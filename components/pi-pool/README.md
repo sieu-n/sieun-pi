@@ -510,8 +510,10 @@ One run of one session holds one working slot from its first model call to its a
 - `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
 
 An owner run never waits and still counts toward the limit, so background work waits behind it.
+The limit is `mac_working_max`, the number the owner set, and memory never lowers it or holds a turn or a spawn (owner, c88 on 10-16).
 Queued runs take free slots by class, high before normal before low, and the longest wait goes first inside a class.
 A queued run moves up one class for every `queue_aging_s` it waits.
+A session that asks again within 30 s of its run's release (`REQUEUE_GRACE_S`) keeps that run's place in line, so a job's chained runs go ahead of turns that never ran.
 A slot is free while the Mac has fewer than `mac_working_max` slots in use and the run's tree has fewer than `tree_working_max`, and every working run but a borrow counts toward both.
 A child whose parent's run is in flight and that finds no free slot runs on the parent's lent slot, and a parent lends one slot at a time, so a parent that spawns six children in one cell runs one of them over the limit, not six.
 A borrow rides on its lender's slot and takes none: at 11:02 KST on 10-14, 7 of 30 working runs were borrows that each kept a queued run off a free slot.
@@ -532,42 +534,6 @@ A failed admit lets the run go, so a broken pool never stops the Mac's agents.
 
 A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run, gives at most 16 slots at once, and puts at most 11 children on lent slots at once (`tests/test_turns.py`).
 
-### The memory governor
-
-While the Mac is short of memory the queue lowers its limit and holds low turns, so agent work stops adding load while the Mac pages.
-`pool/pressure.py` reads three kernel values in-process, with no fork: `kern.memorystatus_vm_pressure_level`, `vm.swapusage`, and the pages the compressor occupies (`vm_stat`'s "Pages occupied by compressor").
-On Linux it reads `/proc/meminfo` and the memory PSI of the nearest cgroup with a numeric `memory.max` (a systemd slice's `MemoryMax`, else `/proc/pressure/memory`): `some avg10` at 7% or more reads warn and `full avg10` at 70% or more reads critical, Android lmkd's default PSI cutoffs, and RAM is that `memory.max` when it is below `MemTotal` (`tests/test_linux_host.py`).
-The spawn gate's worker read uses macOS libproc and returns nothing on Linux, so spawns are not held there; its 20 and 16 GiB cutoffs were measured on the 32 GB Mac.
-While ops guy's machine-wide feed `~/.cache/virev/mac-pressure.json` (schema v1) is under 30 s old and parses, its `pressure_level`, `mem_gb.compressed`, `swap_gb` and `swapouts_per_s` replace the kernel's values, and the reading's `source` says `feed`; a missing, stale or malformed feed leaves the kernel read (`source` `sysctl`), and `pressure.parse_feed` is the one place that knows the schema.
-The level is critical when the kernel says critical (4), the compressor holds 45% of RAM, swap is over 95% full or the feed counts 6,000 swapouts a second or more, high when the kernel says warn (2), and ok otherwise. macOS said warn through the 10-14 thrash, with swap 98% full and 6,210 to 22,956 swapouts a second while kernel_task paged at 168% to 256%.
-At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at 189-268%, and at 18:20 it held 17.1 GB with a median 12,000 swap-ins a second while the kernel still said warn.
-Swap shows in the reading and sets no level, because macOS grows swap a 1 GB file at a time and used swap sat at 95-99% of the total in every sample.
-While the level is high or critical the Mac limit is the lower of `mac_working_max` and `pressure_working_max[level]` (16 at high, 12 at critical).
-A queued turn whose own class and whose tree's class are both below high is held: duties and check-ins queue low and a job of a normal or low chat takes that chat's class, so they wait, while a chat and every job and subagent of a High chat run under the lower limit.
-A held turn keeps its place and takes a free slot under the lower limit only after every turn that is not held, one per tree each admit pass; a turn held 141 s (`HOLD_MAX_S`, the 90th percentile wait before the governor) queues like any other, and a held child may still borrow its in-flight parent's lent slot; an owner turn never queues, and a running turn is never stopped.
-The level is read again once `state["turns"]["pressure"]` is 30 s old, a read costs about 0.01 ms, and a lost record is read again at the next admit.
-`queue --json` carries `pressure` with the level, the reading, the limit, the held count and the last level change (`changed`, with its reading and the limits before and after), and pi-pool.log gets a `pressure_level` line for each change and a `pressure_limit` line when the limit changes inside one level, which a new `mac_working_max` does.
-The limit is never above `mac_working_max`, the number the owner set: a read at high or critical lowers it, and the next ok read puts it back to that number.
-While the level is high or critical, a borrow starts only while slots and borrows in use are under the limit plus 2 (`turns.PRESSURE_BORROWS`), so a fan-out of children puts at most 2 turns over the limit; at ok every in-flight parent still lends one slot. Over the 721 Mac usable watch minutes from 10-14 20:31Z to 10-15 08:51Z, no minute at or under that top was unusable (0 of 124), and 30 of the 88 over it were (`tests/usable_minutes_1014_1015.json`).
-Over the 101 feed minutes the governor read critical from 10-14 20:31Z to 10-15 08:25Z, the 39 with at most 18 turns working peaked at 92.2% kernel_task, and 22 of the 62 with 19 or more read over 100%, each with 2 to 8 borrows; at 08:15Z on 10-15 a job fanned out 26 children and the Mac held 16 slots and 6 borrows at 152.3% (`tests/critical_minutes_1014_1015.json`).
-While the level is high or critical, the governor also holds any tree that the chat service lists in `~/.cache/virev/tree-memory.json` as over a quarter of RAM (the share in `~/.cache/virev/tree-guard-contract.md`).
-Every queued turn of that tree waits, whatever its class, with no 141 s release, no one-per-tree pass and no borrow, until the tree leaves the file or the level is ok.
-The tree's root session still runs, so the chat can read the service's notice and stop its job, and an owner turn never queues.
-The file is read with the level, once every 30 s, and a missing, malformed or 180 s old file holds nothing; on 10-15 00:40-00:53Z the VP of SEO tree held 16 to 25.5 GiB while the Mac swapped out up to 25,873 pages a second.
-`queue --json`'s `pressure` lists the held root session ids in `memory_trees` and counts their turns in `held`, and pi-pool.log gets a `tree_memory_held` line when a tree starts being held and a `tree_memory_released` line when it stops (`tests/test_tree_memory.py`).
-`pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.
-
-### The spawn gate
-
-A child that `rlm.spawn` starts costs memory in the Prime daemon at once, before its first turn asks for a slot: from 08:37Z to 09:37Z on 10-15 live sessions went from 66 to 133, the workers from 17 to 27 GiB, and 21 of 53 feed minutes were unusable.
-The chat service's kernel wrapper (`components/user-history/src/message-limit-check.py`) runs `pi-pool spawn-gate enter --parent <s> --name <n> --pid <kernel pid>` before each spawn, and `pool/spawns.py` answers go or held.
-`pressure.read_workers_gb` sums the footprint of the Prime daemon, its workers and every process under them, at most once every 30 s.
-New spawns are held from 20 GiB (`spawns.HOLD_ON_GB`) until the sum falls to 16 GiB (`spawns.HOLD_OFF_GB`), and between the two the hold keeps its last state: on 10-15, 0 of 364 feed minutes at 16 GiB or less in the workers were unusable, against 5 of 42 at 20 to 22 GiB and 54 of 98 over 24.
-While the hold is off, each read lets (20 - GiB) / 0.15 spawns start, the 0.15 GiB one live session added on 10-15, so a fan-out fills the room under 20 GiB and the rest wait for the next read.
-A held spawn returns the parent a handle whose `rlm_child_id` starts with `queued-` at once, its kernel runs `pi-pool spawn-gate wait <ticket>` in the background, and the spawn goes out in queue order when the wait prints go; `rlm.held_spawns[name]` then holds the real handle.
-Roots (`rlm.create_session`) and owner turns never pass the gate, a gate that fails lets the spawn go, an entry whose kernel is gone is dropped with a `spawn_dropped` line, and `pi-pool set spawn_hold_on 0` lets every spawn go.
-`pi-pool spawn-gate status` prints the hold, the GiB and the held spawns, and pi-pool.log gets `spawn_hold`, `spawn_held` and `spawn_started` lines (`tests/test_spawns.py` replays the 08:42Z, 09:10Z and 09:30Z fan-outs).
-
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
 
 ## Config
@@ -577,10 +543,10 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
-`mac_working_max`, `tree_working_max`, `queue_aging_s`, `lease_s`, `memory_governor_on` and `pressure_working_max`. `pi-pool set` takes a JSON object for
-`tier_units`, `max_moves_per_day` and `pressure_working_max`. `five_hour_max_pct`, the runway keys
+`mac_working_max`, `tree_working_max`, `queue_aging_s` and `lease_s`. `pi-pool set` takes a JSON object for
+`tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
-`min_runway_hours`) and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+`min_runway_hours`), the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties

@@ -1,6 +1,6 @@
 """Prod turns: a turn runs at once, like an owner turn, while its session works on prod.
 
-Two signals make a prod turn, read by `read` at most every turns.PRESSURE_TTL_SEC and kept in
+Two signals make a prod turn, read by `read` at most every turns.PROD_TTL_SEC and kept in
 state["turns"]["prod"] as {at, trees: {tree: why}, sessions: {session: why}}:
 
 - A run of a prod deploy workflow (prod_deploy_owners, by workflow file) that GitHub has not
@@ -18,7 +18,7 @@ From 09:16Z to 11:04Z metal's root ran 11 turns for 168 s and waited 6,517 s, an
 owner's ran 9 for 96 s and waited 5,565 s (tests/live_1015_1859kst.json).
 
 Both caches refresh every 30 s (ci-runs.json intervalSeconds, the bridge's poll_every_s), so a
-read every PRESSURE_TTL_SEC sees each change within a minute. Reading the 72 MB ci-runs.json
+read every PROD_TTL_SEC sees each change within a minute. Reading the 72 MB ci-runs.json
 and finding its deploy runs took 80 ms on 10-15; the scan parses only the runs whose workflow
 path matches.
 """

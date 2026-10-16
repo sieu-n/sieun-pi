@@ -5,7 +5,7 @@ import calendar, collections, heapq, json, os, subprocess, sys, tempfile, time, 
 
 from fixture_isolation import isolate_test_module
 from test_core import SOURCE
-from vend.pool import base, pressure, turns
+from vend.pool import base, turns
 
 
 def setUpModule():
@@ -152,7 +152,7 @@ def ask_args(session, tree="t", parent=None, klass=None, renew=False):
 
 
 class Lease(unittest.TestCase):
-    CFG = dict(base.DEFAULTS, mac_working_max=1, memory_governor_on=0)
+    CFG = dict(base.DEFAULTS, mac_working_max=1)
 
     def test_a_run_that_calls_the_model_every_300_s_keeps_its_slot(self):
         """A 3,000 s run, longer than lease_s, whose model calls renew every 300 s;
@@ -208,7 +208,7 @@ class OwnerLog(unittest.TestCase):
     was owner-turn starting an agent run already in the queue, logged as the owner's
     with that run's wait, and 15 of the 25 marks came from the extension's input hook
     on a [job] or [brief check] notice, not from the owner."""
-    CFG = dict(base.DEFAULTS, mac_working_max=16, memory_governor_on=0)
+    CFG = dict(base.DEFAULTS, mac_working_max=16)
 
     def full(self):
         t = turns.empty()
@@ -258,7 +258,7 @@ class Class(unittest.TestCase):
     def cls(self, sessions, **kw):
         t = turns.empty()
         fill(t, 16)
-        turns.ask(t, sessions, ask_args("s", tree="T", **kw), 0, dict(base.DEFAULTS, memory_governor_on=0))
+        turns.ask(t, sessions, ask_args("s", tree="T", **kw), 0, dict(base.DEFAULTS))
         return t["queued"]["s"]["class"]
 
     def test_a_child_of_a_high_chat_queues_as_normal(self):
@@ -276,8 +276,7 @@ class Class(unittest.TestCase):
 
 
 class CheckIn(unittest.TestCase):
-    """A chat's check-in key queues above every class and is never held. 10-15: at the
-    critical limit of 12 with 60 to 77 turns queued, every entry aged to high within 36 s and
+    """A chat's check-in key queues above every class. 10-15: with 60 to 77 turns queued, every entry aged to high within 36 s and
     check-in keys waited up to 381 s behind them."""
     KEY = "duty:01a11bd7-072f-7591-ad1d-f123c276cde5:checkin"
 
@@ -285,15 +284,6 @@ class CheckIn(unittest.TestCase):
         q = {"old": entry(klass="normal", since=0, tree="a"), self.KEY: entry(klass=turns.CHECKIN, since=900, tree=self.KEY)}
         self.assertEqual(turns.order(q, 1000, 18), [self.KEY, "old"], "a normal turn aged to high for 1,000 s still queues behind it")
         self.assertGreater(turns.rank(q[self.KEY], 1000, 18), turns.rank(q["old"], 10 ** 6, 18))
-
-    def test_pressure_never_holds_a_check_in_key(self):
-        self.assertFalse(turns.holds(entry(klass=turns.CHECKIN, since=0, tree=self.KEY), {}, 1))
-        self.assertTrue(turns.holds(entry(klass="low", since=0, tree="duty:c:d4"), {}, 1), "another duty's key is held as before")
-        t = turns.empty()
-        fill(t, 11)
-        t["queued"].update({"aged": entry(klass="high", since=0, tree="a"), self.KEY: entry(klass=turns.CHECKIN, since=50, tree=self.KEY)})
-        hold = lambda e: turns.holds(e, {}, 60)
-        self.assertEqual(turns.admit_pass(t, 60, 12, 8, 18, hold=hold), [(self.KEY, "slot")], "the one free slot under the limit of 12")
 
     def test_only_a_check_in_key_may_ask_for_the_class(self):
         self.assertEqual(turns.parse([self.KEY, "--tree", self.KEY, "--class", "checkin", "--wait"])["class"], turns.CHECKIN)
@@ -304,249 +294,18 @@ class CheckIn(unittest.TestCase):
     def test_queue_json_shows_a_check_in_key_as_high_with_a_flag(self):
         t = turns.empty()
         t["queued"][self.KEY] = entry(klass=turns.CHECKIN, since=0, tree=self.KEY)
-        shown = turns.view(t, 5, dict(base.DEFAULTS, memory_governor_on=0))["queued"][0]
+        shown = turns.view(t, 5, dict(base.DEFAULTS))["queued"][0]
         self.assertEqual((shown["class"], shown["base_class"], shown.get("checkin")), ("high", "high", True))
 
 
-GB = 10 ** 9
-RAM = 34359738368
-# 10-14 18:20 KST on the owner's Mac: the kernel said warn, the compressor held 17.1 GB
-# of 34.4 GB RAM, and swap held 45.7 of 46.2 GB.
-THRASH = {"kernel": 2, "swap_used": 45661159424, "swap_total": 46170898432, "compressor": 17304076288, "ram": RAM}
-WARN = dict(THRASH, compressor=8 * GB, swap_used=20 * GB)
-CALM = dict(WARN, kernel=1, compressor=4 * GB)
-# ops guy's feed, schema v1, at 10:21Z on 10-14: warn while swap held 45.18 of 46.0 GB,
-# 16,191 swapouts a second, kernel_task at 224% and load 145.
-FEED_1021 = {"v": 1, "ts": "2026-10-14T10:21:36Z", "interval_s": 10, "pressure": "warn", "pressure_level": 2, "free_pct": 35,
-             "mem_gb": {"total": 32.0, "free": 0.05, "compressed": 15.9, "wired": 3.8}, "swap_gb": {"used": 45.18, "total": 46.0},
-             "swapins_per_s": 14000.0, "swapouts_per_s": 16191.0, "kernel_task_cpu_pct": 224.0, "load": [145.0, 120.0, 100.0],
-             "owner_mem_metric": "footprint", "owners": [], "sampler_ms": 40}
 
-
-class Readings:
-    """A stand-in for pressure.read that counts its calls."""
-
-    def __init__(self, reading):
-        self.reading, self.calls = reading, 0
-
-    def __call__(self):
-        self.calls += 1
-        return self.reading
-
-
-class PressureLevel(unittest.TestCase):
-    def test_the_kernel_level_and_the_compressor_share_set_the_level(self):
-        level = pressure.level
-        self.assertEqual(level(CALM), "ok")
-        self.assertEqual(level(WARN), "high")
-        self.assertEqual(level(dict(WARN, kernel=4)), "critical")
-        self.assertEqual(level(THRASH), "critical", "18:20 KST: kernel warn, compressor at half of RAM")
-        self.assertEqual(level(dict(CALM, compressor=16 * GB)), "critical", "18:00 KST: 16 GB compressor")
-        self.assertEqual(level(None), "ok", "a broken probe never holds the Mac's agents")
-
-    def test_full_swap_or_fast_swapouts_read_critical_while_the_kernel_says_warn(self):
-        level = pressure.level
-        feed = pressure.parse_feed(FEED_1021)
-        self.assertEqual(level(dict(WARN, **feed)), "critical", "10:21Z: warn, swap 98% full, 16,191 swapouts a second")
-        self.assertEqual(level(dict(WARN, swap_used=int(0.96 * WARN["swap_total"]))), "critical", "swap over 95% alone")
-        self.assertEqual(level(dict(WARN, swapouts=6210)), "critical", "the slowest swapout rate measured while kernel_task paged")
-        self.assertEqual(level(dict(WARN, swapouts=5999)), "high")
-        self.assertEqual(level(dict(CALM, swap_total=0, swap_used=0)), "ok", "no swap file is no full swap")
-
-    @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
-    def test_a_read_on_this_mac_gives_every_value(self):
-        reading = pressure.read()
-        self.assertEqual(set(reading), {"kernel", "swap_used", "swap_total", "compressor", "ram", "load", "cpus", "uptime", "source"})
-        self.assertLessEqual(0, reading["load"])
-        self.assertLess(0, reading["cpus"])
-        self.assertLess(0, reading["uptime"])
-        self.assertIn(reading["kernel"], (1, 2, 4))
-        self.assertLessEqual(reading["swap_used"], reading["swap_total"])
-        self.assertLess(0, reading["compressor"])
-        self.assertLess(reading["compressor"], reading["ram"])
-        self.assertIn(pressure.level(reading), pressure.LEVELS)
-
-
-
-class PressureFeed(unittest.TestCase):
-    """ops guy's ~/.cache/virev/mac-pressure.json replaces the kernel's level and
-    compressor size while it is fresh and parses; anything else falls back."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="pi-pool-feed-")
-        self.path = os.path.join(self.dir, "mac-pressure.json")
-
-    def write(self, text, age=0):
-        with open(self.path, "w") as f:
-            f.write(text)
-        at = time.time() - age
-        os.utime(self.path, (at, at))
-
-    def test_a_fresh_feed_gives_the_level_the_compressor_the_swap_and_the_swapouts(self):
-        self.write(json.dumps(FEED_1021), age=9)
-        self.assertEqual(pressure.read_feed(self.path), {"kernel": 2, "compressor": int(15.9 * 2 ** 30), "swap_used": int(45.18 * 2 ** 30),
-                                                          "swap_total": int(46.0 * 2 ** 30), "swapouts": 16191.0})
-        self.write(json.dumps(dict(FEED_1021, pressure_level=4)))
-        self.assertEqual(pressure.read_feed(self.path)["kernel"], 4)
-
-    @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
-    def test_a_fresh_feed_sets_the_level_and_marks_its_source(self):
-        self.write(json.dumps(dict(FEED_1021, pressure_level=1, mem_gb=dict(FEED_1021["mem_gb"], compressed=0.5),
-                                   swap_gb={"used": 1.0, "total": 4.0}, swapouts_per_s=0)))
-        reading = pressure.read(self.path)
-        self.assertEqual((reading["source"], reading["kernel"], reading["compressor"], reading["swapouts"]), ("feed", 1, 2 ** 29, 0))
-        self.assertEqual(pressure.level(reading), "ok")
-        self.write(json.dumps(FEED_1021))
-        self.assertEqual(pressure.level(pressure.read(self.path)), "critical")
-
-    def test_a_stale_feed_is_ignored(self):
-        self.write(json.dumps(FEED_1021), age=31)
-        self.assertIsNone(pressure.read_feed(self.path))
-        if sys.platform == "darwin":
-            self.assertEqual(pressure.read(self.path)["source"], "sysctl")
-
-    def test_a_missing_or_malformed_feed_is_ignored(self):
-        self.assertIsNone(pressure.read_feed(os.path.join(self.dir, "absent.json")))
-        bad = [dict(FEED_1021, v=2), dict(FEED_1021, pressure_level="purple"), dict(FEED_1021, pressure_level=True),
-               dict(FEED_1021, mem_gb={"compressed": "16"}), dict(FEED_1021, mem_gb={"compressed": -1}), dict(FEED_1021, swap_gb=None),
-               dict(FEED_1021, swap_gb={"used": 1}), dict(FEED_1021, swapouts_per_s=None), {k: v for k, v in FEED_1021.items() if k != "mem_gb"}]
-        for text in ["", "{", "[]", "null", '{"pressure_level": 2, "compressed_gb": 1}', b"\xff".decode("latin-1")] + [json.dumps(b) for b in bad]:
-            self.write(text)
-            self.assertIsNone(pressure.read_feed(self.path), text)
-            if sys.platform == "darwin":
-                self.assertEqual(pressure.read(self.path)["source"], "sysctl", text)
-
-
-class Governor(unittest.TestCase):
-    """Under memory pressure the queue admits fewer turns and holds the low ones."""
-    CFG = dict(base.DEFAULTS, mac_working_max=30)
-    SESSIONS = {"normal-job": {"priority": "normal"}, "high-chat": {"priority": "high"}, "labeled": {"priority": "normal", "priority_label": "high"}}
-
-    def ask(self, t, session, now, read, **kw):
-        return turns.ask(t, self.SESSIONS, ask_args(session, **kw), now, self.CFG, read=read)[1]
-
-    def test_a_full_limit_holds_duties_and_normal_jobs_behind_the_rest_never_an_owner_turn(self):
-        """A held turn takes a free slot under the lower limit only after every turn that is
-        not held, one per tree each pass, so every chat's check-in still runs."""
-        t, read = turns.empty(), Readings(WARN)
-        fill(t, 16)
-        turns.mark_owner(t, "owner-chat", 0, 1800)
-        self.assertEqual(self.ask(t, "owner-chat", 1, read, tree="normal-job")["kind"], "owner", "16 of 16, and the owner runs")
-        self.assertEqual(self.ask(t, "duty", 2, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
-        self.assertEqual(self.ask(t, "duty-2", 3, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
-        self.assertEqual(self.ask(t, "job", 4, read, tree="normal-job")["state"], "queued")
-        self.assertEqual(self.ask(t, "kid", 5, read, tree="high-chat", parent="high-chat")["state"], "queued")
-        self.assertEqual(turns.view(t, 5, self.CFG, self.SESSIONS)["pressure"]["held"], 3)
-        for i in range(5):
-            del t["working"][f"w{i}"]
-        admitted = turns.step(t, self.SESSIONS, 6, self.CFG, read)[2]
-        self.assertEqual([s for s, _ in admitted], ["kid", "job", "duty"], "the High chat's turn first, then one held turn per tree")
-        self.assertEqual(sorted(t["queued"]), ["duty-2"], "a slot stays free for the next pass")
-        self.assertEqual(turns.step(t, self.SESSIONS, 7, self.CFG, read)[2], [("duty-2", "slot")])
-
-    def test_a_held_turn_waits_at_most_hold_max_s_then_queues_like_any_other(self):
-        t, read = turns.empty(), Readings(THRASH)
-        fill(t, 12)
-        self.assertEqual(self.ask(t, "duty", 0, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
-        self.assertEqual(turns.view(t, turns.HOLD_MAX_S - 1, self.CFG, self.SESSIONS)["pressure"]["held"], 1)
-        self.assertEqual(turns.view(t, turns.HOLD_MAX_S, self.CFG, self.SESSIONS)["pressure"]["held"], 0)
-        self.assertEqual(self.ask(t, "kid", turns.HOLD_MAX_S, read, tree="high-chat", parent="high-chat", klass="high")["state"], "queued")
-        del t["working"]["w0"]
-        self.assertEqual(turns.step(t, self.SESSIONS, turns.HOLD_MAX_S + 1, self.CFG, read)[2], [("duty", "slot")],
-                         "past its hold the duty has aged to high and waited longest")
-        self.assertEqual(turns.HOLD_MAX_S, 141)
-    def test_the_limit_drops_to_16_when_high_and_12_when_critical(self):
-        t, read = turns.empty(), Readings(CALM)
-        fill(t, 16, tree="high-chat")
-        self.assertEqual(self.ask(t, "a", 0, read, tree="high-chat", klass="high")["state"], "admitted", "17 of 30")
-        read.reading = THRASH
-        self.assertEqual(self.ask(t, "b", 31, read, tree="high-chat", klass="high")["state"], "queued", "17 of 12")
-        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("critical", 12))
-        del t["working"]["w0"], t["working"]["w1"]
-        read.reading = WARN
-        self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[2], [("b", "slot")], "16 of 16")
-        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("high", 16))
-
-    def test_a_held_child_takes_its_in_flight_parents_lent_slot_when_the_limit_is_full(self):
-        """ops guy's review of db7b8bf: a normal job's parent that waits on its child in a cell
-        would hold its slot for the whole pressure spell if the held child could not borrow."""
-        t, read = turns.empty(), Readings(THRASH)
-        fill(t, 11)
-        t["working"]["parent"] = dict(entry(tree="normal-job"), kind="slot")
-        kid = self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")
-        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"), "12 of 12 and no borrow yet")
-        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "12 of 12 in use, and the held child adds no slot")
-        self.assertEqual(len(turns.in_slots(t["working"])), 12)
-        self.assertEqual(self.ask(t, "kid2", 1, read, tree="normal-job", parent="parent")["state"], "queued", "a parent lends one slot")
-        self.assertEqual(self.ask(t, "orphan", 2, read, tree="normal-job", parent="gone")["state"], "queued", "no parent in flight, no borrow")
-        self.assertEqual(sorted(t["queued"]), ["kid2", "orphan"])
-
-    def test_at_critical_borrows_put_at_most_pressure_borrows_turns_over_the_limit(self):
-        """10-15 08:15Z: the governor read critical with 16 slots and 6 borrows in use, and
-        kernel_task read 152.3%. At high the cap is the same 2 over high's limit."""
-        t, read = turns.empty(), Readings(THRASH)
-        for i in range(12):
-            t["working"][f"p{i}"] = dict(entry(tree=f"T{i}"), kind="slot")
-        states = [self.ask(t, f"kid{i}", i, read, tree=f"T{i}", parent=f"p{i}")["state"] for i in range(6)]
-        self.assertEqual(states, ["admitted"] * turns.PRESSURE_BORROWS + ["queued"] * (6 - turns.PRESSURE_BORROWS))
-        self.assertEqual(len(t["working"]), 12 + turns.PRESSURE_BORROWS)
-        del t["working"]["kid0"]
-        self.assertEqual(turns.step(t, self.SESSIONS, 7, self.CFG, read)[2], [("kid2", "borrow")], "an ended borrow passes its place on")
-        read.reading = WARN
-        self.assertEqual(turns.step(t, self.SESSIONS, 40, self.CFG, read)[2], [("kid3", "slot"), ("kid4", "slot"), ("kid5", "slot")],
-                         "at high the limit is 16 and the children take free slots")
-        turns.mark_owner(t, "boss", 41, 1800)
-        read.reading = THRASH
-        self.assertEqual(self.ask(t, "boss", 80, read, tree="boss")["kind"], "owner", "an owner turn never waits")
-
-    def test_a_level_change_is_recorded_with_its_reading_and_logged(self):
-        t, read = turns.empty(), Readings(CALM)
-        self.ask(t, "a", 0, read, tree="high-chat")
-        self.assertIsNone(t["pressure"]["changed"])
-        read.reading = WARN
-        changed, gone, admitted, events = turns.step(t, self.SESSIONS, 31, self.CFG, read)
-        record = {"from": "ok", "to": "high", "at": 31, "limit_from": 30, "limit_to": 16, "reading": WARN}
-        self.assertEqual(t["pressure"]["changed"], record)
-        self.assertEqual(events, [("pressure_level", record)])
-        self.assertTrue(changed, "a fresh reading is saved")
-        self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[3], [], "the same level logs nothing")
-        self.assertEqual((t["pressure"]["since"], t["pressure"]["changed"]["at"]), (31, 31))
-
-    def test_one_read_serves_30_s_and_a_lost_record_is_read_again(self):
-        t, read = turns.empty(), Readings(WARN)
-        fill(t, 16)
-        for now in range(0, 30, 3):
-            self.ask(t, f"s{now}", now, read, tree="normal-job")
-        self.assertEqual(read.calls, 1)
-        del t["pressure"]
-        self.assertEqual(self.ask(t, "after-restart", 31, read, tree="normal-job")["state"], "queued")
-        self.assertEqual((read.calls, t["pressure"]["level"]), (2, "high"))
-        self.assertEqual(turns.view(t, 31, self.CFG, self.SESSIONS)["pressure"]["held"], 11)
-    def test_a_failed_read_and_the_off_switch_leave_the_limit(self):
-        t = turns.empty()
-        fill(t, 20, tree="high-chat")
-        self.assertEqual(self.ask(t, "a", 0, Readings(None), tree="normal-job", klass="low")["state"], "admitted")
-        off = dict(self.CFG, memory_governor_on=0)
-        read = Readings(THRASH)
-        self.assertEqual(turns.ask(t, self.SESSIONS, ask_args("b", tree="normal-job", klass="low"), 1, off, read=read)[1]["state"], "admitted")
-        self.assertEqual((read.calls, t["pressure"]["level"], t["pressure"]["limit"]), (0, "ok", 30))
-
-    def test_queue_json_carries_the_level_the_reading_the_limit_and_the_held_count(self):
-        t, read = turns.empty(), Readings(WARN)
-        fill(t, 16)
-        self.ask(t, "duty", 0, read, tree="duty:x", klass="low")
-        p = turns.view(t, 0, self.CFG, self.SESSIONS)["pressure"]
-        self.assertEqual({k: p[k] for k in ("level", "on", "limit", "held", "reading")},
-                         {"level": "high", "on": True, "limit": 16, "held": 1, "reading": WARN})
-        self.assertEqual(set(p), {"level", "on", "at", "since", "reading", "limit", "changed", "held", "memory_trees", "workers_gb", "workers_at",
-                                  "workers_full", "workers_gb_max"})
+class Cli(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-turns-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
         for k in (base.SESSION_ENV, base.JOURNAL_ENV, "RLM_SESSION_DIR"):
             self.env.pop(k, None)
         self.set("mac_working_max", "2")
-        self.set("memory_governor_on", "0")
 
     def run_cli(self, *args, check=True):
         done = subprocess.run(["/usr/bin/python3", "-B", os.path.join(SOURCE, "bin", "pi-pool"), *args],
@@ -579,13 +338,6 @@ class Governor(unittest.TestCase):
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": True})
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": False}, "release is idempotent")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "c"], "the release admitted c")
-
-    def test_queue_json_reads_this_macs_pressure_when_the_governor_is_on(self):
-        self.set("memory_governor_on", "1")
-        p = self.queue()["pressure"]
-        self.assertIn(p["level"], turns.pressure.LEVELS)
-        self.assertEqual(p["limit"], 2 if p["level"] == "ok" else min(2, base.DEFAULTS["pressure_working_max"][p["level"]]))
-        self.assertEqual(p["held"], 0)
 
     def test_set_records_who_and_when_in_config_and_the_log(self):
         before = round(time.time())
@@ -678,7 +430,7 @@ class Governor(unittest.TestCase):
     def test_off_admits_everything_records_nothing_and_keeps_the_limit(self):
         self.set("agent_queue_on", "0")
         saved = read(os.path.join(self.dir, "config.json"))
-        self.assertEqual({k: v for k, v in saved.items() if k != "set_by"}, {"mac_working_max": 2, "memory_governor_on": 0, "agent_queue_on": 0})
+        self.assertEqual({k: v for k, v in saved.items() if k != "set_by"}, {"mac_working_max": 2, "agent_queue_on": 0})
         for s in "abc":
             self.assertEqual(self.admit(s)["state"], "off")
         view = self.queue()
@@ -800,109 +552,41 @@ class Burst(unittest.TestCase):
         print(f"\nburst replay: {admitted} turns, peak {peak_working} working, {peak_borrows} borrows at once, "
               f"median wait {waits[len(waits) // 2]:.0f} s, p90 {waits[int(len(waits) * 0.9)]:.0f} s", file=sys.stderr)
 
-class CriticalMinutes(unittest.TestCase):
-    """The feed minutes the governor read critical from 10-14 20:31Z to 10-15 08:25Z, with the
-    most slots, borrows and working turns pi-pool.log shows in each."""
+class Limit(unittest.TestCase):
+    """The working limit is mac_working_max, the number the owner set, whatever the Mac's memory reads (owner, c88 on 10-16)."""
 
-    def test_no_minute_at_the_limit_plus_pressure_borrows_read_over_a_core(self):
-        with open(os.path.join(os.path.dirname(__file__), "critical_minutes_1014_1015.json")) as f:
-            rows = json.load(f)["minutes"]
-        top = base.DEFAULTS["pressure_working_max"]["critical"] + turns.PRESSURE_BORROWS
-        within = [r for r in rows if r["total"] <= top]
-        hot = [r for r in rows if r["kernel_task_pct"] >= 100]
-        self.assertEqual((len(rows), len(within), len(hot)), (101, 13, 22))
-        self.assertEqual(max(r["kernel_task_pct"] for r in within), 84.8)
-        self.assertTrue(all(r["total"] > top and r["slots"] >= 15 and r["borrows"] >= 2 for r in hot))
-        self.assertIn({"at": "2026-10-15T08:15", "kernel_task_pct": 152.3, "slots": 16, "borrows": 6, "total": 22}, rows)
-
-
-
-class UsableMinutes(unittest.TestCase):
-    """The Mac usable watch minutes from 10-14 20:31Z to 10-15 08:51Z with pi-pool's level and
-    working turns: at the limit plus PRESSURE_BORROWS for its level or under, no minute was unusable."""
-
-    def test_no_minute_at_or_under_its_levels_top_was_unusable(self):
-        with open(os.path.join(os.path.dirname(__file__), "usable_minutes_1014_1015.json")) as f:
-            rows = json.load(f)["minutes"]
-        cfg = dict(base.DEFAULTS, mac_working_max=30)
-        top = {level: turns.working_limit(cfg, level) + (0 if level == "ok" else turns.PRESSURE_BORROWS) for level in ("ok", "high", "critical")}
-        self.assertEqual((top["high"], top["critical"]), (18, 14))
-        within = [r for r in rows if r["level"] != "ok" and r["working"] <= top[r["level"]]]
-        over = [r for r in rows if r["level"] != "ok" and r["working"] > top[r["level"]]]
-        self.assertEqual((len(rows), len(within), len(over)), (721, 124, 88))
-        self.assertEqual([r for r in within if r["unusable"]], [])
-        self.assertEqual(sum(r["unusable"] for r in over), 30)
-
-class Replay1014Evening(unittest.TestCase):
-    """The governor against the turns pi-pool logged on 10-14 from 21:07 to 22:48 KST, while
-    the Mac read critical: under the old rule 21 low turns sat held, the oldest 2,541 s. At the
-    critical limit of 12 the 90th percentile turn waits about 5 min, the cost of a usable Mac."""
-
-    def test_held_turns_wait_about_hold_max_s_and_every_tree_with_one_gets_through(self):
-        with open(os.path.join(os.path.dirname(__file__), "live_1014_2107_2248kst.json")) as f:
-            arrivals = json.load(f)["turns"]
-        cfg = dict(base.DEFAULTS, mac_working_max=30)
-        limit = turns.working_limit(cfg, "critical")
-        t, waits, keys, seen, i = turns.empty(), {}, {}, collections.Counter(), 0
-        for now in range(max(a["t"] for a in arrivals) + 6000):
-            while i < len(arrivals) and arrivals[i]["t"] <= now:
-                a = arrivals[i]
-                i += 1
-                seen[a["session"]] += 1
-                t["queued"][f"{a['session']}#{seen[a['session']]}"] = dict(entry(tree=a["tree"], parent=a["parent"], klass=a["class"], since=a["t"]),
-                                                                           holdable=a["holdable"], dur=a["dur"], base=a["session"])
-            for s, e in list(t["working"].items()):
-                if now >= e["since"] + e["dur"]:
-                    del t["working"][s]
-                    keys.pop(e["base"], None)
-            for e in t["queued"].values():
-                e["parent"] = keys.get(e["parent"], e["parent"])
-            hold = lambda e, now=now: e["holdable"] and now - e["since"] < turns.HOLD_MAX_S
-            for s, _ in turns.admit_pass(t, now, limit, int(cfg["tree_working_max"]), int(cfg["queue_aging_s"]), 10 ** 9, hold):
-                w = t["working"][s]
-                waits[s] = (now - w["queued_since"], w["holdable"], w["tree"])
-                keys[w["base"]] = s
-            if i == len(arrivals) and not t["queued"]:
-                break
-        held = sorted(w for w, h, _ in waits.values() if h)
-        everyone = sorted(w for w, _, _ in waits.values())
-        p90 = lambda xs: xs[int(0.9 * (len(xs) - 1))]
-        self.assertEqual((len(waits), len(t["queued"])), (len(arrivals), 0), "every turn ran")
-        self.assertEqual(len(held), 113)
-        p99 = lambda xs: xs[int(0.99 * (len(xs) - 1))]
-        print(f"\n10-14 evening replay at {limit}: p90 wait held {p90(held)} s, all {p90(everyone)} s, p99 all {p99(everyone)} s", file=sys.stderr)
-        self.assertLessEqual(p90(held), 260, "at 16 this was 150 s; 12 is what keeps critical minutes usable (UsableMinutes)")
-        self.assertLessEqual(p90(everyone), 310, "at 16 this was 60 s")
-        self.assertEqual({tree for _, h, tree in waits.values() if h}, {a["tree"] for a in arrivals if a["holdable"]})
+    def test_the_limit_is_the_set_number(self):
+        t = turns.empty()
+        cfg = dict(base.DEFAULTS, mac_working_max=30, tree_working_max=30)
+        for i in range(40):
+            t["queued"][f"q{i}"] = entry(tree=f"t{i}", since=float(i), klass="low")
+        changed, _, admitted, _ = turns.step(t, 100, cfg, prods=lambda cfg, now: {"at": now, "trees": {}, "sessions": {}})
+        self.assertTrue(changed)
+        self.assertEqual((len(admitted), len(t["working"]), len(t["queued"])), (30, 30, 10))
+        view = turns.view(t, 100, cfg)
+        self.assertNotIn("pressure", view)
+        self.assertEqual(view["mac_working_max"], 30)
 
 
-class SetLimit(unittest.TestCase):
-    """The working limit is mac_working_max, the number the owner set. Pressure lowers it, and the first ok read puts it back,
-    never above. Before this, an ok read raised it 4 slots a read (LIMIT_STEP), and with mac_working_max at 30 the limit
-    climbed 12 to 30 after the 13:49Z restart on 10-15."""
+class Requeue(unittest.TestCase):
+    """A session that asks again within REQUEUE_GRACE_S of its run's release keeps its place in line."""
 
-    def limits(self, mac, readings):
-        t, read = turns.empty(), Readings(THRASH)
-        cfg = dict(base.DEFAULTS, mac_working_max=mac)
-        out = []
-        for n, reading in enumerate(readings):
-            read.reading = reading
-            turns.step(t, {}, n * turns.PRESSURE_TTL_SEC, cfg, read)
-            out.append(t["pressure"]["limit"])
-        return out
-
-    def test_an_ok_read_puts_the_limit_back_to_the_set_number_at_once(self):
-        self.assertEqual(self.limits(30, [THRASH, CALM, CALM, THRASH, CALM]), [12, 30, 30, 12, 30])
-
-    def test_the_limit_never_goes_above_the_set_number(self):
-        self.assertEqual(self.limits(12, [THRASH, WARN, CALM, CALM]), [12, 12, 12, 12], "high allows 16, but the owner set 12")
-        self.assertEqual(self.limits(16, [CALM, WARN, THRASH, CALM]), [16, 16, 12, 16])
-
-    def test_a_limit_at_the_set_number_logs_nothing(self):
-        t, read = turns.empty(), Readings(CALM)
-        cfg = dict(base.DEFAULTS, mac_working_max=12)
-        turns.step(t, {}, 0, cfg, read)
-        self.assertEqual(turns.step(t, {}, 30, cfg, read)[3], [])
+    def test_a_chained_run_keeps_its_line_and_a_late_one_does_not(self):
+        cfg = dict(base.DEFAULTS, mac_working_max=1, prod_turns_on=0)
+        t = turns.empty()
+        t["working"]["job"] = dict(entry(tree="job", since=0.0), kind="slot", queued_since=0.0, lease_until=10 ** 9)
+        t["queued"]["other"] = entry(tree="other", since=5.0)
+        turns.leave(t, "job", 100.0, cfg)
+        self.assertIn("other", t["working"])
+        turns.ask(t, {}, ask_args("job", tree="job"), 110.0, cfg)
+        self.assertEqual(turns.line(t["queued"]["job"]), 0.0)
+        t["queued"]["new"] = entry(tree="new", since=50.0)
+        self.assertEqual(turns.order(t["queued"], 110.0, 18), ["job", "new"])
+        turns.leave(t, "other", 200.0, cfg)
+        self.assertIn("job", t["working"])
+        turns.leave(t, "job", 300.0, cfg)
+        turns.ask(t, {}, ask_args("job", tree="job"), 300.0 + turns.REQUEUE_GRACE_S + 1, cfg)
+        self.assertNotIn("line", t["queued"].get("job", t["working"].get("job", {})))
 
 
 if __name__ == "__main__":

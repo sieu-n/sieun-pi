@@ -80,11 +80,11 @@ def setter():
 
 
 # What an agent may not loosen with `pi-pool set`: it may lower a turn limit but not raise it, and may not
-# switch the queue or the memory governor off. On 10-16 at about 03:54 KST, minutes after a restart, an agent
+# switch the queue off. On 10-16 at about 03:54 KST, minutes after a restart, an agent
 # set mac_working_max from 12 to 30; 28 turns then ran on 12 cores and load reached 47. The owner's shell and
 # the chat service's Settings pane run outside a Prime session and keep every setting.
 AGENT_NO_RAISE = ("mac_working_max", "tree_working_max")
-AGENT_NO_OFF = ("agent_queue_on", "memory_governor_on")
+AGENT_NO_OFF = ("agent_queue_on",)
 
 
 def in_agent():

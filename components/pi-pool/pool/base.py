@@ -113,18 +113,6 @@ DEFAULTS = {
     # one turn over the 3 days to 10-14 08 KST: p99 157 s, p99.9 1,508 s, and 110 over
     # 1,800 s (0735-agent-queue-design/data/measure_gaps.py).
     "lease_s": 1800,
-    # The memory governor (turns.governor): 0 leaves the limits above as they are under any pressure.
-    "memory_governor_on": 1,
-    # The spawn gate (pool/spawns.py): 0 lets every rlm.spawn child start at once whatever Prime's workers hold.
-    "spawn_hold_on": 1,
-    # The working limit while memory pressure is high or critical, when below mac_working_max.
-    # High is the 16 that fit in the 6.9 GB free at 07:38 KST on 10-14 (426 MB per working
-    # session at p90). Critical is 12: over the 721 Mac usable watch minutes from 10-14 20:31Z
-    # to 10-15 08:51Z, none of the 24 critical minutes with 14 or fewer turns working (12 plus
-    # turns.PRESSURE_BORROWS) was unusable, and 24 of the 60 with more were
-    # (tests/usable_minutes_1014_1015.json). A replay of the 10-14 21:07-22:48 KST log
-    # (tests/live_1014_2107_2248kst.json) at 8 left the 90th percentile turn waiting 1,932 s.
-    "pressure_working_max": {"high": 16, "critical": 12},
     # Prod turns (pool/prod.py): 0 queues a session on prod work like any other.
     "prod_turns_on": 1,
     # Each prod deploy workflow and the trees that own its runs: the release owner dispatches

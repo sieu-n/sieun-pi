@@ -17,8 +17,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RELEASE = "01a10810-34b5-710f-88fe-3d369f89a8c9"
 METAL = "01a11d24-ac9b-757d-ac51-9b2b7598782f"
 CRAWLER = "01a115e2-9544-7204-b8db-8ce4d5319048"
-# The critical limit of 12 plus turns.PRESSURE_BORROWS, as the governor ran it at 09:59Z.
-TOP = 12 + turns.PRESSURE_BORROWS
 
 
 def load_fixture():
@@ -96,15 +94,15 @@ class Alerts(Files):
             t["working"][f"w{i}"] = {"tree": f"busy{i}", "parent": None, "class": "normal", "since": 0, "pid": ME, "kind": "slot"}
         t["queued"][CRAWLER] = {"tree": CRAWLER, "parent": None, "class": "high", "since": 9, "pid": ME}
         t["queued"]["job"] = {"tree": CRAWLER, "parent": CRAWLER, "class": "high", "since": 1, "pid": ME}
-        self.assertEqual(turns.admit_pass(t, 10, 12, 8, 18, borrow_top=TOP), [(CRAWLER, "prod"), ("job", "borrow")],
+        self.assertEqual(turns.admit_pass(t, 10, 12, 8, 18), [(CRAWLER, "prod"), ("job", "borrow")],
                          "the job only borrows its in-flight parent's slot, as any child does")
         self.assertEqual(t["working"][CRAWLER]["why"], "alert Production crawler health read over 2 s")
         t["queued"]["job2"] = {"tree": CRAWLER, "parent": CRAWLER, "class": "high", "since": 11, "pid": ME}
-        self.assertEqual(turns.admit_pass(t, 12, 12, 8, 18, borrow_top=TOP), [])
+        self.assertEqual(turns.admit_pass(t, 12, 12, 8, 18), [])
 
 
 class Replay0959(unittest.TestCase):
-    """The queue at 09:59:00Z on 10-15: 14 working, 60 queued, the governor at critical (limit 12)."""
+    """The queue at 09:59:00Z on 10-15: 14 working, 60 queued, at a limit of 12."""
 
     def state(self, snap):
         t = turns.empty()
@@ -129,14 +127,14 @@ class Replay0959(unittest.TestCase):
         t = self.state(snap)
         self.assertEqual((len(t["working"]), len(t["queued"])), (14, 60))
         self.assertEqual(turns.order(t["queued"], snap["at"], 18).index(RELEASE) + 1, 58)
-        self.assertEqual(turns.admit_pass(t, snap["at"], 12, 8, 18, borrow_top=TOP), [], "12 slots are taken, so nobody starts")
+        self.assertEqual(turns.admit_pass(t, snap["at"], 12, 8, 18), [], "12 slots are taken, so nobody starts")
 
     def test_with_promote_running_both_owner_roots_start_at_once_and_nobody_else_does(self):
         snap = self.fx["snapshots"][0]
         t = self.state(snap)
         self.assertEqual(turns.order(t["queued"], snap["at"], 18).index(METAL) + 1, 16)
         self.assertTrue(turns.prod_watch(t, snap["at"], self.cfg)[0])
-        got = turns.admit_pass(t, snap["at"], 12, 8, 18, borrow_top=TOP)
+        got = turns.admit_pass(t, snap["at"], 12, 8, 18)
         self.assertEqual(got, [(METAL, "prod"), (RELEASE, "prod")])
         self.assertEqual(t["working"][RELEASE]["why"], "promote.yml run 38708750431")
         self.assertEqual(len(t["queued"]), 58)
@@ -146,7 +144,7 @@ class Replay0959(unittest.TestCase):
         t = self.state(snap)
         mine = t["queued"].pop(METAL)
         self.assertEqual(turns.order(dict(t["queued"], **{METAL: mine}), snap["at"], 18).index(METAL) + 1, 63)
-        cfg = dict(self.cfg, memory_governor_on=0, mac_working_max=12)
+        cfg = dict(self.cfg, mac_working_max=12)
         ask = {"session": METAL, "tree": METAL, "parent": None, "class": None, "pid": ME, "renew": False}
         sessions = {METAL: {"priority": "high"}}
         _, answer, events = turns.ask(t, sessions, ask, snap["at"], cfg)
@@ -161,17 +159,17 @@ class Replay0959(unittest.TestCase):
         turns.prod_watch(t, snap["at"], self.cfg)
         with open(self.cfg["prod_runs_file"], "w") as f:
             json.dump(runs_cache(dict(self.fx["promote_run"], status="completed", conclusion="success")), f)
-        self.assertEqual(turns.prod_watch(t, snap["at"] + turns.PRESSURE_TTL_SEC - 1, self.cfg), (False, []), "one read serves 30 s")
-        refreshed, events = turns.prod_watch(t, snap["at"] + turns.PRESSURE_TTL_SEC, self.cfg)
+        self.assertEqual(turns.prod_watch(t, snap["at"] + turns.PROD_TTL_SEC - 1, self.cfg), (False, []), "one read serves 30 s")
+        refreshed, events = turns.prod_watch(t, snap["at"] + turns.PROD_TTL_SEC, self.cfg)
         self.assertEqual((refreshed, events), (True, [("prod_turns", {"trees": {}, "sessions": {}})]))
-        self.assertEqual(turns.admit_pass(t, snap["at"] + 30, 12, 8, 18, borrow_top=TOP), [])
+        self.assertEqual(turns.admit_pass(t, snap["at"] + 30, 12, 8, 18), [])
 
     def test_the_off_switch_drops_the_record(self):
         t = self.state(self.fx["snapshots"][0])
         turns.prod_watch(t, 0, self.cfg)
         self.assertEqual(turns.prod_watch(t, 1, dict(self.cfg, prod_turns_on=0)), (True, []))
         self.assertNotIn("prod", t)
-        self.assertEqual(turns.admit_pass(t, 1, 12, 8, 18, borrow_top=TOP), [])
+        self.assertEqual(turns.admit_pass(t, 1, 12, 8, 18), [])
 
 
 class Cli(unittest.TestCase):
@@ -184,7 +182,7 @@ class Cli(unittest.TestCase):
         with open(os.path.join(self.dir, "ci-runs.json"), "w") as f:
             json.dump(runs_cache(promote), f)
         with open(os.path.join(self.dir, "config.json"), "w") as f:
-            json.dump({"mac_working_max": 1, "memory_governor_on": 0, "prod_deploy_owners": {"promote.yml": ["R"]},
+            json.dump({"mac_working_max": 1, "prod_deploy_owners": {"promote.yml": ["R"]},
                        "prod_runs_file": os.path.join(self.dir, "ci-runs.json"), "alert_bridge_file": os.path.join(self.dir, "none.json")}, f)
 
     def run_cli(self, *args):
