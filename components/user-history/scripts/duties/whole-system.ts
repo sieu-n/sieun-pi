@@ -50,7 +50,49 @@ export interface Hold { what: string; from: number; to: number }
 export interface Grant { kind: string; session: string; at: number; waitS: number }
 export interface LogFacts { holds: Hold[]; grants?: Grant[]; firstAt?: number }
 /** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
-export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string } }
+export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string }; proof?: string }
+
+/**
+ * When the Prime daemon stopped work nobody asked to stop, from its logs: each supervisor restart window (from DAEMON_RESTART_LEAD_MS before the
+ * old supervisor's last line to the new one's "listening" line) and each worker SIGTERM. The same rules as resume_paused.py's daemon_restarts
+ * and worker_shutdowns, which lost agent resumes owns.
+ */
+export interface DaemonStops { restarts: readonly (readonly [number, number])[]; sigterms: readonly number[] }
+const DAEMON_LINE = /^\[(\S+Z)\] /;
+const SUPERVISOR_LISTENING = /^\[\S+Z\] supervisor: Prime Agent daemon supervisor \S+ listening/;
+const WORKER_SIGTERM = /^\[\S+Z\] supervisor: Session worker \w+ stderr: received SIGTERM/;
+export const DAEMON_RESTART_LEAD_MS = 5_000;
+/** An abort this close to its worker's SIGTERM line is the shutdown's: they came 0.002 s before to 0.049 s after it (resume_paused.py). */
+export const SIGTERM_MATCH_MS = 1_000;
+
+/** The restart windows and worker SIGTERMs in one daemon log's lines. */
+export function readDaemonStops(lines: readonly string[]): DaemonStops {
+  const restarts: [number, number][] = [];
+  const sigterms: number[] = [];
+  let previous: number | undefined;
+  for (const line of lines) {
+    const stamp = DAEMON_LINE.exec(line);
+    if (!stamp) continue;
+    const at = Date.parse(stamp[1]!);
+    if (!Number.isFinite(at)) continue;
+    if (SUPERVISOR_LISTENING.test(line) && previous !== undefined && previous <= at) restarts.push([previous - DAEMON_RESTART_LEAD_MS, at]);
+    if (WORKER_SIGTERM.test(line)) sigterms.push(at);
+    previous = at;
+  }
+  return { restarts, sigterms };
+}
+
+/**
+ * The proof that an archived cut was an interruption: its archive or abort fell inside a supervisor restart window or at a worker SIGTERM.
+ * Undefined when there is none, which is a deliberate stop (a parent's rlm.delete_subagent, the parker, a person) or work replaced since.
+ */
+export function interruptionProof(cut: { at: number; archivedAt?: number }, stops: DaemonStops): string | undefined {
+  const moments = [cut.archivedAt, cut.at].filter((at): at is number => at !== undefined && Number.isFinite(at));
+  const window = stops.restarts.find(([from, to]) => moments.some(at => from <= at && at <= to));
+  if (window) return `archived inside the supervisor restart from ${clock(window[0])} to ${clock(window[1])}`;
+  const sigterm = stops.sigterms.find(stamp => moments.some(at => Math.abs(at - stamp) <= SIGTERM_MATCH_MS));
+  return sigterm === undefined ? undefined : `aborted at its worker's SIGTERM at ${new Date(sigterm).toISOString().slice(11, 19)}Z`;
+}
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface LimitChange { at: number; limit: number }
 
@@ -194,7 +236,7 @@ export function measure(input: Inputs): PrecheckOutput {
       return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
     });
     flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was ${cutWords(job.cause)} at ` +
-      `${clock(job.at)} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
+      `${clock(job.at)}${job.proof ? `, ${job.proof},` : ""} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
   }
   return { metrics, flagged };
 }
@@ -203,7 +245,8 @@ export function measure(input: Inputs): PrecheckOutput {
  * Every job under the live chats' session folders (`session-artifacts/<chat>/sub-*` at any depth) whose transcript changed within CUT_LOOKBACK_MS
  * and ends cut (`cutEnd`). A child the chat deleted (deleted-jobs.json) or its parent deleted with rlm.delete_subagent is left out.
  */
-export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number): Promise<CutJob[]> {
+export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number,
+  stops: DaemonStops = { restarts: [], sigterms: [] }): Promise<CutJob[]> {
   const found: CutJob[] = [];
   // The lines of each parent transcript that call delete_subagent. A chat's transcript runs to 150 MB, so it is searched as bytes, once.
   const parents = new Map<string, Promise<string[]>>();
@@ -241,8 +284,10 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
         if (now - changed > CUT_LOOKBACK_MS) return;
         const end = await readCut(path);
         if (!end || now - end.at > CUT_LOOKBACK_MS || await deletedBy(parentFile, entry.name)) return;
+        const proof = end.archivedAt === undefined ? undefined : interruptionProof(end, stops);
+        if (end.archivedAt !== undefined && proof === undefined) return;
         const job = await jobOf(child, file);
-        found.push({ ...job, chat, ...end, root: root ? await jobOf(root.child, root.file) : job });
+        found.push({ ...job, chat, at: end.at, cause: end.cause, root: root ? await jobOf(root.child, root.file) : job, ...(proof ? { proof } : {}) });
       }));
     }
   };
@@ -272,6 +317,13 @@ export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<s
   });
 }
 
+/** The daemon's stops from every daemon.sock.*.log and its rotated copies under `logs`. */
+async function daemonStops(logs: string): Promise<DaemonStops> {
+  const names = (await readdir(logs).catch(() => [] as string[])).filter(name => name.startsWith("daemon.sock.") && name.includes(".log")).sort();
+  const all = await Promise.all(names.map(async name => readDaemonStops((await readFile(join(logs, name), "utf8").catch(() => "")).split("\n"))));
+  return { restarts: all.flatMap(stops => stops.restarts), sigterms: all.flatMap(stops => stops.sigterms) };
+}
+
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
 async function main(): Promise<void> {
@@ -299,7 +351,7 @@ async function main(): Promise<void> {
   }
   const live = ids.filter(id => !archived.has(id));
   const cut = await findCutJobs(join(dataDir, "..", "session-artifacts"), live,
-    (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now);
+    (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, await daemonStops(join(dataDir, "..", "logs")));
   const boardStore = new BoardStore(dataDir);
   const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
   const result = measure({

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { cutJobsHoldingWork, findCutJobs, measure, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutJobsHoldingWork, findCutJobs, interruptionProof, measure, readDaemonStops, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
@@ -71,7 +71,7 @@ const archived = entry("00:19:57.647", { type: "session_state", state: { status:
 const aborted = (time = "00:19:57.648") => entry(time, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted" } });
 
 test("a turn the daemon archived and aborted is cut; an owner's Stop, a later input or a later queue place is not", () => {
-  assert.deepEqual(cutEnd([task, queued, archived, aborted()]), { at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "archived" });
+  assert.deepEqual(cutEnd([task, queued, archived, aborted()]), { at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "archived", archivedAt: Date.parse("2026-10-16T00:19:57.647Z") });
   const working = entry("00:18:00.000", { type: "message", message: { role: "assistant", content: [], stopReason: "toolUse" } });
   assert.equal(cutEnd([task, working, aborted("00:18:30.000")]), null);
   assert.equal(cutEnd([task, queued, archived, aborted(), entry("00:41:02.000", { type: "custom_message", customType: "agent_message", content: "Resume" })]), null);
@@ -139,7 +139,31 @@ test("findCutJobs walks every job folder and leaves out a job its parent deleted
     const filler = JSON.stringify({ type: "message", message: { role: "assistant", content: "x".repeat(1000) } });
     await writeFile(join(home, "sessions", `${chat}.jsonl`), [...Array.from({ length: 2000 }, () => filler),
       JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", arguments: { code: "await rlm.delete_subagent('sub-26007170')" } }] } })].join("\n") + "\n");
-    const cut = await findCutJobs(artifacts, [chat], {}, Date.parse("2026-10-16T00:52:00.000Z"));
+    const now = Date.parse("2026-10-16T00:52:00.000Z");
+    const restart = readDaemonStops(["[2026-10-16T00:19:58.000Z] supervisor: Session worker 1345055ce132 stderr: shutting down",
+      "[2026-10-16T00:20:13.000Z] supervisor: Prime Agent daemon supervisor 1792110013 listening on /tmp/daemon.sock"]);
+    const cut = await findCutJobs(artifacts, [chat], {}, now, restart);
     assert.deepEqual(cut.map(one => [one.name, one.root?.name]).sort(), [["failed label fix", "local agents checks"], ["local agents checks", "local agents checks"]]);
+    assert.equal(cut[0]!.proof, "archived inside the supervisor restart from 00:19Z to 00:20Z");
+    // With no restart or worker SIGTERM at that moment the same archive is a deliberate stop and waits for nobody.
+    assert.deepEqual(await findCutJobs(artifacts, [chat], {}, now), []);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("an archived cut is an interruption only inside a supervisor restart or at its worker's SIGTERM", () => {
+  const stops = readDaemonStops([
+    "[2026-10-16T00:19:53.100Z] supervisor: Child passivation sweep failed for worker 283f0715f3b5",
+    "[2026-10-16T00:20:13.000Z] supervisor: Prime Agent daemon supervisor 1792110013 listening on /tmp/daemon.sock",
+    "[2026-10-15T17:43:22.500Z] supervisor: Session worker 22817c6341ac stderr: received SIGTERM",
+  ]);
+  assert.equal(stops.restarts.length, 1);
+  const at = (iso: string) => Date.parse(iso);
+  assert.match(interruptionProof({ at: at("2026-10-16T00:19:57.648Z"), archivedAt: at("2026-10-16T00:19:57.647Z") }, stops) ?? "", /supervisor restart from 00:19Z to 00:20Z/);
+  assert.equal(interruptionProof({ at: at("2026-10-15T17:43:22.510Z"), archivedAt: at("2026-10-15T17:43:22.509Z") }, stops), "aborted at its worker's SIGTERM at 17:43:22Z");
+  // duty fix opener: a chat stopped it at 04:14:29Z with the supervisor alive.
+  assert.equal(interruptionProof({ at: at("2026-10-16T04:14:29.300Z"), archivedAt: at("2026-10-16T04:14:29.200Z") }, stops), undefined);
+  // A tool result the model never answered, archived 2 s later by a parent's delete, carries the archive time too.
+  const result = entry("04:32:59.000", { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "Request was aborted" }] } });
+  const archive = entry("04:32:59.400", { type: "session_state", state: { status: "archived" } });
+  assert.deepEqual(cutEnd([task, result, archive]), { at: Date.parse("2026-10-16T04:32:59.000Z"), cause: "mid-tool", archivedAt: Date.parse("2026-10-16T04:32:59.400Z") });
 });

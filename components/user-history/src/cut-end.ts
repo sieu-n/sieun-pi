@@ -8,7 +8,12 @@ import { clockTime } from "./checkin-settings.ts";
  * stopped it with the supervisor alive, so an archive and abort never proves the daemon went down.
  */
 export type CutCause = "archived" | "error" | "length" | "mid-tool";
-export interface Cut { at: number; cause: CutCause }
+/**
+ * `archivedAt` is when the session was archived at or after its cut. An archive by itself says nothing about why: on 10-16 lost agent resumes
+ * traced all 6 cut jobs the Whole system duty listed at 07:50Z to a parent's rlm.delete_subagent (4) or the parker ending the job above them (2),
+ * and only 1 of 40 archive cuts fell inside a supervisor restart. The duty counts an archived cut only with proof of an interruption.
+ */
+export interface Cut { at: number; cause: CutCause; archivedAt?: number }
 
 /** An archive writes `archived` and then the aborted reply within milliseconds; a Stop that does not archive writes the abort alone. */
 export const ARCHIVE_ABORT_MS = 5_000;
@@ -37,7 +42,7 @@ export const cutActivity = (cut: Cut): string => `${cutWords(cut.cause)} at ${cl
  */
 export function cutEnd(lines: readonly string[]): Cut | null {
   const end = lastCut(lines);
-  return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause } : null;
+  return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause, ...(end.archivedAt === undefined ? {} : { archivedAt: end.archivedAt }) } : null;
 }
 
 /** Whether the job sent its parent a message between its last input and the line at `index`: a cut after its report left nothing waiting. */
@@ -51,23 +56,27 @@ function reportedBefore(lines: readonly string[], index: number): boolean {
 }
 
 function lastCut(lines: readonly string[]): (Cut & { index: number }) | null {
+  let archivedAfter: number | undefined;
   for (let index = lines.length - 1; index >= 0; index--) {
     let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string } };
     try { entry = JSON.parse(lines[index]!); } catch { continue; }
     if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
     if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
+    if (entry.type === "session_state" && entry.state?.status === "archived") archivedAfter ??= Date.parse(entry.timestamp ?? "");
     if (entry.type !== "message" || !entry.message) continue;
     const at = Date.parse(entry.timestamp ?? "");
     const { role, stopReason } = entry.message;
-    if (role === "toolResult") return { at, cause: "mid-tool", index };
+    const archived = archivedAfter === undefined ? {} : { archivedAt: archivedAfter };
+    if (role === "toolResult") return { at, cause: "mid-tool", index, ...archived };
     if (role !== "assistant") return null;
-    if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index };
+    if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index, ...archived };
     if (stopReason !== "aborted") return null;
     for (let back = index - 1; back >= 0; back--) {
       let before: { type?: string; timestamp?: string; state?: { status?: string } };
       try { before = JSON.parse(lines[back]!); } catch { continue; }
       if (before.type !== "session_state") { if (before.type === "message") return null; continue; }
-      return before.state?.status === "archived" && at - Date.parse(before.timestamp ?? "") <= ARCHIVE_ABORT_MS ? { at, cause: "archived", index } : null;
+      const archivedAt = Date.parse(before.timestamp ?? "");
+      return before.state?.status === "archived" && at - archivedAt <= ARCHIVE_ABORT_MS ? { at, cause: "archived", index, archivedAt } : null;
     }
     return null;
   }
