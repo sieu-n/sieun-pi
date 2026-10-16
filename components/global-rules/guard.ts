@@ -7,10 +7,9 @@ import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 import { judgeMergePython, judgeMergeShell } from "./merge-guard.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
-import { isCiRunKeeper, judgeCiRunShell } from "./ci-run-guard.ts";
 
 export interface Verdict {
-	rule: "grep" | "sieun-pi" | "send" | "merge" | "ci-run";
+	rule: "grep" | "sieun-pi" | "send" | "merge";
 	command: string;
 	reason: string;
 	/** What an OWNER_OK todo must name for a merge verdict: the PR, or the repo and default-branch push. */
@@ -96,7 +95,6 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 		...judgeSieunPi(text, cwd),
 		...judgeSendShell(text, cwd),
 		...judgeMergeShell(text, cwd),
-		...judgeCiRunShell(text, cwd),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }
@@ -137,8 +135,7 @@ export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionCont
 		if (typeof text !== "string") return undefined;
 		const judged = event.toolName === "bash" ? judgeShellText(text, cwd) : judgeCell(text, cwd);
 		const sessionPath = ctx?.sessionManager?.getSessionFile?.() ?? process.env.RLM_SESSION_DIR;
-		const keeper = isCiRunKeeper(sessionPath);
-		const verdicts = applyOwnerOk(judged, text).filter((v) => v.rule !== "ci-run" || !keeper);
+		const verdicts = applyOwnerOk(judged, text);
 		for (const v of verdicts) log("guard", `block rule=${v.rule} cwd=${cwd} :: ${v.command}`);
 		recordSends(judged, verdicts, event.toolName, text, sessionPath);
 		return verdicts.length ? { block: true, reason: verdicts[0].reason } : undefined;

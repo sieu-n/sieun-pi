@@ -1,4 +1,4 @@
-"""The run-time half of the global-rules send guard (owner correction c37) and CI run guard, for the Prime Python kernel.
+"""The run-time half of the global-rules send guard (owner correction c37), for the Prime Python kernel.
 
 The tool_call guard reads a cell's text, so it misses a send whose command, URL or MCP tool is built at run time.
 kernel-guard.ts prepends one line to each ipython cell that runs this file once per kernel. From then on the kernel checks
@@ -34,9 +34,6 @@ GIT_WRITE = re.compile(
 GIT_PUSH = re.compile(r"\bgit\s[\s\S]*\bpush\b")
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
-GITHUB_REPO = r"^https?://(?:api\.github\.com|[^/?#]+/api/v3)/repos/[^/?#]+/[^/?#]+/"
-CI_RUN_POST = re.compile(GITHUB_REPO + r"(?:actions/runs/\d+/(?:cancel|force-cancel|rerun|rerun-failed-jobs)|actions/jobs/\d+/rerun|check-(?:runs|suites)/\d+/rerequest)/?(?:[?#]|$)", re.I)
-CI_RUN_DELETE = re.compile(GITHUB_REPO + r"actions/runs/\d+/?(?:[?#]|$)", re.I)
 OWN_PACKAGES = ("aside_browser",)
 state = threading.local()
 WRITING = contextvars.ContextVar("global_rules_send_guard_writing", default=False)
@@ -164,14 +161,8 @@ def on_http_bytes(data) -> None:
     on_http(m.group(1).decode(), target, body)
 
 
-def ci_run_write(method: str, url: str) -> bool:
-    """A cancel, rerun or delete of a GitHub Actions run, which send-check.ts refuses outside the CI run keepers' sessions."""
-    verb = method.upper()
-    return bool((verb == "POST" and CI_RUN_POST.match(url)) or (verb == "DELETE" and CI_RUN_DELETE.match(url)))
-
-
 def on_http(method: str, url: str, body: str = "") -> None:
-    if ((method.upper() in WRITE and send_target(url, body)) or ci_run_write(method, url)) and not owned_by_skill():
+    if method.upper() in WRITE and send_target(url, body) and not owned_by_skill():
         judge({"kind": "http", "method": method.upper(), "url": url, "body": body[:4000]})
 
 
