@@ -25,4 +25,5 @@ const response = await fetch(`${url}api/threads/${encodeURIComponent(chat)}/job-
 const text = await response.text();
 if (!response.ok) { console.error(`job-steer: ${response.status} ${text}`); process.exit(1); }
 const { act, session } = JSON.parse(text) as { act: string; session: string };
-console.log(`${act === "restart" ? "restarted" : "steered"} ${job} (session ${session})`);
+console.log(act === "relay" ? `sent ${job} the message through its chat (session ${session}), because the server cannot reach the job` :
+  `${act === "restart" ? "restarted" : "steered"} ${job} (session ${session})`);

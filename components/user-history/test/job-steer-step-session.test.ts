@@ -35,7 +35,7 @@ async function chatWith(children: ChildAgent[], rows: () => SessionRow[] = () =>
   threads.fire().live("c1", children);
   await chats.settled();
   calls.length = 0;
-  return { chats, calls };
+  return { chats, calls, threads };
 }
 
 test("a job the hub lists with no session id is steered in the session its board step holds, by name or by that id", async () => {
@@ -61,4 +61,16 @@ test("a job is steered in its step's session while the daemon's list times out",
   assert.deepEqual(await chats.steerJob("c1", "blog reader demo", "hi"), { session: SESSION, act: "steer" });
   assert.deepEqual(await chats.steerJob("c1", "no such job", "hi"), { jobs: [] });
   assert.equal(calls.length, 1, calls.join("\n"));
+});
+
+test("blog reader demo 10-16 08:2xZ: a job whose session the server cannot reach gets the message through its chat", async () => {
+  const { chats, calls, threads } = await chatWith([]);
+  const prompt = threads.prompt.bind(threads);
+  threads.prompt = async (id, input) => {
+    if (id === SESSION) throw Object.assign(new Error("This thread is not in the Prime Agent catalog."), { status: 404 });
+    return prompt(id, input);
+  };
+  assert.deepEqual(await chats.steerJob("c1", "blog reader demo", "p164 reads 1.3 of 2%"), { session: "c1", act: "relay" });
+  assert.deepEqual(calls, ["steer c1 [check-in] The server cannot reach your job \"blog reader demo\", so send it this with " +
+    "agent_message.send(text, receiver_role=\"child\", receiver_name=\"blog reader demo\"): p164 reads 1.3 of 2%"]);
 });
