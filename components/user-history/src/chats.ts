@@ -7,7 +7,7 @@ import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
 import type { Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
@@ -1058,6 +1058,28 @@ export class Chats {
     if (line) await this.threads.prompt(chat, { message: CHECK_IN_PREFIX + line, images: [], mode: "steer" })
       .catch(error => this.log(`chat ${chat.slice(0, 8)}: check-in job line: ${error instanceof Error ? error.message : String(error)}`));
     return line;
+  }
+
+  /**
+   * Delivers a check-in job's message to a job of its chat (`scripts/job-steer.ts`, `POST api/threads/<chat>/job-steer`). A chat's jobs are its
+   * subagents, which a check-in job, a root, cannot reach with agent_message (slack green guy 10-16: "No sibling matches"), so the server
+   * sends it the way `pushJobs` does: a steer into the job's session, or a restart with the message when its last turn ended in an error.
+   * The job is named by its name or its session id. Null for a thread that is not a chat; `jobs` lists the chat's job names when none matches.
+   */
+  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" } | { jobs: string[] } | null> {
+    await this.load();
+    if (!this.chatIds.has(chat)) return null;
+    const { facts, sessions } = await this.gather(chat);
+    const wanted = job.trim().toLowerCase();
+    const sessionOf = (fact: JobFact): string | undefined => fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : sessions?.get(fact.key) ?? fact.sessionId;
+    const fact = facts.find(candidate => candidate.name.trim().toLowerCase() === wanted || sessionOf(candidate) === job.trim());
+    const session = fact && sessionOf(fact);
+    if (!fact || !session) return { jobs: facts.map(candidate => candidate.name) };
+    const act = fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined) ? "restart" : "steer";
+    if (act === "restart") await this.threads.restart(session, CHECK_IN_PREFIX + message, true);
+    else await this.threads.prompt(session, { message: CHECK_IN_PREFIX + message, images: [], mode: "steer" });
+    this.log(`chat ${chat.slice(0, 8)}: check-in job ${act === "restart" ? "restarted" : "steered"} job ${fact.name}`);
+    return { session, act };
   }
 
   /**

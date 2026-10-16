@@ -58,9 +58,12 @@ export interface DoneFacts {
 }
 export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
 
-/** A duty metric's verdict on a run, with its value and target, which a goal with no target of its own reads as its number (`goalNumber`). */
-export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<=" }
-/** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first. */
+/**
+ * A duty metric's verdict on a run, with its value and target, which a goal with no target of its own reads as its number (`goalNumber`).
+ * `missedAt` is the newest run at or before it on which the metric missed, before or after its job.
+ */
+export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<="; missedAt?: number }
+/** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first, with its newest miss. */
 export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricFact> {
   const facts = new Map<string, MetricFact>();
   for (const run of runs) {
@@ -69,6 +72,8 @@ export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricF
     for (const [key, result] of Object.entries(judged.metrics)) {
       const link = `${run.duty}/${key}`;
       if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at, value: result.value, target: result.target, op: result.op });
+      const fact = facts.get(link)!;
+      if (fact.missedAt === undefined && (!result.met || run.metrics[key]?.met === false)) fact.missedAt = run.at;
     }
   }
   return facts;
@@ -78,7 +83,7 @@ export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricF
 export interface DoneReason { reason: string; at: number }
 /**
  * Why an open plan item looks done, or null. Only facts count, never the words of a note: a step that fixes a duty metric (`duty`) is done when
- * that metric meets its target on the duty's last run, and a merge step (`mergeStep`) when GitHub shows every PR its text names merged. Any other
+ * that metric meets its target on the duty's last run after it missed on an earlier one, and a merge step (`mergeStep`) when GitHub shows every PR its text names merged. Any other
  * item is done when the chat or its job says so. On 10-16 all 7 items the check-in flagged on 4 chats were open work: notes said "is live" or
  * "merged" about a part (launch main bro p75, slack green guy p71, AI harness p484 and p490), or every step under a goal was closed while its
  * metric missed or its work moved to another chat (launch main bro p125, slack green guy p147, Crawler VP p191). A goal's own `target` does
@@ -93,11 +98,13 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
   // A step the board refuses to close on its own note is not done (ops guy 10-16, p254: d1/servers_not_answering read 0 while the step waited
   // for eecd9d7d5b to land, which never reached sieun/dev, and 3 check-ins in a row said "close it").
   if (unlandedClose(item, { ...item, status: "done" })) return null;
+  // A met metric closes its fix step only after it missed on an earlier run: a metric that never missed does not see the problem the step
+  // fixes (frontend bro 10-16, p174: d1/walk_problems read 0 on every run while the server still called Stripe, flagged 4 check-ins in a row).
   if (item.duty) {
     const fact = facts.metrics.get(item.duty);
     const jobBorn = item.sessionId ? sessionBornAt(item.sessionId) : null;
     if (jobBorn !== null && fact && fact.at < jobBorn) return null;
-    return fact?.met ? { reason: `its metric ${item.duty} is met on the duty's last run`, at: fact.at } : null;
+    return fact?.met && fact.missedAt !== undefined ? { reason: `its metric ${item.duty} moved from a miss to met on the duty's last run`, at: fact.at } : null;
   }
   const prs = mergeStep(item.text) ? mergedPrs(item.text) : [];
   const states = prs.map(pr => facts.prs.get(pr));

@@ -50,6 +50,7 @@ type Sent = Extract<SessionEvent, { kind: "sent" }>;
 type Call = Extract<SessionEvent, { kind: "call" }>;
 type Text = Extract<SessionEvent, { kind: "text" }>;
 const STARTS = /create_session\(|rlm\.spawn\(/;
+const STEER = /scripts\/job-steer\.ts/;
 const BOARD_OP = /"op"\s*:\s*"(plan_|todo_)/;
 
 export const checkinPushControl: Scenario = {
@@ -118,8 +119,13 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       slotLines.push(`slot ${iso(slot.at)}: ${dutyId ? `its duty job started ${started === undefined ? "never" : `${Math.round((started - slot.at) / 1000)} s late`}` : "no duty job"} (${clip(slot.summary ?? "", 120)})`);
       if (!dutyId) return;
     } else slotLines.push(`slot ${iso(slot.at)}: duty job ${duty.get(dutyId)} started after ${Math.round((started - slot.at) / 1000)} s`);
-    const sent = events.filter((event): event is Sent => event.kind === "sent");
     const calls = events.filter((event): event is Call => event.kind === "call");
+    // A job of the chat is the chat's subagent, so the duty job reaches it through scripts/job-steer.ts and the server delivers the message.
+    const steered = calls.filter(event => STEER.test(event.input)).flatMap((event): Sent[] => {
+      const hit = [...jobs].find(([id, name]) => event.input.includes(id) || names(event.input, name));
+      return hit ? [{ kind: "sent", at: event.at, to: hit[0], toName: hit[1], text: event.input }] : [];
+    });
+    const sent = [...events.filter((event): event is Sent => event.kind === "sent"), ...steered];
     for (const event of sent) actions.push(`${iso(event.at)} ${duty.get(dutyId)} messaged ${event.toName || event.to}: "${clip(event.text, 220)}"`);
     for (const event of calls) if (STARTS.test(event.input) || BOARD_OP.test(event.input)) actions.push(`${iso(event.at)} ${duty.get(dutyId)} ${STARTS.test(event.input) ? "started a job" : "changed the board"}: ${clip(event.input, 220)}`);
     const board = boardAt(boards, slot.at);
@@ -136,7 +142,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       const failed = head.some(event => event.kind === "text" && event.at <= slot.at && event.at >= lastAt - 60_000 && new RegExp(`(child-failed|ended|stopped)[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(ended|stopped|failed)`, "i").test(event.text));
       const quietFor = slot.at - lastAt;
       if (!failed && quietFor < state.everyMs) continue;
-      const toJob = sent.find(event => event.to === job);
+      // The server's own push (`pushJobs`) lands in the job's session as a check-in message at the slot.
+      const pushedByServer = own.find((event): event is Text => event.kind === "text" && event.role === "user" && event.at >= slot.at - 60_000 && event.at < next &&
+        /^(\[check-in\]|The check-in)/.test(event.text.trim()));
+      const toJob = sent.find(event => event.to === job) ?? (pushedByServer ? { kind: "sent" as const, at: pushedByServer.at, to: job, toName: name, text: pushedByServer.text } : undefined);
       const tookTurn = own.some(event => event.kind === "assistant" && toJob !== undefined && event.at > toJob.at && event.at < next + state.everyMs);
       const before = boardAt(boards, slot.at); const after = boardAt(boards, next + state.everyMs) ?? boards.at(-1)?.board;
       const ownedBefore = new Set<string>(); walk(before?.plan ?? [], item => { if (item.sessionId === job || item.job === name) ownedBefore.add(item.id); });

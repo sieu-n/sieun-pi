@@ -854,6 +854,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (!found) throw new RequestError(404, "This chat has no such duty.");
           json(res, 200, { duties: await backend.duties.view(id) }); return;
         }
+        case "job-steer": {
+          // A check-in job's message to a job of its chat (scripts/job-steer.ts): the server delivers it, because a root cannot message a chat's subagents.
+          const steered = await backend.chats.steerJob(id, text(body.job, "job", 256), text(body.message, "message"));
+          if (!steered) throw new RequestError(404, "This thread is not a chat.");
+          if ("jobs" in steered) throw new RequestError(404, `The chat has no job by that name. Its jobs: ${steered.jobs.join(", ") || "none"}.`);
+          json(res, 200, steered); return;
+        }
         case "check-in": {
           // The interval and pause for the chat's check-in, from the owner's page or an agent (checkInActor); the chat changes its own through chat_board.
           const view = await backend.chats.setCheckIn(id, parseCheckInChange(body), checkInActor(req));

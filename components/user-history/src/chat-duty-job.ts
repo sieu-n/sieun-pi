@@ -94,7 +94,7 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
     [
       `Apply board changes with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops are chat_board ops.`,
       "Start a job with `await rlm.create_session(brief, name=..., cwd=...)` and set it as its step's job in the same board change. Message a " +
-        "job with `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<job name>)`.",
+        `job of the chat with \`${jobSteerCall(chat)}\`: the server delivers it, and restarts a job whose last turn failed.`,
       `${report ?? "Send the chat one short report when your work is done."} Send it with \`${reportCall(chat)}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
@@ -153,6 +153,9 @@ function chatJobRules(): string[] {
 /** The board-apply call a job the server starts runs for its board ops, as Python. */
 const boardApplyCall = (chat: Pick<DutyChat, "id" | "board">): string =>
   `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
+/** The call a job the server starts uses to message a job of its chat, as Python: the server delivers it (`Chats.steerJob`). */
+const jobSteerCall = (chat: Pick<DutyChat, "id">): string =>
+  `await bash("cd ${USER_HISTORY} && node --import tsx scripts/job-steer.ts ${chat.id} " + shlex.quote(job_name) + " " + shlex.quote(text))`;
 /** The report call a job the server starts ends with. */
 const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
 
@@ -201,7 +204,8 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "`await rlm.create_session(brief, name=..., cwd=...)`.",
       "Map the chat's work as a graph: one job or subagent per part, never steps piled on one old long-running session; when the findings list " +
         "a session that carries too much, move its steps to new jobs per part. Heartbeats the check-in covers go: name each for the chat to delete.",
-      "You can message another thread yourself to chase it: `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<thread name>)`.",
+      "You can message another thread yourself to chase it: `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<thread name>)`. " +
+        `A job of the chat is its subagent, which that cannot reach: message it with \`${jobSteerCall(chat)}\`.`,
       `Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`${apply}\`, where ops is a list of ` +
         "chat_board ops like `[{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}]`. " +
         "It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note. A step whose run, " +

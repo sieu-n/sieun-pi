@@ -453,7 +453,7 @@ test("c44: a step filed as a goal, a finished goal left open and too many open g
     step("p253", "Agents can't send emails or vendor ticket replies unless you approved it in For you", "doing"),
     step("p7", "Old area", "done", { children: [step("p86", "Watch the cache ratio", "todo")] })]);
   const facts: JobFact[] = [{ key: "job:live-job", name: "live-job", state: "working", activityAt: now }];
-  const precheck = checkInPrecheck(undefined, facts, plan, now, { doneFacts: { metrics: new Map([["d1/reply_cap", { met: true, at: now }]]), prs: new Map() } });
+  const precheck = checkInPrecheck(undefined, facts, plan, now, { doneFacts: { metrics: new Map([["d1/reply_cap", { met: true, at: now, missedAt: now - 3_600_000 }]]), prs: new Map() } });
   const { metrics, flagged } = convergenceMisses("c1", precheck.steps, precheck, {}, 15 * 60_000, now);
   assert.equal(metrics.loose_goals, 1);
   assert.ok(metrics.finished_open >= 1);

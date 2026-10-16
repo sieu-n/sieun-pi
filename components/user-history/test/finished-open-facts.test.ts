@@ -35,10 +35,10 @@ test("none of the 7 items the 10-16 prechecks flagged looks done, with their rea
 test("a fix step looks done when its duty metric is met on the duty's newest measured run, and the after-job measure counts", () => {
   const p488 = step("p488", "Goals or steps that look done but are still open in the Check-in duty reaches at most 0, from 2 on the last run", { duty: "checkin/finished_open" });
   const met = metricFacts([run("checkin", NOW - 60_000, { finished_open: true }, "met"), run("checkin", NOW - 3_600_000, { finished_open: false })]);
-  assert.deepEqual(looksDone(p488, facts({ metrics: met })), { reason: "its metric checkin/finished_open is met on the duty's last run", at: NOW - 60_000 });
+  assert.deepEqual(looksDone(p488, facts({ metrics: met })), { reason: "its metric checkin/finished_open moved from a miss to met on the duty's last run", at: NOW - 60_000 });
   const missed = metricFacts([run("checkin", NOW - 60_000, { finished_open: false }), run("checkin", NOW - 3_600_000, { finished_open: true }, "met")]);
   assert.equal(looksDone(p488, facts({ metrics: missed })), null, "the newest run missed");
-  const skipped = metricFacts([run("checkin", NOW - 60_000, {}, "skipped"), run("checkin", NOW - 3_600_000, { finished_open: true }, "met")]);
+  const skipped = metricFacts([run("checkin", NOW - 60_000, {}, "skipped"), run("checkin", NOW - 3_600_000, { finished_open: true }, "met"), run("checkin", NOW - 7_200_000, { finished_open: false })]);
   assert.notEqual(looksDone(p488, facts({ metrics: skipped })), null, "a skipped run neither makes nor breaks it");
   const after = { ...run("checkin", NOW - 3_600_000, { finished_open: false }), after: { at: NOW - 3_000_000, verdict: "met" as const, summary: "",
     metrics: { finished_open: { value: 0, target: 0, op: "<=" as const, met: true } } } };
@@ -51,10 +51,13 @@ test("a duty reading older than the step's job never makes the step look done (f
     duty: "d1/walk_problems", job: "5180 server outside calls fix", sessionId: "01a14223-6b46-71ac-9330-3093231a3690" });
   const before = metricFacts([run("d1", Date.parse("2026-10-15T21:04:19.264Z"), { walk_problems: true })]);
   assert.equal(looksDone(p174, facts({ metrics: before })), null, "the 10-15 21:04Z run read 0 before the job was born at 10-16 00:36Z");
-  const later = metricFacts([run("d1", Date.parse("2026-10-16T06:00:00Z"), { walk_problems: true })]);
-  assert.equal(looksDone(p174, facts({ metrics: later }))?.at, Date.parse("2026-10-16T06:00:00Z"), "a run after the job began counts");
+  const later = metricFacts([run("d1", Date.parse("2026-10-16T06:00:00Z"), { walk_problems: true }), run("d1", Date.parse("2026-10-16T03:00:00Z"), { walk_problems: false })]);
+  assert.equal(looksDone(p174, facts({ metrics: later }))?.at, Date.parse("2026-10-16T06:00:00Z"), "a run after the job began counts once the metric missed");
+  const metOnly = metricFacts([run("d1", Date.parse("2026-10-16T06:00:00Z"), { walk_problems: true })]);
+  assert.equal(looksDone(p174, facts({ metrics: metOnly })), null, "a metric that never missed does not see what the step fixes");
   const noJob = step("p174", p174.text, { duty: "d1/walk_problems" });
-  assert.notEqual(looksDone(noJob, facts({ metrics: before })), null, "a step with no job session keeps the last reading");
+  const beforeAfterMiss = metricFacts([run("d1", Date.parse("2026-10-15T21:04:19.264Z"), { walk_problems: true }), run("d1", Date.parse("2026-10-15T18:58:00Z"), { walk_problems: false })]);
+  assert.notEqual(looksDone(noJob, facts({ metrics: beforeAfterMiss })), null, "a step with no job session keeps the last reading");
 });
 
 test("a goal's own target never makes it look done: it has no direction (launch main bro p127, error reads at 32.4% for a 5% target)", () => {
@@ -120,7 +123,7 @@ test("AI harness p490, p494 and p505 at 06:3xZ on 10-16: notes that say shipped 
   const metrics = metricFacts(live.runs);
   // d1 repeat_corrections read 1 and d6 usable_pct_1h 77.8%; the check-in's after-job measure read stalled_steps 0.
   assert.deepEqual(finishedOpen(board(live.items), facts({ metrics })).map(found => [found.item.id, found.reason]),
-    [["p505", "its metric checkin/stalled_steps is met on the duty's last run"]]);
+    [["p505", "its metric checkin/stalled_steps moved from a miss to met on the duty's last run"]]);
   const met = new Map([...metrics].map(([link, fact]) => [link, { ...fact, met: true }]));
   assert.deepEqual(finishedOpen(board(live.items), facts({ metrics: met })).map(found => found.item.id), ["p494", "p505"],
     "each closes once its metric is met, except p490, whose d1 reading at 17:44Z is older than its job (born 19:12Z)");
@@ -129,10 +132,19 @@ test("AI harness p490, p494 and p505 at 06:3xZ on 10-16: notes that say shipped 
 test("a step the board refuses to close does not look done: ops guy p254 waited for eecd9d7d5b to land while d1/servers_not_answering read 0", () => {
   const p254 = step("p254", "Search answers GET / within 5 s while other jobs move the main checkout: one paraglide recompile per batch of message changes", {
     job: "search paraglide stall fix", duty: "d1/servers_not_answering", waitFor: "search paraglide stall fix lands eecd9d7d5b on its own green run (steered 04:2x KST on 10-16)" });
-  const metrics = metricFacts([run("d1", NOW - 60_000, { servers_not_answering: true }, "met")]);
+  const metrics = metricFacts([run("d1", NOW - 60_000, { servers_not_answering: true }, "met"), run("d1", NOW - 3_600_000, { servers_not_answering: false })]);
   assert.equal(looksDone(p254, facts({ metrics })), null, "the land is still to come");
   assert.notEqual(looksDone({ ...p254, note: "eecd9d7d5b landed on sieun/dev." }, facts({ metrics })), null, "a note that names the landed commit");
   const p267 = step("p267", "Steps stuck on the same wait for over 2 hours in the Check-in duty reaches at most 0, from 14 on the last run", { status: "blocked",
     duty: "checkin/stalled_steps", waitFor: "the AI harness chat's job 'checkin false idle flags' ships, the same fix as p264" });
-  assert.notEqual(looksDone(p267, facts({ metrics: metricFacts([run("checkin", NOW - 60_000, { stalled_steps: true }, "met")]) })), null, "a wait on no land or run");
+  assert.notEqual(looksDone(p267, facts({ metrics: metricFacts([run("checkin", NOW - 60_000, { stalled_steps: true }, "met"), run("checkin", NOW - 3_600_000, { stalled_steps: false })]) })), null, "a wait on no land or run");
+});
+
+test("frontend bro p174 on 10-16: a metric that never missed does not close its step, and one that missed and then met does", () => {
+  const p174 = step("p174", "The 5180 demo server makes no outside call, and the offline walk catches server calls and failed pages", { job: "5180 server outside calls fix",
+    duty: "d1/walk_problems", note: "The walk passed at 09:33 KST 10-16 with 0 browser outside calls, but the server called the real Stripe API 6 times (billing overview payment methods), and /app/analytics/monitor and an onboarding image answered 500 without failing the walk." });
+  const always = metricFacts([run("d1", NOW - 60_000, { walk_problems: true }), run("d1", NOW - 3_600_000, { walk_problems: true }), run("d1", NOW - 7_200_000, { walk_problems: true })]);
+  assert.equal(looksDone(p174, facts({ metrics: always })), null, "walk_problems read 0 on every run, so it misses the problem p174 fixes");
+  const moved = metricFacts([run("d1", NOW - 60_000, { walk_problems: true }), run("d1", NOW - 3_600_000, { walk_problems: false })]);
+  assert.equal(looksDone(p174, facts({ metrics: moved }))?.at, NOW - 60_000, "the walk counted the server calls, then the fix moved it to 0");
 });

@@ -77,3 +77,28 @@ test("IG index gaps 10-16: the check-in run restarts the dead job in its session
   const run = (sink.runs[0] as { run: CheckInRun & { prompt?: string } }).run;
   assert.match(run.prompt ?? "", /The server already restarted job instagram index gaps/);
 });
+
+test("slack green guy 10-16: a check-in job's message to a job of its chat goes through the server, a steer or a restart, by name or session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "checkin-steer-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  await writeFile(join(dir, "check-in-settings.json"), JSON.stringify({ c1: { everyMs: EVERY } }));
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, { c1: igBoard() }, () => NOW), duty: dutySink().duty });
+  await chats.adopt();
+  const working = { id: "k1", label: "gaps", sessionName: "instagram index gaps", sessionId: "s-gaps", status: "running", lastActivityAt: NOW - MIN, repliedSinceTask: false } as ChildAgent;
+  const dead = { id: "k2", label: "page", sessionName: "gaps page", sessionId: "s-page", status: "error", error: "RLM quiescence wait cancelled",
+    lastActivityAt: NOW - 30 * MIN, repliedSinceTask: false } as ChildAgent;
+  threads.fire().live("c1", [working, dead]);
+  await chats.settled();
+  calls.length = 0;
+  assert.deepEqual(await chats.steerJob("c1", "Instagram Index Gaps", "p1 reads 0 of 10 at 05:30Z, 10 short with 18 h left: send the first 3 gaps by 06:00Z"),
+    { session: "s-gaps", act: "steer" });
+  assert.ok(calls.includes("steer s-gaps [check-in] p1 reads 0 of 10 at 05:30Z, 10 short with 18 h left: send the first 3 gaps by 06:00Z"), calls.join("\n"));
+  assert.deepEqual(await chats.steerJob("c1", "s-page", "write the page now"), { session: "s-page", act: "restart" });
+  assert.ok(calls.some(call => call.startsWith("restart s-page [check-in] write the page now")), calls.join("\n"));
+  assert.deepEqual(await chats.steerJob("c1", "no such job", "hi"), { jobs: ["instagram index gaps", "gaps page"] });
+  assert.equal(await chats.steerJob("not-a-chat", "instagram index gaps", "hi"), null);
+});
