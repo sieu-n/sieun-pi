@@ -81,7 +81,7 @@ test("whole-system.duty.json: a duty every 30 minutes on the owner's words, whos
   for (const metric of duty.metrics) assert.ok(written.includes(metric.key), metric.key);
 });
 
-// Transcript shapes from 10-16: the restart at 00:19:57Z archived local agents checks while its turn waited 71st in pi-pool's queue.
+// Transcript shapes from 10-16: at 00:19:57Z local agents checks was archived and aborted while its turn waited 71st in pi-pool's queue.
 const entry = (time: string, fields: Record<string, unknown>): string => JSON.stringify({ timestamp: `2026-10-16T${time}Z`, ...fields });
 const queued = entry("00:16:43.455", { type: "custom", customType: "pi-pool-queue", data: { text: "Queued for a working slot, 71st of 71" } });
 const task = entry("00:16:42.807", { type: "custom_message", customType: "agent_message", content: "[task from parent] ..." });
@@ -89,7 +89,7 @@ const archived = entry("00:19:57.647", { type: "session_state", state: { status:
 const aborted = (time = "00:19:57.648") => entry(time, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted" } });
 
 test("a turn the daemon archived and aborted is cut; an owner's Stop, a later input or a later queue place is not", () => {
-  assert.deepEqual(cutEnd([task, queued, archived, aborted()]), { at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "restart" });
+  assert.deepEqual(cutEnd([task, queued, archived, aborted()]), { at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "archived" });
   const working = entry("00:18:00.000", { type: "message", message: { role: "assistant", content: [], stopReason: "toolUse" } });
   assert.equal(cutEnd([task, working, aborted("00:18:30.000")]), null);
   assert.equal(cutEnd([task, queued, archived, aborted(), entry("00:41:02.000", { type: "custom_message", customType: "agent_message", content: "Resume" })]), null);
@@ -108,7 +108,7 @@ test("a cut job waiting over 10 minutes is a hold, with the continue the fleet b
   ]);
   const watch = [line(0, { at: "2026-10-16T00:21:00.000Z", queue: { working: 15, queued: 71, oldestWaitS: 300, oldestTree: null } } as Partial<WatchLine>)];
   const cut = [
-    { session: "01a14211-72c8-718e-aa23-b49a735cb130", name: "local agents checks", chat: "01a14210", at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "restart" as const },
+    { session: "01a14211-72c8-718e-aa23-b49a735cb130", name: "local agents checks", chat: "01a14210", at: Date.parse("2026-10-16T00:19:57.648Z"), cause: "archived" as const },
     { session: "01a14260-0000-7000-8000-000000000000", name: "fresh cut", chat: "01a14210", at: now - 5 * 60_000, cause: "error" as const },
   ];
   const output = measure(inputs({ now, log, watch, cut }));
@@ -116,7 +116,7 @@ test("a cut job waiting over 10 minutes is a hold, with the continue the fleet b
   // The two 28 s starts are no holds; only the cut job that waited 32 min is.
   assert.equal(output.metrics.queue_holds_30, 1);
   const excerpt = (output.flagged ?? []).find(item => item.kind === "cut_job")?.excerpt ?? "";
-  assert.match(excerpt, /local agents checks .* cut by an abort when the Prime daemon went down at 00:19Z and got no input in 32 min/);
+  assert.match(excerpt, /local agents checks .* was aborted and archived at 00:19Z and got no input in 32 min/);
   assert.match(excerpt, /let its continue start at 00:21Z after 28 s, pi-pool then ran 15 of 15 slots with 71 queued, and nothing reached the session/);
 });
 

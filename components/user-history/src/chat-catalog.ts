@@ -201,8 +201,8 @@ export function settledOnFailure(row: SessionSummary): boolean {
 const daemonSaysFailed = (row: SessionSummary): boolean => row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
 
 /**
- * The session files of children that are not running, for `SessionCuts`: the daemon's rows carry no stop reason, and a job the daemon archived and
- * aborted when it went down settles idle with no failure, so the panel read it as done (10-16 00:19:57Z). A new message changes the key.
+ * The session files of children that are not running, for `SessionCuts`: the daemon's rows carry no stop reason, and a job that was archived and
+ * aborted settles idle with no failure, so the panel read it as done (10-16 00:19:57Z). A new message changes the key.
  */
 export const cutSources = (children: readonly SessionSummary[]): CutSource[] => children.flatMap(row =>
   row.sessionFile && nativeStatus(row) !== "running" ? [{ file: row.sessionFile, key: `${row.modified ?? ""}|${row.messageCount}` }] : []);

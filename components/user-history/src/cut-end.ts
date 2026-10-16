@@ -2,15 +2,16 @@ import { open } from "node:fs/promises";
 import { clockTime } from "./checkin-settings.ts";
 
 /**
- * How a job's last turn ended when it was cut and nothing came after it, read from its transcript. On 10-16 at 00:19:57Z the Prime daemon went
- * down and archived queued jobs (local agents checks, local agents recovery): each wrote `archived`, then an empty aborted reply, did no work and
- * sent no report, while the agents panel and the Whole system duty read them as done.
+ * How a job's last turn ended when it was cut and nothing came after it, read from its transcript. On 10-16 at 00:19:57Z queued jobs (local agents
+ * checks, local agents recovery) each wrote `archived`, then an empty aborted reply, did no work and sent no report, while the agents panel and the
+ * Whole system duty read them as done. The words name only what the transcript shows: duty fix opener wrote the same pair at 04:14:29Z when a chat
+ * stopped it with the supervisor alive, so an archive and abort never proves the daemon went down.
  */
-export type CutCause = "restart" | "error" | "length" | "mid-tool";
+export type CutCause = "archived" | "error" | "length" | "mid-tool";
 export interface Cut { at: number; cause: CutCause }
 
-/** The daemon writes `archived` and then the aborted reply within milliseconds when it dies or restarts; an owner's Stop writes no archive. */
-export const RESTART_ABORT_MS = 5_000;
+/** An archive writes `archived` and then the aborted reply within milliseconds; a Stop that does not archive writes the abort alone. */
+export const ARCHIVE_ABORT_MS = 5_000;
 /**
  * `readCut` reads this tail first, then CUT_CONFIRM_BYTES when the tail ends cut, since a report before the tail clears the cut. Measured 10-16
  * on 6,615 job transcripts against a 4 MB tail: 128 KB alone misread 50 of them as cut, 512 KB 10, and a cold pass took 88 s against 176 s.
@@ -19,18 +20,18 @@ export const CUT_TAIL_BYTES = 128_000;
 export const CUT_CONFIRM_BYTES = 4_000_000;
 
 const CUT_WORDS: Record<CutCause, string> = {
-  restart: "an abort when the Prime daemon went down", error: "a provider error", length: "the length limit", "mid-tool": "a stop mid-tool",
+  archived: "aborted and archived", error: "stopped on a provider error", length: "stopped at the length limit", "mid-tool": "stopped mid-tool",
 };
 
-/** The cause in words for a sentence, "cut by <words>". */
+/** What the transcript shows, in words for a sentence, "<name> was <words> at 09:19". */
 export const cutWords = (cause: CutCause): string => CUT_WORDS[cause];
 
 /** The line the agents panel shows for a cut job, with the owner's local clock. */
-export const cutActivity = (cut: Cut): string => `cut by ${cutWords(cut.cause)} at ${clockTime(cut.at)} and never reported`;
+export const cutActivity = (cut: Cut): string => `${cutWords(cut.cause)} at ${clockTime(cut.at)}, no report since`;
 
 /**
- * How a session's last turn ended when it was cut and nothing came after it, from its transcript lines: an abort the daemon wrote right after
- * archiving the session (it went down or restarted), a provider error, the length limit, or a tool result the model never answered. Null when the
+ * How a session's last turn ended when it was cut and nothing came after it, from its transcript lines: an abort written right after the session
+ * was archived, a provider error, the length limit, or a tool result the model never answered. Null when the
  * turn ended well, an owner's Stop aborted it, an input or a pi-pool queue place came after the end, or the job reported to its parent in that
  * turn. A last tool call is left out, since its tool may still run.
  */
@@ -66,7 +67,7 @@ function lastCut(lines: readonly string[]): (Cut & { index: number }) | null {
       let before: { type?: string; timestamp?: string; state?: { status?: string } };
       try { before = JSON.parse(lines[back]!); } catch { continue; }
       if (before.type !== "session_state") { if (before.type === "message") return null; continue; }
-      return before.state?.status === "archived" && at - Date.parse(before.timestamp ?? "") <= RESTART_ABORT_MS ? { at, cause: "restart", index } : null;
+      return before.state?.status === "archived" && at - Date.parse(before.timestamp ?? "") <= ARCHIVE_ABORT_MS ? { at, cause: "archived", index } : null;
     }
     return null;
   }

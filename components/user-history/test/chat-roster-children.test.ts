@@ -142,7 +142,7 @@ test("an attached chat's children take the daemon row's later activity and runni
 });
 
 /**
- * At 00:19:57Z on 10-16 the Prime daemon went down and archived queued jobs (local agents checks, local agents recovery): each wrote `archived`,
+ * At 00:19:57Z on 10-16 queued jobs were archived and aborted (local agents checks, local agents recovery): each wrote `archived`,
  * then an empty aborted reply, did no work and sent no report, and the hub's roster still said done. The daemon's row carries no stop reason, so
  * the catalog reads the end of the session file after the list and hands the roster on again.
  */
@@ -179,7 +179,7 @@ test("a job the daemon archived and aborted with no report since is an error wit
   await catalog.refresh();
   await settle(() => statuses().some(([, status]) => status === "error"));
   assert.deepEqual(statuses(), [
-    ["cut", "error", `cut by an abort when the Prime daemon went down at ${clockTime(Date.parse("2026-10-16T00:19:57.648Z"))} and never reported`],
+    ["cut", "error", `aborted and archived at ${clockTime(Date.parse("2026-10-16T00:19:57.648Z"))}, no report since`],
     ["finished", "done", undefined],
     ["owner", "done", undefined],
   ]);

@@ -79,7 +79,7 @@ test("spawnedSubagents counts every sub-* folder with an rlm-subagent.json at an
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("a job the daemon archived and aborted when it went down reads failed with the cut, not done (10-16 00:19:57Z)", async () => {
+test("a job that was archived and aborted reads failed with the cut, not done (10-16 00:19:57Z)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "subagent-cut-"));
   try {
     const at = "2026-10-16T00:19:57.648Z";
@@ -94,7 +94,7 @@ test("a job the daemon archived and aborted when it went down reads failed with 
     await cuts.update(cutSources([cut, done]));
     const agents = chatAgents({ self: { id: "chat", name: "chat" }, children: [], childSessions: subagentSessions(tree.get("chat") ?? [], tree, cuts), board: null, roots: [], messages: [], rows: [], now: 0 });
     assert.deepEqual(Object.fromEntries(agents.map(agent => [agent.name, [agent.state, agent.activity]])), {
-      "local agents checks": ["failed", `cut by an abort when the Prime daemon went down at ${clockTime(Date.parse(at))} and never reported`],
+      "local agents checks": ["failed", `aborted and archived at ${clockTime(Date.parse(at))}, no report since`],
       "startup prompt trim": ["done", undefined],
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }

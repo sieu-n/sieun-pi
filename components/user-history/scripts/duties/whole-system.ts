@@ -231,7 +231,7 @@ export function measure(input: Inputs): PrecheckOutput {
       const slots = watched ? `, pi-pool then ran ${watched.working} of ${limitAt(input.limits, grant.at, input.okLimit)} slots with ${watched.queued} queued` : "";
       return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
     });
-    flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was cut by ${cutWords(job.cause)} at ` +
+    flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was ${cutWords(job.cause)} at ` +
       `${clock(job.at)} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
   }
   return { metrics, flagged };
