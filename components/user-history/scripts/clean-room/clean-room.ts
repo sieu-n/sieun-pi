@@ -26,6 +26,7 @@ import { transactJsonFile } from "../../src/locked-json.ts";
 import { parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
+import { checkinJobSteer } from "./checkin-job-steer.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
@@ -37,7 +38,7 @@ import type { RunState, Scenario } from "./session-read.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine,
-  "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour };
+  "checkin-job-steer": checkinJobSteer, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
