@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PARK_AFTER_S, PARK_CONTINUE, parkPlan, parkTick, type QueueView } from "../src/queue-park.ts";
+import { PARK_AFTER_S, PARK_CONTINUE, parkPlan, parkTick, type QueueView, settledLimit, UNPARK_SETTLE_MS, UNPARK_PER_TICK } from "../src/queue-park.ts";
 
 // pi-pool's queue at 20:03Z on 10-15, 50 min after the fleet stop switch was lifted: 14 turns working in 5 trees, 47 queued for 12 slots,
 // while 33 Prime workers held 21.2 GB and the fleet budget had been shut since 19:23Z. 36 of the 38 queued trees had no turn working; 20 of
@@ -86,7 +86,20 @@ test("parkTick aborts what it parks, keeps the list on disk, and resumes through
   assert.equal((await parkTick(deps)).resumed, 0, "the budget is shut, so nothing goes back");
   open = true;
   const back = await parkTick(deps);
-  assert.equal(back.resumed, Math.min(12, aborted.length));
+  assert.equal(back.resumed, Math.min(UNPARK_PER_TICK, aborted.length), "at most UNPARK_PER_TICK go back a pass");
   assert.equal(resumed[0]![0], aborted[0]);
   assert.equal(resumed[0]![1], PARK_CONTINUE);
+});
+
+test("a parked job goes back against the lowest limit of the last 5 min, at most 2 a pass (10-16 09:25-09:27 KST: 16, 30, 12, 30)", () => {
+  const seen: { at: number; limit: number }[] = [];
+  const t0 = NOW - 2 * 60_000;
+  assert.equal(settledLimit(seen, 16, t0), 16);
+  assert.equal(settledLimit(seen, 30, t0 + 40_000), 16);
+  assert.equal(settledLimit(seen, 12, t0 + 80_000), 12);
+  assert.equal(settledLimit(seen, 30, NOW), 12, "one reading of 30 does not let the parked jobs back");
+  assert.equal(settledLimit(seen, 30, NOW + UNPARK_SETTLE_MS + 81_000), 30, "the 12 falls out of the window");
+  const parked = Array.from({ length: 14 }, (_, i) => ({ session: `p${i}`, at: NOW - (60 - i) * 60_000, position: 20 + i }));
+  assert.deepEqual(parkPlan({ working: [], queued: [], limit: 30 }, parked, CHATS, NOW, 12).unpark.map(e => e.session), ["p0", "p1"]);
+  assert.deepEqual(parkPlan({ working: [], queued: [], limit: 30 }, parked, CHATS, NOW, 0).unpark, []);
 });

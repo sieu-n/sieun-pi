@@ -15,6 +15,23 @@ import type { AgentQueueReading } from "./shared/types.ts";
 
 /** A queued turn is parked once it waited this long: past pi-pool's 120 s ticket renew poll, so a turn about to be admitted is left alone. */
 export const PARK_AFTER_S = 120;
+/**
+ * A parked job goes back against the lowest limit pi-pool's governor gave in this window, and at most UNPARK_PER_TICK per pass. The governor
+ * reads pressure every 30 s and its limit swings: at 09:25-09:27 KST on 10-16 it read 16, 30, 12 and 30 within 2 min, the park resumed 14 jobs
+ * on one reading of 30 (22 queued for 16 slots right after) and parked them again as the limit fell to 12, loading and unloading their workers.
+ */
+export const UNPARK_SETTLE_MS = 5 * 60_000;
+export const UNPARK_PER_TICK = 2;
+
+/** The lowest limit seen within UNPARK_SETTLE_MS, with `limit` added at `now`; `seen` is pruned in place. */
+export function settledLimit(seen: { at: number; limit: number }[], limit: number, now: number): number {
+  seen.push({ at: now, limit });
+  while (seen.length && now - seen[0]!.at > UNPARK_SETTLE_MS) seen.shift();
+  return Math.min(...seen.map(entry => entry.limit));
+}
+
+const limitsSeen: { at: number; limit: number }[] = [];
+
 export const PARK_CONTINUE = "[queue] Your turn waited for a working slot, so the chat service parked it to unload your worker. A slot is free now; continue where you left off.";
 
 export interface QueueEntry { session: string; tree: string; parent: string | null; class: string; position: number; waitS: number }
@@ -35,7 +52,7 @@ const NEVER = new Set(["owner", "prod", "ahead", "checkin"]);
  * because 19 to 41 turns waited for 12 slots the whole hour. A resumed session is not parked again while its resumed turn waits, and an entry
  * ends once its session works, or, resumed, has left the queue; a parked session that something else woke (it works or waits again) is dropped.
  */
-export function parkPlan(view: QueueView, parked: readonly Parked[], chats: ReadonlySet<string>, now: number): { park: QueueEntry[]; unpark: Parked[]; drop: Parked[] } {
+export function parkPlan(view: QueueView, parked: readonly Parked[], chats: ReadonlySet<string>, now: number, settled = view.limit): { park: QueueEntry[]; unpark: Parked[]; drop: Parked[] } {
   const working = new Set(view.working.map(entry => entry.tree));
   const workingSessions = new Set(view.working.map(entry => entry.session));
   const queuedSessions = new Set(view.queued.map(entry => entry.session));
@@ -49,7 +66,7 @@ export function parkPlan(view: QueueView, parked: readonly Parked[], chats: Read
   const unpark: Parked[] = [];
   for (const entry of waiting) {
     const ahead = view.queued.filter(queued => !park.includes(queued) && now - queued.waitS * 1000 < entry.at).length;
-    if (ahead + unpark.length >= view.limit) break;
+    if (ahead + unpark.length >= settled || unpark.length >= UNPARK_PER_TICK) break;
     unpark.push(entry);
   }
   return { park, unpark, drop };
@@ -69,6 +86,8 @@ export interface ParkDeps {
   fleet: { place(ask: FleetAsk): Promise<FleetDone | null> };
   log: (line: string) => void;
   now?: () => number;
+  /** The governor limits seen (`settledLimit`); the module's own list when absent. */
+  limitsSeen?: { at: number; limit: number }[];
 }
 
 /** One pass: park the turns `parkPlan` names, then let parked ones go through the fleet budget while it is open. The list survives restarts. */
@@ -77,7 +96,7 @@ export async function parkTick(deps: ParkDeps): Promise<{ parked: number; resume
   const view = await deps.queue().catch(() => null);
   if (!view) return { parked: 0, resumed: 0 };
   let list = await readParked(deps.file);
-  const { park, unpark, drop } = parkPlan(view, list, await deps.chats(), now());
+  const { park, unpark, drop } = parkPlan(view, list, await deps.chats(), now(), settledLimit(deps.limitsSeen ?? limitsSeen, view.limit, now()));
   list = list.filter(entry => !drop.includes(entry));
   let parked = 0, resumed = 0;
   for (const entry of park) {
