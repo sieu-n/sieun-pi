@@ -113,7 +113,7 @@ export function createdRootChat(input: { marked: boolean; self: string; job: Cha
 /**
  * The brief a chat runs: the bullets its board tool puts in the base prompt, and their version (8 hex of a sha256 over the bullets). A chat
  * pins the brief it loaded (`pinnedBrief`) and keeps it in its system prompt until it compacts, so an edit to CHAT_BRIEF never rewrites a
- * running chat's cached prompt; it reaches the chat as the `briefNote` notice at the end of its history.
+ * running chat's cached prompt; the chat reads the new brief after its next compaction.
  */
 export interface Brief { version: string; lines: readonly string[] }
 export function chatBrief(lines: readonly string[] = CHAT_BRIEF): Brief {
@@ -128,29 +128,6 @@ export function pinnedBrief(branch: readonly { type: string; customType?: string
   const pin = branch.slice(compact + 1).findLast(entry => entry.type === "custom" && entry.customType === CHAT_BRIEF_ENTRY);
   const lines = (pin?.data as { lines?: unknown } | undefined)?.lines;
   return Array.isArray(lines) && lines.every(line => typeof line === "string") ? lines : null;
-}
-
-const sentences = (lines: readonly string[]): string[] =>
-  lines.flatMap(line => line.split(/(?<=[.!?])\s+(?=[A-Z`"])/)).map(sentence => sentence.trim()).filter(Boolean);
-
-/** What changed between two briefs, sentence by sentence (a bullet holds several rules): the new sentences and the gone ones, in brief order. */
-export function briefChanges(before: readonly string[], after: readonly string[]): { added: string[]; dropped: string[] } {
-  const old = sentences(before);
-  const next = sentences(after);
-  return { added: next.filter(sentence => !old.includes(sentence)), dropped: old.filter(sentence => !next.includes(sentence)) };
-}
-
-/**
- * The notice a chat gets in its transcript after it reloads onto a changed brief; null when no rule changed. Its system prompt keeps the brief
- * it pinned, so the notice quotes every added and dropped sentence in full.
- */
-export function briefNote(before: readonly string[], after: readonly string[]): string | null {
-  const { added, dropped } = briefChanges(before, after);
-  if (!added.length && !dropped.length) return null;
-  return ["[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.",
-    ...(added.length ? ["New rules:", ...added.map(sentence => `- ${sentence}`)] : []),
-    ...(dropped.length ? ["Rules that no longer hold:", ...dropped.map(sentence => `- ${sentence}`)] : []),
-    "Jobs you started keep their old instructions: re-brief a long-running job if this matters."].join("\n");
 }
 
 /**

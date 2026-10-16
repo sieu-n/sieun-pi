@@ -7,7 +7,7 @@ import type { ChatBackend } from "../src/chat-backend.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { startChatServer } from "../src/chat-server.ts";
-import { briefChanges, briefNote, CHAT_BRIEF, CHAT_BRIEF_ENTRY, chatBrief, loadRecord, pinnedBrief, reloadAction } from "../src/chat-brief.ts";
+import { CHAT_BRIEF, CHAT_BRIEF_ENTRY, chatBrief, loadRecord, pinnedBrief, reloadAction } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
 import { briefRows, briefStatus, currentBrief } from "../src/client/brief.ts";
@@ -50,24 +50,6 @@ test("brief version: 8 hex, the same for the same bullets, another when one bull
   assert.equal(reloadAction("b1", "b1", true, true), "wait");
 });
 
-test("brief diff: added and dropped sentences in brief order; the note quotes each in full and is null with no change", () => {
-  const before = ["Rule one is here. Reply in 60 words at most.", "Old rule nobody needs any more."];
-  const after = ["Rule one is here. Reply in 3 short sentences or 60 words at most.", "A brand new rule about wikis."];
-  assert.deepEqual(briefChanges(before, after), { added: ["Reply in 3 short sentences or 60 words at most.", "A brand new rule about wikis."],
-    dropped: ["Reply in 60 words at most.", "Old rule nobody needs any more."] });
-  assert.equal(briefNote(before, after), [
-    "[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.",
-    "New rules:", "- Reply in 3 short sentences or 60 words at most.", "- A brand new rule about wikis.",
-    "Rules that no longer hold:", "- Reply in 60 words at most.", "- Old rule nobody needs any more.",
-    "Jobs you started keep their old instructions: re-brief a long-running job if this matters."].join("\n"));
-  assert.equal(briefNote(CHAT_BRIEF, [...CHAT_BRIEF]), null);
-  assert.equal(briefNote(["Keep it."], ["Keep it."]), null);
-  const long = `A long new rule ${"x".repeat(400)}.`;
-  assert.ok(briefNote([], [long])!.includes(long), "a long rule is quoted whole");
-  assert.equal(briefNote(["Gone one. Kept."], ["Kept."]), "[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.\n" +
-    "Rules that no longer hold:\n- Gone one.\nJobs you started keep their old instructions: re-brief a long-running job if this matters.");
-});
-
 test("pinned brief: the last pin since the last compaction, none before a pin or right after a compaction", () => {
   const pin = (lines: string[]) => ({ type: "custom", customType: CHAT_BRIEF_ENTRY, data: { lines } });
   assert.equal(pinnedBrief([]), null);
@@ -92,7 +74,7 @@ test("load record: the brief text is kept per version, the old text comes back o
   assert.deepEqual(await loads.briefs(), {});
 });
 
-test("reload onto a changed brief: one notice line with the diff, no turn started; the next reload on the same brief adds none", async () => {
+test("reload onto a changed brief: the chat reloads and records the new brief, with no notice and no turn started", async () => {
   const dir = await mkdtemp(join(tmpdir(), "brief-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
@@ -111,18 +93,14 @@ test("reload onto a changed brief: one notice line with the diff, no turn starte
   threads.fire().live("c1", []);
   threads.fire().live("legacy", []);
   await chats.settled();
-  const notices = calls.filter(call => call.startsWith("notice"));
-  assert.equal(notices.length, 1, calls.join("\n"));
-  assert.match(notices[0]!, /^notice c1 \[brief\] Your chat rules changed\. [^]*\nNew rules:\n- Every open step names its owner/);
-  assert.match(notices[0]!, /re-brief a long-running job if this matters\.$/);
-  assert.deepEqual(calls.filter(call => /^(prompt|restart)/.test(call)), [], "the note starts no turn");
-  assert.ok(calls.indexOf("reload c1") < calls.indexOf(notices[0]!), "the notice follows the reload");
+  assert.deepEqual(calls.filter(call => /^(notice|prompt|restart)/.test(call)), [], calls.join("\n"));
+  assert.ok(calls.includes("reload c1") && calls.includes("reload legacy"));
   assert.deepEqual([...(await chats.briefs()).values()].map(brief => [brief.version, brief.updating]), [[current, false], [current, false]]);
   assert.ok(changed >= 2, "the stream hears about each reload");
   calls.length = 0;
   await chats.updateAll();
   await chats.settled();
-  assert.deepEqual(calls.sort(), ["reload c1", "reload legacy"], "the owner's update reloads again; the brief is the same, so no notice");
+  assert.deepEqual(calls.sort(), ["reload c1", "reload legacy"], "the owner's update reloads again");
   chats.close();
 });
 
@@ -148,7 +126,7 @@ test("update all: idle chats reload now, a busy one shows updating and reloads w
   await chats.settled();
   assert.deepEqual(calls.filter(call => call.startsWith("reload")), ["reload idle", "reload busy"]);
   assert.equal(briefStatus((await chats.briefs()).get("busy")!), "up to date");
-  assert.equal(calls.filter(call => call.startsWith("notice")).length, 2, "each got its one note");
+  assert.equal(calls.filter(call => call.startsWith("notice")).length, 0, "a reload sends no notice");
   calls.length = 0;
   threads.fire().idle("busy");
   await chats.settled();

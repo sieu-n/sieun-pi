@@ -16,7 +16,7 @@ const blocks = (message: unknown) => {
 const agentsMd = join(import.meta.dirname, "../../../config/AGENTS.md");
 
 /** Runs test/prompt-prefix-turns.ts in a child process with a clean env and the installed global AGENTS.md, and returns every Anthropic request it serialized. */
-type Run = { requests: Request[]; fresh: Request; freshAfterBrief: Request; compacted: Request; note: string | null; rule: string; pending: number };
+type Run = { requests: Request[]; fresh: Request; freshAfterBrief: Request; compacted: Request; rule: string; pending: number };
 async function realRequests(): Promise<Run> {
   const dir = await mkdtemp(join(tmpdir(), "prompt-prefix-"));
   try {
@@ -30,7 +30,7 @@ async function realRequests(): Promise<Run> {
 }
 
 test("a real chat sends the same cached prefix on owner turns, tool continuations, agent-message wakes, child notices, check-ins, heartbeats, after a correction, after a rate-limited retry, after a reload and after a brief change, and a reloaded chat sends a fresh chat's system prompt and tools", { timeout: 120_000 }, async () => {
-  const { requests, fresh, freshAfterBrief, compacted, note, rule, pending } = await realRequests();
+  const { requests, fresh, freshAfterBrief, compacted, rule, pending } = await realRequests();
   assert.equal(pending, 0);
   const turns = [...new Set(requests.map(request => request.turn))];
   assert.deepEqual(turns, ["owner", "agent-message wake", "owner again", "child exit notice", "check-in", "heartbeat", "agent message mid-turn",
@@ -47,9 +47,7 @@ test("a real chat sends the same cached prefix on owner turns, tool continuation
   const reloaded = requests.find(request => request.turn === "agent-message wake after a reload")!.payload;
   assert.deepEqual(withoutCacheControl(reloaded.tools), withoutCacheControl(fresh.payload.tools), "a reloaded chat has a fresh chat's tools");
   assert.deepEqual(withoutCacheControl(reloaded.system), withoutCacheControl(fresh.payload.system), "a reloaded chat has a fresh chat's system prompt");
-  const briefChanged = requests.at(-1)!.payload;
-  assert.ok(note?.includes(rule), "the brief notice names the new rule");
-  assert.ok(JSON.stringify(briefChanged.messages.slice(-3)).includes(JSON.stringify(note).slice(1, -1)), "the chat reads the brief notice at the end of its history");
+  assert.ok(!JSON.stringify(requests.at(-1)!.payload.system).includes(rule), "a running chat keeps its pinned brief after a brief change");
   for (const [label, { payload }] of [["a chat started after the brief change", freshAfterBrief], ["a compacted chat", compacted]] as const) {
     assert.ok(JSON.stringify(payload.system).includes(rule), `${label} has the new brief in its system prompt`);
     assert.deepEqual(withoutCacheControl(payload.tools), withoutCacheControl(freshAfterBrief.payload.tools), `${label}: a fresh chat's tools`);

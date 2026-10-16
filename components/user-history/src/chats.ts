@@ -30,7 +30,7 @@ import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
-import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
+import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, leftoverLine } from "./job-leftovers.ts";
@@ -1248,9 +1248,8 @@ export class Chats {
 
   /**
    * Reloads the chat when the build it last loaded is not the one on disk, or the owner asked to update every chat: now if it is idle, else once
-   * its turn ends. The reload keeps the brief the chat pinned in its system prompt, so its cached prompt stays valid; a reload onto a changed
-   * brief leaves one notice in the transcript with what changed. The model reads it on its next turn, whatever starts that turn, and it starts
-   * no turn itself.
+   * its turn ends. The reload keeps the brief the chat pinned in its system prompt, so its cached prompt stays valid, and the chat reads a
+   * changed brief after its next compaction.
    */
   private async refreshExtension(id: string): Promise<void> {
     await this.load();
@@ -1263,10 +1262,8 @@ export class Chats {
       this.reloadWaiting.delete(id);
       if (!action) return;
       await this.threads.reload(id);
-      const before = await this.loads.set(id, this.build, this.brief);
+      await this.loads.set(id, this.build, this.brief);
       this.log(`chat ${id.slice(0, 8)}: extension reloaded, build ${this.build}, brief ${this.brief.version}`);
-      const note = before && briefNote(before, this.brief.lines);
-      if (note) await this.threads.notice(id, note);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: reload: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

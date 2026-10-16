@@ -12,9 +12,8 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, type ExtensionA
 import { type Context, fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
 import { streamAnthropic } from "@earendil-works/pi-ai/anthropic";
 import historyExtension from "../extension/index.ts";
-import { briefNote, CHAT_BRIEF } from "../src/chat-brief.ts";
+import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG } from "../src/chat-guard.ts";
-import { CHAT_NOTICE } from "../src/shared/chat-feed.ts";
 
 const dataDir = process.argv[2]!;
 // Loaded by URL so this package's stricter tsconfig does not type-check global-rules, which the root tsconfig owns.
@@ -118,14 +117,11 @@ await fresh.session.bindExtensions(bindings);
 turn = "fresh session"; faux.setResponses([said("Fresh.")]);
 await fresh.session.prompt("Look at the board.");
 const freshRequest = requests.splice(freshRequests)[0];
-// Another agent edits the chat brief while the chat runs. The chat service reloads the chat onto the new build and leaves its `[brief]`
-// notice in the transcript between turns (Chats.refreshExtension).
-const before = [...CHAT_BRIEF];
+// Another agent edits the chat brief while the chat runs. The chat service reloads the chat onto the new build (Chats.refreshExtension),
+// and the chat keeps the brief it pinned until it compacts.
 (CHAT_BRIEF as string[]).push(NEW_RULE);
 await session.reload();
 faux = fauxProvider();
-const note = briefNote(before, CHAT_BRIEF);
-if (note) await session.sendCustomMessage({ customType: CHAT_NOTICE, content: note, display: true });
 turn = "agent-message wake after a brief change"; faux.setResponses([said("New rule noted.")]);
 await wake("Fourth report.");
 // A chat started after the edit, and the running chat once it compacts, carry the new brief in the system prompt.
@@ -140,5 +136,5 @@ await session.compact();
 turn = "owner after a compaction"; faux.setResponses([said("Compacted.")]);
 await session.prompt("Carry on after the compaction.");
 const [freshAfterBrief, compacted] = requests.splice(briefRequests);
-await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, fresh: freshRequest, freshAfterBrief, compacted, note, rule: NEW_RULE, pending: faux.getPendingResponseCount() }));
+await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, fresh: freshRequest, freshAfterBrief, compacted, rule: NEW_RULE, pending: faux.getPendingResponseCount() }));
 process.exit(0);
