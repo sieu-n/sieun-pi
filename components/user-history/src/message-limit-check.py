@@ -13,9 +13,8 @@ its own reference. It does three things.
    instead and prints that a resend arrives as a second copy.
 3. The brief record. When an "rlm.run" (rlm.spawn) or "rlm.create_session" request returns, it writes the brief with the new child's or
    root's ids to DATA_DIR/spawn-briefs/, where the chat service's brief keeper (src/brief-keeper.ts) sends it again if the session never gets
-   its first prompt after a supervisor restart. Prime holds a new session's state in its worker's memory and writes the file late: at 23:43
-   to 00:04Z on 10-15/16 ten children showed no first prompt for 17 to 37 min and the supervisor restart at 00:20:13Z dropped them. The
-   record names the daemon that took the spawn, so the keeper knows when that copy is gone. The request itself goes out as
+   its first prompt. Prime holds a new session's state in its worker's memory and writes the file late: at 23:43 to 00:04Z on 10-15/16 ten
+   children showed no first prompt for 17 to 37 min and the supervisor restart at 00:20:13Z dropped them. The request itself goes out as
    it came, at once, and a failed write never fails the spawn.
 """
 
@@ -70,15 +69,6 @@ def tree_root(path):
     return next((parts[i + 1] for i, part in enumerate(parts[:-1]) if part == "session-artifacts"), None)
 
 
-def daemon_epoch():
-    """The supervisor socket's inode and birth time in ms, as the chat service's socketEpoch reads them, or None."""
-    try:
-        info = os.stat(os.environ["PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"])
-        return f"{info.st_ino}:{round(info.st_birthtime * 1000)}"
-    except (KeyError, OSError, AttributeError):
-        return None
-
-
 def record_brief(request_type, payload, reply):
     data_dir = globals().get("DATA_DIR")
     if not isinstance(data_dir, str) or not isinstance(reply, dict) or not isinstance(payload.get("prompt"), str):
@@ -93,9 +83,6 @@ def record_brief(request_type, payload, reply):
         return
     record = {"kind": kind, "id": ident, "name": kw.get("name") or reply.get("name") or "", "prompt": payload["prompt"], "root": root,
               "at": int(time.time() * 1000), **{key: str(value) for key, value in where.items() if value}}
-    daemon = daemon_epoch()
-    if daemon:
-        record["daemon"] = daemon
     folder = os.path.join(data_dir, BRIEFS)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     path = os.path.join(folder, f"{kind}-{ident}.json")

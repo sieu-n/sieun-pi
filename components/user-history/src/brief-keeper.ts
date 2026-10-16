@@ -1,8 +1,9 @@
-import { readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { zTime } from "./checkin-goals.ts";
 import type { JobFact } from "./checkin-steps.ts";
-import { sessionBrief } from "./job-resume.ts";
 
 /**
  * The brief of every job a chat or its jobs start, kept until the job's session file shows it. Prime holds a new session's first prompt and
@@ -10,11 +11,15 @@ import { sessionBrief } from "./job-resume.ts";
  * "opensearch disk move" at 23:58:30Z and "post reads schema fix" at 00:03:27Z among them) showed only their 5 header lines for 17 to 37 min,
  * and the supervisor restart at 00:20:13Z threw away what their workers held, the brief with it. The check-in then read both jobs as working
  * or idle. The kernel wrapper (message-limit-check.py) writes each spawn's brief to
- * `<data dir>/spawn-briefs/` as rlm.spawn or rlm.create_session returns, so the brief no longer lives only in that memory. This sends a brief
- * whose session still has none after BRIEF_LATE_MS once the daemon restarted since the spawn, and again after each later restart. A worker
- * writes its session file late under load: at 06:03 to 06:06Z on 10-16 four lim-* children got their task within 20 s, but their files still
- * held only the 5 header lines at 06:14Z and the first version of this keeper sent each a second copy. So while the daemon that took the
- * spawn still runs, the brief is in its hands and nothing is sent. A record goes once its session holds a first prompt or its child ended.
+ * `<data dir>/spawn-briefs/` as rlm.spawn or rlm.create_session returns, so the brief no longer lives only in that memory.
+ *
+ * This sends a brief whose session file still has none BRIEF_LATE_MS after the spawn, whatever dropped it, unless the live worker of its tree
+ * ran the session's agent, and sends it at most once to each worker. A worker writes its session file late under load: at 06:03 to 06:06Z on
+ * 10-16 four lim-* children showed only their 5 header lines at 06:14Z, though their worker's recovery journal had their agent_start 6 to 40 s
+ * after the spawn, and the first version of this keeper sent each a second copy. The second version waited for a supervisor restart and so
+ * missed a worker that stops under a live supervisor: at 14:35:39Z on 10-15 every worker got SIGTERM while the supervisor ran on until 14:46Z,
+ * and 20 children spawned from 14:14 to 14:34Z never got their brief. Of 1,714 children spawned from 10-13 00:00Z to 10-16 07:39Z, 65 never got
+ * it: 45 at a supervisor restart and 20 at that worker stop. A record goes once its session holds its brief or its child ended.
  */
 
 export const BRIEFS_DIR = "spawn-briefs";
@@ -40,10 +45,8 @@ export interface BriefRecord {
   sessionDir?: string;
   /** A root's session file, from rlm.create_session. */
   sessionFile?: string;
-  /** The daemon that took the spawn (`socketEpoch` of the supervisor socket, which the kernel wrapper reads); absent in older records. */
-  daemon?: string;
-  /** The keeper's last send: when, and the daemon it went to (`daemonEpoch`). */
-  sent?: { at: number; daemon: string };
+  /** The keeper's last send: when, and the worker of the tree it went to ("" when none ran then). */
+  sent?: { at: number; worker: string };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -52,14 +55,40 @@ const ID = /^[\w-]{1,128}$/;
 export function parseBriefRecord(value: unknown): BriefRecord | null {
   if (!isRecord(value) || (value.kind !== "child" && value.kind !== "root") || typeof value.id !== "string" || !ID.test(value.id)) return null;
   if (typeof value.prompt !== "string" || typeof value.at !== "number" || !Number.isFinite(value.at) || typeof value.root !== "string" || !ID.test(value.root)) return null;
-  const sent = isRecord(value.sent) && typeof value.sent.at === "number" && typeof value.sent.daemon === "string" ? { sent: { at: value.sent.at, daemon: value.sent.daemon } } : {};
+  const sent = isRecord(value.sent) && typeof value.sent.at === "number" && typeof value.sent.worker === "string" ? { sent: { at: value.sent.at, worker: value.sent.worker } } : {};
   return { kind: value.kind, id: value.id, name: typeof value.name === "string" ? value.name : "", prompt: value.prompt, at: value.at, root: value.root,
-    ...(typeof value.sessionDir === "string" ? { sessionDir: value.sessionDir } : {}), ...(typeof value.sessionFile === "string" ? { sessionFile: value.sessionFile } : {}),
-    ...(typeof value.daemon === "string" ? { daemon: value.daemon } : {}), ...sent };
+    ...(typeof value.sessionDir === "string" ? { sessionDir: value.sessionDir } : {}), ...(typeof value.sessionFile === "string" ? { sessionFile: value.sessionFile } : {}), ...sent };
 }
 
-/** What the session of a record shows now: its session id and file once Prime wrote them, whether it holds a first prompt, and whether its child ended. */
-export interface BriefSeen { sessionId?: string; file?: string; started: boolean; ended: boolean }
+/**
+ * What the session of a record shows now: its session id and file once Prime wrote them, whether its brief landed (`started`), whether any
+ * prompt landed (`prompted`), and whether its child ended. A child's brief arrives labelled "[task from parent]"; a root's is its first prompt.
+ */
+export interface BriefSeen { sessionId?: string; file?: string; started: boolean; prompted: boolean; ended: boolean }
+
+const TASK_LABEL = "[task from parent]";
+/**
+ * Whether a session file holds any prompt and whether one is a child's task. A message from a parent, sibling or check-in can land before
+ * the task: from 10-13 to 10-16 07:39Z 11 of 65 children that never got their task had one, "duty prompt button" a check-in at 03:39Z.
+ */
+async function prompts(file: string): Promise<{ prompted: boolean; task: boolean }> {
+  const lines = createInterface({ input: createReadStream(file, "utf8"), crlfDelay: Infinity });
+  let prompted = false;
+  try {
+    for await (const line of lines) {
+      const message = line.startsWith('{"type":"custom_message","customType":"agent_message"');
+      if (!message && !line.includes('"role":"user"')) continue;
+      const entry = JSON.parse(line) as { content?: unknown; message?: { role?: string; content?: unknown } };
+      if (!message && entry.message?.role !== "user") continue;
+      prompted = true;
+      const content = message ? entry.content : entry.message!.content;
+      const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(part => isRecord(part) && typeof part.text === "string" ? part.text : "").join("") : "";
+      if (text.startsWith(TASK_LABEL)) return { prompted, task: true };
+    }
+  } catch { /* unreadable: what was read */ }
+  finally { lines.close(); }
+  return { prompted, task: false };
+}
 
 /** RLM child statuses after which nothing will start the child. */
 const ENDED = new Set(["deleted", "cancelled", "error", "failed", "done"]);
@@ -82,30 +111,28 @@ export async function seeBrief(record: BriefRecord): Promise<BriefSeen> {
       if (own.length === 1) file = join(record.sessionDir, own[0]!);
     }
   }
-  if (!file) return { started: false, ended };
+  if (!file) return { started: false, prompted: false, ended };
   const sessionId = /([\w-]+)\.jsonl$/.exec(file)?.[1];
-  const started = await sessionBrief(file).then(brief => brief !== undefined, () => false);
-  return { ...(sessionId ? { sessionId } : {}), file, started, ended };
+  const seen = await prompts(file);
+  return { ...(sessionId ? { sessionId } : {}), file, started: record.kind === "child" ? seen.task : seen.prompted, prompted: seen.prompted, ended };
 }
 
 /** What the keeper does with one record this tick. */
 export type BriefAct = { act: "drop"; why: "started" | "ended" } | { act: "wait" } | { act: "send"; session: string };
 
-/** Whether the daemon that holds the brief's last copy is gone: the spawn's (or the last send's) daemon is not the running one. */
-export const briefLost = (record: BriefRecord, daemon: string | undefined): boolean => {
-  const held = record.sent?.daemon ?? record.daemon;
-  return held !== undefined && daemon !== undefined && held !== daemon;
-};
+/** The live Prime worker of a tree, and whether it ran the session's agent: then the brief is in its hands and only the file is late. */
+export interface TreeWorker { id: string; ran: boolean }
 
 /**
- * The rule for one record: drop it once its session holds a first prompt or its child ended; else wait out BRIEF_LATE_MS from the spawn;
- * then send the brief to its session once the daemon that held its last copy is gone (`briefLost`), since a supervisor restart drops a
- * prompt or message that waits in a worker. A session Prime has not written yet waits.
+ * The rule for one record: drop it once its session holds its brief or its child ended; else wait out BRIEF_LATE_MS from the spawn; then
+ * send the brief to its session, once to each worker, unless the tree's live worker ran a session whose file shows no prompt yet (only the
+ * file is late). A worker that stops, alone or in a supervisor restart, takes a prompt it held with it, and the next worker has a new id. A
+ * session whose file shows another message but not its brief lost the brief. A session Prime has not written yet waits.
  */
-export function briefAct(record: BriefRecord, seen: BriefSeen, daemon: string | undefined, now: number): BriefAct {
+export function briefAct(record: BriefRecord, seen: BriefSeen, worker: TreeWorker | undefined, now: number): BriefAct {
   if (seen.started) return { act: "drop", why: "started" };
   if (seen.ended) return { act: "drop", why: "ended" };
-  if (now - record.at < BRIEF_LATE_MS || !seen.sessionId || !briefLost(record, daemon)) return { act: "wait" };
+  if (now - record.at < BRIEF_LATE_MS || !seen.sessionId || (worker?.ran && !seen.prompted) || record.sent?.worker === (worker?.id ?? "")) return { act: "wait" };
   return { act: "send", session: seen.sessionId };
 }
 
@@ -116,10 +143,43 @@ export function briefText(record: BriefRecord, now: number): string {
     "and its first prompt never reached it. If this brief already reached you, do it once.)";
 }
 
-/** The daemon supervisor's identity: its socket file's inode and birth time, which a supervisor start makes anew. Undefined when it cannot be read. */
-export async function socketEpoch(socketPath: string): Promise<string | undefined> {
-  const info = await stat(socketPath).catch(() => undefined);
-  return info ? `${info.ino}:${Math.round(info.birthtimeMs)}` : undefined;
+const WORKER_FILE = /^[0-9a-f]{12}\.json$/;
+const alive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+/** Whether a worker's recovery journal shows the session's agent start at or after `since`. */
+async function journalRan(journal: string, session: string, since: number): Promise<boolean> {
+  const lines = createInterface({ input: createReadStream(journal, "utf8"), crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.includes(session) || !/"operation":\s*"agent_start"/.test(line)) continue;
+      const entry: unknown = JSON.parse(line);
+      if (isRecord(entry) && entry.sessionId === session && typeof entry.recordedAt === "string" && Date.parse(entry.recordedAt) >= since) return true;
+    }
+  } catch { return false; }
+  finally { lines.close(); }
+  return false;
+}
+
+/**
+ * The live worker of each tree, from Prime's `<agent dir>/daemon-workers/<daemon>/<worker id>.json` (one per root session; a worker that starts
+ * after another stopped gets a new id and journal), and whether its recovery journal shows the session's agent start since the worker began.
+ */
+export function primeWorkers(workersDir: string): (root: string, session: string) => Promise<TreeWorker | undefined> {
+  return async (root, session) => {
+    for (const daemon of await readdir(workersDir).catch(() => [] as string[])) {
+      const dir = join(workersDir, daemon);
+      for (const name of (await readdir(dir).catch(() => [] as string[])).filter(entry => WORKER_FILE.test(entry))) {
+        const worker: unknown = await readFile(join(dir, name), "utf8").then(text => JSON.parse(text), () => null);
+        if (!isRecord(worker) || worker.rootSessionId !== root || typeof worker.workerId !== "string" || typeof worker.pid !== "number" || !alive(worker.pid)) continue;
+        const since = typeof worker.createdAt === "string" ? Date.parse(worker.createdAt) : NaN;
+        const ran = typeof worker.recoveryJournalPath === "string" && Number.isFinite(since) && await journalRan(worker.recoveryJournalPath, session, since);
+        return { id: worker.workerId, ran };
+      }
+    }
+    return undefined;
+  };
 }
 
 export interface BriefDeps {
@@ -128,8 +188,8 @@ export interface BriefDeps {
   deliver: (session: string, text: string) => Promise<"sent" | "gone">;
   /** Starts the worker of the tree `root`, so the daemon finds the session in it on the next tick (wakes.ts). */
   startRoot: (root: string) => Promise<void>;
-  /** The identity of the running daemon supervisor; undefined when it cannot be read. */
-  daemonEpoch: () => Promise<string | undefined>;
+  /** The live worker of the tree `root` and whether it ran `session` (`primeWorkers`); undefined when none runs. */
+  worker: (root: string, session: string) => Promise<TreeWorker | undefined>;
   log: (line: string) => void;
   now?: () => number;
   see?: (record: BriefRecord) => Promise<BriefSeen>;
@@ -151,14 +211,21 @@ async function writeRecord(file: string, record: BriefRecord): Promise<void> {
   await rename(`${file}.${process.pid}.tmp`, file);
 }
 
+/** The tree's worker, read only for a session that is late and has no brief; a failed read counts as no worker. */
+async function workerOf(read: BriefDeps["worker"], record: BriefRecord, seen: BriefSeen, now: number): Promise<TreeWorker | undefined> {
+  if (seen.started || seen.ended || !seen.sessionId || now - record.at < BRIEF_LATE_MS) return undefined;
+  return read(record.root, seen.sessionId).catch(() => undefined);
+}
+
 /** One pass over the records. Returns how many briefs went out. */
 export async function briefTick(deps: BriefDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
   const see = deps.see ?? seeBrief;
-  const daemon = await deps.daemonEpoch().catch(() => undefined);
   let sent = 0;
   for (const { file, record } of await readRecords(deps.dir)) {
-    const act = briefAct(record, await see(record), daemon, now);
+    const seen = await see(record);
+    const worker = await workerOf(deps.worker, record, seen, now);
+    const act = briefAct(record, seen, worker, now);
     const label = `${record.kind} ${record.name || record.id} (${record.id.slice(0, 12)})`;
     if (act.act === "drop") {
       await rm(file, { force: true });
@@ -173,7 +240,7 @@ export async function briefTick(deps: BriefDeps): Promise<number> {
         await deps.startRoot(record.root);
         continue;
       }
-      await writeRecord(file, { ...record, sent: { at: now, daemon: daemon ?? "" } });
+      await writeRecord(file, { ...record, sent: { at: now, worker: worker?.id ?? "" } });
       sent++;
       deps.log(`briefs: ${label} had no first prompt ${Math.round((now - record.at) / 60_000)} min after its spawn; sent its brief to ${act.session}`);
     } catch (error) {
@@ -196,36 +263,27 @@ export function startBriefKeeper(deps: BriefDeps, everyMs = BRIEF_TICK_MS): () =
   return () => clearInterval(timer);
 }
 
-/**
- * A job whose session shows no first prompt, as the check-in reads it: its fact key, name, spawn time, the keeper's last send, and whether
- * the daemon that held its brief is gone (`lost`).
- */
-export interface Unstarted { key: string; name: string; at: number; sentAt?: number; lost: boolean }
+/** A job whose session shows no brief and whose worker never ran it, as the check-in reads it: its fact key, name, spawn time and the keeper's last send. */
+export interface Unstarted { key: string; name: string; at: number; sentAt?: number }
 
-/** The recorded jobs whose session file still has no first prompt BRIEF_LATE_MS after their spawn. */
-export async function unstartedJobs(dir: string, now: number, daemon?: string, see: (record: BriefRecord) => Promise<BriefSeen> = seeBrief): Promise<Unstarted[]> {
+/** The recorded jobs whose session file still has no brief BRIEF_LATE_MS after their spawn, unless the tree's live worker ran them and only the file is late. */
+export async function unstartedJobs(dir: string, now: number, worker: BriefDeps["worker"], see: (record: BriefRecord) => Promise<BriefSeen> = seeBrief): Promise<Unstarted[]> {
   const out: Unstarted[] = [];
   for (const { record } of await readRecords(dir)) {
     if (now - record.at < BRIEF_LATE_MS) continue;
     const seen = await see(record);
-    if (seen.started || seen.ended) continue;
-    out.push({ key: record.kind === "child" ? record.id : `thread:${record.id}`, name: record.name, at: record.at, ...(record.sent ? { sentAt: record.sent.at } : {}),
-      lost: briefLost(record, daemon) });
+    if (seen.started || seen.ended || ((await workerOf(worker, record, seen, now))?.ran && !seen.prompted)) continue;
+    out.push({ key: record.kind === "child" ? record.id : `thread:${record.id}`, name: record.name, at: record.at, ...(record.sent ? { sentAt: record.sent.at } : {}) });
   }
   return out;
 }
 
-/**
- * The facts with each job that never got its first prompt read as not started, whatever its RLM status says. While the daemon that took
- * the spawn runs, a job the daemon saw act after its spawn (`activityAt`, which Prime stamps at the spawn and moves on each model, tool or
- * note event) has started and its file is only late.
- */
+/** The facts with each job that never got its first prompt read as not started, whatever its RLM status says. */
 export function withUnstarted(facts: readonly JobFact[], unstarted: readonly Unstarted[]): JobFact[] {
   if (!unstarted.length) return [...facts];
   const byKey = new Map(unstarted.map(job => [job.key, job] as const));
   return facts.map(fact => {
     const job = byKey.get(fact.key) ?? (fact.sessionId ? byKey.get(`thread:${fact.sessionId}`) : undefined);
-    if (!job || (!job.lost && fact.activityAt !== undefined && fact.activityAt > job.at)) return fact;
-    return { ...fact, state: "unstarted", unstarted: { at: job.at, ...(job.sentAt !== undefined ? { sentAt: job.sentAt } : {}) } };
+    return job ? { ...fact, state: "unstarted", unstarted: { at: job.at, ...(job.sentAt !== undefined ? { sentAt: job.sentAt } : {}) } } : fact;
   });
 }

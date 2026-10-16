@@ -9,6 +9,7 @@
  *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
+ *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time>   (lost-brief: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
@@ -29,13 +30,14 @@ import { checkinPushControl } from "./checkin-push-control.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
 import { kernelRevive } from "./kernel-revive.ts";
+import { killWorker, lostBrief } from "./lost-brief.ts";
 import { ordinaryHour } from "./ordinary-hour.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine,
-  "kernel-revive": kernelRevive, "ordinary-hour": ordinaryHour };
+  "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -348,6 +350,12 @@ async function main(): Promise<void> {
   if (command === "setup") return setup(flags);
   if (command === "collect") return collect(flags);
   if (command === "say") return say(flags);
+  if (command === "kill-worker") {
+    const run = need(flags, "run");
+    const kill = await killWorker(run, Date.parse(need(flags, "until")));
+    log(run, kill ? `killed worker ${kill.workerId} (pid ${kill.pid}) of the chat after job ${kill.record.name} was spawned` : "kill-worker: no spawn of the chat before --until");
+    return;
+  }
   if (command === "reseed") return reseed(flags);
   if (command === "evaluate") return evaluate(flags);
   if (command === "teardown") return teardown(flags);
