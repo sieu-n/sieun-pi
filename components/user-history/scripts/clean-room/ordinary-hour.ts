@@ -19,6 +19,13 @@ export const TASKS: Record<string, { message: string; counts: RegExp; section: R
     section: /\b(apps|domains|projects|experiments|agents|sessions|archive)\b/i,
     drop: /\b(the|top|all) 10\b|\b10 pages\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
   },
+  "apps file changes": {
+    message: "how many files under auto-sns-agent's apps folder changed in the last 7 days, and which app changed the most? then find the 10 " +
+      "files that changed the most and what changed in each, and keep a report with that list updated. i want all 10 explained by tonight",
+    counts: /\b\d[\d,]*\s+(files?|changes?|commits?|lines?)\b/gi,
+    section: /\b(admin|anything|anything-be|api-portal|blog|crawler-v3|dm-extension|infra|llm-wiki|research-agent-be|research-app|search|vent|virev-demo)\b/i,
+    drop: /\b(the|top|all) 10\b|\b10 files\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
+  },
   "dev branch commits": {
     message: "how many commits landed on auto-sns-agent's sieun/dev in the last 7 days, and which app got the most of them? then find the 10 " +
       "biggest commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
