@@ -1,4 +1,4 @@
-import { open, readFile, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +19,10 @@ import { isHarnessMinute } from "./mac-stays-usable.ts";
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read the Mac usable, no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds, fix jobs that ended
  * within CHURN_MS of their open with their metric still missing, and open steps nobody moves in all chats. The rest is detail.
+ * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
+ * fleet budget logged a continue for local agents checks, local agents recovery and daily code health report at 00:21:17Z, none reached its
+ * session, and the check-in read them as moving or gone while the agents panel showed done. A cut job with a later input, such as a continue
+ * that waits in pi-pool's queue, is not cut, so ordinary queueing never counts here.
  */
 
 export const WINDOW_MS = 30 * 60_000;
@@ -31,12 +35,23 @@ export const CHURN_MS = 5 * MINUTE;
 export const FREE_SLOTS = 2;
 /** A queued turn counts against free slots only once the oldest one waited this long, past pi-pool's admit poll. */
 export const QUEUED_WAIT_S = 120;
+/** The resume rule's look-back (resume_paused.py --since-minutes defaults to 1440): a job cut longer ago than this is left to its chat. */
+export const CUT_LOOKBACK_MS = 24 * 60 * MINUTE;
+/** The daemon writes `archived` and then the aborted reply within milliseconds when it dies or restarts; an owner's Stop writes no archive. */
+export const RESTART_ABORT_MS = 5_000;
 /** About 3 h of service.log at 10-16's rate (1.7 MB an hour, most of it held wakes), so a hold that began before the window is seen whole. */
 const LOG_TAIL_BYTES = 6_000_000;
 
 export interface Hold { what: string; from: number; to: number }
 export interface FixOpen { chat: string; duty: string; job: string; at: number; died?: { at: number; why: string } }
-export interface LogFacts { holds: Hold[]; fixes: FixOpen[]; stepScans: { at: number; chat: string; steps: string[] }[]; firstAt?: number }
+/** A continue or wake the fleet budget let through for a session (`starts after N s`): proof the start was admitted. */
+export interface Grant { kind: string; session: string; at: number; waitS: number }
+export interface LogFacts { holds: Hold[]; fixes: FixOpen[]; stepScans: { at: number; chat: string; steps: string[] }[]; grants?: Grant[]; firstAt?: number }
+/** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
+export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause }
+export type CutCause = "restart" | "error" | "length" | "mid-tool";
+const CUT_WORDS: Record<CutCause, string> = { restart: "abort when the Prime daemon went down", error: "provider error", length: "length limit", "mid-tool": "stop mid-tool" };
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface LimitChange { at: number; limit: number }
 
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
@@ -54,6 +69,7 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   const wakes = new Map<string, Hold>();
   const holds: Hold[] = [];
   const fixes: FixOpen[] = [];
+  const grants: Grant[] = [];
   const stepScans: LogFacts["stepScans"] = [];
   // Lines from the chats part (the step scan) carry no time, so they take the time of the stamped line before them.
   let at = NaN;
@@ -69,6 +85,7 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
       else { const hold = { what: `wake of ${found[1]}`, from: at, to: at }; wakes.set(found[1]!, hold); holds.push(hold); }
     } else if ((found = STARTED_AFTER.exec(text))) {
       holds.push({ what: `${found[1]} ${found[2]}`, from: at - Number(found[3]) * 1000, to: at });
+      if ((found[1] === "continue" || found[1] === "wake") && SESSION_ID.test(found[2]!)) grants.push({ kind: found[1], session: found[2]!, at, waitS: Number(found[3]) });
     } else if ((found = FIX_OPENED.exec(text))) {
       fixes.push({ chat: found[1]!, duty: found[2]!, job: found[3]!.trim(), at });
     } else if ((found = FIX_ENDED.exec(text)) || (found = NOT_RESUMED.exec(text))) {
@@ -87,7 +104,52 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
     if (!fix.died && next && next.at - fix.at <= CHURN_MS) fix.died = { at: next.at, why: `another fix job, ${next.job}, opened for the same duty` };
   }
   const first = lines.find(line => TIME.test(line));
-  return { holds, fixes, stepScans, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
+  return { holds, fixes, stepScans, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
+}
+
+/**
+ * How a session's last turn ended when it was cut and nothing came after it, from its transcript lines: an abort the daemon wrote right after
+ * archiving the session (it went down or restarted), a provider error, the length limit, or a tool result the model never answered. Null when the
+ * turn ended well, an owner's Stop aborted it, or an input or a pi-pool queue place came after the end. A last tool call is left out, since its
+ * tool may still run.
+ */
+export function cutEnd(lines: readonly string[]): { at: number; cause: CutCause } | null {
+  const end = lastCut(lines);
+  return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause } : null;
+}
+
+/** Whether the job sent its parent a message between its last input and the line at `index`: a cut after its report left nothing waiting. */
+function reportedBefore(lines: readonly string[], index: number): boolean {
+  for (let back = index - 1; back >= 0; back--) {
+    const line = lines[back]!;
+    if (line.includes('"customType":"agent_message"') || line.includes('"role":"user"')) return false;
+    if (line.includes('"role":"assistant"') && line.includes("agent_message.send") && line.includes("parent")) return true;
+  }
+  return false;
+}
+
+function lastCut(lines: readonly string[]): { at: number; cause: CutCause; index: number } | null {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string } };
+    try { entry = JSON.parse(lines[index]!); } catch { continue; }
+    if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
+    if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
+    if (entry.type !== "message" || !entry.message) continue;
+    const at = Date.parse(entry.timestamp ?? "");
+    const { role, stopReason } = entry.message;
+    if (role === "toolResult") return { at, cause: "mid-tool", index };
+    if (role !== "assistant") return null;
+    if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index };
+    if (stopReason !== "aborted") return null;
+    for (let back = index - 1; back >= 0; back--) {
+      let before: { type?: string; timestamp?: string; state?: { status?: string } };
+      try { before = JSON.parse(lines[back]!); } catch { continue; }
+      if (before.type !== "session_state") { if (before.type === "message") return null; continue; }
+      return before.state?.status === "archived" && at - Date.parse(before.timestamp ?? "") <= RESTART_ABORT_MS ? { at, cause: "restart", index } : null;
+    }
+    return null;
+  }
+  return null;
 }
 
 /** pi-pool's working limit at each change, from its pressure events (local time stamps), oldest first. */
@@ -124,6 +186,8 @@ export interface Inputs {
   parked: readonly { session: string; at: number; resumedAt?: number }[];
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused). */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[] }[];
+  /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
+  cut?: readonly CutJob[];
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
@@ -137,7 +201,9 @@ export function measure(input: Inputs): PrecheckOutput {
     ...input.log.holds,
     ...input.waiting.flatMap(ask => ask.since === undefined ? [] : [{ what: `${ask.kind} ${ask.label} (still waiting)`, from: ask.since, to: now }]),
     ...input.parked.filter(entry => entry.resumedAt === undefined).map(entry => ({ what: `parked job ${entry.session.slice(0, 8)} (not resumed)`, from: entry.at, to: now })),
+    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: job.at, to: now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
+  const cutHeld = (input.cut ?? []).filter(job => now - job.at > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   let clean = 0, usable = 0, fed = 0, unwatched = 0, held = 0, freeSlot = 0, harness = 0, other = 0;
   const dirty: string[] = [];
@@ -189,6 +255,7 @@ export function measure(input: Inputs): PrecheckOutput {
     stuck_duties: redDuties.length,
     starts_waiting: input.waiting.length,
     parked_now: input.parked.filter(entry => entry.resumedAt === undefined).length,
+    cut_jobs_held: cutHeld.length,
   };
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean. The Mac read usable in ${usable} of ${fed} minutes with a pressure reading ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
@@ -208,7 +275,46 @@ export function measure(input: Inputs): PrecheckOutput {
   if (scans.length) flagged.push({ kind: "step_scan", excerpt: `${scans.length} step scan notices in 30 min: ${scans.slice(-6).map(scan => `${clock(scan.at)} ${scan.chat} ${scan.steps.join(", ")}`).join("; ")}.` });
   for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id, excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves, from its check-in at ${clock(entry.at!)}.` });
   for (const line of redDuties) flagged.push({ kind: "stuck_duty", excerpt: line });
+  for (const job of cutHeld.sort((a, b) => a.at - b.at)) {
+    const grants = (input.log.grants ?? []).filter(grant => grant.session === job.session && grant.at >= job.at);
+    const admitted = grants.map(grant => {
+      const watched = input.watch.findLast(entry => Date.parse(entry.at) <= grant.at)?.queue;
+      const slots = watched ? `, pi-pool then ran ${watched.working} of ${limitAt(input.limits, grant.at, input.okLimit)} slots with ${watched.queued} queued` : "";
+      return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
+    });
+    flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was cut by a ${CUT_WORDS[job.cause]} at ` +
+      `${clock(job.at)} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
+  }
   return { metrics, flagged };
+}
+
+/**
+ * Every job under the live chats' session folders (`session-artifacts/<chat>/sub-*` at any depth) whose transcript changed within CUT_LOOKBACK_MS
+ * and ends cut (`cutEnd`). A child the chat deleted (deleted-jobs.json) or its parent deleted with rlm.delete_subagent is left out.
+ */
+export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number): Promise<CutJob[]> {
+  const found: CutJob[] = [];
+  const walk = async (chat: string, folder: string, parentFile: string): Promise<void> => {
+    const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries.filter(item => item.isDirectory() && item.name.startsWith("sub-"))) {
+      const child = join(folder, entry.name);
+      const file = (await readdir(child).catch(() => [] as string[])).find(name => SESSION_ID.test(name.replace(/\.jsonl$/, "")) && name.endsWith(".jsonl"));
+      if (!file) continue;
+      const path = join(child, file);
+      await walk(chat, child, path);
+      if (deleted[chat]?.[entry.name] !== undefined) continue;
+      const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
+      if (now - changed > CUT_LOOKBACK_MS) continue;
+      const end = cutEnd(await tailLines(path, 512_000));
+      if (!end || now - end.at > CUT_LOOKBACK_MS) continue;
+      const parent = await readFile(parentFile, "utf8").catch(() => "");
+      if (parent.split("\n").some(line => line.includes("delete_subagent") && line.includes(entry.name))) continue;
+      const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
+      found.push({ session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : entry.name, chat, ...end });
+    }
+  };
+  for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`));
+  return found;
 }
 
 /** The last `bytes` of a file as lines, the first (cut) line dropped. */
@@ -241,6 +347,8 @@ async function main(): Promise<void> {
   const parked = await readJson(join(dataDir, "queue-parked.json"));
   const listed = await readJson(join(dataDir, "chats.json")) as { ids?: unknown } | null;
   const ids = (Array.isArray(listed?.ids) ? listed.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
+  const archivedFile = await readJson(join(dataDir, "archived-chats.json")) as { ids?: unknown } | null;
+  const archived = new Set((Array.isArray(archivedFile?.ids) ? archivedFile.ids : []).filter((id): id is string => typeof id === "string"));
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   const chats: Inputs["chats"][number][] = [];
@@ -258,6 +366,8 @@ async function main(): Promise<void> {
     waiting: (fleet?.waiting ?? []) as Inputs["waiting"],
     parked: Array.isArray(parked) ? parked as Inputs["parked"] : [],
     chats,
+    cut: await findCutJobs(join(dataDir, "..", "session-artifacts"), ids.filter(id => !archived.has(id)),
+      (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
