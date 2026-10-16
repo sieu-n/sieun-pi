@@ -27,6 +27,7 @@ import { machineView } from "./chat-machine.ts";
 import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
+import { nextBriefView } from "./prompt-view.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -609,6 +610,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (action === "duties") {
             if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
             json(res, 200, { duties: await backend.duties.view(id) }); return;
+          }
+          if (action === "duty-brief") {
+            const duty = url.searchParams.get("duty") ?? "";
+            if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            const brief = duty ? await backend.duties.nextBrief(id, duty) : null;
+            if (!brief) throw new RequestError(404, "This chat has no such duty.");
+            json(res, 200, nextBriefView(id, duty, brief, `Next run of ${(await backend.duties.view(id)).find(view => view.duty.id === duty)?.duty.name ?? duty}`)); return;
           }
           if (action === "agents") {
             // The chat's agents as its row carries them; the chat_board tool reads this for its "Agents:" lines.

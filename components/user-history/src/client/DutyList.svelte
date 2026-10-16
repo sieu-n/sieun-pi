@@ -1,6 +1,7 @@
 <script lang="ts">
     import { type DutyView, verdictMetrics } from "../shared/chat-duties.ts";
   import { CHANGE_APPROACH_MISSES, effectiveRun } from "../shared/duty-streak.ts";
+  import type { PromptTarget } from "../shared/prompt-view.ts";
   import type { ChatAgent } from "../shared/types.ts";
   import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel, headlineWords } from "./duty-cadence.ts";
   import { dutyCard, dutyState, dutyStatus, dutyStatusLine, judgedRun, type MissLine } from "./duty-card.ts";
@@ -54,8 +55,8 @@
 {#snippet jobLink(name: string)}
   <button type="button" class="link-chip job" data-preview-chat={chat} data-preview-job={name} onclick={() => store.openArtifact({ kind: "job", name }, chat)}><Icon name="briefcase" size={11} /><span class="chip-label">{name}</span></button>
 {/snippet}
-{#snippet promptLink(id: string)}
-  <button type="button" class="link-chip" onclick={() => { store.prompt = id; }}><Icon name="layers" size={11} /><span class="chip-label">Prompt</span></button>
+{#snippet promptLink(target: PromptTarget, label?: string)}
+  <button type="button" class="link-chip" aria-label={label} onclick={() => { store.prompt = target; }}><Icon name="layers" size={11} /><span class="chip-label">Prompt</span></button>
 {/snippet}
 {#snippet marks(line: MissLine)}
   <span class="miss-runs" use:tooltip={streakTip(line)}>{line.misses} run{line.misses === 1 ? "" : "s"}</span>
@@ -77,6 +78,7 @@
           <span class="duty-state">{#if state === "running"}<span class="spinner tiny"></span>{:else}<span class="duty-dot {state}"></span>{/if}</span>
           <span class="duty-text"><span class="duty-name">{duty.name}</span> <span class="duty-status {status.kind}">{dutyStatusLine(status, headlineWords(view), card.headlineMiss !== null || card.headline === null)}</span></span>
         </button>
+        {@render promptLink(card.job ? card.job.id : { chat, duty: duty.id }, card.job ? `The prompt ${card.job.name} got` : `The brief the next ${duty.name} run sends`)}
       </div>
       {#if open[duty.id]}
         {@const found = flaggedLabel(view)}
@@ -172,6 +174,7 @@
   .duty-main { display: flex; flex: 1; min-width: 0; align-items: flex-start; gap: 6px; padding: 3px 6px; margin: 0 -6px; border-radius: var(--radius-small); text-align: left; line-height: 18px; }
   .duty-main:hover { background: var(--bg-hover); }
   .duty-state { display: inline-flex; flex: none; width: 12px; height: 18px; align-items: center; justify-content: center; }
+  .duty-line > .link-chip { flex: none; padding-top: 3px; }
   .duty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
   .duty-dot.met { background: var(--success); }
   .duty-dot.missed { background: var(--warning); }

@@ -10,7 +10,7 @@ import { shortNotices } from "./prime-notices.ts";
 import { readCapture } from "./prompt-capture.ts";
 import { type BranchTail, readBranchTail } from "./session-tail.ts";
 import { serverNote } from "./shared/chat-feed.ts";
-import type { PromptOrigin, PromptPart, PromptPartKind, PromptSubagent, PromptView } from "./shared/prompt-view.ts";
+import { DUTY_BRIEF, type PromptOrigin, type PromptPart, type PromptPartKind, type PromptSubagent, type PromptView } from "./shared/prompt-view.ts";
 
 /**
  * `GET api/threads/<id>/prompt`: the prompt a thread's model gets, split into labelled parts in payload order. With a capture (the user-history
@@ -35,6 +35,18 @@ const IMAGE_TOKENS = 1600;
 const record = (value: unknown): Json | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Json : null;
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const str = (value: unknown): string => typeof value === "string" ? value : "";
+
+/**
+ * The Prompt view of a duty's next run while none of its runs has a job yet: the one brief that run sends (`Duties.nextBrief`), rebuilt now
+ * with the precheck's parts named, since the precheck runs only when the run starts.
+ */
+export function nextBriefView(chatId: string, dutyId: string, brief: { text: string; at: number }, title: string): PromptView {
+  return { threadId: chatId, title, sessionFile: `next run of duty ${dutyId}, ${new Date(brief.at).toISOString()}`,
+    origin: { kind: "rebuild", reason: "No run of this duty has started a job yet, so this is the brief its next run sends, built now by the same code. " +
+      "The parts in <angle brackets> are filled by that run's precheck." },
+    totalTokens: estimateTokens(brief.text),
+    parts: [{ id: "brief", kind: "message", label: DUTY_BRIEF, source: "next run (rebuilt now)", role: "user", text: brief.text, tokens: estimateTokens(brief.text) }] };
+}
 
 export async function promptView(sessionId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string; title?: string }): Promise<PromptView> {
   const [capture, tail, subagents] = await Promise.all([readCapture(options.dataDir, sessionId), branchOf(options.sessionFile, REBUILD_BYTES), subagentsOf(options.sessionFile, sessionId)]);
@@ -287,6 +299,7 @@ const HOOK = "user-history context hook (added on every call, not in the session
 const PRIME = "Prime (custom message)";
 const PREFIXES: readonly [RegExp, (match: RegExpExecArray) => Source][] = [
   [/^\[harness-digest\]/, () => ({ kind: "harness", label: "Harness digest", source: "Prime harness: memories, prompt notes, skills and subagent specs" })],
+  [/^# [^\n]+: the (?:check-in|[^\n]+ duty) of the chat "/, () => ({ kind: "message", label: DUTY_BRIEF, source: "chat server duty run: dutyJobBrief (chat-duty-job.ts)" })],
   [/^\[compaction-summary\]/, () => ({ kind: "message", label: "Compaction summary", source: "Prime compaction" })],
   [/^\[branch-summary\]/, () => ({ kind: "message", label: "Branch summary", source: "Prime" })],
   [/^\[corrections\]/, () => ({ kind: "instructions", label: "[corrections]", source: `${HOOK}: the owner's corrections ledger` })],

@@ -137,7 +137,7 @@
       <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />
     {/if}
     {#if store.prompt}
-      {#key store.prompt}<PromptView sessionId={store.prompt} {narrow} onclose={() => { store.prompt = null; }} />{/key}
+      {#key store.prompt}<PromptView target={store.prompt} {narrow} onclose={() => { store.prompt = null; }} />{/key}
     {/if}
     <ReportCard />
   </div>

@@ -1,17 +1,19 @@
 <script lang="ts">
   import { api } from "./api.ts";
   import { compactNumber } from "./format.ts";
-  import { clip, labelDetail, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
-  import type { PromptPart, PromptView } from "../shared/prompt-view.ts";
+  import { clip, labelDetail, LEAD_KEY, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
+  import { DUTY_BRIEF, type PromptPart, type PromptTarget, type PromptView } from "../shared/prompt-view.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
 
   /**
    * The prompt a session's model gets, as the summary table: the parts before the conversation, then the conversation by source kind. Each row
    * opens in place: a source kind lists its parts in time order as one line each, and a part opens to its text. A job's subagents link to their
-   * own view, opened through `via` so an ended subagent the daemon no longer lists still opens.
+   * own view, opened through `via` so an ended subagent the daemon no longer lists still opens. A duty job's brief (`DUTY_BRIEF`) is listed first
+   * and opens with the view; a duty with no job yet (`target` names the chat and duty) shows the brief its next run sends.
    */
-  let { sessionId, narrow, onclose }: { sessionId: string; narrow: boolean; onclose: () => void } = $props();
+  let { target, narrow, onclose }: { target: PromptTarget; narrow: boolean; onclose: () => void } = $props();
+  const sessionId = $derived(typeof target === "string" ? target : `${target.chat}/${target.duty}`);
 
   /** The subagents opened from this view, each below the one before; the view shows the last. */
   let below = $state<{ id: string; name: string }[]>([]);
@@ -26,7 +28,13 @@
     view = null;
     error = null;
     collapseAll();
-    api.promptView(id, via).then(result => { if (cancelled) return; view = result; if (result.title) titles = { ...titles, [id]: result.title }; }, failure => { if (!cancelled) error = failure instanceof Error ? failure.message : String(failure); });
+    const load = typeof target !== "string" && !via.length ? api.nextDutyBrief(target.chat, target.duty) : api.promptView(id, via);
+    load.then(result => {
+      if (cancelled) return;
+      view = result;
+      if (result.title) titles = { ...titles, [id]: result.title };
+      if (result.parts.some(part => part.label === DUTY_BRIEF)) rows = { [LEAD_KEY]: true };
+    }, failure => { if (!cancelled) error = failure instanceof Error ? failure.message : String(failure); });
     return () => { cancelled = true; };
   });
 
@@ -41,7 +49,7 @@
   let whole = $state<Record<string, boolean>>({});
   let subagentsOpen = $state(false);
   function collapseAll(): void { rows = {}; parts = {}; whole = {}; subagentsOpen = false; }
-  function expandAll(): void { if (table) rows = Object.fromEntries([...table.rows, ...table.groups].map(row => [row.key, true])); }
+  function expandAll(): void { if (table) rows = Object.fromEntries([...table.lead ? [table.lead] : [], ...table.rows, ...table.groups].map(row => [row.key, true])); }
   const flip = (record: Record<string, boolean>, key: string): Record<string, boolean> => ({ ...record, [key]: !record[key] });
 
   const SPEAKER: Record<Speaker, string> = { prompt: "", owner: "owner", injected: "injected", model: "model", tool: "tool" };
@@ -86,7 +94,7 @@
   </button>
   {#if open}
     <div class="body">
-      {#if row.parts.length === 1 && !row.parts[0]!.role}{@render text(row.parts[0]!)}
+      {#if row.parts.length === 1 && (!row.parts[0]!.role || row.key === LEAD_KEY)}{@render text(row.parts[0]!)}
       {:else}{#each row.parts as part (part.id)}{@render partLine(part, row)}{/each}{/if}
     </div>
   {/if}
@@ -132,6 +140,7 @@
       </div>
 
       <nav class="outline" aria-label="Prompt parts">
+        {#if table.lead}{@render tableRow(table.lead)}{/if}
         <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(table.headTokens)}</span>{@render bar(table.headTokens)}</div>
         {#each table.rows as row (row.key)}{@render tableRow(row)}{/each}
         {#if !table.rows.length}<div class="row empty">None in this view.</div>{/if}

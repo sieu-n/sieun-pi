@@ -91,6 +91,7 @@ export const api = {
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
   promptView: (id: string, via: readonly string[] = []) =>
     get<PromptView>("api/threads/" + encodeURIComponent(id) + "/prompt" + (via.length ? "?via=" + via.map(encodeURIComponent).join(",") : ""), 60000),
+  nextDutyBrief: (chat: string, duty: string) => get<PromptView>("api/threads/" + encodeURIComponent(chat) + "/duty-brief?duty=" + encodeURIComponent(duty), 60000),
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
   part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),

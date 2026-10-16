@@ -22,6 +22,12 @@ export type PromptPart = {
 /** A subagent the session spawned, opened in the same view by its session id. */
 export type PromptSubagent = { sessionId: string; name: string };
 
+/** What the Prompt view opens: a session by its id, or the brief a duty's next run sends while none of its runs has a job yet. */
+export type PromptTarget = string | { chat: string; duty: string };
+
+/** The label of a duty job's first message, the brief its run sent; the view lists it before everything else. */
+export const DUTY_BRIEF = "Duty brief";
+
 export type PromptOrigin =
   | { kind: "exact"; capturedAt: string; provider: string; model: string }
   | { kind: "rebuild"; reason: string };

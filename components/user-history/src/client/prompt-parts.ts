@@ -1,4 +1,4 @@
-import type { PromptPart, PromptView } from "../shared/prompt-view.ts";
+import { DUTY_BRIEF, type PromptPart, type PromptView } from "../shared/prompt-view.ts";
 
 export type Speaker = "prompt" | "owner" | "injected" | "model" | "tool";
 
@@ -24,7 +24,10 @@ export function labelDetail(label: string): string {
  */
 export type PromptRow = { key: string; label: string; source: string; speaker: Speaker; tokens: number; parts: PromptPart[] };
 
-export type Outline = { rows: PromptRow[]; groups: PromptRow[]; headParts: number; messageParts: number; headTokens: number; messageTokens: number };
+/** `lead` is the duty brief a duty job got as its first message (`DUTY_BRIEF`), listed before everything else; null for any other session. */
+export type Outline = { lead: PromptRow | null; rows: PromptRow[]; groups: PromptRow[]; headParts: number; messageParts: number; headTokens: number; messageTokens: number };
+
+export const LEAD_KEY = "g:" + DUTY_BRIEF;
 
 function headRows(head: readonly PromptPart[]): PromptRow[] {
   const rows: PromptRow[] = [];
@@ -51,8 +54,12 @@ export function outline(view: PromptView): Outline {
   }
   for (const group of groups.values()) group.source = `${group.parts.length} ${group.parts.length === 1 ? "part" : "parts"}`;
   const sum = (parts: PromptPart[]) => parts.reduce((total, part) => total + part.tokens, 0);
-  return { rows: headRows(head), groups: [...groups.values()].sort((a, b) => b.tokens - a.tokens), headParts: head.length, messageParts: messages.length,
-    headTokens: sum(head), messageTokens: sum(messages) };
+  const lead = groups.get(DUTY_BRIEF) ?? null;
+  groups.delete(DUTY_BRIEF);
+  if (lead) lead.source = lead.parts[0]!.source;
+  const rest = lead ? messages.filter(part => !lead.parts.includes(part)) : messages;
+  return { lead, rows: headRows(head), groups: [...groups.values()].sort((a, b) => b.tokens - a.tokens), headParts: head.length, messageParts: rest.length,
+    headTokens: sum(head), messageTokens: sum(rest) };
 }
 
 export function share(tokens: number, total: number): string {

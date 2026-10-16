@@ -7,6 +7,7 @@ import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionR
 import { hashFor, parseHash } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
+import type { PromptTarget } from "../shared/prompt-view.ts";
 import type { SettingsSection } from "./settings-sections.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
@@ -42,8 +43,8 @@ class Store {
   replyQuote = $state.raw<{ chat: string; text: string } | null>(null);
   /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
   reader = $state.raw<ReaderView | null>(null);
-  /** The session whose Prompt view is open: a thread or chat from its header, a job from its drawer, report or duty run. Null when closed. */
-  prompt = $state.raw<string | null>(null);
+  /** The session whose Prompt view is open: a thread or chat from its header, a job from its drawer, report or duty run, or a duty's next run. Null when closed. */
+  prompt = $state.raw<PromptTarget | null>(null);
   /** The plan view modal of a chat: its whole board as a tree, scrolled to `focus` (a plan step or note id) when set. Null when closed. */
   planView = $state.raw<{ chat: string; focus: string | null } | null>(null);
   /** The Slack bridge as the chat header and the new-chat screen show it; null when this instance runs none, undefined until read. */

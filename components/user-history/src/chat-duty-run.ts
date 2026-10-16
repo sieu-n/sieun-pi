@@ -632,6 +632,24 @@ export class Duties {
   }
 
   /**
+   * The brief the duty's next run sends its job, for the card's Prompt button while no run of the duty has a job yet. It is `dutyJobBrief`, as
+   * `launch` builds it, with the parts the precheck fills at run time (the measure, the findings and the misses) named instead; null when the
+   * chat or the duty is unknown.
+   */
+  async nextBrief(chatId: string, dutyId: string): Promise<{ text: string; at: number } | null> {
+    const checkIn = dutyId === CHECK_IN_DUTY_ID;
+    const duty = checkIn ? CHECK_IN_DUTY : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
+    const chat = duty ? await this.host.jobs.chat(chatId) : null;
+    if (!duty || !chat) return null;
+    const at = (await this.view(chatId)).find(view => view.duty.id === dutyId)?.nextAt ?? this.now();
+    const job = dutyJobName(duty.name, chat.name, at);
+    const text = dutyJobBrief({ duty, chat, job, at, measure: "<the precheck's measure against the targets, taken when the run starts>",
+      findings: "<the precheck's findings, and a line for each metric stuck on a miss, from that run>",
+      ...checkIn ? { focus: CHECK_IN_FOCUS, report: CHECK_IN_REPORT } : {} });
+    return { text, at };
+  }
+
+  /**
    * One run of the check-in duty, measured by the chat server: its misses against `CHECK_IN_DUTY`'s targets, its step classes and flagged
    * items go in the record, and one check-in job starts with the findings as context (`launch`). A second call while one is going shares it.
    */
