@@ -200,9 +200,9 @@
   const dirOf = (path: string) => path.replace(/\/[^/]*$/, "");
 </script>
 
-{#snippet prose(text: string, base: string)}
+{#snippet prose(text: string, base: string, plain = false)}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="prose reader-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: renderMarkdown(text, base, mentions), live: false }}>{@html renderMarkdown(text, base, mentions)}</div>
+  <div class="prose reader-prose" class:plain onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: renderMarkdown(text, base, mentions, plain), live: false }}>{@html renderMarkdown(text, base, mentions, plain)}</div>
 {/snippet}
 
 {#snippet loading()}<p class="snapshot"><span class="spinner tiny"></span> Opening</p>{/snippet}
@@ -229,7 +229,7 @@
       {:else if !snapshot}{@render loading()}
       {:else if !latest}<p class="snapshot">This job has sent nothing to the chat yet.</p>
       {:else}
-        {@render prose(body(latest), cwd)}
+        {@render prose(body(latest), cwd, true)}
         {#if linkedPath}
           {@const path = linkedPath}
           <section class="linked">
@@ -248,7 +248,7 @@
             {#each earlier as report (report.id)}
               <article class="earlier">
                 <div class="stamp">{clockTime(report.at)}</div>
-                {@render prose(body(report), cwd)}
+                {@render prose(body(report), cwd, true)}
               </article>
             {/each}
           {/if}
@@ -275,8 +275,8 @@
       {:else if message.kind === "user"}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
         <div class="said" onclick={onProseClick}>{@html renderSaid(message.text, mentions)}</div>
-      {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd)}
-      {:else if message.kind === "job"}{@render prose(body(message), cwd)}
+      {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd, true)}
+      {:else if message.kind === "job"}{@render prose(body(message), cwd, true)}
       {:else}<p class="snapshot">{message.text}</p>{/if}
     {:else if view.kind === "updates"}
       {#if entry?.error && !snapshot}{@render failure(entry.error)}
@@ -286,7 +286,7 @@
         {#each updates.entries as update (update.id)}
           <article class="update {update.kind}">
             <div class="update-head"><span class="update-from">{update.kind === "job" ? update.from : "VP notes"}</span><span class="stamp">{clockTime(update.at)}</span></div>
-            {@render prose(update.kind === "job" ? body(update) : update.text, cwd)}
+            {@render prose(update.kind === "job" ? body(update) : update.text, cwd, true)}
           </article>
         {/each}
       {/if}
@@ -315,7 +315,7 @@
   .update:first-child { padding-top: 0; border-top: 0; }
   .update-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
   .update-head .stamp { margin: 0; }
-  .update-from { font-size: 13px; font-weight: 600; color: var(--text); }
+  .update-from { font-size: 13px; color: var(--text); }
   .update.notes .update-from { color: var(--accent-bold); }
   .lines { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre; overflow-x: auto; tab-size: 4; }
   .line { display: block; }

@@ -58,11 +58,11 @@ export function replyText(quote: string | null, text: string): string {
   return quote.split("\n").map(line => "> " + line).join("\n") + "\n\n" + text;
 }
 
-/** The owner's bubble HTML: a leading `> ` block as a `<blockquote class="quote">` over the inline-rendered text, else the text alone. */
+/** The owner's bubble HTML: a leading `> ` block as a `<blockquote class="quote">` over the inline-rendered text, else the text alone. No bold. */
 export function renderSaid(text: string, index: MentionIndex | null = null): string {
   const { quote, body } = splitQuote(text);
-  if (quote === null) return renderInline(text, index);
-  return `<blockquote class="quote">${renderInline(quote, index)}</blockquote>` + (body ? renderInline(body, index) : "");
+  if (quote === null) return renderInline(text, index, true);
+  return `<blockquote class="quote">${renderInline(quote, index, true)}</blockquote>` + (body ? renderInline(body, index, true) : "");
 }
 
 /** A message split for the owner's bubble: the `> ` lines it opens with as the quote (markers dropped), and the text after them. */

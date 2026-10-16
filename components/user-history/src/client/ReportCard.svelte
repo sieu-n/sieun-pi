@@ -78,7 +78,7 @@
   });
   const linkedName = $derived(linkedPath ? (linkedTitle?.path === linkedPath ? linkedTitle.title : linkedPath.split("/").at(-1) ?? linkedPath) : "");
   const mentions = $derived(chat ? mentionIndex(chat, snapshot?.board, jobNames(row, snapshot, rowOf)) : null);
-  const html = $derived(excerpt && chat ? renderMarkdown(excerpt.text, snapshot?.info.cwd ?? "", mentions) : "");
+  const html = $derived(excerpt && chat ? renderMarkdown(excerpt.text, snapshot?.info.cwd ?? "", mentions, true) : "");
   const count = $derived(reports.length === 1 ? "1 message" : `${reports.length} messages`);
 
   /** A trigger in the left third of the window (a sidebar row) gets the card at its right, so the card covers no row under it; the rest get it below or above. */
@@ -128,7 +128,7 @@
       {:else if !latest}<p class="note">No report yet{#if listed}<span class="sep"></span>{jobStatusText(listed)}{/if}</p>
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-        <div class="prose card-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: false, eager: true }}>{@html html}</div>
+        <div class="prose plain card-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: false, eager: true }}>{@html html}</div>
         <div class="bottom">
           {#if linkedPath}
             {@const path = linkedPath}
@@ -148,14 +148,12 @@
   .report-card { position: fixed; inset: auto; margin: 0; padding: 0; overflow: auto; overscroll-behavior: contain; font-size: 13px; }
   .head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); font-size: 12px; color: var(--text-muted); white-space: nowrap; }
   .head :global(svg) { color: var(--accent); flex: none; }
-  .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--text); }
+  .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
   .sep { flex: none; width: 3px; height: 3px; margin: 0 2px; border-radius: 50%; background: currentColor; opacity: 0.6; }
   .note { display: flex; align-items: center; gap: 6px; margin: 0; padding: 12px; color: var(--text-faint); }
   .note.error { color: var(--danger); }
   .card-prose { padding: 10px 12px 6px; font-size: 13px; line-height: 1.45; }
   .card-prose :global(p), .card-prose :global(ul), .card-prose :global(ol), .card-prose :global(blockquote), .card-prose :global(.table-wrap), .card-prose :global(.code-block) { margin: 0 0 0.6em; }
-  .card-prose :global(h1), .card-prose :global(h2), .card-prose :global(h3), .card-prose :global(h4) { font-size: 1em; margin: 0.6em 0 0.25em; }
-  .card-prose :global(h1:first-child), .card-prose :global(h2:first-child), .card-prose :global(h3:first-child) { margin-top: 0; }
   .card-prose :global(li + li) { margin-top: 0.15em; }
   .card-prose :global(.code-block), .card-prose :global(.table-wrap) { max-width: 100%; }
   .card-prose :global(pre) { padding: 0.6em 0.8em; }
@@ -165,11 +163,11 @@
   .linked-open { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; padding: 4px 0; text-align: left; color: var(--text-muted); }
   .linked-open :global(svg) { flex: none; color: var(--accent); }
   .linked-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .linked-title { font-weight: 600; color: var(--text); }
+  .linked-title { color: var(--text); }
   .linked-wiki { display: inline-flex; flex: none; padding: 5px; border-radius: 6px; color: var(--text-faint); }
   .linked-wiki:hover, .linked-open:hover .linked-title { color: var(--accent-bold); }
   .linked-wiki:hover { background: var(--bg-hover); }
-  .foot { display: flex; align-items: center; gap: 4px; width: 100%; padding: 7px 12px; text-align: left; font-size: 12.5px; font-weight: 500; color: var(--accent-bold); }
+  .foot { display: flex; align-items: center; gap: 4px; width: 100%; padding: 7px 12px; text-align: left; font-size: 12.5px; color: var(--accent-bold); }
   .foot:hover { background: var(--bg-hover); }
-  .more { font-weight: 400; color: var(--text-faint); }
+  .more { color: var(--text-faint); }
 </style>

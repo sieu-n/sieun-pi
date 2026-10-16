@@ -360,18 +360,18 @@
                 <div class="bubble theirs quote-only">{@render replyQuote(item.replyTo)}</div>
               {/if}
               {#each blocks as block, position (position)}
-                {@const html = renderMarkdown(block.text, cwd, mentions)}
+                {@const html = renderMarkdown(block.text, cwd, mentions, true)}
                 {@const streaming = item.streaming ?? false}
                 {#if block.kind === "prose"}
                   <div class="bubble theirs" use:longpress={press(item.at, item.text)}>
                     {#if item.replyTo && position === 0}{@render replyQuote(item.replyTo)}{/if}
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-                    <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
+                    <div class="prose plain bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
                     {#if fold?.folded && position === blocks.length - 1}<button type="button" class="more" aria-label="Show the whole reply" onclick={() => unfolded.add(`${id}:${item.id}`)}>More</button>{/if}
                   </div>
                 {:else}
                   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-                  <div class="card prose {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={press(item.at, item.text)}>{@html html}</div>
+                  <div class="card prose plain {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={press(item.at, item.text)}>{@html html}</div>
                 {/if}
               {/each}
               {#if !blocks.length && item.streaming}<div class="bubble theirs"><span class="caret"></span></div>{/if}
@@ -573,12 +573,11 @@
   .said :global(.mention-chip .dot) { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 70%, transparent); }
   .blocks { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
   .blocks > .bubble { max-width: min(82%, 560px); }
-  /* Bubble typography: paragraphs and lists sit tight, headings read as bold lines, blocks scroll sideways inside the bubble. */
+  /* Bubble typography: paragraphs and lists sit tight, nothing is bold, blocks scroll sideways inside the bubble. */
   .bubble-prose { line-height: 1.45; }
   .more { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--accent-bold); font: inherit; font-size: 12.5px; cursor: pointer; }
   .more:hover { text-decoration: underline; }
   .bubble-prose :global(p), .bubble-prose :global(ul), .bubble-prose :global(ol), .bubble-prose :global(blockquote), .bubble-prose :global(.table-wrap), .bubble-prose :global(.code-block) { margin: 0 0 0.55em; }
-  .bubble-prose :global(h1), .bubble-prose :global(h2), .bubble-prose :global(h3), .bubble-prose :global(h4) { font-size: 1em; margin: 0.7em 0 0.25em; }
   .bubble-prose :global(li + li) { margin-top: 0.15em; }
   .bubble-prose :global(li > ul), .bubble-prose :global(li > ol) { margin-top: 0.15em; }
   .bubble-prose :global(.code-block), .bubble-prose :global(.table-wrap) { max-width: 100%; background: var(--bg-elevated); }
@@ -604,7 +603,7 @@
   .line.updates { justify-content: center; margin: 2px 0; border-radius: 999px; }
   .updates-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
   .updates-line:hover { background: var(--bg-hover); color: var(--text-muted); }
-  .updates-count { flex: none; font-weight: 500; }
+  .updates-count { flex: none; }
   .updates-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .updates-mark { display: inline-flex; flex: none; opacity: 0.7; }
   .dot-sep { flex: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }

@@ -13,6 +13,8 @@ const DIAGRAM_LANGUAGES = new Set(["mermaid"]);
 let renderCwd = "";
 /** The chat's board ids and job names, for mention chips. Set around each synchronous parse; null renders every id and name as plain text. */
 let renderIndex: MentionIndex | null = null;
+/** A chat message renders without bold: `**text**` as its text and a heading as a paragraph (owner, 10-16: bold is noisy on his phone). */
+let renderPlain = false;
 
 /**
  * A board id written as a whole word (`p7`, `s3`) that exists on the chat's board becomes a chip: the item's dot color and id, its short title
@@ -212,34 +214,41 @@ const marked = new Marked({
       return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeHtml(language)}</span><button type="button" class="copy-button" data-copy>Copy</button></div><pre><code>${escapeHtml(text)}</code></pre></div>\n`;
     },
     checkbox({ checked }) { return `<span class="checkbox">${checked ? "[x]" : "[ ]"}</span> `; },
+    strong({ tokens }) { return renderPlain ? this.parser.parseInline(tokens) : false; },
+    heading({ tokens }) { return renderPlain ? `<p>${this.parser.parseInline(tokens)}</p>\n` : false; },
   },
 });
 
 const cache = new Map<string, string>();
 const CACHE_LIMIT = 4000;
 
-/** `index` turns the chat's board ids and job names in the text into mention chips; a reply outside a chat passes none. */
-export function renderMarkdown(text: string, cwd = "", index: MentionIndex | null = null): string {
-  const key = cwd + "\0" + (index?.key ?? "") + "\0" + text;
+/**
+ * `index` turns the chat's board ids and job names in the text into mention chips; a reply outside a chat passes none. `plain` is a chat
+ * message: no bold and no headings.
+ */
+export function renderMarkdown(text: string, cwd = "", index: MentionIndex | null = null, plain = false): string {
+  const key = (plain ? "plain\0" : "") + cwd + "\0" + (index?.key ?? "") + "\0" + text;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   renderCwd = cwd;
   renderIndex = index;
+  renderPlain = plain;
   let html: string;
-  try { html = marked.parse(text, { async: false }); } finally { renderCwd = ""; renderIndex = null; }
+  try { html = marked.parse(text, { async: false }); } finally { renderCwd = ""; renderIndex = null; renderPlain = false; }
   cache.set(key, html);
   if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;
 }
 
-/** The owner's own bubble: links, inline code, bold, mention chips and line breaks only; no lists, headings or blocks. */
-export function renderInline(text: string, index: MentionIndex | null = null): string {
-  const key = "inline\0" + (index?.key ?? "") + "\0" + text;
+/** The owner's own bubble: links, inline code, bold, mention chips and line breaks only; no lists, headings or blocks. `plain` drops the bold. */
+export function renderInline(text: string, index: MentionIndex | null = null, plain = false): string {
+  const key = (plain ? "inline-plain\0" : "inline\0") + (index?.key ?? "") + "\0" + text;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   renderIndex = index;
+  renderPlain = plain;
   let html: string;
-  try { html = marked.parseInline(text.replace(/\r\n?/g, "\n"), { async: false, breaks: true }); } finally { renderIndex = null; }
+  try { html = marked.parseInline(text.replace(/\r\n?/g, "\n"), { async: false, breaks: true }); } finally { renderIndex = null; renderPlain = false; }
   cache.set(key, html);
   if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;

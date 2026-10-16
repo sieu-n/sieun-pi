@@ -41,9 +41,9 @@ test("splitQuote reads a leading > block back out of the owner's message", () =>
 });
 
 test("renderSaid draws a leading quote as a blockquote over the owner's text, and plain text as before", () => {
-  assert.equal(renderSaid(replyText("the chat said **this**\nand that\u2026", "ok, do it")), '<blockquote class="quote">the chat said <strong>this</strong><br>and that\u2026</blockquote>ok, do it');
+  assert.equal(renderSaid(replyText("the chat said **this**\nand that\u2026", "ok, do it")), '<blockquote class="quote">the chat said this<br>and that\u2026</blockquote>ok, do it');
   assert.equal(renderSaid("> only the quote"), '<blockquote class="quote">only the quote</blockquote>');
-  assert.equal(renderSaid("plain **words**\nnext"), "plain <strong>words</strong><br>next");
+  assert.equal(renderSaid("plain **words**\nnext"), "plain words<br>next", "no bold in the owner's bubble");
   assert.equal(renderSaid("a <b> tag"), "a &lt;b&gt; tag");
 });
 
