@@ -31,9 +31,9 @@ test("c47: a message that holds a job for another thread's go is a wait; a repor
 });
 
 test("c47: checkMessage refuses the hold only on a message to a job; a sibling thread may hear what we wait for", async () => {
-  assert.match(await checkMessage(HOLD_1359, undefined, "child") ?? "", /^Refused, not sent: this message tells your job to wait\. It waits for another thread's go, word or slot \("Fable's 'ON STAGING' word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
-  assert.equal(await checkMessage(HOLD_1359, undefined, "sibling"), null);
-  assert.equal(await checkMessage(FREE[3]!, undefined, "child"), null);
+  assert.match(await checkMessage(HOLD_1359, "child") ?? "", /^Refused, not sent: this message tells your job to wait\. It waits for another thread's go, word or slot \("Fable's 'ON STAGING' word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
+  assert.equal(await checkMessage(HOLD_1359, "sibling"), null);
+  assert.equal(await checkMessage(FREE[3]!, "child"), null);
 });
 
 test("c47: in the kernel, agent_message.send of the 13:59Z hold to a job raises LimitRefused and the host gets nothing; the same text to a sibling goes", async () => {

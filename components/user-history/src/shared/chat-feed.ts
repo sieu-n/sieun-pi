@@ -6,8 +6,6 @@ export interface PendingSend { id: string; text: string; images: ImagePart[]; at
 
 /** The tool a chat calls to reach the owner on a turn the owner did not start. Its `text` shows as an agent bubble unless the tool refused it. */
 export const TELL_OWNER_TOOL = "tell_owner";
-/** The longest text `tell_owner` accepts; the tool refuses longer with "shorter: one or two sentences". */
-export const TELL_OWNER_LIMIT = 400;
 /**
  * A user message the chat server sends on its own: the restart of a failed turn and the job notices (and, in transcripts from before W44, the
  * check-in digest). The feed folds them into updates and the turn they start is not the owner's.

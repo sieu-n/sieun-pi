@@ -23,7 +23,7 @@ import { deadOwnerLines, deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStoppe
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
-import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
@@ -37,7 +37,7 @@ import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThre
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, leftoverLine } from "./job-leftovers.ts";
 
-export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
+export { TELL_OWNER_TOOL };
 
 /** The daemon's answer for an active session id it does not hold: that session ended, whatever its list still says. */
 export const UNKNOWN_ACTIVE = "Unknown active session:";

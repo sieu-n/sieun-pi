@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { findingsList, lintOwnerReply, replyNotes } from "./shared/reply-lint.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
-import { ALLOWED_SHELL, NAME_RULE, SHELL_LIST } from "./chat-brief.ts";
+import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 
-/** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner check, the reply cap, and the code and job-name guards. */
+/** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner check, the reply cap, and the shell guard. */
 
 /** The extension flag the chat server sets on `create`. The extension turns it into the session entry at the first session_start. */
 export const CHAT_FLAG = "chat";
@@ -17,7 +17,6 @@ export const CHAT_MODE_ENTRY = "chat_mode";
 export const CHAT_BOARD_TOOL = "chat_board";
 /** The only way the chat reaches the owner on a turn the owner did not start; active with the board tool. The feed reads its calls from the transcript. */
 export const CHAT_TOOLS: readonly string[] = [CHAT_BOARD_TOOL, TELL_OWNER_TOOL];
-export const TELL_OWNER_TOO_LONG = "shorter: one or two sentences";
 export const TELL_OWNER_DONE = "told the owner";
 export const TELL_OWNER_REFUSED = "Refused: the owner did not see it. Rewrite it and call tell_owner again:";
 
@@ -90,22 +89,20 @@ export function withReplyCap<M extends ContextMessage>(messages: readonly M[]): 
 }
 
 /**
- * What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused as too long or for reply-lint findings, which come back
+ * What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused for reply-lint findings, which come back
  * with their fixes so the chat rewrites it in the same turn (the feed shows a refused call as nothing). `ownerText` is the owner's last message:
  * a word the owner used is not jargon.
  */
 export function tellOwner(text: unknown, ownerText = ""): { ok: true; text: string } | { ok: false; text: string } {
   const told = typeof text === "string" ? text.trim() : "";
   if (!told) return { ok: false, text: "nothing to tell: give text" };
-  if (told.length > TELL_OWNER_LIMIT) return { ok: false, text: TELL_OWNER_TOO_LONG };
   const findings = lintOwnerReply(told, ownerText);
   if (findings.length) return { ok: false, text: `${TELL_OWNER_REFUSED}\n${findingsList(findings)}` };
   return { ok: true, text: TELL_OWNER_DONE };
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
-const CALL = /(?<!\w)(bash|edit|open)\s*\(/g;
-const MODE = /^[rwaxbt+U]{1,4}$/;
+const CALL = /(?<!\w)bash\s*\(/g;
 
 function unquote(literal: string): string {
   const body = literal.replace(/^[rbfuRBFU]{0,2}/, "");
@@ -132,14 +129,6 @@ function argumentText(code: string, openParen: number): string {
   return code.slice(openParen + 1, limit);
 }
 
-function literals(text: string): string[] {
-  PY_STRING.lastIndex = 0;
-  const out: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = PY_STRING.exec(text)) !== null) out.push(unquote(match[0]));
-  return out;
-}
-
 /** The command with quoted text blanked, so `rg "a|b"` passes while `cat x | sh` and `ls; rm x` do not. */
 function unquotedShell(command: string): string {
   return command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, text => " ".repeat(text.length));
@@ -152,13 +141,10 @@ function shellReason(command: string | null, how: string): string | null {
   }
   return `A chat runs only quick look-ups in the shell (${SHELL_LIST}; no pipes, redirects or chaining) (${how}). Give the work to a job with rlm.spawn.`;
 }
-const EDIT_REASON = "A chat edits no files. Give the change to a job with rlm.spawn.";
-const WRITE_REASON = "A chat writes no files. Give the change to a job with rlm.spawn.";
-
 /**
  * The reason an ipython cell is refused in a chat, or null. Calls are found on the code with its string literals and comments blanked, so a job
- * brief that mentions bash( or edit( does not trip the guard. A computed shell command counts as refused. subprocess, os.system and pathlib
- * writes are not inspected; the brief forbids them.
+ * brief that mentions bash( does not trip the guard. A computed shell command counts as refused. subprocess and os.system are not inspected;
+ * the brief forbids them.
  */
 export function judgeChatCode(code: string): string | null {
   const lines = code.split("\n");
@@ -174,32 +160,12 @@ export function judgeChatCode(code: string): string | null {
   let match: RegExpExecArray | null;
   while ((match = CALL.exec(blanked)) !== null) {
     const args = argumentText(code, match.index + match[0].length - 1);
-    switch (match[1]) {
-      case "edit": return EDIT_REASON;
-      case "bash": {
-        const head = args.replace(/^\s*(?:command\s*=\s*)?/, "");
-        PY_STRING.lastIndex = 0;
-        const literal = PY_STRING.exec(head);
-        const reason = shellReason(literal && literal.index === 0 ? unquote(literal[0]) : null, literal ? "bash()" : "a computed bash() command");
-        if (reason) return reason;
-        break;
-      }
-      case "open": {
-        if (literals(args).some(text => MODE.test(text) && /[wax+]/.test(text))) return WRITE_REASON;
-        break;
-      }
-    }
+    const head = args.replace(/^\s*(?:command\s*=\s*)?/, "");
+    PY_STRING.lastIndex = 0;
+    const literal = PY_STRING.exec(head);
+    const reason = shellReason(literal && literal.index === 0 ? unquote(literal[0]) : null, literal ? "bash()" : "a computed bash() command");
+    if (reason) return reason;
   }
-  for (const { name } of jobNameLiterals(code)) { const reason = nameReason(name); if (reason) return reason; }
-  return null;
-}
-/**
- * Why a literal job or thread name is refused, or null: words joined by a hyphen or underscore (kebab-case, snake_case), a trailing number
- * (`-2`, `_2`, `2`), or more than 40 characters. The owner names threads with a few plain words and spaces.
- */
-export function nameReason(name: string): string | null {
-  const trimmed = name.trim();
-  if (/[A-Za-z0-9][-_][A-Za-z0-9]/.test(trimmed) || /[-_ ]?\d+$/.test(trimmed) || trimmed.length > 40) return NAME_RULE;
   return null;
 }
 
@@ -211,7 +177,6 @@ export function chatGuard({ toolName, input, depth, marked }: GuardInput): { blo
   let reason: string | null = null;
   if (toolName === "ipython" && typeof input.code === "string") reason = judgeChatCode(input.code);
   else if (toolName === "bash" && typeof input.command === "string") reason = shellReason(input.command, "the bash tool");
-  else if (toolName === "edit") reason = EDIT_REASON;
   return reason ? { block: true, reason } : undefined;
 }
 

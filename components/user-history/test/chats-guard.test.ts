@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { TELL_OWNER_LIMIT } from "../src/chats.ts";
 import { chatGuard, chatModeAt, hasChatMarker, judgeChatCode, REPLY_CAP_NOTE, tellOwner, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { lintOwnerReply } from "../src/shared/reply-lint.ts";
 import { reply } from "./chats-helpers.ts";
@@ -34,13 +33,11 @@ const ALLOWED = [
   "await bash(f'tail -50 {path}')",
   "await bash('ls')",
   "!git diff --stat",
+  "await edit(path='a.py', old_str='x', new_str='y')",
+  "open('/tmp/out.txt', 'w').write('x')",
+  "await rlm.spawn(brief, name='readme-check')",
 ];
 const BLOCKED: [string, RegExp][] = [
-  ["await edit(path='a.py', old_str='x', new_str='y')", /edits no files/],
-  ["open('/tmp/out.txt', 'w').write('x')", /writes no files/],
-  ["with open(p, mode='a') as f: f.write(x)", /writes no files/],
-  ["open(p, 'r+')", /writes no files/],
-  ["Path(p).open('wb')", /writes no files/],
   ["await bash('git commit -m x')", /quick look-ups/],
   ["await bash('git push')", /quick look-ups/],
   ["await bash('npm test')", /quick look-ups/],
@@ -54,13 +51,6 @@ const BLOCKED: [string, RegExp][] = [
   ["await bash('prime-agentx')", /quick look-ups/],
   ["%%bash\nprime-agent stop x", /a shell cell/],
   ["!npm install", /a ! line/],
-  ["await rlm.spawn(brief, name='readme-check')", /Name every job and thread like the owner names threads/],
-  ["await rlm.create_session(brief, name='crawler_ops', cwd='/r')", /with no kebab-case, ids or numbered suffixes like -2\./],
-  ["await rlm(brief, name='readme check 2')", /numbered suffixes/],
-  ["await rlm.spawn(brief, name='readme check-2')", /numbered suffixes/],
-  ["await rlm.spawn(brief, name='worker2')", /numbered suffixes/],
-  ["await rlm.spawn(brief, name='w22-agents-card')", /numbered suffixes/],
-  ["await rlm.spawn(brief, name='a thread name that goes on and on past forty')", /numbered suffixes/],
 ];
 
 test("chat guard: the decision table, only in a marked root", () => {
@@ -74,7 +64,7 @@ test("chat guard: the decision table, only in a marked root", () => {
   assert.equal(at(0, true, "bash", { command: "prime-agent stop a" }), undefined);
   assert.equal(at(0, true, "bash", { command: "git status" }), undefined);
   assert.match(at(0, true, "bash", { command: "git checkout main" })?.reason ?? "", /the bash tool/);
-  assert.match(at(0, true, "edit", { path: "a" })?.reason ?? "", /edits no files/);
+  assert.equal(at(0, true, "edit", { path: "a" }), undefined);
   assert.equal(at(0, true, "read", { path: "a" }), undefined);
   assert.equal(at(0, true, "ipython", { code: 42 }), undefined, "a non-string cell is left to the tool");
 });
@@ -125,10 +115,8 @@ test("brief: a reply that answers an older owner message sets reply_to; one to t
   assert.ok(extension.includes('reply_to: { type: "string", description: "[message id] of an older owner message it answers." }'), "tell_owner's reply_to says when to set it");
 });
 
-test("tell_owner takes up to the limit and refuses longer or empty text", () => {
+test("tell_owner takes plain text and refuses empty text", () => {
   assert.deepEqual(tellOwner("The audit is done; nothing failed."), { ok: true, text: "told the owner" });
-  assert.deepEqual(tellOwner("x".repeat(TELL_OWNER_LIMIT)), { ok: true, text: "told the owner" });
-  assert.deepEqual(tellOwner("x".repeat(TELL_OWNER_LIMIT + 1)), { ok: false, text: "shorter: one or two sentences" });
   assert.equal(tellOwner("   ").ok, false);
   assert.equal(tellOwner(undefined).ok, false);
 });

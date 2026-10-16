@@ -125,15 +125,6 @@ export function ownerSaid(words: string, owner: readonly string[]): boolean {
   const pieces = words.split(/\[[^\]]*\]/).map(piece => quoteForm(piece).replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
   return pieces.length > 0 && owner.some(text => { const form = quoteForm(text); return pieces.every(piece => form.includes(piece)); });
 }
-/**
- * Null when the owner said `words` in the chat (`ownerSaid`); else the refusal. On 10-12 the Crawler VP recorded Fable's "Never re-push a land-33
- * branch name tonight." and the ledger reopened c53 as an owner repeat. A fix call names no words and passes.
- */
-export function ownerWordsRefusal(call: CorrectionCall, owner: readonly string[]): string | null {
-  if (call.kind !== "add" || ownerSaid(call.input.words, owner)) return null;
-  return `"${call.input.words}" is not in any owner message of this chat. Quote the owner exactly, or do not record it: words from another agent, ` +
-    "a job or a check-in are no owner correction.";
-}
 
 const sameWords = (a: string, b: string): boolean => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 const nextId = (ledger: Ledger): string => `c${1 + Math.max(0, ...ledger.corrections.map(entry => Number(entry.id.slice(1)) || 0))}`;

@@ -3,9 +3,8 @@
 agent_message.send reaches the host through rlm.host_request. This wraps host_request in rlm and in the agent_message module, which imported
 its own reference. It does three things.
 
-1. The c43 limit check. Before an "agent_message.send" request goes out, message-limit-check.ts lints the text with reply-lint.ts's limit rule;
-   a limit with a rate or size and no measurement, vendor limit or incident in its own sentence raises LimitRefused, and nothing is sent. A
-   message to a job (receiver_role "child") that holds it for another thread's go or word raises it too (c47, steer-wait.ts). A failure to
+1. The c47 hold check. Before an "agent_message.send" request goes out, message-limit-check.ts checks a message to a job (receiver_role
+   "child"): one that holds the job for another thread's go or word raises LimitRefused, and nothing is sent (steer-wait.ts). A failure to
    run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
 2. A daemon timeout on a send is no failure (p334). The supervisor gives the target's worker 30 s to confirm (WORKER_REQUEST_TIMEOUT_MS in
    prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
@@ -46,7 +45,7 @@ UNCONFIRMED_NOTE = (
 
 
 class LimitRefused(Exception):
-    """An agent message that states a limit with no evidence behind it (c43), or one that holds a job for another thread's go (c47)."""
+    """An agent message that holds a job for another thread's go (c47)."""
 
 
 def refusal(text: str, role=None):

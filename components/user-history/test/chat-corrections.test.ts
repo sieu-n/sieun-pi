@@ -254,27 +254,7 @@ const crawlerVp = (): Entry[] => [
   { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "text", text: `Fable's ruling: ${LAND_33}` }], timestamp: 99 } },
 ];
 
-test("extension: correction_add refuses words no owner message holds, so Fable's land-33 line in the Crawler VP is no repeat of c53", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "corrections-owner-"));
-  try {
-    const file = join(dataDir, "corrections.json");
-    await writeFile(file, JSON.stringify({ corrections: [C53] }, null, 2));
-    const before = await readFile(file, "utf8");
-    const chat = loadExtension(dataDir, { id: "01a115e2-9544-7204-b8db-8ce4d5319048", name: "Crawler VP", branch: crawlerVp() });
-    await chat.run("session_start", {}, true);
-    const tool = chat.tools.get(CORRECTION_TOOL)!;
-    // The call the Crawler VP made at 21:58Z.
-    await assert.rejects(tool.execute("t1", { rule: "Never re-push a branch whose run is in the current land set.", words: LAND_33,
-      ref: "Fable 10-12 21:5xZ ruling (not the owner)", theme: "ci", enforcedBy: "brief" }, undefined, undefined, chat.ctx(true)),
-      /not in any owner message of this chat\. Quote the owner exactly, or do not record it/);
-    assert.equal(await readFile(file, "utf8"), before, "the ledger is unchanged: no repeat on c53");
-    await assert.rejects(tool.execute("t2", { rule: "A new rule.", words: LAND_33, ref: "x", theme: "land branch name re-push", enforcedBy: "brief" },
-      undefined, undefined, chat.ctx(true)), /Quote the owner exactly/, "a new correction in another agent's words is refused too");
-    assert.equal(await readFile(file, "utf8"), before);
-  } finally { await rm(dataDir, { recursive: true, force: true }); }
-});
-
-test("extension: correction_add takes the owner's exact words with other whitespace, quotes or case, a part of one message, and a repeat in them", async () => {
+test("extension: correction_add records the owner's words, and a repeat in them", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "corrections-owner-"));
   try {
     await writeFile(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [C53] }));

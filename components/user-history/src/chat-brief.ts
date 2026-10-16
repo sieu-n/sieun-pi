@@ -67,9 +67,6 @@ export const CHAT_BRIEF: readonly string[] = [
 /** The corrections the brief holds in full. */
 export const BRIEF_CORRECTIONS = briefCorrections(CHAT_BRIEF);
 
-/** The brief's naming line, and the reason a cell that names a job otherwise is refused. */
-export const NAME_RULE = CHAT_BRIEF.find(line => line.startsWith("Name every job"))!;
-
 /** The tool whose promptGuidelines tell a job of a chat how to report. Registered only in a job's own session, so its base prompt carries the line. */
 export const JOB_REPLY_TOOL = "job_reply";
 /** A session that works for a chat: `chat` is the chat's session name (empty when unknown); `root` for a thread the chat started with rlm.create_session. */

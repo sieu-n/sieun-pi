@@ -5,19 +5,17 @@ import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
-import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
+import { TELL_OWNER_TOOL } from "../src/chats.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
-import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, ownerWordsRefusal, parseCorrectionCall } from "../src/chat-corrections.ts";
-import { ownerTexts } from "../src/shared/brief-check.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
-import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
 import { FLEET_STOP_FILE } from "../src/fleet-budget.ts";
@@ -88,8 +86,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: `The only text the owner reads: one or two plain sentences. Over ${TELL_OWNER_LIMIT} characters, dashes, labels, ` +
-      "headings or jargon are refused with fixes.",
+    description: "The only text the owner reads: one or two plain sentences. Dashes, labels, headings or jargon are refused with fixes.",
     parameters: {
       type: "object",
       properties: {
@@ -101,8 +98,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       let owner = "";
       try { owner = lastOwnerText(ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : [])); } catch { /* no owner words */ }
-      const jobsOf = async () => linkableJobs(await chatAgentsOf(ctx.sessionManager.getSessionId()));
-      const result = await tellOwnerChecked((params as { text?: unknown }).text, owner, jobsOf);
+      const result = tellOwner((params as { text?: unknown }).text, owner);
       if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },
@@ -165,9 +161,6 @@ export default function historyExtension(pi: ExtensionAPI): void {
       },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const call = parseCorrectionCall(params);
-        const transcript = ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : []);
-        const refusal = ownerWordsRefusal(call, ownerTexts(transcript));
-        if (refusal) throw new Error(refusal);
         const chat = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
         // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads.
         const cleanRoom = await new IdIndex(join(dataDir(), CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(chat.id), () => false);

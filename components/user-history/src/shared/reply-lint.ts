@@ -253,16 +253,6 @@ export function boardLimitRefusal(ops: readonly BoardOp[], names: readonly strin
   return claims.length ? `Refused, nothing changed: a todo or plan step states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}.` : null;
 }
 
-/**
- * The refusal for an agent message a chat or a job sends with a limit claim, or null. A limit that one session passes to another gets the same
- * check as a reply to the owner, because the receiver acts on it (c43, owner 10-12 22:37 KST, "r u fucking kidding?").
- */
-export function messageLimitRefusal(text: string, names: readonly string[] = []): string | null {
-  const claims = unmeasuredLimits(proseLines(withoutNames(text, names))).map(claim => `"${claim}"`);
-  return claims.length ? `Refused, not sent: this agent message states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}. ` +
-    "If you only report another session's line, drop the number and ask what it rests on." : null;
-}
-
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const CODE = /`[^`]+`/g;
