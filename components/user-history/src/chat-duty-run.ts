@@ -31,6 +31,8 @@ export interface CheckInDutyHost {
  */
 export interface CheckInRun {
   at: number; trigger: DutyTrigger; everyMs: number; output: PrecheckOutput & { flagged: FlaggedSlice[] }; classes: Record<string, number>; findings: string;
+  /** The check-in prompt's body (`checkInPrompt`): the goals and the actions due. Set, the job's brief is `checkInJobBrief` and the findings go to the detail file only. */
+  prompt?: string;
 }
 
 /** What the runner needs from the server: which threads are chats, and the duty jobs. Tests pass fakes. */
@@ -149,7 +151,7 @@ export const NOT_STARTED = "the duty job did not start";
 /** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
 interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
-  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report">;
+  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report" | "prompt">;
 }
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
@@ -697,7 +699,8 @@ export class Duties {
     const stepMisses = misses.filter(miss => miss.key !== "goal_gaps");
     const started = await this.startJob(chatId, record, CHECK_IN_DUTY, {
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
-      brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT } });
+      brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT,
+        ...run.prompt !== undefined ? { prompt: `${run.prompt}\n\nThe full precheck, with every step and finding, is in ${detail}. Read it for the work you take on; never paste it into a message.` } : {} } });
     return started === "failed" ? "failed" : "done";
   }
 
@@ -810,7 +813,7 @@ export class Duties {
    * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses">, measured: AfterMeasure | null): Promise<Launched> {
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null || "skipped" in previous) return previous;

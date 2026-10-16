@@ -18,7 +18,8 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
 import type { FleetStop } from "./fleet-budget.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stuckLine } from "./checkin-end-state.ts";
-import { type GoalMemo, goalLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded } from "./checkin-goals.ts";
+import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded } from "./checkin-goals.ts";
+import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
 export { finishedOpen, looksDone };
 
@@ -44,7 +45,9 @@ export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
   /** How many runs in a row flagged each finding, by `flagKey` (src/checkin-repeats.ts). */
   flags?: Record<string, number>;
   /** Each open goal's last readings of its number, for its trend and pace (`goalPushes`). */
-  goals?: Record<string, GoalMemo> }
+  goals?: Record<string, GoalMemo>;
+  /** Each job's progress mark and last push (`jobPushes`). */
+  jobs?: Record<string, JobMemo> }
 /**
  * What the precheck needs besides the jobs and the board: the chat's own id and name (a step it owns is `mine`), a board read error, the
  * catalog rows (the threads a step's `waitFor` can name), and the ledger's handoffs (`handoffRules`: an open step on another thread's topics).
@@ -86,6 +89,8 @@ export interface CheckInPrecheck {
   memory: CheckInMemory; steps: StepView[]; scope: ScopeMiss[]; gates: GateFinding[]; stalled: StalledStep[];
   /** Each open goal's number, trend, pace and owner, and whether to steer or start its owner job (`goalPushes`): the check-in's first job. */
   goals: GoalPush[]; blocked: BlockedStep[];
+  /** The chat's jobs with no progress for a check-in interval or whose last turn failed, to nudge or restart (`jobPushes`). */
+  jobs: JobPush[];
   done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
@@ -151,7 +156,12 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
     : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)));
-  return { memory: { at: now, steps, since, goals: goals.memos }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
+  const roots = new Set(context.jobs ?? []);
+  const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
+    : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
+      fact => !fact.name.startsWith("check-in ") && (!fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length))),
+      view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt);
+  return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: goals.pushes, blocked, done,
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
@@ -308,6 +318,24 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Jobs", facts.map(fact => jobLine(fact, now))),
     ...section("Every open step, oldest change first", listed),
   ].join("\n\n") || "The board has no open step and no job.";
+}
+
+/**
+ * What the check-in job's prompt carries from the precheck (owner 10-16: "it should be based on metrics, more sophisticated"; c80, c90): each
+ * open goal's number, gap, trend, days to target and pace, and the actions due this run in plain words, with no list of step ids and no stock
+ * rules. Every step finding stays in the run's detail file and its record.
+ */
+export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end">, jobLine: string | null): string {
+  const goals = precheck.goals.map(push => `- ${goalPromptLine(push)}`);
+  const due = precheck.goals.flatMap(push => { const line = goalDueLine(push); return line ? [line] : []; });
+  const stuck = precheck.end.filter(entry => !OK_STATES.has(entry.state)).length;
+  const items = [...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
+    ...jobLine ? [`${jobLine.replace(/^Check-in: /, "The server already ")} Check in this run that each one reported; start a job in place of one that did not.`] : [],
+    ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner; give each a live owner, a For you todo or a close. The detail file lists them.`] : []];
+  return [
+    `## Goals\n${goals.length ? goals.join("\n") : "The chat has no open goal."}`,
+    `## Due this run\n${items.length ? items.map((line, at) => `${at + 1}. ${line}`).join("\n") : "Nothing is due: every goal moves on pace with a live owner. End in one short turn."}`,
+  ].join("\n\n");
 }
 
 /**

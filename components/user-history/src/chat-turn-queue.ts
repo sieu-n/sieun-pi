@@ -1,4 +1,4 @@
-import { admitTurn, readAgentQueue, releaseTurn, type TurnClass } from "./chat-pool.ts";
+import { admitTurn, markOwnerTurn, readAgentQueue, releaseTurn, type TurnClass } from "./chat-pool.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import type { JobFact } from "./checkin-steps.ts";
 import type { AgentQueueReading, ChildAgent, QueuePlace } from "./shared/types.ts";
@@ -100,8 +100,8 @@ export const dutyClass = (dutyId: string): TurnClass => dutyId === CHECK_IN_DUTY
  * the 114 live sessions and about 2.4 GB, so holding them could not bring the workers near the 16 GB under which minutes stayed usable.
  */
 export function dutyAdmitter(input: { log: (line: string) => void; now?: () => number;
-  pool?: { admit: typeof admitTurn; release: typeof releaseTurn; read: () => Promise<AgentQueueReading> } }): DutyAdmitter {
-  const pool = input.pool ?? { admit: admitTurn, release: releaseTurn, read: readAgentQueue };
+  pool?: { admit: typeof admitTurn; release: typeof releaseTurn; read: () => Promise<AgentQueueReading>; mark?: (key: string) => Promise<void> } }): DutyAdmitter {
+  const pool = input.pool ?? { admit: admitTurn, release: releaseTurn, read: readAgentQueue, mark: markOwnerTurn };
   const now = input.now ?? Date.now;
   const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
   return {
@@ -109,6 +109,9 @@ export function dutyAdmitter(input: { log: (line: string) => void; now?: () => n
       const key = dutyQueueKey(chatId, dutyId);
       const asked = now();
       let state: "admitted" | "off";
+      // A check-in starts at once, the way an owner turn does (c89, owner 10-16): its key asked as `checkin` still waited for a free slot under
+      // the working limit, 1277 s for 01a141d2 at 23:37Z and 669 s for Crawler VP at 23:54Z on 10-15, and both waits were lost to restarts.
+      if (dutyId === CHECK_IN_DUTY_ID) await pool.mark?.(key).catch(error => input.log(`duty ${chatId.slice(0, 8)}/${dutyId}: mark its key as starting at once: ${reason(error)}`));
       try { state = await pool.admit(key, key, dutyClass(dutyId)); }
       catch (error) {
         input.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the turn queue did not answer, so its job starts unqueued: ${reason(error)}`);

@@ -220,3 +220,41 @@ export function goalsDetail(pushes: readonly GoalPush[]): string {
   });
   return `### Goals, the check-in's first job (steer or start one owner job per goal; the message for each is under it)\n${parts.join("\n")}`;
 }
+
+/** How far a number is from its target in words: "85.1 points short", "26 Mbps short", "738 over"; "" when unmeasured or met. */
+export function gapText(number: GoalNumber): string {
+  if (number.value === undefined) return "";
+  const gap = number.op === "<=" ? number.value - number.target : number.target - number.value;
+  if (gap <= 0) return "";
+  const unit = number.unit === "%" ? " points" : unitText(number.unit);
+  return `${amount(gap)}${unit} ${number.op === "<=" ? "over" : "short"}`;
+}
+
+/** Days to target in words: "about 10 days to target at this rate", "no rate yet", or "moving away from target". */
+const paceText = (push: GoalPush): string => {
+  const trend = push.trend;
+  if (!trend || trend.kind === "unmeasured") return "not measured yet";
+  if (trend.kind === "met") return "at target";
+  const pace = pushNeeded(push) ? "off pace" : "on pace";
+  return `${trendText(push.number!, trend, push.stale)}, ${pace}`;
+};
+
+/** A goal as the check-in prompt shows it, one plain sentence: its title, number, gap, trend, days to target, pace, and who owns it. */
+export function goalPromptLine(push: GoalPush): string {
+  const title = `${quote(push.goal.text)} (${push.goal.id})`;
+  if (!push.number) return `${title} has no number yet: no target and no duty metric.`;
+  const gap = gapText(push.number);
+  const owner = push.owner ? `${ownerLabel(push.owner)} owns it` : "no live job owns it";
+  return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.`;
+}
+
+/** The action a goal needs this run, with the message to send or brief to open with; null for a goal on pace. */
+export function goalDueLine(push: GoalPush): string | null {
+  const title = quote(push.goal.text);
+  if (push.act === "no_number") return `Give ${title} a target from the owner's words, with plan_update target.`;
+  if (!pushNeeded(push)) return null;
+  const ask = push.act === "steer" ? `Steer ${ownerLabel(push.owner!)} on ${title} with this message`
+    : push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title}, a live job of the goal or a new one, and send it this message`
+    : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to a live job of the goal or a new one, and send it this message`;
+  return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}`;
+}

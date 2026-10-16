@@ -74,6 +74,33 @@ export interface DutyJobInput {
   misses?: readonly MetricStreak[];
   /** How this duty's job reports to the chat, in place of the generic report rule; the check-in's is `CHECK_IN_REPORT`. */
   report?: string;
+  /** The check-in's own prompt body (`checkInPrompt` and its detail file): set, the brief is `checkInJobBrief` with no stock rules (c90). */
+  prompt?: string;
+}
+
+/** The owner's sentence for the check-in (c90, 2026-10-15 23:52Z), which the check-in prompt opens with. */
+export const CHECK_IN_WORDS = "check conversation and sync Plans to actual status, and resume tasks, nudge agents to achieve the goal. be aggressive, poteto mode use subagents aggressively";
+
+/**
+ * The check-in job's brief (c80, c90; owner 10-16: "it should be based on metrics, more sophisticated"): the owner's sentence, where the chat's
+ * board and conversation are, the goals' numbers and the actions due (`prompt`), and the four calls the job acts with. No stock rule lines and
+ * no list of step ids: the detail file the prompt names holds every finding.
+ */
+export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobInput, "chat" | "job" | "at" | "report"> & { prompt: string }): string {
+  const agentDir = dirname(dirname(dirname(chat.board)));
+  return [
+    `# ${job}: the check-in of the chat "${chat.name}"`,
+    `You are the check-in job "${job}" of the chat "${chat.name}", started ${localTime(at)}. The owner's words for the check-in (verbatim):\n\n> ${CHECK_IN_WORDS}`,
+    `The chat's session id is ${chat.id}. Its board is ${chat.board}, and its conversation is ${join(agentDir, "sessions", `${chat.id}.jsonl`)}.`,
+    prompt,
+    "## How to act",
+    [
+      `Apply board changes with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops are chat_board ops.`,
+      "Start a job with `await rlm.create_session(brief, name=..., cwd=...)` and set it as its step's job in the same board change. Message a " +
+        "job with `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<job name>)`.",
+      `${report ?? "Send the chat one short report when your work is done."} Send it with \`${reportCall(chat)}\`.`,
+    ].map(line => `- ${line}`).join("\n"),
+  ].join("\n\n") + "\n";
 }
 
 const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
@@ -137,7 +164,8 @@ const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_messag
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
-export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], report }: DutyJobInput): string {
+export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], report, prompt }: DutyJobInput): string {
+  if (prompt !== undefined) return checkInJobBrief({ chat, job, at, prompt, ...(report ? { report } : {}) });
   const send = reportCall(chat);
   const headline = headlineMetric(duty.metrics);
   const counted = verdictMetrics(duty.metrics);

@@ -23,7 +23,9 @@ import { deadOwnerLines, deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStoppe
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
-import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { checkInPrompt } from "./chat-checkin.ts";
+import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
 import { correctionStep } from "./correction-refine.ts";
 import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
@@ -112,6 +114,8 @@ interface ChatJob { chat: string; agent: ChatAgent }
 interface Gathered {
   board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
   queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; wakes: readonly Wake[]; name?: string;
+  /** Each subagent's session id by its child id, for a job the check-in pushes (`pushJobs`). */
+  sessions?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -1037,12 +1041,38 @@ export class Chats {
       }
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });
+      const pushed = await this.pushJobs(id, precheck.jobs, gathered.sessions ?? new Map());
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
-        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags) });
+        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags), prompt: checkInPrompt(precheck, pushed) });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Nudges or restarts each job the precheck found with no progress (`jobPushes`): a nudge is a steer into its session, a restart starts a new
+   * turn with the same message (`jobPushMessage`). Then the chat gets one line saying which jobs were pushed (`jobPushLine`), which the check-in
+   * prompt repeats. A job whose session the server cannot reach is named for the check-in job to replace.
+   */
+  private async pushJobs(chat: string, pushes: readonly JobPush[], sessions: ReadonlyMap<string, string>): Promise<string | null> {
+    const failed = new Set<string>();
+    for (const push of pushes) {
+      const session = push.fact.key.startsWith("thread:") ? push.fact.key.slice("thread:".length) : sessions.get(push.fact.key) ?? push.fact.sessionId;
+      try {
+        if (!session) throw new Error("no session id");
+        if (push.act === "restart") await this.threads.restart(session, jobPushMessage(push), true);
+        else await this.threads.prompt(session, { message: jobPushMessage(push), images: [], mode: "steer" });
+        this.log(`chat ${chat.slice(0, 8)}: check-in ${push.act === "restart" ? "restarted" : "nudged"} job ${push.fact.name}: ${push.why}`);
+      } catch (error) {
+        failed.add(push.fact.key);
+        this.log(`chat ${chat.slice(0, 8)}: check-in could not ${push.act} job ${push.fact.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const line = jobPushLine(pushes, failed);
+    if (line) await this.threads.prompt(chat, { message: CHECK_IN_PREFIX + line, images: [], mode: "steer" })
+      .catch(error => this.log(`chat ${chat.slice(0, 8)}: check-in job line: ${error instanceof Error ? error.message : String(error)}`));
+    return line;
   }
 
   /**
@@ -1104,7 +1134,7 @@ export class Chats {
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
-    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, wakes, ...(name ? { name } : {}) };
+    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, wakes, ...(name ? { name } : {}), sessions };
   }
 
   /** The facts that say an item is done: the chat's duty metric verdicts, and the state of the PRs its open items name in the repo of its folder. */
