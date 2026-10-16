@@ -70,7 +70,7 @@ test("a run with 2 missed metrics lists both with their streaks in the brief, an
   const brief = jobs.briefs[0]!;
   assert.match(brief, /## Missed metrics: each one needs a fix step with a live job/);
   assert.match(brief, /- usable_pct_1h \(Share of the last hour's minutes the Mac was usable\) is 93\.2%, target >= 100%, missed 1 run in a row\. No plan step fixes it\. Start a fix job with rlm\.create_session/);
-  assert.match(brief, /add a plan step with duty "d6\/usable_pct_1h" and that job\./);
+  assert.match(brief, /add a plan step with duty "d6\/usable_pct_1h", that job and its sessionId\./);
   assert.match(brief, /- usable_pct_24h \(.*\) is 96\.7%, target >= 100%, missed 11 runs in a row, not moving toward the target\./);
   assert.match(brief, /When a fix step closes, the server runs this duty again at once/);
   assert.doesNotMatch(brief, /sends you back/);
@@ -85,7 +85,7 @@ test("a stuck metric's brief requires a new root-cause job and names the old fix
   await duties.settled();
   const brief = jobs.briefs[0]!;
   assert.match(brief, /usable_pct_24h .* Change approach: the fix p445 \(job hung cell interrupt\) did not move it\. Start a new root-cause job with rlm\.create_session that finds why the last fix did not move the number/);
-  assert.match(brief, /Do not run the same fix again\. Add its own plan step with duty "d6\/usable_pct_24h" and the new job, and close or drop p445/);
+  assert.match(brief, /Do not run the same fix again\. Once it returns the job's session id, add its own plan step with duty "d6\/usable_pct_24h", the new job and its sessionId, and close or drop p445/);
   assert.match(brief, /### Change approach\n- usable_pct_24h missed 11 runs in a row and did not move toward its target; the fix p445 by hung cell interrupt did not move it\./);
   assert.doesNotMatch(brief, /usable_pct_1h[^\n]*Change approach/, "a first miss is not stuck");
 });

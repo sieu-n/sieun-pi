@@ -9,43 +9,25 @@ import { cutJobsHoldingWork, findCutJobs, measure, readLimits, readServiceLog, t
 import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
-// Shapes from service.log and pi-pool.log on 10-15 and 10-16: wakes held by the fleet budget each tick, the fix opener's open and send-back lines,
-// and the step scan's notices, which carry no time stamp.
+// Shapes from service.log and pi-pool.log on 10-15 and 10-16: wakes held by the fleet budget each tick.
 const NOW = Date.parse("2026-10-15T21:40:00.000Z");
 const at = (minutesAgo: number): string => new Date(NOW - minutesAgo * 60_000).toISOString();
 const line = (minutesAgo: number, fields: Partial<WatchLine> = {}): WatchLine => ({ at: at(minutesAgo), usable: { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 20 },
   workers: 10, workerGb: 8, top: [], live: 20, working: 8, idle15: 0, idleOver: 0, idleTrees: [], finished: 0, finishedTrees: [],
   queue: { working: 8, queued: 0, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 4, pressureLevel: 1 }, cpuMs: 50, ...fields }) as WatchLine;
-const inputs = (fields: Partial<Inputs>): Inputs => ({ now: NOW, watch: [], log: { holds: [], fixes: [], stepScans: [] }, limits: [], okLimit: 15, chats: [], ...fields });
+const inputs = (fields: Partial<Inputs>): Inputs => ({ now: NOW, watch: [], log: { holds: [] }, limits: [], okLimit: 15, chats: [], ...fields });
 
-test("held wakes join into one hold per wake, and an untimed step scan line takes the time before it", () => {
+test("held wakes join into one hold per wake", () => {
   const facts = readServiceLog([
     `${at(40)} wakes: wake 01a10db8 for its time: held by the fleet budget: 49 starts wait for the fleet budget; tried again next tick`,
     `${at(20)} wakes: wake 01a10db8 for its time: held by the fleet budget: 50 starts wait for the fleet budget; tried again next tick`,
     ...[16, 12, 8, 4].map(ago => `${at(ago)} wakes: wake 01a10db8 for its time: held by the fleet budget: 50 starts wait for the fleet budget; tried again next tick`),
     `${at(2)} wakes: wake 01a10db8 for its time, its time: held by the fleet budget: the Prime workers hold 17.6 GB (budget 16 GB); tried again next tick`,
     `${at(3)} fleet budget: duty skills and tools AI harness developer environment 04:30 starts after 900 s`,
-    "chat 01a1164b: step scan told the chat p494, p495 have no live owner",
   ]);
   // The 20-minute gap after the first line breaks the hold, so the wake counts from 20 minutes ago.
   assert.deepEqual(facts.holds.map(hold => [hold.what, (NOW - hold.from) / 60_000, (NOW - hold.to) / 60_000]),
     [["wake of 01a10db8", 40, 40], ["wake of 01a10db8", 20, 2], ["duty skills and tools AI harness developer environment 04:30", 18, 3]]);
-  assert.deepEqual(facts.stepScans, [{ at: NOW - 3 * 60_000, chat: "01a1164b", steps: ["p494", "p495"] }]);
-});
-
-test("a fix job sent back or replaced within 5 minutes of its open is churn; one that worked longer is not", () => {
-  const facts = readServiceLog([
-    `${at(29)} duty 01a1164b/d4: wiki_problems had no fix step with a live job after 3 or more missed runs; opened fix wiki dream AI harness 05:40`,
-    `${at(26)} duty 01a1164b/d4: fix job fix wiki dream AI harness 05:40 ended with p494 still missing; sent it back`,
-    `${at(20)} duty 01a11b0b/d1: signups had no fix step with a live job after 3 or more missed runs; opened fix visitors slack green guy 05:50`,
-    `${at(18)} duty 01a11b0b/d1: signups had no fix step with a live job after 3 or more missed runs; opened fix visitors slack green guy 05:52`,
-    `${at(10)} duty 01a1301d/d1: probe had no fix step with a live job after 3 or more missed runs; opened fix portal stays up 06:00`,
-    `${at(1)} duty 01a1301d/d1: fix job fix portal stays up 06:00 ended with p88 still missing; sent it back`,
-  ]);
-  const output = measure(inputs({ log: facts }));
-  assert.equal(output.metrics.fix_churn_30, 2);
-  assert.equal(output.metrics.fix_opened_30, 4);
-  assert.deepEqual((output.flagged ?? []).filter(item => item.kind === "fix_churn").map(item => item.item), ["fix wiki dream AI harness 05:40", "fix visitors slack green guy 05:50"]);
 });
 
 test("a minute is clean only with the Mac usable, no hold over 10 minutes and no turn queued with free slots", () => {

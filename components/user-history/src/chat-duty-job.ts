@@ -115,15 +115,16 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +
       "root-cause job with rlm.create_session that finds why the last fix did not move the number and fixes that cause in code. Do not run the " +
-      `same fix again. Add its own plan step with duty ${link} and the new job${fix ? `, and close or drop ${fix.step} with a note naming the new step` : ""}.`;
+      `same fix again. Once it returns the job's session id, add its own plan step with duty ${link}, the new job and its sessionId${fix ? `, and close or drop ${fix.step} with a note naming the new step` : ""}.`;
   }
-  if (fix?.live) return `${where} Its fix step ${fix.step} has the live job ${fix.job}: steer that job with this number and what the precheck found, and push it to land the code fix.`;
+  if (fix?.live) return `${where} Its fix step ${fix.step} has the live job ${fix.job}: steer that job with this number and what the precheck found, and push it to land the code fix. ` +
+    `${fix.job} stays the owner when your own lookup of it fails, times out or does not find it, since the server found it at work.`;
   return `${where} ${fix ? `Its fix step ${fix.step} has ${fix.job ? `no live job (${fix.job} is not at work)` : "no job"}.` : "No plan step fixes it."} Start a fix job with ` +
-    "rlm.create_session whose brief is to find the cause and land a code change that moves this number. In the same board change, " +
-    `${fix ? `set that job on ${fix.step} if it is still open, else add a plan step` : "add a plan step"} with duty ${link} and that job.`;
+    "rlm.create_session whose brief is to find the cause and land a code change that moves this number. Once it returns the job's session id, " +
+    `${fix ? `set that job and its sessionId on ${fix.step} if it is still open, else add a plan step` : "add a plan step"} with duty ${link}, that job and its sessionId.`;
 }
 
-/** The rules every job the server starts for a chat follows (duty jobs and fix jobs), in brief order. */
+/** The rules every job the server starts for a chat follows, in brief order. */
 function chatJobRules(): string[] {
   return [
     "Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go " +

@@ -138,8 +138,7 @@ test("the queue rows name each turn's chat and job, working longest first, then 
     ["waiting", "t-root-2", "s-q-2", false, 1792000100000],
   ]);
   assert.deepEqual(rowNames("duty:01a1:checkin", "duty:01a1:checkin", title), { chat: "ops guy", job: "check-in" });
-  assert.deepEqual(rowNames("duty:01a1:d3-fix", "duty:01a1:d3-fix", title), { chat: "ops guy", job: "duty d3 fix" });
-  assert.deepEqual(rowNames("duty:01a1:checkin-fix", "x", title), { chat: "ops guy", job: "check-in fix" });
+  assert.deepEqual(rowNames("duty:01a1:d3", "duty:01a1:d3", title), { chat: "ops guy", job: "duty d3" });
 });
 
 test("why these numbers carries the live reading, who set the limit and every measured default", async () => {

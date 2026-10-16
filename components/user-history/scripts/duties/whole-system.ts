@@ -19,8 +19,8 @@ import { isHarnessMinute } from "./mac-stays-usable.ts";
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, and every chat's duty
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read the Mac usable, no start, wake or parked
- * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds, fix jobs that ended
- * within CHURN_MS of their open with their metric still missing, and open steps nobody moves in all chats. The rest is detail.
+ * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds and open steps nobody
+ * moves in all chats. The rest is detail.
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
  * fleet budget logged a continue for local agents checks, local agents recovery and daily code health report at 00:21:17Z, none reached its
  * session, and the check-in read them as moving or gone while the agents panel showed done. A cut job with a later input, such as a continue
@@ -31,8 +31,6 @@ export const WINDOW_MS = 30 * 60_000;
 const MINUTE = 60_000;
 /** A start, wake or parked job waiting longer than this is a hold: the owner's line on 10-15, when 38 jobs' wakes sat held 3,374 times. */
 export const HOLD_MS = 10 * MINUTE;
-/** A fix job whose miss comes back this soon after its open died young: the opener reopened p494 and p495 every few minutes on 10-15 and 10-16. */
-export const CHURN_MS = 5 * MINUTE;
 /** Free slots that make a queued turn a queue fault: two, so one slot a release just freed is not counted. */
 export const FREE_SLOTS = 2;
 /** A queued turn counts against free slots only once the oldest one waited this long, past pi-pool's admit poll. */
@@ -48,10 +46,9 @@ const WALK_AT_ONCE = 16;
 const LOG_TAIL_BYTES = 6_000_000;
 
 export interface Hold { what: string; from: number; to: number }
-export interface FixOpen { chat: string; duty: string; job: string; at: number; died?: { at: number; why: string } }
 /** A continue or wake the fleet budget let through for a session (`starts after N s`): proof the start was admitted. */
 export interface Grant { kind: string; session: string; at: number; waitS: number }
-export interface LogFacts { holds: Hold[]; fixes: FixOpen[]; stepScans: { at: number; chat: string; steps: string[] }[]; grants?: Grant[]; firstAt?: number }
+export interface LogFacts { holds: Hold[]; grants?: Grant[]; firstAt?: number }
 /** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
 export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string } }
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -60,21 +57,14 @@ export interface LimitChange { at: number; limit: number }
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 const WAKE_HELD = /^wakes: wake (\w{8}) for .*: held by the fleet budget/;
 const STARTED_AFTER = /^fleet budget: (\S+) (.+) starts after (\d+) s$/;
-const FIX_OPENED = /^duty (\w{8})\/([\w-]+): .* had no fix step with a live job after \d+ or more missed runs; opened (.+)$/;
-const FIX_ENDED = /^duty (\w{8})\/([\w-]+): fix job (.+?) (ended with .+ still missing; sent it back|could not be sent back.*|ended; it goes back on a later tick.*)$/;
-const NOT_RESUMED = /^duty (\w{8})\/([\w-]+): own its fix: (Prime Agent did not resume this thread.*)$/;
-const STEP_SCAN = /^chat (\w{8}): step scan told the chat (.+) have no live owner$/;
 /** Lines of one wake held this far apart are one hold; the wake loop tries each held wake every tick. */
 const HOLD_GAP_MS = 5 * MINUTE;
 
-/** The holds, fix opens and step scan notices in service.log lines from `since` on; a hold may start before `since`, so the caller reads back far enough. */
+/** The holds in service.log lines from `since` on; a hold may start before `since`, so the caller reads back far enough. */
 export function readServiceLog(lines: readonly string[]): LogFacts {
   const wakes = new Map<string, Hold>();
   const holds: Hold[] = [];
-  const fixes: FixOpen[] = [];
   const grants: Grant[] = [];
-  const stepScans: LogFacts["stepScans"] = [];
-  // Lines from the chats part (the step scan) carry no time, so they take the time of the stamped line before them.
   let at = NaN;
   for (const raw of lines) {
     const match = TIME.exec(raw);
@@ -89,25 +79,10 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
     } else if ((found = STARTED_AFTER.exec(text))) {
       holds.push({ what: `${found[1]} ${found[2]}`, from: at - Number(found[3]) * 1000, to: at });
       if ((found[1] === "continue" || found[1] === "wake") && SESSION_ID.test(found[2]!)) grants.push({ kind: found[1], session: found[2]!, at, waitS: Number(found[3]) });
-    } else if ((found = FIX_OPENED.exec(text))) {
-      fixes.push({ chat: found[1]!, duty: found[2]!, job: found[3]!.trim(), at });
-    } else if ((found = FIX_ENDED.exec(text)) || (found = NOT_RESUMED.exec(text))) {
-      const [, chat, duty] = found;
-      const job = found.length > 4 ? found[3]! : undefined;
-      const why = found.length > 4 ? found[4]! : found[3]!;
-      const fix = fixes.findLast(entry => entry.chat === chat && entry.duty === duty && (job === undefined || entry.job === job) && !entry.died);
-      if (fix && at - fix.at <= CHURN_MS) fix.died = { at, why: why.replace(/; sent it back$/, "") };
-    } else if ((found = STEP_SCAN.exec(text))) {
-      stepScans.push({ at, chat: found[1]!, steps: found[2]!.split(", ") });
     }
   }
-  // A fix job whose duty opened another one within CHURN_MS ended young too: the opener only opens again once the last fix job is gone.
-  for (const fix of fixes) {
-    const next = fixes.find(other => other !== fix && other.chat === fix.chat && other.duty === fix.duty && other.at > fix.at);
-    if (!fix.died && next && next.at - fix.at <= CHURN_MS) fix.died = { at: next.at, why: `another fix job, ${next.job}, opened for the same duty` };
-  }
   const first = lines.find(line => TIME.test(line));
-  return { holds, fixes, stepScans, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
+  return { holds, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
 }
 
 /** pi-pool's working limit at each change, from its pressure events (local time stamps), oldest first. */
@@ -176,9 +151,6 @@ export function measure(input: Inputs): PrecheckOutput {
     if (why.length) dirty.push(`${clock(to)} ${why.join(", ")}`);
     else clean++;
   }
-  const churn = input.log.fixes.filter(fix => fix.at >= start && fix.died);
-  const opened = input.log.fixes.filter(fix => fix.at >= start);
-  const scans = input.log.stepScans.filter(scan => scan.at >= start);
   const stuck = input.chats.map(chat => {
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "skipped" && entry.verdict !== "error");
     const value = run ? effectiveRun(run).metrics.stuck_steps?.value ?? 0 : 0;
@@ -194,7 +166,6 @@ export function measure(input: Inputs): PrecheckOutput {
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length,
-    fix_churn_30: churn.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     usable_min_30: usable,
     fed_min_30: fed,
@@ -203,8 +174,6 @@ export function measure(input: Inputs): PrecheckOutput {
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
     unwatched_min_30: unwatched,
-    fix_opened_30: opened.length,
-    step_scan_notices_30: scans.length,
     stuck_duties: redDuties.length,
     cut_jobs_held: cutHeld.length,
   };
@@ -215,13 +184,6 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
-  for (const fix of churn) flagged.push({ kind: "fix_churn", chat: fix.chat, item: fix.job,
-    excerpt: `${fix.job} (${fix.chat}/${fix.duty}) opened ${clock(fix.at)} and ended ${minutes(fix.died!.at - fix.at)} min later: ${fix.died!.why}.` });
-  const reopened = new Map<string, number>();
-  for (const fix of opened) reopened.set(`${fix.chat}/${fix.duty}`, (reopened.get(`${fix.chat}/${fix.duty}`) ?? 0) + 1);
-  const many = [...reopened].filter(([, count]) => count > 1);
-  if (many.length) flagged.push({ kind: "reopened", excerpt: `Duties that opened more than one fix job in 30 min: ${many.map(([key, count]) => `${key} ${count}`).join(", ")}.` });
-  if (scans.length) flagged.push({ kind: "step_scan", excerpt: `${scans.length} step scan notices in 30 min: ${scans.slice(-6).map(scan => `${clock(scan.at)} ${scan.chat} ${scan.steps.join(", ")}`).join("; ")}.` });
   for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id, excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves, from its check-in at ${clock(entry.at!)}.` });
   for (const line of redDuties) flagged.push({ kind: "stuck_duty", excerpt: line });
   for (const job of cutHeld.sort((a, b) => a.at - b.at)) {

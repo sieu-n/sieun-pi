@@ -28,13 +28,9 @@ export function parseAgentQueueInput(body: unknown): AgentQueueInput {
 
 type Title = (sessionId: string) => string | null;
 const short = (id: string): string => id.slice(0, 8);
-/** The chat service's duty keys (chat-turn-queue.ts dutyQueueKey): `duty:<chat id>:<duty id>`, with `checkin` for the check-in and `-fix` on a fix job. */
+/** The chat service's duty keys (chat-turn-queue.ts dutyQueueKey): `duty:<chat id>:<duty id>`, with `checkin` for the check-in. */
 const DUTY_KEY = /^duty:([^:]+):(.+)$/;
-function dutyJob(id: string): string {
-  const base = id.endsWith("-fix") ? id.slice(0, -"-fix".length) : id;
-  const name = base === "checkin" ? "check-in" : `duty ${base}`;
-  return base === id ? name : `${name} fix`;
-}
+const dutyJob = (id: string): string => id === "checkin" ? "check-in" : `duty ${id}`;
 
 /** The chat and job names of one queue entry; an id the catalog does not know shows as its first 8 characters. */
 export function rowNames(session: string, tree: string, title: Title): Pick<AgentQueueRow, "chat" | "job"> {
