@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { appOf, definedElsewhere, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseGrep, parseLedger, scan, withKeys }
+import { appOf, definedElsewhere, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseGrep, parseLedger, PATTERNS, scan, withKeys }
   from "../scripts/duties/limits-evidence.ts";
 
 const NOW = Date.parse("2026-10-12T18:30:00Z");
@@ -20,6 +20,18 @@ test("limits evidence: git grep rows become keyed candidates; layout sizes drop 
   assert.deepEqual(withKeys(literals).map(found => found.key), ["convex/x.ts#timeout:60", "convex/x.ts#timeout:60#2"]);
   assert.deepEqual(parseGrep("comment", "dev", grepRow("ops/a.sh", 2, "sleep 5  # To Be Safe")).map(found => found.match), ["# To Be Safe"]);
   assert.deepEqual(["apps/crawler-v3/src/x.py", "packages/ui/a.ts", "convex/a.ts", "scripts/dev/b.mjs"].map(appOf), ["crawler-v3", "ui", "convex", "scripts"]);
+});
+
+test("limits evidence: a request, socket or signal timer set to a number is a candidate, and a bare setTimeout is not", () => {
+  const rows = [grepRow("scripts/skills/o.mjs", 149, "req.setTimeout(3_000, () => req.destroy(new Error('timed out')));"),
+    grepRow("scripts/x.mjs", 4, "socket.setTimeout( 5000 );"), grepRow("convex/c.ts", 9, "signal: AbortSignal.timeout(10_000),"),
+    grepRow("convex/c.ts", 12, "signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),"), grepRow("scripts/y.mjs", 2, "const t = setTimeout(() => done(), 3_000);"),
+    grepRow("scripts/y.mjs", 5, "req.setTimeout(0);")].join("\n");
+  const pattern = new RegExp(PATTERNS.timer);
+  const lines = rows.split("\n").map(row => row.split("\0")[2]!).filter(text => pattern.test(text));
+  assert.equal(lines.length, 4, "the named-constant AbortSignal line is the const pattern's, and a bare setTimeout schedules work");
+  assert.deepEqual(withKeys(parseGrep("timer", "dev", rows)).map(found => found.key),
+    ["convex/c.ts#AbortSignal.timeout(10_000)", "scripts/skills/o.mjs#req.setTimeout(3_000)", "scripts/x.mjs#socket.setTimeout(5000)", "scripts/y.mjs#req.setTimeout(0)"]);
 });
 
 test("limits evidence: the first run saves a baseline, the next flags only new candidates, and the metrics count verdicts from the ledger", () => {

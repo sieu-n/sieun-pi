@@ -25,15 +25,18 @@ export const EXCLUDES = ["apps/llm-wiki/content/**", "**/_generated/**", "**/*.t
   "**/*.d.ts", "**/dist/**", "**/build/**", "**/*.min.js", "**/node_modules/**"] as const;
 export const pathspecs = (roots: readonly string[]): string[] =>
   [...roots.flatMap(root => EXTENSIONS.map(ext => `:(glob)${root}/**/*.${ext}`)), ...EXCLUDES.map(glob => `:(exclude,glob)${glob}`)];
-export type Kind = "const" | "literal" | "comment";
+export type Kind = "const" | "literal" | "comment" | "timer";
 /** Patterns for git grep -P and for JS, which finds the match in each line: a named constant like MAX_ROWS or FETCH_TIMEOUT_MS, a key set to a
- * number like `concurrency: 4`, and a comment that hedges, matched case-blind. */
+ * number like `concurrency: 4`, a comment that hedges, matched case-blind, and a request or socket timer set to a number with no cap word,
+ * like `req.setTimeout(3_000, ...)` or `AbortSignal.timeout(10_000)` (on 10-16 a 3 s req.setTimeout in skill-observability.mjs failed a
+ * loaded CI runner and none of the other 3 patterns saw it). A bare `setTimeout(fn, ms)` schedules work and stays out. */
 export const PATTERNS: Record<Kind, string> = {
   const: String.raw`\b[A-Z][A-Z0-9_]*(MAX|LIMIT|CAP|CEILING|BUDGET|THROTTLE|TIMEOUT|BACKOFF|CONCURRENCY|RATE|BATCH|RETRIES)[A-Z0-9_]*\s*(:[^=]+)?=\s*[^=>\s"'\x60]`,
   literal: String.raw`\b(max[A-Za-z0-9_]*|[A-Za-z0-9_]*([Ll]imit|[Cc]ap|[Cc]eiling|[Bb]udget|[Tt]hrottle|[Cc]oncurrency|[Bb]atch_?[Ss]ize|[Tt]imeout|[Bb]ackoff|[Rr]ate_?[Ll]imit|[Rr]etries|[Rr]ps|[Qq]ps))\s*[:=]\s*[0-9][0-9_.]*`,
   comment: String.raw`(//|#|/\*|^\s*\*|""").*\b(conservative|to be safe|caution|safety margin|just in case|on the safe side)`,
+  timer: String.raw`(\b[A-Za-z_$][\w$]*\.setTimeout|\bAbortSignal\.timeout)\(\s*[0-9][0-9_.]*`,
 };
-const FLAGS: Record<Kind, string> = { const: "", literal: "", comment: "i" };
+const FLAGS: Record<Kind, string> = { const: "", literal: "", comment: "i", timer: "" };
 /** Layout and number-format sizes, such as a panel's max height or maximumFractionDigits, limit no work. */
 const LAYOUT = /height|width|px|cols|columns|rows|zoom|scale|opacity|datapoints|digits/i;
 
@@ -71,9 +74,9 @@ export function parseGrep(kind: Kind, rev: string, out: string): Found[] {
     const [path, line, text] = row.split("\0");
     if (!path || !line || text === undefined) continue;
     const match = (pattern.exec(text)?.[0] ?? "").replace(/\s+/g, " ").trim();
-    if (!match || (kind !== "comment" && LAYOUT.test(match.split(/[\s:=]/)[0]!))) continue;
+    if (!match || (kind !== "comment" && kind !== "timer" && LAYOUT.test(match.split(/[\s:=]/)[0]!))) continue;
     found.push({ file: path.slice(rev.length + 1), line: Number(line), kind, match: kind === "comment" ? match.slice(-60) : kind === "const" ? match.split(/[\s:=]/)[0]! :
-      match.replace(/\s*([:=])\s*/, "$1"), text: text.trim().slice(0, 200) });
+      kind === "timer" ? `${match.replace(/\s+/g, "")})` : match.replace(/\s*([:=])\s*/, "$1"), text: text.trim().slice(0, 200) });
   }
   return found;
 }
