@@ -19,7 +19,7 @@ import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priori
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
-import { interruptedRuns } from "./chat-resume.ts";
+import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { unloadPlan } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -188,7 +188,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now())),
+      interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
+        await cutJobs(dataDir, [...await chats.ids()])),
       held: now => readHeldTurns(dataDir, now),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,

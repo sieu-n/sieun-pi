@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
+import { findCutJobs } from "../scripts/duties/whole-system.ts";
+import type { InterruptedHead, InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
@@ -68,17 +71,32 @@ export class InterruptedRuns {
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
    */
   resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>,
-    owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>): Promise<InterruptedReport | null> {
+    owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>,
+    cut: ReadonlySet<string> = new Set()): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
-      const named = owners.size ? ["--owners", [...owners].join(",")] : [];
-      const jobs = (await this.run(["--dry-run", "--direct", ...named])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      const listed = new Set([...owners, ...cut]);
+      const named = listed.size ? ["--owners", [...listed].join(",")] : [];
+      const jobs = (await this.run(["--dry-run", "--direct", ...named])).paused
+        .filter(run => run.session_id !== undefined && run.reason !== "hung" && (isJob(run) || cut.has(run.session_id)));
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       if (!jobs.length) return null;
-      for (const head of new Set(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []))) {
-        try { await reopen(head); }
-        catch (error) { process.stderr.write(`resume: could not reopen ${head}: ${error instanceof Error ? error.message : String(error)}\n`); }
-      }
-      return this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named]);
+      const reopenAll = async (ids: Iterable<string>): Promise<void> => {
+        for (const id of new Set(ids)) {
+          try { await reopen(id); }
+          catch (error) { process.stderr.write(`resume: could not reopen ${id}: ${error instanceof Error ? error.message : String(error)}\n`); }
+        }
+      };
+      await reopenAll(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []));
+      const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named]);
+      // A job the daemon archived when it went down answers "Unknown active session" to every send, its parent's agent_message included
+      // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
+      const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
+      const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
+      if (!lost.length) return sent;
+      await reopenAll(lost);
+      const again = await this.run(["--direct", "--only", lost.join(","), ...named]);
+      const retried = new Map((again.children ?? []).map(child => [child.id, child]));
+      return { ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) };
     });
     this.last = null;
     return report;
@@ -92,6 +110,17 @@ export class InterruptedRuns {
 }
 
 export const interruptedRuns = new InterruptedRuns();
+
+/**
+ * The jobs under `chats` whose last turn was cut and that got no input since, by the Whole system duty's own rule (`findCutJobs`). The resume
+ * script lists only sessions the daemon still runs, so 27 of the 39 cut jobs the duty counted at 05:22Z on 10-16 never got a continue.
+ */
+export async function cutJobs(dataDir: string, chats: readonly string[]): Promise<Set<string>> {
+  const deleted = JSON.parse(await readFile(join(dataDir, "deleted-jobs.json"), "utf8").catch(() => "{}")) as Record<string, Record<string, number>>;
+  return new Set((await findCutJobs(join(dataDir, "..", "session-artifacts"), chats, deleted, Date.now())).map(job => job.session));
+}
+
+const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
 /**
  * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`), and so

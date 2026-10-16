@@ -54,6 +54,26 @@ test("resumeJobs names the step owners to the script and records the cut runs it
   assert.deepEqual(found, [["w1"]]);
 });
 
+test("resumeJobs reopens a cut job the daemon no longer knows, sends its continue again, and keeps a cut job the head rule misses", async () => {
+  const calls: string[][] = [];
+  const queueAudit: InterruptedRun = { id: "af137c9fa4e0", name: "queue audit", reason: "aborted", session_id: "qa", error: "x", errored_at: "2026-10-15T22:28:20.847Z",
+    head: "f4b9cf4fb51f" };
+  const gone = { error: "prime-agent send --json af137c9fa4e0 continue failed (1): Error: Unknown active session: 01a14174-ce46-7478-97ef-af137c9fa4e0" };
+  let sends = 0;
+  const runs = new InterruptedRuns(async args => {
+    calls.push([...args]);
+    if (args.includes("--dry-run")) return { paused: [queueAudit], heads: [], checked_at: "now" };
+    sends++;
+    return { paused: [queueAudit], heads: [], children: [{ id: "af137c9fa4e0", name: "queue audit", head: "f4b9cf4fb51f",
+      result: sends === 1 ? gone : { deliveryStatus: "delivered", deliveryMode: "steer" } }], checked_at: "now" };
+  });
+  const reopened: string[] = [];
+  const report = await runs.resumeJobs(() => false, async id => { reopened.push(id); }, new Set(["w1"]), undefined, new Set(["qa"]));
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owners", "w1,qa"], ["--direct", "--only", "qa", "--owners", "w1,qa"], ["--direct", "--only", "qa", "--owners", "w1,qa"]]);
+  assert.deepEqual(reopened, ["qa"], "the gone job is reopened from its file before the second send");
+  assert.deepEqual(report?.children?.[0]?.result, { deliveryStatus: "delivered", deliveryMode: "steer" });
+});
+
 test("the job sweep passes every open step's owner to the resume pass, a job lost before its first turn and a saved root included", async () => {
   const dir = await mkdtemp(join(tmpdir(), "held-turns-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
