@@ -45,14 +45,19 @@ list, and a message to the head no longer hides a run below it. The chat
 server runs it that way for the jobs of its chats, naming them with --only.
 
 --owners names the sessions that own an open step of a chat. Each one is looked
-at even when its worker is gone or it was archived (from `prime-agent list
---all`), an empty aborted reply counts for it ("aborted"), and a spawned job
+at even when its worker is gone or it was archived (read from its session file
+on disk), an empty aborted reply counts for it ("aborted"), and a spawned job
 whose worker stopped before its first task reached it ("never_started") gets
 that task from its rlm-subagent.json instead of "continue". On 10-15 a worker
 stop at 16:07Z lost the first task of watchlist viewers and scroll for 3 h, the
 workers SIGTERMed at 17:43:22Z left stuck steps root cause unloaded and out of
 the default list, and the owner's stop archived three step owners at 18:25Z;
 nothing resumed any of them.
+
+A job deleted on purpose never counts: one the chat service deleted or parked
+(deleted-jobs.json), one under such a job, one whose parent's rlm.delete_subagent
+returned it, and one archived right before its aborted reply outside a daemon
+restart. Each of these writes the same archive and abort a restart writes.
 
 Usage:
   python3 resume_paused.py                  # find and resume heads
@@ -66,6 +71,7 @@ Usage:
 import argparse
 import datetime as dt
 import json
+import mmap
 import os
 import re
 import shutil
@@ -92,6 +98,9 @@ CUT_OFF_GRACE_MIN = 2.0
 # Full session ids the caller aborted because they were hung; their "aborted" last message still counts.
 UNSTUCK = set()
 DEFAULT_STATE = Path.home() / ".prime" / "agent" / "resume-paused-sessions.json"
+SESSIONS_DIR = Path.home() / ".prime" / "agent" / "sessions"
+ARTIFACTS_DIR = Path.home() / ".prime" / "agent" / "session-artifacts"
+DELETED_JOBS = Path.home() / ".prime" / "agent" / "browser-chat" / "deleted-jobs.json"
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -127,8 +136,83 @@ def run(cmd):
     return p.stdout
 
 
-def list_sessions(saved=False):
-    return json.loads(run([prime_agent_bin(), "list", "--json", *(["--all"] if saved else [])]))["sessions"]
+def list_sessions():
+    return json.loads(run([prime_agent_bin(), "list", "--json"]))["sessions"]
+
+
+def session_files(ids):
+    """{full session id: its transcript} for each id found on disk: a thread under SESSIONS_DIR, a job under ARTIFACTS_DIR/<root>/sub-*/...
+
+    `prime-agent list --all` answered in 30.9 s against its 30 s timeout on 10-16, so every resume pass that named an owner failed from 04:20Z;
+    a walk of the 6,768 job folders took 3.7 s."""
+    wanted = set(ids)
+    found = {sid: SESSIONS_DIR / f"{sid}.jsonl" for sid in wanted if (SESSIONS_DIR / f"{sid}.jsonl").is_file()}
+    stack = [ARTIFACTS_DIR]
+    while stack and len(found) < len(wanted):
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.endswith(".jsonl") and entry.name[:-6] in wanted:
+                found.setdefault(entry.name[:-6], Path(entry.path))
+            elif entry.is_dir(follow_symlinks=False) and (entry.name.startswith("sub-") or Path(entry.path).parent == ARTIFACTS_DIR):
+                stack.append(entry.path)
+    return found
+
+
+def saved_rows(ids):
+    """A row like `prime-agent list --all` gives for each session in `ids` the daemon does not hold, read from its file on disk."""
+    rows = []
+    for sid, path in session_files(ids).items():
+        try:
+            meta = json.loads((path.parent / "rlm-subagent.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        name = meta.get("sessionName") if isinstance(meta, dict) else None
+        stamp = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        rows.append({"id": sid, "sessionId": sid, "lifecycle": "archived", "activity": "idle", "sessionFile": str(path),
+                     "sessionName": name if isinstance(name, str) else sid, "runtimeKind": "subagent" if meta else "top-level",
+                     "lastActivityAt": stamp})
+    return rows
+
+
+def deleted_on_purpose(path):
+    """The job at `path` or a job above it was deleted on purpose: the chat service deleted it (deleted-jobs.json, the parker included), or
+    its parent called rlm.delete_subagent and got it back. Every such delete archives the job and aborts its turn within milliseconds, the
+    same lines a daemon restart writes: on 10-16 the Whole system duty counted ci train, new ci server, fair-self-heal, spec-junit and the two
+    jobs under the parked checkin pushes goals as cut by a restart, and a continue would have revived all six."""
+    folder = Path(path).parent
+    try:
+        deleted = json.loads(DELETED_JOBS.read_text())
+    except (OSError, ValueError):
+        deleted = {}
+    gone = {child for chat in deleted.values() if isinstance(chat, dict) for child in chat}
+    while folder.name.startswith("sub-"):
+        if folder.name in gone or parent_deleted(folder):
+            return True
+        folder = folder.parent
+    return False
+
+
+def parent_deleted(folder):
+    """The transcript above the job folder `folder` holds an rlm.delete_subagent call whose result names it. A chat's transcript reached
+    152 MB on 10-16, so the file is searched for the job's id before any line is read."""
+    above = folder.parent
+    parent = next((p for p in above.glob("*.jsonl") if len(p.name) == 42), None) if above.name.startswith("sub-") else SESSIONS_DIR / f"{above.name}.jsonl"
+    named = f"rlm_child_id='{folder.name}'".encode()
+    try:
+        with open(parent, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as text:
+            at = text.find(named)
+            while at >= 0:
+                start = text.rfind(b"\n", 0, at) + 1
+                call = text.rfind(b'"toolCall"', 0, start)
+                if text.find(b'"toolResult"', start, at) >= 0 and call >= 0 and text.find(b"delete_subagent", text.rfind(b"\n", 0, call) + 1, start) >= 0:
+                    return True
+                at = text.find(named, at + len(named))
+    except (OSError, TypeError, ValueError):
+        return False
+    return False
 
 
 def with_saved_owners(sessions, saved_rows, owners):
@@ -257,10 +341,13 @@ def is_busy(session):
 def stopped_on_purpose(entries, last, restarts=list):
     """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted.
 
-    An archive that a daemon restart wrote does not count."""
+    An archive that a daemon restart wrote does not count, and an archive written just before the aborted reply outside a restart does, even
+    next to a worker's SIGTERM, since an archive stops the worker too. `find_paused` also drops a recorded delete (`deleted_on_purpose`)."""
     if archived_by_restart(entries, restarts):
         return False
     msg = last.get("message") or {}
+    if msg.get("role") == "assistant" and msg.get("stopReason") == "aborted" and archive_before(entries, last):
+        return True
     if msg.get("role") == "toolResult" and any(
             isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or []):
         return True
@@ -331,6 +418,23 @@ def daemon_restarts():
                 windows.append((previous - dt.timedelta(seconds=RESTART_LEAD_S), stamp))
             previous = stamp or previous
     return sorted(set(windows))
+
+
+# An archive writes its aborted reply within milliseconds; RESTART_ABORT_MS in components/user-history/src/cut-end.ts uses the same 5 s.
+ARCHIVE_ABORT_S = 5.0
+
+
+def archive_before(entries, last):
+    """An archive came right before the aborted reply `last`, with no message between them."""
+    ts = parse_ts(last.get("timestamp"))
+    index = entries.index(last) if last in entries else -1
+    for entry in reversed(entries[:max(index, 0)]):
+        if entry.get("type") == "message":
+            return False
+        if entry.get("type") == "session_state":
+            stamp = parse_ts(entry.get("timestamp"))
+            return (entry.get("state") or {}).get("status") == "archived" and bool(ts and stamp) and (ts - stamp).total_seconds() <= ARCHIVE_ABORT_S
+    return False
 
 
 def in_restart(stamp, restarts):
@@ -500,6 +604,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner, restarts)
             if not verdict:
                 continue
+        if s.get("sessionFile") and deleted_on_purpose(s["sessionFile"]):
+            continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None
         if since_minutes and age_min is not None and age_min > since_minutes:
@@ -671,7 +777,7 @@ def main():
     try:
         sessions = list_sessions()
         if OWNERS:
-            sessions = with_saved_owners(sessions, list_sessions(saved=True), OWNERS)
+            sessions = with_saved_owners(sessions, saved_rows(OWNERS - {s.get("sessionId") or s["id"] for s in sessions}), OWNERS)
         report = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
     except CommandError as error:
         raise SystemExit(str(error))

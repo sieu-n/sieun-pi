@@ -279,10 +279,11 @@ class ResumePausedTests(unittest.TestCase):
         saved[0]["sessionFile"] = str(path)
         self.assertEqual(resume_paused.with_saved_owners(self.sessions, saved, set()), [])
         self.sessions = resume_paused.with_saved_owners(self.sessions, saved, {full})
-        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+        stop = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]), patch.object(resume_paused, "daemon_restarts", return_value=[stop]):
             self.owners(full)
             report = self.run_direct()
-        self.assertEqual([(p["reason"], p["target"]) for p in report["paused"]], [("aborted", full)])
+        self.assertEqual([(p["reason"], p["target"]) for p in report["paused"]], [("daemon_restart", full)])
         self.assertEqual(self.sent, [(full, "continue")])
 
     def test_an_empty_abort_of_a_job_that_owns_no_open_step_still_does_not_count(self):
@@ -348,6 +349,73 @@ class ResumePausedTests(unittest.TestCase):
             report = self.run_direct()
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("restartcut00", "daemon_restart")])
         self.assertEqual(self.sent, [("0" * 24 + "restartcut00", "continue")])
+
+    def deleted_owner(self, chat, sub, sid, archived_at, aborted_at):
+        folder = self.root / "artifacts" / chat / sub
+        folder.mkdir(parents=True)
+        (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": sub}))
+        archived = {"type": "session_state", "timestamp": at(archived_at), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(aborted_at), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
+        (folder / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [role(40, "user"), archived, aborted]) + "\n")
+        return folder
+
+    def run_saved_owners(self, owners, restarts=(), shutdowns=()):
+        with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                patch.object(resume_paused, "daemon_restarts", return_value=list(restarts)), \
+                patch.object(resume_paused, "worker_shutdowns", return_value=list(shutdowns)):
+            self.sessions = resume_paused.with_saved_owners(self.sessions, resume_paused.saved_rows(set(owners)), set(owners))
+            self.owners(*owners)
+            return self.run_direct()
+
+    def test_saved_owners_come_from_their_files_and_never_from_list_all(self):
+        # 10-16 04:20Z on: `prime-agent list --json --all` took 30.9 s against its 30 s timeout, so every resume pass that named an owner failed.
+        sid = "01a14075-ec87-74e6-a080-109665a0941d"
+        self.deleted_owner("01a1164b-chat", "sub-aaaa0001", sid, 30.01, 30)
+        stop = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
+        report = self.run_saved_owners([sid], restarts=[stop])
+        self.assertEqual([(p["name"], p["reason"], p["target"]) for p in report["paused"]], [("sub-aaaa0001", "daemon_restart", sid)])
+        calls = []
+        self.addCleanup(resume_paused.OWNERS.clear)
+        with patch.object(resume_paused, "run", side_effect=lambda cmd: calls.append(cmd) or '{"sessions": []}'), \
+                patch.object(resume_paused, "saved_rows", return_value=[]), patch("sys.argv", ["x", "--json", "--dry-run", "--owners", sid]), \
+                patch("builtins.print"):
+            resume_paused.main()
+        self.assertEqual([cmd[1:] for cmd in calls], [["list", "--json"]])
+
+    def test_an_archive_right_before_the_abort_outside_a_restart_is_a_delete_even_next_to_a_sigterm(self):
+        # 10-15/16: rlm.delete_subagent (ci train, new ci server, fair-self-heal, spec-junit) and the parker (checkin pushes goals) each archived
+        # a job and aborted its queued turn within milliseconds, with no daemon restart; a continue would have revived all six.
+        sid = "01a13a70-b2fc-7191-a914-3d3058bea249"
+        self.deleted_owner("01a1180e-chat", "sub-46ce81aa", sid, 30.01, 30)
+        report = self.run_saved_owners([sid], shutdowns=[NOW - dt.timedelta(minutes=30)])
+        self.assertEqual(report["paused"], [])
+        self.assertEqual(self.sent, [])
+
+    def test_a_recorded_delete_wins_inside_a_restart_window(self):
+        chat = "01a11bd7-chat"
+        deleted = self.deleted_owner(chat, "sub-47607c8a", "01a140fc-ba32-7228-99c6-b12621a32ffc", 50, 49.99)
+        child = "01a14103-72eb-7349-b56f-93fc7ba3684b"
+        folder = deleted / "sub-6430b61d"
+        folder.mkdir()
+        call = {"type": "message", "timestamp": at(30.02), "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "name": "ipython", "arguments": {"code": "await rlm.delete_subagent(h1)"}}]}}
+        result = {"type": "message", "timestamp": at(30.01), "message": {"role": "toolResult", "content": [
+            {"type": "text", "text": "RLMSubagent(rlm_child_id='sub-6430b61d', session_name='fair-self-heal')"}]}}
+        parent = deleted / "01a140fc-ba32-7228-99c6-b12621a32ffc.jsonl"
+        parent.write_text(parent.read_text() + json.dumps(call) + "\n" + json.dumps(result) + "\n")
+        archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
+        (folder / f"{child}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [role(40, "user"), archived, aborted]) + "\n")
+        parked = "01a14193-47fd-711a-838f-16ebb93f7fc5"
+        self.deleted_owner(chat, "sub-7d295f61", "01a1418c-420e-748c-a38f-cc0b2693c6e1", 50, 49.99)
+        (self.root / "artifacts" / chat / "sub-7d295f61" / "sub-86a1a030").mkdir()
+        (self.root / "artifacts" / chat / "sub-7d295f61" / "sub-86a1a030" / f"{parked}.jsonl").write_text(
+            "\n".join(json.dumps(entry) for entry in [role(40, "user"), archived, aborted]) + "\n")
+        (self.root / "deleted-jobs.json").write_text(json.dumps({chat: {"sub-7d295f61": 1}}))
+        window = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
+        report = self.run_saved_owners([child, parked], restarts=[window])
+        self.assertEqual(report["paused"], [])
 
     def test_an_archived_owner_in_the_default_list_counts_as_saved(self):
         full = "01a141b8-c786-723a-baec-b975a1a24279"
