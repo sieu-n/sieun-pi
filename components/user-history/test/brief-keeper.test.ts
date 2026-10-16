@@ -4,7 +4,7 @@ import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BRIEF_LATE_MS, BRIEFS_DIR, briefAct, type BriefRecord, briefTick, seeBrief, unstartedJobs, withUnstarted } from "../src/brief-keeper.ts";
+import { BRIEFS_DIR, briefAct, type BriefRecord, briefTick, seeBrief, socketEpoch, unstartedJobs, withUnstarted } from "../src/brief-keeper.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { jobFacts, stepView } from "../src/checkin-steps.ts";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
@@ -28,7 +28,7 @@ async function child(root: string, entry: Case, status = "running"): Promise<{ d
   await writeFile(file, entry.lines.map(line => JSON.stringify(line)).join("\n") + "\n");
   await writeFile(join(dir, "rlm-subagent.json"), JSON.stringify({ type: "rlm_subagent", childId: entry.childId, sessionName: entry.sessionName, sessionDir: dir,
     sessionFile: file, prompt: entry.prompt, status, createdAt: entry.createdAt }));
-  return { dir, file, record: { kind: "child", id: entry.childId, name: entry.sessionName, prompt: entry.prompt, at: entry.createdAt, root: CHAT, sessionDir: dir } };
+  return { dir, file, record: { kind: "child", id: entry.childId, name: entry.sessionName, prompt: entry.prompt, at: entry.createdAt, root: CHAT, sessionDir: dir, daemon: "d1" } };
 }
 
 test("a session with only its 5 header lines has no first prompt; one whose task landed has", async () => {
@@ -41,17 +41,21 @@ test("a session with only its 5 header lines has no first prompt; one whose task
   assert.equal((await seeBrief(deleted.record)).ended, true, "a child its parent deleted is not sent anything");
 });
 
-test("the keeper waits out the measured start time, sends the brief once per daemon, and sends it again after a supervisor restart", async () => {
+test("the keeper sends a brief only once the daemon that took the spawn is gone, and again after each later restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "brief-act-"));
   const { record } = await child(root, fixture.opensearch);
   const seen = await seeBrief(record);
   const at = (ms: number) => record.at + ms;
-  assert.deepEqual(briefAct(record, seen, "d1", at(60_000)), { act: "wait" }, "inside p99 of first-prompt times");
-  assert.deepEqual(briefAct(record, seen, "d1", at(BRIEF_LATE_MS)), { act: "send", session: seen.sessionId });
-  const sent = { ...record, sent: { at: at(BRIEF_LATE_MS), daemon: "d1" } };
-  assert.deepEqual(briefAct(sent, seen, "d1", RESTART - 1000), { act: "wait" }, "the copy still waits in the same daemon");
-  assert.deepEqual(briefAct(sent, seen, "d2", RESTART + 30_000), { act: "send", session: seen.sessionId }, "the 00:20:13Z restart dropped it");
-  assert.deepEqual(briefAct(sent, { ...seen, started: true }, "d2", RESTART + 30_000), { act: "drop", why: "started" });
+  assert.deepEqual(briefAct(record, seen, "d2", at(60_000)), { act: "wait" }, "inside p99 of first-prompt times");
+  // 10-16 06:03Z: lim-infra got its task at once and its file still held 5 lines at 06:14Z, so a send while d1 runs is a second copy.
+  assert.deepEqual(briefAct(record, seen, "d1", RESTART - 1000), { act: "wait" }, "the daemon that took the spawn still holds the brief");
+  assert.deepEqual(briefAct(record, seen, "d2", RESTART + 30_000), { act: "send", session: seen.sessionId }, "the 00:20:13Z restart dropped it");
+  const sent = { ...record, sent: { at: RESTART + 30_000, daemon: "d2" } };
+  assert.deepEqual(briefAct(sent, seen, "d2", RESTART + 60 * 60_000), { act: "wait" }, "sent once to this daemon");
+  assert.deepEqual(briefAct(sent, seen, "d3", RESTART + 60 * 60_000), { act: "send", session: seen.sessionId }, "a later restart dropped the copy");
+  assert.deepEqual(briefAct(sent, { ...seen, started: true }, "d3", RESTART + 60 * 60_000), { act: "drop", why: "started" });
+  const { daemon: _daemon, ...unstamped } = record;
+  assert.deepEqual(briefAct(unstamped, seen, "d2", RESTART + 30_000), { act: "wait" }, "a record with no daemon is never resent");
 });
 
 test("one tick replays the lost start: gone starts its tree, the next tick sends the brief, and the record goes once the prompt landed", async () => {
@@ -73,7 +77,7 @@ test("one tick replays the lost start: gone starts its tree, the next tick sends
   assert.ok(sends[0]![1].startsWith("[task from parent]\n\nOwner's words (verbatim, 10-16 about 00:01Z)"), "the child gets its brief as Prime labels a task");
   assert.match(sends[0]![1], /started this session at 10-15 23:58Z and its first prompt never reached it/);
   assert.equal(await briefTick({ ...deps, now: () => now + 60_000 }), 0, "sent once to this daemon");
-  assert.equal((await unstartedJobs(data, now + 60_000)).length, 1, "still not started until its file shows the prompt");
+  assert.equal((await unstartedJobs(data, now + 60_000, "d2")).length, 1, "still not started until its file shows the prompt");
   await appendFile(file, JSON.stringify({ type: "custom_message", customType: "agent_message", content: sends[0]![1], timestamp: new Date(now + 61_000).toISOString() }) + "\n");
   assert.equal(await briefTick({ ...deps, now: () => now + 90_000 }), 0);
   assert.deepEqual(await readdir(data), [], "started: the record is dropped");
@@ -92,12 +96,17 @@ test("the check-in reads an admitted child with no first prompt as not started a
   const self = new Set([CHAT, "Crawler VP"]);
   const before = jobFacts(children, null, [], CHAT);
   assert.equal(before[0]!.state, "working", "the old reading");
-  const facts = withUnstarted(before, await unstartedJobs(data, now));
+  // At 00:29Z the 00:20:13Z restart had dropped its worker's state (daemon d2 now), so its file is the truth.
+  const facts = withUnstarted(before, await unstartedJobs(data, now, "d2"));
   assert.equal(facts[0]!.state, "unstarted");
   const end = endState(stepView(item, now - 26 * 60_000, self, facts, [], [], now), [], [], self, now, facts);
   assert.equal(end.state, "job_ended");
   assert.equal(end.reason, "job post reads schema fix never started: Prime admitted it at 10-16 00:03Z and its session has no first prompt");
-  assert.deepEqual(withUnstarted(before, await unstartedJobs(data, record.at + 60_000)), before, "inside the measured start time it is left alone");
+  assert.deepEqual(withUnstarted(before, await unstartedJobs(data, record.at + 60_000, "d2")), before, "inside the measured start time it is left alone");
+  const same = await unstartedJobs(data, now, "d1");
+  assert.equal(withUnstarted(before, same)[0]!.state, "unstarted", "with the spawn's daemon up and no activity since the spawn, it has not started");
+  const acting = [{ ...before[0]!, activityAt: record.at + 20_000 }];
+  assert.deepEqual(withUnstarted(acting, same), acting, "a job the daemon saw act after its spawn started; only its file is late");
 });
 
 /** A kernel with the wrapper over a fake rlm: the host answers like Prime 0.9.8, and fleet-state.json says closed, which the old wrapper held on. */
@@ -129,7 +138,9 @@ async function kernel(): Promise<{ run: ReturnType<typeof spawnSync>; dir: strin
     "    print(json.dumps({'child': child['rlm_child_id'], 'root': root['session_id'][:8], 'sent': rlm.sent}))",
     "asyncio.run(main())",
   ].join("\n");
-  return { run: spawnSync("python3", ["-c", script], { cwd: dir, env: { ...process.env, PYTHONPATH: dir }, encoding: "utf8" }), dir };
+  const socket = join(dir, "daemon.sock");
+  await writeFile(socket, "");
+  return { run: spawnSync("python3", ["-c", script], { cwd: dir, env: { ...process.env, PYTHONPATH: dir, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET: socket }, encoding: "utf8" }), dir };
 }
 
 test("the kernel sends both starts at once and records each brief for the keeper", async () => {
@@ -142,6 +153,7 @@ test("the kernel sends both starts at once and records each brief for the keeper
   const childRecord = JSON.parse(await readFile(join(dir, BRIEFS_DIR, names[0]!), "utf8"));
   assert.equal(childRecord.prompt, "move opensearch");
   assert.equal(childRecord.root, CHAT);
+  assert.equal(childRecord.daemon, await socketEpoch(join(dir, "daemon.sock")), "the record names the daemon that took the spawn");
   const rootRecord = JSON.parse(await readFile(join(dir, BRIEFS_DIR, names[1]!), "utf8"));
   assert.deepEqual([rootRecord.kind, rootRecord.name, rootRecord.root, rootRecord.sessionFile], ["root", "ig posts heal fix", rootRecord.id, "/s/01a1422b-0000-7000-8000-000000000001.jsonl"]);
 });
