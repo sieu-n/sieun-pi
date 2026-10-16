@@ -11,7 +11,7 @@ export const ENFORCEMENTS = ["brief", "code", "test"] as const;
 export const CORRECTION_STATUSES = ["active", "reopened", "retired"] as const;
 export type Enforcement = typeof ENFORCEMENTS[number];
 export type CorrectionStatus = typeof CORRECTION_STATUSES[number];
-/** At most this many rules reach a chat's context; older ones stay in the file and board.corrections() reads them. */
+/** At most this many rules reach a chat's context; the rest stay in the file and board.corrections() reads them. */
 export const LEDGER_PROMPT_LINES = 40;
 
 export interface ChatRef { id: string; name: string }
@@ -314,37 +314,21 @@ const liveRules = (ledger: Ledger): Correction[] => ledger.corrections.filter(en
   .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
 /** A rule's line: its id and the first sentence of its rule. board.corrections("c12") reads the whole entry. */
 const shortLine = (entry: Correction): string => `- ${entry.id} ${entry.rule.split(/(?<=[.!?])\s+(?=[A-Z`"])/)[0]!.trim()}`;
-/** How many theme words a rule held by code or a test shows. */
-export const TITLE_WORDS = 3;
-/** A rule in a chat's snapshot: in full on its own `- ` line, or held elsewhere and listed on one shared line, by id (brief) or id and theme (code). */
-export interface SnapshotRule { held: "full" | "brief" | "code"; text: string }
-const HELD_BRIEF = "Held by the brief: ";
-const HELD_CODE = "Held by code or tests: ";
-/** The snapshot lines of some rules: the full ones first, then one line of brief ids and one of code-held ids with their themes. */
-export function ruleLines(rules: readonly SnapshotRule[]): string[] {
-  const of = (held: SnapshotRule["held"]) => rules.filter(rule => rule.held === held).map(rule => rule.text);
-  const brief = of("brief"), code = of("code");
-  return [...of("full"), ...(brief.length ? [HELD_BRIEF + brief.join(", ")] : []), ...(code.length ? [HELD_CODE + code.join("; ")] : [])];
-}
-/** Code or a test holds the rule: it names one and no fix is pending. */
-const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !/^pending\b/i.test(entry.ref);
-
 /** The correction ids a brief names, like "(c47)": the rules it holds in full. */
 export const briefCorrections = (lines: readonly string[]): ReadonlySet<string> => new Set(lines.join("\n").match(/\bc\d+\b/g) ?? []);
+/** Code or a test holds the rule: it names one and no fix is pending. */
+const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !/^pending\b/i.test(entry.ref);
 export const READ_RULE = "Read one in full with board.corrections(\"c12\") in Python, or all with board.corrections().";
 
 /**
- * A chat's rules, at most LEDGER_PROMPT_LINES and a line counting the rest. A rule the brief holds shows as its id, and one landed code or a test
- * holds as its id and theme, each group on one line; the rest, and every reopened rule, as one short line each (`shortLine`). Null with no rule.
+ * A chat's rules: of the newest LEDGER_PROMPT_LINES, reopened first, each one that neither its brief names nor landed code or a test holds, one
+ * short line each (`shortLine`). A reopened rule always shows.
+ * Null with none.
  */
 export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string | null {
-  const live = liveRules(ledger);
-  if (!live.length) return null;
-  const shown = live.slice(0, LEDGER_PROMPT_LINES);
-  const rules = shown.map((entry): SnapshotRule => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)) ? { held: "full", text: shortLine(entry) }
-    : brief.has(entry.id) ? { held: "brief", text: entry.id } : { held: "code", text: `${entry.id} ${entry.theme.slice(0, TITLE_WORDS).join(" ")}` });
-  const more = live.length - shown.length;
-  return [`[corrections] The owner's corrections in force, live from the ledger. ${READ_RULE}`, ...ruleLines(rules), ...(more > 0 ? [`and ${more} older ones`] : [])].join("\n");
+  const shown = liveRules(ledger).slice(0, LEDGER_PROMPT_LINES).filter(entry => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)));
+  if (!shown.length) return null;
+  return [`[corrections] The owner's corrections in force, live from the ledger. ${READ_RULE}`, ...shown.map(shortLine)].join("\n");
 }
 
 export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticket or support reply, a customer message, a post) check these rules; " +

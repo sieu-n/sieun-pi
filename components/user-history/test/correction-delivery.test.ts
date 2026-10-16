@@ -166,7 +166,7 @@ test("native compaction with retained messages puts a fresh snapshot after the s
   assert.deepEqual(call(), messages);
 });
 
-test("a rule the brief or code holds sits on a shared line, and later changes send nothing", () => {
+test("a rule the brief names or landed code holds is left out, and later changes send nothing", () => {
   const branch: SessionEntry[] = [];
   const append = (data: unknown) => branch.push({ type: "custom", id: `checkpoint-${branch.length}`, parentId: branch.at(-1)?.id ?? null,
     timestamp: "2026-10-09T10:00:00Z", customType: CORRECTION_CHECKPOINT, data });
@@ -178,13 +178,16 @@ test("a rule the brief or code holds sits on a shared line, and later changes se
     enforcedBy: "code", ref: "abc1234" }), owner, `2026-10-09T10:0${id}:00Z`);
   add(ledger, 1);
   landed(2);
-  assert.match(text(call(ledger)[1]!), /\nHeld by the brief: c1\nHeld by code or tests: c2 unique2 theme2$/);
+  add(ledger, 4);
+  const block = text(call(ledger)[1]!);
+  assert.match(block, /\n- c3 Rule 4\.$/);
+  assert.ok(!/- c1 |- c2 /.test(block), "the brief holds c1 and code holds c2");
   landed(3);
   applyCorrection(ledger, parseCorrectionCall({ id: "c1", status: "retired" }), owner, "");
   assert.equal(call(ledger).length, 2);
 });
 
-test("a forty-rule snapshot counts the older rules, and a 41st rule added later sends nothing", () => {
+test("a forty-rule snapshot shows the newest forty with no count line, and a 41st rule added later sends nothing", () => {
   const { branch, call } = session();
   const first = user("Owner prompt");
   branch.push(entry("first", first));
@@ -192,7 +195,8 @@ test("a forty-rule snapshot counts the older rules, and a 41st rule added later 
   for (let id = 1; id <= 41; id++) add(ledger, id);
   const initial = call([first], ledger);
   assert.equal(initial.length, 2);
-  assert.match(text(initial[1]!), /\nand 1 older ones$/);
+  assert.equal(text(initial[1]!).split("\n").length, 41);
+  assert.ok(!/older ones/.test(text(initial[1]!)));
   add(ledger, 42);
   assert.deepEqual(call([first], ledger), initial);
 });

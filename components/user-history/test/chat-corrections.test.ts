@@ -115,7 +115,7 @@ test("repeatsBetween counts a repeat only when the owner wrote its words in that
   assert.ok(!ownerSaid("[screenshot of the duties panel]", [c32]) && !ownerSaid("ci works [x] and stop asking", [c32]), "the words around the note must be the owner's");
 });
 
-test("ledger prompt: active and reopened rules, reopened first then newest, capped; retired ones and an empty ledger give nothing", () => {
+test("ledger prompt: active and reopened rules, reopened first then newest, at most LEDGER_PROMPT_LINES with no count line; retired ones and an empty ledger give nothing", () => {
   const ledger: Ledger = { corrections: [] };
   assert.equal(ledgerPrompt(ledger, new Set()), null);
   for (let i = 1; i <= LEDGER_PROMPT_LINES + 3; i++) {
@@ -128,12 +128,12 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   assert.ok(lines[0]!.includes(READ_RULE), "the header says how to read a rule in full");
   assert.equal(lines[1], "- c2 Rule 2.");
   assert.equal(lines[2], "- c42 Rule 42.");
-  assert.equal(lines.length, 1 + LEDGER_PROMPT_LINES + 1);
-  assert.equal(lines.at(-1), "and 2 older ones");
+  assert.equal(lines.length, 1 + LEDGER_PROMPT_LINES);
+  assert.ok(lines.slice(1).every(line => /^- c\d+ /.test(line)), "every line after the header is one rule");
   assert.ok(!lines.some(line => line.startsWith("- c43 ")));
 });
 
-test("ledger prompt: a rule the brief holds is its id and one landed code or a test holds is its id and theme, each group on one line; a pending or brief-only rule and a reopened one get the id and first sentence", () => {
+test("ledger prompt: a rule the brief names or landed code holds is left out, and every other rule, reopened first, is its id and first sentence", () => {
   const ledger: Ledger = { corrections: [] };
   const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
   applyCorrection(ledger, add("w1", "outside email send owner ok", "No email without the owner's ok."), VP, at(1));
@@ -146,8 +146,6 @@ test("ledger prompt: a rule the brief holds is its id and one landed code or a t
     "- c5 Staging needs no ok.",
     "- c4 Frontend work is 70% build.",
     "- c3 A cache fix ships with a test.",
-    "Held by the brief: c1",
-    "Held by code or tests: c2 duty name plain",
   ]);
   assert.deepEqual([...briefCorrections(["a (c47) and c12, not abc12 or c5x"])], ["c47", "c12"]);
 });
