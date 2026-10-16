@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { measure, readLimits, readServiceLog, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutJobsHoldingWork, measure, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
+import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
 // Shapes from service.log and pi-pool.log on 10-15 and 10-16: wakes held by the fleet budget each tick, the fix opener's open and send-back lines,
@@ -116,4 +117,24 @@ test("a cut job waiting over 10 minutes is a hold, with the continue the fleet b
   const excerpt = (output.flagged ?? []).find(item => item.kind === "cut_job")?.excerpt ?? "";
   assert.match(excerpt, /local agents checks .* cut by an abort when the Prime daemon went down at 00:19Z and got no input in 32 min/);
   assert.match(excerpt, /let its continue start at 00:21Z after 28 s, pi-pool then ran 15 of 15 slots with 71 queued, and nothing reached the session/);
+});
+
+test("a cut job holds work only while an open step names it or the chat's job above it", () => {
+  const chat = "01a1164b";
+  const cut = (session: string, name: string, root?: { session: string; name: string }): CutJob =>
+    ({ session, name, chat, at: Date.parse("2026-10-15T08:34:00.000Z"), cause: "mid-tool", ...root ? { root } : {} });
+  const board = { plan: [
+    { id: "p1", text: "metal box", status: "doing", job: "metal dev environment r2", children: [] },
+    { id: "p2", text: "old inventory", status: "done", job: "metal-inventory", children: [] },
+    { id: "p3", text: "ci", status: "blocked", sessionId: "01a14300-0000-7000-8000-000000000001", children: [] },
+  ] } as unknown as ChatBoard;
+  const jobs = [
+    cut("01a13eb1-4cf8-70ab-b8cf-105d139b6764", "metal-inventory"),
+    cut("01a14300-0000-7000-8000-000000000002", "metal kit check", { session: "01a14300-0000-7000-8000-000000000003", name: "metal dev environment r2" }),
+    cut("01a14300-0000-7000-8000-000000000001", "new ci server"),
+    cut("01a14300-0000-7000-8000-000000000004", "queue audit"),
+  ];
+  assert.deepEqual(cutJobsHoldingWork(jobs, new Map([[chat, board]])).map(job => job.name), ["metal kit check", "new ci server"]);
+  // A chat whose board could not be read keeps every cut job, so a read failure never hides a hold.
+  assert.equal(cutJobsHoldingWork(jobs, new Map()).length, 4);
 });

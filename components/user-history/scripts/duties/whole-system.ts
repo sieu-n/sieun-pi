@@ -5,6 +5,9 @@ import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
+import { BoardStore } from "../../src/chat-board-store.ts";
+import { OPEN, walk } from "../../src/checkin-steps.ts";
+import type { ChatBoard } from "../../src/shared/types.ts";
 import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -45,7 +48,7 @@ export interface FixOpen { chat: string; duty: string; job: string; at: number; 
 export interface Grant { kind: string; session: string; at: number; waitS: number }
 export interface LogFacts { holds: Hold[]; fixes: FixOpen[]; stepScans: { at: number; chat: string; steps: string[] }[]; grants?: Grant[]; firstAt?: number }
 /** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
-export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause }
+export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string } }
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface LimitChange { at: number; limit: number }
 
@@ -235,14 +238,17 @@ export function measure(input: Inputs): PrecheckOutput {
  */
 export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number): Promise<CutJob[]> {
   const found: CutJob[] = [];
-  const walk = async (chat: string, folder: string, parentFile: string): Promise<void> => {
+  // `root` is the chat's own job (its direct child) above the folder the walk reads.
+  const walk = async (chat: string, folder: string, parentFile: string, root?: { session: string; name: string }): Promise<void> => {
     const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
     for (const entry of entries.filter(item => item.isDirectory() && item.name.startsWith("sub-"))) {
       const child = join(folder, entry.name);
       const file = (await readdir(child).catch(() => [] as string[])).find(name => SESSION_ID.test(name.replace(/\.jsonl$/, "")) && name.endsWith(".jsonl"));
       if (!file) continue;
       const path = join(child, file);
-      await walk(chat, child, path);
+      const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
+      const job = { session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : entry.name };
+      await walk(chat, child, path, root ?? job);
       if (deleted[chat]?.[entry.name] !== undefined) continue;
       const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
       if (now - changed > CUT_LOOKBACK_MS) continue;
@@ -250,12 +256,33 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
       if (!end || now - end.at > CUT_LOOKBACK_MS) continue;
       const parent = await readFile(parentFile, "utf8").catch(() => "");
       if (parent.split("\n").some(line => line.includes("delete_subagent") && line.includes(entry.name))) continue;
-      const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
-      found.push({ session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : entry.name, chat, ...end });
+      found.push({ ...job, chat, ...end, root: root ?? job });
     }
   };
   for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`));
   return found;
+}
+
+/**
+ * The cut jobs that hold owner work: an open step of the job's chat names the job or the chat's own job above it, by session id or job name.
+ * A cut job no open step names waits for nobody. At 06:27Z on 10-16 the duty counted 40 cut jobs as holds, and 37 of them sat under no open
+ * step: their steps were done, or a later job had taken the work (metal-inventory, cut 10-15 08:34Z, under metal dev environment and its r2).
+ */
+export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<string, ChatBoard | null>): CutJob[] {
+  const named = new Map<string, Set<string>>();
+  for (const [chat, board] of boards) {
+    const keys = new Set<string>();
+    walk(board?.plan ?? [], item => {
+      if (!OPEN.has(item.status)) return;
+      if (item.sessionId) keys.add(item.sessionId);
+      if (item.job) keys.add(item.job);
+    });
+    named.set(chat, keys);
+  }
+  return cut.filter(job => {
+    const keys = named.get(job.chat);
+    return !keys || [job, job.root ?? job].some(one => keys.has(one.session) || keys.has(one.name));
+  });
 }
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
@@ -283,14 +310,18 @@ async function main(): Promise<void> {
     chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id),
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
+  const live = ids.filter(id => !archived.has(id));
+  const cut = await findCutJobs(join(dataDir, "..", "session-artifacts"), live,
+    (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now);
+  const boardStore = new BoardStore(dataDir);
+  const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
   const result = measure({
     now, watch,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
     okLimit: typeof config?.mac_working_max === "number" ? config.mac_working_max : 15,
     chats,
-    cut: await findCutJobs(join(dataDir, "..", "session-artifacts"), ids.filter(id => !archived.has(id)),
-      (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now),
+    cut: cutJobsHoldingWork(cut, boards),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
