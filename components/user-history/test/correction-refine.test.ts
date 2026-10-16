@@ -23,6 +23,12 @@ test("a correction the chat recorded after the owner's message gets one global /
   assert.ok(!step!.message.includes("\n"));
 });
 
+test("a clean-room chat's refine stays in its own session", () => {
+  const step = correctionStep(CHAT, ledger(T0 + 60_000), [owner(BOLD, T0)], T0 + 120_000, HOUR, false);
+  assert.match(step!.message, /^\/refine The owner corrected an agent in this chat: c87 /);
+  assert.ok(!step!.message.includes("--global") && !step!.message.includes("global edit"));
+});
+
 test("a repeat recorded in this chat refines too, and an entry from another chat does not", () => {
   assert.equal(correctionStep(CHAT, ledger(T0 - 5 * HOUR, "other", T0 + 60_000), [owner("no bold!!", T0)], T0 + 120_000, HOUR)?.kind, "refine");
   const other = correctionStep(CHAT, ledger(T0 + 60_000, "other"), [owner("thanks, looks good", T0)], T0 + 120_000, HOUR);

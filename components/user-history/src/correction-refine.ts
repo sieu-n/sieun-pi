@@ -25,11 +25,14 @@ const recordedIn = (ledger: Ledger, chat: string): Recorded[] => ledger.correcti
 ]);
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-/** The session command that refines the global harness on what the chat recorded: Prime runs `/refine` from prompt text in that chat's session. */
-export function refineCommand(recorded: readonly Pick<Recorded, "id" | "words" | "rule">[]): string {
+/**
+ * The session command that refines the harness on what the chat recorded: Prime runs `/refine` from prompt text in that chat's session. `global`
+ * false (a clean-room chat) keeps the edit in that session, since the script, not the owner, wrote its messages.
+ */
+export function refineCommand(recorded: readonly Pick<Recorded, "id" | "words" | "rule">[], global = true): string {
   const items = recorded.map(item => `${item.id} "${oneLine(item.words)}" (rule: ${oneLine(item.rule)})`).join("; ");
-  return `/refine --global The owner corrected an agent in this chat: ${items}. Make the smallest global edit, a prompt note or memory in his terms, ` +
-    "so every future session follows it, and fix any entry that says otherwise.";
+  return `/refine${global ? " --global" : ""} The owner corrected an agent in this chat: ${items}. Make the smallest ${global ? "global " : ""}edit, a prompt ` +
+    `note or memory in his terms, so every ${global ? "future session" : "later turn"} follows it, and fix any entry that says otherwise.`;
 }
 
 /** A refinement the chat ran itself (refine.run) or the service's `/refine`, after `at`; an auto-refinement is aimed at nothing in particular. */
@@ -44,13 +47,13 @@ export type CorrectionStep = { kind: "refine" | "ask"; at: number; message: stri
  * With none, an owner message at most `maxAgeMs` old that reads as a correction gets CORRECTION_ASK; the turn that answers it records the
  * correction, and the scan at its end refines. `at` is the claim key: the newest recorded time, or the owner message's time.
  */
-export function correctionStep(chat: string, ledger: Ledger, messages: readonly ThreadMessage[], now: number, maxAgeMs: number): CorrectionStep | null {
+export function correctionStep(chat: string, ledger: Ledger, messages: readonly ThreadMessage[], now: number, maxAgeMs: number, global = true): CorrectionStep | null {
   const owner = ownerMessages(messages).at(-1);
   if (!owner) return null;
   const recorded = recordedIn(ledger, chat).filter(item => item.at >= owner.at && now - item.at <= maxAgeMs);
   if (recorded.length) {
     const at = Math.max(...recorded.map(item => item.at));
-    return refinedSince(messages, at) ? null : { kind: "refine", at, message: refineCommand(recorded) };
+    return refinedSince(messages, at) ? null : { kind: "refine", at, message: refineCommand(recorded, global) };
   }
   return now - owner.at <= maxAgeMs && readsAsCorrection(owner.text) ? { kind: "ask", at: owner.at, message: CORRECTION_ASK } : null;
 }

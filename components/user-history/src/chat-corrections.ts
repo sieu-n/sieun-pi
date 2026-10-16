@@ -4,6 +4,9 @@ import { normal } from "./shared/brief-check.ts";
 
 export const CORRECTION_TOOL = "correction_add";
 export const CORRECTIONS_FILE = "corrections.json";
+/** The chats clean-room.ts opened (an IdIndex), and the scratch ledger their correction_add writes to, so words the script sent never reach the real one. */
+export const CLEAN_ROOM_CHATS_FILE = "clean-room-chats.json";
+export const CLEAN_ROOM_CORRECTIONS_FILE = "corrections.clean-room.json";
 export const ENFORCEMENTS = ["brief", "code", "test"] as const;
 export const CORRECTION_STATUSES = ["active", "reopened", "retired"] as const;
 export type Enforcement = typeof ENFORCEMENTS[number];
@@ -302,7 +305,7 @@ export function parseLedger(value: unknown): Ledger {
 /** The ledger file under the chat service's data dir, written under the cross-process lock in locked-json. */
 export class CorrectionLedger {
   private readonly file: JsonFile<Ledger>;
-  constructor(dataDir: string) { this.file = { path: join(dataDir, CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) }; }
+  constructor(dataDir: string, name: string = CORRECTIONS_FILE) { this.file = { path: join(dataDir, name), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) }; }
   get path(): string { return this.file.path; }
   /** The ledger; empty before the first correction. Writes replace the file by rename, so a read without the lock sees a whole ledger. */
   async read(): Promise<Ledger> {

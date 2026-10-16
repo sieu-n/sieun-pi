@@ -1314,7 +1314,8 @@ export class Chats {
     const messages = this.chatIds.has(id) ? this.messages(id) : undefined;
     if (!messages) return;
     try {
-      const step = correctionStep(id, await this.source.corrections(), messages, this.now(), REPLY_CHECK_MAX_AGE_MS);
+      const scratch = await this.source.cleanRoom?.(id) ?? null;
+      const step = correctionStep(id, scratch ?? await this.source.corrections(), messages, this.now(), REPLY_CHECK_MAX_AGE_MS, scratch === null);
       if (!step || !await record.claim(step.kind === "ask" ? `${id}:ask` : id, step.at)) return;
       await this.threads.prompt(id, { message: step.message, images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: correction ${step.kind === "ask" ? "check sent" : "refine started"}`);

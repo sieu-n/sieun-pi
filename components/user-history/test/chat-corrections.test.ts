@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
-import { applyCorrection, briefCorrections, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, JOB_RULES, jobLedgerPrompt, type Ledger, LEDGER_PROMPT_LINES, ledgerPrompt,
+import { applyCorrection, briefCorrections, CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, JOB_RULES, jobLedgerPrompt, type Ledger, LEDGER_PROMPT_LINES, ledgerPrompt,
   matchCorrection, OUTSIDE_ACTION_RULE, ownerSaid, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { CHAT_MODE_ENTRY, REPLY_CAP_NOTE } from "../src/chat-guard.ts";
@@ -221,6 +221,20 @@ test("extension: correction_add is registered only in a chat; it records a new c
     const ledger = await new CorrectionLedger(dataDir).read();
     assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.chat, entry.repeats.length]), [["c1", "reopened", { id: "chat-1", name: "dev VP" }, 1]]);
     await assert.rejects(tool.execute("t3", { words: "x" }, undefined, undefined, chat.ctx(true)), /theme is required/);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test("extension: a chat clean-room.ts opened records its corrections in the scratch ledger, never the real one", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "corrections-clean-room-"));
+  try {
+    await writeFile(join(dataDir, CLEAN_ROOM_CHATS_FILE), JSON.stringify({ ids: ["room-1"] }));
+    const chat = loadExtension(dataDir, { id: "room-1", name: "pi-pool queue waits", branch: [owner("stop using bold in your replies")] });
+    await chat.run("session_start", {}, true);
+    const result = await chat.tools.get(CORRECTION_TOOL)!.execute("t1", { words: "stop using bold in your replies", rule: "Replies use no bold.", theme: "bold replies",
+      ref: "brief" }, undefined, undefined, chat.ctx(true));
+    assert.match(result.content[0]!.text, /^Recorded c1: Replies use no bold\./);
+    assert.deepEqual((await new CorrectionLedger(dataDir).read()).corrections, []);
+    assert.deepEqual((await new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read()).corrections.map(entry => [entry.id, entry.chat.id]), [["c1", "room-1"]]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 

@@ -10,7 +10,7 @@ import { ThreadHub } from "./chat-threads.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
-import { CorrectionLedger } from "./chat-corrections.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, readHeldSpawns, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueLong, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
 import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
@@ -138,6 +138,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
+  const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
       file: join(dataDir, "idle-clocks.json") });
@@ -222,7 +223,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet, owners, cut => writeResumePending(dataDir, cut, Date.now())),
       held: now => readHeldTurns(dataDir, now), fleetStop: () => readFleetStop(dataDir),
       settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),
-      awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
+      awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
+      cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),

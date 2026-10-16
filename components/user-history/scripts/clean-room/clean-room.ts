@@ -18,6 +18,8 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { jobRegistry } from "../../src/chat-sources.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
+import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
 import { parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
@@ -104,7 +106,8 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const srv = await server();
   const headMessage = scenario.headMessage(name);
   const chat = await createThread(srv, "chat", name, sandbox, headMessage);
-  log(run, `created chat ${chat} "${name}" in ${sandbox}`);
+  await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(chat);
+  log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger`);
   const fixtures: Record<string, string> = {};
   const fixtureBriefs: string[] = [];
   let changes: string[] = [];
@@ -264,6 +267,8 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   }
   await call(srv, "POST", `api/threads/${state.chat.id}/archive`, {});
   log(run, `archived test chat ${state.chat.id}`);
+  await transactJsonFile({ path: join(DATA, CLEAN_ROOM_CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) },
+    ledger => { ledger.corrections = ledger.corrections.filter(entry => entry.chat.id !== state.chat.id); });
   await jobRegistry(join(DATA, "chat-jobs.json")).remove(Object.keys(state.fixtures).concat(Object.values(state.fixtures)));
   const wakes = join(DATA, "wakes");
   for (const file of existsSync(wakes) ? readdirSync(wakes) : []) {

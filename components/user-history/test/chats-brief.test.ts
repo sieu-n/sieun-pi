@@ -80,7 +80,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/owner.md", "like [secrets walkthrough](job:secrets walkthrough)", "job links"],
     ["references/owner.md", "mermaid diagrams", "images and diagrams"],
     ["references/corrections.md", "receiver_role=\"sibling\", receiver_name=\"realtime layer\"", "corrections change the brief"],
-    ["references/corrections.md", "await refine.run()", "corrections change a skill"],
+    ["references/corrections.md", "the chat service runs `/refine --global` in your session", "corrections refine the harness"],
     ["references/corrections.md", "pass `handoff: {to, topics, with?}`", "correction handoff"],
     ["references/jobs.md", "sends `[brief check]` when one breaks these rules; fix it in the job with a message", "brief check"],
     ["SKILL.md", "Give 2 to 4 short choices, your recommendation first.", "todo choices"],

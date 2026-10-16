@@ -12,8 +12,9 @@ import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
-import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, ownerWordsRefusal, parseCorrectionCall } from "../src/chat-corrections.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, ownerWordsRefusal, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { ownerTexts } from "../src/shared/brief-check.ts";
+import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
@@ -168,7 +169,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
         const refusal = ownerWordsRefusal(call, ownerTexts(transcript));
         if (refusal) throw new Error(refusal);
         const chat = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
-        return { content: [{ type: "text", text: correctionResult(await corrections().apply(call, chat)) }], details: undefined };
+        // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads.
+        const cleanRoom = await new IdIndex(join(dataDir(), CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(chat.id), () => false);
+        const ledger = cleanRoom ? new CorrectionLedger(dataDir(), CLEAN_ROOM_CORRECTIONS_FILE) : corrections();
+        return { content: [{ type: "text", text: correctionResult(await ledger.apply(call, chat)) }], details: undefined };
       },
     });
   };

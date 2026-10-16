@@ -275,6 +275,8 @@ export interface CheckInSource {
   held?: (now: number) => Promise<HeldTurns>;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
+  /** A clean-room chat's scratch ledger (CLEAN_ROOM_CORRECTIONS_FILE), null for any other chat. Absent: every chat reads the real one. */
+  cleanRoom?: (chat: string) => Promise<Ledger | null>;
   /**
    * The duty runner's side of the check-in duty (src/chat-duty-run.ts): each check-in run is recorded as a run of the built-in duty and starts
    * one check-in job with the precheck as context. Absent (tests): the precheck runs and nothing starts.
