@@ -113,3 +113,14 @@ test("AI harness p490, p494 and p505 at 06:3xZ on 10-16: notes that say shipped 
   const met = new Map([...metrics].map(([link, fact]) => [link, { ...fact, met: true }]));
   assert.deepEqual(finishedOpen(board(live.items), facts({ metrics: met })).map(found => found.item.id), ["p490", "p494", "p505"], "each closes once its metric is met");
 });
+
+test("a step the board refuses to close does not look done: ops guy p254 waited for eecd9d7d5b to land while d1/servers_not_answering read 0", () => {
+  const p254 = step("p254", "Search answers GET / within 5 s while other jobs move the main checkout: one paraglide recompile per batch of message changes", {
+    job: "search paraglide stall fix", duty: "d1/servers_not_answering", waitFor: "search paraglide stall fix lands eecd9d7d5b on its own green run (steered 04:2x KST on 10-16)" });
+  const metrics = metricFacts([run("d1", NOW - 60_000, { servers_not_answering: true }, "met")]);
+  assert.equal(looksDone(p254, facts({ metrics })), null, "the land is still to come");
+  assert.notEqual(looksDone({ ...p254, note: "eecd9d7d5b landed on sieun/dev." }, facts({ metrics })), null, "a note that names the landed commit");
+  const p267 = step("p267", "Steps stuck on the same wait for over 2 hours in the Check-in duty reaches at most 0, from 14 on the last run", { status: "blocked",
+    duty: "checkin/stalled_steps", waitFor: "the AI harness chat's job 'checkin false idle flags' ships, the same fix as p264" });
+  assert.notEqual(looksDone(p267, facts({ metrics: metricFacts([run("checkin", NOW - 60_000, { stalled_steps: true }, "met")]) })), null, "a wait on no land or run");
+});

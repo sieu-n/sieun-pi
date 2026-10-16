@@ -85,8 +85,11 @@ export interface DoneReason { reason: string; at: number }
  * are lower-is-better targets that a ratio would read as met. A step that only names merged PRs is not a merge step: slack green guy p82
  * launches the tests that #229 to #249 merged, and their merge is where it starts.
  */
-export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty">>, facts: DoneFacts): DoneReason | null {
+export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty" | "waitFor" | "note" | "job">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
+  // A step the board refuses to close on its own note is not done (ops guy 10-16, p254: d1/servers_not_answering read 0 while the step waited
+  // for eecd9d7d5b to land, which never reached sieun/dev, and 3 check-ins in a row said "close it").
+  if (unlandedClose(item, { ...item, status: "done" })) return null;
   if (item.duty) {
     const fact = facts.metrics.get(item.duty);
     return fact?.met ? { reason: `its metric ${item.duty} is met on the duty's last run`, at: fact.at } : null;
