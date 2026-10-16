@@ -50,9 +50,9 @@ test("c47 invented gates: a gate with its cause, an owner rule, a real event or 
 test("c47 invented gates: the brief check flags a gate in the task and leaves the owner's quoted words and My read alone", () => {
   const brief = "Owner's words: none, started by the corrections ledger\n\nMy read: today that meant 15-minute slot spacing and quiet stretches.\n" +
     "Split: stays inline.\nTask: fix the canary. Prod writes are one change per 15-min slot with a clean read-back.";
-  const findings = briefCheck({ brief, owner: [], turnOwner: null, previousSpawnAt: null }).filter(finding => finding.kind === "invented-gate");
+  const findings = briefCheck(brief).filter(finding => finding.kind === "invented-gate");
   assert.deepEqual(findings, [{ kind: "invented-gate", gates: [{ phrase: "one change per 15-min slot", sentence: "Prod writes are one change per 15-min slot with a clean read-back." }] }]);
   assert.match(briefCheckNote("canary", findings), /- It sets a gate nobody asked for: "one change per 15-min slot"\. Drop the gate and have the job act now \(c47/);
   const fixed = brief.replace("Prod writes are one change per 15-min slot with a clean read-back.", "Write the canary now and read it back.");
-  assert.deepEqual(briefCheck({ brief: fixed, owner: [], turnOwner: null, previousSpawnAt: null }).filter(finding => finding.kind === "invented-gate"), []);
+  assert.deepEqual(briefCheck(fixed).filter(finding => finding.kind === "invented-gate"), []);
 });

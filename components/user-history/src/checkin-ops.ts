@@ -2,7 +2,6 @@ import type { SessionEntry } from "prime-agent";
 import { CHAT_BOARD_TOOL } from "./chat-guard.ts";
 import { readBranchTail } from "./session-tail.ts";
 import { OPS_STEER_PREFIX } from "./shared/chat-feed.ts";
-import type { ChatBoard, PlanItem } from "./shared/types.ts";
 
 /**
  * The board ops a duty job (a check-in, CI system) sends its chat, and whether the chat applied them. A duty job is a root session and has no
@@ -78,55 +77,6 @@ export class OpsReader {
 
 /** The ops of a report its chat did not apply: no chat_board call the board took touched their keys. */
 export const unapplied = (report: OpsReport): string[] => [...report.ops.keys()].filter(key => !report.applied.has(key));
-
-/** The plan item with `id` and the id of its parent (null at the top), or undefined. */
-function located(plan: readonly PlanItem[], id: string, parent: string | null = null): { item: PlanItem; parent: string | null } | undefined {
-  for (const item of plan) {
-    if (item.id === id) return { item, parent };
-    const found = located(item.children, id, item.id);
-    if (found) return found;
-  }
-  return undefined;
-}
-const same = (key: string, held: unknown, sent: unknown): boolean =>
-  sent === null ? held === undefined : key === "waitUntil" && typeof held === "string" && typeof sent === "string" ? Date.parse(held) === Date.parse(sent)
-    : JSON.stringify(held) === JSON.stringify(sent);
-/** The board already holds the op: a removed step is gone, and an updated one has every field the op sets, however it got there. */
-export function onBoard(op: Op, board: ChatBoard | null): boolean {
-  if (!board || typeof op.id !== "string") return false;
-  const found = located(board.plan, op.id);
-  if (op.op === "plan_remove") return !found;
-  if (op.op !== "plan_update" || !found) return false;
-  return Object.entries(op).every(([key, sent]) => key === "op" || key === "id" ||
-    (key === "parent" ? found.parent === sent : same(key, (found.item as unknown as Record<string, unknown>)[key], sent)));
-}
-
-const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
-/** The `[board]` line for a report's ops the board does not hold. */
-export const opsSteerLine = (report: OpsReport, left: readonly string[]): string =>
-  `${OPS_STEER_PREFIX}${left.length} of ${report.ops.size} from ${report.from} at ${clock(report.at)} (${left.join(", ")}); apply them or write why in each step's note.`;
-
-/**
- * What the server sends a chat for its newest duty report with board ops: undefined while the turn that read it runs (or there is none to judge
- * yet), null when there is nothing to say (the chat touched every op, the board holds the rest, or the line was sent), else the `[board]` line.
- * Older reports are left alone: each check-in sends again the ops it still needs. The line is in the transcript, so a restart never sends it twice.
- */
-export function opsSteer(messages: Iterable<Said>, board: ChatBoard | null): string | null | undefined {
-  const reader = new OpsReader();
-  for (const message of messages) reader.read(message);
-  const report = reader.reports.at(-1);
-  if (!report || report.asked) return report && null;
-  if (!report.ended) return undefined;
-  const left = unapplied(report).filter(key => !onBoard(report.ops.get(key)!, board));
-  return left.length ? opsSteerLine(report, left) : null;
-}
-
-/** The time of a chat's newest duty report with an op line, from the hub's messages (custom text is clipped there, so this only finds it). */
-export function newestReportAt(messages: readonly Said[]): number | undefined {
-  const report = messages.findLast(message => message.role === "custom" && message.customType === "agent_message" &&
-    DUTY_HEADER.test(textOf(message.content)) && /"op"\s*:/.test(textOf(message.content)));
-  return report?.timestamp;
-}
 
 /** The transcript messages of a session file's branch tail (`readBranchTail`), whole, as the hub's projection clips custom text and tool arguments. */
 export async function tailMessages(sessionFile: string): Promise<Said[] | undefined> {

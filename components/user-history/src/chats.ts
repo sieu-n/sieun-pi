@@ -18,18 +18,16 @@ import { withHeldTurns } from "./held-turns.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
-import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
-import { deadOwnerLines, deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStopped } from "./step-scan.ts";
+import { tailMessages } from "./checkin-ops.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
-import { previousSpawn, spawnRecord } from "./spawn-record.ts";
+import { spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
 import { correctionStep } from "./correction-refine.ts";
-import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
-import { briefCheckWithHistory } from "./owner-history.ts";
+import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
@@ -198,16 +196,8 @@ export class Chats {
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
   private lastScan: number;
   private readonly plain = new Set<string>();
-  /** Jobs whose brief was read for the brief check, and the spawn time of each subagent folder read so far (they never change). */
+  /** Jobs whose brief was read for the brief check. */
   private readonly briefSeen = new Set<string>();
-  private readonly spawnTimes = new Map<string, number>();
-  /** Each chat's newest duty report with board ops that `opsCheck` judged after its turn ended, by its time. */
-  private readonly opsJudged = new Map<string, number>();
-  /** The agent states each chat's row last listed for its jobs (subagents and roots), by session id, so a job that stops working is seen. */
-  private readonly jobStates = new Map<string, Map<string, string>>();
-  /** Chats with a step scan queued or waiting (`scanSoon`), and per chat the dead-owner steps the last scans told, with the owner and end told. */
-  private readonly scanning = new Set<string>();
-  private readonly scanTold = new Map<string, Map<string, string>>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -228,14 +218,13 @@ export class Chats {
         this.queue(id, () => this.attached(id));
         this.queue(id, () => this.refreshExtension(id));
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
-        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); this.queue(id, () => this.correctionCheck(id)); }
+        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.correctionCheck(id)); }
       },
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => {
         if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id));
         this.cleanSoon(id);
         this.queue(id, () => this.replyCheck(id));
-        this.queue(id, () => this.opsCheck(id));
         this.queue(id, () => this.correctionCheck(id));
       },
     });
@@ -254,55 +243,6 @@ export class Chats {
     if (before) for (const child of endedJobs(before, children)) this.laterOpenSteps(id, child.id);
     for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
     if (before?.some(was => childWorking(was) && children.some(child => child.id === was.id && !childWorking(child)))) this.cleanSoon(id);
-  }
-
-  /** The board watch: a chat's board changed, so its step scan runs (`scanSoon`). */
-  boardChanged(id: string): void { this.scanSoon(id); }
-
-  /**
-   * Queues one step scan of the chat (`scanSteps`) after `waitMs`, unless one is queued or waiting already. The service calls it when a job of
-   * the chat stops working (its turn ends, it fails or it is archived) and when the chat's board changes, as well as on the check-in schedule.
-   */
-  scanSoon(id: string, waitMs = 0): void {
-    if (this.scanning.has(id)) return;
-    this.scanning.add(id);
-    const run = () => this.queue(id, () => this.scanSteps(id).finally(() => this.scanning.delete(id)));
-    if (waitMs <= 0) { run(); return; }
-    const timer = setTimeout(run, waitMs);
-    timer.unref?.();
-  }
-
-  /**
-   * The cheap dead-owner scan: the check-in's measure with no duty job, which tells the chat at once each open step whose owner job failed, is
-   * gone, or is a root that ended over the no-report grace ago (`deadOwnerSteps`), once per owner end. A subagent that ended is the open-steps
-   * notice's (`openSteps`). ops guy 10-15: universal debug layer failed at about 17:15Z and nobody saw it until the owner asked at 18:07Z; the
-   * owner's words, "THEN WHY THE HELL DIDN"T CHECK IN FIX THIS??" and "OR WHENEVER UPDATE HAPPENS??". It runs while a relief or the daemon
-   * gate pauses check-ins, and not for a chat the owner paused or whose last turn failed.
-   */
-  private async scanSteps(id: string): Promise<void> {
-    await this.load();
-    if (!this.chatIds.has(id) || this.stall(id)) return;
-    const setting = await this.source.settings.get(id);
-    const now = this.now();
-    if (activePause(setting, now) !== null && ownerPause(setting)) return;
-    const gathered = await this.gather(id);
-    if (!gathered.rows.length && !this.children.has(id)) return;
-    const { precheck } = await this.measure(id, gathered, await this.source.memory.get(id), setting.everyMs, now);
-    const roots = new Set(this.source.registry ? await this.source.registry.rootsOf(gathered.name ? [id, gathered.name] : [id]).catch(() => []) : []);
-    const dead = deadOwnerSteps(precheck.end, roots, this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS, now);
-    const before = this.scanTold.get(id);
-    this.scanTold.set(id, new Map(dead.map(({ entry, end }) => [entry.view.item.id, end])));
-    const fresh = dead.filter(({ entry, end }) => before?.get(entry.view.item.id) !== end);
-    if (!fresh.length) return;
-    try {
-      const entries = fresh.map(({ entry }) => entry);
-      const detail = await this.noticeDetail(id, "step-scan", deadOwnerLines(entries, now));
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + deadOwnerNotice(entries, now, detail), images: [], mode: "steer" });
-      this.log(`chat ${id.slice(0, 8)}: step scan told the chat ${fresh.map(({ entry }) => entry.view.item.id).join(", ")} have no live owner`);
-    } catch (error) {
-      for (const { entry } of fresh) this.scanTold.get(id)?.delete(entry.view.item.id);
-      this.log(`chat ${id.slice(0, 8)}: step scan: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
 
   /**
@@ -682,7 +622,6 @@ export class Chats {
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
-    for (const row of chatRows) if (jobStopped(this.jobStates.get(row.id), this.jobStates.set(row.id, jobStateMap(row)).get(row.id)!)) this.scanSoon(row.id, this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
     if (this.now() - this.rootsEndedAt >= ROOT_END_EVERY_MS) {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
@@ -1379,48 +1318,24 @@ export class Chats {
   }
 
   /**
-   * At a turn's end, and when an idle chat attaches: once the turn that read the chat's newest duty report with board ops ended, one `[board]`
-   * steer naming the ops it left off the board (`opsSteer`). The hub clips the report and the chat_board arguments, so this reads the session file.
-   */
-  private async opsCheck(id: string): Promise<void> {
-    await this.load();
-    const said = this.chatIds.has(id) ? this.messages(id) : undefined;
-    const at = said && newestReportAt(said);
-    if (at === undefined || this.opsJudged.get(id) === at) return;
-    try {
-      const sessionFile = (await this.summary(id))?.sessionFile;
-      const messages = sessionFile ? await tailMessages(sessionFile) : undefined;
-      const line = messages && opsSteer(messages, await this.source.board(id));
-      if (line === undefined) return;
-      if (line) await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
-      this.opsJudged.set(id, at);
-    } catch (error) { this.log(`chat ${id.slice(0, 8)}: board ops check: ${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  /**
-   * When a chat's direct subagent first shows up: its brief, the `prompt` the daemon stored at the spawn, is checked against the Jobs rule
-   * (`briefCheckWithHistory`) with the chat's owner messages, the owner message that started the spawning turn and the chat's previous spawn. On findings
-   * the chat gets one `[brief check]` steer naming the job; the spawn is never held. Once per job across restarts (`briefChecks`); a job
-   * spawned more than BRIEF_CHECK_MAX_AGE_MS before the server first reads it is left alone. A spawn record not written yet is read again
-   * at the next children change.
+   * When a chat's direct subagent first shows up: its brief, the `prompt` the daemon stored at the spawn, is checked for an invented gate or
+   * wait (`briefCheck`, c47). On findings the chat gets one `[brief check]` steer naming the job; the spawn is never held. Once per job across
+   * restarts (`briefChecks`); a job spawned more than BRIEF_CHECK_MAX_AGE_MS before the server first reads it is left alone. A spawn record not
+   * written yet is read again at the next children change.
    */
   private async briefCheck(chat: string, child: ChildAgent): Promise<void> {
     const record = this.source.briefChecks;
     if (!record || this.briefSeen.has(child.id)) return;
     await this.load();
-    const messages = this.chatIds.has(chat) ? this.messages(chat) : undefined;
-    if (!messages) return;
+    if (!this.chatIds.has(chat)) return;
     try {
       const sessionFile = (await this.summary(chat))?.sessionFile;
       if (!sessionFile) return;
-      const dir = artifactsDir(sessionFile);
-      const spawn = await spawnRecord(join(dir, child.id));
+      const spawn = await spawnRecord(join(artifactsDir(sessionFile), child.id));
       if (!spawn) return;
       this.briefSeen.add(child.id);
-      this.spawnTimes.set(join(dir, child.id), spawn.createdAt);
       if (this.now() - spawn.createdAt > BRIEF_CHECK_MAX_AGE_MS) return;
-      const findings = await briefCheckWithHistory({ brief: spawn.prompt, turnOwner: turnOwnerAt(messages, spawn.createdAt),
-        previousSpawnAt: await previousSpawn(dir, spawn.createdAt, this.spawnTimes) }, messages, sessionFile);
+      const findings = briefCheck(spawn.prompt);
       if (!findings.length || !await record.claim(child.id, spawn.createdAt)) return;
       await this.threads.prompt(chat, { message: briefCheckNote(childName(child), findings), images: [], mode: "steer" });
       this.log(`chat ${chat.slice(0, 8)}: brief check for job ${childName(child)}: ${findings.map(finding => finding.kind).join(", ")}`);

@@ -81,9 +81,8 @@ test("c47: an agent todo that asks the owner's leave for a push, a staging land 
 });
 
 test("c47: a brief that has the job wait for another thread's word or the owner's ok is a brief check finding", () => {
-  const owner = [{ text: "just make it work", at: 1_000 }];
   const brief = (task: string) => `Owner's words (verbatim):\n1. "just make it work"\nMy read: VP of CI held ci/ pushes for Fable's "ON STAGING" word.\nSplit: inline.\n${task}`;
-  const check = (task: string) => briefCheck({ brief: brief(task), owner, turnOwner: owner[0]!, previousSpawnAt: null }).filter(finding => finding.kind === "waits-for-leave");
+  const check = (task: string) => briefCheck(brief(task)).filter(finding => finding.kind === "waits-for-leave");
   assert.deepEqual(check("Build the stack. Push to a fresh ci/ ref only after I relay Fable's word."), [{ kind: "waits-for-leave", wait: { kind: "thread", phrase: "Fable's word" } }]);
   assert.deepEqual(check("CI pushes wait until I relay Fable's land 32b on staging call."), [{ kind: "waits-for-leave", wait: { kind: "thread", phrase: "on staging call" } }]);
   assert.deepEqual(check("Land it on staging after the owner's ok."), [{ kind: "waits-for-leave", wait: { kind: "owner", phrase: "the owner's ok" } }]);
@@ -92,7 +91,7 @@ test("c47: a brief that has the job wait for another thread's word or the owner'
   assert.deepEqual(check("Never ask the owner to confirm a staging land or deploy; never merge a PR into production without his go on a For you todo (c49)."), []);
   assert.deepEqual(check("- c50 Staging deploys and lands never need the owner's confirmation; ship to staging when checks are green and ask only for prod promotes."), []);
   const note = briefCheckNote("ci fixes", [{ kind: "waits-for-leave", wait: { kind: "thread", phrase: "Fable's word" } }]);
-  assert.match(note, /^\[brief check\] Your brief for \[ci fixes\]\(job:ci fixes\) breaks the Jobs rule:\n- It has the job wait: it waits for another thread's go, word or slot \("Fable's word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
+  assert.match(note, /^\[brief check\] Your brief for \[ci fixes\]\(job:ci fixes\) has the job wait or sets a gate \(c47\):\n- It has the job wait: it waits for another thread's go, word or slot \("Fable's word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
   assert.equal(goWait("metal GO about 14:00Z", { cued: true })?.phrase, "GO");
   assert.equal(goWait("OK?"), null, "a plain question is no wait");
 });

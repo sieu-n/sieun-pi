@@ -297,7 +297,7 @@ test("reply check: kept on disk, so a restart right after a long reply still sen
   fourth.chats.close();
 });
 
-test("brief check: a new job of a chat whose brief breaks the Jobs rule gets one [brief check] steer, once across restarts", async () => {
+test("brief check: a new job of a chat whose brief has it wait for the owner's ok gets one [brief check] steer, once across restarts", async () => {
   const dir = await mkdtemp(join(tmpdir(), "brief-check-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("vp");
@@ -313,9 +313,9 @@ test("brief check: a new job of a chat whose brief breaks the Jobs rule gets one
     { role: "user", content: "can you simulate what you send to the agent?", timestamp: askAt },
     { role: "assistant", content: [{ type: "text", text: "on it" }], stopReason: "toolUse", timestamp: askAt + 1_000 },
   ] as unknown as ThreadMessage[];
-  await spawn("bad", "Owner's words (verbatim):\n1. \"show me what you send to agents\"\nMy read: audit the briefs.\nDo it.", askAt + 2_000);
+  await spawn("bad", "Owner's words (verbatim):\n1. \"show me what you send to agents\"\nMy read: audit the briefs.\nSplit: inline.\nLand it on staging after the owner's ok.", askAt + 2_000);
   await spawn("good", `Owner's words (verbatim):\n1. 10:00 "can you simulate what you send to the agent?"\nMy read: audit the briefs.\nSplit: inline, two reads.`, askAt + 3_000);
-  await spawn("old", "no block", askAt - BRIEF_CHECK_MAX_AGE_MS - 1);
+  await spawn("old", "Split: inline.\nLand it on staging after the owner's ok.", askAt - BRIEF_CHECK_MAX_AGE_MS - 1);
   const job = (id: string): ChildAgent => ({ id, label: id, sessionName: id, status: "running" });
   const start = () => {
     const calls: string[] = [];
@@ -331,8 +331,7 @@ test("brief check: a new job of a chat whose brief breaks the Jobs rule gets one
   first.threads.fire().children("vp", [job("old"), job("bad"), job("good")]);
   await first.chats.settled();
   assert.equal(first.checks().length, 1, "one steer: the good brief passes and the old job is skipped");
-  assert.match(first.checks()[0]!, /^steer vp \[brief check\] Your brief for \[bad\]\(job:bad\) breaks the Jobs rule:\n- "show me what you send to agents" is not in any owner message/);
-  assert.match(first.checks()[0]!, /- No `Split:` line\./);
+  assert.match(first.checks()[0]!, /^steer vp \[brief check\] Your brief for \[bad\]\(job:bad\) has the job wait or sets a gate \(c47\):\n- It has the job wait: it waits for the owner's ok/);
   assert.match(first.checks()[0]!, /receiver_name="bad"/);
   first.threads.fire().children("vp", [job("old"), { ...job("bad"), status: "done" }, job("good")]);
   await first.chats.settled();

@@ -12,7 +12,6 @@ import { changeCheckIn, CHECK_IN_MS, checkInSettings, OWNER_UI } from "../src/ch
 import { BRIEF_ITEMS, briefFindings } from "../src/shared/brief-cap.ts";
 import type { DutyJobRef, FlaggedSlice } from "../src/shared/chat-duties.ts";
 import type { ChildAgent, PlanItem } from "../src/shared/types.ts";
-import { deadOwnerNotice } from "../src/step-scan.ts";
 
 const NOW = new Date(2026, 9, 15, 19, 40).getTime();
 const quiet = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0,
@@ -61,12 +60,9 @@ test("briefFindings: a rule breach leads the shown items, then the headline metr
   assert.match(text, /in \/d\/checkin\.flagged\.md\./);
 });
 
-test("the step scan and open-steps notices name at most 3 steps and the detail file", () => {
+test("the open-steps notice names at most 3 steps and the detail file", () => {
   const entries = Array.from({ length: 6 }, (_, at): EndStateView => ({ state: "job_ended", reason: "its job is gone",
     view: { item: { id: `p${at + 1}`, text: `step ${at + 1}`, status: "doing" } as PlanItem, cls: "orphan", changedAt: NOW, mine: false } as EndStateView["view"] }));
-  const scan = deadOwnerNotice(entries, NOW, "/d/step-scan.flagged.md");
-  assert.equal(scan.split("\n").filter(line => line.startsWith("- p")).length, 3);
-  assert.match(scan, /^Step scan: 6 open steps have no live owner\..*\n- p1 [^\n]*\n- p2 [^\n]*\n- p3 [^\n]*\n- and 3 more, all listed in \/d\/step-scan\.flagged\.md$/s);
   const steps = entries.map(entry => entry.view.item);
   const open = openStepsNotice({ id: "j1", label: "crawler fix", status: "done" } as unknown as ChildAgent, steps, "/d/open-steps.flagged.md");
   assert.match(open, /it: p1 "step 1" is doing; p2 "step 2" is doing; p3 "step 3" is doing; and 3 more, all listed in \/d\/open-steps\.flagged\.md\. Read/);

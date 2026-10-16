@@ -19,8 +19,8 @@ export const BRIEF_CHECK_PREFIX = "[brief check] ";
 /** The server's one line after an owner message that reads as a correction and no correction_add followed (src/correction-refine.ts); the turn it starts is not the owner's. */
 export const CORRECTION_CHECK_PREFIX = "[correction check] ";
 /**
- * The server's `[board]` line when a chat's turn read a duty job's board ops and left some unapplied (src/checkin-ops.ts); unlike the owner's
- * `[board]` actions, the turn it starts is not the owner's.
+ * The server's `[board]` line after a chat's turn read a duty job's board ops and left some unapplied. The server sent it until 10-16; the feed
+ * and Chat health still read it in older transcripts as a note the owner did not type.
  */
 export const OPS_STEER_PREFIX = "[board] Ops not applied: ";
 /**

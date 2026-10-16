@@ -3,22 +3,16 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadRecord } from "../src/chat-brief.ts";
 import { parseHeldSpawns } from "../src/chat-pool.ts";
-import type { CheckInSource } from "../src/chat-sources.ts";
-import { Chats } from "../src/chats.ts";
-import { IdIndex } from "../src/id-index.ts";
 import { stuckFindings } from "../src/chat-duty-run.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { blockedOnOthers, goalsToFold, looseGoalLine } from "../src/checkin-findings.ts";
 import { withWakes } from "../src/checkin-load.ts";
 import { type JobFact, jobFacts, stepView, withHeldSpawns } from "../src/checkin-steps.ts";
-import { deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStopped } from "../src/step-scan.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../src/shared/types.ts";
 import { pendingWakes, startWakes, TICKED } from "../src/wakes.ts";
-import { fakeThreads, source } from "./chats-helpers.ts";
 
 /** Real board items and duty runs of 10-15, from Crawler VP, launch main bro and the AI harness chat (fixtures/checkin-false-findings-1015.json). */
 const fixture = JSON.parse(await readFile(join(import.meta.dirname, "fixtures", "checkin-false-findings-1015.json"), "utf8")) as {
@@ -127,55 +121,3 @@ test("AI harness 14:02Z: d6's fix steps p478 and p479, filed at the top level wi
   assert.deepEqual(goalsToFold(board(items), idle, new Set([chat]), [duty]).map(fold => fold.goal.id), ["p478", "p479"]);
 });
 
-test("step scan: a job that stops working triggers it, and it tells each dead owner's step once per end", () => {
-  const agents = (list: object[]) => ({ agents: list }) as unknown as Pick<SessionRow, "agents">;
-  const working = jobStateMap(agents([{ sessionId: "s-root", link: "root", state: "working" }, { sessionId: "s-sub", link: "subagent", state: "idle" }]));
-  assert.equal(jobStopped(undefined, working), false);
-  assert.equal(jobStopped(working, working), false);
-  assert.equal(jobStopped(working, jobStateMap(agents([{ sessionId: "s-root", link: "root", state: "error" }]))), true);
-  assert.equal(jobStopped(working, new Map()), true, "an archived job left the row");
-  const now = at("17:20:00");
-  const step = (id: string, job: string): PlanItem => ({ id, text: `step ${id}`, status: "doing", job, children: [] });
-  const items = [step("p195", "universal debug layer"), step("p196", "ops train"), step("p197", "gone job"), step("p198", "ops sub")];
-  const rows = [row({ id: "s-debug", name: "universal debug layer", failure: "provider error", lastActivityAt: "2026-10-15T17:15:00.000Z" }),
-    row({ id: "s-train", name: "ops train", lastActivityAt: "2026-10-15T17:19:30.000Z" })];
-  const children: ChildAgent[] = [{ id: "sub-1", label: "ops sub", sessionName: "ops sub", status: "done", lastActivityAt: at("17:00:00") }];
-  const facts = jobFacts(children, board(items), rows, "ops");
-  const self = new Set(["ops"]);
-  const entries = views(items, facts, rows, self, now).map(view => endState(view, [], rows, self, now, facts));
-  const dead = deadOwnerSteps(entries, new Set(["universal debug layer", "ops train"]), 90_000, now);
-  assert.deepEqual(dead.map(({ entry }) => entry.view.item.id), ["p195", "p197"], "a root that ended 30 s ago and an ended subagent are left out");
-  assert.deepEqual(deadOwnerSteps(entries, new Set(), 90_000, now).map(({ entry }) => entry.view.item.id), ["p197"], "another chat's thread is not this chat's job");
-  assert.match(deadOwnerNotice(dead.map(({ entry }) => entry), now), /^Step scan: 2 open steps have no live owner\. .*\n- p195 "step p195" is stuck \(thread\)/);
-});
-
-test("step scan: a board change and a root that stops working each tell the chat a dead owner's step once, with no check-in", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "step-scan-"));
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add("c1");
-  const calls: string[] = [];
-  const threads = fakeThreads(calls);
-  const p195: PlanItem = { id: "p195", text: "Draft the p195 observability plan and status", status: "doing", job: "universal debug layer", children: [] };
-  const job = (working: boolean): SessionRow => row({ id: "s-debug", name: "universal debug layer", working, lastActivityAt: "2026-10-15T17:15:00.000Z",
-    ...(working ? {} : { failure: "provider error" }) });
-  const chat = (working: boolean): SessionRow => row({ id: "c1", name: "ops guy", agents: [{ sessionId: "s-debug", name: "universal debug layer", link: "root", state: working ? "working" : "error" }] } as Partial<SessionRow>);
-  let rows = [chat(true), job(true)];
-  const now = at("17:20:00");
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board([p195]) }, () => now, () => rows), registry: { rootsOf: async () => ["universal debug layer"] } as unknown as NonNullable<CheckInSource["registry"]> });
-  await chats.adopt();
-  const scans = () => calls.filter(call => call.startsWith("steer c1 [job] Step scan"));
-  await chats["jobs"](new Set(["c1"]), false);
-  chats.boardChanged("c1");
-  await chats.settled();
-  assert.deepEqual(scans(), [], "a working root owns its step");
-  rows = [chat(false), job(false)];
-  await chats["jobs"](new Set(["c1"]), false);
-  await chats.settled();
-  assert.equal(scans().length, 1);
-  assert.match(scans()[0]!, /p195 "Draft the p195 observability plan and status" is stuck \(thread\)/);
-  chats.boardChanged("c1");
-  await chats.settled();
-  assert.equal(scans().length, 1, "the same end is told once");
-  chats.close();
-});

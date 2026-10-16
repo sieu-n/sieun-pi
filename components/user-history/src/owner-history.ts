@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { missing } from "./locked-json.ts";
-import { briefCheck, type BriefFinding, type BriefInput, type OwnerMessage, ownerMessages, ownerTexts } from "./shared/brief-check.ts";
+import { type OwnerMessage, ownerMessages, ownerTexts } from "./shared/brief-check.ts";
 import { ownerSaid } from "./chat-corrections.ts";
 import { agentScheduleProblem, type DutySchedule } from "./shared/chat-duties.ts";
 import { ownerMessageId } from "./shared/chat-feed.ts";
@@ -61,14 +61,4 @@ async function userMessages(file: string): Promise<ThreadMessage[]> {
     }
   } catch (error) { if (missing(error)) return []; throw error; }
   return messages;
-}
-
-/**
- * The brief check with the chat's owner messages from the thread's tail, and from its whole session file when a quote is not in the tail. On
- * 10-12 ops guy's job briefs quoted the owner's 10-09 "have it your duty to have usable mac.", which had left the tail. The check refused it twice
- * as not in any owner message, and the chat recorded the refusal as an owner repeat of c59.
- */
-export async function briefCheckWithHistory(input: Omit<BriefInput, "owner">, tail: readonly ThreadMessage[], sessionFile: string): Promise<BriefFinding[]> {
-  const findings = briefCheck({ ...input, owner: ownerMessages(tail) });
-  return findings.some(finding => finding.kind === "not-verbatim") ? briefCheck({ ...input, owner: await fileOwnerMessages(sessionFile) }) : findings;
 }
