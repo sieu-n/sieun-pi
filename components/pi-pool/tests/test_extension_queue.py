@@ -91,6 +91,20 @@ class Wiring(unittest.TestCase):
         self.assertEqual([w["session"] for w in run["queues"]["running"]["working"]], ["job"])
         self.assertEqual(run["queues"]["ended"]["working"], [], "agent_end released the slot")
 
+    def test_a_queued_run_waits_with_no_process_of_its_own(self):
+        """Until 10-16 each waiting run spawned `admit --wait`, a Python process of about 30 MB:
+        at 09:10 KST 49 of them held 1.5 GB while 68 turns waited."""
+        found = os.path.join(self.dir, "waiters.txt")
+        probe = subprocess.Popen(["/bin/sh", "-c", f'sleep 2 && (pgrep -f "admit waitless --wait" || true) > "{found}"'],
+                                 stdout=subprocess.DEVNULL)
+        run = self.drive({"op": "start", "name": "waitless"}, {"op": "context", "name": "waitless"},
+                         {"op": "wait", "name": "waitless", "ms": 3500, "label": "queued"}, {"op": "queue", "label": "q"})
+        probe.wait()
+        self.assertIsNone(run["context"]["queued"])
+        self.assertEqual([e["session"] for e in run["queues"]["q"]["queued"]], ["waitless"])
+        with open(found) as f:
+            self.assertEqual(f.read().strip(), "", "no admit --wait process while the run is queued")
+
     def test_stop_drops_a_queued_run(self):
         run = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
                          {"op": "wait", "name": "job", "ms": 2000, "label": "queued"}, {"op": "queue", "label": "before"},
