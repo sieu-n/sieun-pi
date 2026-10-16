@@ -59,7 +59,7 @@ test("a reported root quiet past PARK_IDLE_MS that no open step names is saved a
   const path = join(dir, "job-resumes", "c1", "r1.json");
   const saved = JSON.parse(await readFile(path, "utf8"));
   assert.deepEqual([saved.brief, saved.report, saved.job], [BRIEF, REPORT, "crawler release driver"]);
-  assert.ok(calls.some(call => call.startsWith("notice c1 [job] crawler release driver was archived after 61 min quiet") && call.includes(path)), calls.join("\n"));
+  assert.ok(!calls.some(call => call.startsWith("notice")), calls.join("\n"));
   assert.ok(lines.some(line => line.startsWith("chat c1: archived idle root crawler release driver (quiet 61 min)")), lines.join("\n"));
   chats.close();
 });

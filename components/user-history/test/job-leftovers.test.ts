@@ -71,7 +71,7 @@ function chatsWith(dir: string, calls: string[], asked: string[][], summary: (id
   return { chats, threads, index, lines };
 }
 
-test("the cleanup's delete of a finished job stops what it left and the notice says what was stopped", async () => {
+test("the cleanup's delete of a finished job stops what it left, logs it and sends the chat no notice", async () => {
   const NOW = Date.parse("2026-10-15T00:45:00Z");
   const dir = await mkdtemp(join(tmpdir(), "job-leftovers-delete-"));
   const calls: string[] = [];
@@ -87,8 +87,7 @@ test("the cleanup's delete of a finished job stops what it left and the notice s
   await chats.settled();
   assert.deepEqual(calls.filter(call => call.startsWith("delete")), [`delete ${SEO} sub-1`]);
   assert.deepEqual(asked, [[join(ARTIFACTS, SEO, "sub-1"), SEO_JOB]], "once, for the job's folder and session, after the delete");
-  assert.equal(calls.find(call => call.startsWith(`notice ${SEO}`)), `notice ${SEO} [job] seo data memory fix was deleted. The service stopped the processes its kernel started ` +
-    "detached: pid 77400 `python3 runner.py` (0.0 GiB), pid 77405 `python3 old_analysis.py --all` (27.0 GiB), and closed the 2 Aside tabs it opened.");
+  assert.equal(calls.find(call => call.startsWith(`notice ${SEO}`)), undefined);
   assert.ok(lines.some(line => line.includes("stopped 77400, 77405, closed 2 Aside tabs")), lines.join("\n"));
   chats.close();
 });
@@ -105,7 +104,7 @@ test("a job the chat deleted itself has its leftovers stopped once the daemon li
   await chats.roster(new Map([[SEO, []]]));
   await chats.settled();
   assert.deepEqual(asked, [[join(ARTIFACTS, SEO, "sub-1"), SEO_JOB]], "job 2 left the chat's list but the daemon still lists its session");
-  assert.match(calls.find(call => call.startsWith(`notice ${SEO}`)) ?? "", /^notice \S+ \[job\] job 1 is gone\. The service stopped the processes/);
+  assert.equal(calls.find(call => call.startsWith(`notice ${SEO}`)), undefined);
   await chats.roster(new Map([[SEO, [job(1)]]]));
   await chats.roster(new Map([[SEO, []]]));
   await chats.settled();

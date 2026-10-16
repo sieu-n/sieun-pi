@@ -57,34 +57,33 @@ async function setup(agents: ChatAgent[]) {
     return chats;
   };
   const sweep = async (chats: Chats, iso: string) => { state.now = at(iso); await chats.tick(); await chats.settled(); };
-  const notices = () => calls.filter(call => call.startsWith(`notice ${CHAT} [job] `)).map(call => call.slice(`notice ${CHAT} [job] `.length).replace(/ with its report in.*/s, ""));
-  return { state, serve, sweep, notices };
+  const archives = () => calls.filter(call => call.startsWith("archive ")).map(call => NAMES[call.slice("archive ".length)]);
+  return { state, serve, sweep, archives };
 }
 
-test("a root the daemon lists as archived gets no second archive or notice after a service start", async () => {
-  const { serve, sweep, notices } = await setup([root(STALE, "2026-10-14T16:11:08.812Z"), root(SIGNIN, "2026-10-14T16:09:32.842Z"),
+test("a root the daemon lists as archived gets no second archive after a service start", async () => {
+  const { serve, sweep, archives } = await setup([root(STALE, "2026-10-14T16:11:08.812Z"), root(SIGNIN, "2026-10-14T16:09:32.842Z"),
     root(FOOTPRINT, "2026-10-14T13:48:07.915Z"), root(HEAP, "2026-10-14T14:33:06.704Z")]);
   const first = await serve();
   await sweep(first, "2026-10-14T17:15:41Z");
-  assert.deepEqual(notices(), ["stale tree guard land was archived after 65 min quiet", "github signin land was archived after 66 min quiet",
-    "harness footprint fix was archived after 208 min quiet", "vp worker heap fix was archived after 163 min quiet"]);
+  assert.deepEqual(archives(), ["stale tree guard land", "github signin land", "harness footprint fix", "vp worker heap fix"]);
   first.close();
   const second = await serve();
   await sweep(second, "2026-10-14T17:50:19Z");
-  assert.deepEqual(notices().slice(4), [], "all four are archived on the daemon's list, so the 17:49Z start sends no second notice");
+  assert.deepEqual(archives().slice(4), [], "all four are archived on the daemon's list, so the 17:49Z start archives none again");
   second.close();
 });
 
 test("a root that ran again after its archive is archived once more in the same serve, since it has a worker again", async () => {
-  const { state, serve, sweep, notices } = await setup([root(SIGNIN, "2026-10-14T06:06:37.844Z")]);
+  const { state, serve, sweep, archives } = await setup([root(SIGNIN, "2026-10-14T06:06:37.844Z")]);
   const chats = await serve();
   await sweep(chats, "2026-10-14T16:03:52Z");
-  assert.deepEqual(notices(), ["github signin land was archived after 597 min quiet"]);
+  assert.deepEqual(archives(), ["github signin land"]);
   await sweep(chats, "2026-10-14T16:20:00Z");
-  assert.deepEqual(notices().slice(1), [], "still archived");
+  assert.deepEqual(archives().slice(1), [], "still archived");
   state.agents = [root(SIGNIN, "2026-10-14T16:09:32.842Z")];
   state.lifecycle.set(SIGNIN, "live");
   await sweep(chats, "2026-10-14T17:10:00Z");
-  assert.deepEqual(notices().slice(1), ["github signin land was archived after 60 min quiet"]);
+  assert.deepEqual(archives().slice(1), ["github signin land"]);
   chats.close();
 });

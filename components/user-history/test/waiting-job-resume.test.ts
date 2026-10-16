@@ -70,7 +70,7 @@ test("an idle job whose only open work is a board wait is kept up to PARK_IDLE_M
   assert.equal(step.waitFor, WAIT, "the wait stays on the step");
   assert.equal(step.job, "ci clickhouse memcap");
   assert.match(step.note!, new RegExp(`^Saved state: job ci clickhouse memcap ended at \\S+ while it was quiet; its brief, last report and wait are in ${path.replace(/[.]/g, "\\.")}\\.\\nr1 pushed$`));
-  assert.ok(calls.some(call => call.startsWith("notice c1 [job] ci clickhouse memcap was ended after 70 min quiet while open steps named it") && call.includes(path)), calls.join("\n"));
+  assert.ok(!calls.some(call => call.startsWith("notice")), calls.join("\n"));
   assert.ok(lines.some(line => line.startsWith("chat c1: ended waiting job ci clickhouse memcap (quiet 70 min")), lines.join("\n"));
   chats.close();
 });

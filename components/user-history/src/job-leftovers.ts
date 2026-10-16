@@ -77,15 +77,6 @@ export async function endLeftovers(source: LeftoverSource, dir: string, session?
   return { stopped, tabs };
 }
 
-/** The line a deleted or archived job's notice gets for what the service stopped; empty when it stopped nothing. */
-export function leftoverLine({ stopped, tabs }: Leftovers): string {
-  const parts = [
-    ...(stopped.length ? [`stopped the processes its kernel started detached: ${stopped.map(entry => `pid ${entry.pid} \`${entry.command}\` (${(entry.bytes / 1024 ** 3).toFixed(1)} GiB)`).join(", ")}`] : []),
-    ...(tabs ? [`closed the ${tabs === 1 ? "Aside tab" : `${tabs} Aside tabs`} it opened`] : []),
-  ];
-  return parts.length ? ` The service ${parts.join(", and ")}.` : "";
-}
-
 function helper(args: readonly string[]): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
