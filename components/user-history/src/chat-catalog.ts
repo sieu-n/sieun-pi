@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import { chatAgents, stepSessions, withQueue, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
@@ -197,6 +198,15 @@ export function settledOnFailure(row: SessionSummary): boolean {
   return (row.taskState as string | undefined) === "error" && Boolean(row.summary?.trim());
 }
 
+const daemonSaysFailed = (row: SessionSummary): boolean => row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
+
+/**
+ * The session files of children that are not running, for `SessionCuts`: the daemon's rows carry no stop reason, and a job the daemon archived and
+ * aborted when it went down settles idle with no failure, so the panel read it as done (10-16 00:19:57Z). A new message changes the key.
+ */
+export const cutSources = (children: readonly SessionSummary[]): CutSource[] => children.flatMap(row =>
+  row.sessionFile && nativeStatus(row) !== "running" ? [{ file: row.sessionFile, key: `${row.modified ?? ""}|${row.messageCount}` }] : []);
+
 /** Subagent summaries by parent session id, one per session id (the resident copy wins over a saved one). */
 export function childrenByParent(children: readonly SessionSummary[]): Map<string, SessionSummary[]> {
   const byId = new Map<string, SessionSummary>();
@@ -244,14 +254,16 @@ export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; p
 export const runningSubagents = (row: SessionSummary, subtree?: Subtree): number => Math.max(subtree?.running ?? 0, row.hasRunningRlmChildren === true ? 1 : 0);
 
 /**
- * A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure, the first task text for a derived display name,
- * and the running and listed subagents below each one, from `tree` (sessions by parent id).
+ * A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure (a cut end in `cuts` counts), the first task text
+ * for a derived display name, and the running and listed subagents below each one, from `tree` (sessions by parent id).
  */
-export function subagentSessions(children: readonly SessionSummary[], tree: ReadonlyMap<string, SessionSummary[]> = new Map()): SubagentSession[] {
+export function subagentSessions(children: readonly SessionSummary[], tree: ReadonlyMap<string, SessionSummary[]> = new Map(), cuts?: SessionCuts): SubagentSession[] {
   return children.map((row): SubagentSession => {
     const running = nativeStatus(row) === "running";
-    const failed = row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
-    const activity = running ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : failed ? row.summary?.trim().slice(0, 200) : undefined;
+    const daemonFailed = daemonSaysFailed(row);
+    const cut = running || daemonFailed ? null : cuts?.of(row.sessionFile) ?? null;
+    const failed = daemonFailed || cut !== null;
+    const activity = running ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : daemonFailed ? row.summary?.trim().slice(0, 200) : cut ? cutActivity(cut) : undefined;
     const at = row.lastActivityAt ?? row.modified;
     const name = row.sessionName?.replace(/\s+/g, " ").trim();
     const first = firstTask(row);
@@ -265,18 +277,22 @@ export function subagentSessions(children: readonly SessionSummary[], tree: Read
 
 /**
  * Each chat's direct subagents as the hub's attach lists them (`projectChild`), from the daemon's own rows, so Chats knows them while no attach
- * succeeds: an RLM child id, its session name, running, failed (`error`) or done, whether it replied since its task, and its last activity.
+ * succeeds: an RLM child id, its session name, running, failed (`error`, also for a cut end in `cuts`) or done, whether it replied since its task,
+ * and its last activity.
  */
-export function rosterChildren(children: readonly SessionSummary[]): Map<string, ChildAgent[]> {
+export function rosterChildren(children: readonly SessionSummary[], cuts?: SessionCuts): Map<string, ChildAgent[]> {
   const byChat = new Map<string, ChildAgent[]>();
   for (const [parent, rows] of childrenByParent(children)) {
     const listed = rows.flatMap((row): ChildAgent[] => {
       if (!row.rlmChildId) return [];
       const name = row.sessionName?.replace(/\s+/g, " ").trim();
-      const status = nativeStatus(row) === "running" ? "running" : row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row) ? "error" : "done";
+      const running = nativeStatus(row) === "running";
+      const failed = daemonSaysFailed(row);
+      const cut = running || failed ? null : cuts?.of(row.sessionFile) ?? null;
+      const status = running ? "running" : failed || cut ? "error" : "done";
       // The session file's change counts as activity: a job between turns still gets its workers' reports (`liveJobs`).
       const at = Math.max(...[row.lastActivityAt, row.modified].map(value => Date.parse(value ?? "")).filter(Number.isFinite));
-      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status,
+      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status, ...(cut ? { error: cutActivity(cut) } : {}),
         ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
     });
     if (listed.length) byChat.set(parent, listed);
@@ -426,6 +442,9 @@ export class Catalog {
   private ratesTimer: ReturnType<typeof setTimeout> | undefined;
   private summaries = new Map<string, SessionSummary>();
   private childSummaries: SessionSummary[] = [];
+  /** Children's cut ends (`SessionCuts`), read after each list. */
+  readonly cuts = new SessionCuts();
+  private cutsReading = false;
   private schedules = new Map<string, ThreadSchedule>();
   private observedDaemonVersion: { version: string | undefined } | undefined;
   private daemonVersionListener: (version: string | undefined) => void = () => {};
@@ -604,10 +623,29 @@ export class Catalog {
     this.summaries = next;
     this.childSummaries = children;
     this.listed = true;
-    const roster = rosterChildren(children);
+    const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
     this.setDaemon("up");
+    void this.readCuts();
     await this.emit();
+  }
+
+  /** Reads the cut ends of children that changed since the last read, one pass at a time, and hands the roster on again when one moved. */
+  private async readCuts(): Promise<void> {
+    if (this.cutsReading) return;
+    this.cutsReading = true;
+    try {
+      let changed = false;
+      for (let read: SessionSummary[] | undefined; read !== this.childSummaries && !this.closed;) {
+        read = this.childSummaries;
+        if (await this.cuts.update(cutSources(read))) changed = true;
+      }
+      if (!changed || this.closed) return;
+      await this.chats.roster?.(rosterChildren(this.childSummaries, this.cuts));
+      await this.emit();
+    } catch (error) {
+      if (!this.closed) process.stderr.write(`catalog: cut ends: ${error instanceof Error ? error.message : String(error)}\n`);
+    } finally { this.cutsReading = false; }
   }
 
   private async list(all: boolean, timeoutMs: number): Promise<SessionSummary[]> {
@@ -644,7 +682,7 @@ export class Catalog {
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
       const links = await this.chats.links(row.id).catch(() => null);
-      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children),
+      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
       if (sessions.size) void this.linkSessions(row.id, sessions);

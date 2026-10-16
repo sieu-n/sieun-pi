@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { cutEnd, measure, readLimits, readServiceLog, type Inputs } from "../scripts/duties/whole-system.ts";
+import { measure, readLimits, readServiceLog, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutEnd } from "../src/cut-end.ts";
 
 // Shapes from service.log and pi-pool.log on 10-15 and 10-16: wakes held by the fleet budget each tick, the fix opener's open and send-back lines,
 // and the step scan's notices, which carry no time stamp.
@@ -113,6 +114,6 @@ test("a cut job waiting over 10 minutes is a hold, with the continue the fleet b
   // The two 28 s starts are no holds; only the cut job that waited 32 min is.
   assert.equal(output.metrics.queue_holds_30, 1);
   const excerpt = (output.flagged ?? []).find(item => item.kind === "cut_job")?.excerpt ?? "";
-  assert.match(excerpt, /local agents checks .* cut by a abort when the Prime daemon went down at 00:19Z and got no input in 32 min/);
+  assert.match(excerpt, /local agents checks .* cut by an abort when the Prime daemon went down at 00:19Z and got no input in 32 min/);
   assert.match(excerpt, /let its continue start at 00:21Z after 28 s, pi-pool then ran 15 of 15 slots with 71 queued, and nothing reached the session/);
 });

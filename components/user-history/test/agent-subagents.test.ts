@@ -5,8 +5,10 @@ import { chatAgents } from "../src/chat-agents.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { childrenByParent, spawnedSubagents, subagentFolder, subagentSessions } from "../src/chat-catalog.ts";
+import { childrenByParent, cutSources, spawnedSubagents, subagentFolder, subagentSessions } from "../src/chat-catalog.ts";
+import { SessionCuts } from "../src/cut-end.ts";
 import { agentSubagents } from "../src/client/board.ts";
+import { clockTime } from "../src/checkin-settings.ts";
 import type { ChatAgent, SessionRow } from "../src/shared/types.ts";
 
 const summary = (over: Partial<SessionSummary>): SessionSummary => ({ id: "x", lifecycle: "live", activity: "idle", isSessionActive: false, sessionId: "x", cwd: "/r", isStreaming: false, isCompacting: false,
@@ -75,4 +77,25 @@ test("spawnedSubagents counts every sub-* folder with an rlm-subagent.json at an
     assert.equal(await spawnedSubagents(folder!, 31_000), 4);
     assert.equal(subagentFolder({ sessionId: "top", sessionFile: join(root, "sessions", "top.jsonl") }), join(root, "session-artifacts", "top"));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a job the daemon archived and aborted when it went down reads failed with the cut, not done (10-16 00:19:57Z)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "subagent-cut-"));
+  try {
+    const at = "2026-10-16T00:19:57.648Z";
+    const lines = [{ timestamp: "2026-10-16T00:16:42.807Z", type: "custom_message", customType: "agent_message", content: "[task from parent] ..." },
+      { timestamp: "2026-10-16T00:19:57.647Z", type: "session_state", state: { status: "archived" } },
+      { timestamp: at, type: "message", message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted" } }];
+    writeFileSync(join(dir, "cut.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const cut = summary({ sessionId: "c", parentSessionId: "chat", rlmChildId: "sub-c", sessionName: "local agents checks", sessionFile: join(dir, "cut.jsonl") } as Partial<SessionSummary>);
+    const done = summary({ sessionId: "d", parentSessionId: "chat", rlmChildId: "sub-d", sessionName: "startup prompt trim" } as Partial<SessionSummary>);
+    const tree = childrenByParent([cut, done]);
+    const cuts = new SessionCuts();
+    await cuts.update(cutSources([cut, done]));
+    const agents = chatAgents({ self: { id: "chat", name: "chat" }, children: [], childSessions: subagentSessions(tree.get("chat") ?? [], tree, cuts), board: null, roots: [], messages: [], rows: [], now: 0 });
+    assert.deepEqual(Object.fromEntries(agents.map(agent => [agent.name, [agent.state, agent.activity]])), {
+      "local agents checks": ["failed", `cut by an abort when the Prime daemon went down at ${clockTime(Date.parse(at))} and never reported`],
+      "startup prompt trim": ["done", undefined],
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

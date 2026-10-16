@@ -1,8 +1,9 @@
-import { open, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
+import { cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -35,8 +36,6 @@ export const FREE_SLOTS = 2;
 export const QUEUED_WAIT_S = 120;
 /** The resume rule's look-back (resume_paused.py --since-minutes defaults to 1440): a job cut longer ago than this is left to its chat. */
 export const CUT_LOOKBACK_MS = 24 * 60 * MINUTE;
-/** The daemon writes `archived` and then the aborted reply within milliseconds when it dies or restarts; an owner's Stop writes no archive. */
-export const RESTART_ABORT_MS = 5_000;
 /** About 3 h of service.log at 10-16's rate (1.7 MB an hour, most of it held wakes), so a hold that began before the window is seen whole. */
 const LOG_TAIL_BYTES = 6_000_000;
 
@@ -47,8 +46,6 @@ export interface Grant { kind: string; session: string; at: number; waitS: numbe
 export interface LogFacts { holds: Hold[]; fixes: FixOpen[]; stepScans: { at: number; chat: string; steps: string[] }[]; grants?: Grant[]; firstAt?: number }
 /** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
 export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause }
-export type CutCause = "restart" | "error" | "length" | "mid-tool";
-const CUT_WORDS: Record<CutCause, string> = { restart: "abort when the Prime daemon went down", error: "provider error", length: "length limit", "mid-tool": "stop mid-tool" };
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface LimitChange { at: number; limit: number }
 
@@ -103,51 +100,6 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   }
   const first = lines.find(line => TIME.test(line));
   return { holds, fixes, stepScans, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
-}
-
-/**
- * How a session's last turn ended when it was cut and nothing came after it, from its transcript lines: an abort the daemon wrote right after
- * archiving the session (it went down or restarted), a provider error, the length limit, or a tool result the model never answered. Null when the
- * turn ended well, an owner's Stop aborted it, or an input or a pi-pool queue place came after the end. A last tool call is left out, since its
- * tool may still run.
- */
-export function cutEnd(lines: readonly string[]): { at: number; cause: CutCause } | null {
-  const end = lastCut(lines);
-  return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause } : null;
-}
-
-/** Whether the job sent its parent a message between its last input and the line at `index`: a cut after its report left nothing waiting. */
-function reportedBefore(lines: readonly string[], index: number): boolean {
-  for (let back = index - 1; back >= 0; back--) {
-    const line = lines[back]!;
-    if (line.includes('"customType":"agent_message"') || line.includes('"role":"user"')) return false;
-    if (line.includes('"role":"assistant"') && line.includes("agent_message.send") && line.includes("parent")) return true;
-  }
-  return false;
-}
-
-function lastCut(lines: readonly string[]): { at: number; cause: CutCause; index: number } | null {
-  for (let index = lines.length - 1; index >= 0; index--) {
-    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string } };
-    try { entry = JSON.parse(lines[index]!); } catch { continue; }
-    if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
-    if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
-    if (entry.type !== "message" || !entry.message) continue;
-    const at = Date.parse(entry.timestamp ?? "");
-    const { role, stopReason } = entry.message;
-    if (role === "toolResult") return { at, cause: "mid-tool", index };
-    if (role !== "assistant") return null;
-    if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index };
-    if (stopReason !== "aborted") return null;
-    for (let back = index - 1; back >= 0; back--) {
-      let before: { type?: string; timestamp?: string; state?: { status?: string } };
-      try { before = JSON.parse(lines[back]!); } catch { continue; }
-      if (before.type !== "session_state") { if (before.type === "message") return null; continue; }
-      return before.state?.status === "archived" && at - Date.parse(before.timestamp ?? "") <= RESTART_ABORT_MS ? { at, cause: "restart", index } : null;
-    }
-    return null;
-  }
-  return null;
 }
 
 /** pi-pool's working limit at each change, from its pressure events (local time stamps), oldest first. */
@@ -271,7 +223,7 @@ export function measure(input: Inputs): PrecheckOutput {
       const slots = watched ? `, pi-pool then ran ${watched.working} of ${limitAt(input.limits, grant.at, input.okLimit)} slots with ${watched.queued} queued` : "";
       return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
     });
-    flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was cut by a ${CUT_WORDS[job.cause]} at ` +
+    flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was cut by ${cutWords(job.cause)} at ` +
       `${clock(job.at)} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
   }
   return { metrics, flagged };
@@ -294,7 +246,7 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
       if (deleted[chat]?.[entry.name] !== undefined) continue;
       const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
       if (now - changed > CUT_LOOKBACK_MS) continue;
-      const end = cutEnd(await tailLines(path, 512_000));
+      const end = await readCut(path);
       if (!end || now - end.at > CUT_LOOKBACK_MS) continue;
       const parent = await readFile(parentFile, "utf8").catch(() => "");
       if (parent.split("\n").some(line => line.includes("delete_subagent") && line.includes(entry.name))) continue;
@@ -304,20 +256,6 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
   };
   for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`));
   return found;
-}
-
-/** The last `bytes` of a file as lines, the first (cut) line dropped. */
-async function tailLines(file: string, bytes: number): Promise<string[]> {
-  const handle = await open(file, "r").catch(() => null);
-  if (!handle) return [];
-  try {
-    const { size } = await handle.stat();
-    const from = Math.max(0, size - bytes);
-    const buffer = Buffer.alloc(size - from);
-    await handle.read(buffer, 0, buffer.length, from);
-    const lines = buffer.toString("utf8").split("\n");
-    return from > 0 ? lines.slice(1) : lines;
-  } finally { await handle.close(); }
 }
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;

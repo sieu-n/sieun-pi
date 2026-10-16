@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { Catalog } from "../src/chat-catalog.ts";
+import { Catalog, rosterChildren } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
@@ -139,4 +139,54 @@ test("an attached chat's children take the daemon row's later activity and runni
   assert.equal(prompts.length, 1, "one notice, once the row shows the turn ended");
   assert.ok(prompts[0]!.includes(`ended at ${clockTime(Date.parse("2026-10-13T09:47:48.709Z"))}`), prompts[0]);
   assert.ok(!prompts[0]!.includes(`ended at ${clockTime(stale)}`), prompts[0]);
+});
+
+/**
+ * At 00:19:57Z on 10-16 the Prime daemon went down and archived queued jobs (local agents checks, local agents recovery): each wrote `archived`,
+ * then an empty aborted reply, did no work and sent no report, and the hub's roster still said done. The daemon's row carries no stop reason, so
+ * the catalog reads the end of the session file after the list and hands the roster on again.
+ */
+test("a job the daemon archived and aborted with no report since is an error with the cut in words; a finished job or an owner's Stop stays done", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "roster-cut-"));
+  const entry = (time: string, fields: Record<string, unknown>): string => JSON.stringify({ timestamp: `2026-10-16T${time}Z`, ...fields });
+  const task = entry("00:16:42.807", { type: "custom_message", customType: "agent_message", content: "[task from parent] ..." });
+  const queued = entry("00:16:43.455", { type: "custom", customType: "pi-pool-queue", data: { text: "Queued for a working slot, 71st of 71" } });
+  const archived = entry("00:19:57.647", { type: "session_state", state: { status: "archived" } });
+  const aborted = (time: string) => entry(time, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted" } });
+  const stopped = entry("00:30:00.000", { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" } });
+  const files = { cut: [task, queued, archived, aborted("00:19:57.648")], finished: [task, stopped], owner: [task, aborted("00:18:30.000")] };
+  for (const [name, lines] of Object.entries(files)) await writeFile(join(dir, `${name}.jsonl`), lines.join("\n") + "\n");
+  const child = (name: string, messageCount = 2) => ({ sessionId: `s-${name}`, cwd: "/tmp", sessionFile: join(dir, `${name}.jsonl`), messageCount, parentSessionId: CHAT,
+    rlmChildId: `child-${name}`, sessionName: name, taskState: "done", summary: "Completed the task", modified: "2026-10-16T00:19:57.648Z" });
+
+  const handed: ReadonlyMap<string, readonly ChildAgent[]>[] = [];
+  const chats = { ids: async () => new Set([CHAT]), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }),
+    roster: async (children: ReadonlyMap<string, readonly ChildAgent[]>) => { handed.push(children); } };
+  const reads = new ChatReadState("unused");
+  const labels = new ChatLabels("unused");
+  t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
+  t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
+  const catalog = new Catalog("unused", reads, labels, chats, new ThreadOrigins({ ids: async () => [] }));
+  Object.defineProperty(catalog.client, "isConnected", { get: () => true });
+  t.mock.method(catalog.client, "reconnect", async () => {});
+  t.mock.method(catalog.client, "waitForHello", async () => ({ appVersion: "0.9.8" }));
+  t.after(() => catalog.close());
+  let sessions = [{ sessionId: CHAT, cwd: "/tmp", activeSessionId: "a-chat", messageCount: 10, sessionName: "local agents" }, child("cut"), child("finished"), child("owner")];
+  t.mock.method(catalog.client, "request", async (command: { type: string }) => command.type === "list" ? { success: true, data: { sessions } } : { success: true, data: { jobs: [] } });
+  const settle = async (done: () => boolean) => { for (let tries = 0; tries < 100 && !done(); tries++) await new Promise(resolve => setTimeout(resolve, 20)); };
+  const statuses = () => (handed.at(-1)?.get(CHAT) ?? []).map(agent => [agent.sessionName, agent.status, agent.error]);
+
+  await catalog.refresh();
+  await settle(() => statuses().some(([, status]) => status === "error"));
+  assert.deepEqual(statuses(), [
+    ["cut", "error", `cut by an abort when the Prime daemon went down at ${clockTime(Date.parse("2026-10-16T00:19:57.648Z"))} and never reported`],
+    ["finished", "done", undefined],
+    ["owner", "done", undefined],
+  ]);
+
+  await writeFile(join(dir, "cut.jsonl"), [...files.cut, task, stopped].join("\n") + "\n");
+  sessions = [sessions[0]!, child("cut", 4), child("finished"), child("owner")];
+  await catalog.refresh();
+  await settle(() => statuses()[0]?.[1] === "done");
+  assert.equal(statuses()[0]?.[1], "done", "a resume after the cut clears it once the session gets a new message");
 });
