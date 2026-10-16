@@ -419,7 +419,7 @@ function parentSessionId(ctx: ExtensionContext): string | undefined {
  * worker's pid, so the pool sweeps it if the worker dies), an unlocked read of state.json each
  * WAIT_READ_MS sees the admit that another run's release or ask made, and a plain ask every WAIT_ASK_MS
  * keeps the place and runs an admit pass for slots that freed by a lapse. Resolves when the run may call
- * the model: admitted, the queue off, an error (fail open), or Stop, which drops the queue entry.
+ * the model: admitted, the queue off, an error that leaves no entry in state.json (fail open), or Stop, which drops the queue entry.
  * `onQueued` gets each queued answer.
  */
 interface AdmitWait { result: Promise<AdmitReply | "stopped" | "failed">; cancel: () => void }
@@ -436,6 +436,14 @@ export function placeIn(text: string, sid: string): { part: "working" | "queued"
 		const working = turns.working?.[sid];
 		if (working) return { part: "working", kind: typeof working.kind === "string" ? working.kind : null };
 		return { part: turns.queued?.[sid] ? "queued" : "gone", kind: null };
+	} catch {
+		return null;
+	}
+}
+
+function readPlace(sid: string): ReturnType<typeof placeIn> {
+	try {
+		return placeIn(readFileSync(POOL_STATE, "utf8"), sid);
 	} catch {
 		return null;
 	}
@@ -484,6 +492,16 @@ function admitWait(sid: string, parent: string | undefined, signal: AbortSignal 
 			}
 			const reply = admitReply(res.out);
 			if (!res.ok || !reply) {
+				// An ask fails when the pool flock stays busy past LOCK_TIMEOUT, which 1,161 vend_lock_busy
+				// lines in the 14:00 KST hour of 10-16 show. Until then the run went on without a slot and its
+				// queue entry stayed behind, to be admitted later with nobody on it for lease_s. A run whose
+				// entry still stands keeps waiting on it.
+				const place = readPlace(sid);
+				if (place?.part === "working") {
+					finish({ state: "admitted", kind: place.kind, position: null, total: null });
+					return true;
+				}
+				if (place?.part === "queued") return false;
 				finish("failed");
 				return true;
 			}
@@ -504,7 +522,7 @@ function admitWait(sid: string, parent: string | undefined, signal: AbortSignal 
 					const mtime = statSync(POOL_STATE).mtimeMs;
 					if (mtime !== seen) {
 						seen = mtime;
-						const place = placeIn(readFileSync(POOL_STATE, "utf8"), sid);
+						const place = readPlace(sid);
 						if (place?.part === "working") return finish({ state: "admitted", kind: place.kind, position: null, total: null });
 						if (place?.part === "gone") again = true;
 					}
@@ -551,21 +569,22 @@ export default function (pi: ExtensionAPI): void {
 		timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
 	});
 	// This session's place in the turn queue: no run yet, a run waiting for its slot, a
-	// run that holds one, or a run that goes without (queue off or pool error).
-	let slot: "none" | "held" | "free" | Promise<void> = "none";
+	// run that holds one, a run that goes without because the queue is off, or one that goes
+	// without after a pool error and may have left a queue entry that agent_end releases.
+	let slot: "none" | "held" | "free" | "failed" | Promise<void> = "none";
 	let cancelWait = () => {};
 	let renewTimer: ReturnType<typeof setInterval> | undefined;
 	let renewedAt = 0;
 	const dropSlot = async (sid: string | undefined): Promise<void> => {
-		const held = slot === "held";
+		const owes = slot === "held" || slot === "failed";
 		if (typeof slot === "object") cancelWait();
 		slot = "none";
 		if (renewTimer) clearInterval(renewTimer);
 		renewTimer = undefined;
-		if (held && sid) await pool(["release", sid]);
+		if (owes && sid) await pool(["release", sid]);
 	};
 	const holdSlot = async (ctx: ExtensionContext): Promise<void> => {
-		if (slot === "free") return;
+		if (slot === "free" || slot === "failed") return;
 		const sid = sessionId(ctx);
 		const parent = parentSessionId(ctx);
 		if (slot === "held") {
@@ -591,7 +610,7 @@ export default function (pi: ExtensionAPI): void {
 				slot = "none";
 				return;
 			}
-			slot = result !== "failed" && result.state === "admitted" ? "held" : "free";
+			slot = result === "failed" ? "failed" : result.state === "admitted" ? "held" : "free";
 			if (slot !== "held") return;
 			renewedAt = Date.now();
 			renewTimer = setInterval(() => {

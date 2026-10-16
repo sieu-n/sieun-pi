@@ -1,8 +1,8 @@
 // Drives the extension's turn-queue handlers (input when it has one, context, agent_end) against the
 // real pool CLI in the PI_POOL_DIR this process inherits, and prints what happened.
 // node queue_driver.mjs <index.ts> '<steps JSON>'
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -59,6 +59,12 @@ for (const step of steps) {
   } else if (step.op === 'clock') {
     const real = Date.now;
     Date.now = () => real() + step.ms;
+  } else if (step.op === 'lock') {
+    const code = 'import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint("held", flush=True)\ntime.sleep(float(sys.argv[2]))';
+    const holder = spawn('/usr/bin/python3', ['-c', code, join(process.env.PI_POOL_DIR, 'lock'), String(step.ms / 1000)], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await new Promise((r) => holder.stdout.once('data', r));
+  } else if (step.op === 'move') {
+    renameSync(join(process.env.PI_POOL_DIR, step.from), join(process.env.PI_POOL_DIR, step.to));
   } else if (step.op === 'sleep') {
     await new Promise((r) => setTimeout(r, step.ms));
   }
