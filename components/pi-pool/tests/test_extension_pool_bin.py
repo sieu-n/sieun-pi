@@ -24,3 +24,9 @@ class PoolBin(unittest.TestCase):
     def test_checkout_calls_its_own_cli(self):
         self.assertEqual(pool_bin("/h/sieun-pi/components/pi-pool/app/extension"),
                          "/h/sieun-pi/components/pi-pool/bin/pi-pool-token")
+
+    def test_install_staging_calls_its_own_cli(self):
+        # 10-16 02:55Z and 04:05Z: the install of 71316c0 ran its extension tests in releases/.staging-*, which called the live release's
+        # CLI with the memory governor on, so a child's borrow was refused and the install stopped.
+        self.assertEqual(pool_bin("/h/.local/share/pi-pool/releases/.staging-8e25ad526b0a-75370/app/extension"),
+                         "/h/.local/share/pi-pool/releases/.staging-8e25ad526b0a-75370/bin/pi-pool-token")
