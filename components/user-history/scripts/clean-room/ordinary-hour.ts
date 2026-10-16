@@ -10,8 +10,24 @@ import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenari
  * family's session files for the server notices the cuts removed, the chat's first [corrections] block, the chat's turn waits, and system
  * tokens per second from a copy of usage.duckdb. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "how many llm-wiki pages changed in the last 7 days, and which section changed the most? then find the 10 pages that changed " +
-  "the most and what changed in each, and keep a report with that list updated. i want all 10 explained by tonight";
+/** One ordinary task per chat name, so each run gets a new chat and a new task; `counts` and `section` find the answer in its first reply. */
+export const TASKS: Record<string, { message: string; counts: RegExp; section: RegExp; drop: RegExp }> = {
+  "wiki edits this week": {
+    message: "how many llm-wiki pages changed in the last 7 days, and which section changed the most? then find the 10 pages that changed " +
+      "the most and what changed in each, and keep a report with that list updated. i want all 10 explained by tonight",
+    counts: /\b\d[\d,]*\s+(llm-wiki |wiki |distinct |unique |changed )?(pages?|changes?|edits?|commits?|files?)\b/gi,
+    section: /\b(apps|domains|projects|experiments|agents|sessions|archive)\b/i,
+    drop: /\b(the|top|all) 10\b|\b10 pages\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
+  },
+  "dev branch commits": {
+    message: "how many commits landed on auto-sns-agent's sieun/dev in the last 7 days, and which app got the most of them? then find the 10 " +
+      "biggest commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
+    counts: /\b\d[\d,]*\s+(commits?|changes?|files?|lines?)\b/gi,
+    section: /\b(admin|anything|anything-be|api-portal|blog|crawler-v3|dm-extension|infra|llm-wiki|research-agent-be|research-app|search|vent|virev-demo)\b/i,
+    drop: /\b(the|top|all) 10\b|\b10 (biggest )?commits\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
+  },
+};
+const taskOf = (name: string) => { const task = TASKS[name]; if (!task) throw new Error(`no ordinary-hour task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`); return task; };
 const HOUR = 60 * 60_000;
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 /** measure.md (slop-cuts work folder), tokens per second in thousands. */
@@ -120,10 +136,10 @@ function firstCorrections(run: string, chatFile: string, chat: string): { from: 
 }
 
 /** The first text the owner reads: the chat's first tell_owner, else the last text of its first turn. */
-function firstReply(events: readonly SessionEvent[], since: number): { at: number; text: string } | null {
+function firstReply(events: readonly SessionEvent[], since: number, task: string): { at: number; text: string } | null {
   const told = events.find(event => event.kind === "call" && event.tool === "tell_owner" && event.at >= since);
   if (told && told.kind === "call") return { at: told.at, text: String((JSON.parse(told.input) as { text?: string }).text ?? "") };
-  const next = events.find(event => event.kind === "text" && event.at > since + 1000 && !SKIP.has(event.customType ?? "") && event.text.trim() !== TASK);
+  const next = events.find(event => event.kind === "text" && event.at > since + 1000 && !SKIP.has(event.customType ?? "") && event.text.trim() !== task);
   const text = events.filter(event => event.kind === "assistant" && event.at >= since && (!next || event.at < next.at)).at(-1);
   return text && text.kind === "assistant" ? { at: text.at, text: text.text } : null;
 }
@@ -154,6 +170,7 @@ async function usage(run: string, start: number, end: number, ids: readonly stri
 
 async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
   const start = state.windowStart;
+  const task = taskOf(state.chat.name);
   const now = Date.now();
   const end = Math.min(now, start + HOUR);
   const { files, duty, names } = family(run, state);
@@ -171,7 +188,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
     for (const event of events) {
       if (event.kind !== "text" || event.at < start || SKIP.has(event.customType ?? "")) continue;
       const text = event.text.trimStart();
-      if (id === state.chat.id && event.role === "user" && text === TASK) continue;
+      if (id === state.chat.id && event.role === "user" && text === task.message) continue;
       if (id === state.chat.id && event.role === "user" && !text.startsWith("[")) outside.push(`a typed message in the chat at ${iso(event.at)}: "${clip(text, 120)}"`);
       if (event.customType === "agent_message" && event.fromId && !ids.has(event.fromId) && event.relation !== "child" && event.relation !== "parent") {
         outside.push(`${event.from ?? event.fromId} messaged ${label(id)} at ${iso(event.at)}: "${clip(text, 120)}"`);
@@ -225,10 +242,10 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
     `${waits.length} turns, wait median ${median(waitSeconds).toFixed(1)} s, longest ${Math.max(0, ...waitSeconds).toFixed(1)} s` +
     (waits.length ? `:\n${waits.map(entry => `    - ${iso(entry.at)} ${entry.wait.toFixed(1)} s "${entry.what}"`).join("\n")}` : "") });
 
-  const reply = firstReply(chatEvents, start - 5 * 60_000);
-  const plain = reply ? reply.text.replace(/\b(the|top|all) 10\b|\b10 pages\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi, "") : "";
-  const counts = plain.match(/\b\d[\d,]*\s+(llm-wiki |wiki |distinct |unique |changed )?(pages?|changes?|edits?|commits?|files?)\b/gi) ?? [];
-  const section = plain.match(/\b(apps|domains|projects|experiments|agents|sessions|archive)\b/i)?.[0];
+  const reply = firstReply(chatEvents, start - 5 * 60_000, task.message);
+  const plain = reply ? reply.text.replace(task.drop, "") : "";
+  const counts = plain.match(task.counts) ?? [];
+  const section = plain.match(task.section)?.[0];
   checks.push({ id: "e", ok: reply ? counts.length > 0 && section !== undefined : null, detail: reply
     ? `${iso(reply.at)}, counts ${counts.length ? counts.join(", ") : "none"}, section ${section ?? "none"}: "${clip(reply.text, 600)}"` : "the chat has not replied" });
 
@@ -262,13 +279,13 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
 
 export const ordinaryHour: Scenario = {
   name: "ordinary-hour",
-  headMessage: () => TASK,
+  headMessage: name => taskOf(name).message,
   fixtures: [],
   setupNotes: state => [
     `# Run setup: ${state.chat.name}`, "",
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one owner-style first message and no seeded board, todo or fixture.`,
     `Its check-in runs every ${state.everyMs / 60_000} min on the server's clock. Nobody types into it or its jobs for the hour.`, "",
-    "## The first message", "", `> ${TASK}`, "",
+    "## The first message", "", `> ${taskOf(state.chat.name).message}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),
   baseline: () => { throw new Error("this scenario has no baseline; measure.md in the slop-cuts work folder holds the before numbers"); },
