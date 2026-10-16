@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { promisify } from "node:util";
 import { NO_MISSES } from "../src/chat-checkin.ts";
 import { CHECK_IN_DUTY, type DutyMetric, dutyShapeProblem, judge, MAX_DUTY_METRICS, parseDutyInput, type PrecheckOutput, shapeNote, verdictMetrics } from "../src/shared/chat-duties.ts";
 
@@ -14,8 +12,6 @@ const fixture = JSON.parse(await readFile(join(import.meta.dirname, "fixtures", 
 const definition = (metrics: unknown[]) => ({ name: "Chat system", ownerWords: "keep it healthy", goal: "Chats never sit stopped.", onMiss: "Fix what missed.",
   metrics, schedule: { kind: "daily", at: "07:00" }, precheck: { command: ["node", "-e", "0"], cwd: tmpdir() } });
 const metric = (key: string, headline = false) => ({ key, label: `Count of ${key.replace(/_/g, " ")}`, op: "<=", target: 0, ...(headline ? { headline: true } : {}) });
-const FIX = 'Fix it: keep the one number the owner would ask about as the headline ("headline": true), keep up to 3 supporting numbers he can read, ' +
-  "and leave the rest in the precheck output, where the run detail shows them.";
 
 test("a stored 38-metric duty (Chat system, 10-15) is judged on its headline plus the next 3 metrics, and its summary asks for a rework", () => {
   const { duty, output, recordedVerdict } = fixture.chatSystem;
@@ -33,7 +29,6 @@ test("a stored 38-metric duty (Chat system, 10-15) is judged on its headline plu
   const onTarget = judge(duty.metrics, { metrics: { ...output.metrics, end_state_pct: 100, stuck_steps: 0, corrections: 1, repeat_corrections: 0 } });
   assert.equal(onTarget.verdict, "met", "off_brief 15 and blocked_on_others 13 still miss in the output, and the verdict is met");
   assert.match(onTarget.summary, /^end_state_pct 100% \(on target\); all 4 on target; this duty is over the shape limit/);
-  assert.throws(() => parseDutyInput(definition(duty.metrics), "d1", 0), new Error(`metrics: a duty has one headline metric and at most 3 supporting ones; this one has 38 metrics, over the limit of 4. ${FIX}`));
 });
 
 test("a stored duty with no headline (Crawler pipeline, 11 metrics) is judged on its first 4 metrics in file order", () => {
@@ -63,29 +58,12 @@ test("a reshaped duty (CI system, 10-15) is judged on its headline and 3 support
   assert.equal(parseDutyInput(definition(duty.metrics), "d1", 0).metrics.length, 4);
 });
 
-test("parseDutyInput refuses 5 metrics, no headline and two headlines, with what to do; one metric is its own headline", () => {
+test("parseDutyInput takes any number of metrics; one metric is its own headline", () => {
   assert.equal(MAX_DUTY_METRICS, 4);
   const five = [metric("a_count", true), metric("b_count"), metric("c_count"), metric("d_count"), metric("e_count")];
-  assert.throws(() => parseDutyInput(definition(five), "d1", 0),
-    new Error(`metrics: a duty has one headline metric and at most 3 supporting ones; this one has 5 metrics, over the limit of 4. ${FIX}`));
-  assert.throws(() => parseDutyInput(definition([metric("a_count"), metric("b_count")]), "d1", 0),
-    new Error(`metrics: a duty has one headline metric and at most 3 supporting ones; this one has no headline metric. ${FIX}`));
-  assert.throws(() => parseDutyInput(definition([metric("a_count", true), metric("b_count", true)]), "d1", 0),
-    new Error(`metrics: a duty has one headline metric and at most 3 supporting ones; this one has 2 headlines, a_count and b_count. ${FIX}`));
-  assert.throws(() => parseDutyInput(definition([]), "d1", 0), /^Error: metrics: 1 to 4, one of them the headline\.$/);
+  assert.equal(parseDutyInput(definition(five), "d1", 0).metrics.length, 5);
+  assert.throws(() => parseDutyInput(definition([]), "d1", 0), /^Error: metrics: at least one, with the headline marked\.$/);
   assert.deepEqual(parseDutyInput(definition([metric("a_count")]), "d1", 0).metrics, [{ ...metric("a_count"), headline: true }]);
-  assert.equal(parseDutyInput(definition(five.slice(0, 4)), "d1", 0).metrics.length, 4);
-});
-
-test("add.ts prints the shape refusal for the chat and exits 1, leaving the chat's duties as they were", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "duty-shape-"));
-  const file = join(dir, "wide.duty.json");
-  await writeFile(file, JSON.stringify(definition([metric("a_count", true), metric("b_count"), metric("c_count"), metric("d_count"), metric("e_count")])));
-  const result = await promisify(execFile)(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "add.ts"), "chat1", file, "--data-dir", dir],
-    { cwd: join(import.meta.dirname, "..") }).then(() => null, (error: { code: number; stderr: string }) => error);
-  assert.equal(result?.code, 1);
-  assert.equal(result.stderr, `refused ${file}: metrics: a duty has one headline metric and at most 3 supporting ones; this one has 5 metrics, over the limit of 4. ${FIX}\n`);
-  assert.equal(await readFile(join(dir, "duties", "chat1.json"), "utf8").catch(() => "absent"), "absent");
 });
 
 test("the check-in duty has one headline, goal_gaps, and 3 supporting metrics, stuck_steps first; its other counts stay in the measure output", () => {

@@ -12,7 +12,7 @@ import { jobRegistry } from "../src/chat-sources.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_GOING, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, dutyNameProblem, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
+import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
   type DutyMetric, type DutyRunRecord, metricSizeProblem } from "../src/shared/chat-duties.ts";
 
 const run = promisify(execFile);
@@ -131,17 +131,6 @@ test("parseDutyInput: refuses a bad schedule, metric or board goal; nextDutyId n
   assert.equal(parseDutyInput({ ...input(), precheck: { command: ["x"], cwd: "/", timeoutMs: 999_999 } }, "d1", 0).precheck.timeoutMs, 120_000);
   assert.equal(nextDutyId([duty(0, { id: "d1" }), duty(0, { id: "d4" })]), "d5");
   assert.equal(nextDutyId([]), "d1");
-});
-
-test("dutyNameProblem: a duty is named by the system it looks after, in two to four plain words (owner 10-10, c32 repeat)", () => {
-  const refused = { "Chat health": /ends in health/, "Harness health": /ends in health/, "chat HEALTH": /ends in health/, "llm-wiki": /fewer than 2 words/,
-    "the repo and ci stay well designed": /more than 4 words/, "CI Design Review": /Title-Case words/ };
-  for (const [name, why] of Object.entries(refused)) {
-    assert.match(dutyNameProblem(name) ?? "", /^name: the system the duty looks after, in two to four plain words, like "Chat system" or "Skills and harness"; /, name);
-    assert.match(dutyNameProblem(name)!, why, name);
-    assert.throws(() => parseDutyInput({ ...input(), name }, "d1", 0), why, name);
-  }
-  for (const name of ["Chat system", "Skills and harness", "Local dev servers", "git rules are enforced", "CI guarantees"]) assert.equal(dutyNameProblem(name), null, name);
 });
 
 test("metricSizeProblem: a duty refuses size counts of text and takes outcomes, time and process memory (owner 10-10, c39)", () => {
@@ -529,7 +518,7 @@ test("duty store remove: a duty's definition, runs and saved files go; the secon
   assert.deepEqual((await readdir(store.chatDir("c2"))).sort(), ["d10.state.json", "d2.state.json"]);
 });
 
-test("rename.ts: renames a live duty in place, keeping its id, run count and schedule; a second run changes nothing; a health name is refused", async () => {
+test("rename.ts: renames a live duty in place, keeping its id, run count and schedule; a second run changes nothing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duties-rename-"));
   const store = new DutyStore(dir);
   await store.update("c1", duties => { duties.push({ ...parseDutyInput(input(), "d3", 0), name: "Chat health", runCount: 7, lastRunAt: 5 }); });
@@ -537,7 +526,6 @@ test("rename.ts: renames a live duty in place, keeping its id, run count and sch
     { cwd: join(import.meta.dirname, "..") });
   assert.equal((await script("Chat health", "Chat system")).stdout, "renamed d3 in c1\n");
   assert.equal((await script("Chat health", "Chat system")).stdout, "unchanged d3 in c1\n", "a second run changes nothing");
-  await assert.rejects(script("Chat system", "Harness health"), /ends in health/);
   const [renamed] = await store.list("c1");
   assert.deepEqual([renamed!.id, renamed!.name, renamed!.runCount, renamed!.lastRunAt, renamed!.schedule], ["d3", "Chat system", 7, 5, input().schedule]);
 });

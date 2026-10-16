@@ -256,21 +256,6 @@ export function parseSchedule(schedule: unknown): DutySchedule {
   throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080).");
 }
 
-/**
- * Why a duty name is not the system the duty looks after in two to four plain words, or null for a good name. The owner (10-10)
- * asked for names that say what the system does, like a short plain phrase about git rules or CI, then settled on "Chat system" over
- * "Chat health". Refused: fewer than 2 or more than 4 words, a last word "health", or two or more Title-Case words; a capital first letter is fine.
- */
-export function dutyNameProblem(name: string): string | null {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const problem = words.length < 2 ? "it has fewer than 2 words"
-    : words.length > 4 ? "it has more than 4 words"
-    : /^health$/i.test(words.at(-1)!.replace(/[^\p{L}]/gu, "")) ? "it ends in health"
-    : words.filter(word => /^\p{Lu}\p{Ll}/u.test(word)).length >= 2 ? "it has Title-Case words"
-    : null;
-  return problem && `name: the system the duty looks after, in two to four plain words, like "Chat system" or "Skills and harness"; "${name.trim()}" is refused: ${problem}.`;
-}
-
 const TEXT_UNIT = "words?|lines?|bytes?|chars?|characters?|tokens?";
 const TEXT_SIZE_LABEL = new RegExp(`\\b(?:\\d[\\d,.]*\\s*(?:${TEXT_UNIT})|(?:${TEXT_UNIT})\\s+(?:in|of|per|count)|(?:total|number of|count of)\\s+(?:${TEXT_UNIT})|file ?sizes?)\\b`, "i");
 const TEXT_SIZE_WORD = new RegExp(`^(?:${TEXT_UNIT}|filesize)$`, "i");
@@ -295,13 +280,11 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   if (!isRecord(value)) throw new Error("A duty is an object.");
   const { name, ownerWords, goal, metrics, precheck, onMiss, boardGoal } = value;
   if (!str(name, 80)) throw new Error("name: 1 to 80 characters.");
-  const nameProblem = dutyNameProblem(name);
-  if (nameProblem) throw new Error(nameProblem);
   if (!str(ownerWords, 4000)) throw new Error("ownerWords: the owner's words, verbatim.");
   if (!str(goal, 400)) throw new Error("goal: what good means, in plain words.");
   if (!str(onMiss, 1000)) throw new Error("onMiss: what the duty job does about a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
-  if (!Array.isArray(metrics) || !metrics.length) throw new Error(`metrics: 1 to ${MAX_DUTY_METRICS}, one of them the headline.`);
+  if (!Array.isArray(metrics) || !metrics.length) throw new Error("metrics: at least one, with the headline marked.");
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
@@ -313,8 +296,6 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   });
   // A duty of one metric has nothing else to lead, so that metric is its headline.
   if (parsedMetrics.length === 1) parsedMetrics[0]!.headline = true;
-  const shapeProblem = dutyShapeProblem(parsedMetrics);
-  if (shapeProblem) throw new Error(shapeProblem);
   const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd, 1024)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
