@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChildAgent } from "../src/shared/types.ts";
+import type { ChatBoard, ChildAgent, SessionRow } from "../src/shared/types.ts";
 import { dutySink, fakeThreads, source } from "./chats-helpers.ts";
 
 /**
@@ -22,7 +22,7 @@ const board = (): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-16T07:00:00.
   ] },
 ] });
 
-async function chatWith(children: ChildAgent[]) {
+async function chatWith(children: ChildAgent[], rows: () => SessionRow[] = () => []) {
   const dir = await mkdtemp(join(tmpdir(), "job-steer-step-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -30,7 +30,7 @@ async function chatWith(children: ChildAgent[]) {
   await index.add("c1");
   await writeFile(join(dir, "check-in-settings.json"), JSON.stringify({ c1: { everyMs: 3_600_000 } }));
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board() }, () => NOW, () => []), duty: dutySink().duty });
+    { ...source(dir, { c1: board() }, () => NOW, rows), duty: dutySink().duty });
   await chats.adopt();
   threads.fire().live("c1", children);
   await chats.settled();
@@ -52,4 +52,13 @@ test("a job only the board names, while the catalog has no rows and the hub list
   assert.deepEqual(await chats.steerJob("c1", SESSION, "hi"), { session: SESSION, act: "steer" });
   assert.deepEqual(await chats.steerJob("c1", "no such job", "hi"), { jobs: [] });
   assert.equal(calls.length, 2, calls.join("\n"));
+});
+
+test("a job is steered in its step's session while the daemon's list times out", async () => {
+  let listing = true;
+  const { chats, calls } = await chatWith([], () => { if (listing) return []; throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response to \"list\""); });
+  listing = false;
+  assert.deepEqual(await chats.steerJob("c1", "blog reader demo", "hi"), { session: SESSION, act: "steer" });
+  assert.deepEqual(await chats.steerJob("c1", "no such job", "hi"), { jobs: [] });
+  assert.equal(calls.length, 1, calls.join("\n"));
 });

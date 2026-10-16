@@ -1071,7 +1071,11 @@ export class Chats {
   async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" } | { jobs: string[] } | null> {
     await this.load();
     if (!this.chatIds.has(chat)) return null;
-    const { board, facts, sessions } = await this.gather(chat);
+    // The daemon's list can time out for minutes after a restart (502 at 08:2xZ on 10-16), so the board alone then names the job's session.
+    const gathered = await this.gather(chat).catch(error => { this.log(`chat ${chat.slice(0, 8)}: job steer reads only the board: ${error instanceof Error ? error.message : String(error)}`); return null; });
+    const board = gathered ? gathered.board : await this.source.board(chat).catch(() => null);
+    const facts = gathered?.facts ?? [];
+    const sessions = gathered?.sessions;
     const wanted = job.trim().toLowerCase();
     const stepSessions = new Map<string, string>();
     walk(board?.plan ?? [], item => { const name = planJob(item.job)?.trim().toLowerCase(); if (name && item.sessionId) stepSessions.set(name, item.sessionId); });
