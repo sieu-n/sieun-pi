@@ -334,5 +334,37 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([stamp.isoformat() for stamp in found], ["2026-10-15T14:35:39.152000+00:00", "2026-10-15T16:06:56.136000+00:00"])
 
 
+    def test_a_job_archived_and_aborted_by_a_daemon_restart_is_resumed(self):
+        # 10-16 00:19:58Z: the daemon supervisor stopped and a new one listened at 00:20:13Z. daily code health report (no open step) was
+        # archived at 00:19:58.026Z with an empty abort 1 ms later; the default list then showed it archived and no sweep continued it.
+        archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
+        self.session("restartcut00", [role(31, "toolResult"), archived, aborted], lifecycle="archived")
+        self.session("ownerstop000", [role(21, "toolResult"), {**archived, "timestamp": at(20.01)}, {**aborted, "timestamp": at(20)}],
+                     lifecycle="archived")
+        window = (NOW - dt.timedelta(minutes=30, seconds=5), NOW - dt.timedelta(minutes=29, seconds=45))
+        with patch.object(resume_paused, "daemon_restarts", return_value=[window]), \
+                patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_direct()
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("restartcut00", "daemon_restart")])
+        self.assertEqual(self.sent, [("0" * 24 + "restartcut00", "continue")])
+
+    def test_an_archived_owner_in_the_default_list_counts_as_saved(self):
+        full = "01a141b8-c786-723a-baec-b975a1a24279"
+        listed = [{"id": full, "sessionId": full, "lifecycle": "archived"}, {"id": "other", "lifecycle": "archived"}]
+        rows = resume_paused.with_saved_owners(listed, [], {full})
+        self.assertEqual([row.get("saved") for row in rows], [True, None])
+
+    def test_daemon_restarts_reads_each_supervisor_restart_from_the_logs(self):
+        logs = self.root / "logs"
+        logs.mkdir()
+        (logs / "daemon.sock.abc.log").write_text(
+            "[2026-10-16T00:19:58.036Z] supervisor: Session worker 4b76cc9a9a2a stderr: shutting down (exit 0); closing 0 active session(s)\n"
+            "[2026-10-16T00:20:13.549Z] supervisor: Prime Agent daemon supervisor 2b6f listening on /tmp/daemon.sock\n")
+        with patch.object(resume_paused, "LOG_DIR", logs):
+            found = resume_paused.daemon_restarts()
+        self.assertEqual([(a.isoformat(), b.isoformat()) for a, b in found],
+                         [("2026-10-16T00:19:53.036000+00:00", "2026-10-16T00:20:13.549000+00:00")])
+
 if __name__ == "__main__":
     unittest.main()

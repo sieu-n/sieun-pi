@@ -23,7 +23,7 @@ The script reads `prime-agent list --json` and the tail of each live session fil
 - The last message is an empty model reply that asked for a tool.
 - The run shows `working` but did nothing for 30 minutes, or for 120 minutes inside one tool call.
 
-It skips runs that were aborted or archived, runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also holds back a run until `pi-pool who` names an account that can serve its tree, because an earlier resume fails again at once.
+It skips runs that were aborted or archived, unless the abort or archive came from a daemon restart (it reads each supervisor restart from the daemon logs and lists such runs as `daemon_restart`). It also skips runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also holds back a run until `pi-pool who` names an account that can serve its tree, because an earlier resume fails again at once.
 
 Each run maps to its head through `parentActiveSessionId`. An idle head gets the message plus the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 

@@ -25,7 +25,9 @@ Runs that were aborted ("Request was aborted") or archived, for example a
 helper its parent deleted, do not count, with two exceptions: an abort that
 ended the retry of an interruption error counts as that error, and an abort
 written when the daemon shut the run's worker down (a "received SIGTERM" line
-in the daemon log at that moment) counts as "worker_stopped". Rate limits (429), overloaded (529),
+in the daemon log at that moment) counts as "worker_stopped", and an abort
+or archive written while the daemon supervisor restarted (from its last log
+line to the new supervisor's "listening" line) counts as "daemon_restart". Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
@@ -95,6 +97,10 @@ SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: 
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
 # came 0.002 s before to 0.049 s after their worker's SIGTERM line, so an abort this close to one is the shutdown's.
 SHUTDOWN_MATCH_S = 1.0
+RESTART_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Prime Agent daemon supervisor \S+ listening", re.MULTILINE)
+# A supervisor that stops archives its live sessions just before its last log line: at the 10-16 00:19:58Z restart 14 archives fell
+# 1.0 s before to 0.6 s after that line, and at the 10-15 18:25Z stop 93 fell up to 4.4 s before it.
+RESTART_LEAD_S = 5.0
 # Full session ids that own an open step of a chat (--owners).
 OWNERS = set()
 RECOVERY_NOTICE = "prime-agent.worker_recovery"
@@ -130,7 +136,9 @@ def with_saved_owners(sessions, saved_rows, owners):
     seen = {s.get("sessionId") or s["id"] for s in sessions}
     extra = [{**row, "saved": True} for row in saved_rows
              if (row.get("sessionId") or row["id"]) in owners and (row.get("sessionId") or row["id"]) not in seen]
-    return [*sessions, *extra]
+    # The default list also shows a recently archived session; an owner there counts as saved too, else the next sweep skips it.
+    listed = [{**s, "saved": True} if (s.get("sessionId") or s["id"]) in owners and s.get("lifecycle") != "live" else s for s in sessions]
+    return [*listed, *extra]
 
 
 def tail_entries(path, nbytes=256_000):
@@ -246,8 +254,12 @@ def is_busy(session):
     return session.get("activity") == "working" or any(session.get(flag) for flag in BUSY_FLAGS)
 
 
-def stopped_on_purpose(entries, last):
-    """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted."""
+def stopped_on_purpose(entries, last, restarts=list):
+    """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted.
+
+    An archive that a daemon restart wrote does not count."""
+    if archived_by_restart(entries, restarts):
+        return False
     msg = last.get("message") or {}
     if msg.get("role") == "toolResult" and any(
             isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or []):
@@ -297,7 +309,41 @@ def worker_shutdowns():
     return sorted(stamps)
 
 
-def aborted_verdict(last, entries, shutdowns, owner=False):
+def daemon_restarts():
+    """(start, end) of each time the Prime daemon supervisor stopped and a new one started, from its logs, oldest first.
+
+    The window runs from RESTART_LEAD_S before the old supervisor's last log line to the new one's "listening" line.
+    A daemon restart archives every live session and aborts its turn, which no one asked for.
+    """
+    windows = []
+    for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        previous = None
+        for line in text.splitlines():
+            if not line.startswith("["):
+                continue
+            stamp = parse_ts(line[1:line.find("]")])
+            match = RESTART_LINE.match(line)
+            if match and stamp and previous and previous <= stamp:
+                windows.append((previous - dt.timedelta(seconds=RESTART_LEAD_S), stamp))
+            previous = stamp or previous
+    return sorted(set(windows))
+
+
+def in_restart(stamp, restarts):
+    return bool(stamp) and any(start <= stamp <= end for start, end in restarts())
+
+
+def archived_by_restart(entries, restarts):
+    """The session's last archive came from a daemon restart, not from a person or a parent."""
+    archives = [e for e in entries if e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived"]
+    return bool(archives) and in_restart(parse_ts(archives[-1].get("timestamp")), restarts)
+
+
+def aborted_verdict(last, entries, shutdowns, owner=False, restarts=list):
     """("error", text) for an abort that ended the retry of an interruption error, ("worker_stopped", text) for one the
     daemon wrote when it shut the run's worker down, ("aborted", text) for an empty one of a step owner, else None: the
     user or a parent stopped the run."""
@@ -309,6 +355,8 @@ def aborted_verdict(last, entries, shutdowns, owner=False):
     ts = parse_ts(last.get("timestamp"))
     if ts and any(abs((ts - stamp).total_seconds()) <= SHUTDOWN_MATCH_S for stamp in shutdowns()):
         return ("worker_stopped", f"The daemon shut its worker down at {last.get('timestamp')} in the middle of the turn.")
+    if in_restart(ts, restarts):
+        return ("daemon_restart", f"The Prime daemon restarted at {last.get('timestamp')} in the middle of the turn.")
     if owner and not reply_text(last):
         return ("aborted", "Its turn was aborted with no reply while it owned an open step.")
     return None
@@ -338,14 +386,14 @@ def never_started(session, entries, nbytes=256_000):
     return (notice, task) if isinstance(task, str) and task.strip() else None
 
 
-def classify(last, now, entries=(), shutdowns=list, owner=False):
+def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
         return None
     msg = last.get("message") or {}
     role, stop = msg.get("role"), msg.get("stopReason")
     if role == "assistant" and stop == "aborted":
-        return aborted_verdict(last, list(entries), shutdowns, owner)
+        return aborted_verdict(last, list(entries), shutdowns, owner, restarts)
     if role == "assistant" and stop == "toolUse" and not msg.get("content"):
         ts = parse_ts(last.get("timestamp"))
         if ts is None or (now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN:
@@ -392,6 +440,13 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             stops.append(worker_shutdowns())
         return stops[0]
 
+    restart_windows = []
+
+    def restarts():
+        if not restart_windows:
+            restart_windows.append(daemon_restarts())
+        return restart_windows[0]
+
     def head_session(head, s):
         row = by_id.get(head, s)
         return row.get("sessionId") or row["id"]
@@ -406,7 +461,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
         sid = short_id(s)
         full = s.get("sessionId") or s["id"]
         owner = full in OWNERS
-        if s.get("lifecycle") != "live" and not (owner and s.get("saved")):
+        if s.get("lifecycle") != "live" and not (owner and s.get("saved")) and not archived_by_restart(entries_of(sid), restarts):
             continue
         if s.get("workerState") == "failed":
             head = head_of(sid, by_id)
@@ -440,9 +495,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             verdict = ("never_started", "Its worker stopped before its first task reached it.")
         else:
             unstuck = full in UNSTUCK
-            if not unstuck and stopped_on_purpose(entries_of(sid), last):
+            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts):
                 continue
-            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner)
+            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner, restarts)
             if not verdict:
                 continue
         ts = parse_ts(last.get("timestamp"))
@@ -474,7 +529,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             "head_session_id": head_session(head, s),
             **({"aborted": True} if full in UNSTUCK else {}),
             # A saved session has no short id the daemon answers to; it takes its full id, and the message reopens it.
-            **({"target": full} if s.get("saved") else {}),
+            **({"target": full} if s.get("saved") or s.get("lifecycle") != "live" else {}),
             **({"task": task} if task else {}),
         })
     return paused
