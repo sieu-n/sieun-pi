@@ -270,8 +270,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
         if (names.length) await jobs().add(names, rootChat);
       }
       // A limit a chat or a job of a chat sends another session gets the reply rule's evidence check before it leaves the kernel (c43).
-      if ((marked || job || underChat) && event.toolName === "ipython" && typeof event.input.code === "string") {
-        const code = withMessageCheck(event.input.code, dataDir());
+      // Every other session's kernel gets the send checks too: the 5180 SSR hang fix job, no job of a chat, read each daemon timeout as a
+      // failure and sent one report 4 times on 10-16 between 05:03 and 05:44Z.
+      if (event.toolName === "ipython" && typeof event.input.code === "string") {
+        const code = withMessageCheck(event.input.code, marked || job || underChat ? dataDir() : null);
         if (code !== undefined) event.input.code = code;
       }
       return undefined;

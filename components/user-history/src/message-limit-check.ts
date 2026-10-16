@@ -14,22 +14,26 @@ const FILE = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "messag
 /** The file's VERSION: a kernel that installed an older one runs the new file at its next cell. */
 const VERSION = Number(/^VERSION = (\d+)$/m.exec(readFileSync(FILE, "utf8"))?.[1] ?? 0);
 
-const preludeSource = (dataDir: string): string => `
+const preludeSource = (dataDir: string | null): string => `
 import sys
+sys.user_history_data_dir = ${dataDir === null ? "None" : JSON.stringify(dataDir)}
 if getattr(sys, "user_history_message_check", None) != ${VERSION}:
     try:
-        exec(compile(open(${JSON.stringify(FILE)}).read(), ${JSON.stringify(FILE)}, "exec"), {"__name__": "user_history_message_check", "__file__": ${JSON.stringify(FILE)}, "DATA_DIR": ${JSON.stringify(dataDir)}})
+        exec(compile(open(${JSON.stringify(FILE)}).read(), ${JSON.stringify(FILE)}, "exec"), {"__name__": "user_history_message_check", "__file__": ${JSON.stringify(FILE)}, "DATA_DIR": ${dataDir === null ? "None" : JSON.stringify(dataDir)}})
     except Exception as error:
         sys.user_history_message_check = ${VERSION}
         print(f"user-history: the agent message check did not load: {error}", file=sys.stderr)
 `;
 
-/** One line, so the cell's own line numbers in a traceback move by one. `dataDir` is the chat server's directory, where the job names live. */
-export const messageCheckPrelude = (dataDir: string): string =>
+/**
+ * One line, so the cell's own line numbers in a traceback move by one. `dataDir` is the chat server's directory, where the job names live;
+ * null in a session outside the chats, whose kernel gets the send checks and records no brief.
+ */
+export const messageCheckPrelude = (dataDir: string | null): string =>
   `exec(compile(${JSON.stringify(preludeSource(dataDir))}, "<user-history message check>", "exec"), {})\n`;
 
 /** The cell with the prelude in front, or undefined when it already has it. */
-export function withMessageCheck(code: string, dataDir: string): string | undefined {
+export function withMessageCheck(code: string, dataDir: string | null): string | undefined {
   const prelude = messageCheckPrelude(dataDir);
   return code.includes(prelude) ? undefined : prelude + code;
 }

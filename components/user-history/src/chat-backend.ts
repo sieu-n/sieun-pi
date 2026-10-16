@@ -42,6 +42,7 @@ import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-brid
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
+import { SendOnce, sessionFileOf } from "./send-once.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
@@ -219,14 +220,26 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog });
-  const agentMessage = {
-    deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
+  // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
+  const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
+    send: async (session, text) => {
       await catalog.connect();
       const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
       if (response.success) return "sent";
       if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
       throw new Error(response.error);
     },
+    queued: async session => {
+      await catalog.connect();
+      const response = await catalog.client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
+      if (!response) return null;
+      if (!response.success) return response.error.startsWith(UNKNOWN_ACTIVE) ? [] : null;
+      const actions = (response.data as { sessionActions?: { steering?: unknown; followUps?: unknown } }).sessionActions;
+      return [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []);
+    },
+    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir) });
+  const agentMessage = {
+    deliver: (session: string, text: string): Promise<"sent" | "gone"> => sendOnce.deliver(session, text),
     startRoot: async (root: string): Promise<void> => {
       const sessionPath = (await catalog.summary(root))?.sessionFile;
       if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);

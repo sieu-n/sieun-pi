@@ -10,7 +10,10 @@ its own reference. It does three things.
    prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
    out at 17:08Z reached Crawler VP at 17:16:20Z and frontend bro at 17:10:13Z, when their running ipython calls (758 s and 459 s) ended. The
    senders read the error as a failure and sent again, so frontend bro got one ask 7 times. The wrapper returns an "unconfirmed" receipt
-   instead and prints that a resend arrives as a second copy.
+   instead and remembers the send. A later send of the same text to the same agent looks for the first copy first (src/send-once.ts): when it
+   landed in the target's session file the wrapper returns a "delivered" receipt and sends nothing, when the target still has messages
+   queued or the roster does not answer it returns "unconfirmed" again and sends nothing, and only when neither holds it does it go out.
+   On 10-16 the 5180 SSR hang fix job sent one report 4 times between 05:03 and 05:44Z, each after a timeout.
 3. The brief record. When an "rlm.run" (rlm.spawn) or "rlm.create_session" request returns, it writes the brief with the new child's or
    root's ids to DATA_DIR/spawn-briefs/, where the chat service's brief keeper (src/brief-keeper.ts) sends it again if the session never gets
    its first prompt. Prime holds a new session's state in its worker's memory and writes the file late: at 23:43 to 00:04Z on 10-15/16 ten
@@ -26,15 +29,28 @@ import sys
 import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
-VERSION = 10
+SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
+VERSION = 11
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
 UNCONFIRMED_NOTE = (
     "agent_message: Prime Agent did not confirm this send within 30 s because {target} is busy. The daemon still holds it and delivers it "
     "when {target}'s running tool call ends (on 10-12 two such sends landed 2 and 8 minutes later). Do not send it again: a resend arrives "
-    "as a second copy. To check, read {target}'s transcript after its current tool call."
+    "as a second copy. If you send the same text again, this wrapper first looks for the first copy and sends only when it is gone."
 )
+HELD_NOTE = (
+    "agent_message: not sent again. The send of this text to {target} that timed out at {since} {where}, and a second send would arrive as a "
+    "second copy."
+)
+# (receiver_role, receiver_name, key) -> {"since": epoch s, "texts": [...]} for each send the daemon timed out on.
+UNCONFIRMED = {}
+ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z")
+
+
+def data_dir():
+    """The chat server's directory the latest cell's prelude named (None outside the chats), else the one this file was installed with."""
+    return getattr(sys, "user_history_data_dir", globals().get("DATA_DIR"))
 
 
 class LimitRefused(Exception):
@@ -43,7 +59,7 @@ class LimitRefused(Exception):
 
 def refusal(text: str, role=None):
     try:
-        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": globals().get("DATA_DIR"), "role": role}), capture_output=True, text=True)
+        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": data_dir(), "role": role}), capture_output=True, text=True)
         return json.loads(proc.stdout.strip().splitlines()[-1]).get("refusal")
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError):
         return None
@@ -70,8 +86,8 @@ def tree_root(path):
 
 
 def record_brief(request_type, payload, reply):
-    data_dir = globals().get("DATA_DIR")
-    if not isinstance(data_dir, str) or not isinstance(reply, dict) or not isinstance(payload.get("prompt"), str):
+    chat_dir = data_dir()
+    if not isinstance(chat_dir, str) or not isinstance(reply, dict) or not isinstance(payload.get("prompt"), str):
         return
     kw = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else {}
     if request_type == "rlm.run":
@@ -83,12 +99,67 @@ def record_brief(request_type, payload, reply):
         return
     record = {"kind": kind, "id": ident, "name": kw.get("name") or reply.get("name") or "", "prompt": payload["prompt"], "root": root,
               "at": int(time.time() * 1000), **{key: str(value) for key, value in where.items() if value}}
-    folder = os.path.join(data_dir, BRIEFS)
+    folder = os.path.join(chat_dir, BRIEFS)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     path = os.path.join(folder, f"{kind}-{ident}.json")
     with open(path + ".tmp", "w") as f:
         json.dump(record, f)
     os.replace(path + ".tmp", path)
+
+
+def send_key(payload):
+    """The same send: one receiver and one text, without its ISO times and a "(possible duplicate)" opener."""
+    text = str(payload.get("message") or "").strip()
+    text = re.sub(r"^\(possible duplicate\)\s*", "", text, flags=re.I)
+    return (payload.get("receiver_role"), payload.get("receiver_name"), " ".join(ISO.sub("", text).split()))
+
+
+def landed_at(session_id, texts, since):
+    """When one of texts landed in the session's file at or after since (epoch s), via send-once.ts; None when not found or not readable."""
+    folder = data_dir()
+    agent_dir = os.path.dirname(folder) if isinstance(folder, str) else os.path.expanduser("~/.prime/agent")
+    try:
+        proc = subprocess.run(["node", SEND_ONCE], input=json.dumps({"sessionId": session_id, "texts": texts, "since": int(since * 1000), "agentDir": agent_dir}),
+                              capture_output=True, text=True)
+        return json.loads(proc.stdout.strip().splitlines()[-1]).get("landedAt")
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError):
+        return None
+
+
+async def copy_state(real, payload, earlier):
+    """Where the earlier copy is: "landed", "queued" (the target has queued messages), "absent", or "unknown" (the roster did not answer)."""
+    try:
+        roster = await real("agent_observe.list")
+    except Exception:
+        return "unknown", None
+    role, name = payload.get("receiver_role"), payload.get("receiver_name")
+    agents = roster.get("agents", []) if isinstance(roster, dict) else []
+    target = next((agent for agent in agents if isinstance(agent, dict) and agent.get("relationship") == role and
+                   (role == "parent" or name in (agent.get("sessionName"), agent.get("sessionId"), agent.get("activeSessionId")))), None)
+    if not target or not isinstance(target.get("sessionId"), str):
+        return "unknown", None
+    at = landed_at(target["sessionId"], earlier["texts"], earlier["since"])
+    if at:
+        return "landed", at
+    return ("queued" if (target.get("queuedCount") or 0) > 0 else "absent"), None
+
+
+def held(payload, earlier, state, at):
+    target = payload.get("receiver_name") or payload.get("receiver_role") or "the target"
+    since = time.strftime("%H:%M:%SZ", time.gmtime(earlier["since"]))
+    where = {"landed": "landed at " + time.strftime("%H:%M:%SZ", time.gmtime(at / 1000)) if at else "landed",
+             "queued": f"is not in its transcript yet and {target} has messages queued, so the daemon still holds it",
+             "unknown": "could not be looked for now (the agent roster did not answer)"}[state]
+    note = HELD_NOTE.format(target=target, since=since, where=where)
+    print(note)
+    return {
+        "deliveryStatus": "delivered" if state == "landed" else "unconfirmed",
+        "message": payload.get("message"),
+        "receiverRole": payload.get("receiver_role"),
+        "receiverName": payload.get("receiver_name"),
+        "sentAgain": False,
+        "note": note,
+    }
 
 
 async def request(request_type, payload=None, *args, **kwargs):
@@ -100,8 +171,20 @@ async def request(request_type, payload=None, *args, **kwargs):
             raise LimitRefused(reason)
     # The live rlm module's function, looked up at each call.
     real = getattr(sys.modules.get("rlm"), "unchecked_host_request", None)
+    direct = send and payload.get("target") != "all"
+    key = send_key(payload) if direct else None
+    earlier = UNCONFIRMED.get(key) if direct else None
+    if earlier:
+        state, at = await copy_state(real, payload, earlier)
+        if state == "landed":
+            UNCONFIRMED.pop(key, None)
+        if state != "absent":
+            return held(payload, earlier, state, at)
+    started = earlier["since"] if earlier else time.time()
     try:
         reply = await real(request_type, payload, *args, **kwargs)
+        if direct:
+            UNCONFIRMED.pop(key, None)
         if request_type in ("rlm.run", "rlm.create_session") and isinstance(payload, dict):
             try:
                 record_brief(request_type, payload, reply)
@@ -109,7 +192,9 @@ async def request(request_type, payload=None, *args, **kwargs):
                 print(f"user-history: the brief of this start was not recorded: {error}", file=sys.stderr)
         return reply
     except Exception as error:
-        if send and payload.get("target") != "all" and SEND_TIMEOUT in str(error):
+        if direct and SEND_TIMEOUT in str(error):
+            texts = (earlier or {}).get("texts", [])
+            UNCONFIRMED[key] = {"since": started, "texts": list(dict.fromkeys(texts + [str(payload.get("message") or "").strip()]))}
             return unconfirmed(payload, error)
         raise
 
