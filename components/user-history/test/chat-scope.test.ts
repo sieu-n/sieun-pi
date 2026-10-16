@@ -23,7 +23,7 @@ const step = (id: string, text: string, status: PlanItem["status"], extra: Parti
 const board = (plan: PlanItem[], todos: OwnerTodo[] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos, plan });
 const todo = (id: string, text: string, extra: Partial<OwnerTodo> = {}): OwnerTodo => ({ id, text, done: false, from: "agent", at: "", ...extra });
 
-test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad one is dropped alone, the prompt names it, a retired entry has none", async () => {
+test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad one is dropped alone, the prompt shows the rule, a retired entry has none", async () => {
   const ledger: Ledger = { corrections: [] };
   const first = applyCorrection(ledger, parseCorrectionCall({ words: "ops guy owns the Macs", rule: "Machine work goes to ops guy.", theme: "mac machine ops guy",
     enforcedBy: "brief", ref: "s76", handoff: { to: OPS, topics: "M1 Air, swap ,swap" } }), VP, "2026-10-09T10:00:00.000Z");
@@ -58,7 +58,7 @@ test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad 
     assert.equal(broken.corrections.length, 1, "the entry stays");
     assert.equal(broken.corrections[0]!.handoff, undefined);
     assert.deepEqual(handoffRules(read), [{ correction: "c1", to: OPS, topics: TOPICS }]);
-    assert.match(ledgerPrompt(read, new Set())!, /- c1 Machine work goes to ops guy\. Steps on M1 Air, M2 Air, Mac load, load average, swap, memory pressure, launchd belong to ops guy \(\+observability\)\./);
+    assert.match(ledgerPrompt(read, new Set())!, /\n- c1 Machine work goes to ops guy\.$/, "the prompt has the id and the rule sentence; handoffRules holds the topics");
     await store.apply(parseCorrectionCall({ id: "c1", status: "retired" }), VP);
     assert.deepEqual(handoffRules(await store.read()), []);
     const args = fixArgs(["c1", "--ref", "abc1234", "--status", "active", "--handoff-to", OPS, "--topics", "swap,launchd", "--data-dir", dir]);

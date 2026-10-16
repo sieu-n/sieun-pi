@@ -312,9 +312,8 @@ const lastAt = (entry: Correction): string => entry.repeats.at(-1)?.at ?? entry.
 /** The rules in force: reopened first, then newest first. */
 const liveRules = (ledger: Ledger): Correction[] => ledger.corrections.filter(entry => entry.status !== "retired")
   .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
-const fullLine = (entry: Correction): string =>
-  `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; make agents follow it, c81)` : ""} ${entry.rule}` +
-  (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : "");
+/** A rule's line: its id and the first sentence of its rule. board.corrections("c12") reads the whole entry. */
+const shortLine = (entry: Correction): string => `- ${entry.id} ${entry.rule.split(/(?<=[.!?])\s+(?=[A-Z`"])/)[0]!.trim()}`;
 /** How many theme words a rule held by code or a test shows. */
 export const TITLE_WORDS = 3;
 /** A rule in a chat's snapshot: in full on its own `- ` line, or held elsewhere and listed on one shared line, by id (brief) or id and theme (code). */
@@ -327,13 +326,6 @@ export function ruleLines(rules: readonly SnapshotRule[]): string[] {
   const brief = of("brief"), code = of("code");
   return [...of("full"), ...(brief.length ? [HELD_BRIEF + brief.join(", ")] : []), ...(code.length ? [HELD_CODE + code.join("; ")] : [])];
 }
-/** The rules a snapshot's lines name, so an update compares and resends them one by one. */
-export function snapshotRules(lines: readonly string[]): SnapshotRule[] {
-  return lines.flatMap((line): SnapshotRule[] => line.startsWith("- ") ? [{ held: "full", text: line }]
-    : line.startsWith(HELD_BRIEF) ? line.slice(HELD_BRIEF.length).split(", ").map(text => ({ held: "brief", text }))
-    : line.startsWith(HELD_CODE) ? line.slice(HELD_CODE.length).split("; ").map(text => ({ held: "code", text })) : []);
-}
-export const ruleId = (rule: SnapshotRule): string => /^(?:- )?(c\d+)/.exec(rule.text)?.[1] ?? "";
 /** Code or a test holds the rule: it names one and no fix is pending. */
 const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !/^pending\b/i.test(entry.ref);
 
@@ -343,14 +335,13 @@ export const READ_RULE = "Read one in full with board.corrections(\"c12\") in Py
 
 /**
  * A chat's rules, at most LEDGER_PROMPT_LINES and a line counting the rest. A rule the brief holds shows as its id, and one landed code or a test
- * holds as its id and theme, each group on one line; the rest, and every reopened rule, in full, because a rule the model never reads in full is
- * a rule it does not follow. Null with no rule.
+ * holds as its id and theme, each group on one line; the rest, and every reopened rule, as one short line each (`shortLine`). Null with no rule.
  */
 export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string | null {
   const live = liveRules(ledger);
   if (!live.length) return null;
   const shown = live.slice(0, LEDGER_PROMPT_LINES);
-  const rules = shown.map((entry): SnapshotRule => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)) ? { held: "full", text: fullLine(entry) }
+  const rules = shown.map((entry): SnapshotRule => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)) ? { held: "full", text: shortLine(entry) }
     : brief.has(entry.id) ? { held: "brief", text: entry.id } : { held: "code", text: `${entry.id} ${entry.theme.slice(0, TITLE_WORDS).join(" ")}` });
   const more = live.length - shown.length;
   return [`[corrections] The owner's corrections in force, live from the ledger. ${READ_RULE}`, ...ruleLines(rules), ...(more > 0 ? [`and ${more} older ones`] : [])].join("\n");
@@ -358,11 +349,11 @@ export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string
 
 export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticket or support reply, a customer message, a post) check these rules; " +
   "c37: nothing goes out without the owner's ok on a For you todo.";
-/** The rules a job reads in full: outside sends, acting directly, the model, writing, Convex, merges and staging. */
+/** The rules a job reads as short lines: outside sends, acting directly, the model, writing, Convex, merges and staging. */
 export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c31", "c35", "c37", "c47", "c49", "c50"]);
 export function jobLedgerPrompt(ledger: Ledger | null): string {
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
-    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(fullLine) : [])].join("\n");
+    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
 }
 
 /**

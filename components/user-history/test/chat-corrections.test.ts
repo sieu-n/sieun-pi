@@ -126,24 +126,24 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   const lines = ledgerPrompt(ledger, new Set())!.split("\n");
   assert.match(lines[0]!, /^\[corrections\] The owner's corrections in force, live from the ledger\./);
   assert.ok(lines[0]!.includes(READ_RULE), "the header says how to read a rule in full");
-  assert.equal(lines[1], "- c2 (reopened: the owner repeated it 1x; make agents follow it, c81) Rule 2.");
+  assert.equal(lines[1], "- c2 Rule 2.");
   assert.equal(lines[2], "- c42 Rule 42.");
   assert.equal(lines.length, 1 + LEDGER_PROMPT_LINES + 1);
   assert.equal(lines.at(-1), "and 2 older ones");
   assert.ok(!lines.some(line => line.startsWith("- c43 ")));
 });
 
-test("ledger prompt: a rule the brief holds is its id and one landed code or a test holds is its id and theme, each group on one line; a pending or brief-only rule and a reopened one stay in full", () => {
+test("ledger prompt: a rule the brief holds is its id and one landed code or a test holds is its id and theme, each group on one line; a pending or brief-only rule and a reopened one get the id and first sentence", () => {
   const ledger: Ledger = { corrections: [] };
   const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
   applyCorrection(ledger, add("w1", "outside email send owner ok", "No email without the owner's ok."), VP, at(1));
   applyCorrection(ledger, add("w2", "duty name plain words", "Duties have plain names.", "code", "abc1234"), VP, at(2));
   applyCorrection(ledger, add("w3", "cache ratio drop test", "A cache fix ships with a test.", "test", "pending cache job"), VP, at(3));
-  applyCorrection(ledger, add("w4", "frontend split time loop", "Frontend work is 70% build."), VP, at(4));
+  applyCorrection(ledger, add("w4", "frontend split time loop", "Frontend work is 70% build. The rest is review and tests."), VP, at(4));
   applyCorrection(ledger, add("w5", "staging deploy confirm ask merge", "Staging needs no ok.", "code", "abc1234"), VP, at(5));
   applyCorrection(ledger, add("w6", "staging deploy confirm", "Staging deploys need no confirm."), VP, at(6));
   assert.deepEqual(ledgerPrompt(ledger, briefCorrections(["Nothing goes outside without his ok (c1)."]))!.split("\n").slice(1), [
-    "- c5 (reopened: the owner repeated it 1x; make agents follow it, c81) Staging needs no ok.",
+    "- c5 Staging needs no ok.",
     "- c4 Frontend work is 70% build.",
     "- c3 A cache fix ships with a test.",
     "Held by the brief: c1",
@@ -152,7 +152,7 @@ test("ledger prompt: a rule the brief holds is its id and one landed code or a t
   assert.deepEqual([...briefCorrections(["a (c47) and c12, not abc12 or c5x"])], ["c47", "c12"]);
 });
 
-test("job ledger prompt: only the rules that bind jobs, in full, after the outside-action rule and the pointer to the rest", () => {
+test("job ledger prompt: only the rules that bind jobs, one short line each, after the outside-action rule and the pointer to the rest", () => {
   const ledger: Ledger = { corrections: [] };
   for (let i = 1; i <= 50; i++) applyCorrection(ledger, add(`words ${i}`, `theme${i} unique${i}`, `Rule ${i}.`), VP, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString());
   const lines = jobLedgerPrompt(ledger).split("\n");
@@ -284,7 +284,7 @@ test("extension: tell_owner takes an optional reply_to, and an unknown id goes t
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test("extension: correction changes append after the stable prefix and survive retries, retirement and a broken ledger", async () => {
+test("extension: the corrections block goes in once and stays put through a new rule, a retirement and a broken ledger", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "corrections-ctx-"));
   try {
     const messages = [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }];
@@ -301,20 +301,16 @@ test("extension: correction changes append after the stable prefix and survive r
     assert.match(first.messages[1]!.content[0]!.text, /^\[corrections\] .*\n- c1 Rule one\.$/);
     assert.deepEqual(await chat.run("context", { messages }, true), first, "same ledger yields the same payload");
     await store.apply(add("two", "second theme here", "Rule two."), CI, "2026-10-09T11:00:00.000Z");
-    const next = await chat.run("context", { messages }, true) as typeof first;
-    assert.deepEqual(next.messages.slice(0, 2), first.messages, "new rule cannot rewrite an earlier message");
-    assert.match(next.messages[2]!.content[0]!.text, /- c2 Rule two\./);
+    assert.deepEqual(await chat.run("context", { messages }, true), first, "a new rule is not resent into a running context");
     await store.apply(parseCorrectionCall({ id: "c1", status: "retired" }), VP);
-    const retired = await chat.run("context", { messages }, true) as typeof first;
-    assert.deepEqual(retired.messages.slice(0, 3), next.messages);
-    assert.match(retired.messages[3]!.content[0]!.text, /Remove c1 from the active rules\./);
+    assert.deepEqual(await chat.run("context", { messages }, true), first, "nor is a retirement");
     assert.equal(await other.run("context", { messages }, false), undefined);
     await writeFile(join(dataDir, "corrections.json"), "not json");
-    assert.deepEqual(await chat.run("context", { messages }, true), retired, "bad reads keep the last delivered rules");
+    assert.deepEqual(await chat.run("context", { messages }, true), first, "bad reads keep the delivered rules");
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test("extension: every job under a chat, a duty root too, reads the live ledger after the outside-action rule; the next call sees a new correction", async () => {
+test("extension: every job under a chat, a duty root too, gets the outside-action rule once at its start, and a later correction is not resent", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "corrections-job-"));
   try {
     const lines = (entries: object[]) => entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
@@ -346,8 +342,13 @@ test("extension: every job under a chat, a duty root too, reads the live ledger 
       rule: "No email without the owner's ok.", enforcedBy: "code", ref: "abc1234", status: "active", theme: ["email", "vendor"], repeats: [] }] }));
     for (const { label, job } of jobs) {
       const seen = await job.run("context", { messages }, false) as { messages: { content: { text: string }[] }[] };
-      assert.match(seen.messages[2]!.content[0]!.text, /^\[corrections\] Update.*\n- c37 No email without the owner's ok\.$/, `${label}: read live, no reload`);
+      assert.equal(seen.messages.length, 2, `${label}: the block went in once`);
+      assert.equal(seen.messages[1]!.content[0]!.text, jobLedgerPrompt(null), label);
     }
+    const late = loadExtension(dataDir, { header: { type: "session", parentSession: file("chat"), rlmDepth: 1 }, id: "job-2", name: "w63" });
+    await late.run("session_start", {}, false);
+    const started = await late.run("context", { messages }, false) as { messages: { content: { text: string }[] }[] };
+    assert.match(started.messages[1]!.content[0]!.text, /\n- c37 No email without the owner's ok\.$/, "a job that starts later reads the live ledger");
     await writeFile(join(dataDir, "corrections.json"), "not json");
     const broken = await jobs[0]!.job.run("context", { messages }, false) as { messages: { content: { text: string }[] }[] };
     assert.match(broken.messages[1]!.content[0]!.text, /c37: .*todo\. /, "an unreadable ledger keeps the outside-action rule");
@@ -386,13 +387,13 @@ test("a real chat session: a correction reaches an agent-message wake without ch
   assert.deepEqual(seen.beforeAgentStart, { afterOwnerTurn: 1, afterAgentMessage: 1 });
 });
 
-test("a real duty job session: its outside-action rule persists and a new correction follows the stable prefix", { timeout: 120_000 }, async () => {
+test("a real duty job session: its outside-action rule persists and a correction written between turns is not resent", { timeout: 120_000 }, async () => {
   const seen = await realTurns("duty");
   assert.ok(!seen.tools.includes(CORRECTION_TOOL), seen.tools.join(","));
   assert.equal(seen.turnMessages.length, 2);
   assert.ok(seen.turnMessages[0]!.some(text => text === jobLedgerPrompt(null)));
   assert.deepEqual(seen.turnMessages[1]!.slice(0, seen.turnMessages[0]!.length), seen.turnMessages[0]);
-  assert.ok(seen.turnMessages[1]!.some(text => /\[corrections\] Update.*\n- c37 Written between turns\.$/.test(text)));
+  assert.ok(!seen.turnMessages[1]!.slice(seen.turnMessages[0]!.length).some(text => text.startsWith("[corrections]")));
   assert.deepEqual(seen.beforeAgentStart, { afterOwnerTurn: 1, afterAgentMessage: 1 });
 });
 

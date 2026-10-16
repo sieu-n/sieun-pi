@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "prime-agent";
-import { jobLedgerPrompt, ledgerPrompt, type Ledger, ruleId, ruleLines, snapshotRules, type SnapshotRule } from "./chat-corrections.ts";
+import { jobLedgerPrompt, ledgerPrompt, type Ledger } from "./chat-corrections.ts";
 
 export const CORRECTION_CHECKPOINT = "chat_correction_checkpoint";
 
@@ -31,24 +31,12 @@ export function deliverCorrections(input: {
   const active = branch.slice(compact + 1);
   const checkpoints = active.flatMap(entry => { const data = checkpoint(entry); return data ? [data] : []; });
   const previous = checkpoints.at(-1);
-  const current = job ? jobLedgerPrompt(ledger) : ledger && ledgerPrompt(ledger, input.brief);
-  const lines = current?.split("\n") ?? [];
-  if ((ledger !== null || (job && !previous)) && (current !== null || previous) && (!previous || previous.lines.join("\n") !== lines.join("\n"))) {
-    const old = previous?.lines ?? [];
-    // Removed means retired: a rule that changed its line or left a job's short list still holds, so it is not named.
-    const inForce = new Set(ledger?.corrections.filter(entry => entry.status !== "retired").map(entry => entry.id));
-    const oldRules = snapshotRules(old), newRules = snapshotRules(lines);
-    const has = (rules: SnapshotRule[], rule: SnapshotRule) => rules.some(other => other.held === rule.held && other.text === rule.text);
-    const removed = oldRules.filter(rule => !has(newRules, rule) && !inForce.has(ruleId(rule)));
-    const added = newRules.filter(rule => !has(oldRules, rule));
-    const kind = previous ? "update" : "snapshot";
-    const oldMore = old.find(line => line.startsWith("and "));
-    const newMore = lines.find(line => line.startsWith("and "));
-    const text = kind === "snapshot" ? current! : ["[corrections] Update to the owner's rules. This update replaces earlier lines for the named ids.",
-      ...removed.map(rule => `Remove ${ruleId(rule) || rule.text} from the active rules.`), ...ruleLines(added),
-      ...(oldMore === newMore ? [] : [newMore ?? "No older rules are omitted."])].join("\n");
+  // The block goes in once per context: at the first call, and again after a compaction. A later ledger change is not sent; the session reads
+  // the new rule with board.corrections(). Old sessions keep their "update" checkpoints where they were, so their cached prefix holds.
+  const current = previous ? null : job ? jobLedgerPrompt(ledger) : ledger && ledgerPrompt(ledger, input.brief);
+  if (current !== null && (ledger !== null || job)) {
     const after = active.findLast(visible)?.id ?? (compact >= 0 ? branch[compact]!.id : null);
-    const data: Checkpoint = { kind, lines, text, after };
+    const data: Checkpoint = { kind: "snapshot", lines: current.split("\n"), text: current, after };
     append(data);
     checkpoints.push(data);
   }

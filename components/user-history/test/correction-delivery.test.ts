@@ -27,7 +27,7 @@ function session() {
   return { branch, call };
 }
 
-test("checkpoints keep previous request messages in place across an update, retirement, and restart", () => {
+test("the block goes in once: a later ledger change sends no update, and an old session's update checkpoint still replays in place", () => {
   const { branch, call } = session();
   const first = user("First owner message");
   branch.push(entry("first", first));
@@ -37,17 +37,15 @@ test("checkpoints keep previous request messages in place across an update, reti
   assert.deepEqual(before.map(text), ["First owner message", text(before[1]!)]);
   assert.match(text(before[1]!), /- c1 Rule 1\./);
   add(ledger, 2);
-  const after = call([first], ledger);
-  assert.deepEqual(after.slice(0, before.length), before);
-  assert.match(text(after[2]!), /- c2 Rule 2\./);
+  assert.deepEqual(call([first], ledger), before);
   applyCorrection(ledger, parseCorrectionCall({ id: "c1", status: "retired" }), owner, "");
-  const retired = call([first], ledger);
-  assert.deepEqual(retired.slice(0, after.length), after);
-  assert.match(text(retired[3]!), /Remove c1 from the active rules\./);
-  assert.deepEqual(call([first], ledger), retired);
-  applyCorrection(ledger, parseCorrectionCall({ id: "c2", status: "retired" }), owner, "");
-  assert.match(text(call([first], ledger)[4]!), /Remove c2 from the active rules\./);
-  assert.equal(branch.filter(item => item.type === "custom").length, 4);
+  assert.deepEqual(call([first], ledger), before);
+  assert.equal(branch.filter(item => item.type === "custom").length, 1);
+  branch.push({ type: "custom", id: "old-update", parentId: branch.at(-1)!.id, timestamp: "2026-10-09T10:00:00Z", customType: CORRECTION_CHECKPOINT,
+    data: { kind: "update", lines: [], text: "[corrections] Update to the owner's rules.", after: "first" } });
+  const replayed = call([first], ledger);
+  assert.deepEqual(replayed.slice(0, 2), before);
+  assert.equal(text(replayed[2]!), "[corrections] Update to the owner's rules.");
 });
 
 test("a branch after a checkpoint inherits it; a branch before it gets a fresh snapshot", () => {
@@ -108,9 +106,8 @@ test("native SessionManager replays checkpoints at the same position after disk 
     assert.deepEqual(deliver(reopened, ledger), replay);
     assert.equal(checkpointCount(), 1);
     add(ledger, 2);
-    const changed = deliver(reopened, ledger);
-    assert.deepEqual(changed.slice(0, initial.length), initial);
-    assert.equal(checkpointCount(), 2);
+    assert.deepEqual(deliver(reopened, ledger), replay, "a new rule is not sent into a running context");
+    assert.equal(checkpointCount(), 1);
     reopened.branch(firstId);
     const forked = deliver(reopened, ledger);
     assert.equal(checkpointCount(), 1);
@@ -169,7 +166,7 @@ test("native compaction with retained messages puts a fresh snapshot after the s
   assert.deepEqual(call(), messages);
 });
 
-test("a rule the brief or code holds sits on a shared line; an update names a retired one and resends only the new held rules", () => {
+test("a rule the brief or code holds sits on a shared line, and later changes send nothing", () => {
   const branch: SessionEntry[] = [];
   const append = (data: unknown) => branch.push({ type: "custom", id: `checkpoint-${branch.length}`, parentId: branch.at(-1)?.id ?? null,
     timestamp: "2026-10-09T10:00:00Z", customType: CORRECTION_CHECKPOINT, data });
@@ -184,21 +181,18 @@ test("a rule the brief or code holds sits on a shared line; an update names a re
   assert.match(text(call(ledger)[1]!), /\nHeld by the brief: c1\nHeld by code or tests: c2 unique2 theme2$/);
   landed(3);
   applyCorrection(ledger, parseCorrectionCall({ id: "c1", status: "retired" }), owner, "");
-  assert.equal(text(call(ledger)[2]!), "[corrections] Update to the owner's rules. This update replaces earlier lines for the named ids.\n" +
-    "Remove c1 from the active rules.\nHeld by code or tests: c3 unique3 theme3");
+  assert.equal(call(ledger).length, 2);
 });
 
-test("the update reports when the forty-rule snapshot omits another older rule, and does not call that rule removed", () => {
+test("a forty-rule snapshot counts the older rules, and a 41st rule added later sends nothing", () => {
   const { branch, call } = session();
   const first = user("Owner prompt");
   branch.push(entry("first", first));
   const ledger: Ledger = { corrections: [] };
-  for (let id = 1; id <= 40; id++) add(ledger, id);
+  for (let id = 1; id <= 41; id++) add(ledger, id);
   const initial = call([first], ledger);
   assert.equal(initial.length, 2);
-  add(ledger, 41);
-  const changed = call([first], ledger);
-  assert.deepEqual(changed.slice(0, initial.length), initial);
-  assert.match(text(changed[2]!), /and 1 older ones/);
-  assert.doesNotMatch(text(changed[2]!), /Remove c1 /, "c1 still holds; it only left the snapshot");
+  assert.match(text(initial[1]!), /\nand 1 older ones$/);
+  add(ledger, 42);
+  assert.deepEqual(call([first], ledger), initial);
 });
