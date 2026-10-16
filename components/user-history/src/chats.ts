@@ -11,7 +11,7 @@ import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, 
 import type { Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
-  idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
+  handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
 import { withHeldTurns } from "./held-turns.ts";
@@ -490,10 +490,11 @@ export class Chats {
   }
 
   /**
-   * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its Python kernel and session stop holding memory, and
-   * ends each job whose only open work is a board wait (`waitingJobs`) with its state saved on the step (`parkJob`). A board that cannot be
-   * read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat no longer
-   * holds (`not_held`), goes on the deleted job record, so a restart does not try it again while the daemon still lists it.
+   * Hands the open steps a reported job still owns to the chat (`handBack`), deletes each finished job of a chat (`finishedJobs`) once, with
+   * one log line, so its Python kernel and session stop holding memory, and ends each job whose only open work is a board wait
+   * (`waitingJobs`) with its state saved on the step (`parkJob`). A board that cannot be read deletes nothing; a failed delete is logged and
+   * not tried again in this serve. A job the daemon deleted, or one the chat no longer holds (`not_held`), goes on the deleted job record,
+   * so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
     const children = this.children.get(id);
@@ -511,6 +512,11 @@ export class Chats {
     const now = this.now();
     const messages = this.messages(id) ?? [];
     const said = lastJobMessages(messages);
+    if (this.source.resumes) {
+      let handed = false;
+      for (const { child, steps } of handBackSteps(children, board, said)) if (!gone?.has(child.id)) handed = await this.handBack(id, child, steps) || handed;
+      if (handed) board = await this.source.board(id).catch(() => board);
+    }
     for (const child of finishedJobs(children, board, said)) {
       if (gone?.has(child.id)) continue;
       const result = await this.deleteJob(id, child, listed, now);
@@ -563,6 +569,28 @@ export class Chats {
       this.deletedJobs.delete(child.id);
       this.log(`chat ${id.slice(0, 8)}: delete job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
       return "kept";
+    }
+  }
+
+  /**
+   * Hands the open steps a reported job still owns (`handBackSteps`) to the chat: each step's job becomes the chat and its note names the job,
+   * then the chat gets one turn to close or continue them (`handBackText`). The note keeps the job named, so it is kept and later saved on the
+   * step (`parkJob`) unless the chat steers it. A job asleep on a board.wake, or one whose wakes cannot be read yet, keeps its steps.
+   */
+  private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
+    const name = childName(child);
+    try {
+      const sessionId = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
+      if (this.source.waking && (sessionId === undefined || await this.source.waking(sessionId))) return false;
+      const line = handBackNote(name, child.lastActivityAt ?? this.now());
+      await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
+        note: [line, step.note].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note) })));
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + handBackText(child, steps), images: [], mode: "steer" });
+      this.log(`chat ${id.slice(0, 8)}: handed ${steps.map(step => step.id).join(", ")} back to the chat: job ${name} reported with them open`);
+      return true;
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: hand back the steps of ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 

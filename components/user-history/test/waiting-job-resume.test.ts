@@ -126,7 +126,7 @@ test("a quiet waiting job whose session holds a live tool call or a background b
   chats.close();
 });
 
-test("frontend bro 10-14 12:07Z: a quiet job that a doing step with no wait names is saved and deleted too, and the step asks for a fresh job", async () => {
+test("frontend bro 10-14 12:07Z: a quiet job that a doing step with no wait names is saved and deleted too, and the step goes to the chat", async () => {
   // connections multiple accounts sat 417 min after its report, held only by p106 doing and p115 blocked on a todo; neither had a waitFor.
   const { dir, chats, boards, calls, sweep } = await setup({ prompt: BRIEF });
   await boards.apply("c1", [{ op: "plan_update", id: "p12", waitFor: null }], "agent");
@@ -135,10 +135,12 @@ test("frontend bro 10-14 12:07Z: a quiet job that a doing step with no wait name
   const path = join(dir, "job-resumes", "c1", "sub-9.json");
   assert.equal(JSON.parse(await readFile(path, "utf8")).event, "p12 is doing");
   chats.close();
+  assert.ok(calls.includes("steer c1 [job] ci clickhouse memcap reported, and its open step is yours now: p12 \"Build: ClickHouse gets a memory cap in CI\". Close or continue p12."), calls.join("\n"));
   const step = (await boards.read("c1"))!.plan[0]!;
+  assert.equal(step.job, "c1");
   const later = START + STEP_STALE_MS + 60_000;
   const line = classLine(stepView(step, START, new Set(["c1"]), [], [], [], later), later);
-  assert.match(line ?? "", /^p12 .* has no live owner .*saved in /, line ?? "");
+  assert.match(line ?? "", /^p12 .* is yours and has not moved .*saved in /, line ?? "");
 });
 
 test("Crawler VP 10-14 13:05Z: a quiet job that ended its task with no reply to the chat, under an open step, is saved and deleted too", async () => {

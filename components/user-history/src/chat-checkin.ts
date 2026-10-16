@@ -536,6 +536,32 @@ export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | 
   });
 }
 
+const HANDED = "Handed back: ";
+/** The note line a step gets when the server hands it back to the chat (`handBackSteps`); the open-steps notice skips a step that has it. */
+export const handBackNote = (job: string, at: number): string => `${HANDED}job ${job} reported at ${clockTime(at)} with this step open, so the step is the chat's.`;
+const handedBack = (item: PlanItem, job: string): boolean => (item.note ?? "").split("\n").some(line => line.startsWith(`${HANDED}job ${job} `));
+
+/**
+ * The open leaf steps with no wait that a job still owns after it ended its task with its final report in (`reported`). The cleanup hands
+ * each to the chat (the step's job becomes the chat) with one turn (`handBackText`), so the chat closes or continues it while the report is
+ * fresh. frontend bro 10-16: inbox tree lines reported at 02:18Z with p164 doing and email compose polish at 03:41Z with p168 doing; the
+ * cleanup ended both jobs at 03:42Z and 04:02Z, and both steps read job_ended at the 04:04Z check-in.
+ */
+export function handBackSteps(children: readonly ChildAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage>): { child: ChildAgent; steps: PlanItem[] }[] {
+  const ids = new Set(children.map(child => child.id));
+  const open = openSteps(board).filter(item => item.waitFor === undefined && item.waitUntil === undefined && !item.children.some(below => OPEN.has(below.status)));
+  return children.flatMap(child => {
+    if (!reported(child, ids, said)) return [];
+    const names = [child.id, childName(child), child.label, child.sessionId];
+    const steps = open.filter(item => { const owner = stepOwner(item); return owner !== undefined && names.includes(owner); });
+    return steps.length ? [{ child, steps }] : [];
+  });
+}
+/** The turn the chat gets for the steps `handBackSteps` handed it. */
+export const handBackText = (child: ChildAgent, steps: readonly PlanItem[]): string =>
+  `${childName(child)} reported, and ${steps.length === 1 ? "its open step is" : "its open steps are"} yours now: ${steps.map(step => `${step.id} ${quote(step.text)}`).join("; ")}. ` +
+  `Close or continue ${steps.map(step => step.id).join(", ")}.`;
+
 /**
  * The jobs whose turn just ended: at work in `before`, not at work in `after`, however it ended (done, cancelled or failed).
  */
@@ -554,7 +580,7 @@ export function endedJobs(before: readonly ChildAgent[], after: readonly ChildAg
 export function leftOpenSteps(child: ChildAgent, children: readonly ChildAgent[], board: ChatBoard | null): PlanItem[] {
   const others = children.filter(other => other.id !== child.id && childWorking(other));
   return openSteps(board).filter(item => {
-    if (!stepNamesJob(item, jobRef(child))) return false;
+    if (!stepNamesJob(item, jobRef(child)) || handedBack(item, childName(child))) return false;
     const owner = stepOwner(item);
     return owner === undefined || !others.some(other => owner === other.id || owner === childName(other) || owner === other.sessionId);
   });
