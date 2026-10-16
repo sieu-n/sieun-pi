@@ -86,4 +86,20 @@ export function sessionFiles(id: string): string[] {
   walk(join(ARTIFACTS, id));
   return files;
 }
-export const readSession = (id: string): SessionEvent[] => readSessionFile(join(SESSIONS, `${id}.jsonl`));
+/** A session's own file: a root's under sessions/, else a subagent's `<id>.jsonl` anywhere under the session-artifacts folder of `roots`. */
+export function sessionFile(id: string, roots: readonly string[] = []): string | undefined {
+  const root = join(SESSIONS, `${id}.jsonl`);
+  if (existsSync(root)) return root;
+  const find = (dir: string, depth: number): string | undefined => {
+    if (depth > 4 || !existsSync(dir)) return undefined;
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (name === `${id}.jsonl`) return path;
+      if (statSync(path).isDirectory()) { const found = find(path, depth + 1); if (found) return found; }
+    }
+    return undefined;
+  };
+  for (const parent of roots) { const found = find(join(ARTIFACTS, parent), 0); if (found) return found; }
+  return undefined;
+}
+export const readSession = (id: string, roots: readonly string[] = []): SessionEvent[] => { const file = sessionFile(id, roots); return file ? readSessionFile(file) : []; };

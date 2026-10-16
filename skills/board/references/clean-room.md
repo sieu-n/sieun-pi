@@ -27,3 +27,4 @@ A clean-room chat gets a real, ordinary task and never learns it is a test. Its 
 3. A short check-in interval on the new chat is fine, because c84 asks for the run, and no other chat's interval changes for it.
 4. The chat's own starts wait in the fleet budget like any other chat's, so a shut budget can leave a run open longer.
 5. Never seed a copy of another chat's board: its todos land in the owner's For you, and its owners point at real jobs.
+6. No correction or todo from the clean-room chat reaches the owner's correction ledger or his For you. The evaluator checks both, and teardown removes the chat's todos.

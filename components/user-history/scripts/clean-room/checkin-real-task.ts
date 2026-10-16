@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, sessionFiles, type Verdict } from "./session-read.ts";
+import { readSession, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 import { flagHits, names, reportShape, stepIdLists } from "./text-checks.ts";
 
 /**
@@ -71,7 +71,6 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const runsFile = join(run, "runs.jsonl");
   const all = (existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").filter(line => line.trim()).map(line => JSON.parse(line) as Run) : [])
     .filter(entry => entry.duty === "checkin" && entry.at >= state.windowStart);
-  const scheduled = all.filter(entry => entry.trigger === "schedule" && entry.job);
   const dutyJobs = new Map(all.flatMap(entry => entry.job ? [[entry.job.id, entry.job.name] as const] : []));
   const boards = snapshots(run);
   const agentsDir = join(run, "agents");
@@ -81,13 +80,20 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       if (agent.sessionId && !seen.has(agent.sessionId) && !dutyJobs.has(agent.sessionId)) seen.set(agent.sessionId, { name: agent.name, first: Number(file.replace(".json", "")), key: agent.key });
     }
   }
-  const jobs = [...seen].map(([id, info]) => ({ id, ...info, events: readSession(id).length ? readSession(id) : sessionFiles(id).flatMap(readSessionFile) }));
-  const findSession = (id: string): SessionEvent[] => jobs.find(job => job.id === id)?.events ?? readSession(id);
+  for (const [id, info] of seen) if (/^check-in /.test(info.name)) { dutyJobs.set(id, info.name); seen.delete(id); }
+  const jobs = [...seen].map(([id, info]) => ({ id, ...info, events: readSession(id, [state.chat.id]) }));
+  const findSession = (id: string): SessionEvent[] => jobs.find(job => job.id === id)?.events ?? readSession(id, [state.chat.id]);
   const stepsOf = (board: ChatBoard | undefined, job: { id: string; name: string }): { goal: PlanItem; step: PlanItem }[] => {
     const found: { goal: PlanItem; step: PlanItem }[] = [];
     walk(board?.plan ?? [], (item, goal) => { if (item !== goal && (item.sessionId === job.id || item.job === job.name)) found.push({ goal, step: item }); });
     return found;
   };
+  const clock = (at: number): string => { const date = new Date(at); return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
+  const scheduled = all.filter(entry => entry.trigger === "schedule").flatMap(entry => {
+    if (entry.job) return [entry];
+    const found = [...dutyJobs].find(([, name]) => name.endsWith(` ${clock(entry.at)}`));
+    return found ? [{ ...entry, job: { id: found[0], name: found[1] } }] : [];
+  });
   const last = boards.at(-1)?.board;
   const goals = goalsOf(last);
   const checks: Check[] = [];
@@ -184,7 +190,21 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     if (/\bPRs?\b.*\b(look|looks) done|merged/i.test(brief)) cases.push(`${dutyJobs.get(id)} brief names a PR step that looks done`);
   }
 
+  const head = findSession(state.chat.id);
+  const firstReply = head.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= state.windowStart)?.text ?? "";
+  const measured = firstReply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|days?|h|hours?)\b/gi) ?? [];
+  const defers = firstReply.match(/nothing is measured yet|i started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
+  checks.push({ id: "i", ok: firstReply ? measured.length > 0 && defers.length === 0 : false, detail: firstReply
+    ? `measured numbers ${measured.length ? measured.join(", ") : "none"}; put-off words ${defers.length ? defers.map(word => `"${word}"`).join(", ") : "none"}. First reply: "${clip(firstReply, 700)}"` : "the chat has not replied" });
+
+  const board = last;
+  const ledgerFile = join(process.env.AGENT_CHAT_DATA_DIR ?? join(process.env.HOME ?? "", ".prime/agent/browser-chat"), "corrections.json");
+  const ledger = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8") : "";
+  const leaks = [...(board?.todos ?? []).map(todo => `todo ${todo.id} "${clip(todo.text, 100)}"`), ...(ledger.includes(state.chat.id) || ledger.includes(`"${state.chat.name}"`) ? ["a correction in corrections.json names this chat"] : [])];
+  checks.push({ id: "j", ok: leaks.length === 0, detail: leaks.length ? leaks.join("; ") : "the chat's board has no todo and corrections.json does not name the chat" });
+
   const get = (id: string) => checks.find(check => check.id === id)!;
+  if (get("f").ok === false) for (const id of ["a", "b", "e"]) { const check = get(id); if (check.ok === false) { check.ok = null; check.detail += " (judged again after 2 check-ins with a duty job)"; } }
   const voided = get("h").ok === false;
   const open = !voided && (get("f").ok === false || checks.some(check => check.ok === null));
   const verdict: Verdict = voided ? "void" : checks.some(check => check.ok === false && check.id !== "f") ? "fail" : open ? "open" : "pass";
