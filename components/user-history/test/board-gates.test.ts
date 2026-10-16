@@ -103,23 +103,17 @@ test("owner go: only the owner answers; the agent cannot write, clear, re-word o
   assert.throws(() => run(board, [{ op: "todo_add", text: "Go?", choices: ["Go", "No"], step: "p9" }]), error => error instanceof BoardError && error.kind === "unknown");
 });
 
-test("requirements check: a Build step moves to doing only when its goal's list passes", () => {
+test("requirements check: the board takes a Build step's move whatever its goal's list says, and requirementGaps names what fails for the check-in", () => {
   const board = gated();
-  refused(board, [{ op: "plan_update", id: "p3", status: "doing" }],
-    /p3 "Build the variant system" is a Build step and cannot move to doing: its goal p1 has no requirements list\. Have the plan or design job quote each line of the owner's request/);
+  assert.equal(run(board, [{ op: "plan_update", id: "p3", status: "doing" }]).plan[0]!.children[1]!.status, "doing", "no list, no refusal (c81: the c28 rule is text)");
+  assert.equal(requirementGaps(board.plan[0]!), "has no requirements list");
   const unmet = run(board, [{ op: "plan_update", id: "p1", requirements: [...MET, { text: '"the picker only shows what applies to the current tab"', status: "unmet" }] }]);
-  refused(unmet, [{ op: "plan_update", id: "p3", status: "doing" }], /its goal p1 fails its requirements check: line 2 ""the picker only shows what applies to the current tab"" is unmet with no note/);
-  const noEvidence = run(board, [{ op: "plan_update", id: "p1", requirements: [{ text: '"100s of variants"', status: "met" }] }]);
-  refused(noEvidence, [{ op: "plan_update", id: "p3", status: "doing" }], /is met with no evidence/);
-  refused(run(board, [{ op: "plan_update", id: "p1", requirements: [{ text: "x", status: "open" }] }]), [{ op: "plan_update", id: "p3", status: "done" }], /open with no note/);
+  assert.equal(requirementGaps(unmet.plan[0]!), 'fails its requirements check: line 2 ""the picker only shows what applies to the current tab"" is unmet with no note');
+  assert.equal(run(unmet, [{ op: "plan_update", id: "p3", status: "doing" }]).plan[0]!.children[1]!.status, "doing");
+  assert.match(requirementGaps({ requirements: [{ text: '"100s of variants"', status: "met" }] })!, /is met with no evidence/);
   const good = run(board, [{ op: "plan_update", id: "p1", requirements: [...MET, { text: '"intelligent picker"', status: "open", note: "the owner put it off to v2" }] }]);
-  assert.equal(run(good, [{ op: "plan_update", id: "p3", status: "doing" }]).plan[0]!.children[1]!.status, "doing");
+  assert.equal(requirementGaps(good.plan[0]!), null);
   assert.match(renderOpenPlan(good), /Not shown: .*, 1 step notes and requirements\./, "requirements stay in the board file, read with board.get");
-  refused(board, [{ op: "plan_add", parent: "p1", text: "Variant engine", kind: "build", status: "doing" }], /is a Build step/);
-  const nested = run(board, [{ op: "plan_update", id: "p1", requirements: MET }, { op: "plan_add", parent: "p1", text: "Picker" }, { op: "plan_add", parent: "p4", text: "Build the picker", status: "doing" }]);
-  assert.equal(nested.plan[0]!.children[2]!.children[0]!.status, "doing", "the nearest goal above with a list answers for it");
-  const before: ChatBoard = { ...board, plan: [{ ...board.plan[0]!, children: [board.plan[0]!.children[0]!, { ...board.plan[0]!.children[1]!, status: "doing" }] }] };
-  assert.equal(run(before, [{ op: "plan_update", id: "p3", status: "done" }]).plan[0]!.children[1]!.status, "done", "a Build step already doing may finish");
   assert.equal(requirementGaps({ requirements: MET }), null);
   assert.throws(() => parseBoardOps([{ op: "plan_update", id: "p1", requirements: [{ text: "x", status: "done" }] }]), BoardError);
   assert.throws(() => parseBoardOps([{ op: "plan_update", id: "p1", requirements: [] }]), BoardError);

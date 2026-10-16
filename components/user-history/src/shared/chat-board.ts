@@ -884,9 +884,9 @@ export function requirementGaps(goal: Pick<PlanItem, "requirements">): string | 
 
 const MOVES: ReadonlySet<PlanStatus> = new Set(["doing", "done"]);
 /**
- * The agent's plan change against both gates: an item that moves to doing or done (new, or with another status before) while it or an item
- * above it needs the owner's go and has none (`stepGo`: a go on a step above never covers a merge step); a Build step that moves to doing (or skips to done) while its goal's requirements check fails.
- * A step already doing may finish. The owner never changes the plan, so the owner never meets a gate.
+ * The agent's plan change against the c49 go gate: an item that moves to doing or done (new, or with another status before) while it or an
+ * item above it needs the owner's go and has none (`stepGo`: a go on a step above never covers a merge step). The owner never changes the plan,
+ * so the owner never meets a gate.
  */
 function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
   const was = new Map<string, PlanStatus>();
@@ -902,13 +902,6 @@ function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
             `a standing "merge once checks pass" go does not.` : " Only the owner's answer counts.";
           throw new BoardError("forbidden", `${item.id} ${quote(item.text)} cannot move to ${item.status}: ${held === item ? "it needs" : `${held.id} ${quote(held.text)} above it needs`} ` +
             `the owner's go. Add one For you todo with step "${held.id}" and choices, the go first (like "Go" and "Not yet"), and wait for the owner's answer.${merge}`);
-        }
-        const goal = buildGoal(item, above);
-        const gap = isBuildStep(item) && prior !== "doing" ? requirementGaps(goal) : null;
-        if (gap) {
-          throw new BoardError("forbidden", `${item.id} ${quote(item.text)} is a Build step and cannot move to ${item.status}: its goal ${goal.id} ${gap}. Have the plan or design job ` +
-            `quote each line of the owner's request and check it against the design, then record it with plan_update {"id":"${goal.id}","requirements":` +
-            `[{"text":"<the owner's words>","status":"met","evidence":"<where the design meets it>"}]}; an unmet or open line needs a note.`);
         }
       }
       visit(item.children, [...above, item]);

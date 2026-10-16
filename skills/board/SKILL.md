@@ -105,7 +105,7 @@ The owner picking a design on a demo is not a go. Offer the go choice first, wor
 
 ### Build steps and requirements
 
-1. `kind: "build"` marks a Build step, and text that starts with "Build" counts too. It moves to doing only when its goal's requirements are all met with evidence, or carry a note.
+1. `kind: "build"` marks a Build step, and text that starts with "Build" counts too. Start it only when its goal's requirements are all met with evidence, or carry a note.
 2. `requirements: [{text,status,evidence?,note?}]` on a goal holds one line per owner requirement, quoting the owner's words, with status met, unmet or open.
 3. Before a goal's Build step starts, the plan or design job quotes each line of the owner's request word for word and checks it against the design (c28).
 4. A met line carries its evidence, and an unmet or open line the owner put off carries a note.

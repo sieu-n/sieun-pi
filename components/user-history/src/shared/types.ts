@@ -100,7 +100,7 @@ export interface PlanItem {
   sessionId?: string;
   /** The step ships, ports, deploys, merges to a shared app, or moves demo work to a real app: it moves only after the owner's go (`stepGo`). Once set, it stays. */
   go?: "needed";
-  /** A Build step: one whose text starts with "Build", or this flag. It starts only after its goal's requirements check passes (`requirementGaps`). */
+  /** A Build step: one whose text starts with "Build", or this flag. The check-in flags one at work while its goal's requirements check fails (`requirementGaps`). */
   kind?: "build";
   /** A goal's requirements check: one line per owner requirement, quoting the owner's words. */
   requirements?: Requirement[];
