@@ -9,7 +9,6 @@ import { BOARD_LIMITS, findItem, nextIds, openGoals, titleDetail, walkItems } fr
 import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
 import { TICK_MS } from "./wakes.ts";
 
-export const REWAKE_MS = 20 * 60_000;
 export const ESCALATE_MS = 30 * 60_000;
 export const OWNERS_PATH = "ops/alert-relay/owners.json";
 export const ALERT_GOAL = "Firing prod alerts";
@@ -20,7 +19,7 @@ export interface FiringAlert { fingerprint: string; startsAt: string; alertname:
 export interface Tracked { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number; resolvedAt?: number }
 export interface BridgeState { v: 1; alerts: Record<string, Tracked> }
 export interface StepView { text: string; open: boolean; owned: boolean }
-export interface ChatNotice { chat: string; add: FiringAlert[]; rewake: string[] }
+export interface ChatNotice { chat: string; add: FiringAlert[] }
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
@@ -109,12 +108,11 @@ export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, st
   const notice = (chat: string): ChatNotice => {
     const known = notices.get(chat);
     if (known) return known;
-    const fresh: ChatNotice = { chat, add: [], rewake: [] };
+    const fresh: ChatNotice = { chat, add: [] };
     notices.set(chat, fresh);
     return fresh;
   };
   for (const [key, alert] of firing) if (!state.alerts[key]) notice(route(alert)).add.push(alert);
-  const waiting = new Map<string, { keys: string[]; due: boolean }>();
   const resolves: Resolve[] = [];
   const escalate: string[] = [];
   for (const [key, tracked] of Object.entries(state.alerts)) {
@@ -123,28 +121,22 @@ export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, st
     const step = steps.get(key);
     if (!step?.open || step.owned) continue;
     if (tracked.escalatedAt === undefined && tracked.chat !== OPS_ROUTE.session && now - tracked.firstWokeAt >= ESCALATE_MS) escalate.push(key);
-    const chat = waiting.get(tracked.chat) ?? { keys: [], due: false };
-    chat.keys.push(key);
-    chat.due ||= now - tracked.wokeAt >= REWAKE_MS;
-    waiting.set(tracked.chat, chat);
   }
-  for (const [chat, { keys, due }] of waiting) if (due) notice(chat).rewake.push(...keys);
   return { notices: [...notices.values()], resolves, escalate };
 }
 
 /**
- * The state after `notice` went out at `now`. `wokeAt` 0 records the placed steps before the send, so a send that fails or times out leaves the
- * alert tracked (no second step on the next tick) and its re-wake due at once. 10-15 12:41 to 13:46Z the daemon timed out send_message after
- * 30 s on most ticks; the state was written only after the send, and the Crawler VP had rewritten each step's note without the bridge's mark,
- * so every tick added a new step for each still-firing alert (p404 to p490, p500 to p502).
+ * The state after the bridge placed `notice`'s steps at `now`. The bridge writes it right after the board write, so the next tick never files the
+ * same firing again. 10-15 12:41 to 13:46Z the state was written only after a send that timed out, and the Crawler VP had rewritten each step's
+ * note without the bridge's mark, so every tick added a new step for each still-firing alert (p404 to p490, p500 to p502). `wokeAt` and
+ * `firstWokeAt` keep their names so older state files still read; both hold the time the step was placed.
  */
-export function noticed(state: BridgeState, notice: ChatNotice, placed: ReadonlyMap<string, string | null>, now: number, wokeAt = now): BridgeState {
+export function noticed(state: BridgeState, notice: ChatNotice, placed: ReadonlyMap<string, string | null>, now: number): BridgeState {
   const alerts = { ...state.alerts };
   for (const alert of notice.add) {
     const step = placed.get(alertKey(alert));
-    if (step !== undefined) alerts[alertKey(alert)] = { chat: notice.chat, step, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt, firstWokeAt: now };
+    if (step !== undefined) alerts[alertKey(alert)] = { chat: notice.chat, step, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now };
   }
-  for (const key of notice.rewake) if (alerts[key]) alerts[key] = { ...alerts[key], wokeAt: now };
   return { ...state, alerts };
 }
 
@@ -185,8 +177,7 @@ const MARK = /^Grafana alert [\w-]{1,64}, firing since \S+\.$/m;
 
 /**
  * Whether the bridge still holds a step it added: the note keeps its mark and no resolve line, the step has no job, thread or wait, and it last
- * changed within ESCALATE_MS. The bridge wakes the chat when it adds the step, wakes it again after REWAKE_MS and escalates it at ESCALATE_MS,
- * so nobody else needs to act in that window. On 10-15 the Crawler VP set a job 4.8 min (p350, p351) and 7.8 min (p360) after the bridge added
+ * changed within ESCALATE_MS. The bridge escalates such a step to ops guy at ESCALATE_MS, so nobody else needs to act in that window. On 10-15 the Crawler VP set a job 4.8 min (p350, p351) and 7.8 min (p360) after the bridge added
  * the step, and two check-ins in between counted those steps stuck with no owner.
  */
 export function bridgeHolds(item: Pick<PlanItem, "job" | "sessionId" | "note" | "waitFor" | "waitUntil">, changedAt: number, now: number): boolean {
@@ -262,29 +253,10 @@ export function resolveOps(board: ChatBoard, resolve: Resolve): BoardOp[] {
   return [{ op: "plan_update", id: resolve.step, note }];
 }
 
-export function alertText(added: readonly StepLine[], waiting: readonly StepLine[]): string {
-  const line = (step: StepLine) => `${step.step} "${step.title}" (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z)`;
-  const parts: string[] = [];
-  if (added.length) {
-    parts.push(`${added.length === 1 ? "A Grafana alert" : `${added.length} Grafana alerts`} started firing, and the alert bridge put ${added.length === 1 ? "a step" : "one step each"} ` +
-      `on your board: ${added.map(line).join("; ")}.`);
-  }
-  if (waiting.length) parts.push(`Still firing with no job on the step: ${waiting.map(line).join("; ")}.`);
-  return `[alert] ${parts.join(" ")} Act on ${added.length + waiting.length === 1 ? "it" : "each one"} now: start a job and set it on the step, or close the step with a reason in its note. ` +
-    "Each step's note has the labels and the Grafana link.";
-}
-
-export function boardlessText(alerts: readonly FiringAlert[]): string {
-  const one = (alert: FiringAlert) => `"${stepTitle(alert)}" (${ruleIn(stepTitle(alert), alert.alertname)}firing since ${alert.startsAt.slice(0, 16)}Z, labels ` +
-    `${Object.entries(alert.labels).filter(([name]) => name !== "alertname").map(([name, value]) => `${name}=${value}`).join(", ")}${alert.url ? `, ${alert.url}` : ""})`;
-  return `[alert] ${alerts.length === 1 ? "A Grafana alert you own" : `${alerts.length} Grafana alerts you own`} started firing: ${alerts.map(one).join("; ")}. ` +
-    `Act on ${alerts.length === 1 ? "it" : "each one"} now: start a job, or say why it needs nothing.`;
-}
-
 export function escalationText(steps: readonly (StepLine & { chat: string })[]): string {
   const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z)`;
   return `[alert-escalation] ${steps.length === 1 ? "An alert step is" : `${steps.length} alert steps are`} still open with no job ${ESCALATE_MS / 60_000} min after the alert bridge ` +
-    `first woke the chat that owns ${steps.length === 1 ? "it" : "them"}: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
+    `put ${steps.length === 1 ? "it" : "them"} on the owning chat's board: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
 }
 
 const chatName = (session: string): string => ALERT_ROUTES.find(route => route.session === session)?.chat ?? session;
@@ -323,11 +295,11 @@ export class AlertBridge {
     const { notices, resolves, escalate } = reconcile(alerts, state, steps, now, route);
     for (const notice of notices) {
       try {
-        state = await this.notify(notice, state, steps, now);
+        state = await this.notify(notice, state, now);
         await this.write(state);
       } catch (error) {
         state = await this.read().catch(() => state);
-        this.deps.log(`alerts: notice to ${notice.chat.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+        this.deps.log(`alerts: steps for ${notice.chat.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
       }
     }
     if (escalate.length) {
@@ -369,29 +341,19 @@ export class AlertBridge {
     return result;
   }
 
-  private async notify(notice: ChatNotice, state: BridgeState, steps: ReadonlyMap<string, StepView>, now: number): Promise<BridgeState> {
-    if (notice.add.length && !(await this.deps.hasBoard?.(notice.chat) ?? true)) {
-      const result = await this.send(notice.chat, boardlessText(notice.add));
-      this.deps.log(`alerts: ${result === "sent" ? "woke" : "could not reach"} ${notice.chat.slice(0, 8)} (no board) for ${notice.add.length} new alerts`);
+  /** Puts each new firing on the owning chat's board as one step. A chat with no board gets nothing; the firing is only recorded. */
+  private async notify(notice: ChatNotice, state: BridgeState, now: number): Promise<BridgeState> {
+    if (!(await this.deps.hasBoard?.(notice.chat) ?? true)) {
+      this.deps.log(`alerts: ${notice.chat.slice(0, 8)} has no board, so ${notice.add.length} new alerts are only recorded`);
       return noticed(state, notice, new Map(notice.add.map(alert => [alertKey(alert), null])), now);
     }
     let placed = new Map<string, string>();
-    if (notice.add.length) {
-      await this.deps.boards.apply(notice.chat, board => {
-        const plan = placeSteps(board, notice.add);
-        placed = plan.steps;
-        return plan.ops;
-      }, "agent");
-      state = noticed(state, { ...notice, rewake: [] }, placed, now, 0);
-      await this.write(state);
-    }
-    const added = notice.add.map(alert => ({ step: placed.get(alertKey(alert))!, title: stepTitle(alert), alertname: alert.alertname, startsAt: alert.startsAt }));
-    const waiting = notice.rewake.map(key => {
-      const tracked = state.alerts[key]!;
-      return { step: tracked.step ?? "", title: steps.get(key)?.text ?? tracked.alertname, alertname: tracked.alertname, startsAt: tracked.startsAt };
-    });
-    const result = await this.send(notice.chat, alertText(added, waiting));
-    this.deps.log(`alerts: ${result === "sent" ? "woke" : "could not reach"} ${notice.chat.slice(0, 8)} for ${added.length} new and ${waiting.length} unowned firing steps`);
+    await this.deps.boards.apply(notice.chat, board => {
+      const plan = placeSteps(board, notice.add);
+      placed = plan.steps;
+      return plan.ops;
+    }, "agent");
+    this.deps.log(`alerts: put ${placed.size} new firing steps on ${notice.chat.slice(0, 8)}'s board`);
     return noticed(state, notice, placed, now);
   }
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
-import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, REWAKE_MS, routerFor, stepNote, stepTitle, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
+import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, routerFor, stepNote, stepTitle, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES, routeAlert } from "../src/alert-routes.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { walkItems } from "../src/shared/chat-board.ts";
@@ -37,12 +37,10 @@ async function fixture(list: unknown[] = [], options: { owners?: OwnerMap; board
   let now = NOW;
   let alerts: unknown[] | null = list;
   const sent: { session: string; text: string }[] = [];
-  const failing = new Set<string>();
   const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), boards, now: () => now, log: () => {},
     alerts: async () => alerts && parseAlerts(alerts),
     owners: async () => options.owners ?? null, hasBoard: async session => !options.boardless?.includes(session),
     deliver: async (session, text) => {
-      if (failing.has(session)) throw new Error("Timed out waiting for daemon worker response");
       sent.push({ session, text });
       return "sent";
     } });
@@ -51,11 +49,11 @@ async function fixture(list: unknown[] = [], options: { owners?: OwnerMap; board
     walkItems((await boards.read(id))?.plan ?? [], item => { if (item.note?.startsWith("Grafana alert ")) found.push(item); });
     return found;
   };
-  return { dir, boards, bridge, sent, failing, steps, set: (next: unknown[] | null) => { alerts = next; }, at: (ms: number) => { now = ms; },
+  return { dir, boards, bridge, sent, steps, set: (next: unknown[] | null) => { alerts = next; }, at: (ms: number) => { now = ms; },
     state: async () => JSON.parse(await readFile(join(dir, "alert-bridge.json"), "utf8")) as { alerts: Record<string, { step: string; wokeAt: number; resolvedAt?: number }> } };
 }
 
-test("alert bridge: a new firing alert adds exactly one board step in the chat that owns it and sends that chat one [alert] message", async () => {
+test("alert bridge: a new firing alert adds exactly one board step in the chat that owns it and sends no message", async () => {
   const f = await fixture([ciAlert]);
   await f.bridge.tick();
   const [step, ...more] = await f.steps(CI);
@@ -69,35 +67,15 @@ test("alert bridge: a new firing alert adds exactly one board step in the chat t
   const goal = (await f.boards.read(CI))!.plan.find(item => item.children.some(child => child.id === step.id))!;
   assert.equal(goal.text, ALERT_GOAL);
   for (const other of [CRAWLER, LAUNCH, OPS]) assert.equal(await f.boards.read(other), null);
-  assert.equal(f.sent.length, 1);
-  assert.equal(f.sent[0]!.session, CI);
-  assert.match(f.sent[0]!.text, new RegExp(`^\\[alert\\] A Grafana alert started firing.*${step.id} "Production CI runner queue over 30 min" \\(firing since 2026-10-14T01:00Z\\)`));
-  assert.match(f.sent[0]!.text, /start a job and set it on the step, or close the step with a reason/);
+  assert.equal(f.sent.length, 0);
 });
 
-test("alert bridge: the same alert firing on later ticks adds no second step and sends no second message", async () => {
+test("alert bridge: the same alert firing on later ticks adds no second step", async () => {
   const f = await fixture([ciAlert]);
   await f.bridge.tick();
   for (let tick = 1; tick <= 10; tick++) { f.at(NOW + tick * 30_000); await f.bridge.tick(); }
   assert.equal((await f.steps(CI)).length, 1);
-  assert.equal(f.sent.length, 1);
-});
-
-test("alert bridge: a send that fails after the board write keeps the step tracked, and the next tick re-wakes it instead of adding a second", async () => {
-  const f = await fixture([ciAlert]);
-  f.failing.add(CI);
-  await f.bridge.tick();
-  const [placed, ...extra] = await f.steps(CI);
-  assert.equal(extra.length, 0);
-  const key = alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:00:00.000Z" });
-  assert.deepEqual((await f.state()).alerts[key], { chat: CI, step: placed!.id, alertname: "CI runner queue over 30 min", startsAt: "2026-10-14T01:00:00.000Z", wokeAt: 0, firstWokeAt: NOW });
-  f.failing.clear();
-  f.at(NOW + 30_000);
-  await f.bridge.tick();
-  assert.deepEqual((await f.steps(CI)).map(step => step.id), [placed!.id]);
-  assert.equal(f.sent.length, 1);
-  assert.match(f.sent[0]!.text, new RegExp(`Still firing with no job on the step: ${placed!.id} "`));
-  assert.equal((await f.state()).alerts[key]!.wokeAt, NOW + 30_000);
+  assert.equal(f.sent.length, 0);
 });
 
 test("alert bridge: a crash after the board write and before the state write adopts the step on the next tick instead of adding a second", async () => {
@@ -111,7 +89,7 @@ test("alert bridge: a crash after the board write and before the state write ado
   assert.equal((await f.state()).alerts[alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:00:00.000Z" })]!.step, steps[0]!.id);
 });
 
-test("alert bridge: replay of 10-15 12:41Z, the daemon times out every send and the Crawler VP rewrites each note, and each firing stays one step", async () => {
+test("alert bridge: replay of 10-15 12:41Z, the Crawler VP rewrites each note on every tick, and each firing stays one step", async () => {
   const at = Date.parse("2026-10-15T12:42:00Z");
   const firing = (fingerprint: string, startsAt: string, labels: Record<string, string>, summary: string) =>
     ({ ...raw(fingerprint, labels), startsAt, annotations: { summary } });
@@ -121,7 +99,6 @@ test("alert bridge: replay of 10-15 12:41Z, the daemon times out every send and 
   const read = firing("4c1d2e3f40516273", "2026-10-15T12:41:10.000Z",
     { alertname: "Staging crawler health read over 2 s", __alert_rule_uid__: "crawler-staging-health-slow", job: "crawler-v3", world: "staging" }, "");
   const f = await fixture([walk, read]);
-  f.failing.add(CRAWLER);
   for (let tick = 0; tick < 6; tick++) {
     f.at(at + tick * 70_000);
     await f.bridge.tick();
@@ -139,48 +116,23 @@ test("alert bridge: replay of 10-15 12:41Z, the daemon times out every send and 
   assert.deepEqual(Object.values(state.alerts).map(tracked => tracked.step).sort(), [...ids].sort());
 });
 
-test("alert bridge: a re-wake goes out every REWAKE_MS while the step is open with no job, and stops once a job owns it", async () => {
-  const f = await fixture([ciAlert]);
-  await f.bridge.tick();
-  const [step] = await f.steps(CI);
-  f.at(NOW + REWAKE_MS - 30_000);
-  await f.bridge.tick();
-  assert.equal(f.sent.length, 1);
-  f.at(NOW + REWAKE_MS);
-  await f.bridge.tick();
-  assert.equal(f.sent.length, 2);
-  assert.match(f.sent[1]!.text, new RegExp(`^\\[alert\\] Still firing with no job on the step: ${step!.id} "Production CI runner queue over 30 min"`));
-  f.at(NOW + REWAKE_MS + 30_000);
-  await f.bridge.tick();
-  assert.equal(f.sent.length, 2);
-  await f.boards.apply(CI, [{ op: "plan_update", id: step!.id, job: "ci queue fix", status: "doing" }], "agent");
-  for (const at of [2, 3, 5]) { f.at(NOW + at * REWAKE_MS); await f.bridge.tick(); }
-  assert.equal(f.sent.length, 2);
-});
-
-test("alert bridge: a step the chat closed, or one it dropped, gets no re-wake while its alert keeps firing", async () => {
+test("alert bridge: a step the chat closed, or one it dropped, gets no escalation while its alert keeps firing", async () => {
   const f = await fixture([ciAlert, raw("aaaa000000000002", { alertname: "Runner disk under 10 GB", job: "runner" })]);
   await f.bridge.tick();
   const [first, second] = await f.steps(CI);
-  assert.equal(f.sent.length, 1);
   await f.boards.apply(CI, [{ op: "plan_update", id: first!.id, status: "done" }, { op: "plan_update", id: second!.id, status: "dropped" }], "agent");
-  f.at(NOW + 3 * REWAKE_MS);
+  f.at(NOW + 2 * ESCALATE_MS);
   await f.bridge.tick();
-  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent.length, 0);
 });
 
-test("alert bridge: alerts that start in one tick go to their chats as one message per chat, and a re-wake names every unowned step of the chat", async () => {
+test("alert bridge: alerts that start in one tick each get one step in the chat that owns them", async () => {
   const crawler = [1, 2, 3].map(n => raw(`bbbb00000000000${n}`, { alertname: "Production stream entry waiting over 1 hour", job: "crawler-v3", stream: `crawl_profile:${n}` }));
   const f = await fixture([...crawler, ciAlert]);
   await f.bridge.tick();
   assert.equal((await f.steps(CRAWLER)).length, 3);
-  assert.deepEqual(f.sent.map(({ session }) => session).sort(), [CI, CRAWLER].sort());
-  assert.match(f.sent.find(({ session }) => session === CRAWLER)!.text, /^\[alert\] 3 Grafana alerts started firing, and the alert bridge put one step each on your board/);
-  f.sent.length = 0;
-  f.at(NOW + REWAKE_MS);
-  await f.bridge.tick();
-  assert.equal(f.sent.filter(({ session }) => session === CRAWLER).length, 1);
-  for (const step of await f.steps(CRAWLER)) assert.ok(f.sent.find(({ session }) => session === CRAWLER)!.text.includes(`${step.id} "`));
+  assert.equal((await f.steps(CI)).length, 1);
+  assert.equal(f.sent.length, 0);
 });
 
 test("alert bridge: an alert that leaves the firing list gets one resolved line on its step, and the step's status stays the chat's", async () => {
@@ -196,7 +148,7 @@ test("alert bridge: an alert that leaves the firing list gets one resolved line 
   f.at(NOW + 8 * MIN);
   await f.bridge.tick();
   assert.equal((await f.steps(CI))[0]!.note, step!.note);
-  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent.length, 0);
 });
 
 test("alert bridge: the same fingerprint firing again after it resolved is a new step", async () => {
@@ -209,7 +161,6 @@ test("alert bridge: the same fingerprint firing again after it resolved is a new
   f.at(NOW + 10 * MIN);
   await f.bridge.tick();
   assert.equal((await f.steps(CI)).length, 2);
-  assert.equal(f.sent.length, 2);
   assert.deepEqual(Object.keys((await f.state()).alerts), [alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:40:00.000Z" })]);
 });
 
@@ -231,7 +182,6 @@ test("alert bridge: replay of 10-15 06:20Z, one poll drops a firing whose step t
   const ids: string[] = [];
   walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (item.text.includes("health read over 2 s")) ids.push(item.id); });
   assert.equal(ids.length, 1);
-  assert.equal(f.sent.length, 1);
   const tracked = (await f.state()).alerts[alertKey(snapshot)]!;
   assert.equal(tracked.step, ids[0]);
   assert.equal(tracked.resolvedAt, undefined);
@@ -302,7 +252,7 @@ test("alert bridge: a replay of crawler-prod-health-snapshot-down from 2026-10-1
   assert.match(step!.note!, /^Grafana alert 60a82f58f945d61a, firing since 2026-10-14T01:29:10\.000Z\.\nAlert: Production crawler health snapshot failing\./);
   assert.match(step!.note!, /snapshot=instagram_census/);
   assert.match(step!.note!, /Grafana: https:\/\/obs\.virev\.ai\/alerting\/grafana\/crawler-prod-health-snapshot-down\/view$/);
-  assert.deepEqual(f.sent.map(({ session }) => session), [CRAWLER]);
+  assert.equal(f.sent.length, 0);
   for (const other of ALERT_ROUTES.filter(route => route.session !== CRAWLER)) assert.equal(await f.boards.read(other.session), null);
 });
 
@@ -364,7 +314,6 @@ test("alert bridge: the youtube stream-wait firing from 10-15 gets the rule titl
   assert.match(step!.note!, /^Summary: crawl_profile:youtube group crawl_profile:youtube holds an entry 101632\.242 s old/m);
   assert.match(step!.note!, /^Values: A=101632\.242, C=1\.$/m);
   assert.match(step!.note!, /stream=crawl_profile:youtube/);
-  assert.match(f.sent[0]!.text, new RegExp(`${step!.id} "Production stream entry waiting over 1 hour" \\(firing since 2026-10-15T10:35Z\\)`));
 });
 
 test("alert bridge: a title with no env gets the env label in front, and a title that names one stays as it is", () => {
@@ -388,27 +337,23 @@ test("alert bridge: a step placed under the old summary title keeps its title wh
   assert.equal(step!.text, "Prod YouTube job queue holds an entry stuck over a day");
 });
 
-test("alert bridge: an owner with no board, such as metal box owner, gets one message with the alert's labels and link and no step, re-wake or escalation", async () => {
+test("alert bridge: an owner with no board, such as metal box owner, gets no step, message or escalation, and the firing is recorded until it resolves", async () => {
   const backup = raw("ffff000000000001", { alertname: "Backup too old", __alert_rule_uid__: "metal-backup-ch-redis-age", box: "us-metal01" });
   const f = await fixture([backup], { owners: OWNERS, boardless: [METAL] });
   await f.bridge.tick();
   assert.equal(await f.boards.read(METAL), null);
-  assert.deepEqual(f.sent.map(({ session }) => session), [METAL]);
-  assert.match(f.sent[0]!.text, /^\[alert\] A Grafana alert you own started firing: "Backup too old" \(firing since 2026-10-14T01:00Z, labels __alert_rule_uid__=metal-backup-ch-redis-age, box=us-metal01, https:\/\/obs\.virev\.ai\/alerting\/grafana\/metal-backup-ch-redis-age\/view\)/);
-  for (const at of [REWAKE_MS, ESCALATE_MS, 3 * REWAKE_MS]) { f.at(NOW + at); await f.bridge.tick(); }
-  assert.equal(f.sent.length, 1);
+  for (const at of [ESCALATE_MS, 2 * ESCALATE_MS]) { f.at(NOW + at); await f.bridge.tick(); }
   f.set([]);
   await f.bridge.tick();
-  assert.equal((await f.state()).alerts[alertKey(backup)]!.resolvedAt, NOW + 3 * REWAKE_MS);
-  assert.equal(f.sent.length, 1);
+  assert.equal((await f.state()).alerts[alertKey(backup)]!.resolvedAt, NOW + 2 * ESCALATE_MS);
+  assert.equal(f.sent.length, 0);
 });
 
-test("alert bridge: a step still open with no job 30 min after its first wake sends ops guy one escalation, and never for a step a job owns or ops guy's own", async () => {
+test("alert bridge: a step still open with no job 30 min after the bridge placed it sends ops guy one escalation, and never for a step a job owns or ops guy's own", async () => {
   const devbox = raw("dddd000000000009", { alertname: "Dev box swap low", job: "devbox" });
   const f = await fixture([ciAlert, devbox]);
   await f.bridge.tick();
   const [step] = await f.steps(CI);
-  f.sent.length = 0;
   f.at(NOW + ESCALATE_MS - 30_000);
   await f.bridge.tick();
   assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 0);
@@ -417,7 +362,7 @@ test("alert bridge: a step still open with no job 30 min after its first wake se
   const escalations = f.sent.filter(({ text }) => text.startsWith("[alert-escalation]"));
   assert.equal(escalations.length, 1);
   assert.equal(escalations[0]!.session, OPS);
-  assert.match(escalations[0]!.text, new RegExp(`^\\[alert-escalation\\] An alert step is still open with no job 30 min after the alert bridge first woke the chat that owns it: ${step!.id} "Production CI runner queue over 30 min" on VP of CI`));
+  assert.match(escalations[0]!.text, new RegExp(`^\\[alert-escalation\\] An alert step is still open with no job 30 min after the alert bridge put it on the owning chat's board: ${step!.id} "Production CI runner queue over 30 min" on VP of CI`));
   for (const at of [2, 3, 4]) { f.at(NOW + at * ESCALATE_MS); await f.bridge.tick(); }
   assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 1);
 
