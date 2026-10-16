@@ -431,23 +431,11 @@ function runHelper(args: readonly string[], input: string): Promise<unknown> {
 }
 /** Runs the footprint helper with the worker pids on stdin. */
 export const readFootprints = async (pids: readonly number[]): Promise<Footprints> => await runHelper([], pids.join("\n") + "\n") as Footprints;
-/** The processes a session's kernel left detached (worker-footprint.py `strays`): its RLM_HARNESS_STATE_DIR names the session, or it sits in the kernel's process group, and no kernel or Prime process is above it. */
-export async function readStrays(session: string): Promise<RawProcess[]> {
-  const answer = await runHelper(["--session", session], "");
-  return isRecord(answer) && Array.isArray(answer.strays) ? answer.strays as RawProcess[] : [];
-}
 /** A process's start time in epoch seconds, or null when it is gone. */
 export async function processStart(pid: number): Promise<number | null> {
   const answer = await runHelper(["--started", String(pid)], "");
   return typeof answer === "number" ? answer : null;
 }
-/** The line that names a session's detached processes in the notice of its deleted or archived job; empty when there are none. */
-export function strayLine(strays: readonly RawProcess[]): string {
-  if (!strays.length) return "";
-  return ` Processes its kernel started detached still run: ${strays.map(stray => `pid ${stray.pid} \`${stray.command}\` (${(stray.bytes / GB).toFixed(1)} GiB)`).join(", ")}. ` +
-    "Stop them if its work is done.";
-}
-
 export interface WatchSource {
   dataDir: string;
   /** The daemon's raw session rows the catalog holds now; none before its first full list. */

@@ -15,7 +15,7 @@ import type { JobResumes } from "./job-resume.ts";
 import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { FleetStop } from "./fleet-budget.ts";
-import type { RawProcess } from "./mac-usable-watch.ts";
+import type { Leftovers } from "./job-leftovers.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export type SubagentDelete = "deleted" | "not_held" | "running";
@@ -248,11 +248,10 @@ export interface CheckInSource {
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */
   deletedJobs?: DeletedJobRecord;
   /**
-   * The processes a job's kernel started detached that would outlive it (src/mac-usable-watch.ts `readStrays`), read just before the cleanup
-   * deletes or archives it and named in the chat's notice, since on 10-15 at 00:45Z a deleted job's nohup'd runner.py went on to start a 30 GB
-   * script. Absent: none are named.
+   * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
+   * they opened, under its session folder `dir`, once the cleanup deleted or archived it or the chat deleted it. Absent: nothing is stopped.
    */
-  strays?: (session: string) => Promise<readonly RawProcess[]>;
+  leftovers?: (dir: string, session?: string) => Promise<Leftovers>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */

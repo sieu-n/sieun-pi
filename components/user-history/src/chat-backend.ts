@@ -13,7 +13,8 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, readHeldSpawns, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueLong, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
-import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
+import { startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
+import { endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -213,7 +214,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")), correctionChecks: replyCheckRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
-      strays: readStrays,
+      leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       starting: async chat => {
         const name = (await catalog.rows()).find(row => row.id === chat)?.name.trim();

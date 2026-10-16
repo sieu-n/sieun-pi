@@ -4,12 +4,8 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadRecord } from "../src/chat-brief.ts";
-import { Chats } from "../src/chats.ts";
-import { IdIndex } from "../src/id-index.ts";
-import { type Footprints, guardTrees, type RawKernel, type RawOrphan, readFootprints, readStrays, sample, STOP_RULE, TREE_SHARE, type TreeMemory, watchLine } from "../src/mac-usable-watch.ts";
-import type { ChildAgent, ThreadMessage } from "../src/shared/types.ts";
-import { fakeThreads, source } from "./chats-helpers.ts";
+import { leftoverSource } from "../src/job-leftovers.ts";
+import { type Footprints, guardTrees, type RawKernel, type RawOrphan, readFootprints, sample, STOP_RULE, TREE_SHARE, type TreeMemory, watchLine } from "../src/mac-usable-watch.ts";
 
 /**
  * 10-15 00:37 to 00:53Z: the VP of SEO tree grew to 16 to 25.5 GiB and the Mac swapped at up to 25,873 swapouts a second. old_analysis.py (pid
@@ -138,7 +134,7 @@ test("an orphan with the SEO env counts against the SEO tree: a real detached pr
   assert.equal(orphan.command, `${process.execPath} -e setTimeout(() => {}, 6000)`);
   assert.ok(orphan.started! > Date.now() / 1000 - 60);
   assert.ok(measured.cpu_s < 1, `the helper costs ${measured.cpu_s} s of CPU`);
-  const strays = await readStrays(job);
+  const strays = await leftoverSource.strays([job]);
   assert.deepEqual(strays.map(stray => stray.pid), [orphan.pid], "the delete notice's reader finds it by its session");
   const footprints: Footprints = { ...seoFootprints(20), orphans: [{ ...orphan, bytes: 12 * GB }] };
   const line = watchLine({ now: at("00:45"), rows: [rowOf(SEO, { sessionName: "VP of SEO" }), rowOf("other", { sessionName: "ops guy" })], footprints, queue: null,
@@ -158,33 +154,5 @@ test("a shared service is in no tree: a PM2 God Daemon with the SEO env and the 
   const measured = await readFootprints([process.pid]);
   assert.deepEqual(measured.orphans!.filter(entry => entry.session === job).map(entry => entry.command), [`${process.execPath} -e setTimeout(() => {}, 6002)`],
     "the PM2 daemon and its app count toward no tree");
-  assert.deepEqual((await readStrays(job)).map(stray => stray.command), [`${process.execPath} -e setTimeout(() => {}, 6002)`]);
-});
-
-test("a deleted job's notice names the processes its kernel started detached, with pid, command and GiB, and kills nothing", async () => {
-  const NOW = Date.parse("2026-10-15T00:45:00Z");
-  const dir = await mkdtemp(join(tmpdir(), "tree-guard-delete-"));
-  const calls: string[] = [];
-  const lines: string[] = [];
-  const asked: string[] = [];
-  const threads = fakeThreads(calls);
-  const done: ChildAgent = { id: "sub-1", label: "seo data memory fix", sessionName: "seo data memory fix", sessionId: SEO_JOB, status: "done", repliedSinceTask: true, lastActivityAt: NOW - MIN };
-  threads.transcripts.set(SEO, [{ role: "custom", customType: "agent_message", content: "[agent-message from child:seo data memory fix]\nDone, runner started.", display: true,
-    timestamp: NOW - MIN } as ThreadMessage]);
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add(SEO);
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, {}, () => NOW), strays: async session => { asked.push(session); return [{ pid: 77400, bytes: 0.02 * GB, started: STARTED, command: "python3 runner.py" },
-      { pid: 77405, bytes: 27 * GB, started: STARTED, command: "python3 old_analysis.py --all" }]; } }, line => lines.push(line));
-  await chats.adopt();
-  threads.fire().live(SEO, [{ ...done, status: "running", activity: { kind: "executing", toolName: "ipython" } }]);
-  threads.fire().children(SEO, [done]);
-  await chats.settled();
-  assert.deepEqual(asked, [SEO_JOB], "read once, for the job's session, before the delete");
-  assert.deepEqual(calls.filter(call => call.startsWith("delete")), [`delete ${SEO} sub-1`]);
-  const notice = calls.find(call => call.startsWith(`notice ${SEO}`));
-  assert.equal(notice, `notice ${SEO} [job] seo data memory fix was deleted. Processes its kernel started detached still run: pid 77400 \`python3 runner.py\` (0.0 GiB), ` +
-    "pid 77405 `python3 old_analysis.py --all` (27.0 GiB). Stop them if its work is done.");
-  assert.ok(lines.some(line => line.includes("left detached processes running: 77400, 77405")), lines.join("\n"));
-  chats.close();
+  assert.deepEqual((await leftoverSource.strays([job])).map(stray => stray.command), [`${process.execPath} -e setTimeout(() => {}, 6002)`]);
 });

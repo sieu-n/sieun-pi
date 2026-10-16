@@ -8,7 +8,7 @@ Each `python -m rlm.repl` kernel in a worker tree is reported with its session a
 milliseconds since each process started and pids (`members`), and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
-`--session <id>` prints the processes a session's kernel left detached (`strays`), for the notice of a deleted or archived job; `--started <pid>`
+`--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
 prints a process's start time.
 """
 import ctypes
@@ -228,11 +228,11 @@ def orphans(table, inside):
     return [entry for entry in found if entry]
 
 
-def strays(table, session):
-    """The processes a session's kernel left detached: its RLM_HARNESS_STATE_DIR names `session`, or it sits in the kernel's process group, and no kernel or Prime process is above it."""
-    groups = {table[pid][1] for pid in table if (owner := kernel_of(pid, table[pid][3])) and owner[1] == session}
+def strays(table, sessions):
+    """The processes the kernels of `sessions` left detached: its RLM_HARNESS_STATE_DIR names one of them, or it sits in one of their kernels' process groups, and no kernel or Prime process is above it."""
+    groups = {table[pid][1] for pid in table if (owner := kernel_of(pid, table[pid][3])) and owner[1] in sessions}
     found = (process(table, pid, {}) for pid, (_, pgid, _, args) in table.items()
-             if args and not PRIME.search(" ".join(args[0])) and ((harness(args[1]) or ("", ""))[1] == session or pgid in groups) and detached(table, pid) and not shared(table, pid))
+             if args and not PRIME.search(" ".join(args[0])) and ((harness(args[1]) or ("", ""))[1] in sessions or pgid in groups) and detached(table, pid) and not shared(table, pid))
     return [entry for entry in found if entry]
 
 
@@ -246,7 +246,7 @@ if __name__ == "__main__":
         print(json.dumps(started(int(sys.argv[2]))))
         sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
-        print(json.dumps({"strays": strays(scan(), sys.argv[2]), "cpu_s": cpu()}))
+        print(json.dumps({"strays": strays(scan(), set(sys.argv[2].split(","))), "cpu_s": cpu()}))
         sys.exit(0)
     waiters, handles, kernels, seen = [], [], [], set()
     workers = {line.strip(): tree(int(line), waiters, int(time.time()), handles, kernels, seen) for line in sys.stdin if line.strip().isdigit()}

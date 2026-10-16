@@ -35,7 +35,7 @@ import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, C
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
-import { type RawProcess, strayLine } from "./mac-usable-watch.ts";
+import { ARTIFACTS, type Leftovers, leftoverLine } from "./job-leftovers.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -133,6 +133,8 @@ export class Chats {
   private readonly attachedChildren = new Map<string, readonly ChildAgent[]>();
   /** The daemon's subagents by parent session at the last catalog refresh (`roster`), for the subagents of a chat's duty jobs. */
   private subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map();
+  /** Sessions whose leftovers were stopped (`leftovers`), so a job is stopped once. */
+  private readonly leftoversEnded = new Set<string>();
   /**
    * When each job was last seen starting to work, and the end (its last activity) last told to the chat, with the time of the job message it
    * was told as waiting on (none for "ended with no report").
@@ -327,7 +329,9 @@ export class Chats {
    * not given its children yet reads the roster too (VP of CI 10-15 13:50Z: right after a restart that gap left 22 steps owned by nobody).
    */
   async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
+    const previous = this.subagents;
     this.subagents = byChat;
+    if (previous.size) this.queue("#leftovers", () => this.endGone(previous, byChat));
     await this.load();
     for (const id of this.chatIds) {
       const before = this.children.get(id);
@@ -604,18 +608,13 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
         return "kept";
       }
-      const strays = sessionId !== undefined ? await this.strays(id, sessionId) : [];
       const result = await this.threads.deleteSubagent(id, child.id);
       if (result === "running") {
         this.deletedJobs.delete(child.id);
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: the daemon shows it running`);
         return result;
       }
-      if (result === "deleted" && strays.length) {
-        await this.threads.notice(id, `${JOB_NOTICE_PREFIX}${childName(child)} was deleted.${strayLine(strays)}`)
-          .catch(error => this.log(`chat ${id.slice(0, 8)}: stray notice for ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`));
-        this.log(`chat ${id.slice(0, 8)}: deleted job ${childName(child)} left detached processes running: ${strays.map(stray => stray.pid).join(", ")}`);
-      }
+      await this.endLeftovers(id, childName(child), join(ARTIFACTS, id, child.id), sessionId, "was deleted.");
       await this.source.deletedJobs?.add(id, child.id, now, listed);
       if (result === "not_held") this.log(`chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
       return result;
@@ -771,10 +770,10 @@ export class Chats {
         const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
         const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
           report: jobReport(messages, agent.sender), endedAt: now });
-        const strays = await this.strays(row.id, id);
         await this.threads.archive(id);
+        const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
         await this.threads.notice(row.id, `${JOB_NOTICE_PREFIX}${agent.name} was archived after ${quiet} min quiet with its report in and no open step naming it, so its worker ended. ` +
-          `Its brief and last report are saved in ${path}; to send it more work, spawn a fresh job from that file.${strayLine(strays)}`);
+          `Its brief and last report are saved in ${path}; to send it more work, spawn a fresh job from that file.${leftoverLine(left)}`);
         this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}`);
       } catch (error) {
         this.rootsEnded.delete(id);
@@ -831,13 +830,40 @@ export class Chats {
     }
   }
 
-  /** The processes a job's kernel left detached (`CheckInSource.strays`); none when the read fails, which is logged. */
-  private async strays(chat: string, session: string): Promise<readonly RawProcess[]> {
-    if (!this.source.strays) return [];
-    return this.source.strays(session).catch(error => {
-      this.log(`chat ${chat.slice(0, 8)}: detached processes of ${session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+  /** Stops what a gone job left (`CheckInSource.leftovers`) once per session; nothing when the stop fails, which is logged. */
+  private async leftovers(chat: string, dir: string, session?: string): Promise<Leftovers> {
+    const none = { stopped: [], tabs: 0 };
+    if (!this.source.leftovers || (session !== undefined && this.leftoversEnded.has(session))) return none;
+    if (session !== undefined) this.leftoversEnded.add(session);
+    return this.source.leftovers(dir, session).catch(error => {
+      this.log(`chat ${chat.slice(0, 8)}: leftovers of ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+      return none;
     });
+  }
+
+  /** Stops what a gone job left and tells the chat in one notice when anything was stopped. */
+  private async endLeftovers(chat: string, name: string, dir: string, session: string | undefined, what: string): Promise<void> {
+    const left = await this.leftovers(chat, dir, session);
+    const line = leftoverLine(left);
+    if (!line) return;
+    await this.threads.notice(chat, `${JOB_NOTICE_PREFIX}${name} ${what}${line}`)
+      .catch(error => this.log(`chat ${chat.slice(0, 8)}: leftover notice for ${name}: ${error instanceof Error ? error.message : String(error)}`));
+    this.log(`chat ${chat.slice(0, 8)}: job ${name} ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs`);
+  }
+
+  /**
+   * A job the chat deleted itself (rlm.delete_subagent) leaves the daemon's list under the chat without passing `deleteJob`: once the daemon
+   * lists its session nowhere, what it left is stopped too. On 10-15 at 00:45Z the job SEO's chat deleted left the runner that started a 30 GB script.
+   */
+  private async endGone(before: ReadonlyMap<string, readonly ChildAgent[]>, after: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
+    for (const [chat, children] of before) {
+      const kept = new Set((after.get(chat) ?? []).map(child => child.id));
+      for (const child of children) {
+        if (kept.has(child.id) || child.sessionId === undefined || this.leftoversEnded.has(child.sessionId)) continue;
+        const listed = await this.summary(child.sessionId).then(summary => summary !== undefined, () => true);
+        if (!listed) await this.endLeftovers(chat, childName(child), join(ARTIFACTS, chat, child.id), child.sessionId, "is gone.");
+      }
+    }
   }
 
   private messages(id: string): readonly ThreadMessage[] | undefined { return this.threads.state?.(id)?.messages; }
