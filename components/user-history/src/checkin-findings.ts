@@ -90,7 +90,7 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
     (item.waitFor ? ` and waits for ${quote(item.waitFor)}` : "")).join("; ") +
   ". Check the wait against the real state now: if it is met, close the step and the goal on that evidence. If not, send that thread the " +
   "leftover in one message with what it must check. A step whose run, probe, land or push has not finished green and landed stays open with " +
-  "its job, and board-apply refuses that close; close a step here with a note naming the thread only when what is left is that thread's own " +
+  "its job; close a step here with a note naming the thread only when what is left is that thread's own " +
   "work. Keep the goal while a step under it is open, or when more work of this chat comes after the wait, and add that step now";
 
 /**

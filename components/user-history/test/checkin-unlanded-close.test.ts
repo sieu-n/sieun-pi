@@ -51,8 +51,6 @@ const PLAN: PlanItem[] = [
   step("p401", "Agent work runs through one queue with a limit you set in Settings, so this Mac stops running out of memory", "doing",
     { job: "01a11af8-962e-773d-a19a-ee4104011987", note: "Queue fixes are live: sieun-pi fb3c89d and pi-pool 00a7feba9b52 at 11:32 KST." }),
 ];
-/** The 17:01 check-in's ops at 08:04:52Z, as it built them (its scratch note dropped, as in its second call). */
-const OPS = [{"op": "plan_update", "id": "p389", "status": "done", "waitFor": null, "note": "Closed here at 08:04Z and handed to the skill rules land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529531177 was still queued at 08:01Z."}, {"op": "plan_update", "id": "p393", "status": "done", "waitFor": null, "note": "Closed here at 08:04Z and handed to the skill rules land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529531177 was still queued at 08:01Z. It rides the same object as p389."}, {"op": "plan_update", "id": "p402", "status": "done", "waitFor": null, "note": "The harness and sieun-pi parts are done (global prompt v4, two memories, f3c85a4). Closed here at 08:04Z and handed to the skill rewrite land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529446596 was still queued at 08:01Z."}, {"op": "plan_update", "id": "p409", "status": "done", "waitFor": null, "note": "Part 1 landed as b2b3006885. Closed here at 08:04Z and handed to the skill rewrite land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529446596 was still queued at 08:01Z. Batch B also stays with that thread."}, {"op": "plan_update", "id": "p319", "status": "done", "waitFor": null, "note": "Tree sync part is done. Closed here at 08:04Z and handed to the stale tree guard land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529486999 was still queued at 08:01Z."}, {"op": "plan_update", "id": "p357", "status": "done", "waitFor": null, "note": "Closed here at 08:04Z and handed to the stale tree guard land thread, which owns the land to the end and reports to this chat. Its verify-dev run 38529486999 was still queued at 08:01Z."}, {"op": "plan_update", "id": "p249", "status": "done", "note": "The wiki dream duty runs daily and covers the ongoing skill fixes; its last two lands moved to the skill rules land thread at 08:04Z."}, {"op": "plan_update", "id": "p254", "status": "done", "note": "The skills check duty covers this daily (29 of 30 pass on 10-14, s207); the rewrite land moved to the skill rewrite land thread at 08:04Z."}, {"op": "plan_update", "id": "p200", "status": "done", "note": "Every step is closed: the daily Wiki dream duty holds the cleanup and mistake fixes, and the skill rules land thread owns the last land. Requirement 4 stays a known gap: no check can prove a subagent wrote a page."}, {"op": "plan_update", "id": "p243", "status": "done", "note": "Every step is closed: the skill rewrite land and stale tree guard land threads own the last three lands and report here, and the skills check duty covers tool health."}, {"op": "plan_update", "id": "p401", "status": "done", "note": "Every step is done and the queue fixes are live (pool 1c4a02e7090a at 12:37:59 KST). The ops guy (+observability) thread owns the 24 h readout at 10-14 23:16Z, sent at 08:04Z."}, {"op": "plan_update", "id": "p1", "status": "done", "note": "Every step is done: p86's health fixes are live in release-f237210 and p215 runs as the Skills and harness duty. New chat app work opens as a new goal."}];
 
 async function board(plan: PlanItem[] = PLAN): Promise<string> {
   const dataDir = await mkdtemp(join(tmpdir(), "unlanded-close-"));
@@ -67,28 +65,7 @@ const find = (items: readonly PlanItem[], id: string): PlanItem | undefined => {
   return undefined;
 };
 
-test("the 17:01 check-in's closes at rev 2568 are refused: a land job's step stays open while its verify-dev run is queued (AI harness 10-14)", async () => {
-  const dataDir = await board();
-  await assert.rejects(applyDutyOps(dataDir, CHAT, OPS), (error: Error) => {
-    for (const id of ["p389", "p393", "p402", "p409", "p319", "p357"]) assert.match(error.message, new RegExp(`\\b${id} "`), `${id} is named`);
-    assert.match(error.message, /its note says "Its verify-dev run 38529531177 was still queued at 08:01Z\."/);
-    assert.match(error.message, /^Nothing was applied\. A check-in does not mark a step done before its work has landed/);
-    assert.doesNotMatch(error.message, /\bp401 "|\bp1 "/, "a step whose note names no unfinished run, land or push still closes");
-    return true;
-  });
-  const after = await read(dataDir);
-  assert.equal(after.rev, 2556, "all or none: the board is untouched");
-  assert.equal(find(after.plan, "p389")?.status, "doing");
-  assert.equal(find(after.plan, "p389")?.waitFor, "the fresh skill rules run pushed at 07:35Z goes green; skill rules land lands it before promote 10's hold (about 10:00Z)");
-});
-
-test("the same close on a cleared wait is refused when the note only hands the land to the step's job", async () => {
-  const dataDir = await board();
-  await assert.rejects(applyDutyOps(dataDir, CHAT, [{ op: "plan_update", id: "p357", status: "done", waitFor: null,
-    note: "Closed here and handed to the stale tree guard land thread." }]), /p357 "Block commits[^"]*": it waits for "the fresh guard run pushed at 07:35Z goes green; stale tree guard land lands it before promote 10's hold \(about 10:00Z\)" and its note names no landed commit sha/);
-});
-
-test("control: a step whose note names its landed sha still closes, and so does one whose wait was on a run reported green", async () => {
+test("board-apply closes a step whose note names its landed sha, and one whose wait was on a run reported green", async () => {
   const dataDir = await board();
   const out = await applyDutyOps(dataDir, CHAT, [
     { op: "plan_update", id: "p389", status: "done", waitFor: null, note: "Landed as 032ea100bf on sieun/dev at 08:40Z after verify-dev run 38529531177 went green." },

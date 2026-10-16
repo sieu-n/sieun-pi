@@ -500,8 +500,8 @@ test("c45: a goal whose only open step another thread holds is a counted miss wi
   assert.equal(shape[0], 'p1 "Old chats show in the sidebar again and stay there" has no open work of its own: p3 "Verify the old chats show in the sidebar after a ' +
     'new chat o…" is held by the AI harness developer environment VP thread (thread:01a00000-vp) and waits for "next chat release with the fix". Check the wait ' +
     "against the real state now: if it is met, close the step and the goal on that evidence. If not, send that thread the leftover in one message with " +
-    "what it must check. A step whose run, probe, land or push has not finished green and landed stays open with its job, and board-apply refuses " +
-    "that close; close a step here with a note naming the thread only when what is left is that thread's own work. Keep the goal while a step under " +
+    "what it must check. A step whose run, probe, land or push has not finished green and landed stays open with its job; " +
+    "close a step here with a note naming the thread only when what is left is that thread's own work. Keep the goal while a step under " +
     "it is open, or when more work of this chat comes after the wait, and add that step now");
 });
 

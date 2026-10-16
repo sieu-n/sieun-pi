@@ -138,13 +138,11 @@ const ON_BRANCH = /\b(?:on|in|into|to)\s+(?:local\s+)?(?:origin\/[\w/-]+|sieun\/
 const plainWords = (sentence: string): string => sentence.replace(/(['"‘“])[^'"’”]*['"’”]|\([^()]*\)/g, " ");
 
 /**
- * Why a check-in or another duty job may not mark this step done, or null (AI harness 10-14 17:01 KST: the check-in closed p389, p393, p402,
- * p409, p319 and p357 at rev 2568 with notes "handed to the skill rules land thread ... Its verify-dev run 38529531177 was still queued", and
- * cleared their waits in the same op; the land jobs were the chat's own roots). A step closes when its run, probe, land or push has finished
- * green and landed: a sentence of the new note that names one still on its way, on green, or handed to another session refuses the close, and
- * so does a wait (before the op or after it) on a land or a push whose note names no commit sha that landed or sits on a shared branch, or a
- * wait on a run or a probe whose note reports nothing green. The step's own job name ("skill rules land") is no land. A step owned by a live job is already in the end
- * state, so the job keeps it open.
+ * Why closing this step now would be early, or null. `looksDone` reads it, so the check-in never calls a step done while its run, probe, land
+ * or push has not finished green and landed (AI harness 10-14 17:01 KST: notes said "Its verify-dev run 38529531177 was still queued"). A
+ * sentence of the note that names such work still on its way, on green, or handed to another session counts, and so does a wait on a land or a
+ * push whose note names no commit sha that landed or sits on a shared branch, or a wait on a run or a probe whose note reports nothing green.
+ * The step's own job name ("skill rules land") is no land.
  */
 export function unlandedClose(before: Pick<PlanItem, "status" | "waitFor">, after: Pick<PlanItem, "status" | "waitFor" | "note" | "job">): string | null {
   if (after.status !== "done" || !OPEN.has(before.status)) return null;
@@ -161,21 +159,3 @@ export function unlandedClose(before: Pick<PlanItem, "status" | "waitFor">, afte
   return null;
 }
 const quoteText = (text: string): string => `"${text.trim().length > 160 ? text.trim().slice(0, 159) + "…" : text.trim()}"`;
-/** Every step a board change marks done that `unlandedClose` refuses, as "p389 \"...\": its note says ...". */
-export function unlandedCloses(before: ChatBoard, after: ChatBoard): string[] {
-  const was = new Map<string, PlanItem>();
-  const index = (items: readonly PlanItem[]) => { for (const item of items) { was.set(item.id, item); index(item.children); } };
-  index(before.plan);
-  const refused: string[] = [];
-  const visit = (items: readonly PlanItem[]) => {
-    for (const item of items) {
-      const prior = was.get(item.id);
-      // The board marks a reopened step done again with the note it closed on before (`reclose` in src/shared/chat-board.ts).
-      const reason = prior && !(prior.reopened && item.note === prior.note) ? unlandedClose(prior, item) : null;
-      if (reason) refused.push(`${item.id} "${item.text.length > 70 ? item.text.slice(0, 69) + "…" : item.text}": ${reason}`);
-      visit(item.children);
-    }
-  };
-  visit(after.plan);
-  return refused;
-}
