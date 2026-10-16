@@ -22,7 +22,7 @@ export interface Scenario {
   /** The board seeded from `--board`; absent: the chat makes its own board. */
   board?(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };
   setupNotes(state: RunState, changes: readonly string[]): string;
-  evaluate(run: string, state: RunState): { verdict: Verdict; text: string };
+  evaluate(run: string, state: RunState): { verdict: Verdict; text: string } | Promise<{ verdict: Verdict; text: string }>;
   baseline(before: string): { verdict: Verdict; text: string };
 }
 /** `open`: the run has not yet reached a state a criterion needs, so it runs more cycles before a verdict. */

@@ -27,11 +27,12 @@ import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
+import { ordinaryHour } from "./ordinary-hour.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "correction-refine": correctionRefine };
+const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "correction-refine": correctionRefine, "ordinary-hour": ordinaryHour };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -276,7 +277,7 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
   const scenario = SCENARIOS[state.scenario]!;
   const srv = await server().catch(() => null);
   if (srv) await collectOnce(run, state, srv, { at: 0 });
-  const { verdict, text } = scenario.evaluate(run, state);
+  const { verdict, text } = await scenario.evaluate(run, state);
   const out = join(dirname(run), `${basename(run)}.${verdict}.md`);
   writeFileSync(out, text);
   log(run, `verdict ${verdict}: ${out}`);
