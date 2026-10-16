@@ -5,7 +5,8 @@
  * the server runs the chat on its own clock, `collect` saves the evidence, `evaluate` judges it against the criteria written before the run,
  * and `teardown` archives the chat and its jobs.
  *
- *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir>
+ *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir> [--chat <id>]
+ *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
@@ -111,9 +112,12 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const name = need(flags, "name");
   const srv = await server();
   const headMessage = scenario.headMessage(name);
-  const control = scenario.control;
-  const [chat, controlId] = await Promise.all([createThread(srv, "chat", name, sandbox, headMessage),
+  const control = scenario.control && flags["control-name"] ? { ...scenario.control, name: flags["control-name"] } : scenario.control;
+  // --chat adopts a chat whose create the daemon answered after this script's fetch gave up (10-16 06:52Z: 171.7 s at load 82).
+  const adopted = flags.chat;
+  const [chat, controlId] = await Promise.all([adopted ?? createThread(srv, "chat", name, sandbox, headMessage),
     control ? createThread(srv, "chat", control.name, sandbox, control.message) : Promise.resolve(undefined)]);
+  const adoptedAt = adopted ? Date.parse(/"timestamp":"([^"]+)"/.exec(readFileSync(join(homedir(), ".prime/agent/sessions", `${adopted}.jsonl`), "utf8"))?.[1] ?? "") : NaN;
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
   log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger`);
   if (control && controlId) {
@@ -124,7 +128,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const fixtureBriefs: string[] = [];
   let changes: string[] = [];
   const state: RunState = { scenario: scenario.name, chat: { id: chat, name }, fixtures, sandbox, everyMs: everyMin * 60_000, release: liveRelease(),
-    board: flags.board ?? "", seeds: [headMessage], setupAt: Date.now(), windowStart: 0,
+    board: flags.board ?? "", seeds: [headMessage], setupAt: Number.isNaN(adoptedAt) ? Date.now() : adoptedAt, windowStart: 0,
     ...(control && controlId ? { control: { id: controlId, name: control.name } } : {}) };
   if (scenario.board) {
     await setCheckIn(srv, chat, { pause: "forever" });
