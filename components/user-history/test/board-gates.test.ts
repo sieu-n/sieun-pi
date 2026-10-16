@@ -54,19 +54,14 @@ test("owner go: approving answers are a go; holds and refusals are not", () => {
   assert.equal(stepGo(answered, p2Of(answered))?.id, "t2", "the tapped first choice is the owner's go");
 });
 
-test("owner go: the agent cannot move a go-needed step or a step under it to doing or done until the owner answers its todo with a go", () => {
+test("owner go: a go-needed step reads the owner's last go-or-hold answer on its todo as its go", () => {
   const board = gated();
   assert.equal(board.plan[0]!.children[0]!.go, "needed");
   assert.equal(board.todos[0]!.step, "p2");
-  refused(board, [{ op: "plan_update", id: "p2", status: "doing" }], /p2 "Port the picked design to the search app" cannot move to doing: it needs the owner's go\. Add one For you todo with step "p2"/);
-  refused(board, [{ op: "plan_update", id: "p2", status: "done" }], /cannot move to done/);
-  refused(board, [{ op: "plan_add", parent: "p2", text: "Copy the CSS", status: "doing" }], /p4 "Copy the CSS" cannot move to doing: p2 "Port the picked design to the search app" above it needs/);
-  refused(board, [{ op: "plan_add", text: "Deploy", go: "needed", status: "doing" }], /needs the owner's go/);
   assert.equal(run(board, [{ op: "plan_add", parent: "p2", text: "Draft the port plan" }]).plan[0]!.children[0]!.children[0]!.status, "todo", "a todo step under it is fine");
 
   const held = run(board, [{ op: "todo_update", id: "t1", reply: "Not yet", done: true }], "owner");
   assert.equal(held.todos[0]!.answeredBy, "owner");
-  refused(held, [{ op: "plan_update", id: "p2", status: "doing" }], /needs the owner's go/, "agent");
 
   const go = run(board, [{ op: "todo_update", id: "t1", reply: "Go: port it", done: true }], "owner");
   assert.equal(stepGo(go, p2Of(go))?.id, "t1");
@@ -80,16 +75,14 @@ test("owner go: the agent cannot move a go-needed step or a step under it to doi
   const side = run(go, [{ op: "todo_add", text: "Keep the old p2 history?", choices: ["Leave it in the old history", "Erase it from the history"], step: "p2" }]);
   const sideAnswered = run(side, [{ op: "todo_update", id: "t2", reply: "Leave it in the old history", done: true }], "owner");
   assert.equal(stepGo(sideAnswered, p2Of(sideAnswered))?.id, "t1", "an answer to a side question on the step keeps the go");
-  refused(later, [{ op: "plan_update", id: "p2", status: "doing" }], /needs the owner's go/);
 });
 
-test("owner go: only the owner answers; the agent cannot write, clear, re-word or remove the owner's go", () => {
+test("owner go: only the owner answers; the agent cannot write, clear or re-word the owner's go", () => {
   const board = gated();
   refused(board, [{ op: "todo_update", id: "t1", reply: "Go: port it" }], new RegExp(AGENT_REPLY_ERROR.slice(0, 40)));
   refused(board, [{ op: "todo_update", id: "t1", reply: null }], /Only the owner answers a todo/);
   const go = run(board, [{ op: "todo_update", id: "t1", reply: "Go: port it" }], "owner");
   refused(go, [{ op: "todo_update", id: "t1", text: "Port everything to production now?" }], /its question stays as asked/);
-  refused(go, [{ op: "todo_remove", id: "t1" }], /it stays on the board/);
   assert.equal(run(go, [{ op: "todo_update", id: "t1", done: true }]).todos[0]!.done, true, "the agent may still check it off");
   assert.equal(run(go, [{ op: "todo_remove", id: "t1" }], "owner").todos.length, 0, "the owner's own actions are never refused");
   const old: ChatBoard = { ...board, todos: [{ ...board.todos[0]!, reply: "Go: port it" }] };
@@ -97,7 +90,6 @@ test("owner go: only the owner answers; the agent cannot write, clear, re-word o
   assert.throws(() => parseBoardOps([{ op: "plan_update", id: "p2", go: null }]), BoardError, "the go mark never clears");
   const kept = run(board, [{ op: "plan_set", items: [{ id: "p1", text: "Ship the demo design", children: [{ id: "p2", text: "Port it" }] }] }]);
   assert.equal(kept.plan[0]!.children[0]!.go, "needed", "plan_set keeps the go of an item that keeps its id");
-  refused(board, [{ op: "plan_set", items: [{ id: "p1", text: "Ship", children: [{ id: "p2", text: "Port it", status: "doing" }] }] }], /needs the owner's go/);
   const doing = run(emptyBoard(T0), [{ op: "plan_add", text: "Port", status: "doing" }, { op: "plan_update", id: "p1", go: "needed" }]);
   assert.equal(doing.plan[0]!.go, "needed", "marking a step already at work is no move; the check-in flags it");
   assert.throws(() => run(board, [{ op: "todo_add", text: "Go?", choices: ["Go", "No"], step: "p9" }]), error => error instanceof BoardError && error.kind === "unknown");

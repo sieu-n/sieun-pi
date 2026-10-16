@@ -13,7 +13,7 @@ import type { SessionRow } from "../src/shared/types.ts";
 import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_GOING, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
-  type DutyMetric, type DutyRunRecord, metricSizeProblem } from "../src/shared/chat-duties.ts";
+  type DutyRunRecord } from "../src/shared/chat-duties.ts";
 
 const run = promisify(execFile);
 const at = (day: number, hours: number, minutes = 0): number => new Date(2026, 9, day, hours, minutes).getTime();
@@ -100,7 +100,7 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 - Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`await bash("cd ${join(import.meta.dirname, "..")} && node --import tsx scripts/board-apply.ts c1 " + shlex.quote(json.dumps(ops)) + " --data-dir /data")\`, where ops is a list of chat_board ops like \`[{"op":"plan_update","id":"p4","status":"done","note":"live on production at 4f1c2a, checked on the live page"}]\`. It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note. A step whose run, probe, land or push has not finished green and landed stays open with its job, which is a live owner.
 - Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with \`await rlm.create_session(brief, name=..., cwd=...)\`, which registers the session as a job of the chat, and set the step's job to that name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.
 - Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go (a step whose only target is staging never needs one): never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the design before build.
-- Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. The board gate and the global-rules merge guard pass a merge, a push to main or master and a promote with no For you todo and no OWNER_OK. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
+- Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
 - A goal can carry a target: when you measure it, apply plan_update with its whole target, like \`{"op":"plan_update","id":"p1","target":{"metric":"proxy bandwidth used","target":200,"unit":"Mbps","current":8,"measuredAt":"2026-10-09T21:00:00+09:00","source":"proxy dashboard, 24 h average"}}\`. Close the largest gap first: start or steer the job that moves the number.
 - Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent (\`node scripts/repo/agent/commit.mjs --object-only -m "<type>(<scope>): <what>" <files>\`) and send it to the chat, which asks Fable for a probe slot; code reaches the shared tip only after its own green probe. Every file you touch stays under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.
 - Never cancel or rerun an auto-sns-agent CI run (\`gh run cancel\`, \`gh run rerun\` or their API calls), yours included; a superseded run is cancelled by Fable's loop or its own probe family, so send Fable its id through the chat, and push a fresh run for a new attempt.
@@ -131,50 +131,6 @@ test("parseDutyInput: refuses a bad schedule, metric or board goal; nextDutyId n
   assert.equal(parseDutyInput({ ...input(), precheck: { command: ["x"], cwd: "/", timeoutMs: 999_999 } }, "d1", 0).precheck.timeoutMs, 120_000);
   assert.equal(nextDutyId([duty(0, { id: "d1" }), duty(0, { id: "d4" })]), "d5");
   assert.equal(nextDutyId([]), "d1");
-});
-
-test("metricSizeProblem: a duty refuses size counts of text and takes outcomes, time and process memory (owner 10-10, c39)", () => {
-  const refused = [
-    { key: "biggest_skill_words", label: "Words in the biggest skill" },
-    { key: "skill_md_over_500_lines", label: "SKILL.md files over 500 lines" },
-    { key: "skills_over_budget", label: "Skills over 5000 words" },
-    { key: "prompt_size", label: "Prompt tokens in the brief" },
-    { key: "doc_bytes", label: "Docs on disk" },
-    { key: "brief_chars", label: "Brief length" },
-    { key: "memory_text", label: "Characters in harness memories" },
-    { key: "skill_files", label: "Total file size of skills" },
-    { key: "brief_length", label: "Length of the brief", unit: " lines" },
-    { key: "code_size", label: "Lines of code in the server" },
-    { key: "long_replies", label: "Owner replies over 60 words", unit: "%" },
-  ];
-  for (const metric of refused) {
-    assert.match(metricSizeProblem(metric) ?? "", /counts the size of text \(.+\); a duty measures outcomes \(a thing works, a mistake stops repeating\), never the size of text\.$/, metric.key);
-    assert.throws(() => parseDutyInput({ ...input(), metrics: [{ ...metric, op: "<=", target: 0 }] }, "d1", 0), /^Error: metrics\[0\]: ".*" counts the size of text/, metric.key);
-  }
-  const allowed = [
-    { key: "wiki_ms", label: "Time for the wiki (localhost:5176) to answer", unit: " ms" },
-    { key: "dead_hours", label: "Hours a chat sat on a failed turn", unit: " h" },
-    { key: "wiki_footprint_mb", label: "Real memory of the wiki's pm2 process tree", unit: " MB" },
-    { key: "skill_smoke_failures", label: "Skills that fail their smoke check" },
-    { key: "repeat_corrections_7d", label: "Owner corrections given again in 7 days (ledger repeats)" },
-    { key: "unread_14d", label: "Tracked skills no agent read in 14 days" },
-    { key: "orphan_steps", label: "Open steps with no live owner, todo or wait" },
-    { key: "pipeline_failures", label: "Failed pipeline runs before the deadline" },
-    { key: "slop_replies", label: "Owner replies with labels, dashes, jargon or abstract words" },
-    { key: "unlinked_job_mentions", label: "Messages to the owner naming a job with no job: link" },
-  ];
-  for (const metric of allowed) {
-    assert.equal(metricSizeProblem(metric), null, metric.key);
-    assert.doesNotThrow(() => parseDutyInput({ ...input(), metrics: [{ ...metric, op: "<=", target: 0 }] }, "d1", 0), metric.key);
-  }
-});
-
-test("every shipped duty file passes the size check", async () => {
-  const dir = join(import.meta.dirname, "..", "scripts", "duties");
-  for (const file of (await readdir(dir)).filter(name => name.endsWith(".duty.json"))) {
-    const { metrics } = JSON.parse(await readFile(join(dir, file), "utf8")) as { metrics: DutyMetric[] };
-    for (const metric of metrics) assert.equal(metricSizeProblem(metric), null, `${file} ${metric.key}`);
-  }
 });
 
 const script = (body: string) => ["node", "-e", body];

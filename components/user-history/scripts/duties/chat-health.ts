@@ -220,7 +220,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
 
 /**
  * `placeholder_todos` (correction c14, owner 10-09: "what the fuck is  this???"): each open agent todo with no choices that only holds a place
- * for something not ready (`placeholderTodo`, the check `chat_board` refuses new ones with). For you holds only what the owner must decide or do now.
+ * for something not ready (`placeholderTodo`). For you holds only what the owner must decide or do now.
  */
 async function countPlaceholderTodos(boards: BoardStore, chats: readonly string[], now: number, tally: Tally): Promise<void> {
   const flagged: FlaggedSlice[] = [];

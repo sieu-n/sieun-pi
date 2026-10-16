@@ -1,8 +1,7 @@
 /**
- * The owner's standing go on production moves, one switch for every place that asks for his go on a merge (c49). While `preapproval` is
- * set, a prod promote, a PR merge or a push to main or master needs no For you todo: the board gate (`needsGo` in chat-board.ts), the
- * global-rules merge guard and the briefs pass it, and a todo that asks for such a go is refused. An outside send (c37) and a public release
- * keep their todo. When an owner rule after launch takes the standing go back, set `preapproval` to null and the c49 gate returns everywhere.
+ * The owner's standing go on production moves (c74). While `preapproval` is set, a prod promote, a PR merge or a push to main or master needs no
+ * For you todo: the briefs say so, and the check-in does not count such a step as waiting for his go. An outside send (c37) and a public release
+ * keep their todo. When an owner rule after launch takes the standing go back, set `preapproval` to null and the briefs carry the c49 text.
  */
 export interface PreApproval { readonly rule: string; readonly date: string; readonly words: string }
 

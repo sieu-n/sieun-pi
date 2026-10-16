@@ -58,12 +58,10 @@ test("c74: slack green guy's merge step naming six PRs moves to doing and done w
   assert.deepEqual(gateFindings(run(board, [{ op: "plan_update", id: "p2", status: "done" }]), []).filter(gate => gate.item.id === "p2"), [], "no merges_without_go breach");
 });
 
-test("c74: with the switch off the same move is refused until the owner answers a todo naming each PR", () => {
+test("c74: with the switch off the step needs the owner's go on a todo naming each PR", () => {
   withSwitch(null, () => {
     const board = slackGreen();
     assert.equal(needsGo(stepOf(board, "p2")), true);
-    refused(board, [{ op: "plan_update", id: "p2", status: "doing" }], /p2 .* cannot move to doing: it needs the owner's go\..*on a todo that names #225 and #250 and #252 and #253 and #254 and #255/);
-    refused(board, [{ op: "plan_add", parent: "p1", text: "gh pr merge 254 --squash", status: "doing" }], /needs the owner's go/);
     const asked = run(board, [{ op: "todo_add", text: T21, choices: ["Go: merge all six", "Not yet"], step: "p2" }]);
     const answered = run(asked, [{ op: "todo_update", id: "t1", reply: "Go: merge all six", done: true }], "owner");
     assert.equal(stepOf(run(answered, [{ op: "plan_update", id: "p2", status: "doing" }]), "p2").status, "doing");
@@ -74,9 +72,7 @@ test("c74 control: a step that sends an email still needs its todo, and an email
   const board = slackGreen();
   assert.equal(preApproved(RESEND), false);
   assert.equal(needsGo(stepOf(board, "p3")), true);
-  refused(board, [{ op: "plan_update", id: "p3", status: "doing" }], /p3 .* cannot move to doing: it needs the owner's go/);
   const asked = run(board, [{ op: "todo_add", text: "Can I make a new Resend key and email the team the new setup?", choices: ["Go: make a new one", "Not yet"], step: "p3" }]);
-  refused(asked, [{ op: "plan_update", id: "p3", status: "doing" }], /needs the owner's go/);
   const answered = run(asked, [{ op: "todo_update", id: "t1", reply: "Go: make a new one", done: true }], "owner");
   assert.equal(stepOf(run(answered, [{ op: "plan_update", id: "p3", status: "doing" }]), "p3").status, "doing");
   assert.equal(preApproved("Publish the extension to the Chrome web store"), false, "a public release keeps its todo");

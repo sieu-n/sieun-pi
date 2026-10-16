@@ -10,8 +10,8 @@ import { morningTime, upsertDuty } from "../../src/shared/chat-duties.ts";
  * `node --import tsx scripts/duties/add.ts <chatId> <duty.json> [--data-dir <dir>]`: adds the duty to the chat, or updates the definition of the
  * chat's duty with the same name and keeps its run state, so running it twice changes nothing. The server picks it up at its next 30 s tick.
  * A relative `precheck.cwd` is resolved against the duty file's folder, so a checked-in duty names no home path.
- * A duty is named by the system it looks after, in two to four plain words, like "Chat system"; parseDutyInput refuses "<something> health".
- * It has one headline metric (`"headline": true`) and at most 3 supporting ones; parseDutyInput refuses more, and refuses zero or two headlines.
+ * Name a duty by the system it looks after, in two to four plain words, like "Chat system", never "<something> health" (c38). Mark one headline
+ * metric (`"headline": true`) and keep up to 3 supporting ones; the verdict counts only those four (`verdictMetrics`).
  * Leave out `schedule` and a new duty runs daily at a random free morning minute in its chat's priority band (`morningTime`; the chat's
  * sidebar label in labels.json, none is high), and an update keeps the duty's schedule. Keep a duty daily unless the owner asks for another
  * cadence (c66). It prints the schedule and the chat's priority.

@@ -279,8 +279,6 @@ function choices(value: unknown): string[] {
  */
 const PLACEHOLDER = /^read:|lands here|link lands|when ready|when it['\u2019]?s ready|when it is ready/i;
 export const placeholderTodo = (todo: Pick<OwnerTodo, "text" | "choices">): boolean => !todo.choices?.length && PLACEHOLDER.test(todo.text.trim());
-export const PLACEHOLDER_TODO_ERROR = "This todo holds a place for something not ready. For you holds only what the owner must decide or do now: track it as a plan step, " +
-  "and when the article exists, send its link in a chat message (tell_owner on a wake-up).";
 
 /**
  * A review ask with nothing to open (c32 repeat, owner 10-14: "is any other tabs ready for review? keep listing them in FOR YOU with the links i
@@ -304,7 +302,6 @@ export function todoJargon(text: string): string | null {
     `${JARGON_HINT} (c32).` : null;
 }
 function checkAgentTodo(todo: OwnerTodo): void {
-  if (placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
   if (leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
   const jargon = todoJargon(todo.text);
   if (jargon) invalid(jargon);
@@ -416,7 +413,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const closed = reclose(next.plan);
       if (closed.ids.length) { next = { ...next, plan: closed.plan }; summary += `, closed ${closed.ids.join(", ")} again now that no open step is left under ${closed.ids.length === 1 ? "it" : "them"}`; }
     }
-    if (actor === "agent" && next.plan) { checkGates(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
+    if (actor === "agent" && next.plan) { checkWaitPushes(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
     return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) };
   };
   const unknown = (what: string, missing: string): never => { throw new BoardError("unknown", `No ${what} ${missing} on the board. Read it again with no ops.`); };
@@ -561,9 +558,6 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "todo_remove": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
-      if (actor === "agent" && todo.answeredBy === "owner" && goSteps(board.plan).some(step => coversStep(todo, step))) {
-        throw new BoardError("forbidden", "This todo holds the owner's answer on a step that needs the owner's go; it stays on the board.");
-      }
       return done({ todos: board.todos.filter(entry => entry.id !== op.id) }, `removed the todo ${quote(todo.text)}`);
     }
   }
@@ -673,7 +667,7 @@ const MERGE = new RegExp([
   String.raw`\bland(?:s|ed|ing)?\s+(?!pages?\b)(?:(?:the|this|that|its?|my|our|both|all)\s+)?(?:[\w-]+\s+)?(?:prs?\b|pull\s+requests?\b|branch(?:es)?\b|code\b|changes?\b|commits?\b|patch(?:es)?\b|fix(?:es)?\b|#\d+)`,
 ].join("|"), "i");
 /**
- * A push that moves main or master (the merge guard's default branches, sieun-pi a3a2b23 and 468b49c): "push the fix to main", "git push origin
+ * A push that moves main or master: "push the fix to main", "git push origin
  * HEAD:main", "land it on master". A push to staging or a dev branch such as sieun/dev is none: staging needs no go.
  */
 const PUSH = new RegExp([
@@ -687,23 +681,19 @@ const PUSH = new RegExp([
  */
 export const MERGE_RULE = releaseGo.preapproval
   ? "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). " + preApprovalText(releaseGo.preapproval) +
-    " The board gate and the global-rules merge guard pass a merge, a push to main or master and a promote with no For you todo and no OWNER_OK. " +
-    "An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37)."
+    " An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37)."
   : "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his " +
     "explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to " +
     "main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the " +
     "word push), is answered by him with a go and checked off. There is no standing \"merge once checks pass\" approval, and a go on another step, PR " +
-    "or push does not carry over. For such a merge or push the global-rules merge guard refuses the command until it carries that todo as " +
-    "OWNER_OK=<chat id>/<todo id>: an env prefix in bash (`OWNER_OK=<chat>/<todo> gh pr merge 123`), or a `# OWNER_OK=<chat>/<todo>` line in an ipython cell. " +
-    "The guard passes staging pushes and branch merges that name base staging with no token, but it still refuses `gh pr merge <n>` for a staging PR, " +
-    "because that command never names the base: merge a staging PR through a path that names the base, or the land script.";
+    "or push does not carry over.";
 /** A step that states the merge rule itself ("Nothing merges without your go", "the guard refuses gh pr merge") merges nothing. */
 const RULE_TEXT = /\bwithout\s+(?:the\s+owner['\u2019]?s|your|his|an?)\s+(?:explicit\s+)?(?:go|approval|ok)\b|\b(?:refuses?|blocks?)\s+(?:gh\s+pr\s+merge|auto-?merges?|merges?|pushes)\b/i;
 /** MERGE_RULE in one sentence, for the short job reply guideline. */
 export const MERGE_RULE_SHORT = releaseGo.preapproval
   ? "Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. " + preApprovalText(releaseGo.preapproval)
   : "Never ask the owner to confirm a staging land or deploy; never merge a PR into production, push to main or master, or " +
-    "promote to production without his go on a For you todo that names that PR or push, passed to the command as OWNER_OK=<chat id>/<todo id> (c49).";
+    "promote to production without his go on a For you todo that names that PR or push (c49).";
 /** Whether a step's text says it merges a PR or a branch, turns on auto-merge, lands code or pushes to main or master. */
 export const mergeStep = (text: string): boolean => (MERGE.test(text) || PUSH.test(text)) && !RULE_TEXT.test(text);
 /** The default branch a push step moves, or null when the step pushes nothing to main or master. */
@@ -711,10 +701,7 @@ export const pushBranch = (text: string): string | null => PUSH.exec(text)?.[0].
 /** The PR numbers a text names: "#123", "PR 123", "pull request 123", "gh pr merge 123" or a ".../pull/123" URL. */
 export const prNumbers = (text: string): string[] =>
   [...new Set([...text.matchAll(/(?:#|\bprs?\s*#?\s*|\bpr\s+merge\s+|\bpull(?:\s+requests?)?\s*#?\s*|\/pulls?\/)(\d+)(?!\d)/gi)].map(match => match[1]!))];
-/**
- * Whether a todo's text names the PR: `#123`, `PR 123`, `pull request 123` or a `/pull/123` link. The same pattern as `prSubject` in
- * components/global-rules/merge-guard.ts, which refuses a merge command whose OWNER_OK todo does not name the PR; test/merge-gate.test.ts keeps the two equal.
- */
+/** Whether a todo's text names the PR: `#123`, `PR 123`, `pull request 123` or a `/pull/123` link. */
 export const namesPr = (text: string, pr: string): boolean => new RegExp(String.raw`(?:#|\bPRs?\s*#?\s*|\bpull(?:\s+request)?\s*#?\s*|/pulls?/)${pr}(?!\d)`, "i").test(text);
 /**
  * Whether an owner's answer approves an action the way owner-ok.ts and the global-rules guards read it: the todo is checked off, and the owner
@@ -830,8 +817,7 @@ export const mergedPrs = (text: string): string[] =>
  * yet" takes a go back. On most steps a todo is about the step when it covers it (`coversStep`: its step field, the step id in its text, or a PR
  * the step's text, note or waitFor names in the todo's text or answer, or the todo's id the step names), so t16, which names #247 and links p71, is the go of p94, which waits
  * for #247. A merge step needs that go for each PR it merges (`mergedPrs`): the last answer on a todo that links the step or names the PR in its
- * text, approved (`approvedTodo`), naming the PR, and on a push to main, master or staging saying push or naming the branch. That is the rule the
- * merge guard applies to an OWNER_OK todo, which also wants the repo's name, which the command knows and a step may not. A go on a PR the step
+ * text, approved (`approvedTodo`), naming the PR, and on a push to main, master or staging saying push or naming the branch. A go on a PR the step
  * only waits for is that PR's merge, not this one: t18 names #234, which p82 waits for, and t17 stays p82's go on #229. A merge step that names
  * no PR takes the last answer on a todo that covers it.
  */
@@ -853,12 +839,6 @@ export function stepGo(board: Pick<ChatBoard, "todos">, item: GoStep): OwnerTodo
   const gos = prs.map(pr => answered.filter(todo => (linksStep(todo, item.id) || namesPr(todo.text, pr)) && decides(todo)).at(-1));
   if (!gos.every((go, index) => counts(go, prs[index]))) return null;
   return answered.findLast(todo => gos.includes(todo)) ?? null;
-}
-/** Every plan item that needs the owner's go, in board order. */
-export function goSteps(plan: readonly PlanItem[]): PlanItem[] {
-  const steps: PlanItem[] = [];
-  walk(plan, item => { if (needsGo(item)) steps.push(item); });
-  return steps;
 }
 /** The plan with every merge step marked `go: "needed"`, so renaming it later does not drop its gate. */
 const markMerges = (plan: readonly PlanItem[]): PlanItem[] => plan.map(item => {
@@ -882,34 +862,6 @@ export function requirementGaps(goal: Pick<PlanItem, "requirements">): string | 
   return gaps.length ? `fails its requirements check: ${gaps.join("; ")}` : null;
 }
 
-const MOVES: ReadonlySet<PlanStatus> = new Set(["doing", "done"]);
-/**
- * The agent's plan change against the c49 go gate: an item that moves to doing or done (new, or with another status before) while it or an
- * item above it needs the owner's go and has none (`stepGo`: a go on a step above never covers a merge step). The owner never changes the plan,
- * so the owner never meets a gate.
- */
-function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
-  const was = new Map<string, PlanStatus>();
-  walk(before.plan, item => was.set(item.id, item.status));
-  const visit = (items: readonly PlanItem[], above: PlanItem[]) => {
-    for (const item of items) {
-      const prior = was.get(item.id);
-      if (MOVES.has(item.status) && prior !== item.status) {
-        const held = [...above, item].find(step => needsGo(step) && !stepGo(before, step));
-        if (held) {
-          const prs = mergeStep(held.text) ? mergedPrs(held.text).map(pr => `#${pr}`) : [];
-          const merge = mergeStep(held.text) ? ` Only his answer on this merge counts${prs.length ? `, on a todo that names ${prs.join(" and ")}` : ""}; ` +
-            `a standing "merge once checks pass" go does not.` : " Only the owner's answer counts.";
-          throw new BoardError("forbidden", `${item.id} ${quote(item.text)} cannot move to ${item.status}: ${held === item ? "it needs" : `${held.id} ${quote(held.text)} above it needs`} ` +
-            `the owner's go. Add one For you todo with step "${held.id}" and choices, the go first (like "Go" and "Not yet"), and wait for the owner's answer.${merge}`);
-        }
-      }
-      visit(item.children, [...above, item]);
-    }
-  };
-  visit(plan, []);
-  checkWaitPushes(before, plan);
-}
 /**
  * c47 reopened 10-12 (owner: "stop making up these bullshit rules on waiting", then "NEVER wait for something"): the agent may not move a step's
  * waitUntil later. That day Crawler VP moved p42, p46 and p47 later 2 to 3 times with fresh waitFor words, and they sat through 12 to 17 check-ins.

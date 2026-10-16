@@ -69,7 +69,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/jobs.md", "`node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass", "wiki pages (c20)"],
     ["references/check-ins.md", "named like `check-in 14:00`, with the precheck as context", "duty jobs"],
     ["references/check-ins.md", "like \"Chat system\" or \"Skills and harness\"", "duty names"],
-    ["references/check-ins.md", "the server refuses size metrics (c39)", "duty metrics"],
+    ["references/check-ins.md", "words, lines or file size (c39)", "duty metrics"],
     ["references/git.md", "rebase, amend) before a push needs no owner ask (c21)", "unpushed sieun-pi commits"],
     ["references/git.md", "run `git add -- <your files>` on the shared index afterwards", "private index commits"],
     ["references/owner.md", "ask yourself whether the CTO would be annoyed to be asked", "few asks"],

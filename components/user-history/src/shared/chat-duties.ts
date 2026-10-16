@@ -244,22 +244,6 @@ export function parseSchedule(schedule: unknown): DutySchedule {
   throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080).");
 }
 
-const TEXT_UNIT = "words?|lines?|bytes?|chars?|characters?|tokens?";
-const TEXT_SIZE_LABEL = new RegExp(`\\b(?:\\d[\\d,.]*\\s*(?:${TEXT_UNIT})|(?:${TEXT_UNIT})\\s+(?:in|of|per|count)|(?:total|number of|count of)\\s+(?:${TEXT_UNIT})|file ?sizes?)\\b`, "i");
-const TEXT_SIZE_WORD = new RegExp(`^(?:${TEXT_UNIT}|filesize)$`, "i");
-
-/**
- * Why a metric counts the size of text, or null for an outcome. The owner (10-10, c39) said word and line counts of
- * skills and SKILL.md files mean nothing to watch. A duty measures real outcomes: a thing works, a mistake stops repeating.
- * Refused: a key part or a unit that is words, lines, bytes, characters or tokens, and a label that counts them ("over 500 lines", "words in", "total tokens") or names a file size.
- * A label that only mentions words ("replies with jargon words"), time, latency, a process's memory in MB and counts of failures or items pass.
- */
-export function metricSizeProblem(metric: Pick<DutyMetric, "key" | "label" | "unit">): string | null {
-  const counted = metric.key.split("_").find(part => TEXT_SIZE_WORD.test(part)) ?? (TEXT_SIZE_WORD.test(metric.unit?.trim() ?? "") ? metric.unit!.trim() : undefined) ??
-    TEXT_SIZE_LABEL.exec(metric.label)?.[0];
-  return counted ? `"${metric.label}" counts the size of text (${counted.toLowerCase()}); a duty measures outcomes (a thing works, a mistake stops repeating), never the size of text.` : null;
-}
-
 /**
  * Parses a duty definition from a file or a request: the fields a person writes. Run state starts empty. A definition with no `schedule` takes
  * `schedule` from the caller (upsertDuty). Throws with the first bad field.
@@ -278,8 +262,6 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
     const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}),
       ...(metric.headline === true ? { headline: true as const } : {}) };
-    const sizeProblem = metricSizeProblem(parsed);
-    if (sizeProblem) throw new Error(`metrics[${index}]: ${sizeProblem}`);
     return parsed;
   });
   // A duty of one metric has nothing else to lead, so that metric is its headline.

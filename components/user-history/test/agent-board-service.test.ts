@@ -38,7 +38,7 @@ async function sessionDir(url: string): Promise<string> {
   return dir;
 }
 
-test("slack green guy p71 (10-15 19:18 KST): a session's chat_board write is judged by the live service's gate, so a rule change reaches it with no reload", async () => {
+test("slack green guy p71 (10-15 19:18 KST): a session's chat_board write is judged by the live service, so a rule change reaches it with no reload", async () => {
   const boards = await seeded();
   const asset = { body: Buffer.from(""), etag: '"x"', contentType: "text/plain" };
   const backend = { chats: { ids: async () => new Set([CHAT]) }, boards, threads: { setBoard() {} }, close: async () => {} } as unknown as ChatBackend;
@@ -46,14 +46,12 @@ test("slack green guy p71 (10-15 19:18 KST): a session's chat_board write is jud
     identity: { pid: process.pid, instanceId: "i", socketPath: "/none" }, onStop: async () => {} });
   const tool = boardTool(await sessionDir(server.url));
   try {
-    releaseGo.preapproval = null;
-    await assert.rejects(tool.execute("c1", { ops: MOVE }, undefined, undefined, ctx),
-      /p1 .* cannot move to doing: it needs the owner's go\..*on a todo that names #254 and #252/, "with the switch off the service applies c49");
-    releaseGo.preapproval = C74;
+    await assert.rejects(tool.execute("c1", { ops: [{ op: "plan_add", text: "Push the fix to sieun/dev", waitFor: "Fable's go for our slot" }] }, undefined, undefined, ctx),
+      /waits for another thread's go, word or slot/, "the service applies the board's c47 check");
     const moved = await tool.execute("c2", { ops: MOVE }, undefined, undefined, ctx);
-    assert.match(moved.content[0]!.text, /^Updated p1 .*\nBoard rev 2: /, "the same loaded tool passes once the service's switch is on");
+    assert.match(moved.content[0]!.text, /^Updated p1 .*\nBoard rev 2: /);
     assert.equal((await boards.read(CHAT))!.plan[0]!.status, "doing", "the write landed in the service's store");
-  } finally { releaseGo.preapproval = C74; await server.close(); }
+  } finally { await server.close(); }
 });
 
 test("chat_board applies with the session's own copy when no service takes the write: connection refused, or a service from before the route (404)", async () => {

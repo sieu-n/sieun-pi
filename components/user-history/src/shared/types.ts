@@ -98,7 +98,7 @@ export interface PlanItem {
   id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string;
   /** The session id of the thread that owns the step (a job of the chat or another thread), kept when the job is deleted or renamed; `job` keeps what the chat wrote. */
   sessionId?: string;
-  /** The step ships, ports, deploys, merges to a shared app, or moves demo work to a real app: it moves only after the owner's go (`stepGo`). Once set, it stays. */
+  /** The step ships, ports, deploys, merges to a shared app, or moves demo work to a real app: it needs the owner's go (`stepGo`), which the board and the check-in show. Once set, it stays. */
   go?: "needed";
   /** A Build step: one whose text starts with "Build", or this flag. The check-in flags one at work while its goal's requirements check fails (`requirementGaps`). */
   kind?: "build";

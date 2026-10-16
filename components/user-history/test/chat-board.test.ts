@@ -8,7 +8,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
-import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, nextIds, parseBoard, parseBoardOps, PLACEHOLDER_TODO_ERROR, placeholderTodo, renderOpenPlan, SCRATCHPAD_REMOVED } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, nextIds, parseBoard, parseBoardOps, placeholderTodo, renderOpenPlan, SCRATCHPAD_REMOVED } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 const T0 = "2026-10-06T00:00:00.000Z";
@@ -149,24 +149,16 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
   assert.equal(run(oneDone, [{ op: "todo_add", text: "d" }]).board.todos.length, 4, "a checked ask frees a slot");
 });
 
-test("chat board: the agent cannot add a placeholder todo or rename one into it; a todo with choices and the owner's own todos pass (owner 10-09)", () => {
+test("chat board: placeholderTodo finds a todo that only holds a place, and a todo with choices is a real ask (owner 10-09)", () => {
   const placeholders = ["Read: GitHub Pro vs Team, the link lands here when ready", "  read: the pool article", "Pool explainer: link lands in t3",
     "Article on swap, lands here", "Cost report when ready", "I'll send it when it's ready", "Team plan when it\u2019s ready", "Notes when it is ready"];
   for (const text of placeholders) {
     assert.equal(placeholderTodo({ text }), true, text);
-    assert.throws(() => run(emptyBoard(T0), parseBoardOps([{ op: "todo_add", text }])), (error: unknown) => error instanceof BoardError && error.kind === "invalid" &&
-      error.message === PLACEHOLDER_TODO_ERROR, text);
   }
-  assert.match(PLACEHOLDER_TODO_ERROR, /track it as a plan step, and when the article exists, send its link in a chat message/);
   for (const text of ["Pick the price", "Approve the Read replica cost", "Ready to deploy?", "Sign the contract"]) assert.equal(placeholderTodo({ text }), false, text);
   assert.equal(placeholderTodo({ text: "Read: which plan?", choices: ["Pro", "Team"] }), false, "an ask with choices is real");
   assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: which plan?", choices: ["Pro", "Team"] }]).board.todos.length, 1);
-  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: the pool article" }], "owner").board.todos.length, 1, "the owner's own todo");
-  const asked = run(emptyBoard(T0), [{ op: "todo_add", text: "Approve the spend" }]).board;
-  throwsKind(() => run(asked, [{ op: "todo_update", id: "t1", text: "Read: spend report, link lands here" }]), "invalid");
-  assert.equal(run(asked, [{ op: "todo_update", id: "t1", text: "Approve the $40 spend" }]).board.todos[0]!.text, "Approve the $40 spend", "a real rename");
-  const old: ChatBoard = { ...emptyBoard(T0), todos: [{ id: "t1", text: "Read: x, the link lands here when ready", done: false, from: "agent", at: T0 }] };
-  assert.equal(run(old, [{ op: "todo_update", id: "t1", done: true }]).board.todos[0]!.done, true, "an old placeholder can still be checked off");
+  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: the pool article" }]).board.todos.length, 1, "the board takes it; the brief keeps For you for real asks (c14, c81)");
 });
 
 test("chat board: a v2 file passes; anything else throws", () => {
