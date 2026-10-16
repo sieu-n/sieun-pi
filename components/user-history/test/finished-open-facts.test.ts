@@ -46,6 +46,17 @@ test("a fix step looks done when its duty metric is met on the duty's newest mea
   assert.equal(looksDone({ ...p488, status: "done" }, facts({ metrics: met })), null, "a closed item");
 });
 
+test("a duty reading older than the step's job never makes the step look done (frontend bro p174, d1/walk_problems)", () => {
+  const p174 = step("p174", "The 5180 demo server makes no outside call, and the offline walk catches server calls and failed pages", {
+    duty: "d1/walk_problems", job: "5180 server outside calls fix", sessionId: "01a14223-6b46-71ac-9330-3093231a3690" });
+  const before = metricFacts([run("d1", Date.parse("2026-10-15T21:04:19.264Z"), { walk_problems: true })]);
+  assert.equal(looksDone(p174, facts({ metrics: before })), null, "the 10-15 21:04Z run read 0 before the job was born at 10-16 00:36Z");
+  const later = metricFacts([run("d1", Date.parse("2026-10-16T06:00:00Z"), { walk_problems: true })]);
+  assert.equal(looksDone(p174, facts({ metrics: later }))?.at, Date.parse("2026-10-16T06:00:00Z"), "a run after the job began counts");
+  const noJob = step("p174", p174.text, { duty: "d1/walk_problems" });
+  assert.notEqual(looksDone(noJob, facts({ metrics: before })), null, "a step with no job session keeps the last reading");
+});
+
 test("a goal's own target never makes it look done: it has no direction (launch main bro p127, error reads at 32.4% for a 5% target)", () => {
   const p127 = step("p127", "Finished prod watch reads in 24 h that ended in an error after retries", { target: { metric: "error reads", target: 5, unit: "%", current: 32.4,
     measuredAt: "2026-10-16T05:00:00Z", source: "d2 precheck" } });
@@ -111,7 +122,8 @@ test("AI harness p490, p494 and p505 at 06:3xZ on 10-16: notes that say shipped 
   assert.deepEqual(finishedOpen(board(live.items), facts({ metrics })).map(found => [found.item.id, found.reason]),
     [["p505", "its metric checkin/stalled_steps is met on the duty's last run"]]);
   const met = new Map([...metrics].map(([link, fact]) => [link, { ...fact, met: true }]));
-  assert.deepEqual(finishedOpen(board(live.items), facts({ metrics: met })).map(found => found.item.id), ["p490", "p494", "p505"], "each closes once its metric is met");
+  assert.deepEqual(finishedOpen(board(live.items), facts({ metrics: met })).map(found => found.item.id), ["p494", "p505"],
+    "each closes once its metric is met, except p490, whose d1 reading at 17:44Z is older than its job (born 19:12Z)");
 });
 
 test("a step the board refuses to close does not look done: ops guy p254 waited for eecd9d7d5b to land while d1/servers_not_answering read 0", () => {

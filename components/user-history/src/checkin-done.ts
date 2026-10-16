@@ -1,5 +1,6 @@
 import { mergedPrs, mergeStep, prNumbers } from "./shared/chat-board.ts";
 import type { DutyRunRecord } from "./shared/chat-duties.ts";
+import { sessionBornAt } from "./shared/duty-fixes.ts";
 import { effectiveRun } from "./shared/duty-streak.ts";
 import type { ChatBoard, PlanItem, PlanStatus } from "./shared/types.ts";
 
@@ -83,15 +84,19 @@ export interface DoneReason { reason: string; at: number }
  * metric missed or its work moved to another chat (launch main bro p125, slack green guy p147, Crawler VP p191). A goal's own `target` does
  * not count: it has no direction, and launch main bro p127 (error reads, 32.4% for a 5% target) and VP of CI p1 (157.8 min for a 10 min wait)
  * are lower-is-better targets that a ratio would read as met. A step that only names merged PRs is not a merge step: slack green guy p82
- * launches the tests that #229 to #249 merged, and their merge is where it starts.
+ * launches the tests that #229 to #249 merged, and their merge is where it starts. A metric reading taken before the step's job began says
+ * nothing about the fix: frontend bro p174 makes d1/walk_problems count server outside calls and 5xx pages, and the metric read 0 on the
+ * 10-15 21:04Z run, before the step and its job (born 10-16 00:36Z) existed.
  */
-export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty" | "waitFor" | "note" | "job">>, facts: DoneFacts): DoneReason | null {
+export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty" | "waitFor" | "note" | "job" | "sessionId">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
   // A step the board refuses to close on its own note is not done (ops guy 10-16, p254: d1/servers_not_answering read 0 while the step waited
   // for eecd9d7d5b to land, which never reached sieun/dev, and 3 check-ins in a row said "close it").
   if (unlandedClose(item, { ...item, status: "done" })) return null;
   if (item.duty) {
     const fact = facts.metrics.get(item.duty);
+    const jobBorn = item.sessionId ? sessionBornAt(item.sessionId) : null;
+    if (jobBorn !== null && fact && fact.at < jobBorn) return null;
     return fact?.met ? { reason: `its metric ${item.duty} is met on the duty's last run`, at: fact.at } : null;
   }
   const prs = mergeStep(item.text) ? mergedPrs(item.text) : [];
