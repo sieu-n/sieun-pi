@@ -27,7 +27,7 @@ import sys
 import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
-VERSION = 9
+VERSION = 10
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -111,8 +111,7 @@ async def request(request_type, payload=None, *args, **kwargs):
         reason = refusal(text, payload.get("receiver_role")) if isinstance(text, str) else None
         if reason:
             raise LimitRefused(reason)
-    # Look the real function up in the live rlm module at call time. A kernel revive restores this function with a copy of host_request
-    # whose globals lost __package__, so its `from . import repl` fails (launch VP, 2026-10-13).
+    # The live rlm module's function, looked up at each call.
     real = getattr(sys.modules.get("rlm"), "unchecked_host_request", None)
     try:
         reply = await real(request_type, payload, *args, **kwargs)
@@ -129,6 +128,16 @@ async def request(request_type, payload=None, *args, **kwargs):
 
 
 request.limit_checked = True
+# A kernel snapshot pickles a skill module by value, and dill pickles a function in it by reference only when its __module__ and
+# __qualname__ find that same function. So the wrapper names itself rlm.host_request, and install points every module that held rlm's own
+# host_request at it. A revive then binds whatever rlm.host_request is live, and never a copy of rlm's function without rlm's __package__,
+# whose `from . import repl` raised "attempted relative import with no known parent package" in chat 01a14210 on 10-16. Install also
+# points at it every such copy that a snapshot from before VERSION 10 brings back, since that copy names itself rlm.host_request too.
+request.__module__, request.__qualname__ = "rlm", "host_request"
+
+
+def name_of(function):
+    return getattr(function, "__module__", None), getattr(function, "__qualname__", None)
 
 
 def install() -> None:
@@ -139,14 +148,13 @@ def install() -> None:
     if not getattr(rlm.host_request, "limit_checked", False):
         rlm.unchecked_host_request = rlm.host_request
     request.__doc__ = rlm.unchecked_host_request.__doc__
-    for name in ("rlm", "agent_message"):
-        module = sys.modules.get(name)
-        if module is None:
-            try:
-                module = __import__(name)
-            except ImportError:
-                continue
-        if getattr(module, "host_request", None) is not None:
+    try:
+        __import__("agent_message")
+    except ImportError:
+        pass
+    for module in list(sys.modules.values()):
+        found = getattr(module, "__dict__", {}).get("host_request")
+        if getattr(found, "limit_checked", False) or name_of(found) == ("rlm", "host_request"):
             module.host_request = request
 
 
