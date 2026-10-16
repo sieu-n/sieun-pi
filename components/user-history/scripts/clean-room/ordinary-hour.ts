@@ -16,21 +16,24 @@ const HOUR = 60 * 60_000;
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 /** measure.md (slop-cuts work folder), tokens per second in thousands. */
 const BEFORE = { day1013: 109, last12h: 97 };
-/** The longest [corrections] rule line that still reads as one short line: about 20 words, the unslop sentence length. */
-const RULE_LINE_MAX = 120;
 
 /** The server notices the cuts removed, by the opening words their code wrote (cuts.md; the old text is in 0fd072f). */
 const REMOVED: readonly [string, RegExp][] = [
   ["brief check quote or Split finding", /^\[brief check\][\s\S]*(Owner's words \(verbatim\):|is not in any owner message|The newest owner message you quoted|It says no owner message started|No `Split:` line)/],
-  ["[brief] rules changed", /^\[brief\] /],
-  ["step scan", /^(\[job\] )?Step scan:/],
+  ["[brief] rules changed", /^\[brief\] Your chat rules changed/],
+  ["step scan", /^(\[job\] )?Step scan/],
   ["Mac usable watch ask", /^\[job\] [^\n]*\(session [0-9a-f]{8}\) (holds its kernel and worker|ended its turn \d+ min ago and still holds|has been in one )/],
   ["hung call interrupt", /^The chat service interrupted your /],
-  ["[alert]", /^\[alert[a-z-]*\]/],
-  ["job cleanup notice", /^\[job\] [^\n]*? was (archived|ended) after \d+ min quiet|^\[job\] [^\n]*? was deleted\./],
+  ["[alert]", /^\[alert\] /],
+  ["job cleanup notice", /^\[job\] [^\n]*? was (archived|ended) after |^\[job\] [^\n]*? (was deleted|is gone)\. The service stopped/],
   ["[board] Ops not applied", /^\[board\] Ops not applied/],
-  ["[corrections] update", /^\[corrections\] Update/],
+  ["[corrections] update", /^\[corrections\] Update to the owner's rules\./],
+  ["[duty] send-back", /^\[duty\] (Your .+? run is not done:|.+? still misses)/],
 ];
+/** Refusals the cuts removed, read from tool results other than ipython and bash, so an agent reading the code is not counted. */
+const REFUSALS: readonly string[] = ["is a Build step and cannot move to", "c66: the owner keeps duties daily"];
+/** A duty fix job the duty fix opener used to start: a root named "fix <duty> <chat> HH:MM". */
+const FIX_JOB = /^fix .+ \d{1,2}:\d{2}$/;
 const SKIP = new Set(["harness_digest", "refinement_outcome", "ipython_state", "ipython_state_restored"]);
 
 const iso = (at: number): string => new Date(at).toISOString();
@@ -48,6 +51,23 @@ function customs(file: string): Custom[] {
     try {
       const entry = JSON.parse(line) as { type?: string; customType?: string; timestamp?: string; data?: Record<string, unknown> };
       return entry.type === "custom" ? [{ at: Date.parse(entry.timestamp ?? "") || 0, customType: entry.customType ?? "", data: entry.data ?? {} }] : [];
+    } catch { return []; }
+  });
+}
+
+/** Tool results (not ipython or bash) in a session file at or after `since` that carry a removed refusal. */
+function refusals(file: string, since: number): { at: number; tool: string; text: string }[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split("\n").flatMap(line => {
+    if (!line.includes('"toolResult"') || !REFUSALS.some(words => line.includes(words))) return [];
+    try {
+      const entry = JSON.parse(line) as { timestamp?: string; message?: { role?: string; toolName?: string; content?: unknown } };
+      const at = Date.parse(entry.timestamp ?? "") || 0;
+      const tool = entry.message?.toolName ?? "";
+      if (entry.message?.role !== "toolResult" || at < since || tool === "ipython" || tool === "bash") return [];
+      const text = JSON.stringify(entry.message.content ?? "");
+      const words = REFUSALS.find(candidate => text.includes(candidate));
+      return words ? [{ at, tool, text: text.slice(Math.max(0, text.indexOf(words) - 120), text.indexOf(words) + 120) }] : [];
     } catch { return []; }
   });
 }
@@ -161,9 +181,13 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
       for (const [kind, pattern] of REMOVED) if (pattern.test(text)) hits.push(`${kind} in ${label(id)} at ${iso(event.at)}: "${clip(text, 200)}"`);
       if (/^\[brief check\]/.test(text) && !REMOVED[0]![1].test(text)) kept.push(`${label(id)} at ${iso(event.at)}: "${clip(text, 160)}"`);
     }
+    for (const refusal of refusals(file, start)) hits.push(`refusal in ${label(id)}'s ${refusal.tool} result at ${iso(refusal.at)}: "${clip(refusal.text, 200)}"`);
     const checkpoints = customs(file).filter(entry => entry.customType === "chat_correction_checkpoint");
     for (const again of checkpoints.slice(1)) if (again.at >= start) hits.push(`[corrections] re-send (${String(again.data.kind)}) in ${label(id)} at ${iso(again.at)}: "${clip(String(again.data.text ?? ""), 200)}"`);
   }
+  for (const [id, name] of names) if (FIX_JOB.test(name)) hits.push(`fix job ${name} (${id}) started in the chat's family`);
+  const serviceLog = join(run, "service.log");
+  for (const line of existsSync(serviceLog) ? readFileSync(serviceLog, "utf8").split("\n") : []) if (/opened fix .+$/.test(line)) hits.push(`service.log: "${clip(line, 200)}"`);
   const elapsed = now - start;
   checks.push({ id: "a", ok: outside.length ? false : elapsed >= HOUR ? true : null, detail: `${Math.round(elapsed / 60_000)} min since ${iso(start)}; ` +
     (outside.length ? outside.join("; ") : `no typed message after the first and no message from outside the family of ${sessions.length} sessions`) });
@@ -172,11 +196,14 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
 
   const block = firstCorrections(run, chatFile, state.chat.id);
   const lines = block ? block.text.split("\n").map(line => line.trim()).filter(Boolean) : [];
-  const rules = lines.slice(1).filter(line => !/^and \d+ older/.test(line));
-  const bad = rules.filter(line => !/^(- )?c\d+\b/.test(line) || line.length > RULE_LINE_MAX || /^Held by/.test(line));
-  checks.push({ id: "c", ok: block ? rules.length > 0 && bad.length === 0 : null, detail: block
-    ? `${block.from}: ${rules.length} rule lines, ${block.text.length} chars, header ${lines[0]!.length} chars, longest rule line ${Math.max(0, ...rules.map(line => line.length))} chars` +
-      (bad.length ? `; ${bad.length} lines are not one short rule line:\n${bad.slice(0, 8).map(line => `    - (${line.length}) "${clip(line, 160)}"`).join("\n")}` : "")
+  const header = lines[0] ?? "";
+  const rules = lines.slice(1);
+  const oneSentence = (line: string): boolean => !/[.!?]\s+[A-Z(]/.test(line.replace(/^- c\d+ /, ""));
+  const bad = rules.filter(line => !/^- c\d+ /.test(line) || line.includes("(reopened:") || /Steps on .* belong to/.test(line) || !oneSentence(line));
+  const headerOk = /^\[corrections\] The owner's corrections (in force|that bind jobs)/.test(header);
+  checks.push({ id: "c", ok: block ? headerOk && rules.length > 0 && bad.length === 0 : null, detail: block
+    ? `${block.from}: header "${clip(header, 90)}", ${rules.length} rule lines, ${block.text.length} chars, longest rule line ${Math.max(0, ...rules.map(line => line.length))} chars` +
+      (bad.length ? `; ${bad.length} lines are not "- cN <first sentence>":\n${bad.slice(0, 8).map(line => `    - (${line.length}) "${clip(line, 200)}"`).join("\n")}` : "")
     : "no [corrections] block found in the chat's checkpoints or Prompt view captures" });
 
   const used = await usage(run, start, end, [...ids], state.chat.id);
