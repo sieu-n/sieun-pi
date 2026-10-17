@@ -420,7 +420,9 @@
   {
    "crawler": "GET /api/live/youtube/video/comment/replies",
    "group": "youtube_video",
-   "portal": []
+   "portal": [
+    "GET /v1/youtube/live/video/comment/replies"
+   ]
   },
   {
    "crawler": "GET /api/live/youtube/video/transcript",
@@ -502,7 +504,9 @@
   {
    "crawler": "GET /api/live/linkedin/post",
    "group": "linkedin",
-   "portal": []
+   "portal": [
+    "GET /v1/linkedin/live/post"
+   ]
   },
   {
    "crawler": "GET /api/live/linkedin/profile",
@@ -710,12 +714,16 @@
   {
    "crawler": "GET /api/profiles/{username}/visual-snapshot",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/profile/visual-snapshot"
+   ]
   },
   {
    "crawler": "POST /api/profiles/{username}/visual-enrich",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "POST /v1/intelligence/profile/visual-enrich"
+   ]
   },
   {
    "crawler": "POST /api/enrich/custom",
@@ -832,7 +840,9 @@
   {
    "crawler": "POST /api/search/profiles/refresh",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/profiles/refresh"
+   ]
   },
   {
    "crawler": "GET /api/live/search/google",
@@ -1113,7 +1123,9 @@
   {
    "crawler": "GET /api/platforms",
    "group": "jobs_crawl",
-   "portal": []
+   "portal": [
+    "GET /v1/jobs/platforms"
+   ]
   },
   {
    "crawler": "GET /api/brand-research/{username}/creators",
