@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RawProcess } from "./mac-usable-watch.ts";
@@ -32,20 +32,39 @@ export interface LeftoverSource {
   later: (ms: number, run: () => void) => void;
 }
 
-/** The session ids and Aside tab ids of a session folder and every folder under it (its subagents). */
-export async function sessionTree(dir: string): Promise<{ sessions: string[]; tabs: string[] }> {
+/** The session ids, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
+export async function sessionTree(dir: string): Promise<{ sessions: string[]; tabs: string[]; tabFiles: string[] }> {
   const sessions: string[] = [];
   const tabs: string[] = [];
+  const tabFiles: string[] = [];
   const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     if (SESSION_FILE.test(entry.name)) sessions.push(entry.name.slice(0, -".jsonl".length));
     else if (entry.name === TABS_FILE) {
-      const record = await readFile(join(entry.parentPath, entry.name), "utf8").then(text => JSON.parse(text) as { tabs?: unknown }, () => null);
-      if (record && typeof record.tabs === "object" && record.tabs) tabs.push(...Object.keys(record.tabs));
+      const file = join(entry.parentPath, entry.name);
+      const record = await readFile(file, "utf8").then(text => JSON.parse(text) as { tabs?: unknown }, () => null);
+      const ids = record && typeof record.tabs === "object" && record.tabs ? Object.keys(record.tabs) : [];
+      if (ids.length) { tabs.push(...ids); tabFiles.push(file); }
     }
   }
-  return { sessions, tabs };
+  return { sessions, tabs, tabFiles };
+}
+
+/**
+ * The folders under a chat's session folder of the subagents the daemon marked deleted (`"status": "deleted"` in rlm-subagent.json). A job the
+ * chat deletes itself with rlm.delete_subagent stays in the daemon's list, so this file is the one sign that it is gone: on 10-16 at 08:42Z
+ * clean room chat 01a1435e deleted "tmp web server setsid", and its setsid'd http.server on 8767 and its Aside tab outlived it until a reboot.
+ */
+export async function deletedFolders(chatDir: string): Promise<string[]> {
+  const entries = await readdir(chatDir, { recursive: true, withFileTypes: true }).catch(() => []);
+  const found: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name !== "rlm-subagent.json") continue;
+    const record = await readFile(join(entry.parentPath, entry.name), "utf8").then(text => JSON.parse(text) as { status?: unknown }, () => null);
+    if (record?.status === "deleted") found.push(entry.parentPath);
+  }
+  return found.filter(dir => !found.some(other => other !== dir && dir.startsWith(other + "/")));
 }
 
 /** SIGTERM to each process whose start time still matches, then SIGKILL after KILL_AFTER_MS to each one still running with that start time. */
@@ -65,16 +84,22 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 }
 
 /**
- * Stops what a gone job left: its sessions' detached processes and its Aside tabs. The processes are read again after KILL_AFTER_MS, since a
- * kernel the daemon is still ending at the delete leaves its children detached only once it exits.
+ * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
+ * open Aside for them again. With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
+ * delete leaves its children detached only once it exits.
  */
-export async function endLeftovers(source: LeftoverSource, dir: string, session?: string): Promise<Leftovers> {
-  const tree = await sessionTree(dir);
-  const sessions = [...new Set([...(session ? [session] : []), ...tree.sessions])];
+export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
+  const trees = await Promise.all((typeof dirs === "string" ? [dirs] : dirs).map(sessionTree));
+  const sessions = [...new Set([...(session ? [session] : []), ...trees.flatMap(tree => tree.sessions)])];
   const stopped = sessions.length ? await stop(source, await source.strays(sessions)) : [];
-  if (sessions.length) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stop(source, found)).catch(() => []); });
-  const tabs = tree.tabs.length ? await source.closeTabs(tree.tabs).catch(() => 0) : 0;
-  return { stopped, tabs };
+  if (session) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stop(source, found)).catch(() => []); });
+  const ids = trees.flatMap(tree => tree.tabs);
+  const tabs = ids.length ? await source.closeTabs(ids).catch(() => -1) : 0;
+  if (tabs >= 0) for (const file of trees.flatMap(tree => tree.tabFiles)) {
+    const record = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => null);
+    if (record) await writeFile(file, JSON.stringify({ ...record, tabs: {} })).catch(() => {});
+  }
+  return { stopped, tabs: Math.max(tabs, 0) };
 }
 
 function helper(args: readonly string[]): Promise<unknown> {

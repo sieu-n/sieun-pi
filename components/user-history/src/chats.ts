@@ -134,6 +134,7 @@ export class Chats {
   private subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map();
   /** Sessions whose leftovers were stopped (`leftovers`), so a job is stopped once. */
   private readonly leftoversEnded = new Set<string>();
+  private deletedSweptAt = -Infinity;
   /**
    * When each job was last seen starting to work, and the end (its last activity) last told to the chat, with the time of the job message it
    * was told as waiting on (none for "ended with no report").
@@ -270,9 +271,7 @@ export class Chats {
    * not given its children yet reads the roster too (VP of CI 10-15 13:50Z: right after a restart that gap left 22 steps owned by nobody).
    */
   async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
-    const previous = this.subagents;
     this.subagents = byChat;
-    if (previous.size) this.queue("#leftovers", () => this.endGone(previous, byChat));
     await this.load();
     for (const id of this.chatIds) {
       const before = this.children.get(id);
@@ -486,6 +485,7 @@ export class Chats {
       this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
     this.queue("#jobs", () => this.jobs(active, woke));
+    if (now - this.deletedSweptAt >= JOB_CLEANUP_EVERY_MS) { this.deletedSweptAt = now; this.queue("#deleted", () => this.sweepDeleted()); }
     return due;
   }
 
@@ -811,17 +811,17 @@ export class Chats {
   }
 
   /**
-   * A job the chat deleted itself (rlm.delete_subagent) leaves the daemon's list under the chat without passing `deleteJob`: once the daemon
-   * lists its session nowhere, what it left is stopped too. On 10-15 at 00:45Z the job SEO's chat deleted left the runner that started a 30 GB script.
+   * Each JOB_CLEANUP_EVERY_MS: stops what the subagents the daemon marked deleted under each chat left (`deletedFolders`), the jobs a chat
+   * deleted itself included, and logs it. A job the chat deletes stays in the daemon's list, so the roster cannot tell it is gone.
    */
-  private async endGone(before: ReadonlyMap<string, readonly ChildAgent[]>, after: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
-    for (const [chat, children] of before) {
-      const kept = new Set((after.get(chat) ?? []).map(child => child.id));
-      for (const child of children) {
-        if (kept.has(child.id) || child.sessionId === undefined || this.leftoversEnded.has(child.sessionId)) continue;
-        const listed = await this.summary(child.sessionId).then(summary => summary !== undefined, () => true);
-        if (!listed) await this.endLeftovers(chat, childName(child), join(ARTIFACTS, chat, child.id), child.sessionId, "is gone.");
-      }
+  private async sweepDeleted(): Promise<void> {
+    if (!this.source.deletedLeftovers) return;
+    for (const id of this.chatIds) {
+      const left = await this.source.deletedLeftovers(id).catch(error => {
+        this.log(`chat ${id.slice(0, 8)}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
+        return { stopped: [], tabs: 0 };
+      });
+      if (left.stopped.length || left.tabs) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs`);
     }
   }
 

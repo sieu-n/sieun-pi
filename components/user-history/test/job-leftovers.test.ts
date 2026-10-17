@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
+import { JOB_CLEANUP_EVERY_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import { ARTIFACTS, endLeftovers, KILL_AFTER_MS, type LeftoverSource, leftoverSource } from "../src/job-leftovers.ts";
+import { ARTIFACTS, deletedFolders, endLeftovers, KILL_AFTER_MS, type LeftoverSource, leftoverSource } from "../src/job-leftovers.ts";
 import type { ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
@@ -92,22 +93,60 @@ test("the cleanup's delete of a finished job stops what it left, logs it and sen
   chats.close();
 });
 
-test("a job the chat deleted itself has its leftovers stopped once the daemon lists its session nowhere, and a job still listed keeps them", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "job-leftovers-roster-"));
+test("a job the chat deleted itself (rlm-subagent.json says deleted) has its detached process stopped and its tab closed by the sweep, and a live job keeps its own", { timeout: 60_000 }, async () => {
+  const chatDir = await mkdtemp(join(tmpdir(), "job-leftovers-sweep-"));
+  const [gone, live] = [session(4), session(5)];
+  for (const [folder, id, status] of [["sub-gone", gone, "deleted"], ["sub-live", live, "running"]] as const) {
+    await mkdir(join(chatDir, folder));
+    await writeFile(join(chatDir, folder, `${id}.jsonl`), "");
+    await writeFile(join(chatDir, folder, "rlm-subagent.json"), JSON.stringify({ type: "rlm_subagent", childId: folder, status }));
+    await writeFile(join(chatDir, folder, "aside-browser-tabs.json"), JSON.stringify({ owner: folder, tabs: { [`T-${folder}`]: "http://127.0.0.1:8767/" } }));
+  }
+  const server = await detached(SEO, gone, "setTimeout(() => {}, 60000)");
+  const kept = await detached(SEO, live, "setTimeout(() => {}, 60000)");
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const closed: string[][] = [];
+  const real: LeftoverSource = { ...leftoverSource, closeTabs: async ids => { closed.push([...ids]); return ids.length; } };
+  try {
+    assert.deepEqual(await deletedFolders(chatDir), [join(chatDir, "sub-gone")]);
+    const left = await endLeftovers(real, await deletedFolders(chatDir));
+    assert.deepEqual(left.stopped.map(entry => entry.pid), [server]);
+    assert.deepEqual(closed, [["T-sub-gone"]]);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    assert.equal(alive(server), false);
+    assert.equal(alive(kept), true, "the live job's process stays");
+    assert.deepEqual(JSON.parse(await readFile(join(chatDir, "sub-gone", "aside-browser-tabs.json"), "utf8")).tabs, {}, "the closed tabs leave the record");
+    const again = await endLeftovers(real, await deletedFolders(chatDir));
+    assert.deepEqual([again.stopped.length, closed.length], [0, 1], "the next sweep finds nothing and opens no Aside call");
+  } finally {
+    for (const pid of [server, kept]) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+  }
+});
+
+test("the service sweeps each chat for deleted jobs' leftovers once per cleanup interval and logs what it stopped", async () => {
+  let now = Date.parse("2026-10-16T08:45:00Z");
+  const dir = await mkdtemp(join(tmpdir(), "job-leftovers-tick-"));
   const calls: string[] = [];
-  const asked: string[][] = [];
-  const listed = new Set([SEO_JOB, "01a13a00-0000-7000-8000-5e0da7a00002"]);
-  const { chats } = chatsWith(dir, calls, asked, async id => listed.has(id) ? { lifecycle: "live" } : undefined, Date.parse("2026-10-15T00:45:00Z"));
-  const job = (n: number): ChildAgent => ({ id: `sub-${n}`, label: `job ${n}`, sessionName: `job ${n}`, sessionId: `01a13a00-0000-7000-8000-5e0da7a0000${n}`, status: "done" });
-  await chats.roster(new Map([[SEO, [job(1), job(2)]]]));
-  listed.delete(SEO_JOB);
-  await chats.roster(new Map([[SEO, []]]));
-  await chats.settled();
-  assert.deepEqual(asked, [[join(ARTIFACTS, SEO, "sub-1"), SEO_JOB]], "job 2 left the chat's list but the daemon still lists its session");
-  assert.equal(calls.find(call => call.startsWith(`notice ${SEO}`)), undefined);
-  await chats.roster(new Map([[SEO, [job(1)]]]));
-  await chats.roster(new Map([[SEO, []]]));
-  await chats.settled();
-  assert.equal(asked.length, 1, "a session is stopped once");
+  const lines: string[] = [];
+  const swept: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add(SEO);
+  const deletedLeftovers = async (chat: string) => {
+    swept.push(chat);
+    return swept.length === 1 ? { stopped: [{ pid: 3013, bytes: 0.02 * GB, started: STARTED, command: "python3 -m http.server 8767" }], tabs: 1 } : { stopped: [], tabs: 0 };
+  };
+  const chats = new Chats(index, threads, (async () => ({ lifecycle: "live" })) as never, "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, {}, () => now), deletedLeftovers }, line => lines.push(line));
+  await chats.adopt();
+  await chats.tick(); await chats.settled();
+  await chats.tick(); await chats.settled();
+  assert.deepEqual(swept, [SEO], "once per interval");
+  assert.ok(lines.includes(`chat ${SEO.slice(0, 8)}: deleted jobs ended; stopped 3013, closed 1 Aside tabs`), lines.join("\n"));
+  now += JOB_CLEANUP_EVERY_MS;
+  await chats.tick(); await chats.settled();
+  assert.deepEqual(swept, [SEO, SEO]);
+  assert.equal(lines.filter(line => line.includes("deleted jobs ended")).length, 1, "a sweep that stops nothing logs nothing");
+  assert.equal(calls.filter(call => call.startsWith("notice")).length, 0, "the chat gets no notice");
   chats.close();
 });

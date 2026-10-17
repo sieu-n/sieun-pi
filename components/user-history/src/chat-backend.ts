@@ -14,7 +14,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } 
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
 import { startMacUsableWatch } from "./mac-usable-watch.ts";
-import { endLeftovers, leftoverSource } from "./job-leftovers.ts";
+import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -188,6 +188,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")), correctionChecks: replyCheckRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
+      deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),

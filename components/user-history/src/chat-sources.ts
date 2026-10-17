@@ -246,9 +246,11 @@ export interface CheckInSource {
   deletedJobs?: DeletedJobRecord;
   /**
    * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
-   * they opened, under its session folder `dir`, once the cleanup deleted or archived it or the chat deleted it. Absent: nothing is stopped.
+   * they opened, under its session folder `dir`, once the cleanup deleted or archived it. Absent: nothing is stopped.
    */
   leftovers?: (dir: string, session?: string) => Promise<Leftovers>;
+  /** Stops what the subagents the daemon marked deleted under a chat left (`deletedFolders`, `endLeftovers`). Absent: no sweep. */
+  deletedLeftovers?: (chat: string) => Promise<Leftovers>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
