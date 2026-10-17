@@ -165,7 +165,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit,
-    board: id => boards.read(id),
+    board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: async (id, item) => {
       const now = Date.now();
       const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));

@@ -1,0 +1,32 @@
+import { targetOp } from "./shared/chat-board.ts";
+import type { MetricResult } from "./shared/chat-duties.ts";
+import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
+
+const walk = (items: readonly PlanItem[], visit: (item: PlanItem) => void): void => { for (const item of items) { visit(item); walk(item.children, visit); } };
+
+/**
+ * The board ops that write a duty run's measures into the goals they measure: a top-level goal with a target, where the goal or an item under it
+ * fixes `<dutyId>/<key>`, and that metric has the goal's target and direction, gets its target's current, measuredAt and source from the run when
+ * the run is newer than the target's reading. On 10-18 the AI harness chat's p453 still read 25.7% from 10-16 06:27Z while the newest measure
+ * said 29.7%, so the check-in pushed on a two-day-old number and the board showed it.
+ */
+export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: number, metrics: Readonly<Record<string, MetricResult>>): BoardOp[] {
+  const ops: BoardOp[] = [];
+  for (const goal of board?.plan ?? []) {
+    const target = goal.target;
+    if (!target || goal.status === "done" || goal.status === "dropped") continue;
+    const measured = Date.parse(target.measuredAt ?? "");
+    if (Number.isFinite(measured) && measured >= at) continue;
+    let reading: { key: string; value: number } | undefined;
+    walk([goal], item => {
+      if (reading || !item.duty?.startsWith(`${dutyId}/`)) return;
+      const key = item.duty.slice(dutyId.length + 1);
+      const result = metrics[key];
+      if (result && result.value >= 0 && result.target === target.target && result.op === targetOp(target)) reading = { key, value: result.value };
+    });
+    if (!reading) continue;
+    ops.push({ op: "plan_update", id: goal.id, target: { ...target, current: reading.value, measuredAt: new Date(at).toISOString(),
+      source: `duty ${dutyId} metric ${reading.key}, its run at ${new Date(at).toISOString().slice(0, 16)}Z` } });
+  }
+  return ops;
+}

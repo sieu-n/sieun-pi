@@ -6,12 +6,13 @@ import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
+import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, headlineMetric, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
   type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
 import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
+import { type BoardOp, CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
 export interface CheckInDutyHost {
@@ -55,6 +56,8 @@ export interface DutyHost {
   board?: (chatId: string) => Promise<ChatBoard | null>;
   /** Whether a fix step's job is at work now (`fixJobLive`); absent: no fix counts as live. */
   fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
+  /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
+  applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -368,6 +371,14 @@ export class Duties {
     if (!after) return;
     await this.store.updateRun(chatId, run.duty, run.at, record => { record.after = after; });
     this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: after its job, ${after.verdict}, ${after.summary}`);
+    await this.writeReadings(chatId, run.duty, after);
+  }
+
+  /** Writes a measured run's values into the goals they measure (`goalReadingOps`), so the board and the next check-in read the newest number. */
+  private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics">): Promise<void> {
+    if (!this.host.applyBoard || (run.verdict !== "met" && run.verdict !== "missed")) return;
+    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, run.metrics))
+      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write its goal readings: ${message(error)}`));
   }
 
   private async afterMeasure(chatId: string, dutyId: string): Promise<AfterMeasure | null> {
@@ -577,7 +588,7 @@ export class Duties {
     await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
     await writeFile(file, JSON.stringify({ at: record.at, ...pending } satisfies PendingStart), { mode: 0o600 });
     if (older && older.at !== record.at) await this.store.updateRun(chatId, record.duty, older.at, stored => { if (!stored.job) stored.summary += `; ${NOT_STARTED}: a later run took its place`; });
-    if (append) await this.store.appendRun(chatId, record);
+    if (append) { await this.store.appendRun(chatId, record); await this.writeReadings(chatId, record.duty, record); }
     let launched: Launched;
     let failed = false;
     try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured); }
