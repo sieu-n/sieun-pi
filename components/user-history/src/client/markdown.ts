@@ -2,6 +2,7 @@ import { Marked, type Token, type TokenizerAndRendererExtension } from "marked";
 import { normalizeArtifactTarget, WIKI_CONTENT_HOME } from "../shared/artifact-link.ts";
 import { idClass, type MentionIndex } from "./board.ts";
 import { inlineIcon, targetIcon } from "./icons.ts";
+import { wikiUrl } from "./reader.ts";
 
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -89,14 +90,17 @@ export function imageSource(href: string, cwd: string): string | null {
 
 /**
  * A web or mail link opens in a new tab. A link whose target is an artifact (`job:`, `thread:`, `wiki:`, `file:`, a bare absolute path,
- * or a chat permalink URL) becomes a button carrying the stored target form; the view's click handler opens it in the reader or the
- * thread. Relative links and other schemes stay as marked text with the target on hover.
+ * a chat permalink URL, or a wiki page URL `http://localhost:5176/page/<path>.html|.md`) becomes a button carrying the stored target form;
+ * the view's click handler opens it in the reader or the thread (owner, 10-17: wiki links open inside the chat by default). A wiki URL
+ * the reader cannot show (another wiki route, a page without .html or .md) stays a web link. Relative links and other schemes stay as
+ * marked text with the target on hover.
  */
 const WEB_LINK = /^(https?:\/\/|mailto:)/i;
+const WIKI_PAGE = /^wiki:.+\.(?:html?|md)$/i;
 function artifactTarget(href: string): string | null {
   const target = normalizeArtifactTarget(href);
   if (!target) return null;
-  return WEB_LINK.test(href) ? (target.startsWith("thread:") ? target : null) : target;
+  return WEB_LINK.test(href) ? (target.startsWith("thread:") || WIKI_PAGE.test(target) ? target : null) : target;
 }
 /**
  * An image file a link target names (`file:/x.png`, `wiki:sessions/.../x.png`, a bare path to one) shows as the image, not a link to a page the
@@ -112,10 +116,13 @@ function targetImage(target: string): string | null {
 const thumb = (src: string, alt: string, source: string): string =>
   `<img class="reply-image thumb" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
 const fileName = (path: string): string => path.split("/").at(-1) || path;
+/** A wiki link also carries the page's wiki URL, so a Cmd, Ctrl, Shift or middle click opens the wiki in a browser tab (artifactFromClick lets those through). */
+const newTabHref = (target: string): string =>
+  target.startsWith("wiki:") ? ` href="${escapeHtml(wikiUrl(target.slice(5)))}" target="_blank" rel="noopener noreferrer"` : "";
 const artifactButton = (target: string, inner: string, tip: string): string =>
-  // An <a> without href, not a <button>: a button lays out as an inline block, so a long label broke out of the sentence as its own centered
-  // block (10-09). The view's click handler opens it; Enter on a focused one clicks it (App's key handler).
-  `<a class="artifact-link" role="link" tabindex="0" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inlineIcon(targetIcon(target))}${inner}</a>`;
+  // An <a>, not a <button>: a button lays out as an inline block, so a long label broke out of the sentence as its own centered block (10-09).
+  // The view's click handler opens it; Enter on a focused one clicks it (App's key handler).
+  `<a class="artifact-link" role="link" tabindex="0" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}"${newTabHref(target)}>${inlineIcon(targetIcon(target))}${inner}</a>`;
 
 /**
  * A link target the chat wrote bare in prose (`wiki:<path>`, `file:/path`, `job:<name>`, `thread:<id>`, an absolute path, or a path through
@@ -285,12 +292,17 @@ export function reportExcerpt(text: string, limit = 12): { text: string; cut: bo
   return { text: blocks.slice(0, limit).map(token => token.raw.trimEnd()).join("\n\n"), cut: blocks.length > limit };
 }
 
-/** The artifact target of a clicked `.artifact-link` in rendered markdown, or null. */
+/** A click the browser should handle itself on a link with an href: a Cmd, Ctrl or Shift click, or any button but the main one. */
+export const opensBrowserTab = (event: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "shiftKey">): boolean =>
+  event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey;
+
+/** The artifact target of a clicked `.artifact-link` in rendered markdown, or null. A new-tab click on one with an href is left to the browser. */
 export function artifactFromClick(event: MouseEvent): string | null {
   const target = event.target;
   if (!(target instanceof Element)) return null;
   const button = target.closest<HTMLElement>(".artifact-link");
   if (!button?.dataset.target) return null;
+  if (button.hasAttribute("href") && opensBrowserTab(event)) return null;
   event.preventDefault();
   return button.dataset.target;
 }

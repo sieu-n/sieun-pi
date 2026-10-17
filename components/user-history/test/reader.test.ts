@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bubbleBlocks, renderInline, renderMarkdown, reportExcerpt } from "../src/client/markdown.ts";
+import { bubbleBlocks, opensBrowserTab, renderInline, renderMarkdown, reportExcerpt } from "../src/client/markdown.ts";
 import { idClass, mentionIndex } from "../src/client/board.ts";
 import { inlineIcon, targetIcon } from "../src/client/icons.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -68,7 +68,7 @@ test("bubbleBlocks: lone images and diagram fences become cards, inline ones sta
 });
 
 test("bare link targets in prose open like a markdown link: wiki:, file:, job:, thread:, absolute and wiki content paths, URLs and board ids", () => {
-  const button = (target: string, text: string) => `<a class="artifact-link" role="link" tabindex="0" data-target="${target}" title="${target}">${inlineIcon(targetIcon(target))}${text}</a>`;
+  const button = (target: string, text: string) => `<a class="artifact-link" role="link" tabindex="0" data-target="${target}" title="${target}" href="http://localhost:5176/page/${target.slice(5)}" target="_blank" rel="noopener noreferrer">${inlineIcon(targetIcon(target))}${text}</a>`;
   const owner = "Sorry. Here it is: wiki:sessions/2026/10/08/2321-github-pro-explained/article.html. Short version: $4 a month.";
   assert.equal(renderMarkdown(owner), `<p>Sorry. Here it is: ${button("wiki:sessions/2026/10/08/2321-github-pro-explained/article.html", "wiki:sessions/2026/10/08/2321-github-pro-explained/article.html")}. Short version: $4 a month.</p>\n`);
   assert.match(renderMarkdown("log at file:/Users/me/a_b/run.log, done"), /data-target="file:\/Users\/me\/a_b\/run.log"[^>]*><svg [^>]+><path d="[^"]+"\/><\/svg>file:\/Users\/me\/a_b\/run.log<\/a>, done/);
@@ -96,6 +96,26 @@ test("markdown links: artifact targets and chat permalinks become reader buttons
   assert.match(renderMarkdown("[link](http://127.0.0.1:5182/cap/#01a11602-d8f5-722f-98b7-ebcf12104b7d@1791363653000)"), /data-target="thread:01a11602-d8f5-722f-98b7-ebcf12104b7d@1791363653000"/);
   assert.match(renderMarkdown("[web](https://example.com/a)"), /<a href="https:\/\/example.com\/a"[^>]*target="_blank"/);
   assert.match(renderMarkdown("[rel](docs/a.md)"), /<span class="path-link"/);
+});
+
+test("a wiki page URL in a message opens inside the chat on a plain click and keeps its href for a new-tab click (owner, 10-17)", () => {
+  const page = "http://localhost:5176/page/sessions/2026/10/18/0658-shared-prime-setup-design/design.html";
+  const inApp = /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" title="[^"]*" href="http:\/\/localhost:5176\/page\/sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" target="_blank" rel="noopener noreferrer">/;
+  assert.match(renderMarkdown("Design page: " + page), inApp, "a bare URL in a reply");
+  assert.match(renderMarkdown(`[design page](${page})`), inApp, "a markdown link in a reply");
+  assert.match(renderInline("can you look at " + page), inApp, "a URL in the owner's own bubble");
+  assert.match(renderMarkdown("[p](http://127.0.0.1:5176/page/sessions/a/notes.md)"), /data-target="wiki:sessions\/a\/notes.md"[^>]*href="http:\/\/localhost:5176\/page\/sessions\/a\/notes.md"/);
+  assert.match(renderMarkdown("wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"[^>]*href="http:\/\/localhost:5176\/page\/sessions\/a\/b.html"/, "a wiki: target gets the same new-tab href");
+  for (const web of ["http://localhost:5176/page/sessions/a/findings", "http://localhost:5176/page/sessions/a/data.json", "http://localhost:5176/search?q=a.html"]) {
+    assert.doesNotMatch(renderMarkdown(`[x](${web})`), /artifact-link/, web + " is a page the reader cannot show, so it stays a web link");
+  }
+  assert.doesNotMatch(renderMarkdown("[r](job:readme-check)"), /href=/, "a job link has no page to open in a tab");
+  const click = { button: 0, metaKey: false, ctrlKey: false, shiftKey: false };
+  assert.equal(opensBrowserTab(click), false, "a plain click opens the reader");
+  assert.equal(opensBrowserTab({ ...click, metaKey: true }), true, "Cmd click");
+  assert.equal(opensBrowserTab({ ...click, ctrlKey: true }), true, "Ctrl click");
+  assert.equal(opensBrowserTab({ ...click, shiftKey: true }), true, "Shift click");
+  assert.equal(opensBrowserTab({ ...click, button: 1 }), true, "middle click");
   assert.equal(renderInline("see `x` and **b**\nnext <b>raw</b>"), "see <code>x</code> and <strong>b</strong><br>next &lt;b&gt;raw&lt;/b&gt;");
 });
 
