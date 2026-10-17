@@ -11,11 +11,8 @@ or a transcript, so the token path refuses a TTY and refuses unknown arguments
     pi-pool-token --status           pool status
     pi-pool-token --cli <command>    same as `pi-pool <command>`
 
-A token run that ends with no token writes one `hook_no_token` line to the pool log
-with the reason, because Prime drops the hook's stderr and reports only "Failed to
-resolve API key". From 10-16 08:44Z to 10-17 19:45Z every Prime hook run gave no
-token and the log had no line for any of them. This file also logs a SIGTERM that
-lands while vend.py still loads, before vend.py installs its own handler.
+A failed invocation writes fixed reason codes and elapsed times to the pool log.
+Credential values and exception messages never enter that record.
 """
 import json
 import os
@@ -60,57 +57,105 @@ def pool_log(event, **fields):
 
 
 class CountedStdout:
-    """stdout that counts what vend.py writes, so a run that printed nothing is seen."""
-
     def __init__(self, stream):
-        self.stream, self.chars = stream, 0
+        self.stream, self.has_token = stream, False
 
     def write(self, text):
-        self.chars += len(text)
-        return self.stream.write(text)
+        written = self.stream.write(text)
+        self.has_token = self.has_token or bool(text[:written].strip())
+        return written
 
     def __getattr__(self, name):
         return getattr(self.stream, name)
 
 
-def exit_reason(code):
-    if code is None or code == 0:
-        return None
-    return code if isinstance(code, str) else f"exit {code}"
+def failure_reason(error):
+    text = str(error)
+    if "could not lock " in text or "refresh lock on " in text:
+        return "lock_wait_timeout"
+    if any(marker in text for marker in (
+        "invalid_grant", "refresh_token_reused", "refresh failed http ",
+        "keychain read failed", "oauth not allowed for organization", "token rejected (401)",
+        "forbidden (403)", "needs terms",
+    )):
+        return "credential_provider_refused"
+    if "no credential " in text or "store was cleared" in text:
+        return "credential_missing"
+    if "accounts.json unreadable" in text:
+        return "account_index_unreadable"
+    if "account can serve this session" in text:
+        return "no_account"
+    if isinstance(error, TimeoutError):
+        return "operation_timeout"
+    if isinstance(error, SystemExit):
+        if isinstance(error.code, str) and error.code.startswith("pi-pool: this session waits for a slot on "):
+            return "slot_wait"
+        return "exit_nonzero"
+    return "exception"
+
+
+def interrupted_signal(error):
+    trace = error.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        if frame.f_code.co_name in ("on_term", "killed_while_loading"):
+            signum = frame.f_locals.get("signum")
+            if signum == signal.SIGTERM:
+                return signum
+        trace = trace.tb_next
+    return None
 
 
 def run_token(source, argv):
-    """Runs vend.py for a token and logs `hook_no_token` with the reason when it gives none."""
     provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
-    started = time.monotonic()
-    logged = []
+    if provider not in ("anthropic", "openai-codex"):
+        provider = "unknown"
+    started, wall = time.monotonic(), time.time()
+    invocation = f"{os.getpid()}-{time.monotonic_ns()}"
+    logged = False
 
-    def no_token(reason):
+    def no_token(reason, **fields):
+        nonlocal logged
         if logged:
             return
-        logged.append(reason)
-        pool_log("hook_no_token", provider=provider, reason=str(reason)[:500], session=os.environ.get(SESSION_ENV),
-                 sec=round(time.monotonic() - started, 1))
+        logged = True
+        pool_log("hook_no_token", invocation=invocation, provider=provider, reason=reason,
+                 session=os.environ.get(SESSION_ENV), pid=os.getpid(),
+                 awake_sec=round(time.monotonic() - started, 3),
+                 wall_sec=round(time.time() - wall, 3), **fields)
 
     def killed_while_loading(signum, frame):
-        no_token(f"killed by signal {signum} while vend.py loaded")
+        no_token("interrupted", signal=signum, phase="load")
         raise SystemExit(128 + signum)
 
-    signal.signal(signal.SIGTERM, killed_while_loading)
-    out = sys.stdout = CountedStdout(sys.stdout)
+    previous_handler = signal.signal(signal.SIGTERM, killed_while_loading)
+    original = sys.stdout
+    out = sys.stdout = CountedStdout(original)
     try:
         runpy.run_path(str(source), run_name="__main__")
-    except SystemExit as e:
-        reason = exit_reason(e.code)
-        if reason is not None and out.chars == 0:
-            no_token(reason)
-        raise
-    except BaseException as e:
-        if out.chars == 0:
-            no_token(f"{type(e).__name__}: {e}")
-        raise
-    if out.chars == 0:
-        no_token("vend.py ended without writing a token")
+        out.flush()
+    except SystemExit as error:
+        if error.code is None or error.code == 0:
+            out.flush()
+            if not out.has_token:
+                no_token("empty_result", exit_code=0)
+        else:
+            signum = interrupted_signal(error)
+            if signum is not None:
+                no_token("interrupted", signal=signum, phase="vend")
+            else:
+                no_token(failure_reason(error), exit_code=error.code if isinstance(error.code, int) else 1)
+        raise SystemExit(error.code if isinstance(error.code, int) else (0 if error.code is None else 1)) from None
+    except BaseException as error:
+        kind = type(error).__name__ if type(error).__module__ == "builtins" else "Exception"
+        no_token(failure_reason(error), error_type=kind)
+        raise SystemExit(1) from None
+    else:
+        if not out.has_token:
+            no_token("empty_result", exit_code=0)
+    finally:
+        sys.stdout = original
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def main():

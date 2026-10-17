@@ -1,6 +1,3 @@
-"""The token hook writes why it gave no token to the pool log. From 10-16 08:44Z to
-10-17 19:45Z every Prime hook run gave no token and pi-pool.log had no line for any
-of them, because Prime drops the hook's stderr."""
 import json, os, shutil, signal, subprocess, sys, tempfile, time, unittest
 
 from fixture_isolation import isolate_test_module
@@ -44,10 +41,10 @@ class HookNoToken(unittest.TestCase):
         return no_token[0]["reason"]
 
     def test_an_empty_store_in_a_temp_home_logs_why_no_token_came(self):
-        self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "RuntimeError: no anthropic account can serve this session")
+        self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "no_account")
 
     def test_a_missing_store_index_logs_why_no_token_came(self):
-        self.assertEqual(self.run_hook(None), "RuntimeError: tokenmaxxing accounts.json unreadable")
+        self.assertEqual(self.run_hook(None), "account_index_unreadable")
 
     def test_a_kill_while_vend_loads_is_logged(self):
         root = tempfile.mkdtemp(prefix="pi-pool-slow-load-")
@@ -72,7 +69,107 @@ class HookNoToken(unittest.TestCase):
         self.assertEqual((hook.returncode, out), (128 + signal.SIGTERM, ""))
         [e] = events(pool)
         self.assertEqual((e["event"], e["provider"], e["session"]), ("hook_no_token", "openai-codex", "fixture-slow"))
-        self.assertEqual(e["reason"], f"killed by signal {signal.SIGTERM} while vend.py loaded")
+        self.assertEqual((e["reason"], e["signal"], e["phase"]), ("interrupted", signal.SIGTERM, "load"))
+
+
+    def stub(self, code, provider="anthropic"):
+        root = tempfile.mkdtemp(prefix="pi-pool-outcome-")
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "bin"))
+        os.makedirs(os.path.join(root, "state"))
+        shutil.copy(HOOK, os.path.join(root, "bin", "pi-pool-token"))
+        with open(os.path.join(root, "vend.py"), "w") as f:
+            f.write(code)
+        env = dict(os.environ, HOME=root, PI_POOL_DIR=os.path.join(root, "state"),
+                   PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-outcome")
+        return root, env, [sys.executable, "-B", os.path.join(root, "bin", "pi-pool-token"), "--provider", provider]
+
+    def outcome(self, code, reason, provider="anthropic"):
+        root, env, args = self.stub(code, provider)
+        run = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+        rows = events(os.path.join(root, "state"))
+        self.assertEqual(len(rows), 1, rows)
+        [event] = rows
+        self.assertEqual((event["event"], event["reason"], event["provider"]), ("hook_no_token", reason, provider))
+        self.assertTrue(event["invocation"].startswith(str(event["pid"]) + "-"))
+        self.assertGreaterEqual(event["awake_sec"], 0)
+        self.assertGreaterEqual(event["wall_sec"], 0)
+        self.assertNotIn("fixture-secret", json.dumps(rows) + run.stderr)
+        return event, run
+
+    def test_empty_result_includes_exit_zero_and_whitespace(self):
+        for code in ("pass", "raise SystemExit(0)", "print('   ')", "print('  '); raise SystemExit(0)"):
+            with self.subTest(code=code):
+                event, run = self.outcome(code, "empty_result")
+                self.assertEqual((run.returncode, event["exit_code"]), (0, 0))
+
+    def test_an_exception_does_not_log_its_credential_payload(self):
+        event, _ = self.outcome("raise RuntimeError('fixture-secret')", "exception", "openai-codex")
+        self.assertEqual(event["error_type"], "RuntimeError")
+
+    def test_a_string_exit_does_not_log_its_credential_payload(self):
+        self.outcome("raise SystemExit('fixture-secret')", "exit_nonzero")
+
+    def test_a_nonzero_exit_after_output_is_still_a_failed_hook(self):
+        event, run = self.outcome("print('fixture-secret'); raise SystemExit(7)", "exit_nonzero")
+        self.assertEqual((run.returncode, event["exit_code"]), (7, 7))
+
+    def test_credential_provider_refusal_has_a_fixed_reason(self):
+        self.outcome("raise RuntimeError('invalid_grant: fixture-secret')", "credential_provider_refused")
+
+    def test_operation_timeout_is_distinct_from_lock_wait(self):
+        self.outcome("raise TimeoutError('fixture-secret')", "operation_timeout")
+        self.outcome("raise TimeoutError('could not lock fixture-secret')", "lock_wait_timeout")
+
+    def test_an_exit_number_is_not_evidence_of_a_signal(self):
+        self.outcome("raise SystemExit(143)", "exit_nonzero")
+
+    def test_a_token_success_has_no_failure_record(self):
+        root, env, args = self.stub("print('synthetic-token')")
+        run = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0)
+        self.assertTrue(run.stdout.strip())
+        self.assertEqual(events(os.path.join(root, "state")), [])
+
+    def test_the_shell_timeout_leaves_an_interrupted_record(self):
+        root, env, args = self.stub("import time\ntime.sleep(30)\n", "openai-codex")
+        driver = os.path.join(root, "timeout.mjs")
+        with open(driver, "w") as f:
+            f.write("import { execSync } from 'node:child_process';\n"
+                    "try { execSync(process.argv[2], { timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }); "
+                    "process.exitCode = 1; } catch (error) { "
+                    "process.stdout.write(JSON.stringify({ code: error.code, signal: error.signal })); }\n")
+        import shlex
+        run = subprocess.run(["node", driver, shlex.join(args)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(json.loads(run.stdout)["code"], "ETIMEDOUT")
+        failures = [e for e in events(os.path.join(root, "state")) if e["event"] == "hook_no_token"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual((failures[0]["reason"], failures[0]["signal"]), ("interrupted", signal.SIGTERM))
+        self.assertGreater(failures[0]["wall_sec"], 0)
+
+    def test_pool_lock_contention_logs_wait_without_changing_the_account(self):
+        import fcntl
+        root = tempfile.mkdtemp(prefix="pi-pool-contended-")
+        self.addCleanup(shutil.rmtree, root, True)
+        pool, tm = os.path.join(root, "pool"), os.path.join(root, "tm")
+        os.makedirs(pool)
+        os.makedirs(tm)
+        with open(os.path.join(tm, "codex-accounts.json"), "w") as f:
+            json.dump({"version": 2, "accounts": []}, f)
+        env = dict(os.environ, HOME=root, PI_POOL_DIR=pool, TOKENMAXXING_HOME=tm, PI_POOL_SECRETS="file",
+                   PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-lock")
+        with open(os.path.join(pool, "lock"), "w") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+            run = subprocess.run([sys.executable, "-B", HOOK, "--provider", "openai-codex"],
+                                 env=env, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "")
+        failures = [e for e in events(pool) if e["event"] == "hook_no_token"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["reason"], "lock_wait_timeout")
+        self.assertGreaterEqual(failures[0]["awake_sec"], 2.5)
+        self.assertFalse(os.path.exists(os.path.join(pool, "state.json")))
 
 
 if __name__ == "__main__":
