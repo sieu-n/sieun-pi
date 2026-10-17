@@ -37,7 +37,7 @@ function results(file: string, since: number): { at: number; text: string }[] {
 }
 
 /** Revives a copy of the chat's saved kernel state in a fresh Prime kernel, restore first and prelude second as at a worker start, and calls each module's host_request. */
-export function reviveSnapshot(chat: string): { ok: boolean | null; detail: string } {
+export function reviveSnapshot(chat: string): { ok: boolean | null; detail: string; dataDir?: string | null } {
   const saved = join(ARTIFACTS, chat, "kernel-state.dill");
   if (!existsSync(saved)) return { ok: null, detail: `no ${saved} yet` };
   if (!existsSync(PYTHON)) return { ok: null, detail: `no Prime kernel at ${PYTHON}` };
@@ -52,6 +52,8 @@ export function reviveSnapshot(chat: string): { ok: boolean | null; detail: stri
     "repl.host_request = host",
     "async def main():",
     "    out = {'failed': [item['name'] for item in result.get('failed', [])], 'calls': {}}",
+    "    held = getattr(ns.get('agent_message'), 'host_request', None)",
+    "    out['dataDir'] = getattr(held, '__globals__', {}).get('DATA_DIR')",
     "    for name, value in sorted(ns.items()):",
     "        if isinstance(value, types.ModuleType) and 'host_request' in vars(value):",
     "            try:",
@@ -64,10 +66,10 @@ export function reviveSnapshot(chat: string): { ok: boolean | null; detail: stri
   const run = spawnSync(PYTHON, ["-c", script], { cwd: dir, encoding: "utf8" });
   const last = run.stdout.trim().split("\n").at(-1) ?? "";
   if (run.status !== 0 || !last.startsWith("{")) return { ok: false, detail: `the revive script exited ${run.status}: ${clip(run.stderr, 400)}` };
-  const out = JSON.parse(last) as { failed: string[]; calls: Record<string, string> };
+  const out = JSON.parse(last) as { failed: string[]; calls: Record<string, string>; dataDir: string | null };
   const bad = Object.entries(out.calls).filter(([, value]) => value !== "agent_observe.list_agents");
   const needed = ["agent_message", "agent_observe"].filter(name => !(name in out.calls));
-  return { ok: bad.length === 0 && needed.length === 0, detail: `${Object.keys(out.calls).length} restored modules hold host_request: ` +
+  return { dataDir: out.dataDir, ok: bad.length === 0 && needed.length === 0, detail: `${Object.keys(out.calls).length} restored modules hold host_request: ` +
     Object.entries(out.calls).map(([name, value]) => `${name} ${value === "agent_observe.list_agents" ? "reached the host" : `raised ${clip(value, 120)}`}`).join(", ") +
     `${needed.length ? `; missing ${needed.join(", ")}` : ""}; restore failures: ${out.failed.join(", ") || "none"}` };
 }
@@ -91,7 +93,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const events = readSession(chat);
   const checks: Check[] = [];
   const asked = events.find(event => event.kind === "text" && event.role === "user" && event.text.includes(FOLLOW_UP));
-  const revive = asked && events.find(event => event.kind === "text" && event.customType === "ipython_state_restored" && event.at >= asked.at);
+  // Prime writes the notice a few ms before the message that woke the worker, so the revive is the first notice after the chat's last reply before it.
+  const lastReply = asked ? events.filter(event => event.kind === "assistant" && event.at < asked.at).at(-1)?.at ?? 0 : 0;
+  const revive = asked && events.find(event => event.kind === "text" && event.customType === "ipython_state_restored" && event.at > lastReply);
   const reviveText = revive && revive.kind === "text" ? revive.text : "";
   const reviveAt = revive ? revive.at : Infinity;
   checks.push({ id: "a", ok: asked ? (revive ? /\bagent_observe\b/.test(reviveText) && /\bagent_message\b/.test(reviveText) : null) : null,
@@ -108,16 +112,14 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   checks.push({ id: "c", ok: revive ? (broken.length ? false : calls.length ? true : null) : null, detail: !revive ? "no revive yet"
     : `${calls.length} cells after the revive call rlm.spawn, agent_message or agent_observe; ${broken.length ? broken.map(result => `${iso(result.at)} "${clip(result.text, 300)}"`).join("; ") : "no host_request traceback"}` });
 
-  const briefs = join(DATA, "spawn-briefs");
-  const records = (existsSync(briefs) ? readdirSync(briefs) : []).filter(name => name.startsWith("child-")).flatMap(name => {
-    try { return [JSON.parse(readFileSync(join(briefs, name), "utf8")) as { id: string; name: string; root: string; at: number }]; } catch { return []; }
-  }).filter(record => record.root === chat);
-  const later = records.filter(record => record.at >= reviveAt);
-  checks.push({ id: "d", ok: revive ? (later.length ? true : null) : null, detail: `${records.length} brief records for this chat, ${later.length} after the revive` +
-    (later.length ? `: ${later.map(record => `${record.name} at ${iso(record.at)}`).join(", ")}` : "") });
+  // The brief keeper drops a record once its job starts (briefTick, act "drop"), so a finished run keeps none. The lasting evidence is the
+  // data folder the revived agent_message.host_request carries, read in (e)'s revive.
+  const snapshot = revive ? reviveSnapshot(chat) : { ok: null, detail: "no revive yet" } as ReturnType<typeof reviveSnapshot>;
+  const spawned = events.filter(event => event.kind === "call" && event.tool === "ipython" && event.at >= reviveAt && /rlm\.spawn\(/.test(event.input));
+  checks.push({ id: "d", ok: revive ? (snapshot.dataDir === undefined ? null : snapshot.dataDir === DATA && spawned.length > 0) : null,
+    detail: `${spawned.length} rlm.spawn cells after the revive; the revived agent_message.host_request carries DATA_DIR ${JSON.stringify(snapshot.dataDir ?? null)}, the service's is ${DATA}` });
 
-  const snapshot = revive ? reviveSnapshot(chat) : { ok: null, detail: "no revive yet" };
-  checks.push({ id: "e", ...snapshot });
+  checks.push({ id: "e", ok: snapshot.ok, detail: snapshot.detail });
 
   const answer = events.filter(event => event.at > reviveAt && (event.kind === "assistant" || (event.kind === "call" && event.tool === "tell_owner"))).at(-1);
   const answerText = !answer ? "" : answer.kind === "assistant" ? answer.text : answer.kind === "call" ? String((JSON.parse(answer.input) as { text?: string }).text ?? "") : "";
@@ -133,7 +135,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const text = [
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
-    `Criteria: ${join(run, "criteria.md")}. Evidence: the chat's session files, ${join(ARTIFACTS, chat, "kernel-state.dill")} and ${briefs}.`, "",
+    `Criteria: ${join(run, "criteria.md")}. Evidence: the chat's session files, ${join(ARTIFACTS, chat, "kernel-state.dill")}, revived in a fresh Prime kernel.`, "",
     "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${yes(check.ok)}: ${check.detail}`), "",
   ].join("\n");
   return { verdict, text };
