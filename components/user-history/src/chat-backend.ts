@@ -27,7 +27,7 @@ import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { fixJobLive } from "./shared/duty-fixes.ts";
-import { archiveDutyJob, dutyJobHost } from "./chat-duty-job.ts";
+import { archiveDutyJob, dutyJobHost, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DaemonGate, rosterList } from "./chat-daemon-gate.ts";
 import { DutyStore } from "./chat-duty-store.ts";
@@ -181,7 +181,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
+    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
+      saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) }),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger) => chats.runCheckIn(id, trigger), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });

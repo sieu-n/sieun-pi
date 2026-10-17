@@ -1,4 +1,6 @@
+import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
@@ -254,6 +256,26 @@ const CREATE_TRIES = 2;
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+/** A chat's name and folder from its session file: the header's cwd and the first session_info name (a chat is named at create). */
+export async function savedChat(file: string): Promise<{ name: string; cwd: string } | null> {
+  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  let cwd: string | undefined;
+  try {
+    for await (const line of lines) {
+      if (cwd === undefined) {
+        const header = JSON.parse(line) as { type?: unknown; cwd?: unknown };
+        if (header.type !== "session" || typeof header.cwd !== "string") return null;
+        cwd = header.cwd;
+      } else if (line.startsWith('{"type":"session_info"')) {
+        const name = (JSON.parse(line) as { name?: unknown }).name;
+        if (typeof name === "string" && name.trim()) return { name: name.trim(), cwd };
+      }
+    }
+    return null;
+  } catch { return null; }
+  finally { lines.close(); }
+}
+
 /**
  * The backend's duty job host: the chat's name and folder from the catalog rows, a job's state from its row (gone counts as done), a start, and
  * a retire that unregisters and queues the archive. Starts from every chat run one at a time (10-09: 9 chats' check-ins fired within 3 min and 6 creates
@@ -272,6 +294,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * with its worker loaded (pi-pool.log, 21:28 and 22:03 KST); the low duty jobs that started from 22:49 KST waited 1,212 s at p50 for their first turn.
    */
   handoff?: (id: string) => Promise<void>;
+  /**
+   * The chat's name and folder from its own session file (`savedChat`), for when the catalog has no row and its refresh fails. On 10-17 at
+   * 21:00:50Z the first check-in slot of the new chat "YouTube index gaps" started no job, because the daemon's list timed out at 30 s at load 70.
+   */
+  saved?: (chatId: string) => Promise<{ name: string; cwd: string } | null>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -315,7 +342,13 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     async chat(chatId) {
       let found = await row(chatId);
       if (!found && input.refresh) {
-        await input.refresh().catch(error => { throw new Error(`the catalog cannot list the chat: ${reason(error)}`); });
+        const failed = await input.refresh().then(() => undefined, error => reason(error));
+        if (failed !== undefined) {
+          const saved = await input.saved?.(chatId).catch(() => null);
+          if (!saved) throw new Error(`the catalog cannot list the chat: ${failed}`);
+          input.log?.(`duty ${chatId.slice(0, 8)}: the catalog cannot list the chat (${failed}); its session file names it "${saved.name}" in ${saved.cwd}`);
+          return { id: chatId, name: saved.name || chatId, cwd: saved.cwd, board: input.board(chatId) };
+        }
         found = await row(chatId);
       }
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
