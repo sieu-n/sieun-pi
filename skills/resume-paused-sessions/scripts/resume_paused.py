@@ -110,6 +110,13 @@ RESTART_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Prime Agent daemon superviso
 # A supervisor that stops archives its live sessions just before its last log line: at the 10-16 00:19:58Z restart 14 archives fell
 # 1.0 s before to 0.6 s after that line, and at the 10-15 18:25Z stop 93 fell up to 4.4 s before it.
 RESTART_LEAD_S = 5.0
+# A new supervisor writes these for the old workers before its "listening" line: 20 "Recovered worker" and 20 "Could not adopt worker" lines
+# at 19:48:47Z to 19:48:48Z on 10-17, after the old one's last line at 19:46:18Z. They belong to the new supervisor's start.
+STARTUP_LINE = re.compile(r"\] supervisor: (Recovered worker|Could not adopt worker) ")
+# The daemon writes this notice into each live session when `prime-agent update` restarts it, then stops its worker, which aborts the turn:
+# on 10-16 the notices came at 08:44:11.97Z and the aborts at 08:44:11Z to 08:44:24Z.
+UPDATE_NOTICE = "prime-agent.update_restart"
+UPDATE_ABORT_S = 60.0
 # Full session ids that own an open step of a chat (--owners).
 OWNERS = set()
 RECOVERY_NOTICE = "prime-agent.worker_recovery"
@@ -343,7 +350,7 @@ def stopped_on_purpose(entries, last, restarts=list):
 
     An archive that a daemon restart wrote does not count, and an archive written just before the aborted reply outside a restart does, even
     next to a worker's SIGTERM, since an archive stops the worker too. `find_paused` also drops a recorded delete (`deleted_on_purpose`)."""
-    if archived_by_restart(entries, restarts):
+    if archived_by_restart(entries, restarts) or update_before(entries, last):
         return False
     msg = last.get("message") or {}
     if msg.get("role") == "assistant" and msg.get("stopReason") == "aborted" and archive_before(entries, last):
@@ -416,7 +423,8 @@ def daemon_restarts():
             match = RESTART_LINE.match(line)
             if match and stamp and previous and previous <= stamp:
                 windows.append((previous - dt.timedelta(seconds=RESTART_LEAD_S), stamp))
-            previous = stamp or previous
+            if not STARTUP_LINE.search(line):
+                previous = stamp or previous
     return sorted(set(windows))
 
 
@@ -434,6 +442,19 @@ def archive_before(entries, last):
         if entry.get("type") == "session_state":
             stamp = parse_ts(entry.get("timestamp"))
             return (entry.get("state") or {}).get("status") == "archived" and bool(ts and stamp) and (ts - stamp).total_seconds() <= ARCHIVE_ABORT_S
+    return False
+
+
+def update_before(entries, last):
+    """The daemon's update notice came at most UPDATE_ABORT_S before `last`, with no message between them: the update stopped the turn."""
+    ts = parse_ts(last.get("timestamp"))
+    index = entries.index(last) if last in entries else -1
+    for entry in reversed(entries[:max(index, 0)]):
+        if entry.get("type") == "message":
+            return False
+        if entry.get("type") == "custom_message" and entry.get("customType") == UPDATE_NOTICE:
+            stamp = parse_ts(entry.get("timestamp"))
+            return bool(ts and stamp) and 0 <= (ts - stamp).total_seconds() <= UPDATE_ABORT_S
     return False
 
 
@@ -459,7 +480,7 @@ def aborted_verdict(last, entries, shutdowns, owner=False, restarts=list):
     ts = parse_ts(last.get("timestamp"))
     if ts and any(abs((ts - stamp).total_seconds()) <= SHUTDOWN_MATCH_S for stamp in shutdowns()):
         return ("worker_stopped", f"The daemon shut its worker down at {last.get('timestamp')} in the middle of the turn.")
-    if in_restart(ts, restarts):
+    if in_restart(ts, restarts) or update_before(entries, last):
         return ("daemon_restart", f"The Prime daemon restarted at {last.get('timestamp')} in the middle of the turn.")
     if owner and not reply_text(last):
         return ("aborted", "Its turn was aborted with no reply while it owned an open step.")

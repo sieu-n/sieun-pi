@@ -443,6 +443,41 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered"}])
         self.assertEqual(self.sent, [("56018fdc0c63", "continue")])
 
+    def test_a_restart_window_starts_at_the_old_supervisors_last_line_not_at_the_new_ones_start(self):
+        # 10-17: the old supervisor's last line came at 19:46:18Z. The new one wrote 40 recovered or not-adopted worker lines at 19:48:47Z
+        # to 19:48:48Z and listened at 19:48:48.539Z, so the window was 5 s long and missed every cut at 19:46Z.
+        logs = self.root / "logs"
+        logs.mkdir()
+        (logs / "daemon.sock.abc.log").write_text(
+            "[2026-10-17T19:46:18.931Z] supervisor: Idle eviction sweep failed: Error: Timed out draining daemon mutations for idle eviction\n"
+            "[2026-10-17T19:48:47.547Z] supervisor: Could not adopt worker b87c5a758ac4: Error: Session worker process is no longer running\n"
+            "    at findWorker (/$bunfs/root/prime-agent:2238:72844)\n"
+            "[2026-10-17T19:48:48.536Z] supervisor: Recovered worker ebab045b44c4 without replaying uncertain operations: message_end\n"
+            "[2026-10-17T19:48:48.539Z] supervisor: Prime Agent daemon supervisor 6876 listening on /tmp/daemon.sock\n")
+        with patch.object(resume_paused, "LOG_DIR", logs):
+            found = resume_paused.daemon_restarts()
+        self.assertEqual([(start.isoformat(), end.isoformat()) for start, end in found],
+                         [("2026-10-17T19:46:13.931000+00:00", "2026-10-17T19:48:48.539000+00:00")])
+
+    def test_a_turn_the_update_stopped_counts_as_a_restart_and_a_recorded_delete_still_wins(self):
+        # 10-16 08:44:11.97Z: `prime-agent update` wrote its restart notice into each live session, then stopped the workers; 12 tts-gap jobs
+        # under one parent ended on "Request was aborted" or an empty abort at 08:44:12Z to 08:44:24Z, and no rule counted them as cut.
+        notice = {"type": "custom_message", "customType": "prime-agent.update_restart", "timestamp": at(30.2)}
+        aborted_tool = {"type": "message", "timestamp": at(30), "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}}
+        self.session("updatetool00", [assistant(31, "toolUse"), notice, aborted_tool])
+        self.session("updateabort0", [role(31, "toolResult"), notice, assistant(30, "aborted", "Request was aborted")])
+        self.session("ownerstopped", [assistant(31, "toolUse"), aborted_tool])
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]), patch.object(resume_paused, "daemon_restarts", return_value=[]):
+            report = self.run_direct(dry_run=True)
+        self.assertEqual(sorted((p["id"], p["reason"]) for p in report["paused"]),
+                         [("updateabort0", "daemon_restart"), ("updatetool00", "cut_off")])
+        self.sessions = []
+        folder = self.deleted_owner("01a143b3-chat", "sub-ad098135", "01a143dc-aa89-767d-845a-9c39765e9128", 50, 49.99)
+        (folder / "01a143dc-aa89-767d-845a-9c39765e9128.jsonl").write_text(
+            "\n".join(json.dumps(entry) for entry in [assistant(31, "toolUse"), notice, aborted_tool]) + "\n")
+        (self.root / "deleted-jobs.json").write_text(json.dumps({"01a143b3-chat": {"sub-ad098135": 1}}))
+        self.assertEqual(self.run_saved_owners(["01a143dc-aa89-767d-845a-9c39765e9128"])["paused"], [])
+
     def test_an_archived_owner_in_the_default_list_counts_as_saved(self):
         full = "01a141b8-c786-723a-baec-b975a1a24279"
         listed = [{"id": full, "sessionId": full, "lifecycle": "archived"}, {"id": "other", "lifecycle": "archived"}]
