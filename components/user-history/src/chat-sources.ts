@@ -26,8 +26,11 @@ export type SubagentDelete = "deleted" | "not_held" | "running";
  * runner writes a duty job's session id (src/chat-duty-job.ts). The root's extension reads it at start and again at its first prompt.
  */
 export interface JobRegistry {
-  add(names: readonly string[], chat: string): Promise<void>;
+  /** Files `names` under the chat's name and, when known, its session id (`chatId`), which `rootsOf` matches when no name is at hand. */
+  add(names: readonly string[], chat: string, chatId?: string): Promise<void>;
   chatOf(name: string): Promise<string | undefined>;
+  /** The session id of the chat a name was filed under, when the add knew it. */
+  chatIdOf(name: string): Promise<string | undefined>;
   /** The session names (or ids, for a duty job) a chat (by any of its names: its session name, its id) started. */
   rootsOf(chat: readonly string[]): Promise<string[]>;
   /** Drops entries: a retired duty job. */
@@ -38,15 +41,19 @@ export interface JobRegistry {
  * with a variable (`name=name` in a loop) has no literal for tool_call to read (AI harness 10-14: the 15:01 KST check-in started skill rules
  * land, stale tree guard land and skill rewrite land that way, and the 17:01 and 19:02 check-ins read their steps as held by other threads).
  */
-export async function registerPrintedRoots(registry: Pick<JobRegistry, "add">, text: string, chat: string): Promise<string[]> {
+export async function registerPrintedRoots(registry: Pick<JobRegistry, "add">, text: string, chat: string, chatId?: string): Promise<string[]> {
   const names = [...new Set(sessionHandles(text).map(handle => handle.name).filter(Boolean))];
-  if (names.length) await registry.add(names, chat);
+  if (names.length) await registry.add(names, chat, chatId);
   return names;
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
-/** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
+/**
+ * `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, chatId?, at } } }` through locked-json; entries older than 30 days go on
+ * the next add. `chatId` came on 10-18: checkin-precheck.ts --roster drops an idle chat's row, so the precheck had only the chat's id, and
+ * slack green guy's own roots, filed under its name, read as held elsewhere.
+ */
 export function jobRegistry(path: string, now: () => number = Date.now): JobRegistry {
-  type Entry = { chat: string; at: number };
+  type Entry = { chat: string; at: number; chatId?: string };
   const file: JsonFile<{ jobs: Record<string, Entry> }> = { path, label: "Chat job registry", initial: () => ({ jobs: {} }), parse(value: unknown) {
     const jobs = typeof value === "object" && value !== null && "jobs" in value && typeof value.jobs === "object" && value.jobs !== null ? value.jobs as Record<string, unknown> : {};
     return { jobs: Object.fromEntries(Object.entries(jobs).filter((entry): entry is [string, Entry] => {
@@ -55,15 +62,19 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
     })) };
   } };
   return {
-    async add(names, chat) {
+    async add(names, chat, chatId) {
       const at = now();
       await transactJsonFile(file, state => {
         for (const [name, entry] of Object.entries(state.jobs)) if (at - entry.at > REGISTRY_KEEP_MS) delete state.jobs[name];
-        for (const name of names) state.jobs[name] = { chat, at };
+        for (const name of names) state.jobs[name] = { chat, at, ...(chatId ? { chatId } : {}) };
       });
     },
     async chatOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chat; },
-    async rootsOf(chat) { return Object.entries((await snapshotJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat)).map(([name]) => name); },
+    async chatIdOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chatId; },
+    async rootsOf(chat) {
+      return Object.entries((await snapshotJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat) || (entry.chatId !== undefined && chat.includes(entry.chatId)))
+        .map(([name]) => name);
+    },
     async remove(names) { await transactJsonFile(file, state => { for (const name of names) delete state.jobs[name]; }); },
   };
 }

@@ -180,6 +180,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
   let dutyJob = false;
   // A subagent at any depth whose top session is a chat or a root a chat started: it reads the corrections ledger like a job.
   let underChat = false;
+  /** The session id of the chat a root this session creates is filed under: the chat's own, or for a duty job the one its own entry holds. */
+  const rootChatId = async (ctx: ExtensionContext): Promise<string | undefined> =>
+    marked ? ctx.sessionManager.getSessionId() : dutyJob ? await jobs().chatIdOf(ctx.sessionManager.getSessionId()).catch(() => undefined) : undefined;
   const findJob = async (ctx: ExtensionContext): Promise<void> => {
     if (job) return;
     const header = ctx.sessionManager.getHeader();
@@ -268,7 +271,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
-        if (names.length) await jobs().add(names, rootChat);
+        if (names.length) await jobs().add(names, rootChat, await rootChatId(ctx));
       }
       // A limit a chat or a job of a chat sends another session gets the reply rule's evidence check before it leaves the kernel (c43).
       // Every other session's kernel gets the send checks too: the 5180 SSR hang fix job, no job of a chat, read each daemon timeout as a
@@ -288,7 +291,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (event.toolName !== "ipython") return;
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (!rootChat) return;
-      await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat);
+      await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat, await rootChatId(ctx));
     } catch { /* the literal names tool_call registered */ }
   });
   pi.registerFlag("agent-chat-socket", {

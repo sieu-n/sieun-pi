@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { readSession, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
@@ -79,11 +80,24 @@ interface Check { id: string; ok: boolean | null; detail: string }
 const yes = (ok: boolean | null): string => ok === null ? "for the reader" : ok ? "met" : "not met";
 interface Agent { sessionId?: string; name: string; state: string; key: string }
 
-/** The jobs a chat's Agents card listed over the run, apart from its check-in duty jobs. */
-function agentsOf(dir: string): { jobs: Map<string, string>; duty: Map<string, string>; first: Map<string, number> } {
+/**
+ * The chat names and ids each root session in chat-jobs.json was started by, for `agentsOf`: the Agents card also lists a thread the board
+ * links, such as another chat ("Crawler VP") or another chat's job, and in r3b on 10-17 those read as jobs of "YouTube index gaps", so 120
+ * messages their own chats sent them voided the run as someone stepping in.
+ */
+function registeredChats(): Map<string, Set<string>> {
+  const file = join(process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat"), "chat-jobs.json");
+  const jobs = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { jobs?: Record<string, { chat?: string; chatId?: string }> }).jobs ?? {} : {};
+  return new Map(Object.entries(jobs).map(([key, entry]) => [key, new Set([entry.chat, entry.chatId].filter((value): value is string => typeof value === "string"))]));
+}
+/** The jobs a chat's Agents card listed over the run, apart from its check-in duty jobs: its subagents and the roots it registered. */
+function agentsOf(dir: string, chat: { id: string; name: string }): { jobs: Map<string, string>; duty: Map<string, string>; first: Map<string, number> } {
   const jobs = new Map<string, string>(); const duty = new Map<string, string>(); const first = new Map<string, number>();
+  const registry = registeredChats();
+  const own = (agent: Agent): boolean => agent.key.startsWith("child:") || agent.name.startsWith(`check-in ${chat.name} `) ||
+    [registry.get(agent.sessionId!), registry.get(agent.name)].some(chats => chats?.has(chat.id) || chats?.has(chat.name));
   for (const { at, value } of listJson<Agent[]>(dir)) for (const agent of value) {
-    if (!agent.sessionId) continue;
+    if (!agent.sessionId || !own(agent)) continue;
     if (!first.has(agent.sessionId)) first.set(agent.sessionId, at);
     (/^check-in /.test(agent.name) ? duty : jobs).set(agent.sessionId, agent.name);
   }
@@ -106,8 +120,8 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const slots = runs.filter(entry => entry.trigger === "schedule");
   const boards = snapshots(join(run, "boards"));
   const controlBoards = snapshots(join(run, "control", "boards"));
-  const { jobs, duty, first } = agentsOf(join(run, "agents"));
-  const control = agentsOf(join(run, "control", "agents"));
+  const { jobs, duty, first } = agentsOf(join(run, "agents"), state.chat);
+  const control = agentsOf(join(run, "control", "agents"), state.control ?? state.chat);
   const clock = (at: number): string => { const date = new Date(at); return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
   const head = read(state.chat.id);
   const checks: Check[] = [];
@@ -193,6 +207,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const family = new Set([state.chat.id, ...duty.keys(), ...jobs.keys(), ...(state.control ? [state.control.id, ...control.jobs.keys()] : [])]);
   const hits: string[] = []; const outside: string[] = []; let scanned = 0;
+  // A reply to a message the chat or its job sent first is no one stepping in: in r3b on 10-17 "YouTube index gaps" asked the CI queue keeper
+  // and the Crawler VP chat for a probe slot and for uncommitted hunks, and their answers voided the run.
+  const asked = new Map<string, number[]>();
+  for (const id of family) for (const event of read(id)) if (event.kind === "sent") asked.set(`${id}<${event.to}`, [...asked.get(`${id}<${event.to}`) ?? [], event.at]);
+  const replies = (id: string, from: string, at: number): boolean => (asked.get(`${id}<${from}`) ?? []).some(sentAt => sentAt <= at);
   for (const id of family) for (const event of read(id)) {
     if (event.kind !== "text" || event.at < state.windowStart) continue;
     if (["harness_digest", "refinement_notice", "refinement_outcome", "ipython_state", "ipython_state_restored"].includes(event.customType ?? "")) continue;
@@ -202,7 +221,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     if (flags.length || lists.length) hits.push(`${id.slice(0, 8)} from ${event.from ?? event.customType ?? event.role} at ${iso(event.at)}: ${[flags.join(", "), lists.map(ids => ids.join(" ")).join(" / ")].filter(Boolean).join("; ")}`);
     if ((id === state.chat.id || id === state.control?.id) && event.role === "user" && !event.text.trimStart().startsWith("[")) outside.push(`typed into ${id.slice(0, 8)} at ${iso(event.at)}: "${clip(event.text, 100)}"`);
     const text = event as Text;
-    if (text.customType === "agent_message" && text.fromId && !family.has(text.fromId) && text.relation !== "child" && text.relation !== "parent") outside.push(`${text.from ?? text.fromId} messaged ${id.slice(0, 8)} at ${iso(event.at)}`);
+    if (text.customType === "agent_message" && text.fromId && !family.has(text.fromId) && text.relation !== "child" && text.relation !== "parent" && !replies(id, text.fromId, event.at)) outside.push(`${text.from ?? text.fromId} messaged ${id.slice(0, 8)} at ${iso(event.at)}`);
   }
   checks.push({ id: "c", ok: hits.length === 0, detail: `${scanned} system texts scanned; ${hits.length} with hits${hits.length ? `:\n${hits.slice(0, 12).map(hit => `    - ${hit}`).join("\n")}` : ""}` });
 

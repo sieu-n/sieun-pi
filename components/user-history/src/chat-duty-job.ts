@@ -361,7 +361,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     start: (chat, planned, brief, admitted = false, since) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned, since);
       try {
-        await input.registry.add([id], chat.name);
+        await input.registry.add([id], chat.name, chat.id);
         await input.started?.(id);
         if (admitted) await input.handoff?.(id).catch(error => input.log?.(`duty job ${name}: hand its queue place over: ${reason(error)}`));
         await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
