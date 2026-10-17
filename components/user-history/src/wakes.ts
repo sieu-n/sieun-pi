@@ -22,6 +22,12 @@ export const TICK_MS = 30_000;
 export const TICKED = ".ticked";
 /** A run the CI cache does not stamp, or one read with `gh`, is read at most this often (GitHub's REST limit is 5,000 requests an hour). */
 export const RUN_LOOK_MS = 2 * 60_000;
+/**
+ * A run wake whose run has read only errors for this long goes out with the error, so the job can set it again. HOLD_MS of the Whole system
+ * duty (10 min, the owner's line on 10-15). On 10-18 three jobs had waited 60 to 71 h on slack-green runs that finished on 10-14 and 10-15,
+ * because board.wake got no repo and the CI cache, which holds only its own repo, answered "not in the cache" every 2 min.
+ */
+export const UNREADABLE_MS = 10 * 60_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const SESSION = /^[\w-]{1,128}$/;
@@ -42,6 +48,10 @@ export function parseWake(value: unknown): Wake | null {
 /** The agent message a due wake sends; it names the wait so the job knows which of its waits ended. */
 export function wakeText(wake: Wake, state: RunState | null, now: number): string {
   const note = wake.note ? ` Your note: ${wake.note}` : "";
+  if (wake.on.kind === "run" && state && "error" in state) {
+    return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} could not be read for ${Math.round(UNREADABLE_MS / 60_000)} min: ${state.error}. ` +
+      `If it runs in another repo than the CI cache's, set board.wake(run=${wake.on.run}, repo="owner/name") again.${note}`;
+  }
   if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note}`;
   const done = state && "done" in state && state.done ? state : null;
   return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} finished: ${done?.conclusion ?? "unknown"}${done?.label ? ` (${done.label})` : ""}. ` +
@@ -74,6 +84,8 @@ export interface WakeDeps {
 /** The wake files, one tick at a time; it remembers each run's last stamp and look so a quiet run costs one stat a tick. */
 export class Wakes {
   private readonly looked = new Map<number, { stamp: string | null; at: number }>();
+  /** Each run whose reads have only failed, from its first failed read on. */
+  private readonly failing = new Map<number, { since: number; error: string }>();
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
@@ -99,7 +111,9 @@ export class Wakes {
           await this.moved();
         }
         state = states.get(wake.on.run) ?? null;
-        if (!state || !("done" in state) || !state.done) continue;
+        const failed = this.failing.get(wake.on.run);
+        if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
+        else if (!state || !("done" in state) || !state.done) continue;
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
     }
@@ -123,6 +137,7 @@ export class Wakes {
       await this.moved();
     }
     for (const run of this.looked.keys()) if (!states.has(run)) this.looked.delete(run);
+    for (const run of this.failing.keys()) if (!states.has(run)) this.failing.delete(run);
     return sent;
   }
 
@@ -137,7 +152,10 @@ export class Wakes {
     if (last && now - last.at < RUN_LOOK_MS && (stamp === null || stamp === last.stamp)) return null;
     this.looked.set(on.run, { stamp, at: now });
     const state = await this.deps.runState(on).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
-    if ("error" in state) this.deps.log(`wakes: run ${on.run}: ${state.error}`);
+    if ("error" in state) {
+      this.deps.log(`wakes: run ${on.run}: ${state.error}`);
+      if (!this.failing.has(on.run)) this.failing.set(on.run, { since: now, error: state.error });
+    } else this.failing.delete(on.run);
     return state;
   }
 }

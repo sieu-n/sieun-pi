@@ -11,7 +11,7 @@ import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { withWakes } from "../src/checkin-load.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
-import { parseWake, pendingWakes, RUN_LOOK_MS, type RunState, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
+import { parseWake, pendingWakes, RUN_LOOK_MS, type RunState, UNREADABLE_MS, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
 // 10-14 20:5xZ: 125 of 152 working sessions had ended their turn and waited on a bash handle in their Python kernel (82 on a CI run, 11 on a
@@ -241,4 +241,36 @@ test("wakes: a tick stamps TICKED when it starts, so a check-in during a long ti
   assert.deepEqual(owed.map(wake => wake.session), [driver], "the tick that started at 10:32:45Z is still reading runs and owes the wake");
   const thread: JobFact = { key: `thread:${driver}`, name: "ci release driver", state: "ended", activityAt: at("10:16:18") };
   assert.deepEqual(withWakes([thread], owed, () => undefined).map(fact => [fact.state, fact.wake]), [["working", "a board.wake on run 38708750431"]]);
+});
+
+test("wakes: a run wake whose run reads only errors for UNREADABLE_MS goes out with the error, so a wake set without its repo never waits for good", async () => {
+  // 10-18 21:45Z: run wakes on slack-green runs 38646889377, 38663462835 and 38717777545 had waited 60 to 71 h. They were set without repo=,
+  // and the CI cache answered "not in the cache" every 2 min, so the jobs were never woken.
+  const states = new Map<number, RunState>([[38646889377, { error: "ci-run-status: run 38646889377 is not in the cache" }]]);
+  const f = await fixture(states);
+  await f.put(`${SESSION_A}-run-38646889377.json`, { session: SESSION_A, on: { kind: "run", run: 38646889377 }, note: "pr253 air run", since: NOW });
+  assert.equal(await f.wakes.tick(), 0);
+  f.at(NOW + UNREADABLE_MS - RUN_LOOK_MS);
+  assert.equal(await f.wakes.tick(), 0);
+  assert.equal(f.sent.length, 0);
+  f.at(NOW + UNREADABLE_MS);
+  assert.equal(await f.wakes.tick(), 1);
+  assert.match(f.sent[0]!.text, /^\[wake\] Run 38646889377 could not be read for 10 min: ci-run-status: run 38646889377 is not in the cache\./);
+  assert.match(f.sent[0]!.text, /board\.wake\(run=38646889377, repo="owner\/name"\)/);
+  assert.match(f.sent[0]!.text, /pr253 air run/);
+  assert.deepEqual(await f.files(), []);
+});
+
+test("wakes: a run that reads again after a failed read keeps waiting for its end", async () => {
+  const states = new Map<number, RunState>([[9, { error: "Timed out" }]]);
+  const f = await fixture(states);
+  await f.put(`${SESSION_A}-run-9.json`, { session: SESSION_A, on: { kind: "run", run: 9 }, note: "", since: NOW });
+  await f.wakes.tick();
+  states.set(9, { done: false });
+  f.at(NOW + RUN_LOOK_MS);
+  await f.wakes.tick();
+  f.at(NOW + UNREADABLE_MS + RUN_LOOK_MS);
+  assert.equal(await f.wakes.tick(), 0);
+  assert.equal(f.sent.length, 0);
+  assert.equal((await f.files()).length, 1);
 });

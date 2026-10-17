@@ -99,7 +99,13 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export interface LimitChange { at: number; limit: number }
 
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
-const WAKE_HELD = /^wakes: wake (\w{8}) for .*: held by the fleet budget/;
+/** A due wake the service could not send this tick: held by the old fleet budget, or a send the daemon failed. */
+const WAKE_HELD = /^wakes: wake (\w{8}) for .*; tried again next tick$/;
+/**
+ * A run wake whose run read failed this tick. On 10-18 the CI cache answered "not in the cache" for three slack-green runs every 2 min for 60
+ * to 71 h, and the jobs that set those wakes were never woken, while queue_holds_30 read 0.
+ */
+const RUN_UNREADABLE = /^wakes: run (\d+): /;
 const STARTED_AFTER = /^fleet budget: (\S+) (.+) starts after (\d+) s$/;
 /** Lines of one wake held this far apart are one hold; the wake loop tries each held wake every tick. */
 const HOLD_GAP_MS = 5 * MINUTE;
@@ -107,7 +113,13 @@ const HOLD_GAP_MS = 5 * MINUTE;
 /** The holds in service.log lines from `since` on; a hold may start before `since`, so the caller reads back far enough. */
 export function readServiceLog(lines: readonly string[]): LogFacts {
   const wakes = new Map<string, Hold>();
+  const runs = new Map<string, Hold>();
   const holds: Hold[] = [];
+  const extend = (open: Map<string, Hold>, key: string, what: string, at: number) => {
+    const hold = open.get(key);
+    if (hold && at - hold.to <= HOLD_GAP_MS) hold.to = at;
+    else { const fresh = { what, from: at, to: at }; open.set(key, fresh); holds.push(fresh); }
+  };
   const grants: Grant[] = [];
   let at = NaN;
   for (const raw of lines) {
@@ -116,11 +128,9 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
     if (!Number.isFinite(at)) continue;
     const text = match ? match[2]! : raw;
     let found: RegExpExecArray | null;
-    if ((found = WAKE_HELD.exec(text))) {
-      const open = wakes.get(found[1]!);
-      if (open && at - open.to <= HOLD_GAP_MS) open.to = at;
-      else { const hold = { what: `wake of ${found[1]}`, from: at, to: at }; wakes.set(found[1]!, hold); holds.push(hold); }
-    } else if ((found = STARTED_AFTER.exec(text))) {
+    if ((found = WAKE_HELD.exec(text))) extend(wakes, found[1]!, `wake of ${found[1]}`, at);
+    else if ((found = RUN_UNREADABLE.exec(text))) extend(runs, found[1]!, `wake on unreadable run ${found[1]}`, at);
+    else if ((found = STARTED_AFTER.exec(text))) {
       holds.push({ what: `${found[1]} ${found[2]}`, from: at - Number(found[3]) * 1000, to: at });
       if ((found[1] === "continue" || found[1] === "wake") && SESSION_ID.test(found[2]!)) grants.push({ kind: found[1], session: found[2]!, at, waitS: Number(found[3]) });
     }

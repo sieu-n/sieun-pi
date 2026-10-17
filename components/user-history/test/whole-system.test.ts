@@ -213,3 +213,13 @@ test("an explicit delete of a job or a job above it wins over restart timing, an
     assert.equal(cutJobsHoldingWork([own], new Map([[chat, board("ci train", own.session)]])).length, 1, "a step on the cut session itself");
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+test("a run wake whose run reads only errors for over 10 minutes is a hold", () => {
+  // 10-18 21:44Z service.log: the CI cache answered "not in the cache" for slack-green run 38646889377 every 2 min for 71 h.
+  const facts = readServiceLog([...[30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2].map(ago =>
+    `${at(ago)} wakes: run 38646889377: ci-run-status: run 38646889377 is not in the cache (it holds runs created since 2026-10-17T21:10:56Z, live runs and runs asked for)`),
+    `${at(3)} wakes: run 39068436878: ci-run-status: Timed out`]);
+  assert.deepEqual(facts.holds.map(hold => [hold.what, (NOW - hold.from) / 60_000, (NOW - hold.to) / 60_000]),
+    [["wake on unreadable run 38646889377", 30, 2], ["wake on unreadable run 39068436878", 3, 3]]);
+  assert.equal(measure(inputs({ log: facts })).metrics.queue_holds_30, 1);
+});
