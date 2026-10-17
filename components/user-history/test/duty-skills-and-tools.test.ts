@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { CHECKS, type Deps, type Entry, type ExecResult, frontmatter, type McpResult, realMcp, runChecks, searchPath, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
+import { CHECKS, type Deps, type Entry, type ExecResult, frontmatter, type McpResult, realMcp, releaseVersion, runChecks, searchPath, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 
 const NOW = Date.parse("2026-10-10T05:00:00Z");
 const HOME = "/h";
@@ -240,6 +240,12 @@ test("skills and tools: a check whose exec throws or times out fails for the age
   assert.match(output.flagged!.find(item => item.item === "vercel_auth")!.excerpt, /timed out after 20000 ms/);
   assert.equal(output.metrics.checks_failed, 2);
   assert.equal(output.metrics.checks_run, 30);
+});
+
+test("releaseVersion keeps a pre-release tag, so a daemon-fix build is not read as a stale daemon", () => {
+  assert.equal(releaseVersion("0.9.8-darwin-arm64-078c9abd"), "0.9.8");
+  assert.equal(releaseVersion("0.9.8-daemon-fix.1-darwin-arm64-b29bc85b.VQKrC7"), "0.9.8-daemon-fix.1");
+  assert.equal(releaseVersion("0.9.8-daemon-fix.1-darwin-arm64-b29bc85b"), "0.9.8-daemon-fix.1");
 });
 
 test("frontmatter: plain, quoted and folded values", () => {

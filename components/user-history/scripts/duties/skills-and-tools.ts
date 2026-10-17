@@ -100,6 +100,11 @@ async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
 /** First `---` block of a SKILL.md: top-level `key: value` pairs, with quoted, folded (`>`/`|`) and indented continuation values joined. */
+/** The version in a release folder name such as 0.9.8-daemon-fix.1-darwin-arm64-<sha>.VQKrC7, pre-release tag kept. */
+export function releaseVersion(folder: string): string {
+  return /^(.+?)-(?:darwin|linux|win32)-[^-]+-[0-9a-f]+(?:\.[A-Za-z0-9]+)?$/.exec(folder)?.[1] ?? folder.split("-")[0];
+}
+
 export function frontmatter(text: string): Record<string, string> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   const fields: Record<string, string> = {};
@@ -293,7 +298,7 @@ export const CHECKS: readonly Check[] = [
     }
     if (daemon?.status !== "current") return FAIL("agent", `no current default daemon (${daemon ? `status ${daemon.status}` : failText(result)})`,
       "run `prime-agent doctor --json` (read-only) and report; never doctor --fix or shutdown");
-    const release = basename(dirname(await deps.realpath(paths(deps).prime))).split("-")[0];
+    const release = releaseVersion(basename(dirname(await deps.realpath(paths(deps).prime))));
     if (release && daemon.version !== release) return FAIL("owner", `the daemon runs ${daemon.version} and the installed release is ${release}`, "restart Prime Agent when no work is running");
     return PASS(`daemon ${daemon.version} pid ${daemon.pid}`);
   } },
