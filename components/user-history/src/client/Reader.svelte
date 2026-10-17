@@ -215,7 +215,7 @@
   {:else if wiki.result}{@render prose(wiki.result.text, wiki.result.dir)}{/if}
 {/snippet}
 
-<Modal {title} icon={ICON[view.kind]} width="min(960px, 92vw)" tall full={narrow} {onclose}>
+<Modal {title} icon={ICON[view.kind]} width="min(960px, 92vw)" tall full={narrow} maximizable {onclose}>
   {#snippet header()}
     <span class="source" title={source}>{source}</span>
     <span class="actions">

@@ -50,6 +50,7 @@ export const ICON_PATHS = {
   collapse: "M7 20l5-5 5 5M7 4l5 5 5-5",
   grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
   expandBox: "M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7",
+  shrinkBox: "M14 4v6h6M20 4l-6 6M10 20v-6H4M4 20l6-6",
   external: "M14 4h6v6M20 4l-9 9M11 6H5v13h13v-6",
   chart: "M4 20h16M7 16v-4M12 16V7M17 16v-7",
   cpu: "M7 7h10v10H7zM10 10h4v4h-4zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",

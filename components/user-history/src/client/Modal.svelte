@@ -4,11 +4,15 @@
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons.ts";
 
-  /** `tall` fixes the height at `height` (the reader, the plan view), so a long document scrolls inside a frame that does not grow and shrink while it loads. */
-  let { title, onclose, width = "720px", height = "86vh", full = false, tall = false, icon, header, children }: {
-    title: string; onclose: () => void; width?: string; height?: string; full?: boolean; tall?: boolean; icon?: IconName; header?: Snippet; children: Snippet;
+  /**
+   * `tall` fixes the height at `height` (the reader, the plan view), so a long document scrolls inside a frame that does not grow and shrink
+   * while it loads. `maximizable` adds a full screen toggle beside Close; it is hidden when `full` already fills the window (a phone).
+   */
+  let { title, onclose, width = "720px", height = "86vh", full = false, tall = false, maximizable = false, icon, header, children }: {
+    title: string; onclose: () => void; width?: string; height?: string; full?: boolean; tall?: boolean; maximizable?: boolean; icon?: IconName; header?: Snippet; children: Snippet;
   } = $props();
   let dialog: HTMLDialogElement | undefined = $state();
+  let maximized = $state(false);
 
   /** Focus goes back to the control that opened the modal; the dialog's own restore is lost when Svelte removes the node on close. */
   $effect(() => {
@@ -25,7 +29,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<dialog bind:this={dialog} class="modal" class:full class:tall style:--modal-width={width} style:--modal-height={height} aria-label={title}
+<dialog bind:this={dialog} class="modal" class:full={full || maximized} class:tall style:--modal-width={width} style:--modal-height={height} aria-label={title}
   oncancel={event => { event.preventDefault(); onclose(); }}
   onkeydown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onclose(); } }}
   onclick={event => { if (event.target === dialog) onclose(); }}>
@@ -34,9 +38,12 @@
       {#if icon}<span class="kind-icon"><Icon name={icon} size={16} /></span>{/if}
       <h2>{title}</h2>
       {#if header}<div class="extra">{@render header()}</div>{/if}
-      <button type="button" class="icon-button" aria-label="Close" use:tooltip={"Close (Esc)"} onclick={onclose}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-      </button>
+      <span class="window">
+        {#if maximizable && !full}
+          <button type="button" class="icon-button" aria-label={maximized ? "Exit full screen" : "Full screen"} aria-pressed={maximized} use:tooltip={maximized ? "Exit full screen" : "Full screen"} onclick={() => { maximized = !maximized; }}><Icon name={maximized ? "shrinkBox" : "expandBox"} /></button>
+        {/if}
+        <button type="button" class="icon-button" aria-label="Close" use:tooltip={"Close (Esc)"} onclick={onclose}><Icon name="x" /></button>
+      </span>
     </header>
     <div class="body">{@render children()}</div>
   </div>
@@ -55,7 +62,7 @@
   .modal.tall .frame { height: 100%; max-height: none; }
   .modal.tall h2 { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .extra { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
-  .head > .icon-button { margin-left: auto; }
+  .window { display: flex; flex: none; align-items: center; gap: 2px; margin-left: auto; }
   .body { flex: 1; min-height: 0; overflow: auto; }
   .modal.full { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
   .modal.full[open] { animation: none; }
