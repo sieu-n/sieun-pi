@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-agent";
+import type { ExtensionAPI, ExtensionContext } from "prime-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
