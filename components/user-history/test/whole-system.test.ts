@@ -65,7 +65,7 @@ test("stuck steps count each chat's check-in as its run measured it, and drop a 
     chat("Crawler VP", 60 * 60_000, [run(50, 2)]),
   ] }));
   assert.equal(output.metrics.stuck_steps_all, 28, "26 as VP of CI's run measured it, not its after-job 1; ops guy's 20 h old 7 is dropped");
-  assert.deepEqual(output.flagged.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["VP of CI", "Crawler VP"]);
+  assert.deepEqual(output.flagged?.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["VP of CI", "Crawler VP"]);
 });
 
 test("whole-system.duty.json: a duty every 30 minutes on the owner's words, whose metrics the precheck writes", async () => {

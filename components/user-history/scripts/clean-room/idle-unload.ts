@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readSession, readSessionFile, sessionFiles, type RunState, type Scenario, type Verdict } from "./session-read.ts";
+import { readSession, readSessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for the idle unload of subagents (src/idle-unload.ts). At 21:33Z on 10-17, 57 idle subagents stayed resident with a
@@ -64,7 +64,7 @@ function judge(_run: string, state: RunState): { verdict: Verdict; text: string 
     const own = readSessionFile(file);
     return { id: file.split("/").at(-1)!.replace(/\.jsonl$/, ""), file, last: Math.max(0, ...own.map(event => event.at)), reported: own.some(event => event.kind === "call" && /receiver_role\s*=\s*['"]parent/.test(event.input)) };
   });
-  const answer = events.filter(event => event.kind === "assistant" && /\d/.test(event.text)).at(-1);
+  const answer = events.filter((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && /\d/.test(event.text)).at(-1);
   checks.push({ id: "a", ok: jobs.some(job => job.reported) && answer ? true : null,
     detail: `${jobs.length} job sessions, ${jobs.filter(job => job.reported).length} reported to the chat; the chat's last answer with a number: ${answer ? `${iso(answer.at)} "${clip(answer.text, 300)}"` : "none yet"}` });
 
