@@ -51,7 +51,7 @@ node scripts/cli.mjs plan --out .work/plan.json && node scripts/cli.mjs apply --
 node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
 
 # Units
-mkdir -p ~/.config/systemd/user && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.service llm-wiki.service prime-agent-watchdog.timer
 ```
