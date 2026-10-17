@@ -303,8 +303,11 @@ async function archive(flags: Record<string, string>): Promise<void> {
   const rev = existsSync(boardFile) ? readJson<{ rev?: number }>(boardFile).rev ?? 0 : 0;
   const lines = readFileSync(file, "utf8").split("\n").filter(line => line.trim()).length;
   const mark: ArchiveMark = { at: Date.now(), lines, rev, idle: `idle: last reply stopped at ${new Date(last.at).toISOString()}, quiet ${Math.round(quietMs / 1000)} s, ${agents.length} jobs, none at work` };
+  // The intent goes first: on a timeout or a failed local write after the POST, the run still shows that it asked.
+  writeJson(join(run, "archive.json"), { ...mark, sent: false });
+  log(run, `archiving chat ${state.chat.id} through POST api/threads/<id>/archive`);
   await call(srv, "POST", `api/threads/${state.chat.id}/archive`, {});
-  writeJson(join(run, "archive.json"), mark);
+  writeJson(join(run, "archive.json"), { ...mark, sent: true, answeredAt: Date.now() });
   log(run, `archived chat ${state.chat.id} alone through the archive route (${mark.idle}); ${lines} session lines, board rev ${rev}`);
 }
 
