@@ -15,8 +15,10 @@ HOOK = os.path.join(SOURCE, "bin", "pi-pool-token")
 CLI = os.path.join(SOURCE, "bin", "pi-pool")
 SECRET = "fixture-secret-0123456789"
 
-HOLDER_HOOK = """import json, os, sys
+HOLDER_HOOK = """import json, os, sys, time
 key = json.loads(os.environ.get("PI_POOL_SESSION_KEY") or "null")
+if key and key["key"] == "fixture-slow":
+    time.sleep(12)
 if key and key["key"] == "fixture-waits":
     sys.stderr.write("pi-pool-token: no token (no_account)\\n")
     sys.exit(1)
@@ -129,6 +131,12 @@ class Remote(unittest.TestCase):
         run = self.run_on(pool, [HOOK])
         self.assertEqual((run.returncode != 0, run.stdout), (True, ""))
         self.assertEqual(self.no_token_reason(pool), "remote_unreachable")
+
+    def test_a_holder_slower_than_the_hook_limit_gets_no_token_and_logs_why(self):
+        pool = self.client()
+        run = self.run_on(pool, [HOOK], session="fixture-slow")
+        self.assertEqual((run.returncode != 0, run.stdout), (True, ""))
+        self.assertEqual(self.no_token_reason(pool), "remote_timeout")
 
     def test_a_terminal_command_is_refused_by_the_holder(self):
         run = self.run_on(self.client(), [CLI, "login"])

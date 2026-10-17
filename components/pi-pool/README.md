@@ -90,7 +90,10 @@ The Mac holds every account and does every OAuth refresh. A second machine (us-m
 has no accounts. Two copies of one refresh token would make each other invalid, so the
 second machine never gets one.
 
-The holder runs `pi-pool serve` from the launchd job `com.sieun.pi-pool-serve`. It listens
+The holder runs `pi-pool serve` from the launchd job `com.sieun.pi-pool-serve`
+(`deploy/macos/com.sieun.pi-pool-serve.plist`). The job needs `ProcessType Interactive`:
+with launchd's default throttling, a token from us-metal02 took 5.3 to 9.4 s at load 81
+on 10-18 and Prime's 10 s hook limit cut some off, and with it the same tokens took 0.9 to 1.4 s. It listens
 on the address in `serve.json`, which is the Mac's tailnet IP, and answers only requests
 that carry the secret from that file. The other machine keeps the same secret and the
 holder's URL in `remote.json`. Both files are mode 0600 in the pool folder.
@@ -103,7 +106,7 @@ the asking machine, so each machine keeps its own slot count. `watch` and `login
 only on the holder.
 
 When the second machine gets no token, its hook logs one `hook_no_token` line with the
-reason. The reason is `remote_unreachable`, `remote_refused` or the holder's own reason,
+reason. The reason is `remote_unreachable`, `remote_timeout` (no answer in 9 s), `remote_refused` or the holder's own reason,
 such as `no_account` or `slot_wait`. `pool/remote.py` has the code, and
 `tests/test_remote.py` covers it.
 

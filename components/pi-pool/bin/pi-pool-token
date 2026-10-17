@@ -74,6 +74,8 @@ def failure_reason(error):
     text = str(error)
     if "remote pool unreachable" in text:
         return "remote_unreachable"
+    if "remote pool gave no answer" in text:
+        return "remote_timeout"
     if "remote pool refused" in text:
         return "remote_refused"
     holder = re.search(r"pi-pool-token: no token \((\w+)\)", text)

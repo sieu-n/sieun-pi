@@ -6,7 +6,7 @@ serve.json (holder) and remote.json (client) live in the pool folder, mode 0600:
     serve.json   {"host": "<tailnet ip>", "port": 7781, "secret": "..."}
     remote.json  {"url": "http://<tailnet ip>:7781", "secret": "..."}
 """
-import hmac, http.server, json, os, subprocess, sys, urllib.error, urllib.request
+import hmac, http.server, json, os, socket, subprocess, sys, urllib.error, urllib.request
 
 from . import base, registry
 
@@ -55,6 +55,10 @@ def ask(cfg, argv):
             out = json.loads(answer.read())
     except urllib.error.HTTPError as e:
         raise Unreachable(f"remote pool refused the request (HTTP {e.code})") from None
+    except (socket.timeout, urllib.error.URLError) as e:
+        if isinstance(e, socket.timeout) or isinstance(getattr(e, "reason", None), socket.timeout):
+            raise Unreachable(f"remote pool gave no answer in {TOKEN_WAIT_SEC} s") from None
+        raise Unreachable(f"remote pool unreachable at {cfg['url']}: {type(e.reason).__name__}") from None
     except (OSError, ValueError) as e:
         raise Unreachable(f"remote pool unreachable at {cfg['url']}: {type(e).__name__}") from None
     return int(out["code"]), out.get("out") or "", out.get("err") or ""
