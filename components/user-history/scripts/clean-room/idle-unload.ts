@@ -59,7 +59,7 @@ function judge(_run: string, state: RunState): { verdict: Verdict; text: string 
   const chat = state.chat.id;
   const checks: Check[] = [];
   const events = readSession(chat);
-  const files = sessionFiles(chat).filter(file => !file.endsWith(`${chat}.jsonl`));
+  const files = sessionFiles(chat).filter(file => /\/[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl$/.test(file) && !file.endsWith(`${chat}.jsonl`));
   const jobs = files.map(file => {
     const own = readSessionFile(file);
     return { id: file.split("/").at(-1)!.replace(/\.jsonl$/, ""), file, last: Math.max(0, ...own.map(event => event.at)), reported: own.some(event => event.kind === "call" && /receiver_role\s*=\s*['"]parent/.test(event.input)) };
