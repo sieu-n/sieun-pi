@@ -133,3 +133,23 @@ test("duty job host: a create refused for a taken name does not adopt an older s
   assert.deepEqual(job, { id: "fresh", name: "local dev servers dev VP 10-12 22:24" });
   assert.deepEqual(creates, [old.name, "local dev servers dev VP 10-12 22:24"], "the 10-10 job is left alone");
 });
+
+test("duty job host: a session of the job's name made since the run started is adopted after a restart, not refused as taken (slack green guy 10-17 22:11Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-stop-restart-"));
+  const runAt = Date.parse("2026-10-17T22:11:50.915Z");
+  const made: SessionRow = { id: "01a14bf0", name: "check-in slack green guy 07:11", cwd: "/repo", kind: "live", status: "idle", archived: false,
+    created: "2026-10-17T22:16:50.000Z", messageCount: 0, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none" };
+  const creates: string[] = [];
+  const prompts: string[] = [];
+  const host = dutyJobHost({ rows: async () => [made], registry: jobRegistry(join(dir, "chat-jobs.json")), board: id => `/b/${id}.json`, lookupWaitsMs: [0],
+    now: () => Date.parse("2026-10-17T22:21:16.659Z"), archives: { async add() {} }, sleep: async () => {}, threads: {
+      async create(input) {
+        creates.push(input.name);
+        throw new Error(`Agent name "${input.name}" is unavailable: an agent of that name already exists at depth 0 under this parent`);
+      },
+      async prompt(id) { prompts.push(id); },
+    } });
+  const job = await host.start({ id: "chat1", name: "slack green guy", cwd: "/repo", board: "/b/chat1.json" }, made.name, "brief", false, runAt);
+  assert.deepEqual(job, { id: "01a14bf0", name: made.name }, "the session the timed-out create made before the restart is the run's own");
+  assert.deepEqual([creates, prompts], [[made.name], ["01a14bf0"]]);
+});

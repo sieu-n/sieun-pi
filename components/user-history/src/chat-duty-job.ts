@@ -35,9 +35,10 @@ export interface DutyJobHost {
   working(job: DutyJobRef): Promise<boolean>;
   /**
    * Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message.
-   * `admitted` says the turn queue already admitted the run under its duty key, so the job's first turn runs at once (`handoff`).
+   * `admitted` says the turn queue already admitted the run under its duty key, so the job's first turn runs at once (`handoff`). `since` is
+   * when the run started: a session of the job's name made since then is this run's own, from a create that timed out before a restart.
    */
-  start(chat: DutyChat, name: string, brief: string, admitted?: boolean): Promise<DutyJobRef>;
+  start(chat: DutyChat, name: string, brief: string, admitted?: boolean, since?: number): Promise<DutyJobRef>;
   /**
    * Drops a finished duty job from the registry, so the chat's Agents card lists only the current one, and queues its archive
    * (src/chat-archive-queue.ts): a slow daemon never holds up the next start.
@@ -324,10 +325,13 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     }
     return undefined;
   };
-  const createOrAdopt = async (chat: DutyChat, first: string): Promise<{ id: string; name: string }> => {
+  const createOrAdopt = async (chat: DutyChat, first: string, runAt?: number): Promise<{ id: string; name: string }> => {
     let cause = "";
     let name = first;
-    const since = (input.now ?? Date.now)();
+    // A session made since the run started is its own. On 10-17 slack green guy's 22:11:50Z check-in run made "check-in slack green guy 07:11"
+    // with a create that timed out, and each of the 3 service restarts after it counted only sessions made since its own attempt, found the name
+    // taken, made the dated name, and then found that taken too: the run never got its job.
+    const since = runAt ?? (input.now ?? Date.now)();
     for (let tries = 1; tries <= CREATE_TRIES; tries++) {
       try { return { id: (await input.threads.create({ cwd: chat.cwd, name })).id, name }; }
       catch (error) { cause = reason(error); }
@@ -354,8 +358,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
     async working(job) { return (await row(job.id))?.working === true; },
-    start: (chat, planned, brief, admitted = false) => serial(async () => {
-      const { id, name } = await createOrAdopt(chat, planned);
+    start: (chat, planned, brief, admitted = false, since) => serial(async () => {
+      const { id, name } = await createOrAdopt(chat, planned, since);
       try {
         await input.registry.add([id], chat.name);
         await input.started?.(id);

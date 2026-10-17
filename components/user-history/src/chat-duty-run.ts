@@ -682,7 +682,7 @@ export class Duties {
     const release = await this.host.admit?.(chatId, dutyId) ?? null;
     if (step) this.steps.set(key, step);
     let job: DutyJobRef;
-    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), release !== null); }
+    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), release !== null, at); }
     finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: release its turn queue key: ${message(error)}`)); }
     return replaced ? { job, replaced } : { job };
   }
