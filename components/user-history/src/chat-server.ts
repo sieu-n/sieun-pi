@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import type { Duplex } from "node:stream";
@@ -104,6 +104,20 @@ function requestId(value: unknown): string {
 function threadId(value: string): string {
   if (!idPattern.test(value)) throw new RequestError(400, "Invalid thread ID.");
   return value;
+}
+function archiveAudit(req: IncomingMessage, targetSessionId: string): (outcome: "started" | "completed" | "failed") => void {
+  const requestId = randomUUID();
+  const claim = req.headers["x-chat-agent-session"];
+  const sessionId = typeof claim === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claim) ? claim : null;
+  const agent = req.headers["user-agent"] ?? "";
+  const userAgent = agent === "node" || agent === "undici" ? "node" : agent.startsWith("curl/") ? "curl"
+    : agent.startsWith("python-") || agent.startsWith("Python/") ? "python" : agent.startsWith("Mozilla/") ? "browser" : agent ? "other" : "missing";
+  return outcome => {
+    try {
+      process.stderr.write(JSON.stringify({ event: "chat_archive", at: new Date().toISOString(), requestId, targetSessionId, outcome,
+        unverifiedClientClaims: { sessionId, userAgent } }) + "\n");
+    } catch {}
+  };
 }
 function parseImages(value: unknown) {
   try { return parseChatImages(value); }
@@ -787,13 +801,18 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (chat) await backend.threads.resumeQueue(id);
           break;
         }
-        case "archive":
-          if ((await backend.chats.ids()).has(id)) {
-            await backend.chats.archive(id);
-            // The Slack bridge watches the catalog: this update archives a synced chat's channel without waiting for its minute sync.
-            await backend.catalog.notify();
-          } else await backend.threads.archive(id);
+        case "archive": {
+          const audit = archiveAudit(req, id);
+          audit("started");
+          try {
+            if ((await backend.chats.ids()).has(id)) {
+              await backend.chats.archive(id);
+              await backend.catalog.notify();
+            } else await backend.threads.archive(id);
+            audit("completed");
+          } catch (error) { audit("failed"); throw error; }
           break;
+        }
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
           await backend.threads.unarchive(id);
