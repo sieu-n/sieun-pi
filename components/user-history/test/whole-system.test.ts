@@ -138,7 +138,10 @@ test("findCutJobs walks every job folder and leaves out a job its parent deleted
     await mkdir(join(home, "sessions"), { recursive: true });
     const filler = JSON.stringify({ type: "message", message: { role: "assistant", content: "x".repeat(1000) } });
     await writeFile(join(home, "sessions", `${chat}.jsonl`), [...Array.from({ length: 2000 }, () => filler),
-      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", arguments: { code: "await rlm.delete_subagent('sub-26007170')" } }] } })].join("\n") + "\n");
+      // fair-self-heal's shape on 10-16: the call names a handle, and only its result names the child id.
+      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", arguments: { code: "await rlm.delete_subagent(h)" } }] } }),
+      JSON.stringify({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "RLMSpawnHandle(rlm_child_id='sub-26007170', name='local agents recovery')" }] } }),
+    ].join("\n") + "\n");
     const now = Date.parse("2026-10-16T00:52:00.000Z");
     const restart = readDaemonStops(["[2026-10-16T00:19:58.000Z] supervisor: Session worker 1345055ce132 stderr: shutting down",
       "[2026-10-16T00:20:13.000Z] supervisor: Prime Agent daemon supervisor 1792110013 listening on /tmp/daemon.sock"]);
@@ -166,4 +169,33 @@ test("an archived cut is an interruption only inside a supervisor restart or at 
   const result = entry("04:32:59.000", { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "Request was aborted" }] } });
   const archive = entry("04:32:59.400", { type: "session_state", state: { status: "archived" } });
   assert.deepEqual(cutEnd([task, result, archive]), { at: Date.parse("2026-10-16T04:32:59.000Z"), cause: "mid-tool", archivedAt: Date.parse("2026-10-16T04:32:59.400Z") });
+});
+
+test("an explicit delete of a job or a job above it wins over restart timing, and a newer job of the same name takes the work", async () => {
+  const home = await mkdtemp(join(tmpdir(), "cut-jobs-"));
+  try {
+    const artifacts = join(home, "session-artifacts");
+    const chat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+    const job = async (folder: string, session: string, name: string, status = "completed", lines = [task, queued, archived, aborted()]) => {
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, `${session}.jsonl`), lines.join("\n") + "\n");
+      await writeFile(join(folder, "rlm-subagent.json"), JSON.stringify({ sessionName: name, status }));
+    };
+    // checkin pushes goals (sub-7d295f61) was parked, which the service records in deleted-jobs.json; its two children were cut with it.
+    await job(join(artifacts, chat, "sub-7d295f61"), "01a14190-0000-7000-8000-000000000001", "checkin pushes goals", "deleted", [task]);
+    await job(join(artifacts, chat, "sub-7d295f61", "sub-0de5559a"), "01a14193-6353-719b-82fd-5427cdcaeb75", "checkin-cleanroom", "running");
+    // A job the RLM runtime marked deleted, and a cut job with a newer namesake.
+    await job(join(artifacts, chat, "sub-6430b61d"), "01a14103-72eb-7349-b56f-93fc7ba3684b", "fair-self-heal", "deleted");
+    await job(join(artifacts, chat, "sub-aaaa0001"), "01a13a70-b2fc-7191-a914-3d3058bea249", "ci train");
+    await job(join(artifacts, chat, "sub-aaaa0002"), "01a14068-0000-7000-8000-000000000002", "ci train", "running", [task]);
+    const restart = readDaemonStops(["[2026-10-16T00:19:58.000Z] supervisor: Session worker 1 stderr: shutting down",
+      "[2026-10-16T00:20:13.000Z] supervisor: Prime Agent daemon supervisor 1 listening on /tmp/daemon.sock"]);
+    const cut = await findCutJobs(artifacts, [chat], { [chat]: { "sub-7d295f61": 1 } }, Date.parse("2026-10-16T00:52:00.000Z"), restart);
+    assert.deepEqual(cut.map(one => [one.name, one.replacedBy]), [["ci train", "01a14068-0000-7000-8000-000000000002"]]);
+    const board = (job: string, sessionId?: string): ChatBoard => ({ plan: [{ id: "p1", text: "CI", status: "doing", job, ...(sessionId ? { sessionId } : {}), children: [] }], todos: [] } as unknown as ChatBoard);
+    assert.deepEqual(cutJobsHoldingWork(cut, new Map([[chat, board("ci train")]])), [], "the newer ci train holds the work");
+    const { replacedBy: _, ...own } = cut[0]!;
+    assert.equal(cutJobsHoldingWork([own], new Map([[chat, board("ci train", "01a14068-0000-7000-8000-000000000002")]])).length, 0, "a step on a later session");
+    assert.equal(cutJobsHoldingWork([own], new Map([[chat, board("ci train", own.session)]])).length, 1, "a step on the cut session itself");
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
+import { type Cut, cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
@@ -50,7 +50,9 @@ export interface Hold { what: string; from: number; to: number }
 export interface Grant { kind: string; session: string; at: number; waitS: number }
 export interface LogFacts { holds: Hold[]; grants?: Grant[]; firstAt?: number }
 /** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
-export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string }; proof?: string }
+export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string }; proof?: string;
+  /** A later session in the same chat that carries the job's name: the work went to that replacement. */
+  replacedBy?: string }
 
 /**
  * When the Prime daemon stopped work nobody asked to stop, from its logs: each supervisor restart window (from DAEMON_RESTART_LEAD_MS before the
@@ -247,52 +249,85 @@ export function measure(input: Inputs): PrecheckOutput {
  */
 export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number,
   stops: DaemonStops = { restarts: [], sigterms: [] }): Promise<CutJob[]> {
-  const found: CutJob[] = [];
-  // The lines of each parent transcript that call delete_subagent. A chat's transcript runs to 150 MB, so it is searched as bytes, once.
-  const parents = new Map<string, Promise<string[]>>();
-  const deleteLines = async (parentFile: string): Promise<string[]> => {
-    const bytes = await readFile(parentFile).catch(() => Buffer.alloc(0));
-    const lines: string[] = [];
-    for (let at = bytes.indexOf("delete_subagent"); at >= 0; at = bytes.indexOf("delete_subagent", at + 1)) {
-      const end = bytes.indexOf(10, at);
-      lines.push(bytes.subarray(bytes.lastIndexOf(10, at) + 1, end < 0 ? bytes.length : end).toString("utf8"));
-      if (end < 0) break;
-      at = end;
-    }
-    return lines;
+  const candidates: { chat: string; chain: readonly Folder[]; path: string; end: Cut }[] = [];
+  /** Per chat, each job name read in the look-back with the latest session that carries it, for `replacedBy`. */
+  const latest = new Map<string, Map<string, string>>();
+  const gone = new Set(Object.values(deleted).flatMap(chat => Object.keys(chat ?? {})));
+  const parents = new Map<string, Promise<Buffer>>();
+  const parentBytes = (file: string): Promise<Buffer> => {
+    if (!parents.has(file)) parents.set(file, readFile(file).catch(() => Buffer.alloc(0)));
+    return parents.get(file)!;
   };
-  const deletedBy = async (parentFile: string, child: string): Promise<boolean> => {
-    if (!parents.has(parentFile)) parents.set(parentFile, deleteLines(parentFile));
-    return (await parents.get(parentFile)!).some(line => line.includes(child));
+  const metas = new Map<string, Promise<{ sessionName?: unknown; status?: unknown } | null>>();
+  const metaOf = (folder: string) => {
+    if (!metas.has(folder)) metas.set(folder, readJson(join(folder, "rlm-subagent.json")) as Promise<{ sessionName?: unknown; status?: unknown } | null>);
+    return metas.get(folder)!;
   };
-  const jobOf = async (child: string, file: string): Promise<{ session: string; name: string }> => {
-    const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
-    return { session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : basename(child) };
-  };
-  // `root` is the folder and file of the chat's own job (its direct child) above the folder the walk reads; its name is read only for a cut.
-  const walk = async (chat: string, folder: string, parentFile: string, root?: { child: string; file: string }): Promise<void> => {
-    const entries = (await readdir(folder, { withFileTypes: true }).catch(() => [])).filter(item => item.isDirectory() && item.name.startsWith("sub-"));
+  /** Whether this folder's job was deleted on purpose: the RLM runtime marked it deleted, the chat service deleted or parked it, or its parent's delete_subagent named it. */
+  const deletedOnPurpose = async (folder: Folder): Promise<boolean> =>
+    gone.has(basename(folder.dir)) || (await metaOf(folder.dir))?.status === "deleted" || parentDeleted(await parentBytes(folder.parentFile), basename(folder.dir));
+  const walk = async (chat: string, dir: string, parentFile: string, chain: readonly Folder[]): Promise<void> => {
+    const entries = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(item => item.isDirectory() && item.name.startsWith("sub-"));
     for (let index = 0; index < entries.length; index += WALK_AT_ONCE) {
       await Promise.all(entries.slice(index, index + WALK_AT_ONCE).map(async entry => {
-        const child = join(folder, entry.name);
+        const child = join(dir, entry.name);
         const file = (await readdir(child).catch(() => [] as string[])).find(name => SESSION_ID.test(name.replace(/\.jsonl$/, "")) && name.endsWith(".jsonl"));
         if (!file) return;
         const path = join(child, file);
-        await walk(chat, child, path, root ?? { child, file });
-        if (deleted[chat]?.[entry.name] !== undefined) return;
+        const here = [...chain, { dir: child, parentFile, file }];
+        await walk(chat, child, path, here);
         const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
         if (now - changed > CUT_LOOKBACK_MS) return;
+        const name = (await metaOf(child))?.sessionName;
+        const session = file.slice(0, -".jsonl".length);
+        if (typeof name === "string") {
+          const names = latest.get(chat) ?? new Map<string, string>();
+          if ((names.get(name) ?? "") < session) names.set(name, session);
+          latest.set(chat, names);
+        }
         const end = await readCut(path);
-        if (!end || now - end.at > CUT_LOOKBACK_MS || await deletedBy(parentFile, entry.name)) return;
-        const proof = end.archivedAt === undefined ? undefined : interruptionProof(end, stops);
-        if (end.archivedAt !== undefined && proof === undefined) return;
-        const job = await jobOf(child, file);
-        found.push({ ...job, chat, at: end.at, cause: end.cause, root: root ? await jobOf(root.child, root.file) : job, ...(proof ? { proof } : {}) });
+        if (end && now - end.at <= CUT_LOOKBACK_MS) candidates.push({ chat, chain: here, path, end });
       }));
     }
   };
-  for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`));
+  for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`), []);
+  const found: CutJob[] = [];
+  for (const { chat, chain, end } of candidates) {
+    // An explicit delete of the job or any job above it wins over any restart or SIGTERM timing: such a delete archives and aborts too.
+    if ((await Promise.all(chain.map(deletedOnPurpose))).some(Boolean)) continue;
+    const proof = end.archivedAt === undefined ? undefined : interruptionProof(end, stops);
+    if (end.archivedAt !== undefined && proof === undefined) continue;
+    const jobOf = async (folder: Folder) => {
+      const name = (await metaOf(folder.dir))?.sessionName;
+      return { session: folder.file.slice(0, -".jsonl".length), name: typeof name === "string" ? name : basename(folder.dir) };
+    };
+    const job = await jobOf(chain.at(-1)!);
+    const later = latest.get(chat)?.get(job.name);
+    found.push({ ...job, chat, at: end.at, cause: end.cause, root: await jobOf(chain[0]!), ...(proof ? { proof } : {}),
+      ...(later !== undefined && later > job.session ? { replacedBy: later } : {}) });
+  }
   return found;
+}
+
+/** A job folder on the walk: its folder, the transcript of the job above it and its own transcript's file name. */
+interface Folder { dir: string; parentFile: string; file: string }
+
+/**
+ * Whether a parent transcript holds an rlm.delete_subagent call whose result names `child` (`rlm_child_id='sub-...'`), as resume_paused.py's
+ * parent_deleted reads it: the result line is a toolResult, and the call line before it calls delete_subagent. A plain substring of the id
+ * missed fair-self-heal (sub-6430b61d) on 10-16.
+ */
+export function parentDeleted(text: Buffer, child: string): boolean {
+  const named = `rlm_child_id='${child}'`;
+  for (let at = text.indexOf(named); at >= 0; at = text.indexOf(named, at + named.length)) {
+    const start = text.lastIndexOf(10, at) + 1;
+    const result = text.indexOf('"toolResult"', start);
+    const call = text.lastIndexOf('"toolCall"', start);
+    if (result < 0 || result > at || call < 0) continue;
+    const deleteAt = text.indexOf("delete_subagent", text.lastIndexOf(10, call) + 1);
+    if (deleteAt >= 0 && deleteAt < start) return true;
+  }
+  return false;
 }
 
 /**
@@ -301,19 +336,20 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
  * step: their steps were done, or a later job had taken the work (metal-inventory, cut 10-15 08:34Z, under metal dev environment and its r2).
  */
 export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<string, ChatBoard | null>): CutJob[] {
-  const named = new Map<string, Set<string>>();
+  const steps = new Map<string, { job?: string; sessionId?: string }[]>();
   for (const [chat, board] of boards) {
-    const keys = new Set<string>();
-    walk(board?.plan ?? [], item => {
-      if (!OPEN.has(item.status)) return;
-      if (item.sessionId) keys.add(item.sessionId);
-      if (item.job) keys.add(item.job);
-    });
-    named.set(chat, keys);
+    const open: { job?: string; sessionId?: string }[] = [];
+    walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open.push({ ...(item.job ? { job: item.job } : {}), ...(item.sessionId ? { sessionId: item.sessionId } : {}) }); });
+    steps.set(chat, open);
   }
   return cut.filter(job => {
-    const keys = named.get(job.chat);
-    return !keys || [job, job.root ?? job].some(one => keys.has(one.session) || keys.has(one.name));
+    const open = steps.get(job.chat);
+    if (!open) return true;
+    // A later session took the work: a newer job of the same name (ci train 01a13a70 and its replacement 01a14068 on 10-16), or a step that names
+    // the job and points at a later session.
+    if (job.replacedBy !== undefined) return false;
+    return [job, job.root ?? job].some(one => open.some(step => step.sessionId === one.session ||
+      (step.job === one.name && (step.sessionId === undefined || step.sessionId <= one.session))));
   });
 }
 
