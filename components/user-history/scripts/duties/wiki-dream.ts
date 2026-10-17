@@ -23,8 +23,6 @@ export const UNMEASURED = 999_999;
 export const GLIDE_START = Date.parse("2026-10-11T00:00:00+09:00");
 export const LINT_GLIDE = { base: 250, perDay: 5 };
 export const MEMORY_GLIDE = { base: 306, perDay: 10 };
-/** A duplicate pair judged within this long is settled. */
-export const PAIR_SETTLED_MS = 30 * DAY;
 export const CHURN_MS = 7 * DAY;
 export const FLAGGED_MAX = 80;
 const HEALTH_TIMEOUT_MS = 100_000;
@@ -61,7 +59,7 @@ export interface LedgerClass {
 }
 export interface Ledger {
   version?: number;
-  pairs?: Record<string, { verdict?: string; at?: string; job?: string }>;
+  pairs?: Record<string, { verdict?: string; at?: string; job?: string; score?: number }>;
   classes?: Record<string, LedgerClass>;
   memoryMoves?: Record<string, { skill?: string; commit?: string; deletedAt?: string }>;
 }
@@ -108,9 +106,16 @@ export function parseHealth(text: string): Health {
 
 export const pairKey = (a: string, b: string): string => [a, b].sort().join("|");
 
-/** Duplicate pairs with no ledger verdict newer than 30 days. */
-export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger, now: number): Health["dupPairs"] {
-  return pairs.filter(pair => { const verdict = ledger.pairs?.[pairKey(pair.a, pair.b)]; return !(verdict?.verdict && now - ms(verdict.at) <= PAIR_SETTLED_MS); });
+/**
+ * Duplicate pairs with no ledger verdict, or whose score rose above the score the verdict recorded. A verdict has no
+ * expiry, because the score reads only the two titles and descriptions: re-judging an unchanged pair gives the same
+ * answer, and a 30-day expiry would have reopened the 29 pairs judged 2026-10-14 on 11-13 and 20 more on 11-14.
+ */
+export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger): Health["dupPairs"] {
+  return pairs.filter(pair => {
+    const verdict = ledger.pairs?.[pairKey(pair.a, pair.b)];
+    return !(verdict?.verdict && (typeof verdict.score !== "number" || pair.score <= verdict.score));
+  });
 }
 
 /**
@@ -314,7 +319,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
-  const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger, now) : undefined;
+  const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger) : undefined;
   metrics.dup_unjudged = unjudged?.length ?? UNMEASURED;
   metrics.memory_rules_over_glide = harness ? harness.repoFacts - glide(MEMORY_GLIDE, now) : UNMEASURED;
   const classes = ledger ? classStates(ledger, now, since) : undefined;

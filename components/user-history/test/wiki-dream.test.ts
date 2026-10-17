@@ -25,7 +25,7 @@ const HEALTH = {
 };
 const LEDGER = {
   version: 1,
-  pairs: { "apps/p.html|apps/q.html": { verdict: "distinct", at: iso(-3), job: "j1" }, "apps/m.html|apps/n.html": { verdict: "distinct", at: iso(-40), job: "j0" } },
+  pairs: { "apps/p.html|apps/q.html": { verdict: "distinct", at: iso(-3), job: "j1" }, "apps/m.html|apps/n.html": { verdict: "distinct", at: iso(-40), job: "j0", score: 0.35 } },
   classes: {
     git: { title: "Shared checkout git", skill: ".agents/skills/repo/git-workflow/SKILL.md", gap: "text", status: "open", firstSeen: iso(-3), sources: ["memory a", "refinement b"] },
     fresh: { title: "Found by the last run", status: "open", firstSeen: iso(-0.5) },
@@ -96,8 +96,10 @@ test("wiki dream: glide plans drop by their slope per whole day from the start a
   assert.equal(glide(MEMORY_GLIDE, GLIDE_START + 100 * DAY), 0);
 });
 
-test("wiki dream: pairs judged within 30 days are settled, in either order", () => {
-  assert.deepEqual(unjudgedPairs(HEALTH.dupPairs, LEDGER, NOW).map(pair => pair.a), ["apps/x.html", "apps/m.html"]);
+test("wiki dream: a judged pair stays settled at any age, in either order, until its score rises past the judged score", () => {
+  assert.deepEqual(unjudgedPairs(HEALTH.dupPairs, LEDGER).map(pair => pair.a), ["apps/x.html", "apps/m.html"]);
+  const same = { ...LEDGER, pairs: { ...LEDGER.pairs, "apps/m.html|apps/n.html": { verdict: "distinct", at: iso(-40), job: "j0", score: 0.36 } } };
+  assert.deepEqual(unjudgedPairs(HEALTH.dupPairs, same).map(pair => pair.a), ["apps/x.html"]);
 });
 
 test("wiki dream: open and reopened classes are open; only ones the last run already had are due; a recurrence in 7 days counts as back", () => {
