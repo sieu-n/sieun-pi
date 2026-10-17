@@ -44,7 +44,7 @@ export const ORGS = 3;
 const BALANCE_MICROS = 1_000_000;
 /**
  * The runner kills a precheck at 120 s (PRECHECK_TIMEOUT_MS in src/shared/chat-duties.ts). Page-1 calls stop at 70 s and page-2 and chained
- * calls at 100 s after start, which leaves time for cleanup. A call cut off this way is unprobed, never broken. On 2026-10-12 the slowest
+ * calls at 100 s after start, which leaves time for cleanup. A page 2 starts right after its own page 1. A call cut off this way is unprobed, never broken. On 2026-10-12 the slowest
  * staging answers were upstream timeouts at 32 s, and the audit's slowest crawler call took 12.7 s.
  */
 const PHASE1_MS = 70_000;
@@ -369,36 +369,33 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     }
     return results;
   })();
+  // Page 2 starts as soon as its own page 1 answers. Waiting for the slowest page 1 left page 2 as little as 30 s on 10-17, and a
+  // staging page 2 that answers in 1.5 s alone took over 30 s under the run's own load.
+  const pageTwo = new Map<string, ProbeResult & { body: unknown }>();
   const phase1Run = Promise.all(first.map(async ([op, operation], index) => {
     if (skip.has(op)) return skipped(op);
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
-    return call(orgs[index % orgs.length]!, op, request, start + PHASE1_MS, "docs example");
+    const org = orgs[index % orgs.length]!;
+    const result = await call(org, op, request, start + PHASE1_MS, "docs example");
+    const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
+    if (next) pageTwo.set(op, await call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, start + PHASE2_MS, `page 2 with its own ${next.param}`));
+    return result;
   }));
   const [jobs, phase1] = await Promise.all([jobsRun, phase1Run]);
   const sources = [...jobs.map((result, index) => ({ result, org: index % orgs.length })), ...phase1.map((result, index) => ({ result, org: index % orgs.length }))];
   const chained = chainIds(sources.map(source => source.result.body));
   const ids = Object.fromEntries(Object.entries(chained).map(([name, id]) => [name, id.value]));
-  const phase2 = await Promise.all([
-    ...later.map(async ([op, operation]) => {
-      if (skip.has(op)) return skipped(op);
-      const request = buildRequest(op, operation, ids);
-      if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
-      const name = CHAINED.exec(op)![1]!;
-      return call(orgs[sources[chained[name]!.from]!.org]!, op, request, start + PHASE2_MS, "id from this run, same test org");
-    }),
-    ...phase1.flatMap((result, index) => {
-      const operation = first[index]![1];
-      const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
-      const request = next && buildRequest(result.op, operation);
-      if (!next || !request || "missing" in request) return [];
-      return [call(orgs[index % orgs.length]!, `${result.op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, start + PHASE2_MS, `page 2 with its own ${next.param}`)];
-    }),
-  ]);
+  const phase2 = await Promise.all(later.map(async ([op, operation]) => {
+    if (skip.has(op)) return skipped(op);
+    const request = buildRequest(op, operation, ids);
+    if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
+    const name = CHAINED.exec(op)![1]!;
+    return call(orgs[sources[chained[name]!.from]!.org]!, op, request, start + PHASE2_MS, "id from this run, same test org");
+  }));
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
-  const pageTwo = new Map(phase2.filter(result => result.op.endsWith(" page 2")).map(result => [result.op.slice(0, -" page 2".length), result]));
   const out: ProbeResult[] = [];
-  for (const result of [...phase1, ...jobs, ...phase2.filter(result => !result.op.endsWith(" page 2"))]) {
+  for (const result of [...phase1, ...jobs, ...phase2]) {
     const second = pageTwo.get(result.op);
     const failed = second && (second.verdict === "portal" || second.verdict === "crawler" || (second.verdict === "unprobed" && second.status === 0 && second.ms > 0));
     const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
