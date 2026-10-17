@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
@@ -48,6 +49,8 @@ export interface Deps {
   now: () => number;
   /** Waits between polls; tests pass one that returns at once. */
   sleep?: (ms: number) => Promise<void>;
+  /** Writes the kernel venv's sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
+  pinSkillPaths?: () => Promise<PinResult[]>;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -237,13 +240,23 @@ export const CHECKS: readonly Check[] = [
       "run `cua-driver update --apply` and read the installer output");
     return PASS(`updated ${from} and restarted the daemon`);
   } },
+  /**
+   * Before the import, the check writes kernel-venv/.../sieun_pi_skills.pth (scripts/kernel-skill-paths.ts), which keeps every Python skill in
+   * ~/.prime/agent/skills importable while Prime's kernel setup reinstalls it. On 10-18 websearch, board and aside_browser failed to import
+   * from before 04:35 to 04:49 after such a reinstall (p254).
+   */
   { id: "websearch_kernel", group: "web search", tool: "websearch skill", run: async deps => {
     const python = paths(deps).kernelPython;
+    const pinned = deps.pinSkillPaths ? await deps.pinSkillPaths().catch((error: unknown) => error instanceof Error ? error : new Error(String(error))) : undefined;
+    if (pinned instanceof Error) return FAIL("agent", `could not write ${PIN_FILE}: ${brief(pinned.message, 200)}`,
+      "run `node --import tsx scripts/kernel-skill-paths.ts` in sieun-pi/components/user-history and read the error");
+    const pin = !pinned ? "" : !pinned.length ? `; the kernel venv has no lib/python3.*/site-packages for ${PIN_FILE}`
+      : `; ${PIN_FILE} pins ${pinned[0]!.paths.length} skill source folders${pinned.some(result => result.written) ? " (written now)" : ""}`;
     const result = await deps.exec(python, ["-c", "import websearch,os;print(os.path.realpath(websearch.__file__))"], { timeoutMs: 15_000 });
     const own = `${await deps.realpath(paths(deps).websearch)}/`;
     const where = result.stdout.trim();
-    if (result.code === 0 && where.startsWith(own)) return PASS(`kernel loads ${where}`);
-    if (/ModuleNotFoundError/.test(result.stderr)) return FAIL("agent", "the kernel has no websearch module", `\`uv pip install --python ${python} -e ${paths(deps).websearch}\`, then re-check in a fresh kernel`);
+    if (result.code === 0 && where.startsWith(own)) return PASS(`kernel loads ${where}${pin}`);
+    if (/ModuleNotFoundError/.test(result.stderr)) return FAIL("agent", `the kernel has no websearch module${pin}`, `\`uv pip install --python ${python} -e ${paths(deps).websearch}\`, then re-check in a fresh kernel`);
     if (/prime-agent\/releases\//.test(where)) return FAIL("agent", `the kernel loads the bundled Serper copy ${where}, so \`await websearch(...)\` says it is not set up`,
       `\`uv pip uninstall --python ${python} prime-agent-skill-websearch\`, then re-check in a fresh kernel`);
     return FAIL("agent", `the kernel loads ${where || "nothing"} (${failText(result)})`, `make ${own} the only websearch install in the kernel venv`);
@@ -621,6 +634,7 @@ export function realDeps(scratchDir: string): Deps {
     repo: process.env.HARNESS_REPO || join(home, "Documents/Github/auto-sns-agent"),
     scratchDir,
     now: Date.now,
+    pinSkillPaths: () => pinSkillPaths({ home }),
   };
 }
 

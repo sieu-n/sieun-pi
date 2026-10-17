@@ -152,6 +152,22 @@ test("skills and tools: with every tool answering its pass text, all 30 checks p
   assert.deepEqual(deps.calls.filter(call => call.startsWith("dotenvx")).sort(), ["dotenvx get -f .env", "dotenvx get -f apps/search/.env.local"]);
 });
 
+test("skills and tools: websearch_kernel pins the skill source folders before it imports websearch, and a pin it cannot write fails", async () => {
+  const order: string[] = [];
+  const deps = fakeDeps();
+  const exec = deps.exec;
+  deps.exec = async (program, args, options) => { if (basename(program) === "python") order.push("import"); return exec(program, args, options); };
+  deps.pinSkillPaths = async () => { order.push("pin"); return [{ file: "/site/sieun_pi_skills.pth", written: true, paths: ["/src/websearch/src", "/src/board/src"] }]; };
+  const check = CHECKS.find(item => item.id === "websearch_kernel")!;
+  const outcome = await check.run(deps);
+  assert.deepEqual(order, ["pin", "import"]);
+  assert.deepEqual(outcome, { status: "pass", detail: "kernel loads /src/websearch/src/websearch/__init__.py; sieun_pi_skills.pth pins 2 skill source folders (written now)" });
+  deps.pinSkillPaths = async () => { throw new Error("EACCES: permission denied"); };
+  const failed = await check.run(deps);
+  assert.equal(failed.status, "fail");
+  assert.match(failed.status === "fail" ? failed.detail : "", /could not write sieun_pi_skills\.pth: EACCES/);
+});
+
 const cases: { name: string; fake: Fake; id: string; kind: string; metrics?: Record<string, number>; excerpt?: RegExp }[] = [
   { name: "cua grants false", id: "cua_permissions", kind: "fail_owner", metrics: { cua_failed: 1, owner_fixes: 1 },
     fake: { exec: [[/^cua-driver permissions/, ok(JSON.stringify({ accessibility: false, screen_recording: true }))]] } },
