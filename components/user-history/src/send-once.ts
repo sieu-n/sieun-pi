@@ -23,8 +23,13 @@ export function sendKey(session: string, text: string): string {
   return session + "\n" + text.trim().replace(DUPLICATE_PREFIX, "").replace(ISO, "").replace(/\s+/g, " ").trim();
 }
 
-export const isSendTimeout = (error: unknown): boolean => /Timed out after \d+ms waiting for the Prime Agent daemon response to "send_message"|Timed out waiting for daemon worker response/
-  .test(error instanceof Error ? error.message : String(error));
+/**
+ * A send failure after which the daemon may still deliver: its 30 s timeout, or its client closing mid-send. 10-17 22:11Z a wake to 01a14be9
+ * failed with "daemon client closed before the operation completed", landed at 22:11:57Z anyway, and its resend landed again at 22:14:32Z.
+ */
+export const isSendTimeout = (error: unknown): boolean =>
+  /Timed out after \d+ms waiting for the Prime Agent daemon response to "send_message"|Timed out waiting for daemon worker response|daemon client closed before the operation completed/
+    .test(error instanceof Error ? error.message : String(error));
 
 /** One agent message line of a session file: the text it carried and when it was written. */
 function agentMessage(line: string): { text: string; at: number } | null {

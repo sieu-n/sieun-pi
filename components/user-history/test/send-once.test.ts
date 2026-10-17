@@ -25,13 +25,17 @@ async function slowDaemon() {
   await mkdir(join(agentDir, "sessions"), { recursive: true });
   await writeFile(file, other(NOW - 3_600_000));
   let now = NOW;
-  const state = { mode: "lands" as "lands" | "queues" | "loses" | "ok", queue: [] as string[], queueReadable: true, busy: false, sends: 0, logs: [] as string[] };
+  const state = { mode: "lands" as "lands" | "closes" | "queues" | "loses" | "ok", queue: [] as string[], queueReadable: true, busy: false, sends: 0, logs: [] as string[] };
   const copies = async (): Promise<number> => (await readFile(file, "utf8")).split("\n").filter(line => line.includes('"agent_message"')).length;
   const once = new SendOnce({ file: join(agentDir, "unconfirmed-sends.json"), now: () => now, log: line => state.logs.push(line),
     send: async (_session, text) => {
       state.sends++;
       if (state.mode === "ok") { await appendFile(file, entry(text, now)); return "sent"; }
       if (state.mode === "lands") await appendFile(file, entry(text, now + 5_000));
+      if (state.mode === "closes") {
+        await appendFile(file, entry(text, now + 5_000));
+        throw new Error("Prime Agent daemon client closed before the operation completed. Socket: /tmp/daemon.sock.");
+      }
       if (state.mode === "queues") state.queue.push("Agent message received: " + text);
       throw new Error(TIMEOUT);
     },
@@ -133,6 +137,17 @@ test("send once: a busy target whose held copy then lands gets no second send", 
   daemon.state.busy = false;
   daemon.at(NOW + 90_000);
   await wakes.tick();
+  assert.equal(daemon.state.sends, 1);
+  assert.equal(await daemon.copies(), 1);
+  assert.deepEqual(await files(), []);
+});
+
+test("send once: a send whose daemon client closed mid-send counts like a timeout, so the copy that landed is not sent again", async () => {
+  // 10-17 22:11Z: a wake to 01a14be9 failed with "client closed", landed at 22:11:57Z, and its resend landed again at 22:14:32Z.
+  const daemon = await slowDaemon();
+  const { wakes, files } = await wakeFixture(daemon);
+  daemon.state.mode = "closes";
+  for (let tick = 0; tick < 3; tick++) { daemon.at(NOW + tick * 30_000); await wakes.tick(); }
   assert.equal(daemon.state.sends, 1);
   assert.equal(await daemon.copies(), 1);
   assert.deepEqual(await files(), []);

@@ -35,6 +35,8 @@ VERSION = 13
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
+# The daemon may still deliver after its client closes mid-send (10-17 22:11Z: a wake to 01a14be9 landed, and its resend landed again).
+CLIENT_CLOSED = "daemon client closed before the operation completed"
 UNCONFIRMED_NOTE = (
     "agent_message: Prime Agent did not confirm this send within 30 s because {target} is busy. The daemon still holds it and delivers it "
     "when {target}'s running tool call ends (on 10-12 two such sends landed 2 and 8 minutes later). Do not send it again: a resend arrives "
@@ -220,7 +222,7 @@ async def request(request_type, payload=None, *args, **kwargs):
                 print(f"user-history: the brief of this start was not recorded: {error}", file=sys.stderr)
         return reply
     except Exception as error:
-        if direct and SEND_TIMEOUT in str(error):
+        if direct and (SEND_TIMEOUT in str(error) or CLIENT_CLOSED in str(error)):
             texts = (earlier or {}).get("texts", [])
             UNCONFIRMED[key] = {"since": started, "texts": list(dict.fromkeys(texts + [str(payload.get("message") or "").strip()]))}
             return unconfirmed(payload, error)
