@@ -17,7 +17,7 @@ export const WINDOWS = { cache_read_ratio_1h: HOUR, cache_read_ratio_24h: 24 * H
 export type CacheMetric = keyof typeof WINDOWS;
 /** A window with fewer calls is no data: the metric reads 100 and a flagged line says so. */
 export const MIN_CALLS = 20;
-/** A warm break: same session and model, at most this long after the call before, writing more than half that call's prompt to cache. */
+/** A warm break: same session and model, at most this long after the call before, writing more than half that call's prompt to cache and reading under half. */
 export const WARM_GAP_MS = 5 * 60_000;
 const TOP = 3;
 /** Entries the model never sees; they are not named as the thing before a break. */
@@ -70,7 +70,8 @@ export function warmBreaks(sessions: readonly SessionCalls[], from: number, to: 
     for (let at = 1; at < calls.length; at++) {
       const last = calls[at - 1]!, call = calls[at]!;
       if (call.endedAt <= from || call.endedAt > to || found.has(call.id) || call.model !== last.model) continue;
-      if ((call.startedAt ?? call.endedAt) - last.endedAt > WARM_GAP_MS || call.cacheWrite <= prompt(last) / 2) continue;
+      // A call that still reads half the last prompt from cache kept its prefix; a big tool result made the write.
+      if ((call.startedAt ?? call.endedAt) - last.endedAt > WARM_GAP_MS || call.cacheWrite <= prompt(last) / 2 || call.cacheRead >= prompt(last) / 2) continue;
       found.set(call.id, { session, call, cacheWrite: call.cacheWrite, after: call.before.at(-1) ?? "tool results only" });
     }
   }

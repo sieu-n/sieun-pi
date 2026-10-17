@@ -224,11 +224,13 @@ test("cache share: a drop names the session with the most warm-break cache write
     call("cold", 2 * MIN, 0, 103_000, ["user"]),
     call("other-model", MIN, 0, 104_000, ["model_change"], "gpt-6.1-sol"),
   ] };
+  // A 150k tool result on a 100k prompt writes more than half the prompt but still reads all of it: the prefix held.
+  const grew: SessionCalls = { id: "s-grew", title: "big tool result", calls: [...steady("g", 2, 10 * MIN), call("grew", 9 * MIN, 101_000, 150_000)] };
   const fine: SessionCalls = { id: "s-fine", title: "fine", calls: steady("f", 20, 0) };
-  const { metrics, flagged } = measureCache([broken, fine], NOW, TARGETS);
+  const { metrics, flagged } = measureCache([broken, fine, grew], NOW, TARGETS);
   assert.ok(metrics.cache_read_ratio_1h < 90, `share ${metrics.cache_read_ratio_1h}`);
   const lines = flagged.filter(slice => slice.kind === "cache_read_ratio_1h").map(slice => slice.excerpt);
-  assert.deepEqual(lines, [`${metrics.cache_read_ratio_1h}% < 90% over 44 calls; Crawler VP (s-broken, claude-opus-5-5): 2 warm breaks wrote 0.2M cache tokens; ` +
+  assert.deepEqual(lines, [`${metrics.cache_read_ratio_1h}% < 90% over 47 calls; Crawler VP (s-broken, claude-opus-5-5): 2 warm breaks wrote 0.2M cache tokens; ` +
     "right before: agent_message x2"], "the call after 27 idle minutes and the model switch are not warm breaks");
 });
 
