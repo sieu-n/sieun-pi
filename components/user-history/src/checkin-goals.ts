@@ -36,8 +36,8 @@ export type GoalTrend =
   | { kind: "still"; runs: number }
   | { kind: "moving"; delta: number; since: number; etaMs: number | null };
 
-/** What the check-in does about a goal: steer its owner job, start one, nothing (on pace or met), or give it a number first. */
-export type GoalAct = "steer" | "start" | "on_pace" | "no_number";
+/** What the check-in does about a goal: steer its owner job, start one, nothing (on pace or met), wait on the owner's answer, or give it a number first. */
+export type GoalAct = "steer" | "start" | "on_pace" | "owner" | "no_number";
 
 export interface GoalPush {
   goal: PlanItem;
@@ -48,6 +48,8 @@ export interface GoalPush {
   owner?: JobFact;
   /** The goal's open push step, live or not: a start sets a job on it instead of adding a second one. */
   pushStep?: string;
+  /** The open steps under the goal that wait on the owner's answer in For you, when nothing else under it is open (`ownerHeld`). */
+  asks?: string[];
   act: GoalAct;
   /** The owner's words for the goal: its open and unmet requirement lines. */
   words: string[];
@@ -112,6 +114,18 @@ export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact |
     views.find(view => view.item.id === goal.id && view.item.duty !== undefined && view.owner?.state === "working")?.owner;
 }
 
+/**
+ * The goal's open steps that wait on the owner's answer, when every open step under it besides its push step is For you or parked by his
+ * correction, with at least one For you; undefined otherwise. Such a number moves only when he answers, so no job can push it. frontend bro
+ * 10-16 to 10-18: p106 "Connections parts the owner accepts" 0 of 5 and p118 "Email parts the owner accepts" 0 of 3 waited on For you t28 and
+ * t25, with every part built and walked on Staging, and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again.
+ */
+export function ownerHeld(goal: PlanItem, views: readonly StepView[]): string[] | undefined {
+  const open = views.filter(view => view.goal?.id === goal.id && view.item.duty !== GOAL_PUSH_LINK);
+  const asks = open.filter(view => view.cls === "foryou").map(view => view.item.id);
+  return asks.length && open.every(view => view.cls === "foryou" || view.cls === "parked") ? asks : undefined;
+}
+
 /** The owner's words for a goal: its requirement lines still open or unmet, else the goal's own text. */
 export const goalWords = (goal: PlanItem): string[] => {
   const open = (goal.requirements ?? []).filter(line => line.status !== "met").map(line => line.text.trim());
@@ -137,10 +151,11 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
     if (memo) kept[goal.id] = memo;
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
-    const act: GoalAct = trend.kind === "met" ? "on_pace" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
-    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, act }];
+    const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views);
+    const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
+    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), act }];
   });
-  const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, on_pace: 3 };
+  const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, owner: 3, on_pace: 4 };
   const short = (push: GoalPush): number => !push.number || push.number.value === undefined ? 1
     : Math.max(0, (push.number.target - push.number.value) * (push.number.op === "<=" ? -1 : 1) / Math.abs(push.number.target || 1));
   return { pushes: pushes.sort((a, b) => rank[a.act] - rank[b.act] || short(b) - short(a)), memos: kept };
@@ -178,6 +193,12 @@ export function trendText(number: GoalNumber, trend: GoalTrend, stale: boolean):
   }
 }
 
+/** The steps a goal held by the owner waits on: "p115", or "p115 and 1 more step". */
+const ownerAsks = (push: GoalPush): string => {
+  const [first, ...rest] = push.asks ?? [];
+  return `${first}${rest.length ? ` and ${rest.length} more ${rest.length === 1 ? "step" : "steps"}` : ""}`;
+};
+
 /** The ask for a goal's push, in one sentence. */
 function askText(push: GoalPush): string {
   const { goal, owner } = push;
@@ -185,6 +206,7 @@ function askText(push: GoalPush): string {
     : `no live job owns it: add a push step under ${goal.id} for one job that names and attacks the biggest blocker`;
   if (push.act === "steer") return `${ownerLabel(owner!)} owns it and it is off pace: steer it to name and attack the biggest blocker now`;
   if (push.act === "no_number") return "it has no target and no linked duty metric: set a target from the owner's words in this run";
+  if (push.act === "owner") return `it moves when the owner answers the For you ask on ${ownerAsks(push)}`;
   return `${owner ? ownerLabel(owner) : "its owner"} moves it on pace`;
 }
 
@@ -235,7 +257,7 @@ const paceText = (push: GoalPush): string => {
   const trend = push.trend;
   if (!trend || trend.kind === "unmeasured") return "not measured yet";
   if (trend.kind === "met") return "at target";
-  const pace = pushNeeded(push) ? "off pace" : "on pace";
+  const pace = push.act === "owner" ? `waits on the owner's answer on ${ownerAsks(push)}` : pushNeeded(push) ? "off pace" : "on pace";
   return `${trendText(push.number!, trend, push.stale)}, ${pace}`;
 };
 

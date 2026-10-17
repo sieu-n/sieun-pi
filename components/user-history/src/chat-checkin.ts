@@ -751,9 +751,22 @@ function parseMemory(value: unknown): CheckInMemory | undefined {
   if (!isRecord(value) || typeof value.at !== "number") return undefined;
   const steps = isRecord(value.steps) ? Object.entries(value.steps).flatMap(([id, memo]) => isStepMemo(memo) ? [[id, stepMemoOf(memo)] as const] : []) : [];
   const flags = isRecord(value.flags) ? Object.entries(value.flags).filter((entry): entry is [string, number] => typeof entry[1] === "number") : [];
+  const goals = isRecord(value.goals) ? Object.entries(value.goals).filter((entry): entry is [string, GoalMemo] => isGoalMemo(entry[1])) : [];
+  const jobs = isRecord(value.jobs) ? Object.entries(value.jobs).filter((entry): entry is [string, JobMemo] => isJobMemo(entry[1])) : [];
   return { at: value.at, steps: Object.fromEntries(steps), ...(typeof value.since === "number" ? { since: value.since } : {}),
-    ...(flags.length ? { flags: Object.fromEntries(flags) } : {}) };
+    ...(flags.length ? { flags: Object.fromEntries(flags) } : {}), ...(goals.length ? { goals: Object.fromEntries(goals) } : {}),
+    ...(jobs.length ? { jobs: Object.fromEntries(jobs) } : {}) };
 }
+/**
+ * The goal and job memos survive every read of check-ins.json. Each write of one chat's memory parses the whole file, and the parse kept only
+ * steps, since and flags, so every other chat lost its goal readings and job marks: from 10-16 to 10-18 frontend bro's p106 and p118 read
+ * "first reading, no trend yet" in 14 check-ins in a row, and at 10-17 22:12Z only 1 of the 11 chats in the file, the one written last, held
+ * goals or jobs.
+ */
+const isGoalMemo = (value: unknown): value is GoalMemo => isRecord(value) && typeof value.still === "number" && Array.isArray(value.readings) &&
+  value.readings.every(reading => isRecord(reading) && typeof reading.value === "number" && typeof reading.at === "number");
+const isJobMemo = (value: unknown): value is JobMemo => isRecord(value) && typeof value.mark === "number" && typeof value.since === "number" &&
+  (value.pushed === undefined || typeof value.pushed === "number");
 const JOB_END_CAUSES: Record<JobEndCause, true> = { error: true, aborted: true, "mid-tool": true, length: true };
 const isToldEnd = (value: unknown): value is ToldEnd => isRecord(value) && typeof value.at === "number" && typeof value.cause === "string" && value.cause in JOB_END_CAUSES;
 export function checkInRecord(path: string): CheckInRecord {
