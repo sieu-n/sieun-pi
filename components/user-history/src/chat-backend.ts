@@ -171,6 +171,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     const pool = await queueReading().catch(() => null);
     return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
   };
+  const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
+    saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
+    started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     board: id => boards.read(id),
     fixLive: async (id, item) => {
@@ -181,9 +184,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
-      saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
-      started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) }),
+    jobs: dutyJobs,
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger) => chats.runCheckIn(id, trigger), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
@@ -255,7 +256,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
   };
   const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
-  const stopBriefs = options.ownChatsOnly ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage });
+  const stopBriefs = options.ownChatsOnly ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
+    restart: async (record, text) => {
+      const chat = await dutyJobs.chat(record.root);
+      if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
+      return (await dutyJobs.start(chat, record.name || record.id, text(chat.name))).id;
+    } });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const pollHealth = new PollHealth();
   const hookWatch = new TokenHookWatch({ sessionsDir: join(agentDir, "sessions") });

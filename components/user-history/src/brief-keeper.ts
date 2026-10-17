@@ -64,7 +64,7 @@ export function parseBriefRecord(value: unknown): BriefRecord | null {
  * What the session of a record shows now: its session id and file once Prime wrote them, whether its brief landed (`started`), whether any
  * prompt landed (`prompted`), and whether its child ended. A child's brief arrives labelled "[task from parent]"; a root's is its first prompt.
  */
-export interface BriefSeen { sessionId?: string; file?: string; started: boolean; prompted: boolean; ended: boolean }
+export interface BriefSeen { sessionId?: string; file?: string; started: boolean; prompted: boolean; ended: boolean; unborn?: boolean }
 
 const TASK_LABEL = "[task from parent]";
 /**
@@ -97,9 +97,11 @@ const ENDED = new Set(["deleted", "cancelled", "error", "failed", "done"]);
 export async function seeBrief(record: BriefRecord): Promise<BriefSeen> {
   let file = record.sessionFile;
   let ended = false;
+  let admitted = false;
   if (record.kind === "child" && record.sessionDir) {
     try {
       const spawn: unknown = JSON.parse(await readFile(join(record.sessionDir, "rlm-subagent.json"), "utf8"));
+      admitted = true;
       if (isRecord(spawn)) {
         if (typeof spawn.sessionFile === "string") file = spawn.sessionFile;
         ended = typeof spawn.status === "string" && ENDED.has(spawn.status);
@@ -111,14 +113,16 @@ export async function seeBrief(record: BriefRecord): Promise<BriefSeen> {
       if (own.length === 1) file = join(record.sessionDir, own[0]!);
     }
   }
-  if (!file) return { started: false, prompted: false, ended };
+  // A child whose folder holds neither rlm-subagent.json nor a session file never became a session: on 10-17 at 21:29:46Z clean-room run 6
+  // SIGKILLed the chat's worker 67 ms after rlm.spawn returned, and Prime wrote nothing for the child, not even its ledger line.
+  if (!file) return { started: false, prompted: false, ended, ...(record.kind === "child" && !admitted ? { unborn: true } : {}) };
   const sessionId = /([\w-]+)\.jsonl$/.exec(file)?.[1];
   const seen = await prompts(file);
   return { ...(sessionId ? { sessionId } : {}), file, started: record.kind === "child" ? seen.task : seen.prompted, prompted: seen.prompted, ended };
 }
 
 /** What the keeper does with one record this tick. */
-export type BriefAct = { act: "drop"; why: "started" | "ended" } | { act: "wait" } | { act: "send"; session: string };
+export type BriefAct = { act: "drop"; why: "started" | "ended" } | { act: "wait" } | { act: "send"; session: string } | { act: "restart" };
 
 /** The live Prime worker of a tree, and whether it ran the session's agent: then the brief is in its hands and only the file is late. */
 export interface TreeWorker { id: string; ran: boolean }
@@ -127,11 +131,13 @@ export interface TreeWorker { id: string; ran: boolean }
  * The rule for one record: drop it once its session holds its brief or its child ended; else wait out BRIEF_LATE_MS from the spawn; then
  * send the brief to its session, once to each worker, unless the tree's live worker ran a session whose file shows no prompt yet (only the
  * file is late). A worker that stops, alone or in a supervisor restart, takes a prompt it held with it, and the next worker has a new id. A
- * session whose file shows another message but not its brief lost the brief. A session Prime has not written yet waits.
+ * session whose file shows another message but not its brief lost the brief. A child Prime never wrote at all is started again as a root job
+ * of its chat (`restart`).
  */
 export function briefAct(record: BriefRecord, seen: BriefSeen, worker: TreeWorker | undefined, now: number): BriefAct {
   if (seen.started) return { act: "drop", why: "started" };
   if (seen.ended) return { act: "drop", why: "ended" };
+  if (now - record.at >= BRIEF_LATE_MS && seen.unborn) return { act: "restart" };
   if (now - record.at < BRIEF_LATE_MS || !seen.sessionId || (worker?.ran && !seen.prompted) || record.sent?.worker === (worker?.id ?? "")) return { act: "wait" };
   return { act: "send", session: seen.sessionId };
 }
@@ -141,6 +147,16 @@ export function briefText(record: BriefRecord, now: number): string {
   const head = record.kind === "child" ? "[task from parent]\n\n" : "";
   return `${head}${record.prompt}\n\n(The chat service sent this brief at ${zTime(now)}: Prime started this session at ${zTime(record.at)} ` +
     "and its first prompt never reached it. If this brief already reached you, do it once.)";
+}
+
+/**
+ * The brief of a child that never became a session, for the root job that takes its place: the brief, then where the job reports, since
+ * a root has no parent and reaches its chat as a sibling (chat-brief.ts jobReplyGuideline).
+ */
+export function restartText(record: BriefRecord, chat: string, now: number): string {
+  return `${record.prompt}\n\n(The chat service started this job at ${zTime(now)} in place of "${record.name}", which the chat spawned at ` +
+    `${zTime(record.at)}: its worker stopped before Prime wrote the session. You are a root job of the chat ${chat}, so wherever this brief ` +
+    `says to send to your parent, send to the chat with agent_message.send(report, receiver_role="sibling", receiver_name="${chat}").)`;
 }
 
 const WORKER_FILE = /^[0-9a-f]{12}\.json$/;
@@ -190,6 +206,8 @@ export interface BriefDeps {
   startRoot: (root: string) => Promise<void>;
   /** The live worker of the tree `root` and whether it ran `session` (`primeWorkers`); undefined when none runs. */
   worker: (root: string, session: string) => Promise<TreeWorker | undefined>;
+  /** Starts a root job registered under the chat `record.root` with the brief `restartText` makes (chat-duty-job.ts start); its session id. */
+  restart?: (record: BriefRecord, text: (chat: string) => string) => Promise<string>;
   log: (line: string) => void;
   now?: () => number;
   see?: (record: BriefRecord) => Promise<BriefSeen>;
@@ -233,6 +251,18 @@ export async function briefTick(deps: BriefDeps): Promise<number> {
       continue;
     }
     if (act.act === "wait") continue;
+    if (act.act === "restart") {
+      if (!deps.restart) continue;
+      try {
+        const id = await deps.restart(record, chat => restartText(record, chat, now));
+        await rm(file, { force: true });
+        sent++;
+        deps.log(`briefs: ${label} never became a session ${Math.round((now - record.at) / 60_000)} min after its spawn; started root job ${id} of its chat with its brief`);
+      } catch (error) {
+        deps.log(`briefs: ${label}: restart: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      continue;
+    }
     try {
       const result = await deps.deliver(act.session, briefText(record, now));
       if (result === "gone") {

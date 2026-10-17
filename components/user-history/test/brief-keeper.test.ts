@@ -4,7 +4,7 @@ import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BRIEFS_DIR, briefAct, type BriefRecord, briefTick, primeWorkers, seeBrief, type TreeWorker, unstartedJobs, withUnstarted } from "../src/brief-keeper.ts";
+import { BRIEFS_DIR, briefAct, type BriefRecord, briefTick, primeWorkers, restartText, seeBrief, type TreeWorker, unstartedJobs, withUnstarted } from "../src/brief-keeper.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { jobFacts, stepView } from "../src/checkin-steps.ts";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
@@ -199,4 +199,31 @@ test("the kernel sends both starts at once and records each brief for the keeper
   assert.equal(childRecord.root, CHAT);
   const rootRecord = JSON.parse(await readFile(join(dir, BRIEFS_DIR, names[1]!), "utf8"));
   assert.deepEqual([rootRecord.kind, rootRecord.name, rootRecord.root, rootRecord.sessionFile], ["root", "ig posts heal fix", rootRecord.id, "/s/01a1422b-0000-7000-8000-000000000001.jsonl"]);
+});
+
+test("a child whose worker died before Prime wrote anything for it is started again once, as a root job of its chat", async () => {
+  // Clean-room run 6, 10-17 21:29:46Z: kill-worker SIGKILLed the chat's worker 67 ms after rlm.spawn returned, and the child's folder stayed empty.
+  const root = await mkdtemp(join(tmpdir(), "brief-unborn-"));
+  const sessionDir = join(root, "session-artifacts", CHAT, "sub-d3c04872");
+  await mkdir(sessionDir, { recursive: true });
+  const data = join(root, BRIEFS_DIR);
+  await mkdir(data, { recursive: true });
+  const record: BriefRecord = { kind: "child", id: "sub-d3c04872", name: "user history file count", prompt: "count the .ts files; reply to your parent", at: Date.parse("2026-10-17T21:29:46.745Z"), root: CHAT, sessionDir };
+  await writeFile(join(data, `child-${record.id}.json`), JSON.stringify(record));
+  const seen = await seeBrief(record);
+  assert.equal(seen.unborn, true);
+  assert.deepEqual(briefAct(record, seen, undefined, record.at + 60_000), { act: "wait" }, "inside the start time Prime may still write it");
+  assert.deepEqual(briefAct(record, seen, undefined, record.at + 5 * 60_000), { act: "restart" });
+  const started: [string, string][] = [];
+  const deps = { dir: data, worker: async () => undefined, log: () => {}, startRoot: async () => {}, deliver: async () => "sent" as const,
+    restart: async (r: BriefRecord, text: (chat: string) => string) => { started.push([r.name, text("user-history ts sum")]); return "01a14bd0-0000-7000-8000-000000000000"; } };
+  assert.equal(await briefTick({ ...deps, now: () => record.at + 5 * 60_000 + 1 }), 1);
+  assert.equal(started.length, 1);
+  assert.equal(started[0]![0], "user history file count");
+  assert.ok(started[0]![1].startsWith("count the .ts files; reply to your parent\n\n(The chat service started this job at 10-17 21:34Z"));
+  assert.match(started[0]![1], /receiver_role="sibling", receiver_name="user-history ts sum"/);
+  assert.deepEqual(await readdir(data), [], "restarted once: the record is gone");
+  await writeFile(join(sessionDir, "rlm-subagent.json"), JSON.stringify({ status: "running" }));
+  assert.equal((await seeBrief(record)).unborn, undefined, "a child Prime admitted is not restarted");
+  assert.equal(restartText(record, "c", 0).includes("in place of \"user history file count\""), true);
 });
