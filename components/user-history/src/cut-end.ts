@@ -67,7 +67,9 @@ function lastCut(lines: readonly string[]): (Cut & { index: number }) | null {
     const at = Date.parse(entry.timestamp ?? "");
     const { role, stopReason } = entry.message;
     const archived = archivedAfter === undefined ? {} : { archivedAt: archivedAfter };
-    if (role === "toolResult") return { at, cause: "mid-tool", index, ...archived };
+    // An archive also lands just before the tool result it aborts: the owner's focus pause on 10-17 archived watchlist last fixes at
+    // 23:04:28.977Z and its running tool read "Request was aborted" 29 ms later. That is an archive of the turn, so its archivedAt is set.
+    if (role === "toolResult") return { at, cause: "mid-tool", index, ...archivedAfter === undefined ? archivedJustBefore(lines, index, at) : archived };
     if (role !== "assistant") return null;
     if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index, ...archived };
     if (stopReason !== "aborted") return null;
@@ -81,6 +83,19 @@ function lastCut(lines: readonly string[]): (Cut & { index: number }) | null {
     return null;
   }
   return null;
+}
+
+/** `{ archivedAt }` when the session was archived at most ARCHIVE_ABORT_MS before the line at `index`, with no message between, else nothing. */
+function archivedJustBefore(lines: readonly string[], index: number, at: number): { archivedAt?: number } {
+  for (let back = index - 1; back >= 0; back--) {
+    let before: { type?: string; timestamp?: string; state?: { status?: string } };
+    try { before = JSON.parse(lines[back]!); } catch { continue; }
+    if (before.type === "message") return {};
+    if (before.type !== "session_state" || before.state?.status !== "archived") continue;
+    const archivedAt = Date.parse(before.timestamp ?? "");
+    return at - archivedAt <= ARCHIVE_ABORT_MS ? { archivedAt } : {};
+  }
+  return {};
 }
 
 /** The last `bytes` of a file as lines, the first (partial) line dropped; none when the file is gone. */

@@ -136,6 +136,28 @@ test("a cut job holds work only while an open step names it or the chat's job ab
   assert.equal(cutJobsHoldingWork(jobs, new Map()).length, 4);
 });
 
+test("the owner's focus pause parks a job: an archive right before its aborted tool result and a paused check-in both drop it (launch main bro 10-17)", () => {
+  // watchlist last fixes (01a140fc), the last three lines of its transcript: the pause archived it 29 ms before its running tool read aborted.
+  const stamp = (time: string, fields: object) => JSON.stringify({ timestamp: `2026-10-17T${time}Z`, ...fields });
+  const lines = [
+    stamp("23:01:57.974", { type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "ipython", arguments: { code: "await asyncio.sleep(240)" } }], stopReason: "toolUse" } }),
+    stamp("23:04:28.977", { type: "session_state", state: { status: "archived" } }),
+    stamp("23:04:29.006", { type: "message", message: { role: "toolResult", toolName: "ipython", content: [{ type: "text", text: "Request was aborted" }], isError: true } }),
+  ];
+  assert.deepEqual(cutEnd(lines), { at: Date.parse("2026-10-17T23:04:29.006Z"), cause: "mid-tool", archivedAt: Date.parse("2026-10-17T23:04:28.977Z") });
+  // A tool result long after an archive is still a plain mid-tool cut.
+  assert.deepEqual(cutEnd([lines[0]!, lines[1]!, stamp("23:05:00.000", { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "ok" }] } })]),
+    { at: Date.parse("2026-10-17T23:05:00.000Z"), cause: "mid-tool" });
+  // The same job as the 23:39Z run read it: a chat whose check-in the owner paused holds no cut job, and its board no longer matters.
+  const chat = "01a11bd7-072f-7591-ad1d-f123c276cde5";
+  const job: CutJob = { session: "01a140fc-ba32-7228-99c6-b12621a32ffc", name: "watchlist last fixes", chat, at: Date.parse("2026-10-17T23:04:29.006Z"), cause: "mid-tool" };
+  assert.equal(cutJobsHoldingWork([job], new Map()).length, 1);
+  assert.equal(cutJobsHoldingWork([job], new Map(), new Set([chat])).length, 0);
+  const now = Date.parse("2026-10-17T23:39:22.809Z");
+  assert.equal(measure(inputs({ now, cut: cutJobsHoldingWork([job], new Map(), new Set([chat])) })).metrics.queue_holds_30, 0);
+  assert.equal(measure(inputs({ now, cut: [job] })).metrics.queue_holds_30, 1);
+});
+
 test("findCutJobs walks every job folder and leaves out a job its parent deleted, searching a large chat transcript once", async () => {
   const home = await mkdtemp(join(tmpdir(), "cut-jobs-"));
   try {

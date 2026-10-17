@@ -344,10 +344,10 @@ export function parentDeleted(text: Buffer, child: string): boolean {
 
 /**
  * The cut jobs that hold owner work: an open step of the job's chat names the job or the chat's own job above it, by session id or job name.
- * A cut job no open step names waits for nobody. At 06:27Z on 10-16 the duty counted 40 cut jobs as holds, and 37 of them sat under no open
+ * A cut job no open step names waits for nobody, and a cut job of a chat whose check-in is paused is parked by the owner. At 06:27Z on 10-16 the duty counted 40 cut jobs as holds, and 37 of them sat under no open
  * step: their steps were done, or a later job had taken the work (metal-inventory, cut 10-15 08:34Z, under metal dev environment and its r2).
  */
-export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<string, ChatBoard | null>): CutJob[] {
+export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<string, ChatBoard | null>, paused: ReadonlySet<string> = new Set()): CutJob[] {
   const steps = new Map<string, { job?: string; sessionId?: string }[]>();
   for (const [chat, board] of boards) {
     const open: { job?: string; sessionId?: string }[] = [];
@@ -355,6 +355,9 @@ export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<s
     steps.set(chat, open);
   }
   return cut.filter(job => {
+    // A chat whose check-in the owner paused is parked: the owner's focus pause at 23:03Z on 10-17 stopped watchlist last fixes in launch main
+    // bro, and the duty counted it as a start held from 23:15Z on, 25 of the 30 minutes at 23:39Z.
+    if (paused.has(job.chat)) return false;
     const open = steps.get(job.chat);
     if (!open) return true;
     // A later session took the work: a newer job of the same name (ci train 01a13a70 and its replacement 01a14068 on 10-16), or a step that names
@@ -391,9 +394,11 @@ async function main(): Promise<void> {
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   const chats: Inputs["chats"][number][] = [];
+  const pausedChats = new Set<string>();
   for (const id of ids) {
     const file = await store.read(id);
     const paused = activePause(await settings.get(id), now) !== null;
+    if (paused) pausedChats.add(id);
     chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs,
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
@@ -408,7 +413,7 @@ async function main(): Promise<void> {
     limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
     okLimit: typeof config?.mac_working_max === "number" ? config.mac_working_max : 15,
     chats,
-    cut: cutJobsHoldingWork(cut, boards),
+    cut: cutJobsHoldingWork(cut, boards, pausedChats),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
