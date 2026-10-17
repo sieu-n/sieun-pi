@@ -22,6 +22,13 @@
       "label": "Open steps in all chats that nobody moves",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "sleeping_gb",
+      "label": "GB held by sessions idle past the idle window",
+      "op": "<=",
+      "target": 0.25,
+      "unit": " GB"
     }
   ],
   "schedule": {
@@ -38,5 +45,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: tell this chat one line with the minutes and the owner, for ops guy. Stuck steps: message the chat that owns them with the step ids. Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
+  "onMiss": "Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: tell this chat one line with the minutes and the owner, for ops guy. Stuck steps: message the chat that owns them with the step ids. Sleeping GB: the job fixes why those sessions escaped the idle unload (src/idle-unload.ts) with a test and releases (c92). Oversized processes: one line to this chat with the numbers. Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
 }

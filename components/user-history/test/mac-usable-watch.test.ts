@@ -402,3 +402,24 @@ test("hung: a cell whose kernel used no CPU, no new process and no socket bytes 
   await woke.run(32);
   assert.deepEqual([woke.lines[31]!.idleOver, woke.lines.at(-1)!.quiet![0]!.stillMin], [0, 1], "bytes at 31 count as working; still again from 31 is a new spell");
 });
+
+// `prime-agent list --json` at 23:44Z on 10-17: frontend bro, launch main bro and api portal vp sat 11.7 min idle in their own workers, and in
+// trees still at work idle subagents kept their kernels. The owner (c92): "make sure your daily duty checks whether it's seriously lazy in resource management."
+test("watchLine: sleeping counts each worker whose every resident session is idle past the idle window, plus such a session's kernel in a worker that still works", () => {
+  const idle = (minutes: number) => new Date(NOW - minutes * MIN).toISOString();
+  const rows = [
+    row("lmb", { sessionName: "launch main bro", workerPid: 31, lastActivityAt: idle(50) }),
+    row("vp", { sessionName: "VP", workerPid: 32, activity: "working", lastActivityAt: idle(0) }),
+    row("vpJob", { parentSessionId: "vp", workerPid: 32, lastActivityAt: idle(25), taskState: "needs_input" }),
+    row("vpFresh", { parentSessionId: "vp", workerPid: 32, lastActivityAt: idle(11) }),
+    row("ci", { sessionName: "VP of CI", workerPid: 33, lastActivityAt: idle(3) }),
+  ];
+  const footprints: Footprints = { workers: { 31: { pids: 2, bytes: 0.25 * GB }, 32: { pids: 9, bytes: 2.5 * GB }, 33: { pids: 2, bytes: 0.6 * GB } },
+    kernels: [{ pid: 41, root: "lmb", session: "lmb", pids: 1, bytes: 0.1 * GB, biggest: null }, { pid: 42, root: "vp", session: "vpJob", pids: 1, bytes: 0.15 * GB, biggest: null },
+      { pid: 43, root: "vp", session: "vpFresh", pids: 1, bytes: 0.2 * GB, biggest: null }],
+    swap_used_bytes: 6 * GB, pressure_level: 1, cpu_s: 0.1 };
+  const line = watchLine({ now: NOW, rows, footprints, queue: null, chats: new Set(["lmb", "vp", "ci"]), title: () => null, cpuMs: 0, idleMs: 10 * MIN });
+  assert.deepEqual(line.sleeping, { gb: 0.4, workers: 1, kernels: 1, trees: [{ root: "lmb", tree: "launch main bro", gb: 0.25 }, { root: "vp", tree: "VP", gb: 0.15 }] },
+    "a session 11 min idle is inside the 2 min slack; a kernel in a whole sleeping worker counts once, with the worker");
+  assert.equal(watchLine({ now: NOW, rows, footprints, queue: null, chats: new Set(), title: () => null, cpuMs: 0, idleMs: null }).sleeping, undefined, "idle eviction off");
+});

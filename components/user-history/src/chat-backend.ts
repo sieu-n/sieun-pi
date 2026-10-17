@@ -214,7 +214,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog });
+    queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction() });
   // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
   const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
     send: async (session, text) => {

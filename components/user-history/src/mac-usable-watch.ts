@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AgentQueueReading } from "./shared/types.ts";
+import type { AgentQueueReading, IdleEvictionMinutes } from "./shared/types.ts";
 
 /**
  * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
@@ -122,11 +122,25 @@ export interface WatchLine {
   waiters?: WaiterLine[];
   /** The chat trees with the largest footprint, kernel subtrees plus orphans, at most 5; absent on older lines. */
   trees?: TreeLine[];
+  /** What resident sessions idle past the idle window still hold (`sleepingLine`); absent on older lines and with idle eviction off. */
+  sleeping?: SleepingLine;
+  /** The chat service's own resident memory; absent on older lines. */
+  serviceGb?: number;
   /** Context only, from sysctl: swap in use and kern.memorystatus_vm_pressure_level (1 normal, 2 warn, 4 critical). */
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
   cpuMs: number;
 }
+
+/**
+ * The memory of resident sessions with no turn that sat quiet past the daemon's idleEvictionMinutes plus SLEEP_SLACK_MS: each worker tree whose
+ * every resident session is such a session, and the kernel of such a session in a worker that still works, with the chat trees holding the most.
+ * The idle unload stops these sessions, so the owner's c92 target for it is near 0; at 23:45Z on 10-17, 18 of 23 workers held only sleeping
+ * sessions, 6.5 GB with their kernels.
+ */
+export interface SleepingLine { gb: number; workers: number; kernels: number; trees: { root: string; tree: string; gb: number }[] }
+/** One minute for the unload's sweep and one for the catalog's list refresh, as the idle-unload clean room allows. */
+export const SLEEP_SLACK_MS = 2 * MINUTE;
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
 interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; lastAt: number; worker: number | undefined; ended: boolean;
@@ -289,7 +303,8 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; calls?: ReadonlyMap<string, OpenCall | null>; motion?: Readonly<Motion> }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; calls?: ReadonlyMap<string, OpenCall | null>; motion?: Readonly<Motion>;
+  idleMs?: number | null }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -347,9 +362,39 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
         job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree, ...quietMin };
     }),
     trees: treeLines(input.footprints, owner).slice(0, 5),
+    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(live, input.footprints, tree, input.now, input.idleMs) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
+}
+
+function sleepingLine(live: readonly Row[], footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
+  const asleep = new Map(live.filter(row => !row.working && now - row.lastAt > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
+  const trees = new Map<string, { root: string; tree: string; bytes: number }>();
+  const add = (row: Row, bytes: number) => {
+    const found = tree(row);
+    const entry = trees.get(found.root) ?? { ...found, bytes: 0 };
+    entry.bytes += bytes;
+    trees.set(found.root, entry);
+  };
+  let workers = 0, kernels = 0;
+  const whole = new Set<number>();
+  for (const [pid, worker] of Object.entries(footprints.workers)) {
+    const on = live.filter(row => row.worker === Number(pid));
+    if (!on.length || !on.every(row => asleep.has(row.id))) continue;
+    whole.add(Number(pid));
+    workers++;
+    add(on[0]!, worker.bytes);
+  }
+  for (const kernel of footprints.kernels ?? []) {
+    const row = asleep.get(kernel.session);
+    if (!row || (row.worker !== undefined && whole.has(row.worker))) continue;
+    kernels++;
+    add(row, kernel.bytes);
+  }
+  const sorted = [...trees.values()].sort((a, b) => b.bytes - a.bytes);
+  return { gb: round(sorted.reduce((sum, entry) => sum + entry.bytes, 0) / GB), workers, kernels,
+    trees: sorted.slice(0, 3).map(({ root, tree: name, bytes }) => ({ root, tree: name, gb: round(bytes / GB) })) };
 }
 
 /** Each chat tree's footprint from the helper's kernels and orphans, largest first; `owner` maps a session and the root its env names to the chat tree. */
@@ -438,6 +483,8 @@ export interface WatchSource {
   feed?: (now: number) => Promise<UsableReading | null>;
   /** Each pid's open sockets with byte counts; absent, `readSockets`. */
   sockets?: (pids: readonly number[]) => Promise<Map<number, string[]>>;
+  /** The daemon's idleEvictionMinutes, for `sleeping`; absent, the line has none. */
+  idleMinutes?: () => IdleEvictionMinutes;
 }
 
 /** Whether a quiet session is hung: an open call, a kernel, and no motion (MOTION) for HUNG_MINUTES. */
@@ -468,7 +515,9 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const prev = await readFile(motionFile, "utf8").then(text => JSON.parse(text) as Motion).catch((): Motion => ({}));
   const motion = advanceMotion(isRecord(prev) ? prev : {}, footprints.kernels ?? [], nets, at);
   const resumed = process.cpuUsage();
-  const line = watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, calls, motion });
+  const idle = source.idleMinutes?.();
+  const line = { ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, calls, motion,
+    ...idle === undefined ? {} : { idleMs: idle === "off" ? null : idle * MINUTE } }), serviceGb: round(process.memoryUsage().rss / GB) };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

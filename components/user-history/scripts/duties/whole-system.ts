@@ -20,7 +20,8 @@ import { isHarnessMinute } from "./mac-stays-usable.ts";
  * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, and every chat's duty
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read the Mac usable, no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds and open steps nobody
- * moves in all chats. The rest is detail.
+ * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
+ * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
  * fleet budget logged a continue for local agents checks, local agents recovery and daily code health report at 00:21:17Z, none reached its
  * session, and the check-in read them as moving or gone while the agents panel showed done. A cut job with a later input, such as a continue
@@ -161,9 +162,34 @@ export const limitAt = (changes: readonly LimitChange[], at: number, fallback: n
 export const queuedWithFreeSlots = (line: WatchLine, limit: number): boolean =>
   !!line.queue && line.queue.queued > 0 && line.queue.oldestWaitS >= QUEUED_WAIT_S && line.queue.working <= limit - FREE_SLOTS;
 
+/**
+ * A harness process is far above its normal size at FAR_ABOVE times its kind's median over the last day of watch lines: on 10-17 at 23:45Z
+ * workers holding one idle session read 145 to 360 MB, a 2.5x spread, so 3x the median sits past ordinary variation.
+ */
+export const FAR_ABOVE = 3;
+const DAY_MS = 24 * 60 * MINUTE;
+
+const median = (values: readonly number[]): number | undefined => {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : undefined;
+};
+
+/** The harness processes in the newest watch line over FAR_ABOVE times their kind's median in `day`: Prime workers by tree, and the chat service. */
+export function oversized(latest: WatchLine | undefined, day: readonly WatchLine[]): string[] {
+  if (!latest) return [];
+  const found: string[] = [];
+  const worker = median(day.filter(line => line.workers > 0).map(line => line.workerGb / line.workers));
+  if (worker !== undefined) for (const line of latest.top) if (line.gb > FAR_ABOVE * worker) found.push(`Prime worker ${line.pid} (${line.tree || "no tree"}, ${line.sessions} sessions) holds ${line.gb} GB, over ${FAR_ABOVE}x the day's median worker of ${worker.toFixed(2)} GB`);
+  const service = median(day.flatMap(line => line.serviceGb === undefined ? [] : [line.serviceGb]));
+  if (service !== undefined && latest.serviceGb !== undefined && latest.serviceGb > FAR_ABOVE * service) found.push(`the chat service holds ${latest.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB`);
+  return found;
+}
+
 export interface Inputs {
   now: number;
   watch: readonly WatchLine[];
+  /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
+  day?: readonly WatchLine[];
   log: LogFacts;
   limits: readonly LimitChange[];
   /** pi-pool's limit when the Mac reads ok (`mac_working_max`). */
@@ -219,10 +245,15 @@ export function measure(input: Inputs): PrecheckOutput {
     const live = Object.values(newest.fixes ?? {}).some(fix => fix.live);
     return live ? [] : [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, with no live fix job on its last run`];
   }));
+  const sleepingLines = input.watch.filter(line => Date.parse(line.at) > start && line.sleeping);
+  const latest = input.watch.findLast(line => Date.parse(line.at) > start);
+  const oversize = oversized(latest, input.day ?? []);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
+    sleeping_gb: Math.round(100 * (sleepingLines.reduce((sum, line) => sum + line.sleeping!.gb, 0) / (sleepingLines.length || 1))) / 100,
+    oversized_procs: oversize.length,
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
@@ -237,6 +268,10 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued with ${FREE_SLOTS} or more free slots in ${freeSlot}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
+  const asleep = latest?.sleeping;
+  if (asleep && asleep.gb > 0) flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes, ` +
+    `${asleep.gb} GB at ${clock(Date.parse(latest.at))} in ${asleep.workers} whole workers and ${asleep.kernels} kernels: ${asleep.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")}.` });
+  for (const line of oversize) flagged.push({ kind: "oversized", excerpt: line });
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
@@ -383,7 +418,8 @@ async function main(): Promise<void> {
   const now = Date.now();
   const dataDir = chatDataDir();
   const poolDir = join(homedir(), ".config", "pi-pool");
-  const watch = await readWatch(dataDir, now - 2 * WINDOW_MS, now);
+  const day = await readWatch(dataDir, now - DAY_MS, now);
+  const watch = day.filter(line => Date.parse(line.at) >= now - 2 * WINDOW_MS);
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
   const config = await readJson(join(poolDir, "config.json")) as { mac_working_max?: number } | null;
@@ -408,7 +444,7 @@ async function main(): Promise<void> {
   const boardStore = new BoardStore(dataDir);
   const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
   const result = measure({
-    now, watch,
+    now, watch, day,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
     okLimit: typeof config?.mac_working_max === "number" ? config.mac_working_max : 15,

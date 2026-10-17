@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { cutJobsHoldingWork, findCutJobs, interruptionProof, measure, readDaemonStops, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutJobsHoldingWork, FAR_ABOVE, findCutJobs, interruptionProof, measure, readDaemonStops, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
@@ -244,4 +244,20 @@ test("a run wake whose run reads only errors for over 10 minutes is a hold", () 
   assert.deepEqual(facts.holds.map(hold => [hold.what, (NOW - hold.from) / 60_000, (NOW - hold.to) / 60_000]),
     [["wake on unreadable run 38646889377", 30, 2], ["wake on unreadable run 39068436878", 3, 3]]);
   assert.equal(measure(inputs({ log: facts })).metrics.queue_holds_30, 1);
+});
+
+test("sleeping_gb averages what sessions idle past the idle window held over the window, and a harness process over FAR_ABOVE times its day's median is flagged", () => {
+  const sleeping = (gb: number) => ({ sleeping: { gb, workers: 1, kernels: 0, trees: [{ root: "lmb", tree: "launch main bro", gb }] } });
+  const watch = [line(40, sleeping(9)), line(20, sleeping(1.5)), line(10, sleeping(0.5)), line(1, { ...sleeping(0.25), serviceGb: 3.2,
+    top: [{ pid: 5784, gb: 2.6, sessions: 9, root: "vp", tree: "VP" }, { pid: 18869, gb: 0.7, sessions: 1, root: "ci", tree: "VP of CI" }] })];
+  const day = Array.from({ length: 60 }, (_, index) => line(30 + index, { workers: 10, workerGb: 3.3, serviceGb: 1 }));
+  const output = measure(inputs({ watch, day }));
+  assert.equal(output.metrics.sleeping_gb, 0.75, "the 40 min old line is outside the 30 min window");
+  assert.equal(output.metrics.oversized_procs, 2);
+  const flags = output.flagged.filter(flag => flag.kind === "oversized").map(flag => flag.excerpt);
+  assert.match(flags[0]!, /Prime worker 5784 \(VP, 9 sessions\) holds 2.6 GB, over 3x the day's median worker of 0.33 GB/);
+  assert.match(flags[1]!, /the chat service holds 3.2 GB/);
+  assert.match(output.flagged.find(flag => flag.kind === "sleeping")!.excerpt, /0.25 GB at .* in 1 whole workers and 0 kernels: launch main bro 0.25 GB/);
+  assert.equal(FAR_ABOVE, 3);
+  assert.equal(measure(inputs({ watch: [line(1)] })).metrics.sleeping_gb, 0, "lines before the watch counted it read 0");
 });
