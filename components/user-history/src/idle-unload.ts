@@ -9,9 +9,12 @@ import type { SessionSummary } from "prime-agent";
  * Roots once stopped after one quiet minute, and on 10-17 from 21:29Z babysitter, 01a10810 and 'wiki dream memory moves 10-18' were each stopped
  * 4 times in 11 minutes, each time reloaded 1 to 2 minutes later by an agent message, a board.wake or a check-in, so one quiet minute only
  * traded a kernel for a reload.
+ * A chat the service detached for idleEvictionMinutes (dormant) is stopped too. Before 10-18 every chat was left out, and the detach alone did
+ * not free memory: at 23:45Z on 10-17, 18 of 23 workers held only sleeping sessions (5.3 GB, plus 1.2 GB in their kernels), among them six
+ * paused chats idle 31 to 50 min (api portal vp, frontend bro, launch main bro, spec and monitoring, SEO guy, ops guy).
  */
-function quiet(row: SessionSummary, input: { chats: ReadonlySet<string>; pool: ReadonlySet<string> }): boolean {
-  return row.lifecycle === "live" && row.activeSessionId !== undefined && row.workerState === "ready" && !input.chats.has(row.sessionId) &&
+function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string> }): boolean {
+  return row.lifecycle === "live" && row.activeSessionId !== undefined && row.workerState === "ready" && !input.attached.has(row.sessionId) &&
     row.activity === "idle" && !row.isSessionActive && !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren &&
     !row.isRunningTools && row.attachedClients === 0 && !row.directAttachedClients && !row.unfinishedActionCount &&
     (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !input.pool.has(row.sessionId);
@@ -29,10 +32,11 @@ function busyAncestors(rows: readonly SessionSummary[]): Set<string> {
 }
 
 /**
- * The rows the daemon lists that `unload` may stop: a top-level job that is not a chat, or a subagent, idle for `idleMs` with nothing running,
- * attached, queued or scheduled in it or below it. `idleMs` null (idle eviction off) stops none.
+ * The rows the daemon lists that `unload` may stop: a top-level session (a job, or a chat that is not in `attached`, the chats the service still
+ * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it. `idleMs` null (idle
+ * eviction off) stops none.
  */
-export function unloadPlan(rows: readonly SessionSummary[], input: { chats: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null }): SessionSummary[] {
+export function unloadPlan(rows: readonly SessionSummary[], input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null }): SessionSummary[] {
   const { idleMs } = input;
   if (idleMs === null) return [];
   const busy = busyAncestors(rows);

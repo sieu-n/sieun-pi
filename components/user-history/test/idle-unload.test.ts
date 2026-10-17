@@ -14,13 +14,13 @@ const isRoot = (row: SessionSummary): boolean => (row.rlmDepth ?? 0) === 0 && ro
 // harness minutes. Prime's idle sweep had not stopped idle roots: each sweep ends at the first worker that "did not stop".
 const day15 = load("daemon-rows-1015-2122.json");
 const at15 = Date.parse(day15.takenAt);
-const plan15 = unloadPlan(day15.rows, { chats: new Set(day15.chats), pool: new Set(day15.pool), now: at15, idleMs: TEN_MIN });
+const plan15 = unloadPlan(day15.rows, { attached: new Set(day15.chats), pool: new Set(day15.pool), now: at15, idleMs: TEN_MIN });
 
 test("the 10-15 rows unload the top-level jobs idle for idleEvictionMinutes with nothing running, queued or scheduled", () => {
   const roots = plan15.filter(isRoot);
   assert.ok(roots.length >= 1, `${roots.length} roots`);
   for (const row of roots) {
-    assert.ok(!day15.chats.includes(row.sessionId), "never a chat");
+    assert.ok(!day15.chats.includes(row.sessionId), "never a chat the service holds attached");
     assert.ok(!day15.pool.includes(row.sessionId), "never one with a turn working or queued in pi-pool");
     assert.ok(at15 - Date.parse(row.lastActivityAt!) >= TEN_MIN);
   }
@@ -28,12 +28,12 @@ test("the 10-15 rows unload the top-level jobs idle for idleEvictionMinutes with
 
 test("a session with a heartbeat, a client attached, a running child, a queued input or idleEvictionMinutes of quiet missing keeps its worker", () => {
   const base = plan15.find(isRoot)!;
-  const input = { chats: new Set<string>(), pool: new Set<string>(), now: at15, idleMs: TEN_MIN };
+  const input = { attached: new Set<string>(), pool: new Set<string>(), now: at15, idleMs: TEN_MIN };
   for (const change of [{ hasRegisteredHeartbeat: true }, { hasRegisteredCronJob: true }, { attachedClients: 1 }, { hasRunningRlmChildren: true },
     { sessionActions: { queuedCount: 1, steering: [], followUps: [] } }, { activity: "working" }, { lastActivityAt: new Date(at15 - TEN_MIN + 60_000).toISOString() }] as Partial<SessionSummary>[]) {
     assert.deepEqual(unloadPlan([{ ...base, ...change } as SessionSummary], input), [], JSON.stringify(change));
   }
-  assert.deepEqual(unloadPlan([base], { ...input, chats: new Set([base.sessionId]) }), []);
+  assert.deepEqual(unloadPlan([base], { ...input, attached: new Set([base.sessionId]) }), [], "a chat the service holds attached stays");
   assert.deepEqual(unloadPlan([base], { ...input, idleMs: null }), [], "idle eviction off stops none");
 });
 
@@ -41,7 +41,7 @@ test("a session with a heartbeat, a client attached, a running child, a queued i
 // sweep timing out. 57 idle subagents stayed resident inside trees that still ran, because the unload stopped only roots.
 const day17 = load("daemon-rows-1017-2133.json");
 const at17 = Date.parse(day17.takenAt);
-const plan17 = unloadPlan(day17.rows, { chats: new Set(day17.chats), pool: new Set(day17.pool), now: at17, idleMs: TEN_MIN });
+const plan17 = unloadPlan(day17.rows, { attached: new Set(day17.chats), pool: new Set(day17.pool), now: at17, idleMs: TEN_MIN });
 const children17 = plan17.filter(row => !isRoot(row));
 
 test("the 10-17 rows stop each subagent idle for idleEvictionMinutes with nothing at work below it", () => {
@@ -59,15 +59,26 @@ test("the 10-17 rows stop each subagent idle for idleEvictionMinutes with nothin
 test("a root reloaded by a message 1 to 2 minutes after it went quiet is not stopped in between", () => {
   const root = plan15.find(isRoot)!;
   for (const quietMs of [60_000, 2 * 60_000, 4 * 60_000]) {
-    assert.deepEqual(unloadPlan([{ ...root, lastActivityAt: new Date(at15 - quietMs).toISOString() }], { chats: new Set(), pool: new Set(), now: at15, idleMs: TEN_MIN }), []);
+    assert.deepEqual(unloadPlan([{ ...root, lastActivityAt: new Date(at15 - quietMs).toISOString() }], { attached: new Set(), pool: new Set(), now: at15, idleMs: TEN_MIN }), []);
   }
 });
 
 test("a subagent with a session at work below it keeps its worker", () => {
   const child = children17[0]!;
-  const input = { chats: new Set<string>(), pool: new Set<string>(), now: at17, idleMs: TEN_MIN };
+  const input = { attached: new Set<string>(), pool: new Set<string>(), now: at17, idleMs: TEN_MIN };
   assert.equal(unloadPlan([child], input).length, 1);
   const middle = { ...child, sessionId: "below-0", activeSessionId: "below-0", parentSessionId: child.sessionId } as SessionSummary;
   const grandchild = { ...child, sessionId: "below-1", activeSessionId: "below-1", parentSessionId: "below-0", activity: "working" } as SessionSummary;
   assert.deepEqual(unloadPlan([child, middle, grandchild], input), []);
+});
+
+// `prime-agent list --json` at 23:44Z on 10-17 (sessions/2026/10/18/0844-idle-ram-unload): api portal vp, frontend bro and launch main bro sat
+// detached by the service (no client) for 11.7 min, each still in its own worker, because the unload left every chat out.
+test("a chat the service detached (dormant) is stopped once idle for idleEvictionMinutes, and one it holds attached is not", () => {
+  const root = plan15.find(isRoot)!;
+  const chat = { ...root, sessionId: "chat-0", activeSessionId: "chat-0", lastActivityAt: new Date(at15 - TEN_MIN - 42_000).toISOString() } as SessionSummary;
+  const input = { attached: new Set<string>(), pool: new Set<string>(), now: at15, idleMs: TEN_MIN };
+  assert.deepEqual(unloadPlan([chat], input).map(row => row.sessionId), ["chat-0"]);
+  assert.deepEqual(unloadPlan([chat], { ...input, attached: new Set(["chat-0"]) }), []);
+  assert.deepEqual(unloadPlan([{ ...chat, attachedClients: 1 }], input), [], "a client still attached keeps it");
 });
