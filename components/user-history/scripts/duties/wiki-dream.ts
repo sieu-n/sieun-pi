@@ -11,7 +11,7 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
- * - wiki-health's stale list plus `git log` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
+ * - wiki-health's stale list plus `git log --first-parent` and `git ls-tree` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
  * wiki-health judges the pages as committed at HEAD, so an uncommitted page edit in the shared checkout neither hides nor adds a problem.
  * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
  * An input it cannot read counts in `source_errors` and writes 999999 for the metrics that input feeds, so the run misses and says why.
@@ -177,25 +177,31 @@ export function lastChanged(text: string): Map<string, number> {
 export const verifiedUntil = (lastVerified: string): number => Date.parse(`${lastVerified}T23:59:59Z`);
 
 /**
- * Pages behind their code: a `source_refs` path (a file, or any file under a folder) changed in a commit after the page's
- * `last_verified` day and before `since`, the start of the last measured run, so the last dream run had the change in front of it.
- * The engine compares file mtimes, and a checkout or stash in the shared tree rewrites them with no content change: on 2026-10-15 30 of
- * the 75 refs it listed had no commit after the page's check, and apps/admin/index.html, checked on 10-14, was listed for 3 such refs.
- * A ref git has no commit for (an untracked file) keeps the engine's verdict.
+ * Pages behind their code: a `source_refs` path (a file, or any file under a folder) changed on the tip after the page's `last_verified`
+ * day. `changed` must date each file by the tip commit that brought the change (`git log --first-parent --diff-merges=first-parent`):
+ * on 2026-10-16 merge 10ca745578 brought side commits dated 10-15 01:02Z, and 7 pages checked on 10-15 cited files they changed.
+ * Every behind page counts, however recent the change. The run's verdict is its re-measure after its own job (`effectiveRun`), and a
+ * cutoff at the last run's start hid the newest changes from the brief that the re-measure then counted: on 10-17 the brief listed 2
+ * pages and the re-measure 9. The engine compares file mtimes, and a checkout or stash in the shared tree rewrites them with no content
+ * change, so a tracked ref with no tip commit after the check is not behind (`tracked` lists HEAD's files under the refs). On 2026-10-15
+ * 30 of the 75 refs the engine listed had no commit after the page's check. An untracked ref keeps the engine's verdict.
  */
-export function pagesBehindCode(pages: readonly StalePage[], changed: ReadonlyMap<string, number>, since: number): { path: string; lastVerified: string; refs: { ref: string; at: number }[] }[] {
+export function pagesBehindCode(pages: readonly StalePage[], changed: ReadonlyMap<string, number>, tracked: ReadonlySet<string>): { path: string; lastVerified: string; refs: { ref: string; at: number }[] }[] {
+  const under = (ref: string, file: string): boolean => file === ref || file.startsWith(`${ref.replace(/\/+$/, "")}/`);
   const commitAt = (ref: string): number | undefined => {
-    const folder = `${ref.replace(/\/+$/, "")}/`;
     let newest: number | undefined;
-    for (const [file, at] of changed) if ((file === ref || file.startsWith(folder)) && (newest === undefined || at > newest)) newest = at;
+    for (const [file, at] of changed) if (under(ref, file) && (newest === undefined || at > newest)) newest = at;
     return newest;
   };
+  const isTracked = (ref: string): boolean => { for (const file of tracked) if (under(ref, file)) return true; return false; };
   return pages.map(page => {
     const until = verifiedUntil(page.last_verified);
     const refs = page.staleRefs.flatMap(({ ref, modified }) => {
       const at = commitAt(ref);
-      if (at === undefined) { const engineAt = Date.parse(modified); return Number.isFinite(engineAt) && engineAt >= since ? [] : [{ ref, at: Number.isFinite(engineAt) ? engineAt : 0 }]; }
-      return at > until && at < since ? [{ ref, at }] : [];
+      if (at !== undefined) return at > until ? [{ ref, at }] : [];
+      if (isTracked(ref)) return [];
+      const engineAt = Date.parse(modified);
+      return [{ ref, at: Number.isFinite(engineAt) ? engineAt : 0 }];
     });
     return { path: page.path, lastVerified: page.last_verified, refs };
   }).filter(page => page.refs.length);
@@ -242,7 +248,7 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
 /** The order the job reads flagged items in, with a cap per kind; the list stops at FLAGGED_MAX. */
 export const FLAG_ORDER: readonly [string, number][] = [
   ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
-  ["missing_meta", 6], ["stale_vs_code", 10], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
+  ["missing_meta", 6], ["stale_vs_code", 30], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
   ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
@@ -294,9 +300,12 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   if (stalePages) {
     const refs = [...new Set(stalePages.flatMap(page => page.staleRefs.map(ref => ref.ref)))];
     const oldest = Math.min(...stalePages.map(page => verifiedUntil(page.last_verified)).filter(Number.isFinite));
-    behind = !refs.length ? [] : await deps.exec("git", ["-C", deps.repos.wiki, "log", "HEAD", "--format=%x1e%ct", "--name-only", "--no-renames",
-      ...(Number.isFinite(oldest) ? [`--since=${new Date(oldest).toISOString()}`] : []), "--", ...refs], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS })
-      .then(text => pagesBehindCode(stalePages, lastChanged(text), since), error => fail("git log source_refs", error));
+    const git = (args: readonly string[]): Promise<string> => deps.exec("git", ["-C", deps.repos.wiki, ...args], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS });
+    behind = !refs.length ? [] : await Promise.all([
+      git(["log", "HEAD", "--first-parent", "--diff-merges=first-parent", "--format=%x1e%ct", "--name-only", "--no-renames",
+        ...(Number.isFinite(oldest) ? [`--since=${new Date(oldest).toISOString()}`] : []), "--", ...refs]),
+      git(["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ...refs]),
+    ]).then(([log, files]) => pagesBehindCode(stalePages, lastChanged(log), new Set(files.split("\0").filter(Boolean))), error => fail("git log source_refs", error));
   }
 
   const metrics: Record<string, number> = {};

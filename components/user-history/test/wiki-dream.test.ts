@@ -51,14 +51,18 @@ const HARNESS = {
   },
   refinements: [{ id: "refine_1", trigger: "old", changes: ["x"], created_at: iso(-3) }, { id: "refine_2", trigger: "OOM again", changes: ["update memory"], created_at: iso(-0.4) }],
 };
-// The engine lists 3 pages by mtime. Page a's ref changed in a commit after its check and before the last run; page b's refs only had their
-// mtime rewritten (no commit after its check); page c's ref changed after the last run started; page d cites a file git never had.
+// The engine lists 6 pages by mtime. Page a's refs changed in tip commits after its check; page b's ref last changed before its check;
+// page c's ref changed after the last run started; page d cites a file git never had; page e's tracked ref only had its mtime rewritten
+// (no tip commit since the oldest check); page f cites an untracked file the engine saw change.
 const STALE = { checkable: 5, count: 4, stale: [
   { path: "apps/a.html", title: "A", last_verified: "2026-10-01", staleRefs: [{ ref: "convex/a.ts", modified: iso(0) }, { ref: "apps/x/src", modified: iso(0) }] },
   { path: "apps/b.html", title: "B", last_verified: "2026-10-10", staleRefs: [{ ref: "convex/b.ts", modified: iso(0) }] },
   { path: "apps/c.html", title: "C", last_verified: "2026-10-10", staleRefs: [{ ref: "convex/c.ts", modified: iso(0) }] },
   { path: "apps/d.html", title: "D", last_verified: "2026-10-10", staleRefs: [{ ref: "convex/gone.ts", modified: "missing — ref no longer exists" }] },
+  { path: "apps/e.html", title: "E", last_verified: "2026-10-10", staleRefs: [{ ref: "convex/e.ts", modified: iso(0) }] },
+  { path: "apps/f.html", title: "F", last_verified: "2026-10-10", staleRefs: [{ ref: "scripts/local.json", modified: iso(-0.2) }] },
 ] };
+const TRACKED = ["convex/a.ts", "apps/x/src/deep/file.ts", "convex/b.ts", "convex/c.ts", "convex/e.ts"];
 const sec = (at: number): number => Math.floor(at / 1000);
 const GIT_REFS = `\x1e${sec(NOW - 0.5 * DAY)}\n\nconvex/c.ts\n\x1e${sec(NOW - 2 * DAY)}\n\nconvex/a.ts\napps/x/src/deep/file.ts\n` +
   `\x1e${sec(Date.parse("2026-10-05T00:00:00Z"))}\n\nconvex/b.ts\n`;
@@ -72,7 +76,7 @@ function deps(over: { health?: string | Error; files?: Record<string, string | u
   const exec: Exec = async (file, args, options) => {
     calls.push({ file, args, cwd: options.cwd });
     if (file === "/bin/node") { const health = over.health ?? JSON.stringify({ ...HEALTH, stale: over.stale ?? STALE }); if (health instanceof Error) throw health; return health; }
-    if (file === "git") { if (over.git) throw over.git; if (args.includes("--format=%x1e%ct")) return GIT_REFS; return args[1] === "/wiki" ? GIT_WIKI : GIT_PI; }
+    if (file === "git") { if (over.git) throw over.git; if (args.includes("--format=%x1e%ct")) return GIT_REFS; if (args.includes("ls-tree")) return TRACKED.join("\0") + "\0"; return args[1] === "/wiki" ? GIT_WIKI : GIT_PI; }
     throw new Error(`unexpected ${file}`);
   };
   return { now: NOW, exec, node: "/bin/node", calls, repos: { wiki: "/wiki", pi: "/pi" }, files: { corrections: "/c.json", harness: "/h.json", ledger: "/l.json" },
@@ -103,12 +107,13 @@ test("wiki dream: open and reopened classes are open; only ones the last run alr
   assert.deepEqual(states.back.map(([slug]) => slug), ["mac"]);
 });
 
-test("wiki dream: a page is behind its code only for a commit after its check and before the last run; mtime alone does not count", () => {
+test("wiki dream: a page is behind its code for any tip commit after its check, however recent; mtime alone on a tracked file does not count", () => {
   const changed = lastChanged(GIT_REFS);
   assert.equal(changed.get("convex/a.ts"), sec(NOW - 2 * DAY) * 1000);
-  const behind = pagesBehindCode(parseStale(STALE), changed, NOW - DAY);
-  assert.deepEqual(behind.map(page => [page.path, page.refs.map(ref => ref.ref)]), [["apps/a.html", ["convex/a.ts", "apps/x/src"]], ["apps/d.html", ["convex/gone.ts"]]]);
-  assert.deepEqual(pagesBehindCode(parseStale(STALE), changed, NOW).map(page => page.path), ["apps/a.html", "apps/c.html", "apps/d.html"], "the change after the last run counts once a run saw it");
+  const behind = pagesBehindCode(parseStale(STALE), changed, new Set(TRACKED));
+  assert.deepEqual(behind.map(page => [page.path, page.refs.map(ref => ref.ref)]),
+    [["apps/a.html", ["convex/a.ts", "apps/x/src"]], ["apps/c.html", ["convex/c.ts"]], ["apps/d.html", ["convex/gone.ts"]], ["apps/f.html", ["scripts/local.json"]]],
+    "c changed 12 h ago and is in the brief now, so the run's re-measure counts only pages the brief listed");
   assert.throws(() => parseStale({}), /no stale list/);
 });
 
@@ -148,12 +153,14 @@ test("wiki dream: measures every contract metric from the inputs", async () => {
   const result = await measureDream(d, [run(NOW - DAY, "missed")]);
   const health = d.calls.find(call => call.file === "/bin/node")!;
   assert.deepEqual([health.cwd, health.args], ["/wiki", ["apps/llm-wiki/scripts/wiki-health.mjs", "--since", new Date(NOW - DAY).toISOString()]]);
-  assert.deepEqual(d.calls.filter(call => call.file === "git").map(call => call.args[1]), ["/wiki", "/pi", "/wiki"]);
+  assert.deepEqual(d.calls.filter(call => call.file === "git").map(call => call.args[1]), ["/wiki", "/pi", "/wiki", "/wiki"]);
+  const refsLog = d.calls.find(call => call.args.includes("--format=%x1e%ct"))!;
+  assert.ok(refsLog.args.includes("--first-parent") && refsLog.args.includes("--diff-merges=first-parent"), "a merged side commit dates from its merge onto the tip");
   const plans = { lint: glide(LINT_GLIDE, NOW), memory: glide(MEMORY_GLIDE, NOW) };
   assert.deepEqual(plans, { lint: 235, memory: 276 });
   assert.deepEqual(result.metrics, {
-    hub_orphans: 10, dead_links: 4, session_links: 88, superseded_linked: 8, missing_meta: 60, stale_vs_code: 16, pages_behind_code: 2,
-    wiki_problems: 10 + 4 + 88 + 8 + 60 + 2, lint_over_glide: 240 - 235,
+    hub_orphans: 10, dead_links: 4, session_links: 88, superseded_linked: 8, missing_meta: 60, stale_vs_code: 16, pages_behind_code: 4,
+    wiki_problems: 10 + 4 + 88 + 8 + 60 + 4, lint_over_glide: 240 - 235,
     dup_unjudged: 2, memory_rules_over_glide: 3 - 276, open_mistakes: 2, mistakes_back: 1, dream_reverts: 1, pages_retouched: 1, source_errors: 0,
   });
   const kinds = result.flagged!.map(slice => slice.kind);
