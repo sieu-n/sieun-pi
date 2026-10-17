@@ -417,6 +417,32 @@ class ResumePausedTests(unittest.TestCase):
         report = self.run_saved_owners([child, parked], restarts=[window])
         self.assertEqual(report["paused"], [])
 
+    def test_a_reopened_job_that_refuses_its_full_id_gets_the_continue_on_its_live_id(self):
+        # 10-17 19:51Z: the chat service reopened six archived jobs and each ran again, but the send to the full id answered
+        # "Unknown active session", so the pass logged six failed continues.
+        sid = "01a14123-ebe5-76a4-9e23-97a3fa6d9b40"
+        self.deleted_owner("01a1180e-chat", "sub-bbbb0001", sid, 30.01, 30)
+        stop = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
+
+        def send(target, text):
+            if target == sid:
+                raise resume_paused.CommandError(f"prime-agent send --json {sid} continue failed (1): Error: Unknown active session: {sid}")
+            self.sent.append((target, text))
+            return {"deliveryStatus": "delivered"}
+
+        with patch.object(resume_paused, "list_sessions", return_value=[{"id": "56018fdc0c63", "sessionId": sid, "lifecycle": "live"}]):
+            with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                    patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                    patch.object(resume_paused, "daemon_restarts", return_value=[stop]), patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+                self.sessions = resume_paused.with_saved_owners(self.sessions, resume_paused.saved_rows({sid}), {sid})
+                self.owners(sid)
+                args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                          only="", state=str(self.root / "state.json"))
+                with patch.object(resume_paused, "send", side_effect=send), patch.object(resume_paused, "pool_bin", return_value=None):
+                    report = resume_paused.resume(self.sessions, args, NOW)
+        self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered"}])
+        self.assertEqual(self.sent, [("56018fdc0c63", "continue")])
+
     def test_an_archived_owner_in_the_default_list_counts_as_saved(self):
         full = "01a141b8-c786-723a-baec-b975a1a24279"
         listed = [{"id": full, "sessionId": full, "lifecycle": "archived"}, {"id": "other", "lifecycle": "archived"}]

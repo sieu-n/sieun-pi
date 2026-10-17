@@ -661,6 +661,18 @@ def send(target, message):
     return {"deliveryStatus": j.get("deliveryStatus"), "deliveryMode": j.get("deliveryMode")}
 
 
+def live_id(session_id):
+    """The short id the daemon now runs `session_id` under, or None. A job the chat service just reopened from its file runs on a new
+    worker, and a send to its full id answers "Unknown active session": at 19:51Z on 10-17 six reopened jobs ran again while the log
+    said their continue failed."""
+    try:
+        rows = list_sessions()
+    except CommandError:
+        return None
+    row = next((s for s in rows if (s.get("sessionId") or s["id"]) == session_id and s.get("lifecycle") == "live"), None)
+    return row["id"] if row else None
+
+
 def direct_resume(paused, args, state, now):
     """--direct: each interrupted run gets the message itself, and no head gets a list. A hung run takes no message until
     it is aborted, and a run in a dead worker takes none at all."""
@@ -672,11 +684,16 @@ def direct_resume(paused, args, state, now):
         elif args.dry_run:
             res = "dry-run"
         else:
+            text = NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message
             try:
-                res = send(p.get("target", p["id"]), NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message)
+                res = send(p.get("target", p["id"]), text)
             except CommandError as error:
-                res = {"error": str(error)[:300]}
-            else:
+                live = live_id(p["session_id"]) if "target" in p and "Unknown active session" in str(error) else None
+                try:
+                    res = send(live, text) if live else {"error": str(error)[:300]}
+                except CommandError as again:
+                    res = {"error": str(again)[:300]}
+            if "error" not in res:
                 state[p["session_id"]] = p["errored_at"]
                 sent_any = True
         actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
