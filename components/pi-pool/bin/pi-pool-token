@@ -106,6 +106,13 @@ def interrupted_signal(error):
     return None
 
 
+def term_with_parent():
+    """Linux's /bin/sh (dash) runs the hook as a child instead of exec'ing it, so Prime's timeout SIGTERM reaches only the shell."""
+    if sys.platform == "linux":
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)
+
+
 def run_token(source, argv):
     provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
     if provider not in ("anthropic", "openai-codex"):
@@ -129,6 +136,7 @@ def run_token(source, argv):
         raise SystemExit(128 + signum)
 
     previous_handler = signal.signal(signal.SIGTERM, killed_while_loading)
+    term_with_parent()
     original = sys.stdout
     out = sys.stdout = CountedStdout(original)
     try:
