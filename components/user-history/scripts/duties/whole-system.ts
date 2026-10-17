@@ -159,7 +159,7 @@ export interface Inputs {
   /** pi-pool's limit when the Mac reads ok (`mac_working_max`). */
   okLimit: number;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused). */
-  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[] }[];
+  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
   cut?: readonly CutJob[];
 }
@@ -195,10 +195,12 @@ export function measure(input: Inputs): PrecheckOutput {
     if (why.length) dirty.push(`${clock(to)} ${why.join(", ")}`);
     else clean++;
   }
+  // Each chat's newest measured check-in, as its run measured it, and only while it is under one check-in interval old. On 10-17 the count read
+  // VP of CI's after-job value, 1, while its 19:36Z run measured 26, and took counts 20 h old as current after no check-in ran from 00:05Z on.
   const stuck = input.chats.map(chat => {
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "skipped" && entry.verdict !== "error");
-    const value = run ? effectiveRun(run).metrics.stuck_steps?.value ?? 0 : 0;
-    return { chat, value, at: run?.at };
+    const fresh = run !== undefined && (chat.everyMs === undefined || now - run.at <= chat.everyMs);
+    return { chat, value: fresh ? run.metrics.stuck_steps?.value ?? 0 : 0, at: run?.at };
   }).filter(entry => entry.value > 0);
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
@@ -382,7 +384,7 @@ async function main(): Promise<void> {
   for (const id of ids) {
     const file = await store.read(id);
     const paused = activePause(await settings.get(id), now) !== null;
-    chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id),
+    chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs,
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
   const live = ids.filter(id => !archived.has(id));

@@ -54,6 +54,20 @@ test("stuck steps add up each chat's newest measured check-in", () => {
   assert.equal(output.metrics.stuck_steps_all, 3);
 });
 
+test("stuck steps count each chat's check-in as its run measured it, and drop a count older than one check-in interval (VP of CI 10-17)", () => {
+  const run = (minutesAgo: number, stuck: number, after?: number) => ({ duty: "checkin", at: NOW - minutesAgo * 60_000, slot: 0, trigger: "schedule", ms: 1, verdict: "missed",
+    metrics: { stuck_steps: { value: stuck, target: 0, op: "<=", met: false } }, summary: "",
+    ...(after === undefined ? {} : { after: { at: NOW - (minutesAgo - 5) * 60_000, verdict: "missed", metrics: { stuck_steps: { value: after, target: 0, op: "<=", met: false } } } }) }) as unknown as Inputs["chats"][number]["runs"][number];
+  const chat = (id: string, everyMs: number, runs: Inputs["chats"][number]["runs"]) => ({ id, name: id, duties: [{ id: "checkin", name: "Check-in" }], runs, everyMs });
+  const output = measure(inputs({ chats: [
+    chat("VP of CI", 30 * 60_000, [run(20, 26, 1)]),
+    chat("ops guy", 30 * 60_000, [run(20 * 60, 7)]),
+    chat("Crawler VP", 60 * 60_000, [run(50, 2)]),
+  ] }));
+  assert.equal(output.metrics.stuck_steps_all, 28, "26 as VP of CI's run measured it, not its after-job 1; ops guy's 20 h old 7 is dropped");
+  assert.deepEqual(output.flagged.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["VP of CI", "Crawler VP"]);
+});
+
 test("whole-system.duty.json: a duty every 30 minutes on the owner's words, whose metrics the precheck writes", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/whole-system.duty.json"), "utf8")), "d7", 0);
   assert.deepEqual(duty.schedule, { kind: "every", minutes: 30 });
