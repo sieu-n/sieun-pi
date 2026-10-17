@@ -153,6 +153,32 @@ test("send once: a send whose daemon client closed mid-send counts like a timeou
   assert.deepEqual(await files(), []);
 });
 
+test("send once: a send cut off by a service restart is looked for by the next service, so the copy that landed is not sent again", async () => {
+  // 10-17 21:02, 21:22 and 22:45Z: a release kickstart killed the service while a wake send was out; it landed, and the new service sent it again.
+  const daemon = await slowDaemon();
+  const killed = new SendOnce({ file: join(daemon.agentDir, "unconfirmed-sends.json"), log: () => {}, now: daemon.now,
+    send: async (_session, text) => { await appendFile(daemon.file, entry(text, daemon.now() + 2_000)); return new Promise<"sent">(() => {}); },
+    target: async () => ({ queued: [], busy: false }), fileOf: session => sessionFileOf(session, daemon.agentDir) });
+  void killed.deliver(SESSION, "[wake] Run 39071862302 finished: failure");
+  await new Promise(resolve => setTimeout(resolve, 50));
+  daemon.state.mode = "ok";
+  daemon.at(NOW + 40_000);
+  assert.equal(await daemon.once.deliver(SESSION, "[wake] Run 39071862302 finished: failure"), "sent");
+  assert.equal(daemon.state.sends, 0);
+  assert.equal(await daemon.copies(), 1);
+});
+
+test("send once: a send the daemon refuses outright leaves no record, so the next try goes at once", async () => {
+  const daemon = await slowDaemon();
+  const refusing = new SendOnce({ file: join(daemon.agentDir, "unconfirmed-sends.json"), log: () => {}, now: daemon.now,
+    send: async () => { throw new Error("Target session has too many pending messages: 20 unfinished, limit is 20"); },
+    target: async () => null, fileOf: session => sessionFileOf(session, daemon.agentDir) });
+  await assert.rejects(refusing.deliver(SESSION, "[wake] hi"), /too many pending/);
+  daemon.state.mode = "ok";
+  assert.equal(await daemon.once.deliver(SESSION, "[wake] hi"), "sent");
+  assert.equal(daemon.state.sends, 1);
+});
+
 test("send once: the record of a timed-out send outlives a service restart", async () => {
   const daemon = await slowDaemon();
   daemon.state.mode = "queues";

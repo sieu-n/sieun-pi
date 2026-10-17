@@ -149,14 +149,20 @@ export class SendOnce {
       if (state !== "absent") throw new Error(`the send that timed out at ${new Date(earlier.since).toISOString()} is ${state === "queued" ? "still queued in its worker" : state === "busy" ? "not in its file yet and the target is busy, so the daemon may still hold it" : "not readable now"}; not sent again`);
     }
     const since = earlier?.since ?? this.now();
+    const texts = [...new Set([...earlier?.texts ?? [], text.trim()])];
+    // Written before the send: a service restart mid-send (a release kickstart) leaves the record, so the next service looks first. 10-17 at
+    // 21:02, 21:22 and 22:45Z a send that the old service had out when launchd killed it landed, and the new service sent it again.
+    await this.save(record => record.set(key, { since, texts }));
     try {
       const result = await this.deps.send(session, text);
       await this.settle(key);
       return result;
     } catch (error) {
-      if (!isSendTimeout(error)) throw error;
-      const texts = [...new Set([...earlier?.texts ?? [], text.trim()])];
-      await this.save(record => record.set(key, { since, texts }));
+      if (!isSendTimeout(error)) {
+        if (earlier) await this.save(record => record.set(key, earlier));
+        else await this.settle(key);
+        throw error;
+      }
       const file = await this.deps.fileOf(session).catch(() => null);
       if (file && await landedAt(file, texts, since)) { await this.settle(key); return "sent"; }
       throw error;
