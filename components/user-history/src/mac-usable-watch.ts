@@ -479,14 +479,20 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   return measured;
 }
 
-/** Samples once a minute until the returned stop is called; a sample still running when the next minute comes skips that minute. */
-export function startMacUsableWatch(source: WatchSource, everyMs = MINUTE): () => void {
+/** Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then once a minute until the returned stop is called; a sample still running when the next tick comes skips that tick. */
+export function startMacUsableWatch(source: WatchSource, everyMs = MINUTE, firstMs = 5_000): () => void {
   let running = false;
-  const timer = setInterval(() => {
+  let landed = false;
+  const tick = () => {
     if (running) return;
     running = true;
-    void sample(source).catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
-  }, everyMs);
+    void sample(source).then(line => { if (line) landed = true; })
+      .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
+  };
+  const timer = setInterval(tick, everyMs);
+  const first = setInterval(() => { if (landed) clearInterval(first); else tick(); }, firstMs);
   timer.unref();
-  return () => clearInterval(timer);
+  first.unref();
+  tick();
+  return () => { clearInterval(timer); clearInterval(first); };
 }

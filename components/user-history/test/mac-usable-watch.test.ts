@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { advanceMotion, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { advanceMotion, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, startMacUsableWatch, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { HARNESS_GB, HARNESS_TURNS, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -84,6 +84,23 @@ test("misses: a minute is on target only when every part holds; the worker footp
   assert.deepEqual(misses({ ...on, queue: { ...on.queue, oldestWaitS: TARGET.queueWaitS + 1 } }), ["queue"]);
   assert.deepEqual(misses({ ...on, queue: null }), [], "an unread queue misses no queue part");
   assert.deepEqual(TARGET, { idleMinutes: 30, queueWaitS: 706 });
+});
+
+test("startMacUsableWatch: writes its first line as soon as the catalog holds rows after a start, not a minute later", async () => {
+  // 10-17 22:12Z to 22:41Z: 8 chat releases restarted the service, the first tick came a full minute after each start, and 4 minutes had no line.
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-start-"));
+  let listed = false;
+  setTimeout(() => { listed = true; }, 30);
+  const stop = startMacUsableWatch({ dataDir: dir, rows: () => listed ? ROWS : [], chats: async () => new Set(["chatA", "chatB"]), title: () => null, queue: async () => QUEUE,
+    log: () => {}, footprints: async () => FOOTPRINTS, feed: async now => parseFeed(FEED, now), sockets: async () => new Map() }, MIN, 10);
+  try {
+    let lines: WatchLine[] = [];
+    for (let waited = 0; waited < 2_000 && !lines.length; waited += 20) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      lines = await readWatch(dir, Date.now() - MIN, Date.now());
+    }
+    assert.equal(lines.length, 1, "one line within 2 s of the start, from the first tick that saw rows");
+  } finally { stop(); }
 });
 
 test("sample: appends one line to the day's file under the data dir, and readWatch reads lines across the day files", async () => {
