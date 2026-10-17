@@ -63,3 +63,23 @@ for (const { name, saver, order } of cases) {
     });
   });
 }
+
+// 10-17: agent_message.send raised "'NoneType' object is not callable" in message-limit-check.py in 01a141b8 and a job of "grafana done
+// properly", whose kernels held the wrapper while rlm no longer had unchecked_host_request. A send goes out through Prime's own host_request.
+for (const lost of ["del rlm.unchecked_host_request", "import importlib; importlib.reload(rlm)", "rlm.host_request = agent_message.host_request; del rlm.unchecked_host_request"]) {
+  test(`a send goes out when the wrapper's saved host_request is gone: ${lost}`, { skip: !existsSync(python) && `no Prime kernel at ${python}` }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lost-host-request-"));
+    const script = [
+      "async def host(req): return {'status': 'ok', 'result': {'type': req['type'], 'message': req.get('message')}}",
+      "repl.host_request = host",
+      lost,
+      "async def main():",
+      "    reply = await agent_message.host_request('agent_message.send', {'message': 'done: 3 files', 'receiver_role': 'parent'})",
+      "    print(json.dumps(reply))",
+      "asyncio.run(main())",
+    ].join("\n");
+    const out = spawnSync(python, ["-c", SKILLS + messageCheckPrelude(dir) + script], { cwd: dir, encoding: "utf8" });
+    assert.equal(out.status, 0, out.stderr);
+    assert.deepEqual(last(out.stdout), { type: "agent_message.send", message: "done: 3 files" });
+  });
+}

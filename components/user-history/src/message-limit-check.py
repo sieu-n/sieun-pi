@@ -31,7 +31,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 12
+VERSION = 13
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -168,24 +168,46 @@ def held(payload, earlier, state, at):
     }
 
 
+def plain_request():
+    """Prime's own host_request: the one install saved, else rlm's when it is not this wrapper, else one built on rlm.repl."""
+    rlm = sys.modules.get("rlm")
+    for found in (getattr(rlm, "unchecked_host_request", None), getattr(rlm, "host_request", None)):
+        mine = getattr(getattr(found, "__code__", None), "co_filename", "").endswith("message-limit-check.py")
+        if callable(found) and not getattr(found, "limit_checked", False) and not mine:
+            return found
+    from rlm import repl, _parse_host_reply
+
+    async def bare(request_type, payload=None):
+        return _parse_host_reply(request_type, await repl.host_request({**(payload or {}), "type": request_type}))
+    return bare
+
+
 async def request(request_type, payload=None, *args, **kwargs):
+    # A kernel whose rlm module was reloaded or revived lost unchecked_host_request: on 10-17 agent_message.send then raised "'NoneType'
+    # object is not callable" here in 01a141b8 and a job of "grafana done properly". So the checks never block a send: if one fails, the
+    # request goes out through Prime's own host_request as it came.
+    real = plain_request()
     send = request_type == "agent_message.send" and isinstance(payload, dict)
-    if send:
-        text = payload.get("message")
-        reason = refusal(text, payload.get("receiver_role")) if isinstance(text, str) else None
-        if reason:
-            raise LimitRefused(reason)
-    # The live rlm module's function, looked up at each call.
-    real = getattr(sys.modules.get("rlm"), "unchecked_host_request", None)
-    direct = send and payload.get("target") != "all"
-    key = send_key(payload) if direct else None
-    earlier = UNCONFIRMED.get(key) if direct else None
-    if earlier:
-        state, at = await copy_state(real, payload, earlier)
-        if state == "landed":
-            UNCONFIRMED.pop(key, None)
-        if state != "absent":
-            return held(payload, earlier, state, at)
+    try:
+        if send:
+            text = payload.get("message")
+            reason = refusal(text, payload.get("receiver_role")) if isinstance(text, str) else None
+            if reason:
+                raise LimitRefused(reason)
+        direct = send and payload.get("target") != "all"
+        key = send_key(payload) if direct else None
+        earlier = UNCONFIRMED.get(key) if direct else None
+        if earlier:
+            state, at = await copy_state(real, payload, earlier)
+            if state == "landed":
+                UNCONFIRMED.pop(key, None)
+            if state != "absent":
+                return held(payload, earlier, state, at)
+    except LimitRefused:
+        raise
+    except Exception as error:
+        print(f"user-history: the message check failed ({error}); sent as it came", file=sys.stderr)
+        return await real(request_type, payload, *args, **kwargs)
     started = earlier["since"] if earlier else time.time()
     try:
         reply = await real(request_type, payload, *args, **kwargs)
@@ -225,7 +247,7 @@ def install() -> None:
         return
     if not getattr(rlm.host_request, "limit_checked", False):
         rlm.unchecked_host_request = rlm.host_request
-    request.__doc__ = rlm.unchecked_host_request.__doc__
+    request.__doc__ = getattr(getattr(rlm, "unchecked_host_request", None), "__doc__", None)
     try:
         __import__("agent_message")
     except ImportError:
