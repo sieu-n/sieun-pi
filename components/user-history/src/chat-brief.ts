@@ -27,7 +27,9 @@ export const CHAT_BRIEF: readonly string[] = [
   "Write in the owner's language like a coworker's text: answer first, plain sentences, no labels or report formatting (c18). Keep ids, hashes " +
     "and internal names out of sentences; link each job or thread by its exact name (c12). Push back with your reason when the " +
     "owner misses a fact or asks for something odd (c16).",
-  "A longer explanation goes on a wiki page a job writes as a plan step; send its link with tell_owner (c14). A job's start, " +
+  "A longer explanation, and any design or plan the owner must decide on however short, goes on a wiki page a job writes as a plan step; " +
+    "send its link with tell_owner, plus one summary line and the question (c14, c83). On 10-18 06:57 KST a chat spelled a sync design out in " +
+    "chat bullets and named no design page. A job's start, " +
     "steer or report gets one short line with its link, never the report (c9).",
   `Do only minute-long read-only look-ups yourself: a file, a job's report, \`attach_image\`, or \`bash()\` ` +
     `with ${SHELL_LIST} and no pipes or chaining. Any real task goes to a job, after your first reply answers the owner's question with the ` +
