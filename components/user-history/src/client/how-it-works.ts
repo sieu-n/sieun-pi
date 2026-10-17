@@ -69,7 +69,7 @@ const CHAT_RULES: Rule[] = [
   { id: "open-goals", title: "Open goals", value: q(BOARD_LIMITS.openGoals, "count"), setting: CODE,
     text: "Past this many open goals the check-in asks the chat to fold goals of one area. New work goes under the goal it belongs to.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openGoals" } },
   { id: "plan-items", title: "Plan size", value: q(BOARD_LIMITS.planItems, "count"), setting: CODE,
-    text: "The most goals and steps one plan holds.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.planItems" } },
+    text: "The most open goals and steps one plan holds. Done and dropped ones do not count.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.planItems" } },
   { id: "step-stale", title: "Stale wait", value: q(STEP_STALE_MS, "ms"), setting: CODE,
     text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,

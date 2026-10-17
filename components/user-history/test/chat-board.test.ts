@@ -114,7 +114,7 @@ test("chat board: a step added under a done goal reopens the goal and every done
   assert.deepEqual(statuses(blocked.board.plan), ["p1:todo", "p2:blocked", "p3:todo", "p5:todo", "p4:doing"], "a blocked goal between keeps its status");
 });
 
-test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_add and by plan_set); the item cap is 500", () => {
+test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_add and by plan_set); the cap of 500 counts open items only", () => {
   let board = run(emptyBoard(T0), [{ op: "plan_add", text: "root" }]).board;
   for (let depth = 1; depth < 12; depth++) board = run(board, [{ op: "plan_add", parent: `p${depth}`, text: `level ${depth}` }]).board;
   let deepest = board.plan[0]!;
@@ -127,8 +127,11 @@ test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_ad
   const set = run(emptyBoard(T0), parseBoardOps([{ op: "plan_set", items: [chain(1)] }]));
   assert.equal(set.summaries[0], "Set the plan: 12 items");
   assert.equal(BOARD_LIMITS.planItems, 500);
-  const full = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 500 }, (_, i) => ({ text: `g${i}`, status: "done" as const })) }]).board;
+  const closed = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 600 }, (_, i) => ({ text: `g${i}`, status: i % 2 ? "done" as const : "dropped" as const })) }]).board;
+  assert.equal(run(closed, [{ op: "plan_add", text: "601" }]).summaries[0], 'Added p601 "601"', "600 done and dropped items leave room, as on the Crawler VP's board on 10-15");
+  const full = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 500 }, (_, i) => ({ text: `g${i}`, status: i % 2 ? "doing" as const : "todo" as const })) }]).board;
   throwsKind(() => run(full, [{ op: "plan_add", text: "501" }]), "invalid");
+  throwsKind(() => run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 501 }, (_, i) => ({ text: `g${i}` })) }]), "invalid");
 });
 
 test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; at most 3 open agent asks", () => {

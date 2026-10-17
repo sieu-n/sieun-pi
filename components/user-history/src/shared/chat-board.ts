@@ -62,6 +62,12 @@ function walk<T extends Tree<T>>(items: readonly T[], visit: (item: T, depth: nu
   for (const item of items) { visit(item, depth); walk(item.children, visit, depth + 1); }
 }
 function count<T extends Tree<T>>(items: readonly T[]): number { let total = 0; walk(items, () => { total++; }); return total; }
+/**
+ * The open items that BOARD_LIMITS.planItems caps. Done and dropped items stay in the file but out of the agent's open plan, and counting them
+ * filled the Crawler VP's board on 10-15 (500 items, 312 closed), so every plan_add failed and the alert bridge retried 18 firings every tick.
+ */
+const openCount = (items: readonly PlanItem[]): number => { let total = 0; walk(items, item => { if (OPEN_STATUSES.has(item.status)) total++; }); return total; };
+const PLAN_FULL = `The open plan holds at most ${BOARD_LIMITS.planItems} goals and steps; mark finished ones done or dropped first.`;
 /** The item `id` with the chain of items above it, outermost first; null when no item has that id. */
 function find<T extends Tree<T>>(items: readonly T[], id: string, above: T[] = []): { item: T; ancestors: T[] } | null {
   for (const item of items) {
@@ -467,11 +473,11 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
           children: (input.children ?? []).map(build) };
       };
       const plan = op.items.map(build);
-      if (count(plan) > BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
+      if (openCount(plan) > BOARD_LIMITS.planItems) invalid(PLAN_FULL);
       return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
-      if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
+      if (openCount(board.plan) >= BOARD_LIMITS.planItems) invalid(PLAN_FULL);
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) measuredBy(op.target, now);
