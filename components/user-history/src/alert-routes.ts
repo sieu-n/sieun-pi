@@ -8,6 +8,7 @@ export const ALERT_ROUTES: readonly AlertRoute[] = [
   { chat: "launch main bro", session: "01a11bd7-072f-7591-ad1d-f123c276cde5", words: ["launch", "watchlist"] },
   { chat: "api portal vp", session: "01a1301d-18de-7129-a559-cfb92f9b5fb1", words: ["api portal"] },
   { chat: "slack green guy", session: "01a11b0b-7c15-73da-9481-8de15903eab4", words: ["slack green"] },
+  { chat: "AI harness developer environment VP", session: "01a1164b-4a2d-742d-b27a-82f086ed0200", words: ["pi pool"] },
   OPS_ROUTE,
 ];
 

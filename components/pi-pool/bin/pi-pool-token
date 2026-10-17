@@ -10,12 +10,23 @@ or a transcript, so the token path refuses a TTY and refuses unknown arguments
     pi-pool-token [--provider <p>]   token on stdout (pipe only)
     pi-pool-token --status           pool status
     pi-pool-token --cli <command>    same as `pi-pool <command>`
+
+A token run that ends with no token writes one `hook_no_token` line to the pool log
+with the reason, because Prime drops the hook's stderr and reports only "Failed to
+resolve API key". From 10-16 08:44Z to 10-17 19:45Z every Prime hook run gave no
+token and the log had no line for any of them. This file also logs a SIGTERM that
+lands while vend.py still loads, before vend.py installs its own handler.
 """
+import json
+import os
 from pathlib import Path
 import runpy
+import signal
 import sys
+import time
 
 TOKEN_FLAGS = {"--provider"}
+SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 
 
 def refuse(reason):
@@ -38,6 +49,70 @@ def token_args_ok(argv):
     return True
 
 
+def pool_log(event, **fields):
+    """One line in the pool log, the same file and format as pool/base.py's log()."""
+    folder = os.environ.get("PI_POOL_DIR") or os.path.join(os.path.expanduser("~"), ".config", "pi-pool")
+    try:
+        with open(os.path.join(folder, "pi-pool.log"), "a") as f:
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields}) + "\n")
+    except Exception:
+        pass
+
+
+class CountedStdout:
+    """stdout that counts what vend.py writes, so a run that printed nothing is seen."""
+
+    def __init__(self, stream):
+        self.stream, self.chars = stream, 0
+
+    def write(self, text):
+        self.chars += len(text)
+        return self.stream.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def exit_reason(code):
+    if code is None or code == 0:
+        return None
+    return code if isinstance(code, str) else f"exit {code}"
+
+
+def run_token(source, argv):
+    """Runs vend.py for a token and logs `hook_no_token` with the reason when it gives none."""
+    provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
+    started = time.monotonic()
+    logged = []
+
+    def no_token(reason):
+        if logged:
+            return
+        logged.append(reason)
+        pool_log("hook_no_token", provider=provider, reason=str(reason)[:500], session=os.environ.get(SESSION_ENV),
+                 sec=round(time.monotonic() - started, 1))
+
+    def killed_while_loading(signum, frame):
+        no_token(f"killed by signal {signum} while vend.py loaded")
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, killed_while_loading)
+    out = sys.stdout = CountedStdout(sys.stdout)
+    try:
+        runpy.run_path(str(source), run_name="__main__")
+    except SystemExit as e:
+        reason = exit_reason(e.code)
+        if reason is not None and out.chars == 0:
+            no_token(reason)
+        raise
+    except BaseException as e:
+        if out.chars == 0:
+            no_token(f"{type(e).__name__}: {e}")
+        raise
+    if out.chars == 0:
+        no_token("vend.py ended without writing a token")
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "--cli":
@@ -48,7 +123,10 @@ def main():
         return refuse("stdout is a terminal; not printing a token")
     source = Path(__file__).resolve().parents[1] / "vend.py"
     sys.argv = [str(source), *argv]
-    runpy.run_path(str(source), run_name="__main__")
+    if argv and argv[0] == "--cli" or "--status" in argv:
+        runpy.run_path(str(source), run_name="__main__")
+    else:
+        run_token(source, argv)
 
 
 if __name__ == "__main__":
