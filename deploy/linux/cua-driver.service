@@ -1,0 +1,13 @@
+[Unit]
+Description=cua-driver daemon on the Xvfb display :99
+Requires=xvfb.service
+After=xvfb.service
+
+[Service]
+Environment=DISPLAY=:99
+ExecStart=%h/.local/bin/cua-driver serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

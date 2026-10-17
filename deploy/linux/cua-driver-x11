@@ -1,0 +1,4 @@
+#!/bin/sh
+# cua-driver on the headless box: point it at the Xvfb display from xvfb.service.
+export DISPLAY="${DISPLAY:-:99}"
+exec "$HOME/.local/bin/cua-driver" "$@"
