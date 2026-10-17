@@ -887,8 +887,7 @@ export class ThreadHub {
     }
     this.setSessionState(summary, "archived");
     this.catalog.holdLifecycle(id, "archived");
-    this.catalog.forget(id);
-    await this.catalog.refresh();
+    if (summary.lifecycle !== "archived" || summary.activeSessionId) void this.catalog.refresh().catch(() => {});
   }
 
   /** The supervisor gave up waiting (its graceful window is 2 s) and keeps stopping the worker; if it is still listed a little later, ask once more. */

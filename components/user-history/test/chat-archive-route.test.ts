@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SessionManager, type SessionSummary } from "prime-agent";
+import { Catalog } from "../src/chat-catalog.ts";
+import { ChatReadState } from "../src/chat-read-state.ts";
+import { ChatLabels } from "../src/chat-labels.ts";
+import { ThreadOrigins } from "../src/thread-origin.ts";
+import { ThreadHub } from "../src/chat-threads.ts";
+import { Chats } from "../src/chats.ts";
+import { IdIndex } from "../src/id-index.ts";
+import { loadRecord } from "../src/chat-brief.ts";
+import { source } from "./chats-helpers.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { startChatServer } from "../src/chat-server.ts";
 
@@ -80,4 +93,103 @@ test("a failed audit write does not block a valid archive", async t => {
     assert.equal((await server.post(child)).status, 200);
     assert.deepEqual(archived, [child]);
   } finally { await server.close(); }
+});
+
+for (const failure of ["refresh", "notification", "reply"] as const) {
+  test(`archive keeps disk state and chat indexes consistent when ${failure} fails, and a retry is safe`, async t => {
+    const dir = await mkdtemp(join(tmpdir(), "archive-transaction-"));
+    const manager = SessionManager.create(dir, dir);
+    manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
+    manager.flushNow();
+    const id = manager.getSessionId();
+    const file = manager.getSessionFile()!;
+    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+    const archived = new IdIndex(join(dir, "archived-chats.json"), "Archived chat index");
+    await index.add(id);
+    const summary: SessionSummary = { id: "fixture-active", sessionId: id, activeSessionId: "fixture-active", sessionFile: file, cwd: dir, lifecycle: "live",
+      activity: "idle", isSessionActive: false, isStreaming: false, isCompacting: false, attachedClients: 0, messageCount: 1,
+      sessionActions: { queuedCount: 0, steering: [], followUps: [] } };
+    const abort = new AbortController();
+    let complete!: () => void;
+    const completed = new Promise<void>(resolve => { complete = resolve; });
+    const logs: string[] = [];
+    t.mock.method(process.stderr, "write", (line: string) => {
+      logs.push(line);
+      if (line.startsWith('{"event":"chat_archive"') && JSON.parse(line).outcome === "completed") complete();
+      return true;
+    });
+    let kills = 0, lists = 0;
+    let failNotification = failure === "notification";
+    const catalog = new Catalog("/none", new ChatReadState(join(dir, "reads.json")), new ChatLabels(join(dir, "labels.json")),
+      { ids: async () => new Set(await index.ids()), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) }, new ThreadOrigins({ ids: async () => [] }));
+    t.mock.method(catalog, "connect", async () => {});
+    t.mock.method(catalog, "notify", async () => { if (failNotification) throw new Error("notification unavailable"); });
+    t.mock.method(catalog.client, "request", async (command: { type: string }) => {
+      if (command.type === "list") {
+        if (++lists === 1) return { success: true, data: { sessions: [summary] } };
+        throw new Error("daemon list unavailable");
+      }
+      assert.equal(command.type, "kill");
+      kills++;
+      SessionManager.open(file).appendSessionState({ status: "archived" });
+      if (failure === "reply") abort.abort();
+      return { success: true };
+    });
+    await catalog.refresh();
+    const hub = new ThreadHub("/none", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+    const chats = new Chats(index, hub, id => catalog.summary(id), "test", loadRecord(join(dir, "loads.json")), { ...source(dir), archived });
+    const backend = { chats, threads: hub, catalog, close: async () => { chats.close(); await hub.close(); await catalog.close(); } } as unknown as ChatBackend;
+    const asset = { body: Buffer.from(""), etag: '"test"', contentType: "text/plain" };
+    const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "test-token", stopToken: "test-stop",
+      identity: { pid: process.pid, instanceId: "test", socketPath: "/none" }, onStop: async () => {} });
+    const post = (signal?: AbortSignal) => fetch(server.url + `api/threads/${id}/archive`, {
+      method: "POST", headers: { "content-type": "application/json", origin: new URL(server.url).origin, "x-chat-token": "test-token" }, body: "{}", ...(signal ? { signal } : {}),
+    });
+    try {
+      if (failure === "reply") { await assert.rejects(post(abort.signal), { name: "AbortError" }); await completed; }
+      else assert.equal((await post()).status, failure === "notification" ? 502 : 200);
+      assert.equal(SessionManager.open(file).getSessionState()?.status, "archived");
+      assert.deepEqual(await index.ids(), []);
+      assert.deepEqual(await archived.ids(), [id]);
+      assert.equal((await catalog.summary(id))?.lifecycle, "archived");
+      assert.equal((await catalog.summary(id))?.activeSessionId, undefined);
+      assert.equal(lists, 2);
+      assert(logs.some(line => line.startsWith("catalog: full list failed") && line.includes("daemon list unavailable")));
+      failNotification = false;
+      assert.equal((await post()).status, 200);
+      assert.equal(SessionManager.open(file).getSessionState()?.status, "archived");
+      assert.deepEqual(await index.ids(), []);
+      assert.deepEqual(await archived.ids(), [id]);
+      const reopened = await hub.open(id);
+      assert.equal(reopened.live, null);
+      assert.equal(reopened.state.kind, "saved");
+      assert.equal(kills, 1);
+      assert.equal(lists, 2);
+      catalog.holdLifecycle(id, "active");
+      assert.equal((await catalog.summary(id))?.activeSessionId, "fixture-active");
+    } finally { await server.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const failure of ["kill", "write"] as const) test(`a failed ${failure} still rejects archive without recording completion`, async t => {
+  t.mock.method(process.stderr, "write", () => true);
+  const dir = await mkdtemp(join(tmpdir(), "archive-refused-"));
+  const manager = SessionManager.create(dir, dir);
+  manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 }); manager.flushNow();
+  const id = manager.getSessionId(), file = manager.getSessionFile()!;
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  const archived = new IdIndex(join(dir, "archived-chats.json"), "Archived chat index");
+  await index.add(id);
+  const catalog = { summary: async () => ({ sessionId: id, activeSessionId: "fixture-active", sessionFile: file }), connect: async () => {},
+    client: { request: async () => failure === "kill" ? { success: false, error: "kill refused" } : { success: true } } } as unknown as Catalog;
+  const hub = new ThreadHub("/none", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  const chats = new Chats(index, hub, async () => undefined, "test", loadRecord(join(dir, "loads.json")), { ...source(dir), archived });
+  try {
+    const failingWrite = failure === "write" ? t.mock.method(SessionManager, "open", () => { throw new Error("session write refused"); }) : undefined;
+    await assert.rejects(chats.archive(id), failure === "kill" ? /kill refused/ : /session write refused/);
+    failingWrite?.mock.restore();
+    assert.notEqual(SessionManager.open(file).getSessionState()?.status, "archived");
+    assert.deepEqual(await index.ids(), [id]);
+    assert.deepEqual(await archived.ids(), []);
+  } finally { chats.close(); await hub.close(); await rm(dir, { recursive: true, force: true }); }
 });

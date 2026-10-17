@@ -749,10 +749,11 @@ export class Catalog {
 
   /** A top-level thread, else a subagent session, so a child transcript opens read the same way as its parent. */
   async summary(sessionId: string): Promise<SessionSummary | undefined> {
-    const cached = this.find(sessionId);
-    if (cached) return cached;
-    await this.refresh();
-    return this.find(sessionId);
+    let summary = this.find(sessionId);
+    if (!summary) { await this.refresh(); summary = this.find(sessionId); }
+    if (!summary || this.heldLifecycle.get(sessionId) !== "archived") return summary;
+    const { activeSessionId: _activeSessionId, ...saved } = summary;
+    return { ...saved, lifecycle: "archived" };
   }
 
   /** A session's title from what the catalog holds now, with no refresh; null when it is not listed. */
