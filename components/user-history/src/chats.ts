@@ -5,7 +5,6 @@ import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
-import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
 import type { Wake } from "./wakes.ts";
@@ -158,8 +157,6 @@ export class Chats {
   private readonly now: () => number;
   /** When each chat's check-in last ran: the check-in memory's time after a restart, the service start for a chat with none. */
   private readonly lastCheckIn = new Map<string, number>();
-  /** Check-ins the daemon gate held, logged when each falls due and when it runs. */
-  private readonly holds = new GateHolds(line => this.log(line));
   private readonly started: number;
   /** Restarts sent per chat since its last turn that ended well: how many, and when the last one went. */
   private readonly revivals = new Map<string, { attempts: number; at: number }>();
@@ -446,8 +443,8 @@ export class Chats {
    * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one and that is not paused; the time is
    * taken before the run is queued, so a second wake in the same slot does not queue it again. Every chat the owner has not paused is also
    * checked for a failed last turn (`revive`), and so are its jobs (`jobs`); a wake that follows a sleep restarts every transient failure at
-   * once. A pause by the daemon gate or by the chat itself stops only check-ins: on 10-12 the gate paused 7 chats from 13:35Z on, and their
-   * failed turns would have waited for the resume. A check-in runs in its own lane (`checkInLane`), so a revive never waits behind a check-in
+   * once. A pause by the chat itself stops only check-ins: on 10-12 a pause of 7 chats from 13:35Z on would have held their failed
+   * turns until the resume. A check-in runs in its own lane (`checkInLane`), so a revive never waits behind a check-in
    * whose duty job start hangs: on 10-11 from 20:35Z to 10-12 01:42Z no chat got a revive or a check-in while the hub attached sessions in
    * under 0.3 s, and 4 chats aborted by the 19:08Z Prime update sat 0.5 to 7.7 h (unretried_errors, dead_hours). Every ADOPT_SCAN_MS the
    * session files are scanned for chats the index lost. Returns the ids checked in.
@@ -471,17 +468,13 @@ export class Chats {
       active.add(id);
       if (!this.reviving.has(id)) { this.reviving.add(id); this.queue(id, () => this.revive(id, woke).finally(() => this.reviving.delete(id))); }
       const lastAt = this.lastCheckIn.get(id) ?? now - setting.everyMs;
-      if (paused) {
-        if (setting.pausedBy === "daemon") this.holds.hold(id, lastAt + setting.everyMs, now);
-        continue;
-      }
+      if (paused) continue;
       // A chat with no check-in on record is due now, not one interval after this service started: every release restart pushed ops guy's
       // 2 h check-in back again (10-12: none from 10-10 11:33Z on, with its owner pause lifted at 05:28Z).
       const next = nextCheckIn(setting, lastAt, now);
       if (next === null || next > now) continue;
       due.push(id);
       this.lastCheckIn.set(id, now);
-      this.holds.ran(id, now);
       this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
     this.queue("#jobs", () => this.jobs(active, woke));

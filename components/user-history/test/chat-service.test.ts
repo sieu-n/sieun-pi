@@ -93,7 +93,6 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.match((await unavailable.json()).error, /daemon is not reachable/);
     for (const file of ["configuration.json", "instance.json", "service.log"]) assert.equal((await stat(join(data, file))).mode & 0o777, 0o600);
     const configuration = JSON.parse(await readFile(join(data, "configuration.json"), "utf8"));
-    assert.equal(configuration.daemonGateChat, undefined, "a new configuration names no daemon gate chat");
     const headers = { "Content-Type": "application/json", Origin: new URL(url).origin };
     assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers, body: "{}" })).status, 403);
     assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers: { ...headers, "X-Chat-Stop-Token": configuration.csrfToken }, body: "{}" })).status, 403);
@@ -119,13 +118,10 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal(await run("start", flags), url, "a stale instance record never blocks a new listener");
     assert.notEqual((await (await fetch(url + "api/identity")).json()).instanceId, restarted.instanceId);
     await run("stop");
-    await writeFile(join(data, "configuration.json"), JSON.stringify({ ...configuration, daemonGateChat: 7 }));
-    await assert.rejects(run("start", flags), /daemonGateChat is a chat id or null/);
-    await writeFile(join(data, "configuration.json"), JSON.stringify({ ...configuration, daemonGateChat: "chat-vp" }));
     const publicOrigin = "https://chat.example.ts.net";
     assert.equal(await run("start", [...flags, "--public-origin", publicOrigin + "/"]), url);
     const saved = JSON.parse(await readFile(join(data, "configuration.json"), "utf8"));
-    assert.deepEqual([saved.publicOrigin, saved.daemonGateChat], [publicOrigin, "chat-vp"], "a settings save keeps the hand-set daemon gate chat");
+    assert.equal(saved.publicOrigin, publicOrigin);
     const remote = { Host: new URL(publicOrigin).host, Origin: publicOrigin };
     assert.equal((await (await fetch(url + "api/remote")).json()).mode, "custom", "an explicit origin on an extra instance stays fixed");
     const page = await viaHost(url, { headers: remote });

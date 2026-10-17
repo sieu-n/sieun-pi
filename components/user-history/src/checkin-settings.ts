@@ -14,11 +14,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 /**
  * A chat's check-in choices: its interval, and a pause until a time or until resumed, with who paused it (`pausedBy`) and which one (`setter`).
- * The server pauses with `daemon` while the Prime Agent daemon is slow (src/chat-daemon-gate.ts) and resumes only those, each at its own
- * `startAt` so the chats do not all run at once. An older file's `chat` reads as `agent`; an `owner` pause with no setter stays the owner's.
+ * An older file's `chat` reads as `agent`; an `owner` pause with no setter stays the owner's. A `daemon` pause, left by the daemon gate that
+ * paused every check-in while the daemon's list timed out, reads as no pause: on 10-17 the gate flapped every 1 to 3 min and no chat ran a
+ * check-in from 00:05Z to 19:36Z.
  */
 export type CheckInPausedUntil = number | "forever";
-export type CheckInBy = "owner" | "agent" | "daemon";
+export type CheckInBy = "owner" | "agent";
 export interface CheckInSetting { everyMs: number; pausedUntil?: CheckInPausedUntil; pausedBy?: CheckInBy; setter?: string; startAt?: number }
 /**
  * Who changes a check-in. Only the owner's own page is the owner (`setter` "ui"); the chat through chat_board `check_in` and any other caller of
@@ -58,16 +59,6 @@ export function nextCheckIn(setting: CheckInSetting, lastAt: number, now: number
   return Math.max(lastAt + setting.everyMs, pause ?? 0, setting.startAt ?? 0);
 }
 
-/** The server's pause of a chat while the daemon is slow; null when the chat is already paused (by the owner, the chat or the server), which stays. */
-export function daemonPause(setting: CheckInSetting, now: number): CheckInSetting | null {
-  return activePause(setting, now) !== null ? null : { everyMs: setting.everyMs, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" };
-}
-
-/** The server's resume of a chat it paused, with the first check-in not before `startAt`; null when the server did not pause it. */
-export function daemonResume(setting: CheckInSetting, startAt: number): CheckInSetting | null {
-  return setting.pausedBy === "daemon" && setting.pausedUntil !== undefined ? { everyMs: setting.everyMs, startAt } : null;
-}
-
 /** A time as the owner's local "YYYY-MM-DD HH:MM". */
 export const localTime = (at: number): string => {
   const date = new Date(at);
@@ -80,7 +71,6 @@ export const clockTime = (at: number): string => localTime(at).slice(11);
 export function checkInLine(setting: CheckInSetting, now: number): string {
   const pause = activePause(setting, now);
   if (pause === "forever") {
-    if (setting.pausedBy === "daemon") return "Check-in: paused while the daemon is slow; it resumes on its own";
     if (setting.pausedBy === "agent") return `Check-in: paused by agent ${setting.setter ?? UNKNOWN_AGENT} until resumed; check_in {pause: null} resumes it`;
     return "Check-in: paused until the owner resumes it";
   }
@@ -93,13 +83,12 @@ export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
 
 /**
  * A change applied to a chat's setting at `now`. Whoever writes later wins, with one limit: an agent cannot pause or resume over a pause in
- * force that the owner or the daemon gate made (the refusal says why). An agent keeps the interval at CHECK_IN_MS or more by its brief and
+ * force that the owner made (the refusal says why). An agent keeps the interval at CHECK_IN_MS or more by its brief and
  * the chat_board tool text, not by a refusal here (c81). A pause with no author counts as the owner's. An agent's pause, the chat's own or another session's, any agent may change.
  */
 export function changeCheckIn(current: CheckInSetting, change: CheckInChange, now: number, actor: CheckInActor): { setting: CheckInSetting } | { refused: string } {
   const pause = activePause(current, now);
   if (actor.by === "agent" && change.pause !== undefined && pause !== null && current.pausedBy !== "agent") {
-    if (current.pausedBy === "daemon") return { refused: "the server paused check-ins while the daemon is slow; they resume on their own" };
     return { refused: `the owner paused check-ins ${pause === "forever" ? "until they resume them" : `until ${localTime(pause)}`}; that stays` };
   }
   const everyMs = change.everyMs ?? current.everyMs;
@@ -148,7 +137,7 @@ export async function chatCheckIn(settings: CheckInSettings, id: string, change:
 
 /**
  * `<data dir>/check-in-settings.json`: `{ [chatId]: CheckInSetting }` through locked-json. The owner's page and other agents write it through the
- * chat server, the chat through chat_board `check_in`, the daemon gate in the server.
+ * chat server, the chat through chat_board `check_in`.
  */
 export interface CheckInSettings {
   all(): Promise<Record<string, CheckInSetting>>;
@@ -158,9 +147,9 @@ export interface CheckInSettings {
 function parseSetting(value: unknown): CheckInSetting | undefined {
   if (!isRecord(value) || !validCheckInEvery(value.everyMs)) return undefined;
   const until = value.pausedUntil;
-  const pausedUntil = until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
+  const pausedUntil = value.pausedBy === "daemon" ? undefined : until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
   const by = value.pausedBy === "chat" ? "agent" : value.pausedBy;
-  const pausedBy = by === "owner" || by === "agent" || by === "daemon" ? by : undefined;
+  const pausedBy = by === "owner" || by === "agent" ? by : undefined;
   const setter = typeof value.setter === "string" && value.setter !== "" ? value.setter : undefined;
   const startAt = typeof value.startAt === "number" && Number.isFinite(value.startAt) ? value.startAt : undefined;
   return { everyMs: value.everyMs, ...(pausedUntil !== undefined ? { pausedUntil, ...(pausedBy ? { pausedBy } : {}), ...(setter ? { setter } : {}) } : {}),

@@ -29,7 +29,6 @@ import { Duties } from "./chat-duty-run.ts";
 import { fixJobLive } from "./shared/duty-fixes.ts";
 import { archiveDutyJob, dutyJobHost, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
-import { DaemonGate, rosterList } from "./chat-daemon-gate.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
 import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
@@ -122,7 +121,7 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
 }
 
 /** `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`). */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; daemonGateChat?: string | null; ownChatsOnly?: boolean } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean } = {}): Promise<ChatBackend> {
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
@@ -152,15 +151,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // scheduled and measured in Chats and handed here, and its card edits the check-in setting.
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
-  // While the daemon does not answer the gate pauses every chat's check-in but the configured daemonGateChat's, and resumes them when it
-  // answers again. It writes only the service log; it posts nothing into a chat.
-  const keep = options.daemonGateChat ?? undefined;
-  const gate = new DaemonGate({ settings, chats: () => chats.ids(), keep: new Set(keep ? [keep] : []), log: dutyLog, changed: () => catalog.notify(),
-    lastCheckIn: async id => (await chats.checkInView(id))?.lastAt ?? null,
-    list: async () => {
-      await catalog.connect();
-      await rosterList((command, timeoutMs, options) => catalog.client.request(command, timeoutMs, options));
-    } });
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
@@ -174,7 +164,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit,
     board: id => boards.read(id),
     fixLive: async (id, item) => {
       const now = Date.now();

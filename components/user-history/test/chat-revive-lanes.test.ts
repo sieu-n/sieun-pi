@@ -15,7 +15,7 @@ import type { ChatBoard, SessionRow, ThreadMessage } from "../src/shared/types.t
 // The failed-turn restart (`revive`) of a chat must not wait on its check-in or on a pause the owner did not set.
 // 10-11 19:08Z: a Prime update aborted the turns of 4 chats. From 20:35Z to 10-12 01:42Z the service ran no revive and no check-in for any
 // chat while it attached sessions in under 0.3 s, and the 4 chats sat 0.5 to 7.7 h (chat-health unretried_errors 4, dead_hours 11.8).
-// 10-12 13:35Z on: the daemon gate paused the check-in of 7 chats, and that pause also skipped their revive.
+// 10-12 13:35Z on: a check-in pause of 7 chats also skipped their revive.
 
 process.env.TZ = "Asia/Seoul";
 
@@ -89,15 +89,9 @@ test("chat revive: a check-in whose duty job start never ends does not hold the 
   chats.close();
 });
 
-test("chat revive: a daemon gate pause or the chat's own pause stops the check-in, not the failed-turn restart; the owner's pause stops both", async () => {
+test("chat revive: the chat's own pause stops the check-in, not the failed-turn restart; the owner's pause stops both", async () => {
   const runs: string[] = [];
   const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); }, async lastCheckIn() { return undefined; } };
-  const gated = await setup(sink);
-  await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
-  assert.deepEqual(await gated.run(6), [5], "the gate paused the check-in of the chat; its failed turn still restarts at 5 min");
-  assert.deepEqual(runs, [], "no check-in while the gate holds it");
-  gated.chats.close();
-
   const own = await setup(sink);
   await writeFile(own.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "agent", setter: "s1" } }));
   assert.deepEqual(await own.run(6), [5], "the chat paused its own check-in");
@@ -109,21 +103,15 @@ test("chat revive: a daemon gate pause or the chat's own pause stops the check-i
   owner.chats.close();
 });
 
-test("chat check-in: a check-in that falls due while the daemon gate pauses it gets one held line, then runs at the resume with a line that says how late (VP of CI 10-12: no line for 13:15Z to 17:52Z)", async () => {
+test("chat check-in: a daemon pause the removed daemon gate left in the settings file reads as no pause, so the check-in runs at once (10-17: no check-in from 00:05Z to 19:36Z)", async () => {
   const runs: string[] = [];
   const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); }, async lastCheckIn() { return undefined; } };
-  const gated = await setup(sink);
-  await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
-  await gated.run(20);
-  const held = gated.logs.filter(line => line.includes("check-in due since"));
-  assert.equal(held.length, 1, "one line for the whole hold, not one per wake");
-  assert.match(held[0]!, /^\S+Z chat c1: check-in due since \S+Z is held while the daemon gate pauses check-ins; it runs when the gate resumes, longest wait first$/);
-  assert.deepEqual(runs, []);
-  await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, startAt: 0 } }));
-  await gated.run(1);
-  assert.deepEqual(runs, ["c1"], "the resume runs the held check-in at the next wake");
-  assert.match(gated.logs.filter(line => line.includes("check-in due since")).at(-1)!, /chat c1: check-in due since \S+Z runs now, 20 min late after the daemon gate held it$/);
-  gated.chats.close();
+  const left = await setup(sink);
+  await writeFile(left.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
+  await left.run(1);
+  assert.deepEqual(runs, ["c1"]);
+  assert.equal(left.logs.filter(line => line.includes("held while")).length, 0);
+  left.chats.close();
 });
 
 const at = (iso: string): number => Date.parse(iso);

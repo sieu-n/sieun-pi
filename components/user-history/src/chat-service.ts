@@ -26,8 +26,6 @@ type Configuration = {
   publicOrigin: string | null; remoteAccess: RemoteMode; keepRunning: boolean;
   /** Settings > Phone access > "Open the app at login". On unless turned off. */
   openAppAtLogin: boolean;
-  /** The chat whose check-in the daemon health gate never pauses and that hears of each pause and resume; null for none. Set by hand. */
-  daemonGateChat: string | null;
 };
 type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string; primary: boolean };
@@ -78,10 +76,8 @@ function configuration(value: unknown, primary: boolean): Configuration {
   if (remoteAccess === "custom" && !publicOrigin) throw new Error("Invalid private chat configuration: custom remote access needs publicOrigin.");
   const keepRunning = typeof value.keepRunning === "boolean" ? value.keepRunning : primary && process.platform === "darwin";
   const openAppAtLogin = typeof value.openAppAtLogin === "boolean" ? value.openAppAtLogin : true;
-  const daemonGateChat = value.daemonGateChat ?? null;
-  if (daemonGateChat !== null && !(typeof daemonGateChat === "string" && daemonGateChat)) throw new Error("Invalid private chat configuration: daemonGateChat is a chat id or null.");
   return { port: validPort(value.port), socketPath: value.socketPath, capability: value.capability, csrfToken: value.csrfToken, stopToken: value.stopToken,
-    publicOrigin, remoteAccess, keepRunning, openAppAtLogin, daemonGateChat };
+    publicOrigin, remoteAccess, keepRunning, openAppAtLogin };
 }
 async function saveConfiguration(service: Service, patch: Partial<Pick<Configuration, "publicOrigin" | "remoteAccess" | "keepRunning" | "openAppAtLogin">>): Promise<void> {
   Object.assign(service.config, patch);
@@ -320,7 +316,7 @@ async function serve(options: Options): Promise<void> {
   bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
   const adopt = options.adopt ?? (service.primary ? "live" : "own");
   if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
-  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory, daemonGateChat: service.config.daemonGateChat,
+  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
     ownChatsOnly: adopt === "own" });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),

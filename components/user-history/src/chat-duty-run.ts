@@ -47,8 +47,6 @@ export interface DutyHost {
   tickMs?: number;
   /** The node binary a precheck whose first word is `node` runs with; default this process's. */
   node?: string;
-  /** The daemon health gate (src/chat-daemon-gate.ts): each wake lets it probe the daemon, one probe at a time. */
-  daemon?: { tick(): Promise<void> };
   /** The Mac-wide turn queue's wait before a duty job's session is created (`dutyAdmitter`); absent: every job starts at once. */
   admit?: DutyAdmitter["admit"];
   /** The chat's pool class from its sidebar label (`chatPoolPriority`), for the card; absent: high, as for an unlabelled chat. */
@@ -222,7 +220,6 @@ export class Duties {
 
   /** One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. */
   tick(): Promise<void> {
-    void this.host.daemon?.tick().catch(error => this.log(`duties: daemon probe: ${message(error)}`));
     const scan = this.ticking ??= this.scan().catch(error => this.log(`duties: tick: ${message(error)}`)).finally(() => { this.ticking = undefined; });
     return scan.then(async () => { await Promise.all([...this.ending]); });
   }

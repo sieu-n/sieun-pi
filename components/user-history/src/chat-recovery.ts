@@ -6,10 +6,10 @@ import type { ChatWait, ThreadMessage } from "./shared/types.ts";
 import type { CheckInSetting } from "./checkin-settings.ts";
 
 /**
- * Whether a check-in pause is the owner's. The owner's pause also stops failed-turn restarts; a pause by the daemon gate (`daemon`) or by the
- * chat itself (`agent`) stops only its check-ins, and a failed turn still gets its restart.
+ * Whether a check-in pause is the owner's. The owner's pause also stops failed-turn restarts; a pause by the chat itself (`agent`) stops only
+ * its check-ins, and a failed turn still gets its restart.
  */
-export const ownerPause = (setting: Pick<CheckInSetting, "pausedBy">): boolean => setting.pausedBy !== "daemon" && setting.pausedBy !== "agent";
+export const ownerPause = (setting: Pick<CheckInSetting, "pausedBy">): boolean => setting.pausedBy !== "agent";
 /**
  * A turn that streams with no session event for this long, counted from the last event or the last wake from sleep, has hung, and the
  * server stops it and starts a new one. Measured over every chat transcript of 10-08 to 10-12 KST: 35,490 gaps between consecutive
