@@ -728,7 +728,8 @@ export class ThreadHub {
     const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;
     const summary = await this.summary(id);
-    if (liveSessionId(summary) === undefined) {
+    let activeSessionId = liveSessionId(summary);
+    if (activeSessionId === undefined) {
       if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
       await this.catalog.connect();
       // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
@@ -737,16 +738,22 @@ export class ThreadHub {
       const sessionPath = summary.sessionFile;
       const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
       if (!response.success) throw new ThreadError(502, response.error);
+      const data = response.data;
+      if (typeof data !== "object" || data === null || !("sessionId" in data) || data.sessionId !== id ||
+        !("activeSessionId" in data) || typeof data.activeSessionId !== "string" || !data.activeSessionId) {
+        throw new ThreadError(502, "Prime Agent returned no matching session for the resumed thread.");
+      }
+      activeSessionId = data.activeSessionId;
     }
-    await this.catalog.refresh();
-    const resumed = await this.summary(id);
-    const activeSessionId = liveSessionId(resumed);
-    if (activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
     const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId);
-      try { return { connection, snapshot: await this.liveSnapshot(connection, resumed, thread.full) }; }
+      try { return { connection, snapshot: await this.liveSnapshot(connection, summary, thread.full) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
     });
+    if (this.threads.get(id) !== thread) {
+      await connection.dispose().catch(() => {});
+      throw new ThreadError(409, "This thread was closed while it was resuming.");
+    }
     this.evict("live");
     this.bind(thread, connection, activeSessionId);
     thread.broadcast({ type: "snapshot", snapshot });

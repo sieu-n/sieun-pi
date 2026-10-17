@@ -18,7 +18,7 @@ test("two resumes of one saved thread at once attach it once, so each message sh
     summary: async () => ({ ...summary }),
     refresh: async () => {},
     connect: async () => {},
-    client: { request: async () => { creates.push("create"); summary.activeSessionId = "active-1"; return { success: true, data: {} }; } },
+    client: { request: async () => { creates.push("create"); summary.activeSessionId = "active-1"; return { success: true, data: { ...summary } }; } },
   } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const listeners: NativeListener[] = [];
@@ -60,7 +60,7 @@ test("a thread whose worker failed is reopened from its saved file, not attached
     summary: async () => ({ ...summary }),
     refresh: async () => {},
     connect: async () => {},
-    client: { request: async (command: unknown) => { creates.push(command); Object.assign(summary, { activeSessionId: "fresh-1", workerState: "ready" }); return { success: true, data: {} }; } },
+    client: { request: async (command: unknown) => { creates.push(command); Object.assign(summary, { activeSessionId: "fresh-1", workerState: "ready" }); return { success: true, data: { ...summary } }; } },
   } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const attaches: string[] = [];
