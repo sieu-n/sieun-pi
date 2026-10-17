@@ -96,7 +96,7 @@ class Wiring(unittest.TestCase):
         """Until 10-16 each waiting run spawned `admit --wait`, a Python process of about 30 MB:
         at 09:10 KST 49 of them held 1.5 GB while 68 turns waited."""
         found = os.path.join(self.dir, "waiters.txt")
-        probe = subprocess.Popen(["/bin/sh", "-c", f'sleep 2 && (pgrep -f "admit waitless --wait" || true) > "{found}"'],
+        probe = subprocess.Popen(["/bin/sh", "-c", f'sleep 2 && (pgrep -f "admi[t] waitless --wait" || true) > "{found}"'],
                                  stdout=subprocess.DEVNULL)
         run = self.drive({"op": "start", "name": "waitless"}, {"op": "context", "name": "waitless"},
                          {"op": "wait", "name": "waitless", "ms": 3500, "label": "queued"}, {"op": "queue", "label": "q"})
