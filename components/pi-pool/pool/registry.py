@@ -208,7 +208,12 @@ class SessionKey:
 
 
 def session_key():
-    """The session tree that owns this process, or None outside one."""
+    """The session tree that owns this process, or None outside one. On the machine that
+    holds the accounts, `pi-pool serve` passes the asking machine's key in PI_POOL_SESSION_KEY."""
+    forwarded = os.environ.get("PI_POOL_SESSION_KEY")
+    if forwarded:
+        given = json.loads(forwarded)
+        return SessionKey(given["key"], given.get("uuid"), given.get("active"))
     active = os.environ.get(base.SESSION_ENV) or None
     uuid = None
     journal = os.environ.get(base.JOURNAL_ENV)

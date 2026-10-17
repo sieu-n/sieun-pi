@@ -84,6 +84,29 @@ is rebuilt; a new session loads `current`.
 For a custom state directory, pass the same `PI_POOL_DIR` to the CLI and Prime Agent.
 The CLI rejects state roots inside the code directory.
 
+## One pool for two machines
+
+The Mac holds every account and does every OAuth refresh. A second machine (us-metal02)
+has no accounts. Two copies of one refresh token would make each other invalid, so the
+second machine never gets one.
+
+The holder runs `pi-pool serve` from the launchd job `com.sieun.pi-pool-serve`. It listens
+on the address in `serve.json`, which is the Mac's tailnet IP, and answers only requests
+that carry the secret from that file. The other machine keeps the same secret and the
+holder's URL in `remote.json`. Both files are mode 0600 in the pool folder.
+
+With `remote.json` in place, `pi-pool-token` and every account command (`who`, `ls`,
+`limited`, `refused`, `model`, `use`, `switch`, `status` and the rest) go to the holder,
+which runs them for the asking session's key. Turn slots (`admit`, `release`,
+`owner-turn`, `queue`, `priority`) and `adopt-logins`, `config`, `set` and `log` run on
+the asking machine, so each machine keeps its own slot count. `watch` and `login` run
+only on the holder.
+
+When the second machine gets no token, its hook logs one `hook_no_token` line with the
+reason. The reason is `remote_unreachable`, `remote_refused` or the holder's own reason,
+such as `no_account` or `slot_wait`. `pool/remote.py` has the code, and
+`tests/test_remote.py` covers it.
+
 ## External credential dependencies
 
 pi-pool depends on the user's existing tokenmaxxing pool under

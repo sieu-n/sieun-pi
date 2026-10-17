@@ -113,6 +113,8 @@ USAGE = """usage: pi-pool [command]
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
+  serve                          answer another machine's token requests and account commands
+                                  on the tailnet address in serve.json (pool/remote.py)
 """
 
 
@@ -133,6 +135,7 @@ def cli(args):
         "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
+        "serve": pool.remote.cmd_serve,
     }
     if cmd in handlers:
         return handlers[cmd](rest)
@@ -160,6 +163,9 @@ def log_when_killed(provider):
 
 def main():
     argv = sys.argv[1:]
+    remote = pool.remote.client()
+    if remote and pool.remote.forwards(argv):
+        return pool.remote.run_remote(remote, argv)
     if argv and argv[0] == "--cli":
         return cli(argv[1:])
     if "--status" in argv:

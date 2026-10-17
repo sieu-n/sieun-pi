@@ -16,6 +16,7 @@ Credential values and exception messages never enter that record.
 """
 import json
 import os
+import re
 from pathlib import Path
 import runpy
 import signal
@@ -71,6 +72,13 @@ class CountedStdout:
 
 def failure_reason(error):
     text = str(error)
+    if "remote pool unreachable" in text:
+        return "remote_unreachable"
+    if "remote pool refused" in text:
+        return "remote_refused"
+    holder = re.search(r"pi-pool-token: no token \((\w+)\)", text)
+    if holder:
+        return holder.group(1)
     if "could not lock " in text or "refresh lock on " in text:
         return "lock_wait_timeout"
     if any(marker in text for marker in (
@@ -126,6 +134,7 @@ def run_token(source, argv):
         if logged:
             return
         logged = True
+        sys.stderr.write(f"pi-pool-token: no token ({reason})\n")
         pool_log("hook_no_token", invocation=invocation, provider=provider, reason=reason,
                  session=os.environ.get(SESSION_ENV), pid=os.getpid(),
                  awake_sec=round(time.monotonic() - started, 3),

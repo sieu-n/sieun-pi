@@ -114,7 +114,7 @@ def check_hooks(home):
     results = {}
     for args in PROVIDERS:
         started = time.monotonic()
-        if pooled_accounts(home, args[1]) == 0:
+        if pooled_accounts(home, args[1]) == 0 and not (home / ".config/pi-pool/remote.json").exists():
             try:
                 done = subprocess.run([str(home / ".local/bin/pi-pool"), "config"], capture_output=True,
                                       text=True, timeout=10, env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
