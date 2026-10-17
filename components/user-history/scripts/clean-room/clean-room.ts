@@ -145,7 +145,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
       const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
       const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
       const id = await createThread(srv, "thread", fixture.name, sandbox, brief);
-      await registry.add([fixture.name, id], name);
+      await registry.add([fixture.name, id], name, chat);
       fixtures[fixture.name] = id;
       fixtureBriefs.push(brief);
       log(run, `created fixture ${id} "${fixture.name}", filed under the chat in chat-jobs.json`);
@@ -279,7 +279,15 @@ async function say(flags: Record<string, string>): Promise<void> {
   const state = readJson<RunState>(join(run, "run.json"));
   state.seeds.push(message);
   writeJson(join(run, "run.json"), state);
-  await call(await server(), "POST", `api/threads/${state.chat.id}/prompt`, { message, images: [], mode: "steer", requestId: requestId() });
+  // Every attempt is logged, a failed one too, so a check can tell a first send that landed from one that needed a retry.
+  const id = requestId();
+  log(run, `sending the owner's message (request ${id})`);
+  try {
+    await call(await server(), "POST", `api/threads/${state.chat.id}/prompt`, { message, images: [], mode: "steer", requestId: id });
+  } catch (error) {
+    log(run, `send failed (request ${id}): ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
   log(run, `sent the owner's message: ${message}`);
 }
 
