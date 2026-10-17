@@ -82,7 +82,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/corrections.md", "receiver_role=\"sibling\", receiver_name=\"realtime layer\"", "corrections change the brief"],
     ["references/corrections.md", "the chat service runs `/refine --global` in your session", "corrections refine the harness"],
     ["references/corrections.md", "pass `handoff: {to, topics, with?}`", "correction handoff"],
-    ["references/jobs.md", "sends `[brief check]` when one breaks these rules; fix it in the job with a message", "brief check"],
+    ["references/jobs.md", "sets a gate nobody asked for (c47); fix it in the job with a message", "brief check"],
     ["SKILL.md", "Give 2 to 4 short choices, your recommendation first.", "todo choices"],
   ];
   const texts = new Map(await Promise.all(SKILL_FILES.map(async file => [file, await boardSkill(file)] as const)));
@@ -102,7 +102,9 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.equal(jobOf({ depth: 0, marked: true, registered: "Feature X" }), null, "a chat is never a job");
   assert.equal(jobOf({ depth: 0, marked: false, registered: undefined }), null);
   assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you finish, fail or get blocked, send your report ' +
-    `first with \`await agent_message.send(report, receiver_role="parent")\`, and lead it with the answer. ${MERGE_RULE_SHORT} No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.`);
+    `first with \`await agent_message.send(report, receiver_role="parent")\`, and lead it with the answer. ${MERGE_RULE_SHORT} No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
+    "Work, reason and write in English, including reports, logs, files and commits; quote the owner's words as-is; only replies and pages made " +
+    "for the owner use his language (c2).");
   assert.ok(CHAT_BRIEF.join(" ").includes("Base limits (c43)"), "the brief names c43; tell_owner, the board and agent messages refuse an unbacked limit in code, and a job gets the full line above");
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
   assert.match(jobReplyGuideline({ chat: "", root: false }), /^You are a job of the chat\. /);
