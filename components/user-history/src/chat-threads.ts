@@ -361,7 +361,9 @@ export class ThreadHub {
    * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again, as a
    * background attach (`AttachQueue`), so after a restart the pins come back two at a time and an open tab or an owner send goes first. A
    * failed resume waits PIN_RETRY_MS, doubling per failure. One archived outside this server (the terminal agents view) is unpinned instead,
-   * so the pin never brings an archived session back. A dormant chat is skipped, and one that rested on disk (`restedOnDisk`) opens saved.
+   * so the pin never brings an archived session back. A dormant chat is skipped, and one that rested on disk (`restedOnDisk`) opens saved, also
+   * when an open tab already opened its thread: api portal vp and launch main bro, paused and idle 19 to 58 min, each got a new worker at the
+   * service starts of 23:16Z, 23:34Z and 23:55Z on 10-17, because their tabs reopened the threads first.
    */
   private keepPinnedLive(): void {
     if (this.closed) return;
@@ -372,7 +374,7 @@ export class ThreadHub {
       void (async () => {
         const summary = await this.catalog.summary(id);
         if (!summary || summary.lifecycle === "archived") { this.unpin(id); return; }
-        const rested = this.threads.has(id) ? null : await this.dormant.restedOnDisk(summary, () => this.catalog.childActivity(id));
+        const rested = await this.dormant.restedOnDisk(summary, () => this.catalog.childActivity(id));
         if (rested !== null) {
           await this.open(id, true, false);
           this.dormant.sleep(id, rested, "left detached");

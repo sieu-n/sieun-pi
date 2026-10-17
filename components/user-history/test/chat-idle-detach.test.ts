@@ -517,3 +517,15 @@ test("thread hub: a job check's view lets go of the job's daemon client right af
   assert.equal(fake.threads.isLive("tabbed"), true, "a job a tab watches stays attached");
   await fake.threads.close();
 });
+
+test("thread hub: at a service start a rested chat whose thread an open tab already opened stays detached, so the tab loads no worker (api portal vp and launch main bro, paused and idle 19 to 58 min, got a new worker at the 23:16Z, 23:34Z and 23:55Z starts on 10-17)", async () => {
+  const fake = hub({ minutes: 10, summaries: { tab: { lastActivityAt: new Date(T0 - 58 * MIN).toISOString() } } });
+  delete fake.summary("tab").activeSessionId;
+  await fake.threads.open("tab");
+  fake.threads.pin("tab");
+  fake.fire();
+  for (let wait = 0; wait < 40 && !fake.threads.isDormant("tab"); wait++) await flush();
+  assert.equal(fake.threads.isDormant("tab"), true);
+  assert.equal(fake.requests.includes("create"), false, "no resume");
+  await fake.threads.close();
+});
