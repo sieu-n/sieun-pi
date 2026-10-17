@@ -175,7 +175,8 @@ const cronDaily = (expression: string | undefined): string | undefined => {
 const pathTails = (text: string): Set<string> =>
   new Set([...text.matchAll(/[\w.-]+(?:\/[\w.-]+)+\.\w+/g)].map(([path]) => path!.split("/").slice(-2).join("/").toLowerCase()));
 /** The duty fields that tell whether a duty runs a heartbeat's work. */
-export type HeartbeatDuty = { id: string; name: string; status: string; schedule?: { kind: string; at?: string }; onMiss?: string };
+/** `chat`: a duty of another chat, which runs no heartbeat of this one. */
+export type HeartbeatDuty = { id: string; name: string; status: string; schedule?: { kind: string; at?: string }; onMiss?: string; chat?: string };
 /** A heartbeat of the chat that repeats work the check-in does, or that an active duty (`duty`) runs. */
 export interface RedundantHeartbeat { job: ScheduledJob; duty?: HeartbeatDuty }
 /**
@@ -192,7 +193,7 @@ export function redundantHeartbeats(jobs: readonly ScheduledJob[], duties: reado
     if (CHECK_IN_WORK.test(job.label ?? "") || (!SPAWNS_JOB.test(prompt) && CHECK_IN_WORK.test(prompt))) return [{ job }];
     const at = cronDaily(job.schedule?.expression);
     const files = pathTails(prompt);
-    const duty = at === undefined ? undefined : duties.find(duty => duty.status === "active" && duty.schedule?.kind === "daily" && duty.schedule.at === at &&
+    const duty = at === undefined ? undefined : duties.find(duty => duty.status === "active" && duty.chat === undefined && duty.schedule?.kind === "daily" && duty.schedule.at === at &&
       [...pathTails(duty.onMiss ?? "")].some(tail => files.has(tail)));
     return duty ? [{ job, duty }] : [];
   });

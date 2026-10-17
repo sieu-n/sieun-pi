@@ -10,7 +10,7 @@ import { ThreadHub } from "./chat-threads.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
-import { markUnmeasured } from "./checkin-findings.ts";
+import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
@@ -200,7 +200,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
-      cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: async id => markUnmeasured(await duties.store.list(id), await duties.store.runs(id)),
+      cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => checkInDuties(duties.store, id, async other => (await chats.ids()).has(other)),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),

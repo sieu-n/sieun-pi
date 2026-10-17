@@ -211,9 +211,10 @@ export function greenLater(item: Pick<PlanItem, "waitFor">, train: Train | undef
 
 /**
  * The fields of a chat duty (`<data dir>/duties/<chat>.json`) the fold reads. `unmeasured` marks a duty with no met or missed run on record
- * (`markUnmeasured`), which no goal folds into.
+ * (`markUnmeasured`), which no goal folds into. `chat` marks an active duty of another live chat (`checkInDuties`), which only a goal's note can
+ * name as its cover (`goalsWithoutDuty`); nothing folds into it and it runs no heartbeat of this chat.
  */
-export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal"> & { unmeasured?: true };
+export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal"> & { unmeasured?: true; chat?: string };
 /**
  * Marks each duty with no met or missed run in `runs` as unmeasured. On 10-17 the check-in of "TikTok listing drops" (01a143d5) said to fold
  * p1 into d1, whose only run was an error and whose d1.last-runs.json was empty, while a live job still built d1's precheck.
@@ -221,6 +222,27 @@ export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal"
 export function markUnmeasured<T extends DutyRef>(duties: readonly T[], runs: readonly Pick<DutyRunRecord, "duty" | "verdict">[]): T[] {
   const measured = new Set(runs.filter(run => run.verdict === "met" || run.verdict === "missed").map(run => run.duty));
   return duties.map(duty => measured.has(duty.id) ? duty : { ...duty, unmeasured: true as const });
+}
+/** Where `checkInDuties` reads duties: the DutyStore. */
+export interface DutySource {
+  chats(): Promise<string[]>;
+  list(chatId: string): Promise<Duty[]>;
+  runs(chatId: string): Promise<Pick<DutyRunRecord, "duty" | "verdict">[]>;
+}
+/**
+ * The duties a chat's check-in reads: its own, marked by `markUnmeasured`, then the active duties of every other chat that `live` takes, marked
+ * with their `chat`. A goal's note may name one of those as its cover: chat-057a's p1 says the AI harness chat's Whole system duty watches it.
+ */
+export async function checkInDuties<T extends Duty>(store: { chats(): Promise<string[]>; list(chatId: string): Promise<T[]>; runs: DutySource["runs"] },
+  chatId: string, live: (chatId: string) => Promise<boolean> = async () => true): Promise<(T | DutyRef)[]> {
+  const own: (T | DutyRef)[] = markUnmeasured(await store.list(chatId), await store.runs(chatId));
+  for (const other of await store.chats()) {
+    if (other === chatId || !(await live(other))) continue;
+    for (const duty of await store.list(other).catch(() => [] as T[])) {
+      if (duty.status === "active" && duty.id !== CHECK_IN_DUTY_ID) own.push({ id: duty.id, name: duty.name, goal: duty.goal, status: duty.status, chat: other });
+    }
+  }
+  return own;
 }
 /**
  * The active duty that runs a goal's work: the duty whose `boardGoal` is the goal, else the first whose name and goal share at least
@@ -251,7 +273,7 @@ export interface FoldMove { item: PlanItem; home: PlanItem; why: string }
 export interface FoldGoal { goal: PlanItem; duty?: DutyRef; moves: FoldMove[]; left: PlanItem[] }
 export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], self: ReadonlySet<string>, duties: readonly DutyRef[]): FoldGoal[] {
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
-  const measured = duties.filter(duty => !duty.unmeasured);
+  const measured = duties.filter(duty => !duty.unmeasured && duty.chat === undefined);
   const byDuty = new Map(goals.flatMap(goal => { const duty = dutyFor(goal, measured); return duty ? [[goal.id, duty] as const] : []; }));
   /** A job that names work of this chat: not the chat itself and not another thread. */
   const workJob = (item: PlanItem): string | undefined => {
@@ -313,10 +335,22 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
  * in a row while t1, linked to p5, asked the owner from 10-16 04:54Z on whether to read the daily report every morning.
  */
 export function goalsWithoutDuty(board: ChatBoard | null, duties: readonly DutyRef[]): PlanItem[] {
-  if (duties.some(duty => duty.status === "active" && duty.id !== CHECK_IN_DUTY_ID)) return [];
+  const active = duties.filter(duty => duty.status === "active" && duty.id !== CHECK_IN_DUTY_ID);
+  if (active.some(duty => duty.chat === undefined)) return [];
   const asked = new Set((board?.todos ?? []).flatMap(todo => !todo.done && todo.step ? [todo.step] : []));
   const asks = (goal: PlanItem): boolean => { let found = false; walkItems([goal], item => { if (asked.has(item.id)) found = true; }); return found; };
-  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal));
+  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal) && !namesDuty(goal.note ?? "", active));
+}
+/**
+ * Whether a goal's note names an active duty as its cover, as "<name> duty" or "duty <name>", quoted or not, such as chat-057a's p1: "The
+ * existing Whole system duty in the AI harness developer environment chat plus this chat's check-in watch this goal" (kept since 10-16).
+ */
+export function namesDuty(note: string, duties: readonly DutyRef[]): boolean {
+  const text = note.toLowerCase().replace(/["'\u201c\u201d\u2018\u2019]/g, "").replace(/\s+/g, " ");
+  return duties.some(duty => {
+    const name = duty.name.trim().toLowerCase().replace(/\s+/g, " ");
+    return name.length >= 3 && (text.includes(`${name} duty`) || text.includes(`duty ${name}`));
+  });
 }
 export const noDutyLine = (goals: readonly PlanItem[]): string =>
   `${plural(goals.length, "open goal")} (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}) and no active duty: draft a duty for the chat's ` +
