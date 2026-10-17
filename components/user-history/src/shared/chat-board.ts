@@ -185,12 +185,13 @@ function requirements(value: unknown): Requirement[] {
 }
 
 const TARGET_SHAPE = "target must be {metric, target, unit, current?, measuredAt?, source?, cadence?, direction?}";
-/** A goal's target from an op: metric, a positive target and unit; the measurement (current, measuredAt, source) all three or none; cadence only "daily". */
+/** A goal's target from an op: metric, a non-negative target and unit; the measurement (current, measuredAt, source) all three or none; cadence only "daily". */
 function goalTarget(value: unknown): GoalTarget {
   if (!isRecord(value)) invalid(`${TARGET_SHAPE}.`);
+  // A target of 0 is the natural end of a lower-is-better number, such as stuck steps reach 0 (AI harness p529, 10-18), so it is allowed.
   const amount = (field: "target" | "current"): number => {
     const n = value[field];
-    if (typeof n !== "number" || !Number.isFinite(n) || (field === "target" ? n <= 0 : n < 0)) invalid(`target.${field} must be a ${field === "target" ? "positive" : "non-negative"} number.`);
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) invalid(`target.${field} must be a non-negative number.`);
     return n;
   };
   const out: GoalTarget = { metric: str(value.metric, "target.metric", BOARD_LIMITS.label), target: amount("target"), unit: str(value.unit, "target.unit", 40) };
@@ -232,19 +233,28 @@ function measuredBy(target: GoalTarget | undefined, now: string): void {
 /** A measurement older than this many check-in intervals is stale; a daily metric's (`cadence: "daily"`) after 24 h. */
 export const TARGET_STALE_INTERVALS = 2;
 export const targetStaleMs = (target: Pick<GoalTarget, "cadence">, everyMs: number): number => target.cadence === "daily" ? 24 * 60 * 60_000 : TARGET_STALE_INTERVALS * everyMs;
+/**
+ * How far a measured goal is toward its target, 1 at or past it: current over target for higher-is-better, target over current for
+ * lower-is-better (`targetOp`), so a target of 0 reads 1 at 0 and 0 above it.
+ */
+export function targetRatio(target: GoalTarget): number {
+  const current = target.current ?? 0;
+  if (targetOp(target) === "<=") return current <= target.target ? 1 : target.target / current;
+  return target.target === 0 ? 1 : current / target.target;
+}
 /** A goal's progress toward its target: not measured yet, or its last measurement as a whole percent of the target (`ratio` unrounded) and whether that is stale. */
 export type TargetState = { kind: "unmeasured" } | { kind: "measured"; ratio: number; percent: number; measuredAt: number; stale: boolean };
 export function targetState(target: GoalTarget, everyMs: number, now: number): TargetState {
   const at = Date.parse(target.measuredAt ?? "");
   if (target.current === undefined || !Number.isFinite(at)) return { kind: "unmeasured" };
-  const ratio = target.current / target.target;
+  const ratio = targetRatio(target);
   return { kind: "measured", ratio, percent: Math.round(ratio * 100), measuredAt: at, stale: now - at > targetStaleMs(target, everyMs) };
 }
 const amountText = (n: number): string => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const unitText = (unit: string): string => unit === "%" ? unit : ` ${unit}`;
 /** "8 / 200 Mbps (4%)", or "target 200 Mbps, not measured". */
 export const targetText = (target: GoalTarget): string => target.current === undefined ? `target ${amountText(target.target)}${unitText(target.unit)}, not measured` :
-  `${amountText(target.current)} / ${amountText(target.target)}${unitText(target.unit)} (${Math.round(target.current / target.target * 100)}%)`;
+  `${amountText(target.current)} / ${amountText(target.target)}${unitText(target.unit)} (${Math.round(targetRatio(target) * 100)}%)`;
 
 /** Words that say nothing about a goal's area: plan phases, time words and common words. */
 const AREA_STOP_WORDS = new Set(["about", "after", "again", "also", "before", "being", "both", "build", "check", "could", "does", "done", "each", "every", "first",

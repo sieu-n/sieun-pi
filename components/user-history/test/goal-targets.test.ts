@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
 import { goalPushes } from "../src/checkin-goals.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
-import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetState } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetRatio, targetState, targetText } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, GoalTarget, PlanItem } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");
@@ -36,7 +36,7 @@ test("goal target: the reducer sets, keeps, updates and clears a goal's target",
 
 test("goal target: the reducer refuses a bad target", () => {
   const board = run(emptyBoard(iso(NOW - HOUR)), [{ op: "plan_add", text: "Use the whole proxy plan" }, { op: "plan_add", parent: "p1", text: "Raise crawler concurrency" }]);
-  invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, target: 0 } }], /target\.target must be a positive number/);
+  invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, target: -1 } }], /target\.target must be a non-negative number/);
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, current: -1 } }], /target\.current must be a non-negative number/);
   invalid(board, [{ op: "plan_update", id: "p1", target: { metric: "x", target: 1, unit: "Mbps", current: 8 } }], /all three, or none/);
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, measuredAt: "yesterday" } }], /measuredAt must be an ISO date-time/);
@@ -116,4 +116,15 @@ test("goal pushes: a goal that is itself a duty fix step reads its number from t
   const precheck = checkInPrecheck(undefined, [{ key: "k1", name: "fix visitors become paying users slack green guy 08:16", state: "working", activityAt: NOW }], boardOf([p151]),
     NOW, { everyMs: EVERY, doneFacts: { metrics, prs: new Map() } });
   assert.deepEqual(precheck.goals.map(entry => [entry.act, entry.owner?.name]), [["steer", "fix visitors become paying users slack green guy 08:16"]], "its own fix job owns the number");
+});
+
+test("goal target: a target of 0 is taken for a lower-is-better number, and its progress reads 1 at 0 and 0 above it (AI harness p529, 10-18)", () => {
+  const board = run(emptyBoard(iso(NOW - HOUR)), [{ op: "plan_add", text: "Open steps that nobody moves reach 0 in every chat" }]);
+  const stuck = { metric: "stuck steps in every chat", target: 0, unit: "steps", current: 6, measuredAt: iso(NOW), source: "whole-system.ts" };
+  const set = run(board, [{ op: "plan_update", id: "p1", target: stuck }]);
+  assert.deepEqual(set.plan[0]!.target, stuck);
+  assert.equal(targetRatio(stuck), 0);
+  assert.equal(targetRatio({ ...stuck, current: 0 }), 1);
+  assert.equal(targetText(stuck), "6 / 0 steps (0%)");
+  assert.equal(targetRatio({ metric: "job start wait p90", target: 10, unit: "min", current: 40 }), 0.25, "a wait four times its target is a quarter of the way");
 });
