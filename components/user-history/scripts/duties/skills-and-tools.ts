@@ -99,12 +99,12 @@ async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
-/** First `---` block of a SKILL.md: top-level `key: value` pairs, with quoted, folded (`>`/`|`) and indented continuation values joined. */
 /** The version in a release folder name such as 0.9.8-daemon-fix.1-darwin-arm64-<sha>.VQKrC7, pre-release tag kept. */
 export function releaseVersion(folder: string): string {
-  return /^(.+?)-(?:darwin|linux|win32)-[^-]+-[0-9a-f]+(?:\.[A-Za-z0-9]+)?$/.exec(folder)?.[1] ?? folder.split("-")[0];
+  return /^(.+?)-(?:darwin|linux|win32)-[^-]+-[0-9a-f]+(?:\.[A-Za-z0-9]+)?$/.exec(folder)?.[1] ?? folder.split("-")[0] ?? folder;
 }
 
+/** First `---` block of a SKILL.md: top-level `key: value` pairs, with quoted, folded (`>`/`|`) and indented continuation values joined. */
 export function frontmatter(text: string): Record<string, string> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   const fields: Record<string, string> = {};
