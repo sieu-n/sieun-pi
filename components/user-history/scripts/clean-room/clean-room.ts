@@ -9,7 +9,7 @@
  *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
- *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time>   (lost-brief: start it before setup)
+ *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
@@ -353,7 +353,7 @@ async function main(): Promise<void> {
   if (command === "say") return say(flags);
   if (command === "kill-worker") {
     const run = need(flags, "run");
-    const kill = await killWorker(run, Date.parse(need(flags, "until")));
+    const kill = await killWorker(run, Date.parse(need(flags, "until")), flags.name);
     log(run, kill ? `killed worker ${kill.workerId} (pid ${kill.pid}) of the chat after job ${kill.record.name} was spawned` : "kill-worker: no spawn of the chat before --until");
     return;
   }

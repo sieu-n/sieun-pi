@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readSession, readSessionFile, type RunState, type Scenario, type Verdict } from "./session-read.ts";
@@ -50,11 +50,29 @@ function childFile(record: BriefCopy): string | undefined {
 const firstPrompt = (file: string | undefined): boolean => !!file && existsSync(file) && readSessionFile(file).some(event => event.kind === "text" && (event.role === "user" || event.customType === "agent_message"));
 const sessionOf = (file: string | undefined): string => /([\w-]+)\.jsonl$/.exec(file ?? "")?.[1] ?? "";
 
-/** Polls every 50 ms for the chat's first child spawn record and SIGKILLs the chat's worker at once. Kills nothing else. */
-export async function killWorker(run: string, until: number): Promise<Kill | null> {
+const SESSIONS = join(HOME, ".prime/agent/sessions");
+/** A root session named `name` whose file was created at or after `since`: the chat a setup made before its create call answered. */
+function chatNamed(name: string, since: number): string | undefined {
+  for (const file of readdirSync(SESSIONS).filter(entry => entry.endsWith(".jsonl"))) {
+    const path = join(SESSIONS, file);
+    if (statSync(path).birthtimeMs < since) continue;
+    if (readFileSync(path, "utf8").split("\n").some(line => line.startsWith('{"type":"session_info"') && line.includes(JSON.stringify(name)))) return file.slice(0, -6);
+  }
+  return undefined;
+}
+
+/**
+ * Polls every 50 ms for the chat's first child spawn record and SIGKILLs the chat's worker at once. Kills nothing else. The chat comes from
+ * run.json, or with `name` from the newest root of that name: under load 75 on 10-17 setup's create call timed out after the chat answered.
+ */
+export async function killWorker(run: string, until: number, name?: string): Promise<Kill | null> {
   const stateFile = join(run, "run.json");
+  const started = Date.now();
+  let named: string | undefined;
+  let looked = 0;
   while (Date.now() < until) {
-    const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : undefined;
+    if (name && !named && Date.now() - looked > 1000) { looked = Date.now(); named = chatNamed(name, started); }
+    const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : named;
     const names = chat && existsSync(BRIEFS) ? readdirSync(BRIEFS).filter(name => name.startsWith("child-")) : [];
     for (const name of names) {
       let record: BriefCopy;
