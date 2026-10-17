@@ -229,8 +229,9 @@ export class Duties {
 
   private async scan(): Promise<void> {
     const chats: string[] = [];
+    const gone: string[] = [];
     for (const chatId of await this.store.chats()) {
-      if (!(await this.host.isChat(chatId))) continue;
+      if (!(await this.host.isChat(chatId))) { gone.push(chatId); continue; }
       chats.push(chatId);
       await this.resume(chatId);
       if (!this.boards.has(chatId)) {
@@ -246,6 +247,32 @@ export class Duties {
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
     await this.stopEnded(runs);
+    await this.retireGone(gone);
+  }
+
+  /**
+   * Retires the duty jobs that still work for a chat that left the chat list, such as one the owner archived. Its duties stop with the chat,
+   * so its check-in job must stop too: on 10-17 the check-in job of "TikTok listing drops" (01a143d5) started at 19:57:49Z, the chat was archived
+   * a minute later, and the job kept working on it, got 404 "This thread is not a chat" from job-steer and started a new job for the archived chat.
+   * Only a run from the last STUCK_MAX_MS can have a job at work, so an old archived chat costs one file read per tick and no daemon call.
+   */
+  private async retireGone(gone: readonly string[]): Promise<void> {
+    const since = this.now() - STUCK_MAX_MS;
+    for (const chatId of gone) {
+      const seen = new Set<string>();
+      for (const run of await this.store.runs(chatId)) {
+        if (run.at < since) break;
+        if (!run.job || seen.has(run.duty)) continue;
+        seen.add(run.duty);
+        if (this.stopped.has(run.job.id)) continue;
+        const job = run.job;
+        const working = await this.host.jobs.working(job).catch(() => false);
+        if (!working) continue;
+        this.stopped.add(job.id);
+        await this.host.jobs.retire(job).then(() => this.log(`duty job ${job.name}: its chat left the chat list; retired it`))
+          .catch(error => this.log(`duty job ${job.name}: retire after its chat left the chat list: ${message(error)}`));
+      }
+    }
   }
 
   /**

@@ -20,6 +20,7 @@ import { CorrectionLedger } from "../src/chat-corrections.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type ChatThreads, type CheckInSource, jobRegistry, replyCheckRecord } from "../src/chat-sources.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
+import { markUnmeasured } from "../src/checkin-findings.ts";
 import { Chats } from "../src/chats.ts";
 import { readHeldTurns } from "../src/held-turns.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -67,7 +68,7 @@ const source: CheckInSource = {
   board: id => boards.read(id), rows: async () => rows, registry: jobRegistry(join(dataDir, "chat-jobs.json")),
   memory: checkInRecord(await copy("check-ins.json")), replyChecks: replyCheckRecord(await copy("reply-checks.json")),
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
-  corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
+  corrections: () => corrections.read(), duties: async id => markUnmeasured(await duties.list(id), await duties.runs(id)), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
   dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
   dutyRuns: id => duties.runs(id), prs: prStates(), held: now => readHeldTurns(dataDir, now),
   // pi-pool's queue, as the service's check-in reads it.

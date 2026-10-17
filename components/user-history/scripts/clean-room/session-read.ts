@@ -17,7 +17,7 @@ export interface Scenario {
   agentsMd?(sandbox: string): string;
   headMessage(chatName: string): string;
   /** A control chat with its own ordinary first message, opened with the chat and kept without a check-in. */
-  control?: { name: string; message: string };
+  control?: { name: string; message(name: string): string };
   fixtures: { name: string; brief(context: { chat: string; chatName: string; logFile: string; sandbox: string }): string }[];
   /** The board seeded from `--board`; absent: the chat makes its own board. */
   board?(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };

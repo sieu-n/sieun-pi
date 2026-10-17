@@ -9,10 +9,16 @@ import { flagHits, names, reportShape, stepIdLists } from "./text-checks.ts";
  * didn't push the coordinator job"). Two chats open at the same minute with ordinary research tasks that carry a number; the control's
  * check-in is paused. The criteria live in the run folder's criteria.md, written before the run.
  */
-export const TASK = "research which of our instagram index gaps matter most and keep a page with the top 10 updated. measure each gap's size " +
-  "from real data, i want all 10 measured by tomorrow";
-export const CONTROL_TASK = "research which of our tiktok shop index gaps matter most and keep a page with the top 10 updated. measure each gap's " +
-  "size from real data, i want all 10 measured by tomorrow";
+const gapsTask = (platform: string): string => `research which of our ${platform} index gaps matter most and keep a page with the top 10 updated. ` +
+  "measure each gap's size from real data, i want all 10 measured by tomorrow";
+/** One task per chat name, so a rerun gets new chats and a platform no earlier run left a top 10 page for (r3 left Instagram's at 10 of 10). */
+export const TASKS: Record<string, string> = { "Instagram index gaps": gapsTask("instagram"), "TikTok Shop index gaps": gapsTask("tiktok shop"),
+  "YouTube index gaps": gapsTask("youtube"), "TikTok index gaps": gapsTask("tiktok") };
+export const taskOf = (name: string): string => {
+  const task = TASKS[name];
+  if (!task) throw new Error(`no checkin-push-control task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`);
+  return task;
+};
 const SLOT_START_MS = 5 * 60_000;
 
 const OPEN = new Set(["todo", "doing", "blocked"]);
@@ -55,15 +61,15 @@ const BOARD_OP = /"op"\s*:\s*"(plan_|todo_)/;
 
 export const checkinPushControl: Scenario = {
   name: "checkin-push-control",
-  headMessage: () => TASK,
-  control: { name: "TikTok Shop gaps", message: CONTROL_TASK },
+  headMessage: name => taskOf(name),
+  control: { name: "TikTok Shop index gaps", message: name => taskOf(name) },
   fixtures: [],
   setupNotes: state => [
     `# Run setup: ${state.chat.name} and ${state.control?.name}`, "",
     `Both chats were opened through POST api/threads in ${state.sandbox} on ${state.release} at the same minute, each with one owner-style first message and no seeded board, todo or fixture.`,
     `"${state.chat.name}" (${state.chat.id}) runs its check-in every ${state.everyMs / 60_000} min on the server's clock. "${state.control?.name}" (${state.control?.id}) is the control: the script paused its check-in right after it opened, through POST api/threads/<id>/check-in, as this job's session.`,
     "The owner asked on 10-16 for a run the system does alone (c84) and for a control without the check-in; no other chat's interval changed.", "",
-    `## First messages`, "", `1. ${state.chat.name}: "${TASK}"`, `2. ${state.control?.name}: "${CONTROL_TASK}"`, "",
+    `## First messages`, "", `1. ${state.chat.name}: "${taskOf(state.chat.name)}"`, `2. ${state.control?.name}: "${taskOf(state.control?.name ?? "")}"`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),
   baseline: () => { throw new Error("this scenario has no baseline"); },
@@ -85,7 +91,7 @@ function agentsOf(dir: string): { jobs: Map<string, string>; duty: Map<string, s
 }
 function firstReply(events: readonly SessionEvent[], since: number): Check {
   const reply = events.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= since)?.text ?? "";
-  const measured = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|shops?|products?|days?|h|hours?)\b/gi) ?? [];
+  const measured = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|shops?|products?|channels?|videos?|days?|h|hours?)\b/gi) ?? [];
   const defers = reply.match(/nothing is measured yet|i started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
   return { id: "i", ok: reply ? measured.length > 0 && defers.length === 0 : false, detail: reply
     ? `numbers ${measured.join(", ") || "none"}; put-off words ${defers.map(word => `"${word}"`).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
@@ -190,7 +196,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   for (const id of family) for (const event of read(id)) {
     if (event.kind !== "text" || event.at < state.windowStart) continue;
     if (["harness_digest", "refinement_notice", "refinement_outcome", "ipython_state", "ipython_state_restored"].includes(event.customType ?? "")) continue;
-    if (event.role === "user" && [TASK, CONTROL_TASK].includes(event.text.trim())) continue;
+    if (event.role === "user" && Object.values(TASKS).includes(event.text.trim())) continue;
     scanned++;
     const flags = flagHits(event.text); const lists = stepIdLists(event.text);
     if (flags.length || lists.length) hits.push(`${id.slice(0, 8)} from ${event.from ?? event.customType ?? event.role} at ${iso(event.at)}: ${[flags.join(", "), lists.map(ids => ids.join(" ")).join(" / ")].filter(Boolean).join("; ")}`);

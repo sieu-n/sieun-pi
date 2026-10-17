@@ -1,6 +1,6 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
-import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
+import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
   walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
@@ -209,8 +209,19 @@ export function greenLater(item: Pick<PlanItem, "waitFor">, train: Train | undef
   return found.join(" and ");
 }
 
-/** The fields of a chat duty (`<data dir>/duties/<chat>.json`) the fold reads. */
-export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal">;
+/**
+ * The fields of a chat duty (`<data dir>/duties/<chat>.json`) the fold reads. `unmeasured` marks a duty with no met or missed run on record
+ * (`markUnmeasured`), which no goal folds into.
+ */
+export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal"> & { unmeasured?: true };
+/**
+ * Marks each duty with no met or missed run in `runs` as unmeasured. On 10-17 the check-in of "TikTok listing drops" (01a143d5) said to fold
+ * p1 into d1, whose only run was an error and whose d1.last-runs.json was empty, while a live job still built d1's precheck.
+ */
+export function markUnmeasured<T extends DutyRef>(duties: readonly T[], runs: readonly Pick<DutyRunRecord, "duty" | "verdict">[]): T[] {
+  const measured = new Set(runs.filter(run => run.verdict === "met" || run.verdict === "missed").map(run => run.duty));
+  return duties.map(duty => measured.has(duty.id) ? duty : { ...duty, unmeasured: true as const });
+}
 /**
  * The active duty that runs a goal's work: the duty whose `boardGoal` is the goal, else the first whose name and goal share at least
  * FOLD_AREA_WORDS area words (`areaWords`) with the goal's text, and at least half of the goal's. On VP of CI's board p72 shares 6 of 11 with the
@@ -240,7 +251,8 @@ export interface FoldMove { item: PlanItem; home: PlanItem; why: string }
 export interface FoldGoal { goal: PlanItem; duty?: DutyRef; moves: FoldMove[]; left: PlanItem[] }
 export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], self: ReadonlySet<string>, duties: readonly DutyRef[]): FoldGoal[] {
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
-  const byDuty = new Map(goals.flatMap(goal => { const duty = dutyFor(goal, duties); return duty ? [[goal.id, duty] as const] : []; }));
+  const measured = duties.filter(duty => !duty.unmeasured);
+  const byDuty = new Map(goals.flatMap(goal => { const duty = dutyFor(goal, measured); return duty ? [[goal.id, duty] as const] : []; }));
   /** A job that names work of this chat: not the chat itself and not another thread. */
   const workJob = (item: PlanItem): string | undefined => {
     const job = planJob(item.job);

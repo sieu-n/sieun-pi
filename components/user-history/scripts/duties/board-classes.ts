@@ -9,7 +9,7 @@ import { ACT_CLASSES, classifyBoard, classLine, jobFacts, liveJobs, liveWindowMs
 import { endState, endStateKpi, endStateLine, type EndStateKpi, type EndStateView, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { checkInRecord, classCounts, convergenceMisses, type ConvergenceMisses, finishedOpen } from "../../src/chat-checkin.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
-import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
+import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, markUnmeasured, noProgress, openUnderClosed, scopeMisses,
   staleSteps, stalledSteps, waitsMet } from "../../src/checkin-findings.ts";
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile, withWakes } from "../../src/checkin-load.ts";
@@ -146,7 +146,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
       wakes, key => children.find(child => child.id === key)?.sessionId);
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now, active);
     const end = steps.map(view => endState(view, board?.todos ?? [], rows, new Set([id, name]), now));
-    const chatDuties = await duties.list(id).catch(() => undefined);
+    const chatDuties = await duties.list(id).then(async list => markUnmeasured(list, await duties.runs(id))).catch(() => undefined);
     const cwd = rows.find(row => row.id === id)?.cwd;
     const doneFacts = { metrics: metricFacts(await duties.runs(id).catch(() => [])),
       prs: cwd && boardPrs(board).length ? await prs(cwd, boardPrs(board)).catch(() => new Map()) : new Map() };

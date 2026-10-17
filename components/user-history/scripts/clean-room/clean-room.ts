@@ -120,7 +120,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
   // --chat adopts a chat whose create the daemon answered after this script's fetch gave up (10-16 06:52Z: 171.7 s at load 82).
   const adopted = flags.chat;
   const [chat, controlId] = await Promise.all([adopted ?? createThread(srv, "chat", name, sandbox, headMessage),
-    control ? createThread(srv, "chat", control.name, sandbox, control.message) : Promise.resolve(undefined)]);
+    control ? createThread(srv, "chat", control.name, sandbox, control.message(control.name)) : Promise.resolve(undefined)]);
   const adoptedAt = adopted ? Date.parse(/"timestamp":"([^"]+)"/.exec(readFileSync(join(homedir(), ".prime/agent/sessions", `${adopted}.jsonl`), "utf8"))?.[1] ?? "") : NaN;
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
   log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger`);
