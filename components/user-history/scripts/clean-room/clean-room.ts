@@ -9,6 +9,7 @@
  *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
+ *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
@@ -28,6 +29,7 @@ import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { checkinJobSteer } from "./checkin-job-steer.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
+import { type ArchiveMark, chatEntries, chatToolsReopen } from "./chat-tools-reopen.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
 import { kernelRevive } from "./kernel-revive.ts";
@@ -38,7 +40,7 @@ import type { RunState, Scenario } from "./session-read.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine,
-  "checkin-job-steer": checkinJobSteer, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -280,6 +282,31 @@ async function say(flags: Record<string, string>): Promise<void> {
   log(run, `sent the owner's message: ${message}`);
 }
 
+/**
+ * Archives the test chat alone through the archive route, the owner's archive button, once it is idle: its last turn ended with a stop, its
+ * session file has not changed for a minute and none of its jobs runs. Records the time, the session file's length and the board rev.
+ */
+async function archive(flags: Record<string, string>): Promise<void> {
+  const run = need(flags, "run");
+  const state = readJson<RunState>(join(run, "run.json"));
+  const srv = await server();
+  const file = join(homedir(), ".prime/agent/sessions", `${state.chat.id}.jsonl`);
+  const entries = chatEntries(state.chat.id);
+  const last = entries.filter(entry => entry.role === "assistant" || entry.role === "user" || entry.role === "toolResult" || entry.customType === "agent_message").at(-1);
+  const quietMs = Date.now() - statSync(file).mtimeMs;
+  const { agents } = await call(srv, "GET", `api/threads/${state.chat.id}/agents`) as { agents: { state?: string; name?: string }[] };
+  const working = agents.filter(agent => agent.state === "working" || agent.state === "queued");
+  if (last?.role !== "assistant" || last.stopReason !== "stop" || quietMs < 60_000 || working.length)
+    throw new Error(`not idle: last ${last?.role ?? "none"} ${last?.stopReason ?? ""}, quiet ${Math.round(quietMs / 1000)} s, ${working.length} jobs at work`);
+  const boardFile = join(DATA, "boards", `${state.chat.id}.json`);
+  const rev = existsSync(boardFile) ? readJson<{ rev?: number }>(boardFile).rev ?? 0 : 0;
+  const lines = readFileSync(file, "utf8").split("\n").filter(line => line.trim()).length;
+  const mark: ArchiveMark = { at: Date.now(), lines, rev, idle: `idle: last reply stopped at ${new Date(last.at).toISOString()}, quiet ${Math.round(quietMs / 1000)} s, ${agents.length} jobs, none at work` };
+  await call(srv, "POST", `api/threads/${state.chat.id}/archive`, {});
+  writeJson(join(run, "archive.json"), mark);
+  log(run, `archived chat ${state.chat.id} alone through the archive route (${mark.idle}); ${lines} session lines, board rev ${rev}`);
+}
+
 async function evaluate(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   const state = readJson<RunState>(join(run, "run.json"));
@@ -351,6 +378,7 @@ async function main(): Promise<void> {
   if (command === "setup") return setup(flags);
   if (command === "collect") return collect(flags);
   if (command === "say") return say(flags);
+  if (command === "archive") return archive(flags);
   if (command === "kill-worker") {
     const run = need(flags, "run");
     const kill = await killWorker(run, Date.parse(need(flags, "until")), flags.name);
