@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { judge, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Answers, framesToSeries, QUERIES, type Series, TARGETS, UNMEASURED, UNMEASURED_PCT, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { type Answers, errorText, framesToSeries, QUERIES, type Series, TARGETS, UNMEASURED, UNMEASURED_PCT, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const AT = Date.parse("2026-10-12T14:00:00Z");
 const each = (value: number): Series[] => TARGETS.map(target => ({ labels: { env: "production", job: "api-portal-health", target }, value }));
@@ -52,6 +52,20 @@ test("portal uptime: Grafana errors and a missing target series give 999999, -1 
 test("portal uptime: a failed direct GET is flagged, and so is the Convex probe still saying the portal is up", () => {
   const output = uptimeMetrics(answers(), { status: 0, ms: 15000, error: "The operation was aborted due to timeout" }, AT);
   assert.deepEqual(output.flagged?.map(item => item.kind), ["direct_down", "disagree"]);
+});
+
+test("portal uptime: an offline Mac is flagged as mac_offline, not as a portal outage, and still measures nothing", () => {
+  const down = { error: "fetch failed (ENETUNREACH)" };
+  const output = uptimeMetrics({ up: down, uptime: down, age: down, p90: down }, { status: 0, ms: 4, error: "fetch failed (ENETUNREACH)" }, AT);
+  assert.equal(output.metrics.probe_uptime_24h_pct, UNMEASURED_PCT);
+  assert.deepEqual(output.flagged?.map(item => item.kind), ["source_error", "source_error", "source_error", "source_error", "mac_offline"]);
+  assert.deepEqual(uptimeMetrics(answers({ up: { error: "HTTP 502" } }), { status: 0, ms: 4, error: "fetch failed" }, AT).flagged?.map(item => item.kind), ["source_error", "direct_down"]);
+});
+
+test("portal uptime: errorText adds the network code of a fetch failure", () => {
+  assert.equal(errorText(new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ENOTFOUND" }) })), "fetch failed (ENOTFOUND)");
+  assert.equal(errorText(new TypeError("fetch failed", { cause: { errors: [{}, { code: "ECONNREFUSED" }] } })), "fetch failed (ECONNREFUSED)");
+  assert.equal(errorText(new Error("HTTP 401: unauthorized")), "HTTP 401: unauthorized");
 });
 
 test("portal uptime: the duty JSON passes parseDutyInput with the targets the script cites", async () => {

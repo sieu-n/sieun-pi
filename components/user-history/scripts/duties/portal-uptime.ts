@@ -102,7 +102,10 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   metrics.portal_openapi_p90_ms = p90 ? Math.round(p90[0]!.value) : UNMEASURED;
 
   metrics.portal_openapi_direct_ms = direct.ms;
-  if (direct.status !== 200) {
+  const offline = direct.status === 0 && Object.values(answers).every(answer => "error" in answer && !answer.error.startsWith("HTTP "));
+  if (offline) {
+    flagged.push({ at, kind: "mac_offline", excerpt: `this Mac reached neither obs.virev.ai nor api.virev.ai (${direct.error ?? "no answer"}), so the run measured nothing about prod; the prod series keep running and the next run reads them` });
+  } else if (direct.status !== 200) {
     flagged.push({ at, kind: "direct_down", excerpt: `GET ${PORTAL_OPENAPI} from this Mac gave ${direct.error ?? `HTTP ${direct.status}`} after ${direct.ms} ms` });
     if (up?.find(series => series.labels.target === "portal_openapi")?.value === 1) flagged.push({ at, kind: "disagree", excerpt: "the Convex probe says portal_openapi is up while the direct GET failed" });
   }
@@ -118,6 +121,14 @@ export function grafanaAuth(secrets: string): string {
     return value;
   };
   return `Basic ${Buffer.from(`${get("GRAFANA_ADMIN_USER")}:${get("GRAFANA_ADMIN_PASSWORD")}`).toString("base64")}`;
+}
+
+/** A fetch error with its network code, so "fetch failed" from an offline Mac reads as ENETUNREACH or ENOTFOUND. */
+export function errorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause as { code?: string; errors?: { code?: string }[] } | undefined;
+  const code = cause?.code ?? cause?.errors?.find(item => item.code)?.code;
+  return code ? `${error.message} (${code})` : error.message;
 }
 
 async function instant(auth: string, expr: string, now: number): Promise<Series[]> {
@@ -141,16 +152,16 @@ async function main(): Promise<void> {
   let answers: Answers;
   try {
     const auth = grafanaAuth(await readFile(join(REPO, "apps/infra/aws/secrets.env"), "utf8"));
-    const settled = await Promise.all(names.map(name => instant(auth, QUERIES[name], now).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))));
+    const settled = await Promise.all(names.map(name => instant(auth, QUERIES[name], now).catch((error: unknown) => ({ error: errorText(error) }))));
     answers = Object.fromEntries(names.map((name, index) => [name, settled[index]!])) as Answers;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     answers = Object.fromEntries(names.map(name => [name, { error: message }])) as Answers;
   }
   const start = Date.now();
   const direct = await fetch(PORTAL_OPENAPI, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
     .then(async response => { await response.arrayBuffer(); return { status: response.status, ms: Date.now() - start }; },
-      (error: unknown) => ({ status: 0, ms: Date.now() - start, error: error instanceof Error ? error.message : String(error) }));
+      (error: unknown) => ({ status: 0, ms: Date.now() - start, error: errorText(error) }));
   await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now), null, 2) + "\n");
 }
 
