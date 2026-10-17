@@ -308,11 +308,15 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
 }
 /**
  * The open top-level goals of a chat that has no active duty, in board order; none when the chat has one (duty proposals 10-12: five chats
- * held open goals with no duty and no metric flagged them). The built-in check-in is no duty here.
+ * held open goals with no duty and no metric flagged them). The built-in check-in is no duty here. A goal with an open todo linked to it or to
+ * one of its steps is left out, because For you already asks: 'spec and monitoring system' (01a140fb) got this finding on p5 in 14 check-ins
+ * in a row while t1, linked to p5, asked the owner from 10-16 04:54Z on whether to read the daily report every morning.
  */
 export function goalsWithoutDuty(board: ChatBoard | null, duties: readonly DutyRef[]): PlanItem[] {
   if (duties.some(duty => duty.status === "active" && duty.id !== CHECK_IN_DUTY_ID)) return [];
-  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
+  const asked = new Set((board?.todos ?? []).flatMap(todo => !todo.done && todo.step ? [todo.step] : []));
+  const asks = (goal: PlanItem): boolean => { let found = false; walkItems([goal], item => { if (asked.has(item.id)) found = true; }); return found; };
+  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal));
 }
 export const noDutyLine = (goals: readonly PlanItem[]): string =>
   `${plural(goals.length, "open goal")} (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}) and no active duty: draft a duty for the chat's ` +
