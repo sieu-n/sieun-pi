@@ -2,8 +2,8 @@
 
 Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's tree (the worker and every descendant, from
 proc_listchildpids) with its pid count and summed phys_footprint in bytes (the memory macOS counts, compressed and swapped pages
-included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the Mac's swap use and memory pressure level, and this process's own CPU seconds. It uses libproc and sysctl through ctypes
-and starts no other process, so one call costs well under a second of CPU at 1,000 processes.
+included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
+on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. It starts no other process, so one call costs well under a second of CPU at 1,000 processes.
 Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes, CPU
 milliseconds since each process started and pids (`members`), and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
@@ -13,62 +13,11 @@ prints a process's start time.
 """
 import ctypes
 import json
+import os
 import re
 import resource
 import sys
 import time
-
-lib = ctypes.CDLL("/usr/lib/libproc.dylib")
-libc = ctypes.CDLL("/usr/lib/libc.dylib")
-RUSAGE_INFO_V4 = 4
-
-
-class RusageInfo(ctypes.Structure):
-    _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
-        "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size", "resident_size", "phys_footprint")] + [
-        ("rest", ctypes.c_uint64 * 64)]
-
-
-class SwapUsage(ctypes.Structure):
-    _fields_ = [("total", ctypes.c_uint64), ("avail", ctypes.c_uint64), ("used", ctypes.c_uint64), ("pagesize", ctypes.c_uint32), ("encrypted", ctypes.c_uint32)]
-
-
-class Timebase(ctypes.Structure):
-    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
-
-
-TIMEBASE = Timebase()
-libc.mach_timebase_info(ctypes.byref(TIMEBASE))
-# rusage_info's user_time and system_time are mach ticks on Apple silicon (125/3 ns a tick), not nanoseconds.
-TICK_MS = TIMEBASE.numer / TIMEBASE.denom / 1e6 if TIMEBASE.denom else 1e-6
-
-
-def usage(pid, info=RusageInfo()):
-    """(phys_footprint in bytes, CPU in ms) of a process, or None when it is gone."""
-    if lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info)) != 0:
-        return None
-    return info.phys_footprint, (info.user_time + info.system_time) * TICK_MS
-
-
-def footprint(pid):
-    found = usage(pid)
-    return None if found is None else found[0]
-
-
-def children(pid, buffer=(ctypes.c_int * 4096)()):
-    count = lib.proc_listchildpids(pid, buffer, ctypes.sizeof(buffer))
-    return list(buffer[:count]) if count > 0 else []
-
-
-def allpids(buffer=(ctypes.c_int * 16384)()):
-    count = lib.proc_listallpids(buffer, ctypes.sizeof(buffer))
-    return [pid for pid in buffer[:count] if pid > 0] if count > 0 else []
-
-
-def sysctl(name, value):
-    size = ctypes.c_size_t(ctypes.sizeof(value))
-    return value if libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, 0) == 0 else None
-
 
 # The wrapper Prime's bash() runs each handle in: `/bin/bash -c "...{\n<command>\n} 8>&- 9>&-...prime-agent-complete..."`.
 HANDLE = re.compile(r"\{\n(.*?)\n\} 8>&- 9>&-\n.*prime-agent-complete", re.S)
@@ -80,32 +29,150 @@ PRIME = re.compile(r"rlm\.repl|(^|/)prime-agent( |$)|pi-pool-token")
 # 10-15 they carried a session's RLM_HARNESS_STATE_DIR: two PM2 God Daemons (~/.pm2, and auto-sns-agent/.cache/pm2-dev with the virev-demo vite
 # at 1.77 GiB, dev-guard and devstack-sync under it), Aside (/Applications/Aside.app, its helpers and the Aside Daemon) and cua-driver serve.
 SHARED = re.compile(r"^PM2 v[\d.]+: God Daemon|/Aside\.app/|^Aside Daemon|(^|/)cua-driver( |$)")
-CTL_KERN, KERN_PROCARGS2, PROC_PIDTBSDINFO = 1, 49, 3
-ARGS = ctypes.create_string_buffer(1 << 18)
+if sys.platform == "darwin":
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+    libc = ctypes.CDLL("/usr/lib/libc.dylib")
+    RUSAGE_INFO_V4 = 4
 
+    class RusageInfo(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+            "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size", "resident_size", "phys_footprint")] + [
+            ("rest", ctypes.c_uint64 * 64)]
 
-def procargs(pid):
-    """(argv, env) of a process from KERN_PROCARGS2, or None when it is gone or not readable."""
-    size = ctypes.c_size_t(ctypes.sizeof(ARGS))
-    mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
-    if libc.sysctl(mib, 3, ARGS, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+    class SwapUsage(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_uint64), ("avail", ctypes.c_uint64), ("used", ctypes.c_uint64), ("pagesize", ctypes.c_uint32), ("encrypted", ctypes.c_uint32)]
+
+    class Timebase(ctypes.Structure):
+        _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+    TIMEBASE = Timebase()
+    libc.mach_timebase_info(ctypes.byref(TIMEBASE))
+    # rusage_info's user_time and system_time are mach ticks on Apple silicon (125/3 ns a tick), not nanoseconds.
+    TICK_MS = TIMEBASE.numer / TIMEBASE.denom / 1e6 if TIMEBASE.denom else 1e-6
+
+    def usage(pid, info=RusageInfo()):
+        """(phys_footprint in bytes, CPU in ms) of a process, or None when it is gone."""
+        if lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info)) != 0:
+            return None
+        return info.phys_footprint, (info.user_time + info.system_time) * TICK_MS
+
+    def children(pid, buffer=(ctypes.c_int * 4096)()):
+        count = lib.proc_listchildpids(pid, buffer, ctypes.sizeof(buffer))
+        return list(buffer[:count]) if count > 0 else []
+
+    def allpids(buffer=(ctypes.c_int * 16384)()):
+        count = lib.proc_listallpids(buffer, ctypes.sizeof(buffer))
+        return [pid for pid in buffer[:count] if pid > 0] if count > 0 else []
+
+    def sysctl(name, value):
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        return value if libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, 0) == 0 else None
+
+    CTL_KERN, KERN_PROCARGS2, PROC_PIDTBSDINFO = 1, 49, 3
+    ARGS = ctypes.create_string_buffer(1 << 18)
+
+    def procargs(pid):
+        """(argv, env) of a process from KERN_PROCARGS2, or None when it is gone or not readable."""
+        size = ctypes.c_size_t(ctypes.sizeof(ARGS))
+        mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
+        if libc.sysctl(mib, 3, ARGS, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+            return None
+        raw = ARGS.raw[:size.value]
+        argc = int.from_bytes(raw[:4], "little")
+        parts = [part.decode("utf-8", "replace") for part in raw[4:].split(b"\0") if part]
+        return parts[1:1 + argc], parts[1 + argc:]
+
+    def bsdinfo(pid, info=ctypes.create_string_buffer(136)):
+        """(ppid, pgid, start time in epoch seconds) from proc_bsdinfo, or None when the process is gone."""
+        if lib.proc_pidinfo(pid, PROC_PIDTBSDINFO, ctypes.c_uint64(0), info, 136) != 136:
+            return None
+        raw = info.raw
+        return int.from_bytes(raw[16:20], "little"), int.from_bytes(raw[100:104], "little"), int.from_bytes(raw[120:128], "little")
+
+    def swap_used():
+        """Swap in use in bytes, or None."""
+        swap = sysctl("vm.swapusage", SwapUsage())
+        return swap.used if swap else None
+
+    def pressure_level():
+        """The kernel's memory pressure level (1 normal, 2 warn, 4 critical), or None."""
+        pressure = sysctl("kern.memorystatus_vm_pressure_level", ctypes.c_int())
+        return pressure.value if pressure else None
+else:
+    PROC = "/proc"
+    TICKS = os.sysconf("SC_CLK_TCK")
+    with open(f"{PROC}/stat") as file:
+        BOOT = next(int(line.split()[1]) for line in file if line.startswith("btime "))
+
+    def stat(pid):
+        """The fields of /proc/<pid>/stat after the command name, or None when the process is gone."""
+        try:
+            with open(f"{PROC}/{pid}/stat", "rb") as file:
+                return file.read().rsplit(b")", 1)[1].split()
+        except (OSError, IndexError):
+            return None
+
+    def usage(pid):
+        """(resident plus swapped bytes, the nearest Linux count to phys_footprint, and CPU in ms) of a process, or None when it is gone."""
+        fields = stat(pid)
+        try:
+            with open(f"{PROC}/{pid}/status") as file:
+                kb = sum(int(line.split()[1]) for line in file if line.startswith(("VmRSS:", "VmSwap:")))
+        except OSError:
+            return None
+        return None if fields is None else (kb * 1024, (int(fields[11]) + int(fields[12])) * 1000 / TICKS)
+
+    def children(pid):
+        found = []
+        try:
+            tasks = os.listdir(f"{PROC}/{pid}/task")
+        except OSError:
+            return found
+        for task in tasks:
+            try:
+                with open(f"{PROC}/{pid}/task/{task}/children") as file:
+                    found += [int(child) for child in file.read().split()]
+            except OSError:
+                pass
+        return found
+
+    def allpids():
+        return [int(name) for name in os.listdir(PROC) if name.isdigit()]
+
+    def procargs(pid):
+        """(argv, env) of a process from /proc/<pid>/cmdline and environ, or None when it is gone or not readable."""
+        try:
+            with open(f"{PROC}/{pid}/cmdline", "rb") as file:
+                argv = file.read()
+            with open(f"{PROC}/{pid}/environ", "rb") as file:
+                env = file.read()
+        except OSError:
+            return None
+        return [part.decode("utf-8", "replace") for part in argv.split(b"\0") if part], [part.decode("utf-8", "replace") for part in env.split(b"\0") if part]
+
+    def bsdinfo(pid):
+        """(ppid, pgid, start time in epoch seconds) from /proc/<pid>/stat, or None when the process is gone."""
+        fields = stat(pid)
+        return None if fields is None else (int(fields[1]), int(fields[2]), BOOT + int(fields[19]) // TICKS)
+
+    def swap_used():
+        """Swap in use in bytes, from /proc/meminfo."""
+        with open(f"{PROC}/meminfo") as file:
+            kb = {key: int(value.split()[0]) for key, value in (line.split(":", 1) for line in file) if key in ("SwapTotal", "SwapFree")}
+        return (kb["SwapTotal"] - kb["SwapFree"]) * 1024
+
+    def pressure_level():
+        """None: Linux has no counterpart of macOS's memory pressure level."""
         return None
-    raw = ARGS.raw[:size.value]
-    argc = int.from_bytes(raw[:4], "little")
-    parts = [part.decode("utf-8", "replace") for part in raw[4:].split(b"\0") if part]
-    return parts[1:1 + argc], parts[1 + argc:]
 
 
-def bsdinfo(pid, info=ctypes.create_string_buffer(136)):
-    """(ppid, pgid, start time in epoch seconds) from proc_bsdinfo, or None when the process is gone."""
-    if lib.proc_pidinfo(pid, PROC_PIDTBSDINFO, ctypes.c_uint64(0), info, 136) != 136:
-        return None
-    raw = info.raw
-    return int.from_bytes(raw[16:20], "little"), int.from_bytes(raw[100:104], "little"), int.from_bytes(raw[120:128], "little")
+def footprint(pid):
+    found = usage(pid)
+    return None if found is None else found[0]
 
 
 def started(pid):
-    """The process's start time in epoch seconds (proc_bsdinfo.pbi_start_tvsec), or None."""
+    """The process's start time in epoch seconds (`bsdinfo`), or None."""
     info = bsdinfo(pid)
     return None if info is None else info[2]
 
@@ -250,7 +317,5 @@ if __name__ == "__main__":
         sys.exit(0)
     waiters, handles, kernels, seen = [], [], [], set()
     workers = {line.strip(): tree(int(line), waiters, int(time.time()), handles, kernels, seen) for line in sys.stdin if line.strip().isdigit()}
-    swap = sysctl("vm.swapusage", SwapUsage())
-    pressure = sysctl("kern.memorystatus_vm_pressure_level", ctypes.c_int())
     print(json.dumps({"workers": workers, "waiters": waiters, "handles": handles, "kernels": kernels, "orphans": orphans(scan(), seen),
-                      "swap_used_bytes": swap.used if swap else None, "pressure_level": pressure.value if pressure else None, "cpu_s": cpu()}))
+                      "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
