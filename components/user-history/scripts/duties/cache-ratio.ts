@@ -38,6 +38,18 @@ const share = (calls: readonly Call[]) => {
   return hit === null ? 100 : Math.round(1000 * hit) / 10;
 };
 
+/** A call the provider refused or that failed before any token: it reads and writes no cache. */
+const failed = (call: Call) => prompt(call) + call.output === 0;
+/** The entry a failed call leaves for the next call, so a break after an outage or a 429 names it. */
+export const FAILED = "failed call";
+
+/** Failed calls that ended in the window, each once. */
+export function windowFailures(sessions: readonly SessionCalls[], from: number, to: number): number {
+  const seen = new Set<string>();
+  for (const session of sessions) for (const call of session.calls) if (call.endedAt > from && call.endedAt <= to && failed(call)) seen.add(call.id);
+  return seen.size;
+}
+
 /** Each call once (fork copies share a response id), dropping error calls with no tokens and providers that report no cache at all in the window. */
 export function windowCalls(sessions: readonly SessionCalls[], from: number, to: number): Call[] {
   const seen = new Map<string, Call>();
@@ -53,7 +65,8 @@ export function windowCalls(sessions: readonly SessionCalls[], from: number, to:
 export function warmBreaks(sessions: readonly SessionCalls[], from: number, to: number): WarmBreak[] {
   const found = new Map<string, WarmBreak>();
   for (const session of sessions) {
-    const calls = [...session.calls].sort((a, b) => a.endedAt - b.endedAt);
+    // A failed call wrote no cache, so it is never the call before a break: the first call after hours of failures is a cold start.
+    const calls = session.calls.filter(call => !failed(call)).sort((a, b) => a.endedAt - b.endedAt);
     for (let at = 1; at < calls.length; at++) {
       const last = calls[at - 1]!, call = calls[at]!;
       if (call.endedAt <= from || call.endedAt > to || found.has(call.id) || call.model !== last.model) continue;
@@ -86,16 +99,19 @@ export function measureCache(sessions: readonly SessionCalls[], now: number, tar
   const flagged: FlaggedSlice[] = [];
   for (const [key, span] of Object.entries(WINDOWS) as [CacheMetric, number][]) {
     const calls = windowCalls(sessions, now - span, now);
+    // Failed calls are left out of the share; their count says when a window is short because the fleet was failing, as on 10-16 18:00 to 10-18 04:40 KST.
+    const failures = windowFailures(sessions, now - span, now);
+    const alsoFailed = failures ? ` (${failures} more failed with no tokens)` : "";
     if (calls.length < MIN_CALLS) {
       metrics[key] = 100;
-      flagged.push({ kind: key, excerpt: `no data: ${calls.length} calls in the window, under ${MIN_CALLS}, so it reads 100` });
+      flagged.push({ kind: key, excerpt: `no data: ${calls.length} calls in the window, under ${MIN_CALLS}, so it reads 100${failures ? `; ${failures} calls failed with no tokens` : ""}` });
       continue;
     }
     metrics[key] = share(calls);
     if (metrics[key] >= targets[key]) continue;
     const lines = breakLines(warmBreaks(sessions, now - span, now));
     flagged.push(...(lines.length ? lines : ["no warm breaks: the drop comes from cold starts or calls after more than 5 minutes idle"])
-      .map(line => ({ kind: key, excerpt: `${metrics[key]}% < ${targets[key]}% over ${calls.length} calls; ${line}` })));
+      .map(line => ({ kind: key, excerpt: `${metrics[key]}% < ${targets[key]}% over ${calls.length} calls${alsoFailed}; ${line}` })));
   }
   return { metrics, flagged };
 }
@@ -133,14 +149,17 @@ export async function readTranscript(path: string, since: number): Promise<Sessi
     if (message?.role !== "assistant" || !isRecord(message.usage) || typeof message.model !== "string") return;
     const parsed = Date.parse(String(entry.timestamp));
     const endedAt = Number.isFinite(parsed) ? parsed : null;
+    const usage = message.usage;
+    const tokens = { input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite) };
     const seen = before;
-    before = [];
+    // A failed call keeps what came before it for the next call, which also sees the failure.
+    const none = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite === 0;
+    before = none ? [...seen.filter(kind => kind !== FAILED), FAILED] : [];
     if (endedAt === null || endedAt < since) return;
     const id = text(message.responseId) ?? (text(entry.id) ? `msg:${entry.id}:${endedAt}` : null);
     if (!id) return;
-    const usage = message.usage;
     calls.push({ id, endedAt, startedAt: typeof message.timestamp === "number" ? message.timestamp : null, provider: text(message.provider), model: message.model || "unknown",
-      input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite), before: seen });
+      ...tokens, before: seen });
   });
   const found = header as { id: string } | null;
   return found && !bad ? { id: found.id, title: title ?? found.id, calls } : null;

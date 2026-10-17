@@ -232,6 +232,20 @@ test("cache share: a drop names the session with the most warm-break cache write
     "right before: agent_message x2"], "the call after 27 idle minutes and the model switch are not warm breaks");
 });
 
+test("cache share: the first call after failed calls is a cold start, not a warm break, and the failed calls are counted", () => {
+  // 10-18 04:45 KST: the pool's token hook gave no token for 35 hours, so each chat's last call before its cold start was a failed call with no tokens.
+  const failedCall = (id: string, ago: number) => ({ ...call(id, ago, 0, 0), input: 0, output: 0 });
+  const outage: SessionCalls = { id: "s-out", title: "ops train", calls: [
+    call("before-outage", 30 * 60 * MIN, 400_000, 1_000), failedCall("f1", 4 * MIN), failedCall("f2", 3 * MIN), call("cold", 2 * MIN, 514, 391_000),
+  ] };
+  const { metrics, flagged } = measureCache([outage, { id: "s-fine", title: "fine", calls: steady("f", 20, 0) }], NOW, TARGETS);
+  assert.ok(metrics.cache_read_ratio_1h < 90, `share ${metrics.cache_read_ratio_1h}`);
+  assert.deepEqual(flagged.filter(slice => slice.kind === "cache_read_ratio_1h").map(slice => slice.excerpt),
+    [`${metrics.cache_read_ratio_1h}% < 90% over 21 calls (2 more failed with no tokens); no warm breaks: the drop comes from cold starts or calls after more than 5 minutes idle`]);
+  const quiet = measureCache([{ id: "s", title: "down", calls: [failedCall("x", 2 * MIN), call("y", MIN, 0, 900_000)] }], NOW, TARGETS);
+  assert.equal(quiet.flagged[0]!.excerpt, `no data: 1 calls in the window, under ${MIN_CALLS}, so it reads 100; 1 calls failed with no tokens`);
+});
+
 test("cache share: a transcript gives its calls since the cutoff with the entries the model saw before each, and its chat title", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cache-ratio-"));
   try {
@@ -245,14 +259,18 @@ test("cache share: a transcript gives its calls since the cutoff with the entrie
       assistant("old", 2 * DAY, 5), { type: "message", message: { role: "user", content: [] } }, assistant("a", 3 * MIN, 0),
       { type: "message", message: { role: "toolResult", content: [] } }, { type: "git_state" },
       { type: "custom_message", customType: "harness_digest" }, { type: "custom", customType: "chat_correction_checkpoint" }, { type: "compaction" },
-      assistant("b", 2 * MIN, 900),
+      assistant("b", 2 * MIN, 900), { type: "message", message: { role: "user", content: [] } },
+      { ...assistant("fail", 90_000, 0), message: { ...assistant("fail", 90_000, 0).message, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } },
+      assistant("c", MIN, 800),
     ].map(entry => JSON.stringify(entry)).join("\n") + "\n");
     const session = await readTranscript(path, NOW - DAY);
     assert.equal(session!.title, "Crawler VP");
     assert.deepEqual(session!.calls.map(({ id, before, cacheWrite, startedAt }) => ({ id, before, cacheWrite, startedAt })), [
       { id: "r-a", before: ["user"], cacheWrite: 0, startedAt: NOW - 3 * MIN - 5_000 },
       { id: "r-b", before: ["harness_digest", "chat_correction_checkpoint", "compaction"], cacheWrite: 900, startedAt: NOW - 2 * MIN - 5_000 },
-    ]);
+      { id: "r-fail", before: ["user"], cacheWrite: 0, startedAt: NOW - 90_000 - 5_000 },
+      { id: "r-c", before: ["user", "failed call"], cacheWrite: 800, startedAt: NOW - MIN - 5_000 },
+    ], "a failed call passes the entries before it on to the next call");
     await writeFile(path, JSON.stringify({ type: "message" }) + "\n");
     assert.equal(await readTranscript(path, 0), null, "a file that does not open with a session header is no transcript");
   } finally { await rm(dir, { recursive: true, force: true }); }
