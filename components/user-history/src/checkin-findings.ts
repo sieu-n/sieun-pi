@@ -2,7 +2,7 @@ import type { HandoffRule } from "./chat-corrections.ts";
 import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
-  walkItems } from "./shared/chat-board.ts";
+  targetMet, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
@@ -65,7 +65,7 @@ export interface HeldGoal { goal: { id: string; text: string }; steps: { item: P
 export function heldElsewhere(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
   jobs: readonly string[] = []): HeldGoal[] {
   const settled = (goal: PlanItem): boolean => goal.children.some(child => CLOSED.has(child.status)) &&
-    (!goal.target || (goal.target.current !== undefined && goal.target.current >= goal.target.target));
+    (!goal.target || targetMet(goal.target));
   const tops = new Map((board?.plan ?? []).map(goal => [goal.id, goal]));
   const own = new Set([...jobs, ...rows.filter(row => jobs.includes(row.name)).map(row => row.id)]);
   const other = (thread: { id: string; name: string } | undefined) => thread && !own.has(thread.id) && !own.has(thread.name) ? thread : undefined;

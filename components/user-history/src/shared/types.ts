@@ -123,7 +123,8 @@ export interface PlanItem {
  * and `source` (how it was measured) are the last measurement, all three or none. `cadence: "daily"` marks a metric a daily duty measures: its
  * measurement goes stale after 24 h instead of 2 check-in intervals.
  */
-export interface GoalTarget { metric: string; target: number; unit: string; current?: number; measuredAt?: string; source?: string; cadence?: "daily" }
+/** `direction` "down": lower is better, such as a wait or a run time; absent, the metric's words decide (`targetOp`). */
+export interface GoalTarget { metric: string; target: number; unit: string; current?: number; measuredAt?: string; source?: string; cadence?: "daily"; direction?: "up" | "down" }
 export const REQUIREMENT_STATUSES = ["met", "unmet", "open"] as const;
 export type RequirementStatus = typeof REQUIREMENT_STATUSES[number];
 /** One line of the owner's request on a goal: the owner's words, whether the design meets it, the evidence for met, a note for an unmet or open line the owner put off. */

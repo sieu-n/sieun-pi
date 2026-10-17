@@ -1,6 +1,6 @@
 import type { MetricFact } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
-import { targetStaleMs } from "./shared/chat-board.ts";
+import { targetOp, targetStaleMs } from "./shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "./shared/types.ts";
 import { type JobFact, OPEN, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
 
@@ -26,7 +26,7 @@ export interface GoalReading { value: number; at: number }
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number }
 
-/** A goal's number: from its `target` (always "at least"), or from the last run of a duty metric a step under it fixes. */
+/** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of a duty metric a step under it fixes. */
 export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number }
 
 export type GoalTrend =
@@ -60,7 +60,21 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
   const target = goal.target;
   if (target) {
     const at = Date.parse(target.measuredAt ?? "");
-    return { metric: target.metric, target: target.target, unit: target.unit, op: ">=", ...(target.current !== undefined ? { value: target.current } : {}),
+    const op = targetOp(target);
+    // A duty metric that the goal or a step under it fixes, with the goal's target and direction, read after the target's own reading, is the
+    // newer measure of the same number: on 10-18 the AI harness chat's check-in read p453 "duties green" at 25.7% from 10-16 06:27Z while the
+    // newest measure said 29.7%.
+    let newer: { key: string; fact: MetricFact & { value: number } } | undefined;
+    walk([goal], item => {
+      if (!item.duty || item.duty === GOAL_PUSH_LINK) return;
+      const fact = metrics.get(item.duty);
+      if (fact?.value === undefined || fact.target !== target.target || (fact.op ?? ">=") !== op) return;
+      if ((Number.isFinite(at) && fact.at <= at) || (newer && newer.fact.at >= fact.at)) return;
+      newer = { key: item.duty, fact: fact as MetricFact & { value: number } };
+    });
+    if (newer) return { metric: target.metric, target: target.target, unit: target.unit, op, value: newer.fact.value, measuredAt: newer.fact.at,
+      source: `the last run of duty metric ${newer.key}`, staleMs: targetStaleMs(target, everyMs) };
+    return { metric: target.metric, target: target.target, unit: target.unit, op, ...(target.current !== undefined ? { value: target.current } : {}),
       ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs) };
   }
   let found: GoalNumber | undefined;

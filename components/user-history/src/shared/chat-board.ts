@@ -184,7 +184,7 @@ function requirements(value: unknown): Requirement[] {
   });
 }
 
-const TARGET_SHAPE = "target must be {metric, target, unit, current?, measuredAt?, source?, cadence?}";
+const TARGET_SHAPE = "target must be {metric, target, unit, current?, measuredAt?, source?, cadence?, direction?}";
 /** A goal's target from an op: metric, a positive target and unit; the measurement (current, measuredAt, source) all three or none; cadence only "daily". */
 function goalTarget(value: unknown): GoalTarget {
   if (!isRecord(value)) invalid(`${TARGET_SHAPE}.`);
@@ -204,8 +204,25 @@ function goalTarget(value: unknown): GoalTarget {
     out.source = str(value.source, "target.source", BOARD_LIMITS.waitFor);
   }
   if (value.cadence !== undefined && value.cadence !== null) { if (value.cadence !== "daily") invalid('target.cadence must be "daily".'); out.cadence = "daily"; }
+  if (value.direction !== undefined && value.direction !== null) {
+    if (value.direction !== "up" && value.direction !== "down") invalid('target.direction must be "up" (higher is better) or "down" (lower is better).');
+    out.direction = value.direction;
+  }
   return out;
 }
+
+/** Metric words that make lower better: a wait, a time, a latency, a delay or lag, misses, errors, failures, cancels and stuck items. */
+const LOWER_IS_BETTER = /\b(waits?|waiting|times?|latenc(?:y|ies)|durations?|delays?|lag|miss(?:es|ed)?|errors?|fail(?:s|ed|ures?)?|cancel(?:l?ed|s)?|stuck)\b/i;
+/**
+ * Which way a goal's number must go to reach its target: `<=` for lower is better, else `>=`. The target's `direction` decides, then its metric
+ * words. VP of CI's p1 "m1-air job start wait from the push, p90" read 157.8 against 10 min and p60 "passed land run time, p50" 141.7 against
+ * 45 min, and both were taken as at target on 10-18, which hid the two biggest CI goals from goal_gaps.
+ */
+export const targetOp = (target: Pick<GoalTarget, "metric" | "direction">): ">=" | "<=" =>
+  target.direction ? (target.direction === "down" ? "<=" : ">=") : LOWER_IS_BETTER.test(target.metric) ? "<=" : ">=";
+/** Whether a measured goal reaches its target in its direction (`targetOp`). */
+export const targetMet = (target: GoalTarget): boolean =>
+  target.current !== undefined && (targetOp(target) === "<=" ? target.current <= target.target : target.current >= target.target);
 
 /** A measurement from the future would never go stale: measuredAt may be at most 5 minutes after now. */
 function measuredBy(target: GoalTarget | undefined, now: string): void {
