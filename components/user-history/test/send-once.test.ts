@@ -25,7 +25,7 @@ async function slowDaemon() {
   await mkdir(join(agentDir, "sessions"), { recursive: true });
   await writeFile(file, other(NOW - 3_600_000));
   let now = NOW;
-  const state = { mode: "lands" as "lands" | "queues" | "loses" | "ok", queue: [] as string[], queueReadable: true, sends: 0, logs: [] as string[] };
+  const state = { mode: "lands" as "lands" | "queues" | "loses" | "ok", queue: [] as string[], queueReadable: true, busy: false, sends: 0, logs: [] as string[] };
   const copies = async (): Promise<number> => (await readFile(file, "utf8")).split("\n").filter(line => line.includes('"agent_message"')).length;
   const once = new SendOnce({ file: join(agentDir, "unconfirmed-sends.json"), now: () => now, log: line => state.logs.push(line),
     send: async (_session, text) => {
@@ -35,7 +35,7 @@ async function slowDaemon() {
       if (state.mode === "queues") state.queue.push("Agent message received: " + text);
       throw new Error(TIMEOUT);
     },
-    queued: async () => state.queueReadable ? state.queue : null,
+    target: async () => state.queueReadable ? { queued: state.queue, busy: state.busy } : null,
     fileOf: session => sessionFileOf(session, agentDir) });
   const drain = async () => { for (const item of state.queue.splice(0)) await appendFile(file, entry(item.replace("Agent message received: ", ""), now)); };
   return { agentDir, file, once, state, copies, drain, at: (ms: number) => { now = ms; }, now: () => now };
@@ -99,13 +99,52 @@ test("send once: a send that is in neither the file nor the queue goes again, an
   assert.deepEqual(await files(), []);
 });
 
+test("send once: a copy in neither the file nor the queue is held while the target is busy, and sent again once it is idle and still missing", async () => {
+  // 10-16 10:16Z (01a1430e) and 22:53Z (01a14312): after a run of timeouts the copy was still with the supervisor, the send that read it as
+  // gone went out, and both copies landed.
+  const daemon = await slowDaemon();
+  const { wakes, files } = await wakeFixture(daemon);
+  daemon.state.mode = "loses";
+  daemon.state.busy = true;
+  for (let tick = 0; tick < 6; tick++) { daemon.at(NOW + tick * 30_000); await wakes.tick(); }
+  assert.equal(daemon.state.sends, 1);
+  assert.equal((await files()).length, 1);
+  assert.equal(await daemon.copies(), 0);
+  daemon.state.busy = false;
+  daemon.state.mode = "ok";
+  daemon.at(NOW + 10 * 60_000);
+  await wakes.tick();
+  daemon.at(NOW + 10 * 60_000 + 30_000);
+  await wakes.tick();
+  assert.equal(daemon.state.sends, 2);
+  assert.equal(await daemon.copies(), 1);
+  assert.deepEqual(await files(), []);
+});
+
+test("send once: a busy target whose held copy then lands gets no second send", async () => {
+  const daemon = await slowDaemon();
+  const { wakes, files } = await wakeFixture(daemon);
+  daemon.state.mode = "loses";
+  daemon.state.busy = true;
+  await wakes.tick();
+  daemon.at(NOW + 30_000);
+  await wakes.tick();
+  await appendFile(daemon.file, entry("[wake] It is 2026-10-16T06:38:00.000Z, the time you set with board.wake (2026-10-16T06:37:00.000Z). Your note: check the spawn brief fix", NOW + 60_000));
+  daemon.state.busy = false;
+  daemon.at(NOW + 90_000);
+  await wakes.tick();
+  assert.equal(daemon.state.sends, 1);
+  assert.equal(await daemon.copies(), 1);
+  assert.deepEqual(await files(), []);
+});
+
 test("send once: the record of a timed-out send outlives a service restart", async () => {
   const daemon = await slowDaemon();
   daemon.state.mode = "queues";
   await assert.rejects(daemon.once.deliver(SESSION, "[alert] backup older than 26h"), /Timed out/);
   await daemon.drain();
   const restarted = new SendOnce({ file: join(daemon.agentDir, "unconfirmed-sends.json"), log: () => {}, now: daemon.now,
-    send: async () => { throw new Error("sent again"); }, queued: async () => [], fileOf: session => sessionFileOf(session, daemon.agentDir) });
+    send: async () => { throw new Error("sent again"); }, target: async () => ({ queued: [], busy: false }), fileOf: session => sessionFileOf(session, daemon.agentDir) });
   assert.equal(await restarted.deliver(SESSION, "[alert] backup older than 26h"), "sent");
   assert.equal(await daemon.copies(), 1);
 });

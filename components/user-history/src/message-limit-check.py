@@ -12,7 +12,8 @@ its own reference. It does three things.
    senders read the error as a failure and sent again, so frontend bro got one ask 7 times. The wrapper returns an "unconfirmed" receipt
    instead and remembers the send. A later send of the same text to the same agent looks for the first copy first (src/send-once.ts): when it
    landed in the target's session file the wrapper returns a "delivered" receipt and sends nothing, when the target still has messages
-   queued or the roster does not answer it returns "unconfirmed" again and sends nothing, and only when neither holds it does it go out.
+   queued, is busy or the roster does not answer it returns "unconfirmed" again and sends nothing, and only when the target is idle and the
+   copy is in neither place does it go out.
    On 10-16 the 5180 SSR hang fix job sent one report 4 times between 05:03 and 05:44Z, each after a timeout.
 3. The brief record. When an "rlm.run" (rlm.spawn) or "rlm.create_session" request returns, it writes the brief with the new child's or
    root's ids to DATA_DIR/spawn-briefs/, where the chat service's brief keeper (src/brief-keeper.ts) sends it again if the session never gets
@@ -30,7 +31,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 11
+VERSION = 12
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -127,7 +128,7 @@ def landed_at(session_id, texts, since):
 
 
 async def copy_state(real, payload, earlier):
-    """Where the earlier copy is: "landed", "queued" (the target has queued messages), "absent", or "unknown" (the roster did not answer)."""
+    """Where the earlier copy is: "landed", "queued" (the target has queued messages), "busy" (it runs a turn), "absent", or "unknown"."""
     try:
         roster = await real("agent_observe.list")
     except Exception:
@@ -141,7 +142,11 @@ async def copy_state(real, payload, earlier):
     at = landed_at(target["sessionId"], earlier["texts"], earlier["since"])
     if at:
         return "landed", at
-    return ("queued" if (target.get("queuedCount") or 0) > 0 else "absent"), None
+    if (target.get("queuedCount") or 0) > 0:
+        return "queued", None
+    # A busy target may still get the copy from the supervisor (10-16 10:16Z and 22:53Z), so it is sent again only once the target is idle.
+    busy = target.get("status") == "running" or target.get("isStreaming") or target.get("isCompacting")
+    return ("busy" if busy else "absent"), None
 
 
 def held(payload, earlier, state, at):
@@ -149,6 +154,7 @@ def held(payload, earlier, state, at):
     since = time.strftime("%H:%M:%SZ", time.gmtime(earlier["since"]))
     where = {"landed": "landed at " + time.strftime("%H:%M:%SZ", time.gmtime(at / 1000)) if at else "landed",
              "queued": f"is not in its transcript yet and {target} has messages queued, so the daemon still holds it",
+             "busy": f"is not in its transcript yet and {target} is busy, so the daemon may still hold it",
              "unknown": "could not be looked for now (the agent roster did not answer)"}[state]
     note = HELD_NOTE.format(target=target, since=since, where=where)
     print(note)

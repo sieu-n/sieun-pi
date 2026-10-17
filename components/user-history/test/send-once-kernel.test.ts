@@ -11,7 +11,7 @@ import { messageCheckPrelude } from "../src/message-limit-check.ts";
 const TIMEOUT = 'Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message". Socket: /tmp/daemon.sock.';
 const TARGET = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
 
-async function kernel(mode: "lands" | "queued" | "lost", dataDir: string | null) {
+async function kernel(mode: "lands" | "queued" | "busy" | "lost", dataDir: string | null) {
   const dir = await mkdtemp(join(tmpdir(), "send-once-kernel-"));
   const agentDir = dataDir ? join(dir, "agent") : null;
   const sessions = join(agentDir ?? dir, "sessions");
@@ -23,7 +23,7 @@ async function kernel(mode: "lands" | "queued" | "lost", dataDir: string | null)
     `MODE = ${JSON.stringify(mode)}`,
     "async def host_request(request_type, payload=None):",
     "    if request_type == 'agent_observe.list':",
-    "        return {'current': {}, 'agents': [{'relationship': 'sibling', 'sessionName': 'frontend bro', 'sessionId': " + JSON.stringify(TARGET) + ", 'queuedCount': 1 if MODE == 'queued' else 0}]}",
+    "        return {'current': {}, 'agents': [{'relationship': 'sibling', 'sessionName': 'frontend bro', 'sessionId': " + JSON.stringify(TARGET) + ", 'queuedCount': 1 if MODE == 'queued' else 0, 'status': 'running' if MODE == 'busy' else 'idle'}]}",
     "    sent.append(payload['message'])",
     "    if len(sent) == 1:",
     "        if MODE == 'lands':",
@@ -50,13 +50,14 @@ async function kernel(mode: "lands" | "queued" | "lost", dataDir: string | null)
   return spawnSync("python3", ["-c", script], { cwd: dir, env: { ...process.env, PYTHONPATH: dir }, encoding: "utf8" });
 }
 
-const cases: [mode: "lands" | "queued" | "lost", expected: unknown[], note: RegExp][] = [
+const cases: [mode: "lands" | "queued" | "busy" | "lost", expected: unknown[], note: RegExp][] = [
   ["lands", ["unconfirmed", "delivered", 1], /not sent again\. The send of this text to frontend bro that timed out at \S+ landed at/],
   ["queued", ["unconfirmed", "unconfirmed", 1], /frontend bro has messages queued, so the daemon still holds it/],
+  ["busy", ["unconfirmed", "unconfirmed", 1], /frontend bro is busy, so the daemon may still hold it/],
   ["lost", ["unconfirmed", "delivered", 2], /sends only when it is gone/],
 ];
 for (const [mode, expected, note] of cases) {
-  test(`send once in the kernel: a send that timed out and then ${mode === "lands" ? "landed" : mode === "queued" ? "sits in a busy target's queue" : "is nowhere"} is ${mode === "lost" ? "sent again once" : "not sent again"}`, async () => {
+  test(`send once in the kernel: a send that timed out and then ${mode === "lands" ? "landed" : mode === "queued" ? "sits in a busy target's queue" : mode === "busy" ? "is not found while the target runs a turn" : "is nowhere while the target is idle"} is ${mode === "lost" ? "sent again once" : "not sent again"}`, async () => {
     const run = await kernel(mode, "chat");
     assert.equal(run.status, 0, run.stderr);
     const lines = run.stdout.trim().split("\n");

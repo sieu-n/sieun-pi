@@ -94,13 +94,21 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
 }
 
 /** Where an earlier copy is: written in the target's file, waiting in its worker's queue, gone from both, or not readable now. */
-export type CopyState = "landed" | "queued" | "absent" | "unknown";
+/**
+ * Where an earlier copy is: written in the target's file, waiting in its worker's queue, held while the target is busy, gone from all three,
+ * or not readable now. "busy": the target runs a turn or a tool, or has actions unfinished, and the copy is in neither its file nor its queue.
+ * On 10-16 at 10:16Z (01a1430e) and 22:53Z (01a14312) such a copy was still with the supervisor after a run of timeouts, and the send that
+ * read it as gone made the 4 extra wake copies of that day. A busy target gets nothing sent again; the copy is looked for once it is idle.
+ */
+export type CopyState = "landed" | "queued" | "busy" | "absent" | "unknown";
+/** A target's worker as get_state reads it: its queued texts and whether it runs a turn, a tool or unfinished actions. */
+export interface TargetState { queued: string[]; busy: boolean }
 
 export interface SendOnceDeps {
   /** One send_message; "gone" when the daemon knows no such session. Throws on a timeout or any other failure. */
   send: (session: string, text: string) => Promise<"sent" | "gone">;
-  /** The texts queued in the session's worker (steering and follow-ups), [] when it has no worker, null when the daemon did not answer. */
-  queued: (session: string) => Promise<string[] | null>;
+  /** The session's worker: its queued texts (steering and follow-ups) and whether it is busy; idle and empty when it has no worker, null when the daemon did not answer. */
+  target: (session: string) => Promise<TargetState | null>;
   /** The session's file, or null. */
   fileOf: (session: string) => Promise<string | null>;
   /** The record of sends that timed out, kept across service restarts. */
@@ -133,7 +141,7 @@ export class SendOnce {
         this.deps.log(`send once: ${session.slice(0, 8)} already has the send that timed out at ${new Date(earlier.since).toISOString()}; not sent again`);
         return "sent";
       }
-      if (state !== "absent") throw new Error(`the send that timed out at ${new Date(earlier.since).toISOString()} is ${state === "queued" ? "still queued in its worker" : "not readable now"}; not sent again`);
+      if (state !== "absent") throw new Error(`the send that timed out at ${new Date(earlier.since).toISOString()} is ${state === "queued" ? "still queued in its worker" : state === "busy" ? "not in its file yet and the target is busy, so the daemon may still hold it" : "not readable now"}; not sent again`);
     }
     const since = earlier?.since ?? this.now();
     try {
@@ -153,12 +161,13 @@ export class SendOnce {
   private async copyState(session: string, earlier: Unconfirmed): Promise<CopyState> {
     const file = await this.deps.fileOf(session).catch(() => null);
     if (file && await landedAt(file, earlier.texts, earlier.since)) return "landed";
-    const queue = await this.deps.queued(session).catch(() => null);
-    if (queue === null) return "unknown";
-    const held = queue.some(item => earlier.texts.some(text => item === text || item === QUEUED_PREFIX + text || item.includes(text)));
+    const target = await this.deps.target(session).catch(() => null);
+    if (target === null) return "unknown";
+    const held = target.queued.some(item => earlier.texts.some(text => item === text || item === QUEUED_PREFIX + text || item.includes(text)));
     if (held) return "queued";
     // The worker may have written it between the file read and the queue read.
-    return file && await landedAt(file, earlier.texts, earlier.since) ? "landed" : "absent";
+    if (file && await landedAt(file, earlier.texts, earlier.since)) return "landed";
+    return target.busy ? "busy" : "absent";
   }
 
   private load(): Promise<Map<string, Unconfirmed>> {

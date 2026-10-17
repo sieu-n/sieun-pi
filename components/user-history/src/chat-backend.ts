@@ -230,13 +230,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
       throw new Error(response.error);
     },
-    queued: async session => {
+    target: async session => {
       await catalog.connect();
       const response = await catalog.client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
       if (!response) return null;
-      if (!response.success) return response.error.startsWith(UNKNOWN_ACTIVE) ? [] : null;
-      const actions = (response.data as { sessionActions?: { steering?: unknown; followUps?: unknown } }).sessionActions;
-      return [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []);
+      if (!response.success) return response.error.startsWith(UNKNOWN_ACTIVE) ? { queued: [], busy: false } : null;
+      const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
+        isRunningTools?: unknown; unfinishedActionCount?: unknown };
+      const actions = data.sessionActions;
+      return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
+        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (typeof data.unfinishedActionCount === "number" && data.unfinishedActionCount > 0) };
     },
     fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir) });
   const agentMessage = {
