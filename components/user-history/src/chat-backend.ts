@@ -271,11 +271,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     boards, log: dutyLog, ...agentMessage });
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
-  // An idle root job's worker stops a minute after its last activity, and an idle subagent after idleEvictionMinutes, rather than at Prime's sweeps (src/idle-unload.ts).
+  // An idle root job or subagent stops after idleEvictionMinutes, since Prime's own sweeps fail under load (src/idle-unload.ts).
   const unloadIdle = async (): Promise<void> => {
     const stopped: string[] = [];
     const minutes = defaults.idleEviction();
-    for (const row of unloadPlan(catalog.daemonRows(), { chats: await chats.ids(), pool: await poolWaiting(), now: Date.now(), childIdleMs: minutes === "off" ? null : minutes * 60_000 })) {
+    for (const row of unloadPlan(catalog.daemonRows(), { chats: await chats.ids(), pool: await poolWaiting(), now: Date.now(), idleMs: minutes === "off" ? null : minutes * 60_000 })) {
       const response = await catalog.client.request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
       if (response.success) stopped.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
       else dutyLog(`idle unload: ${row.sessionId.slice(0, 8)}: ${response.error}`);
