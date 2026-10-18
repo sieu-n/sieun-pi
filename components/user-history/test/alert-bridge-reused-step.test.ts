@@ -16,7 +16,7 @@ const raw = (fingerprint: string, uid: string, alertname: string, startsAt: stri
 const cliproxy = raw("c1c1c1c1c1c1c1c1", "cliproxy-claude-wire", "Claude wire through CLIProxy not answering 200", "2026-10-18T09:17:00.000Z");
 const nvme = raw("a0a0a0a0a0a0a0a0", "metal-host-nvme0-writes-4tb", "us-metal01 nvme0n1 wrote over 4 TB in 24 hours", "2026-10-15T21:48:00.000Z");
 
-test("a rule whose removed step id the board gave to another rule's step gets its own step when it fires again, and the other step's note stays", async () => {
+test("a removed step's id goes to no new step, so a rule whose step was removed gets a new one when it fires again, and the other rule's note stays", async () => {
   const dir = await mkdtemp(join(tmpdir(), "alert-reused-id-"));
   const file = join(dir, "alert-bridge.json");
   const boards = new BoardStore(dir);
@@ -34,15 +34,15 @@ test("a rule whose removed step id the board gave to another rule's step gets it
   await boards.apply(OPS, [{ op: "plan_remove", id: old }], "agent");
   now += 60_000; list = [nvme];
   await bridge.tick();
-  assert.equal((await state()).rules[ruleKey(OPS, "metal-host-nvme0-writes-4tb")]!.step, old, "the board reuses the removed id");
-  const nvmeNote = (await item(old))!.note;
+  assert.notEqual((await state()).rules[ruleKey(OPS, "metal-host-nvme0-writes-4tb")]!.step, old, "the board gives the removed id to no new step");
+  const nvmeStep = (await state()).rules[ruleKey(OPS, "metal-host-nvme0-writes-4tb")]!.step!;
+  const nvmeNote = (await item(nvmeStep))!.note;
 
   now += 60_000; list = [nvme, cliproxy];
   await bridge.tick();
-  assert.equal((await item(old))!.note, nvmeNote);
-  assert.equal((await item(old))!.text, "us-metal01 nvme0n1 wrote over 4 TB in 24 hours");
+  assert.equal((await item(nvmeStep))!.note, nvmeNote);
   const own = (await state()).rules[ruleKey(OPS, "cliproxy-claude-wire")]!.step!;
-  assert.notEqual(own, old);
+  assert.ok(![old, nvmeStep].includes(own));
   assert.equal((await item(own))!.text, "Claude wire through CLIProxy not answering 200");
   assert.match((await item(own))!.note!, /^Grafana alert rule cliproxy-claude-wire, firing since 2026-10-18T09:17:00\.000Z\.$/m);
 });

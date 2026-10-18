@@ -152,7 +152,9 @@ export interface OwnerTodo {
   /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
   links?: ArtifactLink[];
 }
-export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string }
+export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string;
+  /** The highest plan and todo numbers the board has given (`idsTop`), so a removed item's id never goes to a new one. */
+  lastIds?: { p: number; t: number } }
 export type BoardActor = "agent" | "owner";
 /** The gate fields a plan op can set: `go` only to "needed" (it never clears), `kind` and `requirements` (null clears them on plan_update). */
 type GateInput = { go?: "needed"; kind?: "build"; requirements?: Requirement[] };

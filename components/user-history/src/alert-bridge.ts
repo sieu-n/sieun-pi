@@ -42,7 +42,7 @@ export interface Resolve { key: string; chat: string; step: string | null; at: s
 export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number; resolved?: boolean }
 /** A job the bridge started for a chat's alert steps (`AlertBridge.own`): its session id and name. */
 export interface AlertJob { id: string; name: string }
-export interface Merge { rule: Tracked; into: string }
+export interface Merge { step: string | null; into: string }
 /**
  * One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away.
  * Reconcile adds `found`, the fresh rules it placed because no open step held them, and `reopen`, the rules whose closed step it reopens.
@@ -207,7 +207,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
       Object.assign(keeper.instances, rule.instances);
       if (rule.startsAt < keeper.startsAt) keeper.startsAt = rule.startsAt;
       if (rule.escalatedAt !== undefined && (keeper.escalatedAt === undefined || rule.escalatedAt < keeper.escalatedAt)) keeper.escalatedAt = rule.escalatedAt;
-      if (keeper.step !== null) merged.set(rule.chat, [...merged.get(rule.chat) ?? [], { rule, into: keeper.step }]);
+      if (keeper.step !== null) merged.set(rule.chat, [...merged.get(rule.chat) ?? [], { step: rule.step, into: keeper.step }]);
       delete rules[key];
       fresh.delete(key);
       touched.delete(key);
@@ -328,7 +328,7 @@ const NAMES_ENV = /\b(prod|production|staging|stage|dev)\b/i;
  * metric values and stream names, such as "crawl_profile:youtube group crawl_profile:youtube holds an entry 68053.971 s old", and crawler ops
  * renamed 28 such steps by hand on 10-15, so it goes in the note (c61).
  */
-export function stepTitle(alert: Pick<FiringAlert, "labels">): string {
+export function stepTitle(alert: FiringAlert): string {
   const env = alert.labels.env ?? alert.labels.environment ?? alert.labels.world ?? "";
   const prefix = ENVS.find(([pattern]) => pattern.test(env))?.[1];
   const titled = (text: string) => prefix && !NAMES_ENV.test(text) ? `${prefix} ${text}` : text;
@@ -385,22 +385,6 @@ const withLine = (note: string, line: string): string => !line || note.includes(
 
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
 
-/**
- * `rule`'s step on `plan`: the item at its stored id while that item still has the title the bridge gives the rule or a note that names the
- * rule. nextIds gives a new item the highest id plus one, so a removed step's id goes to the next item added: on 10-18 ops guy removed the
- * CLIProxy and CPU steps p370 and p371, reconcile put two NVMe alerts back as p370 and p371, and a refire of either old rule would have
- * rewritten the NVMe steps' notes. Chats rename steps and rewrite notes, so either one is enough.
- */
-export function ruleStep(plan: readonly PlanItem[], rule: Tracked): PlanItem | undefined {
-  const item = rule.step === null ? undefined : findItem(plan, rule.step)?.item;
-  if (!item) return undefined;
-  const titled = Object.values(rule.instances).some(set => stepTitle({ labels: { alertname: rule.alertname, ...set.labels } }) === item.text);
-  const note = item.note ?? "";
-  const named = note.split("\n").some(line => line.startsWith(`Grafana alert rule ${rule.rule}, firing since `)) ||
-    note.split(/[\s,]+/).some(word => word.replace(/\.$/, "") === `__alert_rule_uid__=${rule.rule}`);
-  return titled || named ? item : undefined;
-}
-
 function markedStep(plan: readonly PlanItem[], rule: Pick<Tracked, "rule" | "startsAt">): PlanItem | undefined {
   let hit: PlanItem | undefined;
   walkItems(plan, item => { if (!hit && item.note?.split("\n").includes(mark(rule))) hit = item; });
@@ -448,22 +432,21 @@ export function changeOps(board: ChatBoard, change: ChatChange, now = Date.now()
   }
   for (const key of change.reopen ?? []) {
     const rule = change.rules[key]!;
-    const step = ruleStep(board.plan, rule);
+    const step = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
     if (!step) continue;
     ops.push({ op: "plan_update", id: step.id, status: "todo" });
     notes.set(step.id, withLine(noteOf(step.id), `Reopened by reconcile at ${stamp}: this step was closed for over ${REOPEN_MS / 3_600_000} h and the rule still fires, firing since ${rule.startsAt}.`));
   }
   for (const key of change.touched) {
-    const step = ruleStep(board.plan, change.rules[key]!);
-    if (change.fresh.has(key) || !step) continue;
-    notes.set(step.id, ruleNote(noteOf(step.id), change.rules[key]!));
+    const step = change.rules[key]!.step;
+    if (change.fresh.has(key) || step === null || !findItem(board.plan, step)) continue;
+    notes.set(step, ruleNote(noteOf(step), change.rules[key]!));
   }
-  for (const { rule, into } of change.merged) {
-    const step = ruleStep(board.plan, rule);
-    if (!step) continue;
+  for (const { step, into } of change.merged) {
+    if (step === null || !findItem(board.plan, step)) continue;
     const line = `The alert bridge moved this rule's label sets to ${into}, which now lists every set.`;
-    const note = noteOf(step.id);
-    if (!note.includes(line)) notes.set(step.id, note ? `${note}\n${line}` : line);
+    const note = noteOf(step);
+    if (!note.includes(line)) notes.set(step, note ? `${note}\n${line}` : line);
   }
   for (const [id, note] of notes) if (note !== (findItem(board.plan, id)?.item.note ?? "")) ops.push({ op: "plan_update", id, note });
   return { ops, steps };
@@ -489,7 +472,7 @@ export const alertStepLine = (line: StepLine): string =>
 export function unownedSteps(board: ChatBoard, rules: readonly Tracked[]): StepLine[] {
   const lines = new Map<string, StepLine>();
   for (const rule of rules) {
-    const item = ruleStep(board.plan, rule);
+    const item = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
     if (!item || lines.has(item.id) || !OPEN.has(item.status) || item.job || item.sessionId || item.waitFor || item.waitUntil) continue;
     lines.set(item.id, { step: item.id, title: item.text, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule), resolved: isResolved(rule) });
   }
@@ -648,7 +631,7 @@ export class AlertBridge {
     }
     return (_key, rule) => {
       if (!boarded.get(rule.chat)) return "no board";
-      const item = ruleStep(boards.get(rule.chat)?.plan ?? [], rule);
+      const item = rule.step === null ? undefined : findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
       return !item ? "missing" : OPEN.has(item.status) ? "open" : "closed";
     };
   }
@@ -691,7 +674,7 @@ export class AlertBridge {
     for (const [key, rule] of Object.entries(state.rules)) {
       if (rule.step === null || rule.resolvedAt !== undefined) continue;
       if (!boards.has(rule.chat)) boards.set(rule.chat, await this.deps.boards.read(rule.chat));
-      const item = ruleStep(boards.get(rule.chat)?.plan ?? [], rule);
+      const item = findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
       if (item) views.set(key, { text: item.text, open: OPEN.has(item.status), owned: Boolean(item.job || item.sessionId) });
     }
     return views;
