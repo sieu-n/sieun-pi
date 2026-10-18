@@ -162,6 +162,21 @@ class Hookd(unittest.TestCase):
         answer = ask(self.socket, request("pipe", os.path.join(self.link, "bin", "pi-pool"), ["config"], dict(self.env, HOME="/")))
         self.assertEqual(answer, "F\n")
 
+    def test_the_global_rules_folder_on_pythonpath_runs_through_hookd(self):
+        guard = os.path.join(self.root, "src", "components", "global-rules", "python-child")
+        os.makedirs(guard)
+        given = self.env.get("PYTHONPATH")
+        paths = {"guarded": [guard], "other": [os.path.join(self.root, "src", "elsewhere")]}
+        for name, extra in paths.items():
+            with self.subTest(pythonpath=name):
+                env = dict(self.env, PYTHONPATH=":".join(extra + ([given] if given else [])))
+                run = self.client("--provider", "openai-codex", env=env)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(run.stdout, self.token if name == "guarded" else "fallback-ran")
+        self.assertEqual(self.fallback_runs(), 1)
+        run = self.client("--provider", "openai-codex", env=dict(self.env, PYTHONSAFEPATH="1"))
+        self.assertEqual((run.stdout, self.fallback_runs()), ("fallback-ran", 2))
+
     def test_a_script_outside_the_loaded_release_falls_back(self):
         other = os.path.join(self.root, "other", "bin")
         os.makedirs(other)

@@ -142,6 +142,7 @@ class Install(unittest.TestCase):
         unit = self.home / ".config/systemd/user/pi-pool-hookd.service"
         self.assertEqual(unit.read_text(), (INSTALLER.parent / "deploy/systemd/pi-pool-hookd.service").read_text())
         self.assertEqual(out["hookd"], {"unit": str(unit), "systemctl": "skipped: not this user's systemd"})
+        self.assertIsNone(out["serve"])
         # No hookd answers in this HOME, so the client ran the Python hook for both providers.
         self.assertEqual({p: h["ok"] for p, h in out["hooks"].items()}, {"anthropic": True, "openai-codex": True})
 
@@ -252,6 +253,21 @@ class MacPython(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    def test_a_flip_restarts_pi_pool_serve_only_when_it_runs(self):
+        from unittest import mock
+        installer = self.load()
+        for active, expect in ((0, ["is-active", "restart"]), (3, ["is-active"])):
+            with self.subTest(active=active):
+                calls = []
+
+                def run(argv, **kw):
+                    calls.append(argv[2])
+                    return subprocess.CompletedProcess(argv, active if argv[2] == "is-active" else 0, "", "")
+                with mock.patch.object(installer, "systemd_user", return_value=True), \
+                        mock.patch.object(installer.subprocess, "run", side_effect=run):
+                    installer.restart_hookd(Path(tempfile.mkdtemp(prefix="pi-pool-units-")))
+                self.assertEqual(calls, expect)
 
     def test_macos_reruns_under_homebrew_python(self):
         installer = self.load()

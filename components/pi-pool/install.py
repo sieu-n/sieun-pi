@@ -206,10 +206,25 @@ def install_unit(home):
     return {"unit": str(unit), "systemctl": "restarted"}
 
 
+SERVE_UNIT = "pi-pool-serve.service"
+
+
+def restart_serve(home):
+    """pi-pool serve keeps the code it loaded, so a flip restarts it when it runs. After the c54401f8 install on
+    us-metal02 on 10-18 it kept the old remote.py and ran 95 hook and 105 `who` subprocesses in 120 s."""
+    if not systemd_user(home):
+        return None
+    if subprocess.run(["systemctl", "--user", "is-active", "--quiet", SERVE_UNIT], capture_output=True).returncode:
+        return "not active"
+    done = subprocess.run(["systemctl", "--user", "restart", SERVE_UNIT], capture_output=True, text=True)
+    return "restarted" if done.returncode == 0 else f"restart failed: {done.stderr.strip()}"
+
+
 def restart_hookd(home):
-    """After a flip back, start hookd on the release `current` names again."""
+    """After a flip back, start hookd and serve on the release `current` names again."""
     if systemd_user(home) and (home / ".config/systemd/user" / HOOKD_UNIT).exists():
         subprocess.run(["systemctl", "--user", "restart", HOOKD_UNIT], capture_output=True)
+    restart_serve(home)
 
 
 def run_tests(release):
@@ -367,10 +382,11 @@ def install(home, ref, holder=None):
         restore_links(home, links_before)
         raise
     hookd = install_unit(home) if (release / "deploy/systemd" / HOOKD_UNIT).exists() else None
+    serve = restart_serve(home)
     hooks = checked_switch(home, release_id, before, links_before)
     prune(root)
     return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "client": client, "hookd": hookd,
-            "relinked": linked, "hooks": hooks,
+            "serve": serve, "relinked": linked, "hooks": hooks,
             **({"borrow": borrowed} if holder else {})}
 
 
