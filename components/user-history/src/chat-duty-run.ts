@@ -227,6 +227,12 @@ export class Duties {
   private readonly ending = new Set<Promise<void>>();
   /** The push check going per `<chatId>/<dutyId>`, kept off the scan so a slow daemon read holds up no due duty. */
   private readonly pushes = new Map<string, Promise<void>>();
+  /**
+   * The after-job measure and archive going per `<chatId>/<dutyId>` (`endJob`). A push of the duty waits for it and judges on its result, so
+   * a duty has one check in flight: on 10-18 at 15:55:56Z a push run of chat-057a's Chat reopen read its last run's stale miss, measured
+   * beside that run's after-job measure and started a job that ran the reopen check a second time (20261018-1556).
+   */
+  private readonly afters = new Map<string, Promise<void>>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -299,18 +305,28 @@ export class Duties {
   /**
    * Starts a push run of a red standing duty that is not due (`pushMisses`) when no job is at work on it: its last duty job has ended, and no
    * open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts as ended, so the push run's own
-   * start records why it failed. The push run is an ordinary run that leaves the schedule where it was.
+   * start records why it failed. The push run is an ordinary run that leaves the schedule where it was. An ended job whose run has no after-job
+   * measure yet gets that measure first (`endJob`, shared with the scan), and the push judges on it, so no push measures beside it.
    */
   private async push(chatId: string, duty: Duty, context: () => Promise<PushContext>): Promise<void> {
-    if (this.running.has(`${chatId}/${duty.id}`)) return;
+    const key = `${chatId}/${duty.id}`;
+    if (this.running.has(key)) return;
     const { runs, everyMs } = await context();
-    const own = runs.filter(run => run.duty === duty.id);
-    const misses = pushMisses(own, verdictKeys(duty.metrics), everyMs, this.now());
+    const counted = verdictKeys(duty.metrics);
+    let own = runs.filter(run => run.duty === duty.id);
+    if (!pushMisses(own, counted, everyMs, this.now())) return;
+    const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
+    if (lastRun && await this.host.jobs.working(lastRun.job).catch(() => false)) return;
+    // The last job has ended, so its after-job measure is the duty's check now: the push judges on its result instead of measuring beside it.
+    if (lastRun && !lastRun.after || this.afters.has(key)) {
+      await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));
+      own = (await this.store.runs(chatId)).filter(run => run.duty === duty.id);
+    }
+    const misses = pushMisses(own, counted, everyMs, this.now());
     if (!misses) return;
-    const last = own.find(run => run.job)?.job;
-    if (last && await this.host.jobs.working(last).catch(() => false)) return;
     const board = await this.host.board?.(chatId).catch(() => null) ?? null;
     if (Object.values(await this.fixesOn(board, chatId, duty.id, misses)).some(fix => fix.live)) return;
+    if (this.afters.has(key)) return;
     if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
   }
 
@@ -368,22 +384,40 @@ export class Duties {
     }
     for (const id of last.keys()) older.delete(id);
     for (const job of await jobs.ended([...last.values()].map(entry => entry.run.job), [...older.values()])) {
-      this.stopped.add(job.id);
+      if (this.stopped.has(job.id)) continue;
       const ended = last.get(job.id);
-      if (!ended) {
-        await stop(job);
-        this.log(`duty job ${job.name}: an older job still up; queued its archive`);
-        continue;
-      }
-      const task = this.measureAfter(ended.chatId, ended.run)
-        .then(async () => {
-          await stop(job);
-          this.log(`duty job ${job.name}: its turn ended; queued its archive`);
-        })
-        .catch(error => this.log(`duty job ${job.name}: after its turn ended: ${message(error)}`))
-        .finally(() => { this.ending.delete(task); });
-      this.ending.add(task);
+      if (ended) { void this.endJob(ended.chatId, ended.run); continue; }
+      this.stopped.add(job.id);
+      await stop(job);
+      this.log(`duty job ${job.name}: an older job still up; queued its archive`);
     }
+  }
+
+  /**
+   * Measures an ended last job's run again and then queues the job's archive, once per duty at a time: the scan (`stopEnded`) and a push of
+   * the same duty share one measure. A run of the duty going now is this job's measure (`launch` writes it as the after-job measure), so the
+   * measure waits for it and runs only when the run left none.
+   */
+  private endJob(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): Promise<void> {
+    const key = `${chatId}/${run.duty}`;
+    const going = this.afters.get(key);
+    if (going) return going;
+    this.stopped.add(run.job.id);
+    const jobs = this.host.jobs;
+    const task = (async () => {
+      const runGoing = this.running.get(key);
+      if (runGoing) await runGoing;
+      const measured = runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
+      if (!measured) await this.measureAfter(chatId, run);
+      if (!jobs.stop) return;
+      await jobs.stop(run.job);
+      this.log(`duty job ${run.job.name}: its turn ended; queued its archive`);
+    })()
+      .catch(error => this.log(`duty job ${run.job.name}: after its turn ended: ${message(error)}`))
+      .finally(() => { this.afters.delete(key); this.ending.delete(task); });
+    this.afters.set(key, task);
+    this.ending.add(task);
+    return task;
   }
 
   private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[]): Promise<Record<string, FixLink>> {
