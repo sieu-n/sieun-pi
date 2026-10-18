@@ -9,7 +9,7 @@ import { createRelay } from "../../prime-relay/relay.mjs";
 import { Catalog } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { HostCatalogs, MIRROR_DIR } from "../src/host-catalogs.ts";
+import { applyRosterUpdate, HostCatalogs, MIRROR_DIR, rosterMerge } from "../src/host-catalogs.ts";
 import { HostBridge, parseHosts } from "../src/hosts.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
 
@@ -24,9 +24,10 @@ function stubHosts(rows: SessionSummary[]) {
   ] });
   const hosts = new HostCatalogs(registry, new HostBridge(registry, { dir: "/tmp/bridge-test", self: registry.hosts[0]! }), registry.hosts[0]!);
   const boxClient = hosts.client("box")!;
-  const internal = hosts as unknown as { remotes: Map<string, { rows: SessionSummary[]; subscribed: boolean }> };
-  internal.remotes.get("box")!.rows = rows;
+  const internal = hosts as unknown as { remotes: Map<string, { rows: Map<string, SessionSummary>; subscribed: boolean; listed: boolean }> };
+  internal.remotes.get("box")!.rows = new Map(rows.map(candidate => [candidate.sessionFile ?? candidate.sessionId, candidate]));
   internal.remotes.get("box")!.subscribed = true;
+  internal.remotes.get("box")!.listed = true;
   hosts.start = () => {};
   return { hosts, boxClient, remote: internal.remotes.get("box")! };
 }
@@ -99,4 +100,24 @@ test("mirror copies another box's session file through its relay and fetches onl
   assert.equal(await readFile(await hosts.mirror(registry.hosts[0]!, file), "utf8"), "{\"a\":1}\n{\"b\":2}\n");
   await writeFile(file, "{}\n");
   assert.equal(await readFile(await hosts.mirror(registry.hosts[0]!, file), "utf8"), "{}\n", "a shorter file on the box is fetched whole");
+});
+
+test("roster updates move the rows with no list: a new session joins, a changed one updates, a removed one is saved, and an unplaced removal asks for a roster list", () => {
+  const start = new Map([["/s/a.jsonl", row("a", true, { sessionFile: "/s/a.jsonl" })], ["/s/b.jsonl", row("b", false, { sessionFile: "/s/b.jsonl" })]]);
+  const agents = new Map<string, string>();
+  const joined = applyRosterUpdate(start, agents, { changed: [{ agentId: "c", status: "running", summary: { ...row("c", true, { sessionFile: "/s/c.jsonl" }), activity: "working" } }] });
+  assert.deepEqual([joined.unknown, [...joined.rows.keys()].sort()], [false, ["/s/a.jsonl", "/s/b.jsonl", "/s/c.jsonl"]]);
+  assert.equal(joined.rows.get("/s/c.jsonl")?.rosterStatus, "running");
+  const stopped = applyRosterUpdate(joined.rows, agents, { removed: ["c"] });
+  assert.deepEqual([stopped.unknown, stopped.rows.get("/s/c.jsonl")?.activeSessionId, stopped.rows.get("/s/c.jsonl")?.activity], [false, undefined, "idle"]);
+  assert.equal(stopped.rows.get("/s/c.jsonl")?.messageCount, 3, "a saved row keeps what the list said");
+  assert.equal(applyRosterUpdate(start, new Map(), { removed: ["a"] }).rows.get("/s/a.jsonl")?.activeSessionId, undefined, "a top-level agent id is its session id");
+  assert.equal(applyRosterUpdate(start, new Map(), { removed: ["parent#7"] }).unknown, true);
+  assert.equal(applyRosterUpdate(start, new Map(), { changed: [], resync: true }).unknown, true);
+});
+
+test("a roster list lays live rows over the rows: one that left the roster is saved, and one that joined is added, with no full list", () => {
+  const rows = new Map([["/s/a.jsonl", row("a", true, { sessionFile: "/s/a.jsonl" })], ["/s/b.jsonl", row("b", false, { sessionFile: "/s/b.jsonl" })]]);
+  const next = rosterMerge(rows, [row("b", true, { sessionFile: "/s/b.jsonl" }), row("d", true, { sessionFile: "/s/d.jsonl" })]);
+  assert.deepEqual([...next.entries()].map(([key, value]) => [key, value.activeSessionId ?? null]).sort(), [["/s/a.jsonl", null], ["/s/b.jsonl", "a-b"], ["/s/d.jsonl", "a-d"]]);
 });
