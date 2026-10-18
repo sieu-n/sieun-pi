@@ -178,7 +178,12 @@ class FeedSocket {
     if (this.silenceTimer) { clearTimeout(this.silenceTimer); this.silenceTimer = null; }
     for (const listener of [...this.listeners.values()]) listener.onError();
     if (!this.listeners.size || this.retryTimer) return;
-    const delay = Math.min(30_000, 500 * 2 ** this.attempt++) * (0.75 + Math.random() / 2);
+    // The first close after a stable socket reconnects at once; only a reopen that fails again backs off. On 10-18 the Mac waited 1.24 to
+    // 1.43 s between a close and the new socket, most of a 1.07 to 2.07 s reconnect once the resume had cut its bytes. A restart queues
+    // the new socket on systemd's listening socket, so an at-once try reaches the next process instead of failing.
+    const attempt = this.attempt++;
+    if (attempt === 0) { this.connect(); return; }
+    const delay = Math.min(30_000, 500 * 2 ** (attempt - 1)) * (0.75 + Math.random() / 2);
     this.retryTimer = setTimeout(() => { this.retryTimer = null; if (this.listeners.size) this.connect(); }, delay);
   }
 
