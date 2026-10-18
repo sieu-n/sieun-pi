@@ -206,6 +206,16 @@ export const owns = (fact: JobFact, owner: string): boolean => fact.key === owne
  * The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names, a
  * working one first, so a job the chat started again under the same name owns the steps, not its ended first run.
  */
+/**
+ * A job whose last turn failed on the token pool: pi-pool's hook reply says the session waits for its slot ("pi-pool: claude11@slack.green is
+ * limited until 12:00Z; this session waits for its slot at 10:41Z. Try again in 15 minutes."), or the hook gave no token at all. It waits for
+ * the pool, not for a push: from about 08:49Z to 10:45Z on 10-18, while the Claude pool was depleted, check-ins pushed jobs 103 times, 76 of
+ * them on a last turn that ended this way, and each restart added cache writes while pi-pool's backoff wanted quiet. A pool-wide hook outage
+ * is the token hook alert's (src/token-hook-watch.ts), not the check-in's.
+ */
+export const POOL_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a) slot\b|from shell command: \S*pi-pool-token\b/;
+export const poolWait = (fact: Pick<JobFact, "error"> | undefined): boolean => fact?.error !== undefined && POOL_WAIT.test(fact.error);
+
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
   return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId || fact.sessionId === item.sessionId) : undefined) ??
