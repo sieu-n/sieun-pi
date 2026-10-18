@@ -20,8 +20,9 @@ import type { RemoteMode } from "./shared/types.ts";
 /**
  * `adopt`: which chats a serve acts on. `live` is every chat in its chats.json plus the session-file scan, `own` only the chats it created.
  * Unset: `live` for the main instance, `own` for any other, so a test or scratch serve never attaches, steers or reloads a live chat.
+ * `scratch`: the serve only reads (`isScratch`); `--scratch` sets it, and a serve outside the live data dir is one without the flag.
  */
-type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean; adopt?: "live" | "own" };
+type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean; adopt?: "live" | "own"; scratch?: boolean };
 type Configuration = {
   port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string;
   /** The remote HTTPS origin: fixed for `custom`, the last tailnet name seen for `tailscale`. */
@@ -49,8 +50,19 @@ function validPort(port: number): number {
  */
 async function isPrimary(directory: string): Promise<boolean> {
   if (process.env.SIEUN_PI_CHAT_AUTOMATIC === "0") return false;
-  const main = await realpath(join(userInfo().homedir, ".prime", "agent", "browser-chat")).catch(() => null);
-  return main === directory;
+  return isLiveDirectory(directory);
+}
+/** The live data dir is the one the service unit and the login item serve: browser-chat under the account's real home. */
+async function isLiveDirectory(directory: string): Promise<boolean> {
+  return await realpath(join(userInfo().homedir, ".prime", "agent", "browser-chat")).catch(() => null) === directory;
+}
+/**
+ * A scratch serve, such as a CPU profile on a copy of the live data dir, only reads: its wakes, briefs, duties and archive queue are the live
+ * service's copies, and its socket is the live daemon's. From 08:25:10Z to 08:25:47Z on 10-18 a profile serve on port 44357 with a copy of
+ * browser-chat woke 3 jobs, reopened 01a1180e to relay a wake, and ran pi-pool priority on 2 live trees.
+ */
+async function isScratch(options: Options, directory: string): Promise<boolean> {
+  return options.scratch === true || !await isLiveDirectory(directory);
 }
 /**
  * The main instance starts the Prime Agent daemon when its socket does not answer (after a reboot nothing else starts it). Test and extra
@@ -325,11 +337,16 @@ async function serve(options: Options): Promise<void> {
   }
   const existing = listenFd === null ? await running(service) : null;
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
+  const scratch = await isScratch(options, service.directory);
+  if (scratch && options.adopt === "live") throw new Error("A scratch serve only reads, so it cannot adopt the live chats. Drop --adopt-live, or serve the live data dir without --scratch.");
+  // A scratch serve on the live dir still keeps off everything the main instance owns: the daemon, the bridges, Slack, Tailscale and login.
+  const primary = service.primary && !scratch;
+  if (scratch) process.stderr.write(`${new Date().toISOString()} scratch serve: it only reads; no wakes, briefs, check-ins, duties, job cleanup, archives, resumes, reopens, adopts or pool writes (${service.directory})\n`);
   await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   const { DaemonKeeper } = await import("./chat-daemon.ts");
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
-  const keeper = startsDaemon(service.primary)
+  const keeper = !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
@@ -338,19 +355,19 @@ async function serve(options: Options): Promise<void> {
   // listens; the page and app.js wait for it, the API answers at once.
   const bundle = buildClientBundle();
   bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
-  const adopt = options.adopt ?? (service.primary ? "live" : "own");
+  const adopt = scratch ? "own" : options.adopt ?? (primary ? "live" : "own");
   if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
   // The other boxes in ~/.config/sieun-pi/hosts.json: the main instance opens a local socket per box, tunneled to its relay (src/hosts.ts), and
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
-  const hosts = await startHosts(service.primary);
+  const hosts = await startHosts(primary);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
-    ownChatsOnly: adopt === "own", hosts: hosts?.catalogs ?? null, copyFile: service.primary ? join(service.directory, "session-copy.json") : null });
+    ownChatsOnly: adopt === "own", scratch, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
-  const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
+  const slack = !scratch && runsSlack(primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void slack?.start().catch(error => { process.stderr.write(`slack: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Every chat in the index is pinned again, so a saved one resumes on the first catalog update. The daemon may be down here; the pin waits for it.
-  const adopted = backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
+  const adopted = scratch ? Promise.resolve() : backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
     error => { process.stderr.write(`chats: ${error instanceof Error ? error.message : String(error)}\n`); });
   // The prompt captures of ended sessions go once the adopt pass has the daemon's list, then once a day (src/prompt-prune.ts). A serve that
   // does not own the live chats leaves the folder alone.
@@ -362,8 +379,9 @@ async function serve(options: Options): Promise<void> {
   });
   // Exit 75 after an SDK update: launchd's KeepAlive starts a crashed (non-zero) login item again, now on the new packages.
   const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.then(built => built.version, () => "build failed"),
-    canRestart: options.supervised === true && service.primary, restart: () => { process.exitCode = 75; stop(); } });
-  backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
+    canRestart: options.supervised === true && primary, restart: () => { process.exitCode = 75; stop(); } });
+  // The SDK update rewrites the checkout's node_modules, which the live service runs from.
+  if (!scratch) backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
   let closing: Promise<void> | undefined;
@@ -385,13 +403,14 @@ async function serve(options: Options): Promise<void> {
   const stop = () => { void close(false).catch(error => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
   let publishIdentity: () => void = () => {};
   const identityReady = new Promise<void>(resolve => { publishIdentity = resolve; });
-  const remote = new RemoteAccess({ port: service.config.port, capability: service.config.capability, mode: service.config.remoteAccess, origin: service.config.publicOrigin,
+  // A copied configuration.json keeps the live chat's Tailscale mode, and its check would point https://<box>/ at this port.
+  const remote = new RemoteAccess({ port: service.config.port, capability: service.config.capability, mode: scratch ? "off" : service.config.remoteAccess, origin: scratch ? null : service.config.publicOrigin,
     save: value => saveConfiguration(service, { remoteAccess: value.mode, publicOrigin: value.origin }),
     identity: async () => { await identityReady; return identity; } });
-  const node = service.primary ? await findNode() : null;
+  const node = primary ? await findNode() : null;
   const keepRunning = node ? keepRunningFor(service, node, options.supervised === true) : null;
   const loginStart = options.supervised === true || process.env.SIEUN_PI_CHAT_OPEN_AT_LOGIN === "1";
-  const loginWindow = opensAppAtLogin(service.primary) ? new LoginWindow({ url: service.url, markerPath: join(service.directory, "login-window.json"),
+  const loginWindow = !scratch && opensAppAtLogin(primary) ? new LoginWindow({ url: service.url, markerPath: join(service.directory, "login-window.json"),
     enabled: service.config.openAppAtLogin, save: enabled => saveConfiguration(service, { openAppAtLogin: enabled }),
     // On a test instance the variable stands in for the login item.
     startsAtLogin: () => keepRunning?.status().enabled === true || process.env.SIEUN_PI_CHAT_OPEN_AT_LOGIN === "1",
@@ -448,6 +467,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
   for (let index = 0; index < flags.length; index += 2) {
     const flag = flags[index], value = flags[index + 1];
     if (flag === "--supervised") { options.supervised = true; index--; continue; }
+    if (flag === "--scratch") { options.scratch = true; index--; continue; }
     if (flag === "--no-adopt" || flag === "--adopt-live") {
       const adopt = flag === "--no-adopt" ? "own" : "live";
       if (options.adopt && options.adopt !== adopt) throw new Error("Use --no-adopt or --adopt-live, not both.");
@@ -463,6 +483,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (options.remote !== undefined && command !== "start" && command !== "serve") throw new Error("Use --public-origin with chat start or serve.");
   if (options.supervised && command !== "serve") throw new Error("Use --supervised with chat serve.");
   if (options.adopt && command !== "start" && command !== "serve") throw new Error("Use --no-adopt or --adopt-live with chat start or serve.");
+  if (options.scratch && command !== "serve") throw new Error("Use --scratch with chat serve.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
   if (command === "open") {
     // When hosts.json puts the chat role on another box, the app is that box's chat; nothing starts here.
@@ -476,8 +497,8 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (command === "serve") { await serve(options); process.exit(process.exitCode ?? 0); }
   if (!["url", "status", "stop"].includes(command)) {
     if (!["help", "--help", "-h"].includes(command)) throw new Error("Unknown chat command: " + command);
-    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n" +
-      "A serve outside ~/.prime/agent/browser-chat acts only on the chats it created; --adopt-live makes it adopt every chat in its chats.json, --no-adopt keeps any serve to its own.\n"); return;
+    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live] [--scratch]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n" +
+      "A serve outside ~/.prime/agent/browser-chat, or with --scratch, only reads: it sends no wake, check-in, duty, reopen or pool write. --no-adopt keeps any serve to its own chats.\n"); return;
   }
   const service = await loadService(options, false);
   if (!service) {
