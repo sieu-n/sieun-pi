@@ -357,11 +357,16 @@ export function goalsWithoutDuty(board: ChatBoard | null, duties: readonly DutyR
   return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal) && !namesDuty(goal.note ?? "", active) && asksStanding(goal) && !endsSoon(goal));
 }
 const DAY_MS = 24 * 60 * 60_000;
-/** Words in the owner's words for a goal that ask for standing or repeated work: "keep a page updated", "every morning", "daily", "never one slow queue", "on its own". */
-const STANDING = /\b(?:daily|weekly|hourly|nightly|standing|never|whenever|every|each|always|on its own|by itself|any ?more|keeps?|kept|stays?|holds?|ongoing|continuous(?:ly)?|monitor(?:s|ing)?|watch(?:es|ing)?|track(?:s|ing)?|recurring|regularly|updated|up to date)\b/i;
-/** Whether a goal's own text or requirement lines (the owner's words) ask for standing or repeated work (`STANDING`). */
-export const asksStanding = (goal: Pick<PlanItem, "text" | "requirements">): boolean =>
-  [goal.text, ...(goal.requirements ?? []).map(line => line.text)].some(text => STANDING.test(text));
+/**
+ * Words in the owner's words for a goal that ask for standing or repeated work: "keep a page updated", "every morning", "daily", "never one
+ * slow queue", "on its own". "every" and "each" count only before a time ("every day", "each week", "every 30 min"), never "for every source".
+ */
+const STANDING = /\b(?:daily|weekly|hourly|nightly|standing|never|whenever|(?:every|each)\s+(?:day|morning|evening|night|week|month|hour|run|time|\d+\s*(?:min(?:ute)?s?|h|hours?|days?))|always|on its own|by itself|any ?more|keeps?|kept|stays?|ongoing|continuous(?:ly)?|monitor(?:s|ing)?|recurring|regularly|updated|up to date)\b/i;
+/**
+ * Whether the owner's own words on a goal, its requirement lines, ask for standing or repeated work (`STANDING`). A goal's text is often an
+ * agent's: r3d's p6 "Fix the prod discover page, which errors for every source", written by the chat, was flagged three check-ins in a row.
+ */
+export const asksStanding = (goal: Pick<PlanItem, "requirements">): boolean => (goal.requirements ?? []).some(line => STANDING.test(line.text));
 /**
  * Whether a goal's note names an active duty as its cover, as "<name> duty" or "duty <name>", quoted or not, such as chat-057a's p1: "The
  * existing Whole system duty in the AI harness developer environment chat plus this chat's check-in watch this goal" (kept since 10-16).
