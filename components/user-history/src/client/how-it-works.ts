@@ -86,6 +86,8 @@ const POOL_RULES: Rule[] = [
     text: "In this window an account takes one thread per tier unit, and always at least one.", source: { file: POOL_BASE, symbol: "DEFAULTS.admit_slot_sec" } },
   { id: "admit-per-unit", title: "Threads per tier unit", value: q(POOL_DEFAULTS.admit_per_unit, "count"), setting: pool("admit_per_unit"),
     text: "How many threads one tier unit admits per slot window.", source: { file: POOL_BASE, symbol: "DEFAULTS.admit_per_unit" } },
+  { id: "budget-wait", title: "Longest wait when out of moves", value: q(POOL_DEFAULTS.budget_wait_max_sec, "s"), setting: pool("budget_wait_max_sec"),
+    text: "A thread out of moves waits for its own account only when that account frees within this time. Else it moves anyway.", source: { file: POOL_BASE, symbol: "DEFAULTS.budget_wait_max_sec" } },
   { id: "load-window", title: "Load window", value: q(POOL_DEFAULTS.active_session_sec, "s"), setting: pool("active_session_sec"),
     text: "The score counts the threads an account served in this window as its load.", source: { file: POOL_BASE, symbol: "DEFAULTS.active_session_sec" } },
   { id: "cold", title: "Cold thread", value: q(POOL_DEFAULTS.cache_ttl_sec, "s"), setting: pool("cache_ttl_sec"),
@@ -124,6 +126,7 @@ export function howTopics(config: PoolConfig | null): Topic[] {
   const week = poolValue(config, "seven_day_max_pct");
   const slot = formatQuantity(q(poolValue(config, "admit_slot_sec"), "s"));
   const slots = (units: number): number => Math.max(1, Math.round(poolValue(config, "admit_per_unit") * units));
+  const budgetWait = formatQuantity(q(poolValue(config, "budget_wait_max_sec"), "s"));
   return [
   {
     id: "chats", label: "Chats",
@@ -158,7 +161,7 @@ export function howTopics(config: PoolConfig | null): Topic[] {
       { title: "Score", text: "Among the accounts that pass, the thread goes to the best score: weekly pace times 5-hour headroom, divided by load. Weekly pace is the week left over the hours to its reset, so a week that resets soon with room left is spent first." },
       { title: "Slots", text: `Each account takes ${slots(TIER_UNITS["max 20x"])} threads every ${slot} on a Max 20x plan and ${slots(TIER_UNITS["max 5x"])} on the others. Threads that leave one account together enter the next ones at that pace.` },
       { title: "Wait", text: "When no account takes the thread, it gets its own slot on the account that frees first. Waiting threads line up by priority, then by when they began to wait. The turn sleeps until its own slot, not until its old account resets." },
-      { title: "Move budget", text: `A normal thread aims at ${MOVES_PER_DAY.normal} moves in 24 h and a low one at ${MOVES_PER_DAY.low}. Past that it still moves, and pi-pool.log marks the move budget_overrun, since each move drops the prompt cache.` },
+      { title: "Move budget", text: `A normal thread may make ${MOVES_PER_DAY.normal} moves in 24 h and a low one ${MOVES_PER_DAY.low}. Out of moves, it waits for its own account when that frees within ${budgetWait}, and moves anyway when it does not. A high thread always moves when it must.` },
       { title: "Priority", text: `A chat you talk to is high, a job takes its chat's priority, and a duty or check-in run is low. Low threads enter only under ${lowAdmit}% of the 5-hour window. High threads get slots first. When only one account takes threads and it has several slots, the last slot of each window is for high threads.` },
       { title: "Jobs", text: "A subagent uses its root thread's account and never moves alone. A job thread gets its own account when it starts, and stays there while that account serves, even when its chat moves." },
     ],

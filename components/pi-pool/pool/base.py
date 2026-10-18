@@ -69,9 +69,10 @@ DEFAULTS = {
     # R2 projection: a tree is spending on an account while it sent a request
     # there within this window, the window the rates above were measured with
     "spending_tree_sec": 900,
-    # R6, a soft cap: moves a tree makes in 24 h before each further move logs
-    # why: budget_overrun. The move still happens.
+    # R6: moves a tree may make in 24 h before it waits for its own account, and
+    # the longest such wait; when its own account frees later, the tree moves anyway
     "max_moves_per_day": {"high": 6, "normal": 3, "low": 1},
+    "budget_wait_max_sec": 3600,
     # cooldown applied to an account after a vend-failure signal
     "cooldown_sec": 1200,
     # anthropic-only per-model weekly caps that also count toward depletion
