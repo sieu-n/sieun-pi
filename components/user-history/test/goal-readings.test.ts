@@ -46,3 +46,27 @@ test("a check-in run's board counts never become a goal's number through a fix s
   assert.equal(ops.length, 1);
   assert.match(ops[0]!.op === "plan_update" ? ops[0]!.target?.source ?? "" : "", /^duty d3 metric new_unbacked_limits/);
 });
+
+// Crawler VP's p146 on 10-18: the done d2 fix steps p511 (dropped) and p700 carry d2/supply_hold_minutes with the goal's target 0, so each d2 run
+// wrote its supply hold into "new unbacked limits", and the open d3/repo_unbacked_limits p506 (2) sits beside the done d3/new_unbacked_limits p504.
+const p146 = (): ChatBoard => ({ v: 2, rev: 1, todos: [], updatedAt: "2026-10-18T17:00:00.000Z", plan: [{
+  id: "p146", text: "Crawler ops", status: "doing",
+  target: { metric: "new unbacked limits", target: 0, unit: "limits", current: 0, measuredAt: "2026-10-18T15:59:48.000Z", source: "d3 scanner" },
+  children: [step("p504", "d3/new_unbacked_limits", "done"), step("p511", "d2/supply_hold_minutes", "dropped"), step("p506", "d3/repo_unbacked_limits", "doing"),
+    step("p700", "d2/supply_hold_minutes", "done")],
+}] });
+const run1721 = Date.parse("2026-10-18T17:21:00.000Z");
+
+test("a done step's duty link writes nothing into a goal whose metric does not name it", () => {
+  assert.deepEqual(goalReadingOps(p146(), "d2", run1721, { supply_hold_minutes: { value: 0, target: 0, op: "<=", met: true } }), []);
+});
+
+test("the link a goal's metric names wins over an open step's link to another metric of the same duty", () => {
+  const ops = goalReadingOps(p146(), "d3", run1721, {
+    repo_unbacked_limits: { value: 2, target: 0, op: "<=", met: false }, new_unbacked_limits: { value: 0, target: 0, op: "<=", met: true } });
+  assert.equal(ops.length, 1);
+  const op = ops[0]!;
+  assert.ok(op.op === "plan_update");
+  assert.equal(op.target?.current, 0);
+  assert.match(op.target?.source ?? "", /^duty d3 metric new_unbacked_limits/);
+});
