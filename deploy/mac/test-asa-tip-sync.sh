@@ -80,4 +80,8 @@ expect '"stale": \["src/stale.py", "src/landed.py"\]' "13b files on disk at a st
 (cd "$W/box" && printf 'p\n' > src/pid.py && git add src/pid.py && $G commit -qm pid)
 (cd "$W/mac" && printf 'p\n' > src/pid.py && git add src/pid.py && $G commit -qm "pid on the tip host" && printf 'q\n' > src/pid.py && git add src/pid.py && $G commit -qm "pid again")
 run >/dev/null; expect '"converge"' "14 a local commit whose change the tip holds as the same patch converges after the tip changed that path again (6a73f04e21, 10-18 11:49Z)"
+mkdir -p "$W/mac/src/gone" && (cd "$W/mac" && printf 'g\n' > src/gone/rule.yaml && git add src/gone/rule.yaml && $G commit -qm gone0); run >/dev/null
+printf 'live rule\n' > "$W/box/src/gone/rule.yaml"; (cd "$W/mac" && git rm -q src/gone/rule.yaml && $G commit -qm "gone1")
+run >/dev/null; expect '"fast-forward"' "15 a live edit on a file the tip deletes does not hold the move (crawler-proxy-success-prod.yaml, 10-18 12:22Z)"
+[ "$(cat "$W/box/src/gone/rule.yaml")" = "live rule" ] && [ "$(cd "$W/box" && git status --porcelain -- src/gone)" = "?? src/gone/" ] && echo "PASS 15b the edit stays as an untracked file" || { echo "FAIL 15b $(cd "$W/box" && git status --porcelain -- src/gone)"; fail=1; }
 exit $fail

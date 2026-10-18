@@ -322,6 +322,7 @@ def carry(rel, disk, old, new, favor=None):
 
 def write_file(rel, mode, data):
     p = os.path.join(REPO, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".asa-sync.tmp"
     with open(tmp, "wb") as f:
         f.write(data)
@@ -337,7 +338,6 @@ def put(rel, entry):
         except FileNotFoundError:
             pass
         return
-    os.makedirs(os.path.dirname(os.path.join(REPO, rel)) or REPO, exist_ok=True)
     write_file(rel, entry[0], git("cat-file", "blob", entry[1]).stdout)
 
 
@@ -605,6 +605,11 @@ def main():
         elif (merged := carry(rel, disk, old, new, favor="--ours")) is not None:
             carried.append((rel, old, new, disk, merged))
             overlap.append(rel)
+        elif new is None and disk is not None and disk[0] != "dir":
+            # The tip deletes a file that holds a live edit: read-tree refuses to remove the untracked file, as at
+            # 12:22Z on 2026-10-18 for crawler-proxy-success-prod.yaml, which 686d4b302d moved. It leaves for the move,
+            # comes back after it as an untracked file, and its bytes are saved in CARRY_DIR.
+            carried.append((rel, old, new, disk, open(os.path.join(REPO, rel), "rb").read()))
         elif disk is None or disk[0] != "dir":
             preapplied.append((rel, old, new))
             kept.append(rel)
@@ -673,7 +678,7 @@ def main():
         if merged is None and now == tip:
             continue
         if now == tip:
-            write_file(rel, new[0], merged)
+            write_file(rel, (new or disk)[0], merged)
         else:
             restore(rel, disk)
     if now == tip:
