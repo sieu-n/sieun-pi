@@ -141,13 +141,13 @@ test("chatAgents with nothing attached still lists the daemon's subagent session
   assert.deepEqual(agents.map(agent => [agent.key, agent.sessionId, agent.name, agent.job, agent.state]), [["child:sub-1", "s1", "ux email", "ux-email", "done"]]);
 });
 
-test("agentLines gives the chat one line per agent, at most 15", () => {
+test("agentLines gives the chat one line per agent, every agent listed", () => {
   const agent = (name: string, state: "working" | "idle", minutesAgo: number, steps: string[] = []) =>
     ({ key: "thread:" + name, sessionId: name, name, job: "session:" + name, sender: name, link: "step" as const, state, lastActivityAt: new Date(NOW - minutesAgo * 60_000).toISOString(), steps });
   assert.deepEqual(agentLines([agent("prod topup check", "working", 2, ["p9"]), { ...agent("main stripe clerk", "idle", 150), state: "waiting" }], NOW),
     ["Agents:", "- prod topup check: working, 2 min ago (p9)", "- main stripe clerk: waiting for you, 3 h ago"]);
   assert.deepEqual(agentLines([], NOW), []);
   const many = agentLines(Array.from({ length: 20 }, (_, index) => agent("t" + index, "idle", index)), NOW);
-  assert.equal(many.length, 15);
-  assert.equal(many.at(-1), "- and 7 more");
+  assert.equal(many.length, 21);
+  assert.equal(many.at(-1), "- t19: idle, 19 min ago");
 });

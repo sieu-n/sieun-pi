@@ -342,12 +342,10 @@ function ago(ms: number): string {
 }
 /** A queued turn in words: "queued 3 of 7 for a working slot, waiting 4 min". */
 const queuedWords = (place: QueuePlace, now: number): string => `queued ${place.position} of ${place.total} for a working slot, waiting ${ago(now - place.since)}`;
-/** The chat_board tool's "Agents:" section: one line per agent (name, state, age), at most `max` lines with the rest counted. Empty with no agent. */
-export function agentLines(agents: readonly ChatAgent[], now: number, max = 15): string[] {
+/** The chat_board tool's "Agents:" section: one line per agent (name, state, age), every agent listed. Empty with no agent. */
+export function agentLines(agents: readonly ChatAgent[], now: number): string[] {
   if (!agents.length) return [];
-  const lines = agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`);
-  const shown = lines.length > max ? [...lines.slice(0, max - 2), `- and ${lines.length - max + 2} more`] : lines;
-  return ["Agents:", ...shown];
+  return ["Agents:", ...agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`)];
 }
 
 /** The agents with their place in the Mac-wide turn queue attached, for the sessions `pi-pool queue --json` lists as queued. */
