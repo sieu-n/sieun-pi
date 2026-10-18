@@ -111,7 +111,9 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import sys
 from pathlib import Path
 
@@ -576,15 +578,82 @@ class JobRecordError(RecordError):
     and is listed as incomplete; the other jobs go on."""
 
 
+# The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
+# the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
+CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded"}
+# How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
+CHAT_HOST_WAIT_S = 30
+# {file name: (text or None, source)} from the chat host, read once per pass.
+CHAT_HOST_TEXT = {}
+# The (file name, source) pairs the stderr line already named this pass.
+CHAT_FILE_SOURCES_SAID = set()
+
+
+def chat_host():
+    """(base URL, origin) of the chat service when hosts.json puts the chat role on another box, else None, as the board skill finds it.
+    The capability comes from chat-access.json next to hosts.json; a missing or broken one raises."""
+    try:
+        hosts = json.loads(HOSTS_FILE.read_text()).get("hosts") or []
+    except (OSError, ValueError):
+        return None
+    me = socket.gethostname().split(".")[0].lower()
+    holder = next((host for host in hosts if "chat" in (host.get("roles") or {})), None)
+    if holder is None or str(holder.get("hostname", "")).split(".")[0].lower() == me:
+        return None
+    role = holder["roles"]["chat"]
+    origin = (role.get("url") or f"http://{holder['address']}:{role['port']}").rstrip("/")
+    access = json.loads((HOSTS_FILE.parent / "chat-access.json").read_text())
+    return f"{origin}/{access['capability']}/", origin
+
+
+def chat_file_text(path):
+    """(text or None when the file does not exist, source) for the file at `path`. A chat service file comes from the chat host when that is
+    another box; this box's copy answers on the chat host, for other files, or when the chat host cannot be reached. Raises OSError for a
+    local file that cannot be read. Writes one stderr line naming where each chat service file came from."""
+    name = Path(path).name
+    why = ""
+    if name in CHAT_FILES:
+        if name in CHAT_HOST_TEXT:
+            return CHAT_HOST_TEXT[name]
+        try:
+            host = chat_host()
+        except (OSError, ValueError, KeyError) as error:
+            host, why = None, f", because chat-access.json did not read ({error})"
+        if host:
+            base, origin = host
+            try:
+                with urllib.request.urlopen(base + CHAT_FILES[name], timeout=CHAT_HOST_WAIT_S) as response:
+                    found = (response.read().decode(), f"the chat host {origin}")
+            except urllib.error.HTTPError as error:
+                said = error.read().decode(errors="replace")
+                found = (None, f"the chat host {origin}") if error.code == 404 and "on the chat host" in said else None
+                why = f", because the chat host answered {error.code}"
+            except (OSError, http.client.HTTPException) as error:
+                found, why = None, f", because the chat host could not be reached ({error})"
+            if found:
+                CHAT_HOST_TEXT[name] = found
+                print(f"resume_paused: read {name} from {found[1]}", file=sys.stderr)
+                return found
+    source = f"the local file {path}{why}"
+    if name in CHAT_FILES and (name, source) not in CHAT_FILE_SOURCES_SAID:
+        CHAT_FILE_SOURCES_SAID.add((name, source))
+        print(f"resume_paused: read {name} from {source}", file=sys.stderr)
+    try:
+        return Path(path).read_text(), source
+    except FileNotFoundError:
+        return None, source
+
+
 def read_record(path, shape):
     """The parsed JSON of the stop record at `path`, or None when the file does not exist. Raises RecordError when it is unreadable, is not
-    JSON or fails `shape`. The chat service replaces each of these files whole, so an empty or partial file is a fault, not an empty record."""
+    JSON or fails `shape`. The chat service replaces each of these files whole, so an empty or partial file is a fault, not an empty record.
+    The record is the chat host's (chat_file_text)."""
     try:
-        text = Path(path).read_text()
-    except FileNotFoundError:
-        return None
+        text, _ = chat_file_text(path)
     except OSError as error:
         raise RecordError(f"{Path(path).name} is unreadable ({error.strerror or type(error).__name__})") from None
+    if text is None:
+        return None
     try:
         data = json.loads(text)
     except ValueError:
@@ -753,7 +822,8 @@ def run_provider(entries):
 def load_unloaded(path):
     """{full session id: datetime} from the idle unload's record, or {} when there is none."""
     try:
-        data = json.loads(Path(path).read_text())
+        text, _ = chat_file_text(path)
+        data = json.loads(text or "")
     except (OSError, ValueError):
         return {}
     stamps = {sid: parse_ts(value) for sid, value in data.items() if isinstance(value, str)} if isinstance(data, dict) else {}

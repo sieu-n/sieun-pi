@@ -1,12 +1,14 @@
 import argparse
 import datetime as dt
 import importlib.util
+import http.server
 import itertools
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -1314,6 +1316,62 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["id"] for child in report["children"]], sent)
         self.assertEqual([entry["host"] for entry in report["incomplete"]], [None])
         self.assertRegex(report["incomplete"][0]["error"], r"^stopped by SIGTERM after \d+\.\d s during the sends on this box, last step: prime-agent send --json ")
+
+class ChatHostStopRecords(unittest.TestCase):
+    # On 10-18 the chat moved to us-metal02 at 04:19Z and the Mac's browser-chat files stopped there, so a pass on the Mac that read its own
+    # deleted-jobs.json would resume a job deleted after the move. The stop records come from the chat host of hosts.json now.
+    CHAT = "01a11b0b-7c15-73da-9481-8de15903eab4"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        files = {"/cap/api/agent/deleted-jobs": json.dumps({self.CHAT: {"sub-deleted-after-move": "2026-10-18T09:00:00Z"}})}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = files.get(self.path)
+                self.send_response(200 if body else 404)
+                self.end_headers()
+                self.wfile.write((body or '{"error": "Not found."}').encode())
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        port = self.server.server_address[1]
+        hosts = self.root / "hosts.json"
+        hosts.write_text(json.dumps({"version": 1, "hosts": [{"name": "chat-box", "hostname": "chat-box-not-this-one", "address": "127.0.0.1",
+                                                               "roles": {"chat": {"port": port, "url": f"http://127.0.0.1:{port}"}}}]}))
+        (self.root / "chat-access.json").write_text(json.dumps({"capability": "cap", "csrfToken": "token"}))
+        (self.root / "deleted-jobs.json").write_text(json.dumps({self.CHAT: {}}))
+        self.job = self.root / "session-artifacts" / self.CHAT / "sub-deleted-after-move" / "01a14ecc-624e-73df-851a-fc973da7fa4e.jsonl"
+        for name, value in (("HOSTS_FILE", hosts), ("DELETED_JOBS", self.root / "deleted-jobs.json"), ("ARCHIVED_CHATS", self.root / "archived-chats.json"),
+                            ("ARTIFACTS_DIR", self.root / "session-artifacts")):
+            kept = patch.object(resume_paused, name, value)
+            kept.start()
+            self.addCleanup(kept.stop)
+        resume_paused.CHAT_HOST_TEXT.clear()
+        self.addCleanup(resume_paused.CHAT_HOST_TEXT.clear)
+
+    def test_a_deletion_only_the_chat_host_holds_stops_the_resume(self):
+        with patch("sys.stderr") as stderr:
+            self.assertEqual(resume_paused.stop_record(str(self.job)), "deleted on purpose")
+        said = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("read deleted-jobs.json from the chat host http://127.0.0.1:", said)
+
+    def test_an_unreachable_chat_host_falls_back_to_this_box_and_says_so(self):
+        self.server.shutdown()
+        self.server.server_close()
+        with patch("sys.stderr") as stderr:
+            self.assertIsNone(resume_paused.stop_record(str(self.job)))
+        said = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("read deleted-jobs.json from the local file", said)
+        self.assertIn("could not be reached", said)
+
 
 if __name__ == "__main__":
     unittest.main()

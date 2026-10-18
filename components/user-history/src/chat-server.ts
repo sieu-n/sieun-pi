@@ -50,6 +50,13 @@ const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/**
+ * The chat files a box without the chat role reads through the service: the corrections ledger and send log for the board skill, and the
+ * stop records resume_paused.py reads, since a Mac pass that read its own stale deleted-jobs.json could resume a job deleted after the move.
+ */
+const AGENT_FILES = new Map([["api/agent/corrections", "corrections.json"], ["api/agent/sends", "sends.jsonl"], ["api/agent/deleted-jobs", "deleted-jobs.json"],
+  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"]]);
+
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -633,8 +640,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const text = await readFile(join(dirname(backend.boards.dir), "chat-jobs.json"), "utf8").catch(() => "{\"jobs\":{}}");
           res.writeHead(200, { "Content-Type": "application/json" }); res.end(text); return;
         }
-        if (route === "api/agent/corrections" || route === "api/agent/sends") {
-          const name = route === "api/agent/corrections" ? "corrections.json" : "sends.jsonl";
+        const name = AGENT_FILES.get(route);
+        if (name) {
           const text = await readFile(join(dirname(backend.boards.dir), name), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
           if (text === null) throw new RequestError(404, `No ${name} on the chat host.`);
           res.writeHead(200, { "Content-Type": name.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8" }); res.end(text); return;
