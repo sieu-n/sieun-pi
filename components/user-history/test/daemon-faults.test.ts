@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
-import { listedSessions, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
+import { listedSessions, readReopenedSends, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
 import { timedWorkerStart } from "../src/daemon-worker-start.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 
@@ -46,7 +46,7 @@ test("the 08:03Z Mac hang and the owner's 08:16Z attach timeout make their minut
   assert.equal(metrics.clean_min_30, 28);
   const dirty = flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "";
   assert.match(dirty, /^08:03Z daemon calls failed or ran over 30 s for frontend bro, job checklist-research on mac \(an idle check failed, get_state timed out after 30 s\), frontend bro on mac \(opening it failed, attach timed out after 30 s\), session 01a14d93 on us-metal02 .* and 3 more; /);
-  assert.match(dirty, /08:16Z daemon calls failed or ran over 30 s for AI harness developer environment VP on us-metal02 \(a send failed, its session worker was failed; opening it failed, attach timed out after 30 s\)$/);
+  assert.match(dirty, /08:16Z daemon calls failed or ran over 30 s for AI harness developer environment VP on us-metal02 \(opening it failed, attach timed out after 30 s\)$/);
 });
 
 test("a status read on the Mac bridge and a wake's send count, and a kill that timed out does not", () => {
@@ -166,4 +166,35 @@ test("the supervisor's refusal for a worker that is stopping or starting is no f
     "[2026-10-18T12:30:36.871Z] supervisor: Supervisor command reload failed: Error: Daemon worker client closed",
   ], "us-metal02");
   assert.deepEqual(faults.map(fault => fault.what), ["the supervisor's reload failed, its worker's connection closed"]);
+});
+
+// 10-18 on us-metal02: worker 7c1722343034 crashed at 16:37:39Z on an unhandled "Lock file is already being held", and the supervisor parked
+// it failed. At 16:42Z a brief to its subagent and the relay to its root 01a14edd met "Session worker is failed", the reopen made a new worker
+// and the send went out 2 s after the first refusal. d7 counted that one delivered send three times in 16:42Z and the crash not at all.
+const REOPEN_SENT = "2026-10-18T16:42:36.245Z reopen: 01a14edd answered \"Session worker is failed\"; opened it again and sent again: sent";
+const SUPERVISOR_LOG = [
+  "[2026-10-18T16:37:39.867Z] supervisor: Session worker 7c1722343034 stderr: unhandled rejection: Error: Lock file is already being held",
+  "[2026-10-18T16:37:39.867Z] supervisor: Session worker 7c1722343034 stderr:     at <anonymous> (/$bunfs/root/prime-agent:309:11832)",
+  "[2026-10-18T16:37:51.760Z] supervisor: Recovered worker 7c1722343034 without replaying uncertain operations: rlm_child_update, message_start, message_end",
+  "[2026-10-18T16:42:34.209Z] supervisor: Supervisor command send_message failed: Error: Session worker is failed",
+  "    at requireAvailableWorkerClient (/$bunfs/root/prime-agent:2238:70012)",
+  "[2026-10-18T16:42:34.928Z] supervisor: Supervisor command send_message failed: Error: Session worker is failed",
+  "[2026-10-18T08:25:10.499Z] supervisor: Supervisor command send_message failed: Error: Session worker is failed",
+];
+
+test("a reopen that delivered its send is no fault, and one whose second send failed counts with the second answer", () => {
+  const faults = readServiceFaults([
+    REOPEN_SENT,
+    // Made up: no reopen on 10-18 failed its second send.
+    "2026-10-18T16:43:10.000Z reopen: 01a14edd answered \"Session worker is failed\"; opened it again and sent again: Timed out after 30000ms waiting for the Prime Agent daemon response to \"send_message\". Socket: /tmp/prime-agent-1001/daemon.sock.",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => `${fault.session} ${fault.what}`), ["01a14edd a send failed, send_message timed out after 30 s"]);
+});
+
+test("a Prime worker's crash counts, and the refusals for its failed worker that a reopen delivered in their minute do not", () => {
+  const faults = readSupervisorFaults(SUPERVISOR_LOG, "us-metal02", readReopenedSends([REOPEN_SENT]));
+  assert.deepEqual(faults.map(fault => `${new Date(fault.at).toISOString()} ${fault.what}`), [
+    "2026-10-18T16:37:39.867Z Prime worker 7c1722343034 crashed, unhandled rejection: Error: Lock file is already being held",
+    "2026-10-18T08:25:10.499Z the supervisor's send_message failed, its session worker was failed",
+  ]);
 });

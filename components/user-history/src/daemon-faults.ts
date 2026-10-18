@@ -70,6 +70,20 @@ const OTHER_CALLS = new Set(["kill", "list", "cron_list"]);
  */
 const STALE = /Unknown active session|is closing|Session worker is (?:stopping|starting)/;
 
+/**
+ * A send that met a failed worker, opened its session again and went out (src/reopen-send.ts), with what the second send answered: "sent"
+ * delivered it. At 16:42:36Z on 10-18 `reopen: 01a14edd answered "Session worker is failed"; opened it again and sent again: sent` counted as a
+ * failed send, though the message landed 2 s after the first refusal.
+ */
+const REOPENED = /^reopen: [0-9a-f]{8} answered ".*"; opened it again and sent again: (.*)$/;
+/**
+ * A Prime worker's crash handler logs one of these and exits 1 (`installCrashHandlers` in the bundle), which drops every session the worker ran;
+ * the supervisor then logs "Recovered worker <id> without replaying uncertain operations" and parks it failed until a client opens a session
+ * again. On 10-18 us-metal02 logged six, each `unhandled rejection: Error: Lock file is already being held` (08:24Z, 12:26Z, 12:49Z, 16:14Z,
+ * 16:37Z, 17:09Z), and none counted while the sends that met the dead worker did.
+ */
+const WORKER_CRASH = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: (unhandled rejection|uncaught exception): (.*)$/;
+
 const TIMED_OUT = /Timed out after (\d+)ms waiting for the Prime Agent daemon response to "(\w+)"/;
 const MESSAGE_ID = /\b(m-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/;
 
@@ -160,9 +174,11 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
       continue;
     }
     const prefix = PREFIXED.exec(text);
+    const reopened = REOPENED.exec(text)?.[1];
+    if (reopened === "sent") continue;
     // A job's wake that reads the job's file through another box's relay first ("The session file on mac did not read: read ECONNRESET", 625
     // lines from 11:15Z on 10-18) failed on a file read, before any daemon call.
-    const reason = prefix && !FILE_READ.test(text) ? faultReason(text) : undefined;
+    const reason = prefix && !FILE_READ.test(text) ? faultReason(reopened ?? text) ?? reopened?.slice(0, 80) : undefined;
     if (!prefix || !reason) continue;
     const session = SESSION_IN.exec(text)?.[1];
     const wakeOf = prefix[2] === "wake" ? /^job ([0-9a-f]{8})/.exec(text)?.[1] : undefined;
@@ -177,14 +193,39 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
 
 const titleOrSession = (name: string): { session: string } | { title: string } => /^[0-9a-f]{8}$/.test(name) ? { session: name } : { title: name };
 
-/** The supervisor's failed commands in a daemon log's lines: they name no session, and they catch callers other than the chat service. */
-export function readSupervisorFaults(lines: readonly string[], local: string): DaemonFault[] {
+/** When each send that a reopen delivered went out, from the chat service's `reopen: ... sent again: sent` lines. */
+export function readReopenedSends(lines: readonly string[]): number[] {
+  const sent: number[] = [];
+  for (const raw of lines) {
+    const stamped = STAMPED.exec(raw);
+    if (stamped && REOPENED.exec(stamped[2]!)?.[1] === "sent") sent.push(Date.parse(stamped[1]!));
+  }
+  return sent;
+}
+
+const minuteOf = (at: number): number => Math.floor(at / 60_000);
+
+/**
+ * The supervisor's failed commands and its workers' crashes in a daemon log's lines: they name no session, and they catch callers other than
+ * the chat service. A send_message refused for a failed worker in a minute where a reopen delivered a send (`reopened`, from
+ * `readReopenedSends`) is that send's first try. The refusals name no session, so the minute pairs them: on 10-18 each of the 14 refusals
+ * before a reopen's "sent" came 1.3 to 5.6 s before it, in its minute (06:01Z, 08:16Z, 16:42Z, 17:14Z), and the 3 at 08:25Z had no reopen.
+ */
+export function readSupervisorFaults(lines: readonly string[], local: string, reopened: readonly number[] = []): DaemonFault[] {
   const faults: DaemonFault[] = [];
+  const delivered = new Set(reopened.map(minuteOf));
   for (const line of lines) {
+    const crash = WORKER_CRASH.exec(line);
+    if (crash) {
+      const at = Date.parse(crash[1]!);
+      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${crash[2]} crashed, ${crash[3]}: ${crash[4]!.slice(0, 80)}` });
+      continue;
+    }
     const found = SUPERVISOR.exec(line);
     if (!found || OTHER_CALLS.has(found[2]!) || STALE.test(found[3]!)) continue;
     const reason = faultReason(found[3]!);
     const at = Date.parse(found[1]!);
+    if (found[2] === "send_message" && /Session worker is failed/.test(found[3]!) && delivered.has(minuteOf(at))) continue;
     if (reason && Number.isFinite(at)) faults.push({ at, host: local, what: `the supervisor's ${found[2]} failed, ${reason}` });
   }
   return faults;

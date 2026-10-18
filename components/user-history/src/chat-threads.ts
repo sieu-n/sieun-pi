@@ -213,6 +213,14 @@ const PIN_RETRY_MAX_MS = 5 * 60_000;
  * as the link was busy or not, and from 07:38Z to 08:01Z its attach timed out 17 times, each pin retry pulling the same bytes again.
  */
 const REMOTE_SNAPSHOT_MS = 5 * 60_000;
+/**
+ * How long an attach to this box's daemon waits for its hello, as long as the attach request after it may take (the SDK's 30 s
+ * DEFAULT_DAEMON_REQUEST_TIMEOUT_MS). The supervisor writes the hello as it takes the connection: 20 tries at 17:23Z on 10-18, load 57, got it
+ * in 0 to 6 ms. The old 3 s failed two job wakes outright, 01a14f62 near 16:14:33Z and 01a14fef near 17:09:25Z ("Timed out after 3000ms
+ * waiting for the Prime Agent daemon handshake"), each while the supervisor was between a worker's crash and its "Recovered worker" line (19 s
+ * and 25 s). Another box's bridge keeps its 3 s: while the Mac's relay did not answer on 10-18, its hello never came (open 01a11ba8 on mac).
+ */
+const LOCAL_HELLO_MS = 30_000;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
@@ -518,7 +526,7 @@ export class ThreadHub {
     const client = new DaemonClient(host ? this.catalog.socketPathFor(host) : this.socketPath);
     try {
       await client.connect(3000);
-      await client.waitForHello(3000);
+      await client.waitForHello(host ? 3000 : LOCAL_HELLO_MS);
       // Events wait until `bind`, so `liveSnapshot` reads the attach snapshot as it came. Otherwise one event between the two made
       // getInitialSnapshot fetch get_messages and get_session_context, each the whole context with every image.
       return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true,
