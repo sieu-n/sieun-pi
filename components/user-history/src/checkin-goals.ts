@@ -108,8 +108,11 @@ export function goalTrend(number: GoalNumber, memo: GoalMemo | undefined): { tre
   const reading = { value: number.value, at: number.measuredAt };
   const last = memo?.readings.at(-1);
   const moved = last !== undefined && (reading.value - last.value) * sign > 0;
-  const readings = !last || last.at !== reading.at || last.value !== reading.value ? [...memo?.readings ?? [], reading].slice(-GOAL_READINGS) : memo!.readings;
-  const still = !last ? 0 : moved ? 0 : memo!.still + 1;
+  // The same reading as last run is no new measure, so it keeps the trend it had: vent p1 (cadence daily) read 6% at 16:15Z, up from 3%, and
+  // the 16:40Z check-in on 10-18 counted that same 16:15Z reading as "no move toward target in the last check-in".
+  const same = last !== undefined && last.at === reading.at && last.value === reading.value;
+  const readings = !last || !same ? [...memo?.readings ?? [], reading].slice(-GOAL_READINGS) : memo!.readings;
+  const still = !last ? 0 : same ? memo!.still : moved ? 0 : memo!.still + 1;
   const next = { readings, still };
   if ((reading.value - number.target) * sign >= 0) return { trend: { kind: "met" }, memo: next };
   if (!last) return { trend: { kind: "first" }, memo: next };
@@ -122,8 +125,8 @@ export function goalTrend(number: GoalNumber, memo: GoalMemo | undefined): { tre
 }
 
 /**
- * Whether a goal's number is off pace: a goal is on pace only when it is measured, fresh, moved toward its target since the last check-in, and
- * reaches it within PACE_MS at its rate. Unmeasured, stale, new to the memo, still since the last check-in, or moving away are off pace.
+ * Whether a goal's number is off pace: a goal is on pace only when it is measured, fresh, moved toward its target at its last new reading, and
+ * reaches it within PACE_MS at its rate. Unmeasured, stale, new to the memo, still at its last new reading, or moving away are off pace.
  */
 export const offPace = (trend: GoalTrend, stale: boolean): boolean =>
   trend.kind === "met" ? false : stale || trend.kind !== "moving" || trend.etaMs === null || trend.etaMs > PACE_MS;
