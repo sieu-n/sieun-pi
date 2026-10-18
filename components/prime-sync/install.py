@@ -5,6 +5,8 @@ usage: python3 -B components/prime-sync/install.py --ref <commit> [--host <name>
 
 Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json, clones the state repo,
 installs the timer (prime-sync.timer under systemd --user on Linux, com.sieun.prime-sync under launchd on macOS) and runs one sync.
+The timer runs the Python that ran this installer. On macOS that Python needs access to the checkout's folder: launchd jobs
+under /usr/bin/python3 get "Operation not permitted" in ~/Documents, while /opt/homebrew/bin/python3 reads it.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ HOME = Path.home()
 SHARE = HOME / ".local/share/prime-sync"
 CONFIG = HOME / ".config/prime-sync/sync.json"
 STATE_REPO = "https://github.com/sieu-n/prime-shared-state.git"
-PYTHON = "/usr/bin/python3"
+PYTHON = sys.executable
 LABEL = "com.sieun.prime-sync"
 GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 

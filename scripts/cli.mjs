@@ -23,8 +23,8 @@ try {
     run(process.execPath, [resolve(root, "components/user-history/src/hosts-cli.mjs"), ...args], process.cwd());
   } else if (command === "sync") {
     const installed = resolve(homedir(), ".local/share/prime-sync/sync.py");
-    if (args[0] === "install") run(process.env.SIEUN_PI_PYTHON || "/usr/bin/python3", ["-B", resolve(root, "components/prime-sync/install.py"), ...args.slice(1)]);
-    else run(process.env.SIEUN_PI_PYTHON || "/usr/bin/python3", ["-B", installed, ...args]);
+    if (args[0] === "install") run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "components/prime-sync/install.py"), ...args.slice(1)]);
+    else run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", installed, ...args]);
   } else if (command === "source") {
     process.stdout.write(`${root}\n`);
   } else if (command === "sync-prime-agent") {

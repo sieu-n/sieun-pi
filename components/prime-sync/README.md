@@ -34,6 +34,7 @@ node scripts/cli.mjs sync                                                      #
 cat ~/.local/share/prime-sync/status.json                                      # the last run
 ```
 
+1. The timer runs the Python that ran the installer. On the Mac that must be `/opt/homebrew/bin/python3`, because macOS refuses a launchd job under `/usr/bin/python3` access to `~/Documents`, where the checkout lives.
 1. The installer copies `sync.py` from the commit to `~/.local/share/prime-sync/`, so a later checkout change cannot break the timer until someone installs it.
 2. `~/.config/prime-sync/sync.json` names the checkout, the state repo and its clone, and the agent folder. The host name comes from `~/.config/sieun-pi/hosts.json` when this box is listed there.
 3. `sync.log` in the same folder gets one line for each run that changed something or hit an error.
