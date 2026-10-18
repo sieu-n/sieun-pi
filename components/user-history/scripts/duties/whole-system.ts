@@ -137,7 +137,6 @@ export function interruptionProof(cut: { at: number; archivedAt?: number }, stop
   return sigterm === undefined ? undefined : `aborted at its worker's SIGTERM at ${new Date(sigterm).toISOString().slice(11, 19)}Z`;
 }
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export interface LimitChange { at: number; limit: number }
 
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 /** A due wake the service could not send this tick: held by the old fleet budget, or a send the daemon failed. */
@@ -180,24 +179,6 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   return { holds, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
 }
 
-/** pi-pool's working limit at each change, from its pressure events (local time stamps), oldest first. */
-export function readLimits(lines: readonly string[]): LimitChange[] {
-  const changes: LimitChange[] = [];
-  for (const raw of lines) {
-    if (!raw.includes('"pressure_')) continue;
-    try {
-      const event = JSON.parse(raw) as { event?: string; at?: number; ts?: string; limit_to?: number };
-      if ((event.event === "pressure_level" || event.event === "pressure_limit") && typeof event.limit_to === "number") {
-        const at = typeof event.at === "number" ? event.at * 1000 : Date.parse(event.ts ?? "");
-        if (Number.isFinite(at)) changes.push({ at, limit: event.limit_to });
-      }
-    } catch { continue; }
-  }
-  return changes.sort((a, b) => a.at - b.at);
-}
-
-export const limitAt = (changes: readonly LimitChange[], at: number, fallback: number): number => changes.findLast(change => change.at <= at)?.limit ?? fallback;
-
 /** Whether a watch line shows a queued turn while pi-pool had FREE_SLOTS or more free slots. */
 export const queuedWithFreeSlots = (line: WatchLine, limit: number): boolean =>
   !!line.queue && line.queue.queued > 0 && line.queue.oldestWaitS >= QUEUED_WAIT_S && line.queue.working <= limit - FREE_SLOTS;
@@ -231,7 +212,6 @@ export interface Inputs {
   /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
   day?: readonly WatchLine[];
   log: LogFacts;
-  limits: readonly LimitChange[];
   /** pi-pool's limit when the Mac reads ok (`working_max`). */
   okLimit: number;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
@@ -268,7 +248,7 @@ export function measure(input: Inputs): PrecheckOutput {
       else usable++;
     }
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
-    if (line && queuedWithFreeSlots(line, limitAt(input.limits, to, input.okLimit))) { freeSlot++; why.push("a turn queued with free slots"); }
+    if (line && queuedWithFreeSlots(line, input.okLimit)) { freeSlot++; why.push("a turn queued with free slots"); }
     if (why.length) dirty.push(`${clock(to)} ${why.join(", ")}`);
     else clean++;
   }
@@ -333,7 +313,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const grants = (input.log.grants ?? []).filter(grant => grant.session === job.session && grant.at >= job.at);
     const admitted = grants.map(grant => {
       const watched = input.watch.findLast(entry => Date.parse(entry.at) <= grant.at)?.queue;
-      const slots = watched ? `, pi-pool then ran ${watched.working} of ${limitAt(input.limits, grant.at, input.okLimit)} slots with ${watched.queued} queued` : "";
+      const slots = watched ? `, pi-pool then ran ${watched.working} of ${input.okLimit} slots with ${watched.queued} queued` : "";
       return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
     });
     flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was ${cutWords(job.cause)} at ` +
@@ -496,7 +476,6 @@ async function main(): Promise<void> {
   const result = measure({
     now, watch, day,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
-    limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
     okLimit: typeof config?.working_max === "number" ? config.working_max : 15,
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),

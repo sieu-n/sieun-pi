@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { cutJobsHoldingWork, FAR_ABOVE, findCutJobs, interruptionProof, measure, readDaemonStops, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutJobsHoldingWork, FAR_ABOVE, findCutJobs, interruptionProof, measure, readDaemonStops, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
@@ -15,7 +15,7 @@ const at = (minutesAgo: number): string => new Date(NOW - minutesAgo * 60_000).t
 const line = (minutesAgo: number, fields: Partial<WatchLine> = {}): WatchLine => ({ at: at(minutesAgo), usable: { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 20 },
   workers: 10, workerGb: 8, top: [], live: 20, working: 8,
   queue: { working: 8, queued: 0, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 4, pressureLevel: 1 }, cpuMs: 50, ...fields }) as WatchLine;
-const inputs = (fields: Partial<Inputs>): Inputs => ({ now: NOW, watch: [], log: { holds: [] }, limits: [], okLimit: 15, chats: [], ...fields });
+const inputs = (fields: Partial<Inputs>): Inputs => ({ now: NOW, watch: [], log: { holds: [] }, okLimit: 15, chats: [], ...fields });
 
 test("held wakes join into one hold per wake", () => {
   const facts = readServiceLog([
@@ -40,8 +40,6 @@ test("a minute is clean only with the Mac usable, no hold over 10 minutes and no
   assert.equal(quiet.metrics.clean_min_30, 27);
   assert.equal(quiet.metrics.usable_min_30, 28);
   assert.equal(quiet.metrics.queued_free_slot_min_30, 1);
-  // Under the critical limit of 7 the same queue is no fault.
-  assert.equal(measure(inputs({ watch, limits: readLimits([JSON.stringify({ ts: "2026-10-16T06:00:00", event: "pressure_level", at: (NOW - 60 * 60_000) / 1000, limit_to: 7 })]) })).metrics.queued_free_slot_min_30, 0);
 });
 
 test("stuck steps add up each chat's newest measured check-in, a run skipped behind a working job included (frontend bro 10-18 23:13Z and 23:15Z)", () => {
