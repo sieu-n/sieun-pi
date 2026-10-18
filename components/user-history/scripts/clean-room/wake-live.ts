@@ -13,7 +13,7 @@ import { readSession, readSessionFile, sessionFiles, type RunState, type Scenari
 export const TASK = "have a job note how much free disk space this mac has now, check again 25 minutes later, and tell me how much it changed";
 const WAKE_CALL = /\bboard\.wake\s*\(/;
 const STOPPED = /\bended\b|\bopen steps? names?\b|\bwas cancelled\b|\bfailed\b|\bsent no report\b/;
-const PUSHED = /^(?:\[check-in\] )?The check-in (?:is checking on you|restarted you)/;
+const PUSHED = /^\[check-in\] |^The check-in (?:is checking on you|restarted you)/;
 
 const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 300): string => (text.length > length ? text.slice(0, length - 1) + "…" : text).replace(/\s+/g, " ");

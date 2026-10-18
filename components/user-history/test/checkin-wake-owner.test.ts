@@ -73,10 +73,11 @@ test("launch main bro 10-14: the release driver asleep on its 14:40Z board.wake 
   assert.match(run.findings, /release driver thread: asleep on a board\.wake at 14:40Z, last activity 35 min ago, on p53/);
 });
 
-test("launch main bro 10-14 control: a wake overdue past the 2 min delivery gap, or no wake, leaves p53, p75 and p56 stuck; a late tick does not", async () => {
+test("launch main bro 10-14 control: a due wake with no tick for over 2 min, or no wake, leaves p53, p75 and p56 stuck; a late tick or a late send does not", async () => {
   assert.deepEqual(flags(await checkIn({ now: WAKE_AT + 2 * 60_000 })), [], "at 14:42Z the wake is still within one delivery gap");
-  const overdue = await checkIn({ now: WAKE_AT + 3 * 60_000 });
-  assert.deepEqual(flags(overdue), STUCK, "at 14:43Z the wake is 3 min overdue");
+  assert.deepEqual(flags(await checkIn({ now: WAKE_AT + 40 * 60_000 })), [], "a ticking service still owes a wake it sends late (AI harness 10-18 03:27Z: sends up to 41 min late)");
+  const overdue = await checkIn({ now: WAKE_AT + 3 * 60_000, tickedAt: WAKE_AT });
+  assert.deepEqual(flags(overdue), STUCK, "at 14:43Z the wake is due and no tick ran for 3 min, so nobody sends it");
   assert.match(overdue.findings, /owner release driver thread \(idle\)/);
   assert.deepEqual(flags(await checkIn({ now: READ_AT, tickedAt: READ_AT - 3 * 60_000 })), [], "a last tick 3 min old does not erase a wake still ahead (AI harness 10-18 01:32Z)");
   assert.deepEqual(flags(await checkIn({ now: READ_AT, wake: false })), STUCK, "the release driver with no wake is idle");
@@ -105,5 +106,5 @@ test("launch main bro 10-14: a step that waits on the release driver thread is n
   const memo = { p300: { sig: JSON.stringify(["blocked", step.text, ""]), at: READ_AT - 3 * 60 * 60_000, wait: JSON.stringify(["waits", ""]), waitAt: READ_AT - 3 * 60 * 60_000 } };
   const blocked = (run: CheckInRun) => run.output.flagged.filter(slice => slice.kind === "blocked_on_others" && slice.item === "p300").map(slice => slice.excerpt);
   assert.deepEqual(blocked(await checkIn({ now: READ_AT, board, memo })), []);
-  assert.match(blocked(await checkIn({ now: WAKE_AT + 3 * 60_000, board, memo }))[0] ?? "", /p300 "Turn on the 2,000 page canary" is blocked on the release driver thread/);
+  assert.match(blocked(await checkIn({ now: WAKE_AT + 3 * 60_000, tickedAt: WAKE_AT, board, memo }))[0] ?? "", /p300 "Turn on the 2,000 page canary" is blocked on the release driver thread/);
 });

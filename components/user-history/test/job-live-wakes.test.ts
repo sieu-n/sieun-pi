@@ -169,6 +169,8 @@ test("pendingWakes: a .ticked stamp past WAKE_LATE_MS keeps run wakes and time w
     "the tick is 2 min 15 s old: both queued-run wakes and the 10-19 time wake stay owed, and only the time wake already due waits for a fresh tick");
   await writeFile(join(dir, TICKED), new Date(AT - 20_000).toISOString());
   assert.equal((await pendingWakes(dir, AT)).length, 4, "with a fresh tick the due time wake is owed too");
+  await writeFile(join(dir, TICKED), new Date(AT + 40 * 60_000 - 20_000).toISOString());
+  assert.equal((await pendingWakes(dir, AT + 40 * 60_000)).length, 4, "and still 40 min after its time, while the ticker sends late (AI harness 10-18 03:27Z)");
   await rm(join(dir, TICKED));
   assert.equal((await pendingWakes(dir, AT)).length, 3, "with no stamp at all the files still name live waits");
 });
