@@ -16,6 +16,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
 The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
+The daemon unit sets `KillMode=process` too, so a daemon restart signals only the daemon and the new one adopts the running workers. On 10-18 at 03:38Z a restart under the default `control-group` mode sent SIGTERM to every worker and the new daemon failed to adopt 7 of them.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
 

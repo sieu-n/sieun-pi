@@ -13,6 +13,7 @@ Restart=always
 RestartSec=5
 UMask=0077
 TimeoutStopSec=90
+KillMode=process
 
 [Install]
 WantedBy=default.target
