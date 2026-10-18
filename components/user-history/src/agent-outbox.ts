@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { PeerReach } from "./host-reach.ts";
-import { Outbox, type Stored } from "./outbox.ts";
-import { isSendTimeout, landedAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
+import { type AgentKind, MAX_BACKOFF_MS, type Obsolete, Outbox, type Stored } from "./outbox.ts";
+import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, stoppedSubagent } from "./subagent-relay.ts";
 import { moveOf } from "./worker-move.ts";
 
@@ -11,6 +13,15 @@ import { moveOf } from "./worker-move.ts";
  * confirm a send_message and then raises, but the worker still delivers it when it is free (p334): 10-16 one board.wake reached a job 3
  * times and one Grafana alert reached its owner 11 times. So a send that timed out is looked for (landed in the target's file, or queued in
  * its worker) before it goes again, and while the target is busy and the copy is in neither place, it is not sent again.
+ *
+ * A message that waited is dropped only on proof that it is needless, and is then kept on disk as "obsolete" with the proof and one log line.
+ * The proofs are the same text in the target's file since it was queued, a wake for the same run or set time in that file since it was queued,
+ * the cleanup's delete of the target job, the owner's archive of the target chat for a wake or a retry (an archived chat still answers a new
+ * message, `Chats.archive`), and a newer report with the same replaceable key (`[replaceable: <key>]`, which its sender sets on purpose)
+ * waiting behind it for the same target. Its age, a later message of another kind, or a turn the target ended since never drops one, and every
+ * other message goes in order, headed with its age once it waited (`agedText`). The sender names the kind when it queues (`AgentKind`).
+ * On 10-18 the Mac was offline from about 13:10Z to 19:42Z, and its return sent 221 held messages 1.7 h to 7.4 h after they were queued,
+ * among them a 13:20Z time wake to 01a14b8d-c276, which the owner had archived at 07:22Z.
  */
 
 export interface AgentOutboxDeps {
@@ -26,6 +37,8 @@ export interface AgentOutboxDeps {
   hostOf?: (session: string) => string | null;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
+  /** The record that stopped the target (`stopRecords`), or null. */
+  stopped?: (session: string, file: string | null) => Promise<Stop | null>;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -86,6 +99,57 @@ export function queuedText(from: QueuedSend["from"], role: QueuedSend["role"], t
     `agent_message.send(text, ${answer})]\n\n${text}`;
 }
 
+/** The opener a sender puts on its own line in a report that a newer report with the same key replaces, such as a check-in's report. */
+export const replaceableLine = (key: string): string => `[replaceable: ${key}]`;
+
+/** The key of a replaceable report (`replaceableLine`) anywhere in the text's headers, else undefined. */
+export function replaceableKey(text: string): string | undefined {
+  return /^\[replaceable: ([^\]\n]+)\]$/m.exec(text)?.[1];
+}
+
+/** What a wake is about, its run id or the time it was set for; two wakes with one identity are the same wake. */
+export function wakeOf(text: string): string | undefined {
+  const found = /^\[wake\] (?:Run (\d+)\b|It is [^,\n]+, the time you set with board\.wake \(([^)\n]+)\))/.exec(text);
+  return found?.[1] ? `run ${found[1]}` : found?.[2] ? `time ${found[2]}` : undefined;
+}
+
+const AGED = /^\[queued [^\]\n]* ago at [^\]\n]*\]\n\n/;
+const clock = (at: number, now: number): string => {
+  const iso = new Date(at).toISOString();
+  return `${iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : iso.slice(5, 10) + " "}${iso.slice(11, 16)}Z`;
+};
+const ago = (ms: number): string => ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${(ms / 3_600_000).toFixed(1)} h`;
+
+/**
+ * The text as it goes: a message queued at `at` that waited past the longest wait between two tries opens with its age and queue time, like
+ * "[queued 4.8 h ago at 13:13Z; ...]", so the target reads it as old news. One that went at once goes as it is.
+ */
+export function agedText(text: string, at: number, now: number): string {
+  if (now - at < MAX_BACKOFF_MS) return text;
+  return `[queued ${ago(now - at)} ago at ${clock(at, now)}; the chat service's outbox held it until the target could take it]\n\n${text}`;
+}
+
+/** The text without the age header `agedText` put on it. */
+export const unaged = (text: string): string => text.replace(AGED, "");
+
+/** A record that stopped the target: a deleted job takes nothing more, and an archived chat takes only a message (`AgentKind`). */
+export interface Stop { record: "delete" | "archive"; reason: string }
+
+/**
+ * The records that stop a target: `deleted-jobs.json` lists the jobs the cleanup deleted, by root and job folder
+ * (`session-artifacts/<root>/<job>/<session>.jsonl`), and `archived-chats.json` the chats the owner archived.
+ */
+export function stopRecords(dataDir: string): (session: string, file: string | null) => Promise<Stop | null> {
+  const read = async (name: string): Promise<unknown> => JSON.parse(await readFile(join(dataDir, name), "utf8").catch(() => "null"));
+  return async (session, file) => {
+    const job = file ? /\/session-artifacts\/([0-9a-f-]{36})\/([^/]+)\/[^/]+\.jsonl$/.exec(file) : null;
+    const deleted = job ? (await read("deleted-jobs.json") as Record<string, Record<string, unknown>> | null)?.[job[1]!]?.[job[2]!] : undefined;
+    if (typeof deleted === "number") return { record: "delete", reason: `the cleanup deleted the target job ${job![2]} at ${new Date(deleted).toISOString()}` };
+    const archived = await read("archived-chats.json") as { ids?: unknown } | null;
+    return Array.isArray(archived?.ids) && archived.ids.includes(session) ? { record: "archive", reason: "the owner archived the target chat" } : null;
+  };
+}
+
 /** The root of a subagent's tree from its session file (`session-artifacts/<root>/...`); undefined for a root's own file. */
 export function treeOf(file: string | null): string | undefined {
   return file ? /\/session-artifacts\/([0-9a-f-]{36})\//.exec(file)?.[1] : undefined;
@@ -118,19 +182,22 @@ export class AgentOutbox {
       deliver: async (entry, sending) => {
         const session = entry.threadId;
         await this.room(session, entry.id);
-        if (await this.inTree(session, async () => { await sending(); return this.send(session, entry); }) === "sent") return;
+        const proof = await this.obsolete(entry);
+        if (proof) return proof;
+        const text = agedText(entry.text, entry.at, this.now());
+        if (await this.inTree(session, async () => { await sending(); return this.send(session, entry.id, text); }) === "sent") return;
         // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
         const file = await deps.fileOf(session).catch(() => null);
         const child = file ? await stoppedSubagent(file) : null;
         if (child) {
-          await this.deliver(child.parents[0]!, relayNote(child, entry.text), entry.root);
+          await this.deliver(child.parents[0]!, relayNote(child, text), entry.root);
           deps.log(`relay: ${session.slice(0, 8)} (${child.name}) is stopped; its message goes through its parent ${child.parents[0]!.slice(0, 8)}`);
           return;
         }
         if (entry.root && deps.startRoot) {
           await deps.startRoot(entry.root);
           await sending();
-          if (await deps.send(session, entry.text) === "sent") return;
+          if (await deps.send(session, text) === "sent") return;
         }
         deps.log(`messages: ${session.slice(0, 8)} is not a session the daemon has or can reopen; message ${entry.id} dropped`);
         throw new Gone("The daemon has no such session.");
@@ -154,18 +221,19 @@ export class AgentOutbox {
   /**
    * Keeps `text` for `session` on disk and sends it in the background; resolves once it is on disk. A copy of a message still waiting for the
    * same target, with only its ISO times changed (`sendKey`), is the same message. `root` is started when the daemon does not find the target.
+   * `kind` says what the sender meant it as (`AgentKind`).
    */
-  async deliver(session: string, text: string, root?: string): Promise<void> {
-    await this.keep(session, text, root);
+  async deliver(session: string, text: string, root?: string, kind: AgentKind = "message"): Promise<void> {
+    await this.keep(session, text, root, kind);
   }
 
   /** `deliver`, answering the id of the entry that holds the message. */
-  private async keep(session: string, text: string, root?: string): Promise<string> {
+  private async keep(session: string, text: string, root?: string, kind: AgentKind = "message"): Promise<string> {
     const key = sendKey(session, text);
     const held = await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key);
     if (held) return held.id;
     const id = `m-${randomUUID()}`;
-    await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, ...root ? { root } : {} });
+    await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, kind, ...root ? { root } : {} });
     return id;
   }
 
@@ -185,28 +253,47 @@ export class AgentOutbox {
     return { deliveryStatus: "queued", id, ...pending === undefined ? {} : { pending }, target: limit, ahead };
   }
 
-  private async send(session: string, entry: Stored): Promise<"sent" | "gone"> {
+  /** The proof that the entry need not go (see the rule at the top of this file), or undefined when it goes. */
+  private async obsolete(entry: Stored): Promise<Obsolete | undefined> {
+    const session = entry.threadId;
+    const file = await this.deps.fileOf(session).catch(() => null);
+    const stop = await this.deps.stopped?.(session, file).catch(() => null);
+    const kind = entry.kind ?? "message";
+    if (stop && (stop.record === "delete" || kind !== "message")) return { obsolete: stop.record === "delete" ? stop.reason : `${stop.reason}, and it is a ${kind}` };
+    const key = replaceableKey(entry.text);
+    const newer = key === undefined ? undefined : (await this.outbox.waiting(session)).find(other => other.at > entry.at && replaceableKey(other.text) === key);
+    if (newer) return { obsolete: `the newer report ${newer.id} with the replaceable key "${key}" waits behind it` };
+    if (!file) return undefined;
+    const text = entry.text.trim();
+    const wake = wakeOf(text);
+    const landed = await messageAt(file, entry.at, other => { const sent = unaged(other).trim(); return sent === text || (wake !== undefined && wakeOf(sent) === wake); })
+      .catch(() => null);
+    if (landed === null) return undefined;
+    return { obsolete: `${wake ? `a wake for the same ${wake}` : "the same message"} landed in the target's file at ${new Date(landed).toISOString()}, after it was queued` };
+  }
+
+  private async send(session: string, id: string, text: string): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
-    try { sent = await this.deps.send(session, entry.text); } catch (error) {
+    try { sent = await this.deps.send(session, text); } catch (error) {
       const doing = moveOf(error);
       if (doing) {
         if (!this.moving.has(session)) {
           this.moving.set(session, { doing, since: this.now() });
-          this.deps.log(`outbox ${this.where(session)}: the target's worker is ${doing}; ${entry.id} and the sends after it wait until get_state reads it`);
+          this.deps.log(`outbox ${this.where(session)}: the target's worker is ${doing}; ${id} and the sends after it wait until get_state reads it`);
         }
         throw new Moving(error instanceof Error ? error.message : String(error));
       }
       const counts = pendingCounts(error);
       if (counts && !this.full.has(session)) {
         this.full.set(session, counts.limit);
-        this.deps.log(`outbox ${this.where(session)}: the target is full at ${counts.pending} of ${counts.limit} pending; ${entry.id} and the sends after it wait until it holds fewer`);
+        this.deps.log(`outbox ${this.where(session)}: the target is full at ${counts.pending} of ${counts.limit} pending; ${id} and the sends after it wait until it holds fewer`);
       }
       throw error;
     }
     const moved = this.moving.get(session);
     if (moved) {
       this.moving.delete(session);
-      if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${entry.id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
+      if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
     }
     return sent;
   }
@@ -244,12 +331,13 @@ export class AgentOutbox {
   private async copyState(entry: Stored, since: number): Promise<"landed" | "queued" | "busy" | "absent" | "unknown"> {
     const session = entry.threadId;
     const file = await this.deps.fileOf(session).catch(() => null);
-    if (file && await landedAt(file, [entry.text], since)) return "landed";
+    const sent = (other: string) => unaged(other).trim() === entry.text.trim();
+    if (file && await messageAt(file, since, sent)) return "landed";
     const target = await this.deps.target(session).catch(() => null);
     if (target === null) return "unknown";
     if (target.queued.some(item => item === entry.text || item === QUEUED_PREFIX + entry.text || item.includes(entry.text))) return "queued";
     // The worker may have written it between the file read and the queue read.
-    if (file && await landedAt(file, [entry.text], since)) return "landed";
+    if (file && await messageAt(file, since, sent)) return "landed";
     // On 10-16 at 10:16Z and 22:53Z such a copy was still with the supervisor after a run of timeouts, and a resend made 4 extra wake copies.
     return target.busy ? "busy" : "absent";
   }

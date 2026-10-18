@@ -23,18 +23,29 @@ export interface Stored extends OutboxEntry {
   doneAt?: number;
   /** Agent messages only: the tree root to start when the daemon knows no such target (src/agent-outbox.ts). */
   root?: string;
+  /** Agent messages only: what the sender meant it as, set when it is queued (`AgentKind`); absent reads as "message". */
+  kind?: AgentKind;
 }
 
+/**
+ * Why the service sends an agent message: "wake" for a board.wake of a time or a CI run, "retry" for a resend of a send that was already tried
+ * (a spawn brief resent), and "message" for anything an agent or the owner says (a report, an instruction, a relay, an alert).
+ */
+export type AgentKind = "wake" | "retry" | "message";
+
 /** What a caller hands the outbox. */
-export type OutboxSubmit = Pick<Stored, "id" | "threadId" | "text" | "images" | "mode" | "fingerprint"> & { root?: string };
+export type OutboxSubmit = Pick<Stored, "id" | "threadId" | "text" | "images" | "mode" | "fingerprint"> & { root?: string; kind?: AgentKind };
 
 /** Where a send that may have gone is. "unknown": the daemon did not answer, so it is looked for again later and not sent. */
 export type Copy = "landed" | "queued" | "absent" | "unknown";
 
+/** A delivery's answer that the entry need not go: the proof, kept on the entry as its note. */
+export interface Obsolete { obsolete: string }
+
 export interface OutboxDeps {
   dir: string;
-  /** One delivery. Awaits `sending()` right before the daemon request that may land. Throws on failure. */
-  deliver(entry: Stored, sending: () => Promise<void>): Promise<void>;
+  /** One delivery. Awaits `sending()` right before the daemon request that may land. Throws on failure; answers `Obsolete` when it sent nothing on proof. */
+  deliver(entry: Stored, sending: () => Promise<void>): Promise<void | Obsolete>;
   /** Where a send that began at `since` is. */
   copy(entry: Stored, since: number): Promise<Copy>;
   /** Plain words when the error is final and the entry fails, null when it is tried again. */
@@ -126,7 +137,7 @@ export class Outbox {
 
   /** The thread's entries the page shows: queued, sending and failed, oldest first. */
   view(threadId: string): OutboxEntry[] {
-    return this.lane(threadId).filter(entry => entry.state !== "delivered").map(publicEntry);
+    return this.lane(threadId).filter(entry => entry.state !== "delivered" && entry.state !== "obsolete").map(publicEntry);
   }
 
   /** Resolves when every lane has nothing left to try now; tests use it. */
@@ -183,7 +194,11 @@ export class Outbox {
     let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 });
     const sending = async () => { current = this.update(current, { sentAt: this.now() }); await this.writes.get(current.id); };
     try {
-      await this.deps.deliver(current, sending);
+      const result = await this.deps.deliver(current, sending);
+      if (result) {
+        this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} obsolete, not sent: ${result.obsolete}`);
+        return this.finish(current, "obsolete", result.obsolete);
+      }
       return this.finish(current, "delivered");
     } catch (error) {
       const final = this.deps.final(error);
@@ -195,7 +210,7 @@ export class Outbox {
     }
   }
 
-  private finish(entry: Stored, state: "delivered" | "failed", error?: string): Promise<void> {
+  private finish(entry: Stored, state: "delivered" | "failed" | "obsolete", error?: string): Promise<void> {
     const { images: _images, sentAt: _sentAt, ...rest } = entry;
     const done: Stored = { ...rest, images: [], state, doneAt: this.now(), ...(error ? { error } : {}) };
     this.entries.set(done.id, done);

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AgentKind } from "./outbox.ts";
 
 /**
  * Kernel-free waits. A job that waits for a CI run or a time calls `board.wake(...)` (skills/board), which writes one file to
@@ -70,7 +71,7 @@ export interface WakeDeps {
    * after starting the tree `root` when the daemon does not find the session. The daemon finds a child only while its tree's worker runs
    * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped).
    */
-  deliver: (session: string, text: string, root?: string) => Promise<void>;
+  deliver: (session: string, text: string, root?: string, kind?: AgentKind) => Promise<void>;
   /**
    * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
@@ -125,7 +126,7 @@ export class Wakes {
       try {
         const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
         const root = wakes.find(({ wake }) => wake.root)?.wake.root;
-        await this.deps.deliver(session, text, root);
+        await this.deps.deliver(session, text, root, "wake");
         for (const { file } of wakes) await rm(file, { force: true });
         this.deps.log(`wakes: woke ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
         return true;

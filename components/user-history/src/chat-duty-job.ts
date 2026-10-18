@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { replaceableLine } from "./agent-outbox.ts";
 import { type AlertLine, type RuleJob, ruleText } from "./alert-bridge.ts";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -101,7 +102,8 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
         `job of the chat with \`${jobSteerCall(chat)}\`: the server delivers it, and restarts a job whose last turn failed. Write that message ` +
         "in a few plain sentences that name at most 2 step ids in a paragraph, and the other steps by a few words of their title: on 10-18 the " +
         "12:40 steer to a gaps job listed four step ids in one paragraph, which the job had to look up on the board.",
-      `${report ?? "Send the chat one short report when your work is done."} Send it with \`${reportCall(chat)}\`.`,
+      `${report ?? "Send the chat one short report when your work is done."} Send it with \`${checkInReportCall(chat)}\`. Its first line tells the ` +
+        "chat service that your report replaces an older check-in report still waiting for the chat, so a chat that was away reads only the newest.",
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
 }
@@ -198,6 +200,11 @@ const boardApplyCall = (chat: Pick<DutyChat, "id" | "board">): string =>
 /** The call a job the server starts uses to message a job of its chat, as Python: the server delivers it (`Chats.steerJob`). */
 const jobSteerCall = (chat: Pick<DutyChat, "id">): string =>
   `await bash("cd ${USER_HISTORY} && node --import tsx scripts/job-steer.ts ${chat.id} " + shlex.quote(job_name) + " " + shlex.quote(text))`;
+/** A check-in job's report call: the report opens with a replaceable key (src/agent-outbox.ts), since each check-in restates the chat's whole state. */
+const checkInReportCall = (chat: Pick<DutyChat, "name">): string =>
+  `await agent_message.send(${JSON.stringify(replaceableLine(CHECK_IN_REPORT_KEY) + "\n\n")} + report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+/** The replaceable key of a check-in job's report. */
+export const CHECK_IN_REPORT_KEY = "check-in report";
 /** The report call a job the server starts ends with. */
 const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
 

@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { AgentKind } from "./outbox.ts";
 import { zTime } from "./checkin-goals.ts";
 import type { JobFact } from "./checkin-steps.ts";
 
@@ -201,7 +202,7 @@ export function primeWorkers(workersDir: string): (root: string, session: string
 export interface BriefDeps {
   dir: string;
   /** Hands the session the text on disk; the outbox starts the tree `root` when the daemon does not find the session (wakes.ts). */
-  deliver: (session: string, text: string, root?: string) => Promise<void>;
+  deliver: (session: string, text: string, root?: string, kind?: AgentKind) => Promise<void>;
   /** The live worker of the tree `root` and whether it ran `session` (`primeWorkers`); undefined when none runs. */
   worker: (root: string, session: string) => Promise<TreeWorker | undefined>;
   /** Starts a root job registered under the chat `record.root` with the brief `restartText` makes (chat-duty-job.ts start); its session id. */
@@ -262,7 +263,7 @@ export async function briefTick(deps: BriefDeps): Promise<number> {
       continue;
     }
     try {
-      await deps.deliver(act.session, briefText(record, now), record.root);
+      await deps.deliver(act.session, briefText(record, now), record.root, "retry");
       await writeRecord(file, { ...record, sent: { at: now, worker: worker?.id ?? "" } });
       sent++;
       deps.log(`briefs: ${label} had no first prompt ${Math.round((now - record.at) / 60_000)} min after its spawn; sent its brief to ${act.session}`);

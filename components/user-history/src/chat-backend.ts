@@ -51,8 +51,9 @@ import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { sessionFileOf } from "./send-once.ts";
-import { AgentOutbox } from "./agent-outbox.ts";
+import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
 import { OwnerOutbox } from "./owner-outbox.ts";
+import type { AgentKind } from "./outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
@@ -263,6 +264,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
+    stopped: stopRecords(dataDir),
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
@@ -287,7 +289,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     startRoot: async root => {
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     } });
-  const agentMessage = { deliver: (session: string, text: string, root?: string) => agentOutbox.deliver(session, text, root) };
+  const agentMessage = { deliver: (session: string, text: string, root?: string, kind?: AgentKind) => agentOutbox.deliver(session, text, root, kind) };
   const stopWakes = scratch ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopBriefs = scratch ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {

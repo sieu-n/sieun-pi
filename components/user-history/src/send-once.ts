@@ -51,7 +51,12 @@ function lineTime(line: string): number {
  */
 export function landedAt(file: string, texts: readonly string[], since: number): Promise<number | null> {
   const wanted = new Set(texts.map(text => text.trim()));
-  return lineSince(file, since, line => { const found = agentMessage(line); return found && wanted.has(found.text.trim()) ? found.at : null; });
+  return messageAt(file, since, text => wanted.has(text.trim()));
+}
+
+/** When the newest agent message whose text `match` accepts landed in the session file at or after `since`, else null. */
+export function messageAt(file: string, since: number, match: (text: string) => boolean): Promise<number | null> {
+  return lineSince(file, since, line => { const found = agentMessage(line); return found && match(found.text) ? found.at : null; });
 }
 
 /** When a user message with `text` and `imageCount` images landed in the session file at or after `since`, else null (an owner send, src/owner-outbox.ts). */

@@ -5,8 +5,11 @@
  * the POST's requestId, so a resend from either side is the same message and goes to the daemon once.
  */
 
-/** queued: on the server's disk, waiting for the daemon. sending: a delivery is in flight. delivered: the daemon took it. failed: it cannot go (the note says why). */
-export type OutboxState = "queued" | "sending" | "delivered" | "failed";
+/**
+ * queued: on the server's disk, waiting for the daemon. sending: a delivery is in flight. delivered: the daemon took it. failed: it cannot go
+ * (the note says why). obsolete: an agent message proved needless before it went (src/agent-outbox.ts), kept with the proof and never sent.
+ */
+export type OutboxState = "queued" | "sending" | "delivered" | "failed" | "obsolete";
 
 export interface OutboxEntry {
   id: string;
@@ -18,7 +21,7 @@ export interface OutboxEntry {
   /** Epoch ms when the page made the send. */
   at: number;
   attempts: number;
-  /** Plain words for the inline note, only on "failed". */
+  /** Plain words for the inline note on "failed", and the proof on "obsolete". */
   error?: string;
 }
 
