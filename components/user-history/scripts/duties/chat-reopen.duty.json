@@ -1,0 +1,36 @@
+{
+  "name": "Chat reopen",
+  "ownerWords": "fix plan and duties based on the board skill and pursue completion of plans",
+  "goal": "A chat the owner archives comes back on his next message. Each day a fresh chat with an ordinary task is archived while idle and gets one follow-up, which it takes once and answers to the end, with chat_board and tell_owner still working, and it shows in the chat list and its Agents card again, with nobody stepping in. On 10-16 chat 01a14210 came back from an archive without chat_board and tell_owner, on 10-17 the first send after a reopen got a 502, and on 10-18 run-2's reopened chat stayed in the archived list.",
+  "metrics": [
+    {
+      "key": "followup_answered",
+      "label": "The follow-up after the archive landed once and got a finished reply (1 yes, 0 no)",
+      "op": ">=",
+      "target": 1,
+      "headline": true
+    },
+    {
+      "key": "tools_after_reopen",
+      "label": "The reopened chat kept its chat tools, and chat_board and tell_owner worked (1 yes, 0 no)",
+      "op": ">=",
+      "target": 1
+    },
+    {
+      "key": "chat_listed_after_reopen",
+      "label": "The reopened chat left the archived list and its Agents card answered (1 yes, 0 no)",
+      "op": ">=",
+      "target": 1
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/chat-reopen.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "The precheck read the last check. Run today's check first, in one cell, and wait for it: `r = await bash('cd $HOME/.local/share/sieun-pi-chat/current/components/user-history && node --import tsx scripts/clean-room/clean-room.ts reopen-check --dir $HOME/.prime/agent/clean-room/chat-reopen --cwd $HOME/src/sieun-pi')`. It opens a fresh chat with an ordinary task, archives it once idle, sends the one follow-up, judges the run and tears it down; on 10-18 run-3's two turns took 51 s and 34 s. The server measures this duty again when your turn ends, so a check still running then reads as a miss. Never message the test chat, rerun its send, tell it it is a test or touch any other chat. Judge on the verdict file the command prints, with its evidence folder next to it, not on the numbers above. Each missed reading gets one fix job: a live job that owns the cause (agent_observe.list_agents()) gets the failing criterion lines and the evidence path by message; else start one with await rlm.create_session(brief, name=..., cwd=\"/home/sieun/src/sieun-pi\") that lands a code fix with a test in the chat service or the agent runtime and releases it, and set it on the step. An open or void verdict, a failed setup or a cleanup line in the precheck is a miss of the check itself: fix its cause, never count it as a pass. Nothing goes outside (c37). All met: end with no message."
+}

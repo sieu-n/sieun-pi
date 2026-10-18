@@ -11,6 +11,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
+ *   node --import tsx scripts/clean-room/clean-room.ts reopen-check --dir <dir> --cwd <repo> [--window-min <n>]   (the Chat reopen duty's whole run)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts stall-jobs --run <dir> --until <ISO time> [--after-min <n>]   (checkin-push-control: aborts each chat's first job once)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-hooks --run <dir> --until <ISO time> --window-min <n>   (token-hook-resume: start it before setup)
@@ -35,7 +36,8 @@ import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { checkinJobSteer } from "./checkin-job-steer.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
-import { type ArchiveMark, chatEntries, chatToolsReopen } from "./chat-tools-reopen.ts";
+import { type ArchiveMark, chatEntries, chatToolsReopen, FOLLOW_UP } from "./chat-tools-reopen.ts";
+import { reopenFirstMessage } from "./reopen-first-message.ts";
 import { boxTools } from "./box-tools.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
@@ -56,7 +58,7 @@ import { wakeLive } from "./wake-live.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -342,6 +344,97 @@ async function archive(flags: Record<string, string>): Promise<void> {
   log(run, `archived chat ${state.chat.id} alone through the archive route (${mark.idle}); ${lines} session lines, board rev ${rev}`);
 }
 
+/** The Chat reopen duty's criteria, the file run-3 passed on by hand on 10-18. */
+const REOPEN_CRITERIA = join(homedir(), ".prime/agent/clean-room/reopen-first-message/criteria.md");
+/**
+ * The window of one reopen check. On 10-18 run-3's first reply took 51 s and its follow-up reply 34 s, but on 10-15 a duty's first turn waited
+ * 1,604 s in the turn queue (pi-pool.log, src/chat-duty-job.ts), and this run has two turns that can wait like that.
+ */
+const REOPEN_WINDOW_MIN = 60;
+
+/**
+ * The Chat reopen duty's whole check (scripts/duties/chat-reopen.duty.json): a fresh chat in a new run folder under --dir gets the
+ * reopen-first-message task, is archived through the route once it is idle, gets the one follow-up, and is judged when its verdict settles or
+ * the window ends. Evaluate then tears the run down. The setup, archive, send and verdict evidence and a cleanup note stay in
+ * `<run>.evidence/`, next to the verdict file. Nothing here resends the follow-up or touches the chat between those steps.
+ */
+async function reopenCheck(flags: Record<string, string>): Promise<void> {
+  const dir = need(flags, "dir");
+  const started = new Date();
+  const local = started.toLocaleString("sv-SE").slice(5, 16);
+  const run = join(dir, started.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-"));
+  const until = started.getTime() + Number(flags["window-min"] ?? REOPEN_WINDOW_MIN) * 60_000;
+  try { await reopenRun(flags, run, until, local); }
+  catch (error) {
+    // A check that could not run, such as a setup with no chat service or no account, is a failed check, never a pass the precheck could read.
+    const text = error instanceof Error ? error.message : String(error);
+    if (!existsSync(dirname(run)) || !readdirSync(dirname(run)).some(name => name.startsWith(`${basename(run)}.`) && name.endsWith(".md"))) {
+      mkdirSync(dirname(run), { recursive: true });
+      writeFileSync(`${run}.fail.md`, [`# ${basename(run)}: fail`, "", `The reopen check could not run: ${text}`, "",
+        "Readings: followup_answered 0, tools_after_reopen 0, chat_listed_after_reopen 0", ""].join("\n"));
+    }
+    if (existsSync(join(run, "run.json"))) await teardown({ run }).catch(() => {});
+    throw error;
+  }
+}
+
+async function reopenRun(flags: Record<string, string>, run: string, until: number, local: string): Promise<void> {
+  await setup({ scenario: "reopen-first-message", criteria: flags.criteria ?? REOPEN_CRITERIA, cwd: need(flags, "cwd"),
+    name: flags.name ?? `python refs per folder ${local}`, "every-min": "120", run });
+  writeJson(join(run, "run.json"), { ...readJson<RunState>(join(run, "run.json")), until });
+  const srv = await server();
+  const offset = { at: 0 };
+  let wake = (): void => {};
+  const pause = (ms: number) => new Promise<void>(done => { const timer = setTimeout(done, Math.max(0, Math.min(ms, until - Date.now()))); wake = () => { clearTimeout(timer); done(); }; });
+  let done = false;
+  void (async () => {
+    while (!done && Date.now() < until) {
+      await (async () => collectOnce(run, readJson<RunState>(join(run, "run.json")), srv, offset))()
+        .catch(error => { if (!done) log(run, `collect: ${error instanceof Error ? error.message : String(error)}`); });
+      if (!done) await new Promise<void>(next => { setTimeout(next, 60_000).unref(); });
+    }
+  })();
+  let archived = false;
+  while (Date.now() < until) {
+    try { await archive({ run }); archived = true; break; }
+    catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      if (!text.startsWith("not idle")) { log(run, `archive failed: ${text}`); break; }
+    }
+    await pause(15_000);
+  }
+  if (archived) await say({ run, message: FOLLOW_UP }).catch(() => {});
+  while (archived && Date.now() < until) {
+    const state = readJson<RunState>(join(run, "run.json"));
+    await collectOnce(run, state, srv, offset).catch(() => {});
+    if ((await reopenFirstMessage.evaluate(run, state)).verdict !== "open") break;
+    await pause(30_000);
+  }
+  done = true;
+  wake();
+  const evidence = `${run}.evidence`;
+  mkdirSync(evidence, { recursive: true });
+  const state = readJson<RunState>(join(run, "run.json"));
+  writeJson(join(run, "run.json"), { ...state, until: Math.min(until, Date.now()) });
+  for (const file of ["run.json", "setup.md", "criteria.md", "archive.json", "check-in-setting.json", "service.log", "clean-room.log"]) {
+    if (existsSync(join(run, file))) copyFileSync(join(run, file), join(evidence, file));
+  }
+  // Evaluate and teardown log to the run's clean-room.log and stdout, and teardown deletes the run folder, so stdout goes to the copy meanwhile.
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: never[]) => { appendFileSync(join(evidence, "clean-room.log"), chunk); return write(chunk, ...rest); }) as typeof process.stdout.write;
+  let teardownError = "";
+  await evaluate({ run }).catch((error: unknown) => { teardownError = error instanceof Error ? error.message : String(error); })
+    .finally(() => { process.stdout.write = write; });
+  const verdict = readdirSync(dirname(run)).find(name => name.startsWith(`${basename(run)}.`) && name.endsWith(".md"));
+  const archivedNow = existsSync(join(DATA, "archived-chats.json")) && (readJson<{ ids?: string[] }>(join(DATA, "archived-chats.json")).ids ?? []).includes(state.chat.id);
+  const todos = existsSync(join(DATA, "boards", `${state.chat.id}.json`)) ? readJson<ChatBoard>(join(DATA, "boards", `${state.chat.id}.json`)).todos.length : 0;
+  writeFileSync(join(evidence, "cleanup.md"), [`# Cleanup of ${basename(run)}`, "",
+    `- The run folder ${existsSync(run) ? "is still there" : "is deleted"} and the verdict file is ${verdict ?? "missing"}.`,
+    `- The chat ${state.chat.id} is ${archivedNow ? "archived" : "not archived"} and has ${todos} todos.`,
+    ...teardownError ? [`- Teardown failed: ${teardownError}`] : [], ""].join("\n"));
+  process.stdout.write(`${verdict ? join(dirname(run), verdict) : "no verdict file"}; evidence in ${evidence}\n`);
+}
+
 async function evaluate(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   if (!existsSync(join(run, "run.json"))) { process.stdout.write(`${run} is already torn down; its verdict file sits next to where it was\n`); return; }
@@ -502,6 +595,7 @@ async function main(): Promise<void> {
   if (command === "collect") return collect(flags);
   if (command === "say") return say(flags);
   if (command === "archive") return archive(flags);
+  if (command === "reopen-check") return reopenCheck(flags);
   if (command === "kill-worker") {
     const run = need(flags, "run");
     const kill = await killWorker(run, Date.parse(need(flags, "until")), flags.name);
