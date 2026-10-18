@@ -316,7 +316,6 @@
     <div class="foot">
       <button type="button" class="foot-button" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" size={15} /><span>Settings</span></button>
       <button type="button" class="icon-button small" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="table" /></button>
-      <button type="button" class="icon-button small" aria-label="Bookmarks" use:tooltip={"Bookmarks"} onclick={() => { ui.bookmarksOpen = true; }}><Icon name="bookmark" /></button>
       <InterruptedRuns />
     </div>
   </div>

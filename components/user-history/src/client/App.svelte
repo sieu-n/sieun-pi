@@ -12,8 +12,6 @@
   import NewChat from "./NewChat.svelte";
   import Settings from "./Settings.svelte";
   import AgentsDialog from "./AgentsDialog.svelte";
-  import BookmarksDialog from "./BookmarksDialog.svelte";
-  import { bookmarks } from "./bookmarks.svelte.ts";
   import Reader from "./Reader.svelte";
   import PromptView from "./PromptView.svelte";
   import ReportCard from "./ReportCard.svelte";
@@ -25,7 +23,6 @@
 
   onMount(() => {
     store.start();
-    void bookmarks.load();
     const unsync = syncSpinners();
     const observer = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width ?? window.innerWidth;
@@ -129,9 +126,6 @@
     {/if}
     {#if ui.agentsOpen}
       <AgentsDialog onclose={() => { ui.agentsOpen = false; }} />
-    {/if}
-    {#if ui.bookmarksOpen}
-      <BookmarksDialog onclose={() => { ui.bookmarksOpen = false; }} />
     {/if}
     {#if store.reader}
       <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />

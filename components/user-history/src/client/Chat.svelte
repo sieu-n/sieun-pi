@@ -34,7 +34,6 @@
   import { longpress } from "./ui/longpress.ts";
   import { labels } from "./labels.ts";
   import { copyPermalink, revealLine, revealMessage } from "./permalink.ts";
-  import { bookmarks } from "./bookmarks.svelte.ts";
 
   /**
    * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board in a side
@@ -288,7 +287,7 @@
     shownReply.set(item.id, next % replies.length);
     goToLine(replies[next % replies.length]!);
   }
-  /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply, Copy link and Bookmark. */
+  /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply and Copy link. */
   let pressed = $state<{ anchor: HTMLElement; at: number; text: string } | null>(null);
   const press = (at: number, text: string) => (anchor: HTMLElement) => { pressed = { anchor, at, text }; };
   const closeMenu = () => { pressed = null; };
@@ -302,9 +301,7 @@
 </script>
 
 {#snippet actions(at: number, text: string)}
-  {@const saved = bookmarks.has(id, at)}
   <span class="actions">
-    <button type="button" class="icon-button small bookmark" class:saved aria-pressed={saved} aria-label={saved ? "Remove bookmark" : "Bookmark this message"} use:tooltip={saved ? "Remove bookmark" : "Bookmark"} onclick={() => void bookmarks.toggle(id, at, text)}><Icon name="bookmark" size={13} filled={saved} /></button>
     <button type="button" class="icon-button small" aria-label="Reply to this message" use:tooltip={"Reply"} onclick={() => reply(text)}><Icon name="reply" size={13} /></button>
     <button type="button" class="icon-button small" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
   </span>
@@ -490,7 +487,6 @@
     <Floating {anchor} width={180} role="menu" label="Message" onclose={closeMenu}>
       <button type="button" class="menu-item" role="menuitem" data-autofocus onclick={() => { closeMenu(); reply(text); }}><Icon name="reply" size={14} />Reply</button>
       <button type="button" class="menu-item" role="menuitem" onclick={() => { closeMenu(); void copyLink(at); }}><Icon name="link" size={14} />Copy link</button>
-      <button type="button" class="menu-item" role="menuitem" onclick={() => { closeMenu(); void bookmarks.toggle(id, at, text); }}><Icon name="bookmark" size={14} />{bookmarks.has(id, at) ? "Remove bookmark" : "Bookmark"}</button>
     </Floating>
   {/if}
 </div>
@@ -535,13 +531,11 @@
   .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }
   .line.agent { justify-content: flex-start; }
-  /* Bookmark, Reply and Copy link beside the bubble, shown on hover (a long press opens the same three as a menu on touch); the owner's side
-     mirrors the order. A saved message keeps its filled bookmark in view next to the bubble. */
+  /* Reply and Copy link beside the bubble, shown on hover (a long press opens the same two as a menu on touch); the owner's side mirrors the order. */
   .actions { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-bottom: 4px; color: var(--text-faint); }
   .actions > button { opacity: 0; transition: opacity 0.15s; }
   .line.user .actions { flex-direction: row-reverse; }
-  .line:hover .actions > button, .actions:focus-within > button, .actions > .bookmark.saved { opacity: 1; }
-  .bookmark.saved { color: var(--accent-bold); }
+  .line:hover .actions > button, .actions:focus-within > button { opacity: 1; }
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: calc(var(--chat-text) + 0.5px); line-height: 1.45; }

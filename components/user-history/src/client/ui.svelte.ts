@@ -49,7 +49,6 @@ class Ui {
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
   sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
-  bookmarksOpen = $state(false);
   /** Optional Agents view columns the person turned on or off; Status and Title always show. */
   agentsColumns = $state<Record<string, boolean>>(storedColumns());
   setAgentsColumn(key: string, on: boolean): void { this.agentsColumns = { ...this.agentsColumns, [key]: on }; store("chat.agentsColumns", JSON.stringify(this.agentsColumns)); }

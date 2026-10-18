@@ -1,7 +1,6 @@
 import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
-import type { Bookmark, BookmarkAction } from "../shared/bookmarks.ts";
 import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import { readSummary } from "./usage.ts";
@@ -99,8 +98,6 @@ export const api = {
     const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
     return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);
   },
-  bookmarks: () => get<{ bookmarks: Bookmark[] }>("api/bookmarks").then(body => body.bookmarks),
-  bookmark: (action: BookmarkAction) => post<{ bookmarks: Bookmark[] }>("api/bookmarks", action).then(body => body.bookmarks),
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     return subscribeFeed({ feed: "login" }, (event, data) => { if (event === "login") onLogin(data as AccountLogin | null); });

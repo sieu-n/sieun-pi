@@ -11,7 +11,6 @@
   import Icon from "./Icon.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { copyPermalink } from "./permalink.ts";
-  import { bookmarks } from "./bookmarks.svelte.ts";
 
   /**
    * One job of a chat, over the side panel: what it is, what it is doing, every message it sent the chat as a short line (newest first,
@@ -70,11 +69,6 @@
 
 <svelte:window onkeydown={onKey} />
 
-{#snippet bookmarkButton(report: JobReport)}
-  {@const saved = bookmarks.has(chatId, report.at)}
-  <button type="button" class="icon-button small link-button" class:saved aria-pressed={saved} aria-label={saved ? "Remove bookmark" : "Bookmark this message"} use:tooltip={saved ? "Remove bookmark" : "Bookmark"}
-    onclick={() => void bookmarks.toggle(chatId, report.at, report.body)}><Icon name="bookmark" size={13} filled={saved} /></button>
-{/snippet}
 
 <aside class="drawer fade-in" aria-label="Job {name}">
   <header class="drawer-head">
@@ -110,7 +104,7 @@
       <h3>Messages to the chat{#if reports.length}<span class="count">{reports.length}</span>{/if}</h3>
       {#each reports as report (report.id)}
         <article class="report">
-          <div class="stamp">{clockTime(report.at)}{@render bookmarkButton(report)}<button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(report)}><Icon name="link" size={13} /></button></div>
+          <div class="stamp">{clockTime(report.at)}<button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(report)}><Icon name="link" size={13} /></button></div>
           <button type="button" class="preview" title="Read the full message" onclick={() => readMessage(report)}>{preview(report)}</button>
         </article>
       {/each}
@@ -157,8 +151,7 @@
   .report { padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
   .stamp { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .link-button { color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
-  .report:hover .link-button, .link-button:focus-visible, .link-button.saved { opacity: 1; }
-  .link-button.saved { color: var(--accent-bold); }
+  .report:hover .link-button, .link-button:focus-visible { opacity: 1; }
   .preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; width: 100%; text-align: left; font-size: 13px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; border-radius: 4px; }
   .preview:hover { color: var(--text); }
   .none { margin: 0; font-size: 12.5px; color: var(--text-faint); }
