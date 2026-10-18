@@ -10,9 +10,14 @@ import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
 import { TICK_MS } from "./wakes.ts";
 
 export const ESCALATE_MS = 30 * 60_000;
+/**
+ * How long a step the chat closed may sit closed while its rule still fires before reconcile reopens it. ops guy set 24 h on 10-18, after prod
+ * backup alerts fired from 10-16 for over 3 days with no open step anywhere.
+ */
+export const REOPEN_MS = 24 * 3_600_000;
 export const OWNERS_PATH = "ops/alert-relay/owners.json";
 export const ALERT_GOAL = "Firing prod alerts";
-export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts";
+export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?active=true";
 const RESOLVED = "The alert resolved at";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
@@ -23,7 +28,9 @@ export interface Instance { startsAt: string; labels: Record<string, string>; re
  * group resolves when every instance has resolved. `wokeAt` and `firstWokeAt` both hold the time the step was placed.
  */
 export interface Tracked { chat: string; step: string | null; rule: string; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number;
-  resolvedAt?: number; instances: Record<string, Instance> }
+  resolvedAt?: number; instances: Record<string, Instance>;
+  /** When reconcile first saw the rule's step closed (done or dropped) while the rule still fired. */
+  closedAt?: number }
 export interface BridgeState { v: 2; rules: Record<string, Tracked> }
 export interface StepView { text: string; open: boolean; owned: boolean }
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
@@ -32,8 +39,14 @@ export type Router = (alert: FiringAlert) => string;
 export interface Resolve { key: string; chat: string; step: string | null; at: string }
 export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number }
 export interface Merge { step: string | null; into: string }
-/** One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away. */
-export interface ChatChange { chat: string; rules: Record<string, Tracked>; fresh: Map<string, FiringAlert>; touched: Set<string>; merged: Merge[] }
+/**
+ * One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away.
+ * Reconcile adds `found`, the fresh rules it placed because no open step held them, and `reopen`, the rules whose closed step it reopens.
+ */
+export interface ChatChange { chat: string; rules: Record<string, Tracked>; fresh: Map<string, FiringAlert>; touched: Set<string>; merged: Merge[];
+  found?: Map<string, string>; reopen?: Set<string> }
+/** What reconcile sees of an open rule's step: the owning chat has no board, the step is gone or never placed, or the step is open or closed. */
+export type StepLook = "no board" | "missing" | "open" | "closed";
 
 export const emptyState = (): BridgeState => ({ v: 2, rules: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
@@ -197,15 +210,83 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     }
     touched.add(first);
   }
-  const chats = new Set([...Object.values(state.rules), ...Object.values(rules)].map(rule => rule.chat));
-  const changes = [...chats].flatMap((chat): ChatChange[] => {
-    const before = Object.fromEntries(Object.entries(state.rules).filter(([, rule]) => rule.chat === chat));
-    const after = Object.fromEntries(Object.entries(rules).filter(([, rule]) => rule.chat === chat));
-    if (JSON.stringify(before) === JSON.stringify(after) && !merged.has(chat)) return [];
-    return [{ chat, rules: after, fresh: new Map([...fresh].filter(([key]) => key in after)), touched: new Set([...touched].filter(key => key in after)),
-      merged: merged.get(chat) ?? [] }];
+  return { state: { v: 2, rules }, changes: changesOf(state.rules, rules, { fresh, touched, merged }) };
+}
+
+/** One change per chat whose rules moved between `before` and `after`, each with its part of the tick's marks. */
+function changesOf(before: Record<string, Tracked>, after: Record<string, Tracked>, marks: { fresh: Map<string, FiringAlert>; touched: Set<string>;
+  merged?: Map<string, Merge[]>; found?: Map<string, string>; reopen?: Set<string> }): ChatChange[] {
+  const chats = new Set([...Object.values(before), ...Object.values(after)].map(rule => rule.chat));
+  return [...chats].flatMap((chat): ChatChange[] => {
+    const was = Object.fromEntries(Object.entries(before).filter(([, rule]) => rule.chat === chat));
+    const now = Object.fromEntries(Object.entries(after).filter(([, rule]) => rule.chat === chat));
+    if (JSON.stringify(was) === JSON.stringify(now) && !marks.merged?.has(chat)) return [];
+    const mine = (key: string) => key in now;
+    return [{ chat, rules: now, fresh: new Map([...marks.fresh].filter(([key]) => mine(key))), touched: new Set([...marks.touched].filter(mine)),
+      merged: marks.merged?.get(chat) ?? [], found: new Map([...marks.found ?? []].filter(([key]) => mine(key))), reopen: new Set([...marks.reopen ?? []].filter(mine)) }];
   });
-  return { state: { v: 2, rules }, changes };
+}
+
+/**
+ * The state after checking every open rule against its step, and one change per chat that needs board ops. advance only places a step when a
+ * rule first fires, so a rule whose step was never placed stayed silent: from 10-16 05:10Z (64726c5a0) a boardless owner's firing was only
+ * recorded, and prod Postgres, ClickHouse and Redis backup alerts routed to metal box owner, a root session with no board, fired for over 3 days
+ * with no step anywhere.
+ *
+ * 1. A rule whose owner has no board moves to ops guy's board, the fallback owner in owners.json.
+ * 2. A rule whose step was never placed or is gone from the board gets a step, noted as found by reconcile.
+ * 3. A rule whose step is closed records when reconcile first saw it closed, and the step reopens once it has been closed REOPEN_MS and the rule
+ *    still fires.
+ * 4. A placed or reopened step's 30 min escalation clock starts again from now.
+ */
+export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, look: (key: string, rule: Tracked) => StepLook, now: number,
+  names: (session: string) => string = chatName, fallback = OPS_ROUTE.session): { state: BridgeState; changes: ChatChange[] } {
+  const rules: Record<string, Tracked> = structuredClone(state.rules);
+  const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
+  const fresh = new Map<string, FiringAlert>();
+  const touched = new Set<string>();
+  const found = new Map<string, string>();
+  const reopen = new Set<string>();
+  const restart = (rule: Tracked): Tracked => {
+    const { escalatedAt: _escalated, closedAt: _closed, ...rest } = rule;
+    return { ...rest, wokeAt: now, firstWokeAt: now };
+  };
+  const firstFiring = (rule: Tracked): FiringAlert | undefined =>
+    Object.keys(rule.instances).map(id => firing.get(id)).filter(alert => alert !== undefined).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
+  for (const [key, rule] of Object.entries(state.rules)) {
+    if (isResolved(rule)) continue;
+    const alert = firstFiring(rule);
+    if (!alert) continue;
+    const seen = look(key, rule);
+    if (seen === "no board" && rule.chat !== fallback) {
+      delete rules[key];
+      const into = ruleKey(fallback, rule.rule);
+      const there = rules[into];
+      if (there && !isResolved(there)) {
+        Object.assign(there.instances, rule.instances);
+        if (rule.startsAt < there.startsAt) there.startsAt = rule.startsAt;
+        touched.add(into);
+        continue;
+      }
+      rules[into] = { ...restart(rule), chat: fallback, step: null };
+      fresh.set(into, alert);
+      found.set(into, `Its owner ${names(rule.chat)} (${rule.chat}) has no board, so the step is on this one.`);
+    } else if (seen === "missing") {
+      rules[key] = restart(rule);
+      fresh.set(key, alert);
+      found.set(key, "");
+    } else if (seen === "closed") {
+      if (rule.closedAt === undefined) rules[key] = { ...rule, closedAt: now };
+      else if (now - rule.closedAt >= REOPEN_MS) {
+        rules[key] = restart(rule);
+        reopen.add(key);
+      }
+    } else if (seen === "open" && rule.closedAt !== undefined) {
+      const { closedAt: _closed, ...rest } = rule;
+      rules[key] = rest;
+    }
+  }
+  return { state: { v: 2, rules }, changes: changesOf(state.rules, rules, { fresh, touched, found, reopen }) };
 }
 
 /** The state with `chat`'s rules replaced by `rules`, so a chat whose board write failed keeps its old entries for the next tick. */
@@ -294,6 +375,10 @@ export function stepNote(alert: FiringAlert, rule: Pick<Tracked, "rule" | "start
   return ruleNote(head, rule);
 }
 
+const foundLine = (rule: Pick<Tracked, "startsAt">, stamp: string, extra: string): string =>
+  `Firing since ${rule.startsAt}, found by reconcile at ${stamp} with no open step on this board.${extra ? ` ${extra}` : ""}`;
+const withLine = (note: string, line: string): string => !line || note.includes(line) ? note : `${note}\n${line}`;
+
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
 
 function markedStep(plan: readonly PlanItem[], rule: Pick<Tracked, "rule" | "startsAt">): PlanItem | undefined {
@@ -318,25 +403,36 @@ function alertGoal(plan: readonly PlanItem[], ops: BoardOp[], ids: (kind: "p") =
  * The board ops for one chat's change: a step for each new rule (or the step a crash left with its mark), the label block and resolve line
  * rewritten on each rule whose sets moved, and a pointer on each step merged into another. Returns each rule's step id.
  */
-export function changeOps(board: ChatBoard, change: ChatChange): { ops: BoardOp[]; steps: Map<string, string> } {
+export function changeOps(board: ChatBoard, change: ChatChange, now = Date.now()): { ops: BoardOp[]; steps: Map<string, string> } {
   const ids = nextIds(board);
   const ops: BoardOp[] = [];
   const steps = new Map<string, string>();
   const notes = new Map<string, string>();
   const noteOf = (id: string) => notes.get(id) ?? findItem(board.plan, id)?.item.note ?? "";
   let goal: string | undefined;
+  const stamp = new Date(now).toISOString();
   for (const [key, alert] of change.fresh) {
     const rule = change.rules[key]!;
-    const found = markedStep(board.plan, rule);
-    if (found) {
-      steps.set(key, found.id);
-      notes.set(found.id, ruleNote(noteOf(found.id), rule));
+    const extra = change.found?.get(key);
+    const line = extra === undefined ? "" : foundLine(rule, stamp, extra);
+    const marked = markedStep(board.plan, rule);
+    if (marked) {
+      steps.set(key, marked.id);
+      notes.set(marked.id, withLine(ruleNote(noteOf(marked.id), rule), line));
+      if (line && !OPEN.has(marked.status)) ops.push({ op: "plan_update", id: marked.id, status: "todo" });
       continue;
     }
     goal ??= alertGoal(board.plan, ops, ids);
     const id = ids("p");
-    ops.push({ op: "plan_add", parent: goal, text: stepTitle(alert) }, { op: "plan_update", id, note: stepNote(alert, rule) });
+    ops.push({ op: "plan_add", parent: goal, text: stepTitle(alert) }, { op: "plan_update", id, note: withLine(stepNote(alert, rule), line) });
     steps.set(key, id);
+  }
+  for (const key of change.reopen ?? []) {
+    const rule = change.rules[key]!;
+    const step = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
+    if (!step) continue;
+    ops.push({ op: "plan_update", id: step.id, status: "todo" });
+    notes.set(step.id, withLine(noteOf(step.id), `Reopened by reconcile at ${stamp}: this step was closed for over ${REOPEN_MS / 3_600_000} h and the rule still fires, firing since ${rule.startsAt}.`));
   }
   for (const key of change.touched) {
     const step = change.rules[key]!.step;
@@ -386,18 +482,17 @@ export class AlertBridge {
   async tick(): Promise<void> {
     const alerts = await this.deps.alerts();
     if (!alerts) return;
-    const route = routerFor(await this.ownerMap());
+    const map = await this.ownerMap();
+    const route = routerFor(map);
+    const names = new Map(Object.entries(map?.owners ?? {}).map(([name, session]) => [session, name]));
     const now = this.now();
-    let state = await this.read();
-    for (const change of advance(alerts, state, route, now).changes) {
-      try {
-        state = withChat(state, change.chat, await this.place(change));
-        await this.write(state);
-      } catch (error) {
-        state = await this.read().catch(() => state);
-        this.deps.log(`alerts: steps for ${change.chat.slice(0, 8)}: ${message(error)}; tried again next tick`);
-      }
-    }
+    const before = await this.read();
+    let state = await this.apply(before, advance(alerts, before, route, now).changes, now);
+    const checked = reconcile(alerts, state, await this.looks(state), now, session => names.get(session) ?? chatName(session));
+    const found = checked.changes.flatMap(change => [...change.found ?? []].map(([key]) => `${key} (${change.rules[key]!.alertname}, firing since ${change.rules[key]!.startsAt})`));
+    const reopened = checked.changes.flatMap(change => [...change.reopen ?? []]);
+    if (found.length || reopened.length) this.deps.log(`alerts: reconcile found ${found.length} firing rules with no open step: ${found.join("; ") || "none"}; reopened ${reopened.join(", ") || "none"}`);
+    state = await this.apply(state, checked.changes, now);
     const steps = await this.steps(state);
     const escalate = dueEscalations(state, steps, now);
     if (!escalate.length) return;
@@ -415,17 +510,48 @@ export class AlertBridge {
     } catch (error) { this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`); }
   }
 
-  /** Writes one chat's change on its board and returns the chat's rules with their step ids. A chat with no board gets nothing; its rules are only recorded. */
-  private async place(change: ChatChange): Promise<Record<string, Tracked>> {
+  /** Places each chat's change and writes the state after each one, so a chat whose board write fails keeps its old entries for the next tick. */
+  private async apply(state: BridgeState, changes: readonly ChatChange[], now: number): Promise<BridgeState> {
+    for (const change of changes) {
+      try {
+        state = withChat(state, change.chat, await this.place(change, now));
+        await this.write(state);
+      } catch (error) {
+        state = await this.read().catch(() => state);
+        this.deps.log(`alerts: steps for ${change.chat.slice(0, 8)}: ${message(error)}; tried again next tick`);
+      }
+    }
+    return state;
+  }
+
+  /** What reconcile sees of each open rule's step on its chat's board. */
+  private async looks(state: BridgeState): Promise<(key: string, rule: Tracked) => StepLook> {
+    const boarded = new Map<string, boolean>();
+    const boards = new Map<string, ChatBoard | null>();
+    for (const rule of Object.values(state.rules)) {
+      if (isResolved(rule) || boarded.has(rule.chat)) continue;
+      boarded.set(rule.chat, await this.deps.hasBoard?.(rule.chat) ?? true);
+      if (boarded.get(rule.chat)) boards.set(rule.chat, await this.deps.boards.read(rule.chat));
+    }
+    return (_key, rule) => {
+      if (!boarded.get(rule.chat)) return "no board";
+      const item = rule.step === null ? undefined : findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
+      return !item ? "missing" : OPEN.has(item.status) ? "open" : "closed";
+    };
+  }
+
+  /** Writes one chat's change on its board and returns the chat's rules with their step ids. A chat with no board gets nothing here; reconcile moves its rules to ops guy's board. */
+  private async place(change: ChatChange, now: number): Promise<Record<string, Tracked>> {
     const rules = change.rules;
     if (!(await this.deps.hasBoard?.(change.chat) ?? true)) {
-      if (change.fresh.size) this.deps.log(`alerts: ${change.chat.slice(0, 8)} has no board, so ${change.fresh.size} new firing rules are only recorded`);
+      if (change.fresh.size) this.deps.log(`alerts: ${change.chat.slice(0, 8)} has no board, so reconcile moves ${change.fresh.size} new firing rules to ops guy's board`);
       return rules;
     }
+    if (!change.fresh.size && !change.touched.size && !change.merged.length && !change.reopen?.size) return rules;
     let steps = new Map<string, string>();
     let count = 0;
     await this.deps.boards.apply(change.chat, board => {
-      const plan = changeOps(board, change);
+      const plan = changeOps(board, change, now);
       steps = plan.steps;
       count = plan.ops.length;
       return plan.ops;
@@ -509,11 +635,13 @@ export async function readOwnersFor(configFile: string, home: string): Promise<O
 export function startAlertBridge(deps: AlertBridgeDeps, everyMs = TICK_MS): () => void {
   const bridge = new AlertBridge(deps);
   let running = false;
-  const timer = setInterval(() => {
+  const run = () => {
     if (running) return;
     running = true;
     void bridge.tick().catch(error => deps.log(`alerts: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
-  }, everyMs);
+  };
+  const timer = setInterval(run, everyMs);
+  run();
   timer.unref();
   return () => clearInterval(timer);
 }
