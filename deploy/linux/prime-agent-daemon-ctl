@@ -2,24 +2,59 @@
 """Start and update the Prime Agent daemon for prime-agent-daemon.service.
 
 start   Adopt the supervisor that answers on the socket, or start one, and write its PID to the PIDFile.
-update  Run `prime-agent update` inside the unit, then do what start does for the successor.
+update  Run `prime-agent update $PRIME_UPDATE_ARGS` inside the unit, aimed at the socket, then do what start does
+        for the successor.
 
 The unit is Type=forking with PIDFile=, and systemd reads the PIDFile after ExecStart and after a
 successful ExecReload, so MainPID names the supervisor that owns the socket. Prime's update restart
 coordinator starts the successor supervisor itself, and session workers start a replacement when the
 supervisor goes away, so the supervisor is often not the process the unit started.
 
-usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile> [update args...]
+Every prime-agent process this script starts targets the socket argument and nothing else. `prime-agent update`
+picks its daemon from PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET, then $TMPDIR/prime-agent-<uid>/daemon.sock
+(the public command refuses --daemon-socket), and Prime keeps its coordinator registry under
+$TMPDIR/prime-agent-<uid>. So the script sets TMPDIR to the directory above the socket's prime-agent-<uid>
+directory, drops the inherited PRIME_AGENT_INTERNAL_* worker variables and PRIME_AGENT_INTERACTIVE_SELF_UPDATE,
+which would make `prime-agent update` skip the daemon restart, and sets PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET
+to the socket for the update only. The daemon it starts gets --daemon-socket instead.
+
+PRIME_UPDATE_ARGS takes --force and --rollback. --force answers Prime's busy-session confirmation, which refuses
+without a TTY; it does not override a prepare refusal, where the running daemon declines the restart because a
+worker is failed, disconnected or not ready.
+
+usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile>
 """
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 POLL_SECONDS = 0.1
+UPDATE_ARGS = ("--force", "--rollback")
+KEEP_INTERNAL = ("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR",)
+DROP = ("PRIME_AGENT_INTERACTIVE_SELF_UPDATE", "PRIME_UPDATE_ARGS")
+
+# Exit codes for update, one per outcome, so prime-install.sh and the journal tell them apart.
+OK = 0
+FAILED = 1
+USAGE = 2
+BUSY_REFUSED = 3
+PREPARE_REFUSED = 4
+RESTART_FAILED = 5
+
+# Native deadlines in prime-agent 0.9.8-daemon-fix.1-mem.2 that bound one update restart coordinator.
+# Fixed steps: list 30 s, prepare_update_restart 120 s, predecessor stop 10 s, startup fence 60 s,
+# daemon launch 2 x 30 s, successor hello 60 s, restore connect 10 s, registry lock 5 s.
+# Each restored session: create 120 s, update note 30 s, next turn 30 s, actions 30 s, resume prompt 120 s,
+# resume queue 30 s. Prime has no total deadline, so the unit sets TimeoutStartSec=infinity and this
+# budget is a soft target that the wait loop reports once when a coordinator runs past it.
+COORDINATOR_FIXED_SECONDS = 355
+COORDINATOR_PER_SESSION_SECONDS = 360
 
 
 def alive(pid):
@@ -28,6 +63,13 @@ def alive(pid):
     except (OSError, IndexError):
         return False
     return state not in ("Z", "X")
+
+
+def target_env(sock, **extra):
+    """The environment for every prime-agent this script starts, pinned to the socket argument."""
+    env = {k: v for k, v in os.environ.items() if not (k.startswith("PRIME_AGENT_INTERNAL_") and k not in KEEP_INTERNAL) and k not in DROP}
+    env["TMPDIR"] = str(Path(sock).parent.parent)
+    return {**env, **extra}
 
 
 def supervisor_pid(sock):
@@ -57,8 +99,8 @@ def supervisor_pid(sock):
     return pid if alive(pid) else None
 
 
-def update_restart_running(sock):
-    """True while a Prime update restart coordinator for this socket is alive; it starts the successor itself."""
+def update_restart_coordinator(sock):
+    """The registry record of a live Prime update restart coordinator for this socket, or None; it starts the successor itself."""
     registry = Path(sock).parent / "update-restart-coordinators"
     for path in registry.glob("*.json"):
         try:
@@ -69,8 +111,23 @@ def update_restart_running(sock):
             continue
         pid = record.get("pid")
         if isinstance(pid, int) and pid > 0 and alive(pid):
-            return True
-    return False
+            return record
+    return None
+
+
+def coordinator_age(record):
+    try:
+        return time.time() - datetime.fromisoformat(record["createdAt"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def coordinator_budget(record):
+    try:
+        total = json.loads(Path(record["statusPath"]).read_text())["counts"]["total"]
+    except (OSError, ValueError, KeyError, TypeError):
+        total = 0
+    return COORDINATOR_FIXED_SECONDS + COORDINATOR_PER_SESSION_SECONDS * (total if isinstance(total, int) else 0)
 
 
 def cgroup(pid):
@@ -88,6 +145,7 @@ def write_pidfile(pidfile, pid):
 
 def start(prime_agent, sock, pidfile):
     child = None
+    reported = False
     while True:
         pid = supervisor_pid(sock)
         if pid:
@@ -98,30 +156,71 @@ def start(prime_agent, sock, pidfile):
             if cgroup(pid) != cgroup(os.getpid()):
                 print(f"supervisor {pid} runs outside this unit ({cgroup(pid)}) and stops with that cgroup; run updates with systemctl --user reload", file=sys.stderr)
             print(f"supervisor {pid} owns {sock}")
-            return 0
+            return OK
+        coordinator = update_restart_coordinator(sock)
+        if coordinator and not reported and coordinator_age(coordinator) > coordinator_budget(coordinator):
+            reported = True
+            print(f"update restart coordinator {coordinator.get('pid')} has run {int(coordinator_age(coordinator))} s, past the {coordinator_budget(coordinator)} s sum of Prime's step deadlines; still waiting for it", file=sys.stderr)
         if child is None:
-            if not update_restart_running(sock):
-                child = subprocess.Popen([prime_agent, "--mode", "daemon", "--daemon-socket", sock], stdin=subprocess.DEVNULL, start_new_session=True)
-        elif child.poll() is not None and not update_restart_running(sock):
+            if not coordinator:
+                child = subprocess.Popen([prime_agent, "--mode", "daemon", "--daemon-socket", sock], stdin=subprocess.DEVNULL, start_new_session=True, env=target_env(sock))
+        elif child.poll() is not None and not coordinator:
             print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}", file=sys.stderr)
-            return child.returncode or 1
+            return child.returncode or FAILED
         time.sleep(POLL_SECONDS)
 
 
-def update(prime_agent, sock, pidfile, args):
-    code = subprocess.call([prime_agent, "update", *args], stdin=subprocess.DEVNULL)
+def classify(code, output):
+    """Name the outcome of `prime-agent update` from its exit code and output.
+
+    Prime exits 1 when the busy-session confirmation refuses without a TTY, and exits 0 with a warning when the
+    package installed but the restart coordinator failed, including when the running daemon refused to prepare.
+    """
+    if "Could not prepare daemon sessions for automatic resume" in output:
+        return PREPARE_REFUSED, "prepare refused: the running daemon declined the restart and still runs the previous version; --force does not override this, fix the cause Prime names first"
+    if code != 0 and "Re-run with --force to proceed." in output and ("busy session" in output or "Running agents could not be listed" in output):
+        return BUSY_REFUSED, "busy-session confirmation refused: busy sessions need PRIME_UPDATE_ARGS=--force, which checkpoints and restores them; nothing was installed"
+    if "could not restart the daemon (" in output or "could not coordinate the daemon restart" in output:
+        return RESTART_FAILED, "restart failed: the update installed but the daemon restart did not complete"
+    if code != 0:
+        return FAILED, f"prime-agent update exited with {code}"
+    return OK, "updated"
+
+
+def update(prime_agent, sock, pidfile):
+    try:
+        args = shlex.split(os.environ.get("PRIME_UPDATE_ARGS", ""))
+    except ValueError as error:
+        args = [f"<{error}>"]
+    unknown = [a for a in args if a not in UPDATE_ARGS]
+    if unknown:
+        print(f"prime-agent-daemon-ctl: result=usage PRIME_UPDATE_ARGS takes only {' '.join(UPDATE_ARGS)}, got {' '.join(unknown)}", file=sys.stderr)
+        return USAGE
+    env = target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock)
+    proc = subprocess.Popen([prime_agent, "update", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
+    lines = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        lines.append(line)
+    code, message = classify(proc.wait(), "".join(lines))
+    names = {OK: "ok", FAILED: "failed", BUSY_REFUSED: "busy-refused", PREPARE_REFUSED: "prepare-refused", RESTART_FAILED: "restart-failed"}
+    print(f"prime-agent-daemon-ctl: result={names[code]} {message}", file=sys.stderr if code else sys.stdout, flush=True)
     started = start(prime_agent, sock, pidfile)
     return code or started
 
 
 def main(argv):
-    if len(argv) < 4 or argv[0] not in ("start", "update") or (argv[0] == "start" and len(argv) != 4):
+    if len(argv) != 4 or argv[0] not in ("start", "update"):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
-        return 2
-    command, prime_agent, sock, pidfile, *rest = argv
+        return USAGE
+    command, prime_agent, sock, pidfile = argv
+    if Path(sock).parent.name != f"prime-agent-{os.getuid()}":
+        print(f"{sock} is not in a prime-agent-{os.getuid()} directory, so TMPDIR cannot point Prime's default socket and coordinator registry at it", file=sys.stderr)
+        return USAGE
     if command == "start":
         return start(prime_agent, sock, pidfile)
-    return update(prime_agent, sock, pidfile, rest)
+    return update(prime_agent, sock, pidfile)
 
 
 if __name__ == "__main__":

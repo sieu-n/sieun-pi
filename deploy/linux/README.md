@@ -33,6 +33,11 @@ Update Prime with `systemctl --user reload prime-agent-daemon.service`. ExecRelo
 From inside an agent session, add `--no-block`, because the update's prepare step waits for the session's own running command to finish, and a blocking reload holds that command open until prepare times out.
 Do not run `prime-agent update` under `systemd-run`. The new supervisor and the sessions it restores then live in the transient unit's cgroup, and systemd kills them when that unit ends; on 10-18 at 03:03Z that lost the 10 restored sessions.
 The updater reads its feed settings from the unit's environment. While the box serves a local feed, put them in `~/.config/sieun-pi/prime-update.env` (mode 0600), for example `PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS=1`.
+`PRIME_UPDATE_ARGS` in the same file passes `--force` or `--rollback --force` to `prime-agent update`; set it only for a controlled run and empty the file after, as `~/setup-logs/prime-install.sh` does.
+`--force` answers Prime's busy-session confirmation, which refuses without a TTY, and Prime then checkpoints the busy sessions and restores them on the new daemon. It does not override a prepare refusal, where the running daemon declines the restart because a worker is failed, disconnected or not ready.
+The ctl prints one `prime-agent-daemon-ctl: result=` line and exits 0 for `ok`, 3 for `busy-refused`, 4 for `prepare-refused`, 5 for `restart-failed` and 1 for any other failure.
+It aims the update at its socket argument through `PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET` and a matching `TMPDIR`, because the public `prime-agent update` refuses `--daemon-socket` and otherwise follows whatever the environment names.
+The unit sets `TimeoutStartSec=infinity`, because systemd times ExecReload with it and a timeout kills the ctl mid-update. On 10-18 an isolated reload whose prepare hit Prime's own worker deadline took 97 s, past the old 90 s default.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
 

@@ -15,6 +15,10 @@ ExecReload=%h/.local/bin/prime-agent-daemon-ctl update %h/.local/bin/prime-agent
 Restart=always
 RestartSec=5
 UMask=0077
+# systemd times ExecReload with TimeoutStartSec, and a reload waits on Prime's update restart coordinator, whose step
+# deadlines add up to 355 s plus 360 s per restored session with no total cap. On a timeout systemd kills the ctl,
+# which drops the update's result and skips the PIDFile read, so prime-agent-daemon-ctl reports a run past that sum.
+TimeoutStartSec=infinity
 TimeoutStopSec=90
 KillMode=process
 
