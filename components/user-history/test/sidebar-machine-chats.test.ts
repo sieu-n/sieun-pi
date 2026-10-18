@@ -10,7 +10,7 @@ const rows = [
   row("chat-mac", { chat: true, host: "mac" }),
   row("chat-metal", { chat: true, host: "us-metal02" }),
   row("thread-metal", { host: "us-metal02" }),
-  row("beat-mac", { host: "mac", schedule: { kind: "heartbeat", status: "active" } as SessionRow["schedule"] }),
+  row("beat-mac", { host: "mac", schedule: { kind: "heartbeat", status: "active" } as NonNullable<SessionRow["schedule"]> }),
 ];
 const ids = (list: readonly SessionRow[]) => list.map(item => item.id);
 
