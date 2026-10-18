@@ -16,7 +16,7 @@ import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, 
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
-import { withHeldTurns, withThreadPoolWaits } from "./held-turns.ts";
+import { withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -1295,7 +1295,7 @@ export class Chats {
     const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
-    const pooled = await withThreadPoolWaits(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key));
+    const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key));
     const facts = withQueuePlaces(pooled.map(fact => {
       // A thread's report to the chat counts like a job's: at 16:10Z on 10-18 the check-in restarted "wiki memory moves 10-18b" for "nothing
       // moved" one minute after its 16:09Z report ("243 repo-fact memories are deleted ... 127 wiki-dream skill commits").

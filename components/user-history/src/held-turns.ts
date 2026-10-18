@@ -1,6 +1,6 @@
 import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type JobFact, POOL_WAIT } from "./checkin-steps.ts";
+import type { JobFact } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
@@ -55,21 +55,22 @@ export async function writeResumePending(dataDir: string, runs: readonly Pick<In
 }
 
 /**
- * The pool wait a session's own transcript ends on: its last assistant message failed with pi-pool's reply that the session waits for its
- * slot, or with the token hook's. A thread's catalog row has no error text, so `poolWait` never saw one: during the 14:09Z outage on 10-18 the
- * check-in restarted the threads "wiki memory moves 10-18b" and "d7 mac reads and cpu minutes 10-18" three times each for "nothing moved",
- * while both transcripts ended on "this session waits for its slot at 14:20:57Z".
+ * The error a session's own transcript ends on: its last assistant message failed (stopReason "error") and no input, pi-pool queue place or
+ * tool result came after it. Prime holds such a turn in its provider retry or with its input stopped, so a message sent to it waits unseen.
+ * On 10-18 16 jobs of Crawler VP ended on "Provider rate limit exceeded ... waits for its slot at 21:49:27Z" at 19:53Z, the daemon still
+ * listed them running, the check-in read "working, no activity for 58 min" and steered them, and the steers sat in their queues.
  */
-export function lastPoolWait(tail: string): string | undefined {
+export function lastTurnError(tail: string): string | undefined {
   const lines = tail.split("\n");
   for (let index = lines.length - 1; index >= 0; index--) {
-    const raw = lines[index]!;
-    if (!raw.includes('"assistant"')) continue;
-    let line: { type?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
-    try { line = JSON.parse(raw); } catch { continue; }
-    if (line.type !== "message" || line.message?.role !== "assistant") continue;
+    let line: { type?: unknown; customType?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+    try { line = JSON.parse(lines[index]!); } catch { continue; }
+    if (line.type === "custom" && line.customType === "pi-pool-queue") return undefined;
+    if (line.type === "custom_message" && line.customType === "agent_message") return undefined;
+    if (line.type !== "message" || !line.message) continue;
+    if (line.message.role !== "assistant" || line.message.stopReason !== "error") return undefined;
     const error = line.message.errorMessage;
-    return line.message.stopReason === "error" && typeof error === "string" && POOL_WAIT.test(error) ? error : undefined;
+    return typeof error === "string" && error.trim() ? error : "error";
   }
   return undefined;
 }
@@ -88,18 +89,19 @@ async function tailOf(file: string): Promise<string> {
 }
 
 /**
- * Each fact of a thread or a sub-job of the chat whose transcript ends on a pool wait gets that wait as its error, which `poolWait` reads,
- * whatever its state: a thread retrying its turn and a sub-job whose parent waits count as working. At 15:25, 15:40 and 15:55Z on 10-18 the
- * check-in restarted 8 such sessions on release-e73e551, every one ending on "this session waits for its slot", because this read skipped
- * working facts and every sub-job. A thread's transcript is `<agentDir>/sessions/<id>.jsonl`, a sub-job's `<agentDir>/sessions/<session id>.jsonl`
- * when rlm.create_session started it, or `<agentDir>/session-artifacts/<chat>/sub-*\/<session id>.jsonl`.
+ * Each fact of a thread or a sub-job of the chat whose transcript ends on a failed turn (`lastTurnError`) reads failed with that error,
+ * whatever the daemon says: a turn in Prime's provider retry lists as running. A job-steer then restarts it (abort, the message, resume the
+ * queue), as the owner's hand fix did at 20:56Z on 10-18, and a pool wait in the error keeps the check-in's own pushes off it (`poolWait`).
+ * A wake or a held continue it had goes, since its stopped queue would hold that message too. A thread's transcript is
+ * `<agentDir>/sessions/<id>.jsonl`, a sub-job's `<agentDir>/sessions/<session id>.jsonl` when rlm.create_session started it, or
+ * `<agentDir>/session-artifacts/<chat>/sub-*\/<session id>.jsonl`.
  */
-export async function withThreadPoolWaits(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined): Promise<JobFact[]> {
+export async function withFailedTurns(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined): Promise<JobFact[]> {
   const artifacts = join(agentDir, "session-artifacts", chat);
   const subs = (await readdir(artifacts).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
   const tail = async (file: string): Promise<string> => tailOf(file).catch(() => "");
   return Promise.all(facts.map(async fact => {
-    if (fact.error !== undefined && POOL_WAIT.test(fact.error)) return fact;
+    if (fact.cancelled || fact.state === "unstarted") return fact;
     let text = "";
     if (fact.key.startsWith("thread:")) text = await tail(join(agentDir, "sessions", `${fact.key.slice("thread:".length)}.jsonl`));
     else {
@@ -109,7 +111,9 @@ export async function withThreadPoolWaits(facts: readonly JobFact[], agentDir: s
       text = await tail(join(agentDir, "sessions", `${session}.jsonl`));
       for (const sub of subs) { if (text) break; text = await tail(join(artifacts, sub, `${session}.jsonl`)); }
     }
-    const wait = lastPoolWait(text);
-    return wait ? { ...fact, error: wait } : fact;
+    const error = lastTurnError(text);
+    if (error === undefined) return fact;
+    const { wake: _, ...rest } = fact;
+    return { ...rest, state: "failed", error };
   }));
 }
