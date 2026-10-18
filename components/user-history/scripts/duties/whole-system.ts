@@ -21,7 +21,9 @@ import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shar
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
-export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; sleeping?: SleepingLine; error?: string }
+export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; sleeping?: SleepingLine; error?: string;
+  /** Tailscale read the box offline that minute (HostWatchLine.offline). */
+  offline?: true }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
@@ -40,7 +42,7 @@ export function hostViews(line: WatchLine): HostView[] {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-        ...host.sleeping ? { sleeping: host.sleeping } : {}, ...error ? { error } : {} };
+        ...host.sleeping ? { sleeping: host.sleeping } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {} };
     }),
   ];
 }
@@ -128,7 +130,7 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
- * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable (a CPU miss counts
+ * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
  * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
  * failed or ran over 30 s on any box (src/daemon-faults.ts). Supporting: queue holds and open steps nobody
@@ -398,6 +400,12 @@ export function stepSessions(item: { sessionId?: string; job?: string }, named: 
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
+/** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */
+const spans = (starts: readonly number[]): string => {
+  const runs: [number, number][] = [];
+  for (const at of starts) { const last = runs.at(-1); if (last && at - last[1] === MINUTE) last[1] = at; else runs.push([at, at]); }
+  return runs.map(([from, to]) => from === to ? clock(from) : `${clock(from)} to ${clock(to)}`).join(", ");
+};
 
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
@@ -413,14 +421,19 @@ export function measure(input: Inputs): PrecheckOutput {
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
+  // A box Tailscale read offline is offline that minute, neither unknown nor dirty, and the daemon calls that minute to it are left out, so a
+  // minute is clean when every box that is online is clean. From about 14:00Z on 10-18 the MacBook Pro slept with its lid closed, and its
+  // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them.
+  const offlineMin = new Map<string, number[]>();
+  let offlineAny = 0, offlineFaults = 0;
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const side = sideOf(input.watch);
   const dirty: string[] = [];
   const busy: string[] = [];
   const unknownLines: string[] = [];
-  const perHost = new Map<string, { usable: number; unusable: number; unknown: number }>();
-  const hostCount = (name: string) => { const known = perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0 }; perHost.set(name, known); return known; };
+  const perHost = new Map<string, { usable: number; unusable: number; unknown: number; offline: number }>();
+  const hostCount = (name: string) => { const known = perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0, offline: 0 }; perHost.set(name, known); return known; };
   for (let minute = 0; minute < 30; minute++) {
     const from = start + minute * MINUTE, to = from + MINUTE;
     const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < to; });
@@ -428,9 +441,11 @@ export function measure(input: Inputs): PrecheckOutput {
     const unknown: string[] = [];
     const sides = new Set<MinuteSide>();
     let rigged = false;
+    const offline = new Set<string>();
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
+      if (view.offline) { count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]); continue; }
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
       const found = unusable(view.usable);
       const own = view.name === (line.host ?? UNNAMED_HOST);
@@ -460,7 +475,10 @@ export function measure(input: Inputs): PrecheckOutput {
       freeSlot++;
       why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
     }
-    const faults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
+    if (offline.size) offlineAny++;
+    const minuteFaults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
+    const faults = minuteFaults.filter(fault => !offline.has(fault.host));
+    offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) { daemonFail++; why.push(`daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`); }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
@@ -517,6 +535,7 @@ export function measure(input: Inputs): PrecheckOutput {
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
     daemon_fail_min_30: daemonFail,
+    offline_min_30: offlineAny,
     unwatched_min_30: unwatched,
     unknown_min_30: unknownMin,
     stuck_duties: redDuties.length,
@@ -527,12 +546,15 @@ export function measure(input: Inputs): PrecheckOutput {
     metrics[`usable_min_30_${key}`] = count.usable;
     metrics[`unusable_min_30_${key}`] = count.unusable;
     metrics[`unknown_min_30_${key}`] = count.unknown;
+    metrics[`offline_min_30_${key}`] = count.offline;
   }
-  const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
+  const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable}, unknown in ${count.unknown} and offline in ${count.offline}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}; ` +
-    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` });
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
+    (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
+  if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });

@@ -17,6 +17,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } 
 import { claudeReader, markOwnerTurn, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
+import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
@@ -253,13 +254,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
+  const reach = new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
   const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
-    remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
+    remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
-  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session),
+  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);

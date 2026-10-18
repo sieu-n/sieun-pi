@@ -4,6 +4,7 @@ import { appendFile, readdir, readFile, realpath, rm, stat, writeFile } from "no
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { peerReach, seenAgo } from "../../src/host-reach.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
 
@@ -123,19 +124,10 @@ async function probeMac(deps: Deps): Promise<MacReach> {
   // Both read local state (the ssh config, the tailscaled socket) and took 0.09 s and 0.03 s on us-metal02 on 10-18.
   const host = /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: 10_000 })).stdout)?.[1];
   if (!host) return { online: true };
-  type Peer = { DNSName?: string; TailscaleIPs?: string[]; Online?: boolean; LastSeen?: string };
-  let peers: Peer[];
-  try { peers = Object.values((parseJson((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: 10_000 })).stdout) as { Peer?: Record<string, Peer> }).Peer ?? {}); }
-  catch { return { online: true }; }
-  const peer = peers.find(entry => entry.TailscaleIPs?.includes(host) || entry.DNSName?.replace(/\.$/, "") === host);
-  if (peer?.Online !== false) return { online: true };
-  return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${ago(deps.now(), peer.LastSeen)}); Aside and Paper answer again when it wakes` };
+  const reach = peerReach((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: 10_000 })).stdout, host);
+  if (reach.online) return reach;
+  return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside and Paper answer again when it wakes` };
 }
-const ago = (now: number, at: string | undefined): string => {
-  const minutes = Math.round((now - Date.parse(at ?? "")) / 60_000);
-  if (!Number.isFinite(minutes) || minutes < 0) return "at an unknown time";
-  return minutes < 60 ? `${minutes} min ago` : minutes < 48 * 60 ? `${Math.round(minutes / 60)}h ago` : `${Math.round(minutes / 1440)} days ago`;
-};
 const MAC_REACH_FIX = "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check";
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);

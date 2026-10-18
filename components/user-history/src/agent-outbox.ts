@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PeerReach } from "./host-reach.ts";
 import { Outbox, type Stored } from "./outbox.ts";
 import { isSendTimeout, landedAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, stoppedSubagent } from "./subagent-relay.ts";
@@ -23,6 +24,8 @@ export interface AgentOutboxDeps {
   startRoot?: (root: string) => Promise<void>;
   /** The box that runs the session, null for this box; the outbox lines name another box, so the Whole system precheck books them there. */
   hostOf?: (session: string) => string | null;
+  /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
+  reach?: (host: string) => Promise<PeerReach>;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -99,6 +102,10 @@ export class AgentOutbox {
       final: error => error instanceof Gone ? error.message : null,
       uncertain: isSendTimeout,
       quiet: error => error instanceof Full || error instanceof Moving,
+      held: async entry => {
+        const host = deps.reach && deps.hostOf?.(entry.threadId);
+        return !!host && !(await deps.reach!(host)).online;
+      },
       changed: () => {},
     });
   }

@@ -4,6 +4,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { type ChatLatency, takeLatency } from "./chat-latency.ts";
+import { type PeerReach, seenAgo } from "./host-reach.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
@@ -147,7 +148,9 @@ export interface WaitingTree { tree: string; oldestWaitS: number; slots: number 
  * then unknown, not zero.
  */
 export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
-  sleeping?: SleepingLine; swapGb: number | null; error?: string }
+  sleeping?: SleepingLine; swapGb: number | null; error?: string;
+  /** Tailscale read the box offline, so its relay was not asked (src/host-reach.ts); absent on lines written before 10-18 16:xxZ. */
+  offline?: true }
 
 export interface WatchLine {
   at: string;
@@ -440,7 +443,9 @@ export interface WatchSource {
 }
 /** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
 export interface RemoteWatch { name: string; rows: readonly unknown[];
-  read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string }> }
+  read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string }>;
+  /** Whether Tailscale reads the box up; a box it reads offline is written offline, and its relay is not asked. */
+  reach?: () => Promise<PeerReach> }
 
 /** The pids of the workers that host the rows' sessions. */
 const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
@@ -451,6 +456,9 @@ const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(
  */
 export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleMs?: number | null }): Promise<HostWatchLine> {
   try {
+    const reach = await remote.reach?.().catch(() => null);
+    if (reach && !reach.online)
+      return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, offline: true, error: `offline, Tailscale last seen ${seenAgo(input.now, reach.lastSeen)}` };
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: answer.error.slice(0, 200) };

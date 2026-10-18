@@ -43,6 +43,8 @@ export interface OutboxDeps {
   uncertain?: (error: unknown) => boolean;
   /** Whether a failure is a wait the deps already logged, so each try of it writes no line; absent means none is. */
   quiet?: (error: unknown) => boolean;
+  /** Whether the entry's target cannot be reached now, such as a session on a box that is offline: it waits, with no try and no line. */
+  held?: (entry: Stored) => Promise<boolean>;
   /** The thread's queued, sending and failed entries changed; `left` is the one that was just delivered. */
   changed(threadId: string, outbox: OutboxEntry[], left?: OutboxEntry): void;
   log(line: string): void;
@@ -56,7 +58,9 @@ export interface OutboxDeps {
 export class OutboxConflict extends Error {}
 
 const KEEP_MS = 7 * 24 * 60 * 60_000;
-const backoff = (attempt: number) => Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+/** The longest wait between two tries of one entry. */
+export const MAX_BACKOFF_MS = 30_000;
+const backoff = (attempt: number) => Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt, 5));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function publicEntry(entry: Stored): OutboxEntry {
@@ -157,6 +161,10 @@ export class Outbox {
   }
 
   private async attempt(entry: Stored): Promise<void> {
+    if (await this.deps.held?.(entry).catch(() => false)) {
+      if (!this.closed) await this.sleep(MAX_BACKOFF_MS);
+      return;
+    }
     if (entry.sentAt !== undefined) {
       const copy = await this.deps.copy(entry, entry.sentAt).catch(() => "unknown" as const);
       if (copy === "landed" || copy === "queued") {
