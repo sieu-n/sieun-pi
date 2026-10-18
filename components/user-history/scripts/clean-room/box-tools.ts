@@ -10,8 +10,8 @@ import { sessionFile, sessionFiles, type RunState, type Scenario, type Verdict }
  * in. The criteria live in the run folder's criteria.md.
  */
 export const TASK = "find what the top 3 google results say about prime intellect's latest release, open the best one in the browser and grab its " +
-  "headline, take a screenshot of this box's desktop to check the display works, and keep a short note on the board. check again in 10 minutes " +
-  "whether the page changed";
+  "headline, and take a screenshot of this box's desktop with cua to check the display works. keep a short note on the board with the headline, " +
+  "and in 10 minutes check the page again against that board note and tell me if it changed";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const BOX_HOME = homedir();
 const iso = (at: number): string => new Date(at).toISOString();
