@@ -6,7 +6,7 @@ import { turnHistory } from "./turn-history.ts";
 const LIMIT_MAX = 999;
 /** Input bound for the two timers, in seconds: a day, far above the measured 18 s aging and 1,800 s lease. */
 const TIMER_MAX_S = 86_400;
-const POOL_KEYS = { mac: "mac_working_max", tree: "tree_working_max", aging: "queue_aging_s", lease: "lease_s" } as const satisfies Record<string, AgentQueueKey>;
+const POOL_KEYS = { mac: "working_max", tree: "tree_working_max", aging: "queue_aging_s", lease: "lease_s" } as const satisfies Record<string, AgentQueueKey>;
 /** The daemon takes any whole number of minutes; a day is the longest wait the pane offers, and "off" never unloads. */
 const IDLE_MAX_MINUTES = 1440;
 

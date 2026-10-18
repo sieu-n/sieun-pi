@@ -509,9 +509,9 @@ export interface AgentQueuedSession extends AgentQueueSession { basePriority: Po
 export interface PoolSetRecord { by: string | null; at: number }
 /**
  * `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off.
- * `macWorkingMaxSet` is null while the Mac limit holds pi-pool's default.
+ * `workingMaxSet` is null while the Mac limit holds pi-pool's default.
  */
-export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; macWorkingMaxSet: PoolSetRecord | null; treeWorkingMax: number; working: AgentQueueWorking[]; queued: AgentQueuedSession[] }
+export interface AgentQueueReading { enabled: boolean; workingMax: number; workingMaxSet: PoolSetRecord | null; treeWorkingMax: number; working: AgentQueueWorking[]; queued: AgentQueuedSession[] }
 export type IdleEvictionMinutes = number | "off";
 
 /**

@@ -36,7 +36,7 @@
 
   const pool = $derived(view?.pool.state === "read" ? view.pool : null);
   const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
-  const saved = $derived<Record<Field, number | null>>({ mac: pool?.macWorkingMax ?? null, tree: pool?.treeWorkingMax ?? null,
+  const saved = $derived<Record<Field, number | null>>({ mac: pool?.workingMax ?? null, tree: pool?.treeWorkingMax ?? null,
     aging: pool?.queueAgingS ?? null, lease: pool?.leaseS ?? null, idle: idleSaved });
   const shown = (field: Field) => drafts[field] ?? saved[field];
   const changed = (field: Field) => {

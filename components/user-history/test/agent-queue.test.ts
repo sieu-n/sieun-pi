@@ -31,7 +31,7 @@ const raw = () => JSON.parse(readFileSync(fixture, "utf8")) as Record<string, un
 test("the queue fixture parses into epoch ms, queued in position order", async () => {
   const reading = await readAgentQueue();
   assert.equal(reading.enabled, true);
-  assert.equal(reading.macWorkingMax, 16);
+  assert.equal(reading.workingMax, 16);
   assert.equal(reading.treeWorkingMax, 8);
   assert.deepEqual(reading.working.map(entry => [entry.session, entry.priority, entry.kind, entry.since]), [["s-work-1", "high", "owner", 1792000000000], ["s-work-2", "normal", "slot", 1792000030000]]);
   assert.deepEqual(reading.queued.map(entry => [entry.session, entry.position, entry.basePriority, entry.priority, entry.waitMs]), [["s-q-1", 1, "low", "normal", 245000], ["s-q-2", 2, "normal", "normal", 60000]]);
@@ -42,8 +42,8 @@ test("the two timers come from pi-pool config", async () => {
 });
 
 test("both limits must be whole numbers, and a bad shape throws", () => {
-  assert.equal(parseAgentQueue({ ...raw(), enabled: false, working: [], queued: [] }).macWorkingMax, 16);
-  assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max: "off" }));
+  assert.equal(parseAgentQueue({ ...raw(), enabled: false, working: [], queued: [] }).workingMax, 16);
+  assert.throws(() => parseAgentQueue({ ...raw(), working_max: "off" }));
   assert.throws(() => parseAgentQueue({ ...raw(), tree_working_max: 0 }));
   assert.throws(() => parseAgentQueue({ ...raw(), queued: [{ session: "x", tree: "t", class: "normal", since: 1 }] }));
   assert.throws(() => parseAgentQueue(null));
@@ -51,11 +51,11 @@ test("both limits must be whole numbers, and a bad shape throws", () => {
 });
 
 test("the Mac limit carries who last set it and when, and the Settings row says so next to the measured default", () => {
-  assert.equal(parseAgentQueue(raw()).macWorkingMaxSet, null);
-  assert.deepEqual(parseAgentQueue({ ...raw(), mac_working_max_set: { by: "the Settings pane", at: 1791942343 } }).macWorkingMaxSet,
+  assert.equal(parseAgentQueue(raw()).workingMaxSet, null);
+  assert.deepEqual(parseAgentQueue({ ...raw(), working_max_set: { by: "the Settings pane", at: 1791942343 } }).workingMaxSet,
     { by: "the Settings pane", at: 1791942343000 });
-  assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: "", at: 1791942343 } }));
-  assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: null } }));
+  assert.throws(() => parseAgentQueue({ ...raw(), working_max_set: { by: "", at: 1791942343 } }));
+  assert.throws(() => parseAgentQueue({ ...raw(), working_max_set: { by: null } }));
   assert.equal(setLine(16, null, 16), "The Mac limit holds the default 16, and nobody has set it.");
   assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "The Mac limit was set to 30 by the Settings pane at 10-14 10:45 KST.");
   assert.equal(setLine(30, { by: null, at: 1791942343000 }, 16),
@@ -81,7 +81,7 @@ function harness(initial: AgentQueueReading) {
       writes.push([key, value]);
       if (!reading) return;
       if (key === "agent_queue_on") reading = { ...reading, enabled: value === 1 };
-      if (key === "mac_working_max") reading = { ...reading, macWorkingMax: value };
+      if (key === "working_max") reading = { ...reading, workingMax: value };
       if (key === "tree_working_max") reading = { ...reading, treeWorkingMax: value };
     },
     async () => [{ at: 1792000000000, finished: 40, medianWaitS: 12 }]);
@@ -93,10 +93,10 @@ test("the switch is one agent_queue_on write each way and the Mac limit keeps it
   await queue.apply({ action: "mac", value: 12 });
   const off = await queue.apply({ action: "queue", on: false });
   assert.equal(off.pool.state === "read" && off.pool.enabled, false);
-  assert.equal(off.pool.state === "read" && off.pool.macWorkingMax, 12);
+  assert.equal(off.pool.state === "read" && off.pool.workingMax, 12);
   const on = await queue.apply({ action: "queue", on: true });
   assert.equal(on.pool.state === "read" && on.pool.enabled, true);
-  assert.deepEqual(writes, [["mac_working_max", 12], ["agent_queue_on", 0], ["agent_queue_on", 1]]);
+  assert.deepEqual(writes, [["working_max", 12], ["agent_queue_on", 0], ["agent_queue_on", 1]]);
 });
 
 test("the per-chat limit, the two timers and the idle unload time are their own writes, and the idle time reads while the pool is silent", async () => {

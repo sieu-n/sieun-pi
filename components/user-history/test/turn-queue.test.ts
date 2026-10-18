@@ -47,7 +47,7 @@ const NOW = Date.parse("2026-10-14T00:00:00Z");
 const MIN = 60_000;
 const EVERY = 15 * MIN;
 const reading = (queued: { session: string; position: number; total: number; since: number }[], working: string[] = []): AgentQueueReading => ({
-  enabled: true, macWorkingMax: 16, macWorkingMaxSet: null, treeWorkingMax: 8,
+  enabled: true, workingMax: 16, workingMaxSet: null, treeWorkingMax: 8,
   working: working.map(session => ({ session, tree: session, parent: null, priority: "low", kind: "slot", since: NOW })),
   queued: queued.map(entry => ({ ...entry, tree: entry.session, parent: null, priority: "normal", basePriority: "normal", waitMs: NOW - entry.since })) });
 

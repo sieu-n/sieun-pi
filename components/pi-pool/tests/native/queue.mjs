@@ -53,7 +53,7 @@ delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID;
 delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL;
 const cli = (...args) => execFileSync('/usr/bin/python3', ['-B', join(poolSource, 'bin', 'pi-pool'), ...args], { env: cliEnv, encoding: 'utf8' });
 const queue = () => JSON.parse(cli('queue', '--json'));
-cli('set', 'mac_working_max', '1');
+cli('set', 'working_max', '1');
 cli('admit', 'blocker', '--tree', 'other-tree', '--pid', String(process.pid));
 
 const requests = [];

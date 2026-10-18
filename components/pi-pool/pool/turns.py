@@ -12,7 +12,7 @@ agent_end. state.json keeps the queue under the pool flock in state["turns"]:
 Order: an owner turn runs at once and never waits, and so does a prod turn: one of a tree or
 session the caller's `prod set` record names (pool/prod.py). Then queued turns take free slots
 by class, the top class (TOP) first, then high before normal before low, longest wait first inside a class, while the
-Mac has under mac_working_max slots in use and the tree under tree_working_max. A
+machine has under working_max slots in use and the tree under tree_working_max. A
 queued entry moves up one class for every queue_aging_s it has waited. A child whose
 parent's turn is in flight and that finds no slot borrows the parent's slot: a parent
 lends at most one slot at a time, and a borrow rides on its lender's slot, so it counts
@@ -62,10 +62,10 @@ REQUEUE_GRACE_S = 30
 
 
 def limits(cfg):
-    """(mac max or None when the queue is off, tree max, aging seconds)."""
+    """(the machine max or None when the queue is off, tree max, aging seconds)."""
     if not int(cfg["agent_queue_on"]):
         return None, None, None
-    return int(cfg["mac_working_max"]), int(cfg["tree_working_max"]), max(1, int(cfg["queue_aging_s"]))
+    return int(cfg["working_max"]), int(cfg["tree_working_max"]), max(1, int(cfg["queue_aging_s"]))
 
 
 def empty():
@@ -145,7 +145,7 @@ def lending(turns):
     return {e["lender"]: s for s, e in turns["working"].items() if e.get("kind") == "borrow"}
 
 
-def admit_pass(turns, now, mac_max, tree_max, aging, lease=None):
+def admit_pass(turns, now, all_max, tree_max, aging, lease=None):
     """Move queued entries to working: prod turns first, then free slots by class, then borrows.
     Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
@@ -172,7 +172,7 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None):
         if why:
             start(session, "prod", why=why)
     for session in queue:
-        if used >= mac_max:
+        if used >= all_max:
             break
         if trees.get(turns["queued"][session]["tree"], 0) < tree_max:
             start(session, "slot")
@@ -209,7 +209,7 @@ def reply(turns, session, now, aging, enabled=True):
 
 def view(turns, now, cfg):
     """`pi-pool queue --json`."""
-    mac, tree_max, aging = limits(cfg)
+    all_max, tree_max, aging = limits(cfg)
     aging = aging or max(1, int(cfg["queue_aging_s"]))
     queue = order(turns["queued"], now, aging)
     working = [{"session": s, "tree": e["tree"], "parent": e.get("parent"), "class": shown(e["class"]), "kind": e["kind"],
@@ -218,8 +218,8 @@ def view(turns, now, cfg):
                "class": shown(CLASSES[min(rank(turns["queued"][s], now, aging), len(CLASSES) - 1)]), "base_class": shown(turns["queued"][s]["class"]),
                "position": i + 1, "total": len(queue), "since": turns["queued"][s]["since"],
                "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
-    return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
-            "mac_working_max_set": last_set("mac_working_max"),
+    return {"enabled": all_max is not None, "working_max": int(cfg["working_max"]),
+            "working_max_set": last_set("working_max"),
             "tree_working_max": int(cfg["tree_working_max"]), "slots_used": len(in_slots(turns["working"])),
             "working": working, "queued": queued,
             "prod": {k: (prod.live(turns.get("prod"), now) or {}).get(k, {}) for k in ("trees", "sessions")}}
@@ -279,13 +279,13 @@ def ask(turns, sessions, a, now, cfg, waiter=None):
     a session whose slot lapsed (a Mac asleep past the lease) works again at once and
     never queues, because the queue never stops a running turn."""
     session, lease = a["session"], int(cfg["lease_s"])
-    mac, tree_max, aging = limits(cfg)
-    if mac is None:
+    all_max, tree_max, aging = limits(cfg)
+    if all_max is None:
         dropped = turns["queued"].pop(session, None) is not None
         return dropped, reply(turns, session, now, aging, enabled=False), []
     gone = sweep(turns, now)
     _, events = prod_watch(turns, now, cfg)
-    admitted = admit_pass(turns, now, mac, tree_max, aging, lease)
+    admitted = admit_pass(turns, now, all_max, tree_max, aging, lease)
     events += [("turn_swept", dict(session=g["session"], part=g["part"], why=g["why"])) for g in gone]
     changed = True
     entry = {"tree": a["tree"], "parent": a["parent"], "class": class_for(a, sessions), "since": now, "pid": a["pid"]}
@@ -306,7 +306,7 @@ def ask(turns, sessions, a, now, cfg, waiter=None):
         if recent and 0 <= now - recent["at"] <= REQUEUE_GRACE_S:
             entry["line"] = recent["line"]
         turns["queued"][session] = dict(entry, waiter=waiter)
-        admitted += admit_pass(turns, now, mac, tree_max, aging, lease)
+        admitted += admit_pass(turns, now, all_max, tree_max, aging, lease)
         if session in turns["queued"]:
             events.append(("turn_queued", {"session": session, "tree": a["tree"], "parent": a["parent"], "class": entry["class"],
                                            "working": len(turns["working"]), "queued": len(turns["queued"])}))
@@ -346,11 +346,11 @@ def log_changes(gone, admitted, turns, now, events=()):
 def step(turns, now, cfg):
     """Sweep, then admit what fits. Returns (changed, gone, admitted, events)."""
     gone = sweep(turns, now)
-    mac, tree_max, aging = limits(cfg)
-    if mac is None:
+    all_max, tree_max, aging = limits(cfg)
+    if all_max is None:
         return bool(gone), gone, [], []
     refreshed, events = prod_watch(turns, now, cfg)
-    admitted = admit_pass(turns, now, mac, tree_max, aging, int(cfg["lease_s"]))
+    admitted = admit_pass(turns, now, all_max, tree_max, aging, int(cfg["lease_s"]))
     return bool(gone or admitted or refreshed), gone, admitted, events
 
 
@@ -390,8 +390,8 @@ def wait(session, pid, last):
         except OSError:
             mtime = None
         cfg = base.config()
-        mac, tree_max, aging = limits(cfg)
-        if mac is None:
+        all_max, tree_max, aging = limits(cfg)
+        if all_max is None:
             release(session, reason="queue off")
             emit({"state": "off", "kind": None, "position": None, "total": None})
             return 0
@@ -403,7 +403,7 @@ def wait(session, pid, last):
         trial = json.loads(json.dumps(snapshot))
         sweep(trial, now)
         prod_watch(trial, now, cfg)
-        admit_pass(trial, now, mac, tree_max, aging, int(cfg["lease_s"]))
+        admit_pass(trial, now, all_max, tree_max, aging, int(cfg["lease_s"]))
         answer = reply(trial, session, now, aging)
         if answer["state"] != "queued" and session not in snapshot["working"]:
             def settle(state, turns, now):
@@ -527,7 +527,7 @@ def cmd_queue(rest):
         print("The queue is off.")
     else:
         borrows = len(out["working"]) - out["slots_used"]
-        print(f"{out['slots_used']} slots of {out['mac_working_max']} in use, {borrows} borrowed, {len(out['queued'])} queued.")
+        print(f"{out['slots_used']} slots of {out['working_max']} in use, {borrows} borrowed, {len(out['queued'])} queued.")
     for e in out["queued"]:
         print(f"  {e['position']}. {e['session']} {e['class']} (was {e['base_class']}), waiting {e['wait_s']} s")
     return 0

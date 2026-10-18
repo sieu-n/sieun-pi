@@ -25,7 +25,7 @@ class Wiring(unittest.TestCase):
             self.env.pop(key, None)
         with open(os.path.join(self.dir, "config.json"), "w") as f:
             json.dump({"memory_governor_on": 0}, f)
-        self.cli("set", "mac_working_max", "1")
+        self.cli("set", "working_max", "1")
         self.cli("admit", "blocker", "--tree", "B", "--pid", str(os.getpid()))
 
     def cli(self, *args):

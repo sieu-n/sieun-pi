@@ -232,7 +232,7 @@ export interface Inputs {
   day?: readonly WatchLine[];
   log: LogFacts;
   limits: readonly LimitChange[];
-  /** pi-pool's limit when the Mac reads ok (`mac_working_max`). */
+  /** pi-pool's limit when the Mac reads ok (`working_max`). */
   okLimit: number;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
@@ -474,7 +474,7 @@ async function main(): Promise<void> {
   const watch = day.filter(line => Date.parse(line.at) >= now - 2 * WINDOW_MS);
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
-  const config = await readJson(join(poolDir, "config.json")) as { mac_working_max?: number } | null;
+  const config = await readJson(join(poolDir, "config.json")) as { working_max?: number } | null;
   // Only the owner's chats (`ownerChats`): an archived or clean-room test chat stays out of his counts and the job's messages.
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
@@ -497,7 +497,7 @@ async function main(): Promise<void> {
     now, watch, day,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
-    okLimit: typeof config?.mac_working_max === "number" ? config.mac_working_max : 15,
+    okLimit: typeof config?.working_max === "number" ? config.working_max : 15,
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
   });

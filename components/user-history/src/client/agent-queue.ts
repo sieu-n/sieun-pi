@@ -29,10 +29,10 @@ export function setLine(value: number, record: PoolSetRecord | null, fallback: n
 export function whyLines(view: AgentQueueView): string[] {
   const pool = view.pool.state === "read" ? view.pool : null;
   return [
-    ...pool ? [setLine(pool.macWorkingMax, pool.macWorkingMaxSet, POOL_DEFAULTS.mac_working_max)] : [],
+    ...pool ? [setLine(pool.workingMax, pool.workingMaxSet, POOL_DEFAULTS.working_max)] : [],
     "Your own messages and prod work never wait in the queue.",
-    `The default Mac limit of ${POOL_DEFAULTS.mac_working_max} comes from 10-14 07:38 KST, when 6.9 GB was free and a p90 working session used 426 MB.`,
-    `The default of ${POOL_DEFAULTS.tree_working_max} per chat is half of ${POOL_DEFAULTS.mac_working_max}, so two chats at full fan-out fit. VP of CI held 7 working sessions at once on 10-14.`,
+    `The default Mac limit of ${POOL_DEFAULTS.working_max} comes from 10-14 07:38 KST, when 6.9 GB was free and a p90 working session used 426 MB.`,
+    `The default of ${POOL_DEFAULTS.tree_working_max} per chat is half of ${POOL_DEFAULTS.working_max}, so two chats at full fan-out fit. VP of CI held 7 working sessions at once on 10-14.`,
     `The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST, so with a ${POOL_DEFAULTS.queue_aging_s} s step a low turn passes a fresh normal one after about one turn.`,
     "Inside one turn, gaps between model calls were 157 s at p99 and 1,508 s at p99.9 over 174,119 gaps in the 3 days to 10-14 08 KST. A slot quiet for longer belongs to a turn that ended with no release.",
     "90 min is the daemon's own idle unload default. 10 timed reloads on 10-13 took 1.1 to 6.2 s, and the daemon rereads the setting within 5 minutes with no restart.",

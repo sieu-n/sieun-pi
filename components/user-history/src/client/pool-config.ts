@@ -15,7 +15,7 @@ export const POOL_DEFAULTS = {
   /** The Mac-wide turn queue's switch, on by default (agent queue plan, change 5). */
   agent_queue_on: 1,
   /** A p90 working session used 426 MB, and 6.9 GB was free for agents on 10-14 07:38 KST, so 16 fit (agent-queue-measure.md). */
-  mac_working_max: 16,
+  working_max: 16,
   /** Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14. */
   tree_working_max: 8,
   /** The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST (0735-agent-queue-design/data/measure_turns.py). */

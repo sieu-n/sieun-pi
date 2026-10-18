@@ -92,12 +92,12 @@ DEFAULTS = {
     # `pi-pool probe` (run by the extension at session start) checks every
     # account for a refusal at most this often
     "probe_interval_sec": 6 * 3600,
-    # The Mac-wide turn queue (pool/turns.py); 0 turns it off and keeps the limits below.
+    # The machine-wide turn queue (pool/turns.py); 0 turns it off and keeps the limits below.
     "agent_queue_on": 1,
     # At most this many session turns work at once. 10-14 07:38 KST: 6.9 GB was left for agent work
     # and a working session cost 426 MB at p90, and 6,900 / 426 is 16
     # (sessions/2026/10/14/0735-agent-queue-design/agent-queue-measure.md).
-    "mac_working_max": 16,
+    "working_max": 16,
     # At most this many turns of one session tree work at once: half of 16, so two
     # chats at full fan-out fit, above the 7 working sessions VP of CI held at 07:38.
     "tree_working_max": 8,

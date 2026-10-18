@@ -99,7 +99,7 @@ class Replay0959(unittest.TestCase):
         t["prod"] = self.promote
         mine = t["queued"].pop(METAL)
         self.assertEqual(turns.order(dict(t["queued"], **{METAL: mine}), snap["at"], 18).index(METAL) + 1, 63)
-        cfg = dict(self.cfg, mac_working_max=12)
+        cfg = dict(self.cfg, working_max=12)
         ask = {"session": METAL, "tree": METAL, "parent": None, "class": None, "pid": ME, "renew": False}
         _, answer, _ = turns.ask(t, {METAL: {"priority": "high"}}, ask, snap["at"], cfg)
         self.assertEqual(answer, {"state": "admitted", "kind": "prod", "position": None, "total": None})
@@ -129,7 +129,7 @@ class Cli(unittest.TestCase):
         for k in (base.SESSION_ENV, base.JOURNAL_ENV):
             self.env.pop(k, None)
         with open(os.path.join(self.dir, "config.json"), "w") as f:
-            json.dump({"mac_working_max": 1}, f)
+            json.dump({"working_max": 1}, f)
 
     def run_cli(self, *args):
         done = subprocess.run(["/usr/bin/python3", "-B", os.path.join(SOURCE, "bin", "pi-pool"), *args],

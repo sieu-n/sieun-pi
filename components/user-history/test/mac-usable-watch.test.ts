@@ -117,7 +117,7 @@ test("readFootprints: the helper measures this process's tree and the Mac's swap
 
 test("sharedQueueRead: one pi-pool read serves every reader for its ttl, and a failed read is not kept", async () => {
   let reads = 0, now = 0, fail = false;
-  const read = sharedQueueRead(async () => { reads++; if (fail) throw new Error("pool down"); return parseAgentQueue({ enabled: true, mac_working_max: 30, tree_working_max: 8, working: [], queued: [] }); }, 10_000, () => now);
+  const read = sharedQueueRead(async () => { reads++; if (fail) throw new Error("pool down"); return parseAgentQueue({ enabled: true, working_max: 30, tree_working_max: 8, working: [], queued: [] }); }, 10_000, () => now);
   await Promise.all([read(), read()]);
   now = 9_999; await read();
   assert.equal(reads, 1);

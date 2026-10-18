@@ -226,8 +226,8 @@ function workingSession(value: unknown): AgentQueueWorking {
 
 export function parseAgentQueue(value: unknown): AgentQueueReading {
   if (!isRecord(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.working) || !Array.isArray(value.queued)) throw new Error("pi-pool returned an invalid queue");
-  const macWorkingMax = count(value.mac_working_max), treeWorkingMax = count(value.tree_working_max);
-  if (macWorkingMax === null || treeWorkingMax === null) throw new Error("pi-pool returned invalid queue limits");
+  const workingMax = count(value.working_max), treeWorkingMax = count(value.tree_working_max);
+  if (workingMax === null || treeWorkingMax === null) throw new Error("pi-pool returned invalid queue limits");
   const queued = value.queued.map((entry: unknown): AgentQueuedSession => {
     const session = queueSession(entry);
     const row = entry as Record<string, unknown>;
@@ -237,13 +237,13 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
     return { ...session, basePriority, position, total, waitMs: wait * 1000 };
   }).sort((a, b) => a.position - b.position);
-  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
+  return { enabled: value.enabled, workingMax, workingMaxSet: setRecord(value.working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
 }
 
 function setRecord(value: unknown): PoolSetRecord | null {
   if (value === null || value === undefined) return null;
   const at = isRecord(value) ? epochMs(value.at) : null;
-  if (!isRecord(value) || at === null || (value.by !== null && !text(value.by))) throw new Error("pi-pool returned an invalid mac_working_max_set");
+  if (!isRecord(value) || at === null || (value.by !== null && !text(value.by))) throw new Error("pi-pool returned an invalid working_max_set");
   return { by: value.by as string | null, at };
 }
 
@@ -260,7 +260,7 @@ export async function readQueueTimers(): Promise<AgentQueueTimers> {
   return { queueAgingS, leaseS };
 }
 
-export type AgentQueueKey = "agent_queue_on" | "mac_working_max" | "tree_working_max" | "queue_aging_s" | "lease_s";
+export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max" | "queue_aging_s" | "lease_s";
 export async function setPoolKey(key: AgentQueueKey, value: number): Promise<void> {
   await run(poolCommand.set(key, value));
 }

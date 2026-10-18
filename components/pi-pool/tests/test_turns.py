@@ -1,4 +1,4 @@
-"""The Mac-wide turn queue (pool/turns.py): admit, release, owner-turn, queue --json,
+"""The machine-wide turn queue (pool/turns.py): admit, release, owner-turn, queue --json,
 borrowing, class order, aging, the stale sweep, and a replay of the 10-14 02 KST burst.
 """
 import calendar, collections, heapq, json, os, subprocess, sys, tempfile, time, unittest
@@ -152,7 +152,7 @@ def ask_args(session, tree="t", parent=None, klass=None, renew=False):
 
 
 class Lease(unittest.TestCase):
-    CFG = dict(base.DEFAULTS, mac_working_max=1)
+    CFG = dict(base.DEFAULTS, working_max=1)
 
     def test_a_run_that_calls_the_model_every_300_s_keeps_its_slot(self):
         """A 3,000 s run, longer than lease_s, whose model calls renew every 300 s;
@@ -208,7 +208,7 @@ class OwnerLog(unittest.TestCase):
     was owner-turn starting an agent run already in the queue, logged as the owner's
     with that run's wait, and 15 of the 25 marks came from the extension's input hook
     on a [job] or [brief check] notice, not from the owner."""
-    CFG = dict(base.DEFAULTS, mac_working_max=16)
+    CFG = dict(base.DEFAULTS, working_max=16)
 
     def full(self):
         t = turns.empty()
@@ -304,7 +304,7 @@ class Cli(unittest.TestCase):
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
         for k in (base.SESSION_ENV, base.JOURNAL_ENV):
             self.env.pop(k, None)
-        self.set("mac_working_max", "2")
+        self.set("working_max", "2")
 
     def run_cli(self, *args, check=True):
         done = subprocess.run(["/usr/bin/python3", "-B", os.path.join(SOURCE, "bin", "pi-pool"), *args],
@@ -328,7 +328,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(self.admit("c", "--tree", "C", "--class", "low"), {"state": "queued", "kind": None, "position": 1, "total": 1})
         self.assertEqual(self.admit("c", "--tree", "C", "--class", "low")["position"], 1, "asking again keeps the place")
         view = self.queue()
-        self.assertEqual((view["enabled"], view["mac_working_max"], view["tree_working_max"]), (True, 2, 8))
+        self.assertEqual((view["enabled"], view["working_max"], view["tree_working_max"]), (True, 2, 8))
         self.assertEqual([w["session"] for w in view["working"]], ["a", "b"])
         self.assertEqual(set(view["working"][0]), {"session", "tree", "parent", "class", "kind", "since"})
         q = view["queued"][0]
@@ -340,27 +340,27 @@ class Cli(unittest.TestCase):
 
     def test_set_records_who_and_when_in_config_and_the_log(self):
         before = round(time.time())
-        self.run_cli("set", "mac_working_max", "30", "--by", "the Settings pane")
-        record = self.queue()["mac_working_max_set"]
+        self.run_cli("set", "working_max", "30", "--by", "the Settings pane")
+        record = self.queue()["working_max_set"]
         self.assertEqual(record["by"], "the Settings pane")
         self.assertGreaterEqual(record["at"], before)
         with open(os.path.join(self.dir, "pi-pool.log")) as f:
             logged = [json.loads(line) for line in f if '"event": "set"' in line][-1]
         self.assertEqual({k: logged[k] for k in ("key", "value", "was", "by")},
-                         {"key": "mac_working_max", "value": 30, "was": 2, "by": "the Settings pane"})
+                         {"key": "working_max", "value": 30, "was": 2, "by": "the Settings pane"})
         self.env[base.SESSION_ENV] = "01a-root"
-        self.set("mac_working_max", "16")
-        self.assertEqual(self.queue()["mac_working_max_set"]["by"], "Prime session 01a-root")
+        self.set("working_max", "16")
+        self.assertEqual(self.queue()["working_max_set"]["by"], "Prime session 01a-root")
 
     def test_a_value_with_no_set_record_shows_the_file_time_and_the_default_shows_none(self):
         path = os.path.join(self.dir, "config.json")
         with open(path, "w") as f:
-            json.dump({"agent_queue_on": 1, "mac_working_max": 30}, f)
+            json.dump({"agent_queue_on": 1, "working_max": 30}, f)
         os.utime(path, (1791942343, 1791942343))
-        self.assertEqual(self.queue()["mac_working_max_set"], {"by": None, "at": 1791942343})
+        self.assertEqual(self.queue()["working_max_set"], {"by": None, "at": 1791942343})
         with open(path, "w") as f:
             json.dump({"agent_queue_on": 1}, f)
-        self.assertIsNone(self.queue()["mac_working_max_set"])
+        self.assertIsNone(self.queue()["working_max_set"])
 
     def test_priority_label_marks_the_tree_and_a_plain_priority_clears_it(self):
         self.run_cli("priority", "high", "--label", "--session", "01a00000-0000-0000-0000-000000000001")
@@ -411,11 +411,11 @@ class Cli(unittest.TestCase):
     def test_off_admits_everything_records_nothing_and_keeps_the_limit(self):
         self.set("agent_queue_on", "0")
         saved = read(os.path.join(self.dir, "config.json"))
-        self.assertEqual({k: v for k, v in saved.items() if k != "set_by"}, {"mac_working_max": 2, "agent_queue_on": 0})
+        self.assertEqual({k: v for k, v in saved.items() if k != "set_by"}, {"working_max": 2, "agent_queue_on": 0})
         for s in "abc":
             self.assertEqual(self.admit(s)["state"], "off")
         view = self.queue()
-        self.assertEqual((view["enabled"], view["mac_working_max"], view["working"]), (False, 2, []))
+        self.assertEqual((view["enabled"], view["working_max"], view["working"]), (False, 2, []))
 
     def test_asking_again_while_working_renews_the_lease(self):
         self.admit("a")
@@ -534,11 +534,11 @@ class Burst(unittest.TestCase):
               f"median wait {waits[len(waits) // 2]:.0f} s, p90 {waits[int(len(waits) * 0.9)]:.0f} s", file=sys.stderr)
 
 class Limit(unittest.TestCase):
-    """The working limit is mac_working_max, the number the owner set, whatever the Mac's memory reads (owner, c88 on 10-16)."""
+    """The working limit is working_max, the number the owner set, whatever the machine's memory reads (owner, c88 on 10-16)."""
 
     def test_the_limit_is_the_set_number(self):
         t = turns.empty()
-        cfg = dict(base.DEFAULTS, mac_working_max=30, tree_working_max=30)
+        cfg = dict(base.DEFAULTS, working_max=30, tree_working_max=30)
         for i in range(40):
             t["queued"][f"q{i}"] = entry(tree=f"t{i}", since=float(i), klass="low")
         changed, _, admitted, _ = turns.step(t, 100, cfg)
@@ -546,14 +546,14 @@ class Limit(unittest.TestCase):
         self.assertEqual((len(admitted), len(t["working"]), len(t["queued"])), (30, 30, 10))
         view = turns.view(t, 100, cfg)
         self.assertNotIn("pressure", view)
-        self.assertEqual(view["mac_working_max"], 30)
+        self.assertEqual(view["working_max"], 30)
 
 
 class Requeue(unittest.TestCase):
     """A session that asks again within REQUEUE_GRACE_S of its run's release keeps its place in line."""
 
     def test_a_chained_run_keeps_its_line_and_a_late_one_does_not(self):
-        cfg = dict(base.DEFAULTS, mac_working_max=1, prod_turns_on=0)
+        cfg = dict(base.DEFAULTS, working_max=1, prod_turns_on=0)
         t = turns.empty()
         t["working"]["job"] = dict(entry(tree="job", since=0.0), kind="slot", queued_since=0.0, lease_until=10 ** 9)
         t["queued"]["other"] = entry(tree="other", since=5.0)
