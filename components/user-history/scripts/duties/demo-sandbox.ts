@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { footprintMb, treePids } from "./local-dev-uptime.ts";
 
 /**
  * The Demo sandbox works duty's precheck (`node --import tsx scripts/duties/demo-sandbox.ts`) for the frontend chat: the 5180 demo
@@ -26,6 +25,34 @@ import { footprintMb, treePids } from "./local-dev-uptime.ts";
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+
+/** Every live pid under `root`, `root` included, from `ps -axo pid=,ppid=`. */
+export function treePids(ps: string, root: number): number[] {
+  const kids = new Map<number, number[]>();
+  const alive = new Set<number>();
+  for (const line of ps.split("\n")) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (!pid) continue;
+    alive.add(pid);
+    kids.set(ppid!, [...(kids.get(ppid!) ?? []), pid]);
+  }
+  const tree: number[] = [];
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop()!;
+    if (!alive.has(pid) || tree.includes(pid)) continue;
+    tree.push(pid);
+    stack.push(...(kids.get(pid) ?? []));
+  }
+  return tree;
+}
+
+/** The sum of `phys_footprint` in `footprint -f bytes` output, in MB: the memory macOS counts, compressed and swapped pages included. */
+export function footprintMb(output: string): number {
+  const bytes = [...output.matchAll(/phys_footprint: (\d+) B/g)].reduce((sum, match) => sum + Number(match[1]), 0);
+  return Math.round(bytes / 1024 / 1024);
+}
+
 export const BASE_URL = "http://localhost:5180";
 /** How long a probe waits for an answer: the 30 s timeout every 5180 health check uses. The health_ms target is 3 s inside it. */
 export const ANSWER_TIMEOUT_MS = 30_000;

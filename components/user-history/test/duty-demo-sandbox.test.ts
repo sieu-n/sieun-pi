@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { headlineMetric, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { ANSWER_TIMEOUT_MS, editsBefore, type Exec, guardKills, logTime, measureSandbox, readWalk, restarts, type SandboxDeps, ssrTimeouts, type WalkReport, WALK_FILE } from "../scripts/duties/demo-sandbox.ts";
+import { ANSWER_TIMEOUT_MS, editsBefore, type Exec, footprintMb, guardKills, logTime, measureSandbox, readWalk, restarts, type SandboxDeps, ssrTimeouts, treePids, type WalkReport, WALK_FILE } from "../scripts/duties/demo-sandbox.ts";
 
 const NOW = new Date(2026, 9, 15, 18, 20, 0).getTime();
 /** A pm2 log line at `msAgo` before NOW, in the local time pm2 writes. */
@@ -140,4 +140,11 @@ test("demo sandbox duty file parses with one headline and 3 supporting metrics, 
   assert.equal(duty.metrics.length, 4);
   const output = await measureSandbox(deps({}));
   for (const metric of duty.metrics) assert.ok(metric.key in output.metrics, metric.key);
+});
+
+test("demo sandbox: tree pids and the footprint sum", () => {
+  const ps = "  100     1\n  200   100\n  300   200\n  301   200\n  400     1\n";
+  assert.deepEqual(treePids(ps, 100).sort(), [100, 200, 300, 301]);
+  assert.deepEqual(treePids(ps, 999), []);
+  assert.equal(footprintMb("    phys_footprint: 1048576000 B\n    phys_footprint_peak: 1 B\n    phys_footprint: 209715200 B\n"), 1200);
 });
