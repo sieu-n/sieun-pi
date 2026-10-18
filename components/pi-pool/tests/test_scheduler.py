@@ -407,6 +407,18 @@ class R5Backoff(unittest.TestCase):
         self.assertGreater(min(quarters.values()), 25)
         self.assertGreater(len(set(round(s) for s in slots)), 190)
 
+    def test_a_projection_hold_with_accounts_free_on_their_read_is_no_backoff(self):
+        """10-18 11:10Z: two new low trees backed off 40 and 100 min while claude4 and
+        claude12 read 3% and 4%, because the projection of their spending trees held them."""
+        state = empty_state()
+        accounts = [fresh("c4", 3, FIVE, NOW - 600, tier="max 5x"), fresh("c12", 4, FIVE, NOW - 600, tier="max 5x")]
+        for i in range(40):
+            put(state, tree_key(f"busy{i:02d}"), on=("c4", "c12")[i % 2], at=NOW - 30)
+        k = put(state, tree_key("new"), at=NOW - 60, priority="low")
+        d = request(state, k, accounts, NOW)
+        self.assertEqual((type(d), d.backoff), (sched.Wait, False))
+        self.assertLessEqual(d.slot_at, NOW + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
+
     def test_a_high_tree_backs_off_like_any_other(self):
         """The owner on 10-18, asked whether his own turns skip the backoff: "no don't"."""
         state = empty_state()
@@ -421,10 +433,8 @@ class R6MoveBudget(unittest.TestCase):
     def test_a_normal_tree_out_of_moves_waits_for_its_own_account(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
-        with draws(0.25):
-            d = decide(state, KEY, self.ACCOUNTS)
-        self.assertEqual((type(d), d.slot_account.id, d.slot_at, d.backoff),
-                         (sched.Wait, "x", NOW + CFG["depleted_backoff_max_sec"] / 4, True))
+        d = decide(state, KEY, self.ACCOUNTS)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at, d.backoff), (sched.Wait, "x", NOW + 1800, False))
 
     def test_a_tree_out_of_moves_whose_account_is_out_past_the_wait_cap_moves_anyway(self):
         state = empty_state()
@@ -845,10 +855,9 @@ class ProjectedUsage(unittest.TestCase):
         seat = virev_seat((fresh_window(60, FIVE, VIREV_BACK + FIVE, read), VIREV_WINDOWS[1]))
         state = empty_state()
         put(state, tree_key("on"), on=VIREV, at=VIREV_BACK - 30)
-        with draws(0.1):
-            d = request(state, tree_key("new"), [seat], VIREV_BACK)
-        self.assertEqual((type(d), d.backoff), (sched.Wait, True))
-        self.assertEqual(d.slot_at, VIREV_BACK + 0.1 * CFG["depleted_backoff_max_sec"])
+        d = request(state, tree_key("new"), [seat], VIREV_BACK)
+        self.assertEqual((type(d), d.backoff), (sched.Wait, False))
+        self.assertEqual(d.slot_at, read + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
 
 
 LIVE_1014 = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_1014_reads.json")))

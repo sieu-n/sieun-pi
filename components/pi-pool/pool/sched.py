@@ -456,8 +456,12 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
     if slot_at == float("inf"):
         return None
-    # An unsampled account is only a read away, so its waiters keep their short wait.
-    if not any(why_not(a) in (None, "unsampled") for a in accounts if allowed(a)):
+    # The backoff is for a pool waiting on rotation: no account takes this class of
+    # tree on its last read. A projection hold or an unsampled account clears at the
+    # next read, and a tree out of moves (R6) waits for its own account, so those
+    # keep their short wait. On 10-18 at 11:10Z two low trees backed off 40 and 100
+    # min on projections while claude4 and claude12 read 3% and 4%.
+    if not any(admit_reason(a, cooldowns, cfg, now, p) in (None, "unsampled") for a in accounts):
         u = random.random() if draw is None else draw
         return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
     return Wait(slot_at, slot_account, vend, shadowed, left)

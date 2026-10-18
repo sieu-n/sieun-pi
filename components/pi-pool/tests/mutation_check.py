@@ -23,7 +23,7 @@ MUTATIONS = {
         "    candidates = [a for a in ranked if allowed(a)]",
         "    candidates = [a for a in ranked if allowed(a)] + sorted([a for a in accounts if allowed(a) and a not in ranked and serve_reason(a, cooldowns, now) is None], key=lambda a: a.session_pct)"),
     "R5 backoff on a depleted pool": (
-        "    if not any(why_not(a) in (None, \"unsampled\") for a in accounts if allowed(a)):",
+        "    if not any(admit_reason(a, cooldowns, cfg, now, p) in (None, \"unsampled\") for a in accounts):",
         "    if False:"),
     "R5 backoff held until its draw": (
         "    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None",
