@@ -282,7 +282,7 @@ def _remember(target_ids: list[str], url: str = "") -> None:
 
 def _forget(target_ids: list[str]) -> None:
     owned = _owned_tabs()
-    if any(owned.pop(tid, None) is not None for tid in list(target_ids)):
+    if [owned.pop(tid) for tid in list(target_ids) if tid in owned]:
         _save_owned()
 
 
@@ -818,36 +818,66 @@ async def _close(target_id: str) -> str:
     )
 
 
+def _refuse_close(target_id: str) -> AsideError:
+    return AsideError(
+        f"Refused to close tab {target_id}: this agent session ({owner_key()}) did not open it.",
+        "The Aside browser is shared by the user and other agents. Close only tabs you opened "
+        "(`await aside_browser.close_own_tabs()`). Pass force=True only if the user asked to close this tab.",
+    )
+
+
+def _json_line(text: str) -> dict[str, Any]:
+    line = [l for l in text.splitlines() if l.startswith("{")]
+    return json.loads(line[-1]) if line else {}
+
+
 async def close_tab(target_id: str | None = None, force: bool = False) -> str:
     """Close one tab: target_id, or the current `page`. Refuses a tab this session did not open.
 
     Tabs count as opened by this session when they came from open_tab() or from openTab() inside
     run(). force=True closes any tab; use it only when the user asked for that tab to close.
     """
-    if target_id is None:
-        text = await _repl(_scoped("console.log(JSON.stringify({targetId: page ? page.targetId : null}))"), "current tab")
-        line = [l for l in text.splitlines() if l.startswith("{")]
-        target_id = json.loads(line[-1]).get("targetId") if line else None
-        if not target_id:
-            raise AsideError("No current `page` in this REPL session, so there is nothing to close.")
-    if not force and target_id not in _owned_tabs():
-        raise AsideError(
-            f"Refused to close tab {target_id}: this agent session ({owner_key()}) did not open it.",
-            "The Aside browser is shared by the user and other agents. Close only tabs you opened "
-            "(`await aside_browser.close_own_tabs()`). Pass force=True only if the user asked to close this tab.",
-        )
-    text = await _close(target_id)
+    if target_id is not None:
+        if not force and target_id not in _owned_tabs():
+            raise _refuse_close(target_id)
+        text = await _close(target_id)
+        _forget([target_id])
+        return text
+    # One REPL call reads the current tab and closes it only when this session owns it, which saves a round trip to the Mac.
+    allowed = "true" if force else json.dumps(list(_owned_tabs())) + ".includes(__id)"
+    found = _json_line(await _repl(
+        _scoped(
+            f"const __id = page ? page.targetId : null; const __ok = !!__id && {allowed};"
+            " if (__ok) await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id));"
+            " console.log(JSON.stringify({targetId: __id, closed: __ok, left: tabs.length}))"
+        ),
+        "close tab",
+    ))
+    target_id = found.get("targetId")
+    if not target_id:
+        raise AsideError("No current `page` in this REPL session, so there is nothing to close.")
+    if not found.get("closed"):
+        raise _refuse_close(target_id)
     _forget([target_id])
-    return text
+    return f"closed {target_id} - tabs left in this REPL: {found.get('left')}"
 
 
 async def close_own_tabs() -> list[str]:
-    """Close every still-open tab this agent session opened. Returns the closed targetIds."""
-    closed = []
-    for tab in await owned_tabs():
-        await _close(tab["targetId"])
-        _forget([tab["targetId"]])
-        closed.append(tab["targetId"])
+    """Close every still-open tab this agent session opened, in one REPL call. Returns the closed targetIds."""
+    owned = list(_owned_tabs())
+    if not owned:
+        return []
+    found = _json_line(await _repl(
+        _scoped(
+            f"const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = [];"
+            f" for (const __id of {json.dumps(owned)}) {{ if (!__open.has(__id)) continue;"
+            " await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id)); __closed.push(__id); }"
+            " console.log(JSON.stringify({closed: __closed}))"
+        ),
+        "close own tabs",
+    ))
+    closed = [str(t) for t in found.get("closed") or []]
+    _forget(owned)
     return closed
 
 

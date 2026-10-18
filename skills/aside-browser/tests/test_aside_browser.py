@@ -163,17 +163,18 @@ class TabOwnershipTests(Base):
     def test_open_tab_records_and_close_tab_allows_own_tab(self):
         mcp = self.fake(
             '{"title":"Example Domain","url":"https://example.com/","targetId":"T1"}',
-            '{"targetId":"T1"}',
-            "closed T1",
+            '{"targetId":"T1","closed":true,"left":0}',
         )
         self.call(ab.open_tab("https://example.com"))
         self.assertIn("T1", ab._owned_tabs())
-        self.call(ab.close_tab())
-        self.assertIn("closeTab", mcp.calls[2]["code"])
+        self.assertEqual(self.call(ab.close_tab()), "closed T1 - tabs left in this REPL: 0")
+        self.assertEqual(len(mcp.calls), 2)
+        self.assertIn('closeTab', mcp.calls[1]["code"])
+        self.assertIn('["T1"].includes(__id)', mcp.calls[1]["code"])
         self.assertNotIn("T1", ab._owned_tabs())
 
     def test_close_tab_refuses_foreign_tab_without_sending_close(self):
-        mcp = self.fake('{"targetId":"OTHER"}')
+        mcp = self.fake('{"targetId":"OTHER","closed":false,"left":1}')
         with self.assertRaises(ab.AsideError) as caught:
             self.call(ab.close_tab())
         self.assertIn("Refused", str(caught.exception))
@@ -189,15 +190,16 @@ class TabOwnershipTests(Base):
 
     def test_close_own_tabs_skips_other_tabs_and_forgets_closed_ones(self):
         ab._remember(["MINE", "GONE"], "https://example.com/")
-        listing = json.dumps([
-            {"targetId": "MINE", "active": False, "title": "a", "url": "https://example.com/"},
-            {"targetId": "THEIRS", "active": True, "title": "b", "url": "https://slack.com/"},
-        ])
-        mcp = self.fake(listing, "closed MINE")
+        mcp = self.fake('{"closed":["MINE"]}')
         self.assertEqual(self.call(ab.close_own_tabs()), ["MINE"])
-        self.assertEqual(len(mcp.calls), 2)
-        self.assertNotIn("THEIRS", mcp.calls[1]["code"])
+        self.assertEqual(len(mcp.calls), 1)
+        self.assertIn('["MINE", "GONE"]', mcp.calls[0]["code"])
         self.assertEqual(ab._owned_tabs(), {})
+
+    def test_close_own_tabs_with_no_owned_tab_makes_no_call(self):
+        mcp = self.fake()
+        self.assertEqual(self.call(ab.close_own_tabs()), [])
+        self.assertEqual(mcp.calls, [])
 
     def test_tabs_opened_inside_run_become_owned_and_marker_is_hidden(self):
         self.fake("hello\n__ASIDE_OPENED__:[\"T9\"]")
