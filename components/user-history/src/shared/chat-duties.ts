@@ -340,8 +340,11 @@ export const CHECK_IN_DUTY_ID = "checkin";
  * setting); its precheck reads each open goal's number, trend, pace and owner job (src/checkin-goals.ts) and sorts every open step into a
  * class (src/chat-checkin.ts), and its run starts one check-in job with that as context. Its headline is goal_gaps, the open goals whose
  * number is off pace or that no live job owns (owner 10-15: "Check in 이 일을 쭉쭉 밀어줘야되는데 it's deeply flawed"), then stuck_steps, the
- * end state of the steps, then finished_open and stalled_steps for a plan that matches reality. Every other count of the measure
- * (`ConvergenceMisses`) stays in its output and its flagged items, which the check-in job reads in its findings.
+ * end state of the steps, then no_done_line and plan_risks for a plan of finishable work (c110). Every other count of the measure
+ * (`ConvergenceMisses`), finished_open and stalled_steps included, stays in its output and its flagged items, which the check-in job reads in
+ * its findings. c75 caps a duty at one headline and 3 more: 18e1484e added the two c110 counts on 10-18 at 12:03Z and took the check-in to 6,
+ * so every check-in run's summary said "this duty is over the shape target" and asked the chat to rework a duty no chat owns. A stalled step
+ * is a stuck step's earlier warning, and a done-but-open item closes in the same run's plan sync.
  */
 export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
   id: CHECK_IN_DUTY_ID,
@@ -360,8 +363,6 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
   metrics: [
     { key: "goal_gaps", label: "Open goals off pace or with no live job that owns their number", op: "<=", target: 0, headline: true },
     { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0 },
-    { key: "finished_open", label: "Done items still open", op: "<=", target: 0 },
-    { key: "stalled_steps", label: "Steps waiting over 2 hours on the same thing", op: "<=", target: 0 },
     { key: "no_done_line", label: "Open goals with no done line (no target and no \"Done when\" note)", op: "<=", target: 0 },
     { key: "plan_risks", label: "Open plan steps that hold a standing risk, not finishable work", op: "<=", target: 0 },
   ],
