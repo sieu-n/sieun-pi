@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
-import { type Cut, cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
+import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
@@ -133,8 +133,11 @@ export interface Hold { what: string; from: number; to: number }
 /** A continue or wake the fleet budget let through for a session (`starts after N s`): proof the start was admitted. */
 export interface Grant { kind: string; session: string; at: number; waitS: number }
 export interface LogFacts { holds: Hold[]; grants?: Grant[]; firstAt?: number }
-/** A job session whose last turn was cut and that got no input since (`cutEnd`), found in a live chat's tree. */
-export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; root?: { session: string; name: string }; proof?: string;
+/**
+ * A job session whose turn was cut (`cutEnd`), found in a live chat's tree: either it got no input since, or `resumedAt` is when its next input
+ * came. A resumed cut still held its minutes up to that input.
+ */
+export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; resumedAt?: number; root?: { session: string; name: string }; proof?: string;
   /** A later session in the same chat that carries the job's name: the work went to that replacement. */
   replacedBy?: string }
 
@@ -358,9 +361,9 @@ export function measure(input: Inputs): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   const queueHolds: Hold[] = [
     ...input.log.holds,
-    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: job.at, to: now })),
+    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: job.at, to: job.resumedAt ?? now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
-  const cutHeld = (input.cut ?? []).filter(job => now - job.at > HOLD_MS);
+  const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - job.at > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
@@ -496,7 +499,9 @@ export function measure(input: Inputs): PrecheckOutput {
  */
 export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number,
   stops: DaemonStops = { restarts: [], sigterms: [] }): Promise<CutJob[]> {
-  const candidates: { chat: string; chain: readonly Folder[]; path: string; end: Cut }[] = [];
+  const candidates: { chat: string; chain: readonly Folder[]; path: string; end: CutSpan }[] = [];
+  // Cuts that some input ended at or after this still held minutes of measure's window, which starts at most WINDOW_MS + 1 min before now.
+  const since = now - WINDOW_MS - MINUTE;
   /** Per chat, each job name read in the look-back with the latest session that carries it, for `replacedBy`. */
   const latest = new Map<string, Map<string, string>>();
   const gone = new Set(Object.values(deleted).flatMap(chat => Object.keys(chat ?? {})));
@@ -532,8 +537,9 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
           if ((names.get(name) ?? "") < session) names.set(name, session);
           latest.set(chat, names);
         }
-        const end = await readCut(path);
-        if (end && now - end.at <= CUT_LOOKBACK_MS) candidates.push({ chat, chain: here, path, end });
+        // A file last written before `since` got no input since then, so only the cut it ends on can hold the window.
+        const spans = changed >= since ? await readCutSpans(path, since) : [await readCut(path)].filter((cut): cut is CutSpan => cut !== null);
+        for (const end of spans) if (end.resumedAt !== undefined || now - end.at <= CUT_LOOKBACK_MS) candidates.push({ chat, chain: here, path, end });
       }));
     }
   };
@@ -549,9 +555,9 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
       return { session: folder.file.slice(0, -".jsonl".length), name: typeof name === "string" ? name : basename(folder.dir) };
     };
     const job = await jobOf(chain.at(-1)!);
-    const later = latest.get(chat)?.get(job.name);
-    found.push({ ...job, chat, at: end.at, cause: end.cause, root: await jobOf(chain[0]!), ...(proof ? { proof } : {}),
-      ...(later !== undefined && later > job.session ? { replacedBy: later } : {}) });
+    const later = end.resumedAt === undefined ? latest.get(chat)?.get(job.name) : undefined;
+    found.push({ ...job, chat, at: end.at, cause: end.cause, ...end.resumedAt === undefined ? {} : { resumedAt: end.resumedAt }, root: await jobOf(chain[0]!),
+      ...(proof ? { proof } : {}), ...(later !== undefined && later > job.session ? { replacedBy: later } : {}) });
   }
   return found;
 }
@@ -593,6 +599,8 @@ export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<s
     // A chat whose check-in the owner paused is parked: the owner's focus pause at 23:03Z on 10-17 stopped watchlist last fixes in launch main
     // bro, and the duty counted it as a start held from 23:15Z on, 25 of the 30 minutes at 23:39Z.
     if (paused.has(job.chat)) return false;
+    // A cut that a later input ended was work someone wanted back, whatever the board says now: once its step is done the board no longer names it.
+    if (job.resumedAt !== undefined) return true;
     const open = steps.get(job.chat);
     if (!open) return true;
     // A later session took the work: a newer job of the same name (ci train 01a13a70 and its replacement 01a14068 on 10-16), or a step that names
