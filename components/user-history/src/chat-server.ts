@@ -4,7 +4,6 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
 import type { Duplex } from "node:stream";
-import { createGzip, type Gzip } from "node:zlib";
 import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
@@ -14,9 +13,8 @@ import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, rende
 import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
-import { isPriority, isProgress, LabelError } from "./chat-labels.ts";
+import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
-import type { BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
@@ -217,14 +215,6 @@ function threadIds(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected thread IDs.");
   return [...new Set(value.map(id => threadId(id)))];
 }
-function parseBookmarkAction(body: Record<string, unknown>): BookmarkAction {
-  if (body.op === "clear") return { op: "clear" };
-  const chat = threadId(text(body.chat, "chat", 256));
-  if (typeof body.at !== "number" || !Number.isSafeInteger(body.at) || body.at < 0) throw new RequestError(400, "Choose a message time.");
-  if (body.op === "remove") return { op: "remove", chat, at: body.at };
-  if (body.op === "add") return { op: "add", chat, at: body.at, text: text(body.text, "text") };
-  throw new RequestError(400, "Choose add, remove or clear.");
-}
 function parseLabelAction(body: Record<string, unknown>): LabelAction {
   const tagId = () => text(body.tagId, "tagId", 64);
   const name = () => text(body.name, "name");
@@ -238,36 +228,7 @@ function parseLabelAction(body: Record<string, unknown>): LabelAction {
     case "priority":
       if (!isPriority(body.priority)) throw new RequestError(400, "Choose a priority from 0 to 3.");
       return { op: "priority", ids: threadIds(body.ids), priority: body.priority };
-    case "progress":
-      if (!isProgress(body.progress)) throw new RequestError(400, "Choose none, plan, implementation or qa.");
-      return { op: "progress", ids: threadIds(body.ids), progress: body.progress };
     default: throw new RequestError(400, "Unknown label action.");
-  }
-}
-
-class EventStream {
-  private readonly gzip: Gzip | null;
-  private readonly ping: ReturnType<typeof setInterval>;
-  closed = false;
-  constructor(private readonly res: ServerResponse, acceptGzip: boolean) {
-    this.gzip = acceptGzip ? createGzip({ level: 1 }) : null;
-    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no",
-      ...(this.gzip ? { "Content-Encoding": "gzip" } : {}) });
-    if (this.gzip) this.gzip.pipe(res);
-    this.write(": open\n\n");
-    this.ping = setInterval(() => this.write(": ping\n\n"), 20000);
-    res.once("close", () => this.close());
-  }
-  private write(chunk: string): void {
-    if (this.closed) return;
-    if (this.gzip) { this.gzip.write(chunk); this.gzip.flush(); } else this.res.write(chunk);
-  }
-  send(event: string, data: unknown): void { this.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    clearInterval(this.ping);
-    if (this.gzip) this.gzip.end(); else this.res.end();
   }
 }
 
@@ -378,7 +339,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
-  const streams = new Set<EventStream>();
   let host = "";
   let closing: Promise<void> | undefined;
 
@@ -418,7 +378,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   function close(): Promise<void> {
     if (closing) return closing;
     closing = (async () => {
-      for (const stream of streams) stream.close();
       feeds.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       sends.clear();
@@ -427,12 +386,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       await backend.close();
     })();
     return closing;
-  }
-  function openStream(req: IncomingMessage, res: ServerResponse): EventStream {
-    const stream = new EventStream(res, /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? "")));
-    streams.add(stream);
-    res.once("close", () => streams.delete(stream));
-    return stream;
   }
   /** The page origin for the requested host: loopback HTTP, or the remote HTTPS origin while phone access is on. */
   function requestOrigin(req: IncomingMessage): string | null {
@@ -512,13 +465,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const appFile = built.app?.(route);
           if (appFile) { serveAsset(req, res, appFile); return; }
         }
-        if (route === "api/sessions/stream") {
-          const stream = openStream(req, res);
-          sendBuild(version => stream.send("build", { version }));
-          const unsubscribe = backend.catalog.subscribe(event => stream.send("sessions", event));
-          res.once("close", unsubscribe);
-          return;
-        }
         if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
         // The board skill on a box without the chat role reads the chat's files here (skills/board, hosts.json roles.chat).
         if (route === "api/agent/board") {
@@ -543,7 +489,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/new-chat") { json(res, 200, await backend.newChat.read()); return; }
-        if (route === "api/bookmarks") { json(res, 200, { bookmarks: await backend.bookmarks.list() }); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
         if (route === "api/slack") { json(res, 200, slack ? slack.view(origin === `http://${host}`) : null); return; }
         if (route === "api/slack/channels") {
@@ -565,12 +510,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const query = url.searchParams;
           if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")), parseMetric(query.get("metric")))); return; }
           if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
-        }
-        if (route === "api/accounts/login/stream") {
-          const stream = openStream(req, res);
-          const unsubscribe = logins.subscribe(login => stream.send("login", login));
-          res.once("close", unsubscribe);
-          return;
         }
         if (route === "api/accounts") {
           const id = url.searchParams.get("id");
@@ -611,18 +550,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (thread) {
           const id = threadId(decodeURIComponent(thread[1]!));
           const action = thread[2];
-          if (action === "stream") {
-            const stream = openStream(req, res);
-            try {
-              const unsubscribe = await backend.threads.subscribe(id, event => stream.send("thread", event));
-              res.once("close", unsubscribe);
-              if (stream.closed) unsubscribe();
-            } catch (error) {
-              stream.send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
-              stream.close();
-            }
-            return;
-          }
           if (action === "tool-output") {
             const toolCallId = url.searchParams.get("toolCallId") ?? "";
             if (!toolCallId || toolCallId.length > 512) throw new RequestError(400, "Choose a tool call.");
@@ -741,7 +668,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const start = typeof body.start === "string" ? await resolveWorkspace(body.start).catch(() => null) : null;
         json(res, 200, { cwd: await chooseFolder(start) }); return;
       }
-      if (route === "api/bookmarks") { json(res, 200, { bookmarks: await backend.bookmarks.apply(parseBookmarkAction(body)) }); return; }
       if (route === "api/labels") {
         const action = parseLabelAction(body);
         const result = await backend.labels.apply(action);

@@ -73,7 +73,7 @@ export function dutySink() {
 }
 
 export const row = (id: string, lastActivityAt: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, cwd: "/repo", kind: "live", status: "idle", archived: false,
-  messageCount: 3, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", origin: "user", lastActivityAt, ...extra });
+  messageCount: 3, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, origin: "user", lastActivityAt, ...extra });
 export const ownerAsks = (text: string, at: number): ThreadMessage => ({ role: "user", content: text, timestamp: at });
 export const reply = (stopReason: "stop" | "error", at: number, errorMessage?: string): ThreadMessage =>
   ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp: at, ...(errorMessage ? { errorMessage } : {}) });

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { PROGRESS_STEPS, type LabelAction, type Priority, type Progress, type Tag, type ThreadLabels } from "./shared/types.ts";
+import type { LabelAction, Priority, Tag, ThreadLabels } from "./shared/types.ts";
 
 export interface LabelsState { tags: Tag[]; threads: Record<string, ThreadLabels> }
 const HUES = [262, 200, 150, 90, 40, 12, 330, 290] as const;
@@ -10,7 +10,6 @@ export class LabelError extends Error {
 }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const isPriority = (value: unknown): value is Priority => value === 0 || value === 1 || value === 2 || value === 3;
-export const isProgress = (value: unknown): value is Progress => (PROGRESS_STEPS as readonly unknown[]).includes(value);
 
 function parse(value: unknown): LabelsState {
   if (!isRecord(value) || !Array.isArray(value.tags) || !isRecord(value.threads)) throw new Error("Invalid browser labels");
@@ -22,8 +21,7 @@ function parse(value: unknown): LabelsState {
   const threads: Record<string, ThreadLabels> = Object.create(null);
   for (const [id, entry] of Object.entries(value.threads)) {
     if (!isRecord(entry) || !Array.isArray(entry.tags) || !isPriority(entry.priority)) throw new Error("Invalid browser thread labels");
-    if (entry.progress !== undefined && !isProgress(entry.progress)) throw new Error("Invalid browser thread progress");
-    threads[id] = { tags: entry.tags.filter((tag): tag is string => typeof tag === "string" && known.has(tag)), priority: entry.priority, progress: entry.progress ?? "none" };
+    threads[id] = { tags: entry.tags.filter((tag): tag is string => typeof tag === "string" && known.has(tag)), priority: entry.priority };
   }
   return { tags, threads };
 }
@@ -35,11 +33,11 @@ export function tagName(value: string): string {
 }
 
 function entry(state: LabelsState, id: string): ThreadLabels {
-  return state.threads[id] ??= { tags: [], priority: 0, progress: "none" };
+  return state.threads[id] ??= { tags: [], priority: 0 };
 }
 
 function prune(state: LabelsState): void {
-  for (const [id, labels] of Object.entries(state.threads)) if (!labels.tags.length && labels.priority === 0 && labels.progress === "none") delete state.threads[id];
+  for (const [id, labels] of Object.entries(state.threads)) if (!labels.tags.length && labels.priority === 0) delete state.threads[id];
 }
 
 /** Applies one action to the state in place. Creating a tag that already exists (by name, any case) reuses it. */
@@ -86,9 +84,6 @@ export function applyLabelAction(state: LabelsState, action: LabelAction): strin
       break;
     case "priority":
       for (const id of action.ids) entry(state, id).priority = action.priority;
-      break;
-    case "progress":
-      for (const id of action.ids) entry(state, id).progress = action.progress;
       break;
   }
   prune(state);
