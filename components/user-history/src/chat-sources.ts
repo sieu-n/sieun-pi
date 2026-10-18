@@ -308,6 +308,8 @@ export interface CheckInSource {
    * (tests): an owner archive is not remembered.
    */
   archived?: IdIndex;
+  /** `<data dir>/clean-room-chats.json`: the clean-room test chats, which the scan never takes back as chats after their teardown. Absent (tests): none. */
+  cleanRoomChats?: IdIndex;
   /**
    * Set on a serve that does not own the live chats (a test or scratch data dir, `chat serve --no-adopt`): `<data dir>/own-chats.json`, the chats
    * this serve created. It pins, steers, reloads and checks in only those, even when its chats.json is a copy of the live one, and never scans

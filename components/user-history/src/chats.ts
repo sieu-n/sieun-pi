@@ -34,7 +34,7 @@ import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
-import { chatName, fileHasChatMarker } from "./chat-guard.ts";
+import { chatName, fileHasChatMarker, lastSessionStatus } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 
 export { TELL_OWNER_TOOL };
@@ -453,11 +453,18 @@ export class Chats {
     try { rows = await this.source.rows(); }
     catch (error) { this.log(`chats: scan: ${error instanceof Error ? error.message : String(error)}`); return []; }
     const adopted: string[] = [];
-    const archived = await this.archivedIds();
+    const stopped = new Set([...await this.archivedIds(), ...await this.source.cleanRoomChats?.ids() ?? []]);
     for (const row of rows) {
-      if (this.chatIds.has(row.id) || this.plain.has(row.id) || row.archived || archived.has(row.id)) continue;
+      if (this.chatIds.has(row.id) || this.plain.has(row.id) || row.archived || stopped.has(row.id)) continue;
       if (now - (Date.parse(row.lastActivityAt ?? row.created ?? "") || 0) > ADOPT_RECENT_MS) continue;
-      const restored = await this.restore(row.id).catch((error: unknown) => {
+      // The rows and the records above may be minutes old by this row, so the check runs again in turn with the owner's archive: on 10-18 a
+      // scan that waited on session copies from the Mac re-adopted plan-and-duties run-1's chat at 14:29:52Z, 1.5 min after its teardown archived it.
+      const restored = await this.membership(row.id, async () => {
+        const stop = await this.adoptStop(row.id);
+        if (!stop) return this.restore(row.id);
+        this.log(`chat ${row.id.slice(0, 8)}: not re-adopted: ${stop}`);
+        return null;
+      }).catch((error: unknown) => {
         this.log(`chat ${row.id.slice(0, 8)}: scan: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       });
@@ -467,6 +474,18 @@ export class Chats {
       } else if (restored === false && row.messageCount > 0) this.plain.add(row.id);
     }
     return adopted;
+  }
+
+  /**
+   * Why the scan must not take a lost chat back, or null. The owner archived it, it is a clean-room test chat, or its session file's newest
+   * state is archived. Only the owner's unarchive or send (`restore`, `reopen`) takes such a chat back.
+   */
+  private async adoptStop(id: string): Promise<string | null> {
+    if ((await this.archivedIds()).has(id)) return "the owner archived it";
+    if ((await this.source.cleanRoomChats?.ids() ?? []).includes(id)) return "it is a clean-room test chat";
+    const sessionFile = (await this.summary(id))?.sessionFile;
+    if (sessionFile && await lastSessionStatus(sessionFile) === "archived") return "its session file's newest state is archived";
+    return null;
   }
 
   /**
