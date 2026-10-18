@@ -105,14 +105,14 @@ export interface SleepingLine { gb: number; workers: number; kernels: number; tr
 export const SLEEP_SLACK_MS = 2 * MINUTE;
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
-interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; lastAt: number; worker: number | undefined }
+interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; active: boolean; lastAt: number; worker: number | undefined }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function parseRow(value: unknown): Row | null {
   if (!isRecord(value) || typeof value.sessionId !== "string") return null;
   return { id: value.sessionId, parent: typeof value.parentSessionId === "string" ? value.parentSessionId : undefined,
     name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live" && typeof value.activeSessionId === "string",
     hosted: value.lifecycle === "live" && typeof value.workerPid === "number",
-    working: value.activity === "working", lastAt: typeof value.lastActivityAt === "string" ? Date.parse(value.lastActivityAt) : NaN,
+    working: value.activity === "working", active: value.isSessionActive === true, lastAt: typeof value.lastActivityAt === "string" ? Date.parse(value.lastActivityAt) : NaN,
     worker: typeof value.workerPid === "number" ? value.workerPid : undefined };
 }
 
@@ -190,14 +190,29 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
-    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(live, input.footprints, tree, input.now, input.idleMs) } : {},
+    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(live, byId, input.footprints, tree, input.now, input.idleMs) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
 }
 
-function sleepingLine(live: readonly Row[], footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
-  const asleep = new Map(live.filter(row => !row.working && now - row.lastAt > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
+/**
+ * A session with a session at work below it waits on that work, and the idle unload keeps it (src/idle-unload.ts `busyAncestors`), so it is
+ * not counted as sleeping: from 03:49Z on 10-18 'us-metal02 setup', quiet 13 to 17 min while its job metal02-ci-slice worked, read as 0.04 GB
+ * of the sleeping total that the unload could not stop.
+ */
+function waitingOnWork(live: readonly Row[], byId: ReadonlyMap<string, Row>): Set<string> {
+  const waiting = new Set<string>();
+  for (const row of live) {
+    if (!row.working && !row.active) continue;
+    for (let up = row.parent; up !== undefined && up !== row.id && !waiting.has(up); up = byId.get(up)?.parent) waiting.add(up);
+  }
+  return waiting;
+}
+
+function sleepingLine(live: readonly Row[], byId: ReadonlyMap<string, Row>, footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
+  const waiting = waitingOnWork(live, byId);
+  const asleep = new Map(live.filter(row => !row.working && !waiting.has(row.id) && now - row.lastAt > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
   const trees = new Map<string, { root: string; tree: string; bytes: number }>();
   const add = (row: Row, bytes: number) => {
     const found = tree(row);

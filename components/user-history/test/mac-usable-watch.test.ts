@@ -175,3 +175,20 @@ test("watchLine: sleeping counts each worker whose every resident session is idl
     "a session 11 min idle is inside the 2 min slack; a kernel in a whole sleeping worker counts once, with the worker");
   assert.equal(watchLine({ now: NOW, rows, footprints, queue: null, chats: new Set(), title: () => null, cpuMs: 0, idleMs: null }).sleeping, undefined, "idle eviction off");
 });
+
+// From 03:49Z on 10-18 'us-metal02 setup' sat quiet 13 to 17 min while its job metal02-ci-slice worked, and the watch counted its kernel as
+// sleeping, though the idle unload keeps a session with a session at work below it.
+test("watchLine: a session with a session at work below it waits on that work and is not sleeping", () => {
+  const idle = (minutes: number) => new Date(NOW - minutes * MIN).toISOString();
+  const rows = [
+    row("setup", { sessionName: "us-metal02 setup", workerPid: 34, lastActivityAt: idle(17) }),
+    row("slice", { parentSessionId: "setup", workerPid: 34, activity: "working", lastActivityAt: idle(10) }),
+    row("done", { parentSessionId: "setup", workerPid: 34, lastActivityAt: idle(20) }),
+  ];
+  const footprints: Footprints = { workers: { 34: { pids: 4, bytes: 0.5 * GB } },
+    kernels: [{ pid: 44, root: "setup", session: "setup", pids: 1, bytes: 0.04 * GB, biggest: null }, { pid: 45, root: "setup", session: "done", pids: 1, bytes: 0.1 * GB, biggest: null }],
+    swap_used_bytes: 6 * GB, pressure_level: 1, cpu_s: 0.1 };
+  const line = watchLine({ now: NOW, rows, footprints, queue: null, chats: new Set(), title: () => null, cpuMs: 0, idleMs: 10 * MIN });
+  assert.deepEqual(line.sleeping, { gb: 0.1, workers: 0, kernels: 1, trees: [{ root: "setup", tree: "us-metal02 setup", gb: 0.1 }] },
+    "the quiet sibling job still counts; its parent waits on the working job");
+});

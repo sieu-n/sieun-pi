@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultDaemonSocketPath, getAgentDir, type SessionSummary, SettingsManager } from "prime-agent";
+import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
 import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
 import type { HostCatalogs } from "./host-catalogs.ts";
@@ -22,7 +22,7 @@ import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-que
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
-import { quietWorkers, RECYCLE_QUIET_MS, recyclePlan, unloadPlan } from "./idle-unload.ts";
+import { IdleUnloader } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -271,55 +271,38 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a session that ended its task after ENDED_MS, since Prime's own
-  // sweeps fail under load (src/idle-unload.ts). A quiet worker that grew past RECYCLE_OWN_BYTES is recycled.
-  const unloadIdle = async (): Promise<void> => {
-    const stopped: string[] = [];
-    const minutes = defaults.idleEviction();
-    const chatIds = await chats.ids();
-    const attached = new Set([...chatIds].filter(id => !threads.isDormant(id)));
-    const pool = await poolWaiting();
-    const done = new Set<string>();
-    const stop = async (row: SessionSummary): Promise<boolean> => {
-      if (done.has(row.sessionId)) return true;
-      const response = await catalog.clientFor(row.activeSessionId!).request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
-      if (!response.success) { dutyLog(`idle unload: ${row.sessionId.slice(0, 8)}: ${response.error}`); return false; }
-      done.add(row.sessionId);
+  // sweeps fail under load. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait
+  // for a slow kill (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that
+  // knows which chats a tab or the pool holds.
+  const unloader_ = new IdleUnloader({
+    rows: () => [...catalog.daemonRows(), ...catalog.remoteRows()],
+    localRows: () => catalog.daemonRows(),
+    idleMs: () => { const minutes = defaults.idleEviction(); return minutes === "off" ? null : minutes * 60_000; },
+    chats: () => chats.ids(),
+    dormant: id => threads.isDormant(id),
+    pool: () => poolWaiting(),
+    waking: async now => new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session)),
+    own: async pids => {
+      const footprints = await readFootprints([...pids]);
+      return new Map(Object.entries(footprints.workers).map(([pid, worker]) => [Number(pid), worker.own ?? 0] as const));
+    },
+    restNow: (id, quietMs) => threads.restNow(id, quietMs),
+    title: id => catalog.title(id),
+    request: (row, type) => catalog.clientFor(row.activeSessionId!).request({ type, activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false })
+      .catch(error => ({ success: false as const, error: String(error) })),
+    stopped: async (row, isChat) => {
       await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       // The daemon's kill writes the archived state, which would hide the chat until the next service start unarchived it (Chats.adopt).
-      if (chatIds.has(row.sessionId)) await threads.unarchive(row.sessionId).catch(error => dutyLog(`idle unload: unarchive ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
-      return true;
-    };
-    const now = Date.now();
-    const wakingNow = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
-    // Every box's idle sessions stop from here, since the chat service is the one place that knows which chats a tab or the pool holds.
-    for (const row of unloadPlan([...catalog.daemonRows(), ...catalog.remoteRows()], { attached, pool, now, idleMs: minutes === "off" ? null : minutes * 60_000, chats: chatIds, waking: wakingNow })) {
-      if (await stop(row)) stopped.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
-    }
-    if (stopped.length) dutyLog(`idle unload: stopped ${stopped.length} idle sessions: ${stopped.join(", ")}`);
-    // A quiet worker that grew past RECYCLE_OWN_BYTES of its own is recycled: its attached chat detaches now, and the next sweep stops every
-    // session on it so the worker exits (src/idle-unload.ts). Idle eviction off recycles none.
-    if (minutes === "off") return;
-    const quiet = quietWorkers(catalog.daemonRows(), { chats: chatIds, pool, now: Date.now() });
-    if (!quiet.length) return;
-    const footprints = await readFootprints(quiet.map(worker => worker.pid));
-    const own = new Map(Object.entries(footprints.workers).map(([pid, worker]) => [Number(pid), worker.own ?? 0] as const));
-    for (const worker of recyclePlan(quiet, own)) {
-      const gb = ((own.get(worker.pid) ?? 0) / 1024 ** 3).toFixed(2);
-      if (worker.attached.length) {
-        const detached = await Promise.all(worker.attached.map(id => threads.restNow(id, RECYCLE_QUIET_MS)));
-        if (detached.some(Boolean)) dutyLog(`idle unload: worker ${worker.pid} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => catalog.title(id) ?? id.slice(0, 8)).join(", ")} to recycle it`);
-        continue;
-      }
-      const names: string[] = [];
-      for (const row of worker.stop) if (await stop(row)) names.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
-      if (names.length) dutyLog(`idle unload: recycled worker ${worker.pid} (${gb} GB of its own) by stopping ${names.length} quiet sessions: ${names.join(", ")}`);
-    }
-  };
+      if (isChat) await threads.unarchive(row.sessionId).catch(error => dutyLog(`idle unload: unarchive ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    },
+    log: dutyLog,
+    now: () => Date.now(),
+  });
   let unloading = false;
   const unloader = options.ownChatsOnly ? undefined : setInterval(() => {
     if (unloading) return;
     unloading = true;
-    void unloadIdle().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
+    void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
   }, 60_000);
   unloader?.unref();
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);

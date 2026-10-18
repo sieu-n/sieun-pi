@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, unloadPlan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, IdleUnloader, quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, unloadPlan } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; pool: string[]; rows: SessionSummary[] };
 const load = (name: string): Fixture => JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", name), "utf8")) as Fixture;
@@ -158,4 +158,68 @@ test("the 01:16Z rows stop each session that ended its task once quiet ENDED_MS,
   assert.ok(!names.includes("us-metal02 setup"), "a root with its metal02-ci-slice child at work stays");
   const job = day18b.rows.find(row => row.sessionName === "runner reviewer")!;
   assert.equal(unloadPlan([job], { ...input, waking: new Set([job.sessionId]) }).length, 1, "a pending board.wake marks the job as waiting");
+});
+
+// service.log on 10-18: the sweep that stopped 'alerts-h-proxy' at 03:12:53Z was followed by one that ran through 22 kill timeouts of 30 s
+// each until 03:36:49Z, then one until 03:48:24Z. Each kill waited for the one before it, the next sweep waited for the whole sweep, and the
+// plan was read when the sweep started, so the 26 sessions stopped at 03:48:24Z had sat quiet 10.5 to 15.7 min.
+type Call = { type: "get_state" | "kill"; session: string; at: number };
+function harness(rows: SessionSummary[], answers: { kill?: (row: SessionSummary) => Promise<DaemonAnswer>; state?: (row: SessionSummary) => DaemonAnswer } = {}) {
+  const calls: Call[] = [];
+  const stopped: string[] = [];
+  const lines: string[] = [];
+  const clock = { now: at15 };
+  const unloader = new IdleUnloader({
+    rows: () => rows, localRows: () => [], idleMs: () => TEN_MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
+    waking: async () => new Set(), own: async () => new Map(), restNow: async () => false, title: () => null,
+    request: async (row, type) => {
+      calls.push({ type, session: row.sessionId, at: clock.now });
+      if (type === "get_state") return answers.state?.(row) ?? { success: true, data: { isSessionActive: false, isStreaming: false, isCompacting: false, isBashRunning: false } };
+      return answers.kill ? answers.kill(row) : { success: true };
+    },
+    stopped: async row => { stopped.push(row.sessionId); }, log: line => { lines.push(line); }, now: () => clock.now,
+  });
+  return { unloader, calls, stopped, lines, clock };
+}
+const quietRoot = (id: string, quietMs: number): SessionSummary => ({ ...unjudged(plan15.find(isRoot)!), sessionId: id, activeSessionId: id, sessionName: id,
+  lastActivityAt: new Date(at15 - quietMs).toISOString() }) as SessionSummary;
+const turn = () => new Promise(resolve => setImmediate(resolve));
+
+test("a kill the daemon does not answer holds up neither the other stops of its sweep nor the next sweep", async () => {
+  const rows = [quietRoot("hung", TEN_MIN + MIN), quietRoot("quick", TEN_MIN + MIN), quietRoot("later", TEN_MIN - MIN)];
+  const never = new Promise<DaemonAnswer>(() => {});
+  const { unloader, calls, stopped, clock } = harness(rows, { kill: async row => row.sessionId === "hung" ? never : { success: true } });
+  await unloader.sweep();
+  await turn();
+  assert.deepEqual(stopped, ["quick"], "the stop beside the hung kill went through");
+  clock.now += 2 * MIN;
+  await unloader.sweep();
+  await turn();
+  assert.deepEqual(stopped, ["quick", "later"], "the next sweep read its plan fresh and stopped the session that went quiet since");
+  assert.equal(calls.filter(call => call.type === "kill" && call.session === "hung").length, 1, "the session whose kill is still out is not asked again");
+});
+
+test("a session the daemon shows at work when its stop comes is kept, so no kill lands mid-turn", async () => {
+  const rows = [quietRoot("stale-row", TEN_MIN + MIN)];
+  const { unloader, calls, stopped } = harness(rows, { state: () => ({ success: true, data: { isSessionActive: true, isStreaming: true } }) });
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(stopped, []);
+  assert.deepEqual(calls.map(call => call.type), ["get_state"], "no kill was sent");
+});
+
+test("a stale row whose active session the daemon does not know is not asked again until the row changes", async () => {
+  const rows = [quietRoot("gone", TEN_MIN + MIN)];
+  const { unloader, calls, clock } = harness(rows, { state: () => ({ success: false, error: "Unknown active session: gone" }) });
+  await unloader.sweep();
+  await unloader.settled();
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.equal(calls.length, 1, "the second sweep skipped the same stale row");
+  rows[0] = { ...rows[0]!, lastActivityAt: new Date(at15 - TEN_MIN + 30_000).toISOString() };
+  clock.now += 2 * MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.equal(calls.length, 2, "a row that changed is planned again");
 });

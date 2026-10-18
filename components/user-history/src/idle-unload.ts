@@ -102,3 +102,143 @@ export function quietWorkers(rows: readonly SessionSummary[], input: { chats: Re
 export function recyclePlan(quiet: readonly QuietWorker[], own: ReadonlyMap<number, number>, recycleBytes = RECYCLE_OWN_BYTES): QuietWorker[] {
   return quiet.filter(worker => (own.get(worker.pid) ?? 0) >= recycleBytes);
 }
+
+/** A daemon's answer to one request, as `DaemonClient.request` resolves it. */
+export type DaemonAnswer = { success: true; data?: unknown } | { success: false; error: string };
+
+/** What one sweep of `IdleUnloader` reads and calls. The chat backend wires it to the catalog, the hub and each box's daemon. */
+export interface UnloadSource {
+  /** Every box's daemon rows, which the plan reads. */
+  rows(): readonly SessionSummary[];
+  /** This box's rows, which the worker recycle reads, since only this box's footprints are measured. */
+  localRows(): readonly SessionSummary[];
+  /** idleEvictionMinutes in ms; null when idle eviction is off. */
+  idleMs(): number | null;
+  chats(): Promise<ReadonlySet<string>>;
+  /** Whether the hub detached the chat as dormant. */
+  dormant(id: string): boolean;
+  /** The sessions with a turn working or queued in pi-pool. */
+  pool(): Promise<ReadonlySet<string>>;
+  /** The sessions with a board.wake pending at `now`. */
+  waking(now: number): Promise<ReadonlySet<string>>;
+  /** Each worker's own footprint in bytes, by pid. */
+  own(pids: readonly number[]): Promise<ReadonlyMap<number, number>>;
+  restNow(id: string, quietMs: number): Promise<boolean>;
+  title(id: string): string | null;
+  /** `get_state` or `kill` for the row's active session, through the daemon of the row's box. */
+  request(row: SessionSummary, type: "get_state" | "kill"): Promise<DaemonAnswer>;
+  /** Runs after a kill succeeded: record the stop, and unarchive a chat, since the kill writes the archived state. */
+  stopped(row: SessionSummary, isChat: boolean): Promise<void>;
+  log(line: string): void;
+  now(): number;
+}
+
+/** The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input or a background bash. */
+function stateBusy(data: unknown): boolean {
+  const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
+  return state.isSessionActive !== false || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true;
+}
+const unknownActive = (error: string): boolean => /Unknown active session/.test(error);
+
+/**
+ * Runs the idle unload once a minute without letting one slow kill hold up the rest. Up to 10-18 every kill of a sweep waited for the one
+ * before it, and the next sweep waited for the whole sweep. With the daemon answering a kill only after its 30 s timeout, the sweep that
+ * stopped 'alerts-h-proxy' at 03:12:53Z was followed by one that ran until 03:36:49Z through 22 kill timeouts, then one until 03:48:24Z. Its
+ * plan was read when it started, so a session that went quiet meanwhile waited for the next sweep: the 26 sessions stopped at 03:48:24Z had
+ * been quiet 10.5 to 15.7 min, the Douyin index gaps jobs among them, and '***launch main bro***', detached as dormant just after the sweep
+ * read its plan, kept a whole 0.54 GB worker until Prime evicted it at 03:46:59Z. sleeping_gb read 0.8 GB over the 30 min to 03:46Z against
+ * its 0.25 GB target.
+ * Now each sweep reads its plan fresh and starts every stop at once, and a session whose stop is still out is not asked again. Each stop asks
+ * the daemon for the session's state first and keeps a session that started a turn since the row was listed, so no kill lands mid-turn.
+ * An active session the daemon does not know is skipped until its row changes: on 10-18 from 03:12Z the same stale rows of 01a14cf1 and
+ * 01a14cf2 were asked to stop in four sweeps.
+ */
+export class IdleUnloader {
+  /** The stop under way for each session id. */
+  private readonly out = new Map<string, Promise<boolean>>();
+  /** Rows the daemon no longer knows or that were stopped, by active session id and lastActivityAt, so a stale row is not asked again. */
+  private readonly gone = new Set<string>();
+  private readonly running = new Set<Promise<unknown>>();
+
+  constructor(private readonly source: UnloadSource) {}
+
+  /** Plans from the rows now and starts each stop and recycle. Resolves once they have started, not once they end (`settled`). */
+  async sweep(): Promise<void> {
+    const source = this.source;
+    const idleMs = source.idleMs();
+    const chats = await source.chats();
+    const attached = new Set([...chats].filter(id => !source.dormant(id)));
+    const pool = await source.pool();
+    const now = source.now();
+    const waking = await source.waking(now);
+    const plan = unloadPlan(source.rows(), { attached, pool, now, idleMs, chats, waking }).filter(row => !this.out.has(row.sessionId) && !this.gone.has(goneKey(row)));
+    if (plan.length) {
+      this.track(Promise.all(plan.map(async row => await this.stop(row, chats) ? [row.sessionName?.trim() || row.sessionId.slice(0, 8)] : [])).then(names => {
+        const stopped = names.flat();
+        if (stopped.length) source.log(`idle unload: stopped ${stopped.length} idle sessions: ${stopped.join(", ")}`);
+      }));
+    }
+    // A quiet worker that grew past RECYCLE_OWN_BYTES of its own is recycled: its attached chat detaches now, and the next sweep stops every
+    // session on it so the worker exits. Idle eviction off recycles none.
+    if (idleMs === null) return;
+    const quiet = quietWorkers(source.localRows(), { chats, pool, now: source.now() }).filter(worker => !worker.stop.some(row => this.out.has(row.sessionId)));
+    if (!quiet.length) return;
+    const own = await source.own(quiet.map(worker => worker.pid));
+    for (const worker of recyclePlan(quiet, own)) {
+      const gb = ((own.get(worker.pid) ?? 0) / 1024 ** 3).toFixed(2);
+      if (worker.attached.length) {
+        const detached = await Promise.all(worker.attached.map(id => source.restNow(id, RECYCLE_QUIET_MS)));
+        if (detached.some(Boolean)) source.log(`idle unload: worker ${worker.pid} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => source.title(id) ?? id.slice(0, 8)).join(", ")} to recycle it`);
+        continue;
+      }
+      // Deepest first, one after another, as before: the worker exits once its last session stops.
+      this.track((async () => {
+        const names: string[] = [];
+        for (const row of worker.stop) if (await this.stop(row, chats)) names.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
+        if (names.length) source.log(`idle unload: recycled worker ${worker.pid} (${gb} GB of its own) by stopping ${names.length} quiet sessions: ${names.join(", ")}`);
+      })());
+    }
+  }
+
+  /** Waits until no stop is under way. */
+  async settled(): Promise<void> {
+    while (this.running.size) await Promise.allSettled([...this.running]);
+  }
+
+  private track(work: Promise<unknown>): void {
+    const tracked = work.catch(error => this.source.log(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { this.running.delete(tracked); });
+    this.running.add(tracked);
+  }
+
+  /** The session's stop, shared by every caller while it is under way; true once the daemon stopped it. */
+  private stop(row: SessionSummary, chats: ReadonlySet<string>): Promise<boolean> {
+    const known = this.out.get(row.sessionId);
+    if (known) return known;
+    const run = this.stopNow(row, chats).catch(error => {
+      this.source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }).finally(() => { this.out.delete(row.sessionId); });
+    this.out.set(row.sessionId, run);
+    return run;
+  }
+
+  private async stopNow(row: SessionSummary, chats: ReadonlySet<string>): Promise<boolean> {
+    const source = this.source;
+    const failed = (answer: { error: string }): false => {
+      if (unknownActive(answer.error)) this.gone.add(goneKey(row));
+      source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${answer.error}${unknownActive(answer.error) ? "; skipped until its row changes" : ""}`);
+      return false;
+    };
+    const state = await source.request(row, "get_state");
+    if (!state.success) return failed(state);
+    if (stateBusy(state.data)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
+    const killed = await source.request(row, "kill");
+    if (!killed.success) return failed(killed);
+    this.gone.add(goneKey(row));
+    await source.stopped(row, chats.has(row.sessionId));
+    return true;
+  }
+}
+
+/** A row's active session at its last activity; a reload or new work changes it, so only the stale row itself is skipped. */
+const goneKey = (row: SessionSummary): string => `${row.activeSessionId ?? ""}@${row.lastActivityAt ?? ""}`;
