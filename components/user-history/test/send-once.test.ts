@@ -27,7 +27,7 @@ async function slowDaemon(agentDir?: string) {
   await mkdir(join(agentDir, "sessions"), { recursive: true });
   await writeFile(file, other(NOW - 3_600_000));
   let now = NOW;
-  const state = { mode: "lands" as "lands" | "closes" | "queues" | "loses" | "refuses" | "hangs" | "ok", queue: [] as string[], queueReadable: true, busy: false, unfinished: 0, sends: 0, looks: 0, waits: 0 };
+  const state = { mode: "lands" as "lands" | "closes" | "queues" | "loses" | "refuses" | "stopping" | "hangs" | "ok", queue: [] as string[], queueReadable: true, busy: false, unfinished: 0, sends: 0, looks: 0, waits: 0 };
   const copies = async (): Promise<number> => (await readFile(file, "utf8")).split("\n").filter(line => line.includes('"agent_message"')).length;
   let release: (error: Error) => void = () => {};
   const lines: string[] = [];
@@ -38,6 +38,7 @@ async function slowDaemon(agentDir?: string) {
       if (state.mode === "ok") { await appendFile(file, entry(text, now)); return "sent"; }
       if (state.mode === "hangs") return new Promise((_resolve, reject) => { release = reject; });
       if (state.mode === "refuses") throw new Error("Target session has too many pending messages: 20 unfinished, limit is 20");
+      if (state.mode === "stopping") throw new Error("Session worker is stopping");
       if (state.mode === "lands") await appendFile(file, entry(text, now + 5_000));
       if (state.mode === "closes") {
         await appendFile(file, entry(text, now + 5_000));
@@ -194,6 +195,26 @@ test("send once: a target the daemon refused as full gets no send until get_stat
   await messages.outbox.idle();
   assert.equal(daemon.state.sends, 2);
   assert.equal(await daemon.copies(), 1);
+});
+
+// 10-18 12:17:28Z: idle unload stopped Mac job 01a11d25 as a VP of CI review reached it, and the outbox sent m-ded9b958 again at 12:17:31Z
+// and 12:17:35Z, each refused "Session worker is stopping" and each a fault in the Whole system precheck; it landed at 12:18:31Z.
+test("send once: a target whose worker is stopping gets no send until get_state reads it, and the wait logs one line", async t => {
+  const daemon = await slowDaemon();
+  const messages = daemon.open();
+  t.after(() => messages.outbox.close());
+  daemon.state.mode = "stopping";
+  daemon.state.queueReadable = false;
+  await messages.deliver(SESSION, "[cross-host message from VP of CI] review please: 6b0c55db32");
+  await until(() => daemon.state.looks >= 10 || daemon.state.sends >= 3);
+  assert.equal(daemon.state.sends, 1, "no send while get_state does not read the worker");
+  assert.deepEqual(daemon.lines.map(line => line.replace(/m-\S+/, "m-x")), ["outbox 01a142f0: the target's worker is stopping; m-x and the sends after it wait until get_state reads it"]);
+  daemon.state.mode = "ok";
+  daemon.state.queueReadable = true;
+  await messages.outbox.idle();
+  assert.equal(daemon.state.sends, 2);
+  assert.equal(await daemon.copies(), 1);
+  assert.match(daemon.lines.at(-1)!, /^outbox 01a142f0: m-\S+ went after its target's worker was stopping for \d+ s$/);
 });
 
 test("send once: a wake rewritten with a new time while its first copy waits is the same message", async t => {

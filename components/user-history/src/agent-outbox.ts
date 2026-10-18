@@ -31,6 +31,15 @@ class Gone extends Error {}
 /** The target still holds as many unfinished messages as the daemon takes, so nothing was sent. */
 class Full extends Error {}
 
+/** The target's worker is stopping or starting, so nothing was sent. */
+class Moving extends Error {}
+
+/**
+ * A refusal because the target's worker is stopping or starting (or its session is closing). 10-18 12:06 to 12:22Z, 5 such messages got 1 to
+ * 3 refusals each, every one counted in the Whole system precheck, and the outbox delivered each 6 to 63 s after its first refusal.
+ */
+const MOVING = /Session worker is (stopping|starting)|Active session \S+ is (closing)/;
+
 /** The daemon's pending message limit a refusal names ("Target session has too many pending messages: 20 unfinished, limit is 20"). */
 export function pendingLimit(error: unknown): number | undefined {
   const found = /too many pending messages: \d+ unfinished, limit is (\d+)/.exec(error instanceof Error ? error.message : String(error));
@@ -45,8 +54,13 @@ export class AgentOutbox {
    * made each minute of the Whole system precheck dirty. Such a target's next send waits until get_state reads room.
    */
   private readonly full = new Map<string, number>();
+  /** Targets whose worker was stopping or starting at the last send, with what it was doing and since when; their sends wait on get_state. */
+  private readonly moving = new Map<string, { doing: string; since: number }>();
+
+  private readonly now: () => number;
 
   constructor(dir: string, private readonly deps: AgentOutboxDeps) {
+    this.now = deps.now ?? Date.now;
     this.outbox = new Outbox({ dir, log: deps.log, ...deps.sleep ? { sleep: deps.sleep } : {}, ...deps.now ? { now: deps.now } : {},
       deliver: async (entry, sending) => {
         const session = entry.threadId;
@@ -75,7 +89,7 @@ export class AgentOutbox {
       },
       final: error => error instanceof Gone ? error.message : null,
       uncertain: isSendTimeout,
-      quiet: error => error instanceof Full,
+      quiet: error => error instanceof Full || error instanceof Moving,
       changed: () => {},
     });
   }
@@ -91,7 +105,16 @@ export class AgentOutbox {
   }
 
   private async send(session: string, entry: Stored): Promise<"sent" | "gone"> {
-    try { return await this.deps.send(session, entry.text); } catch (error) {
+    let sent: "sent" | "gone";
+    try { sent = await this.deps.send(session, entry.text); } catch (error) {
+      const doing = MOVING.exec(error instanceof Error ? error.message : String(error));
+      if (doing) {
+        if (!this.moving.has(session)) {
+          this.moving.set(session, { doing: doing[1] ?? doing[2]!, since: this.now() });
+          this.deps.log(`outbox ${session.slice(0, 8)}: the target's worker is ${doing[1] ?? doing[2]}; ${entry.id} and the sends after it wait until get_state reads it`);
+        }
+        throw new Moving(doing[0]);
+      }
       const limit = pendingLimit(error);
       if (limit !== undefined && !this.full.has(session)) {
         this.full.set(session, limit);
@@ -99,10 +122,18 @@ export class AgentOutbox {
       }
       throw error;
     }
+    const moved = this.moving.get(session);
+    if (moved) {
+      this.moving.delete(session);
+      if (sent === "sent") this.deps.log(`outbox ${session.slice(0, 8)}: ${entry.id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
+    }
+    return sent;
   }
 
   /** Throws Full while a target the daemon refused as full still reads as full, or does not answer; a target with no worker has room. */
   private async room(session: string, id: string): Promise<void> {
+    // The daemon refuses get_state too while the worker moves; a target that reads running or gone takes the send.
+    if (this.moving.has(session) && await this.deps.target(session).catch(() => null) === null) throw new Moving(`the target's worker is still ${this.moving.get(session)!.doing}`);
     const limit = this.full.get(session);
     if (limit === undefined) return;
     const target = await this.deps.target(session).catch(() => null);

@@ -33,6 +33,17 @@ const WORKER_START = /^daemon (create|resume|reload) (.+?): (answered|refused) i
 const NAME_TAKEN = /is unavailable: an agent of that name already exists/;
 const WORKER_NO_ANSWER = /^daemon (create|resume|reload) (.+): no answer after ([\d.]+) s: (.*)$/;
 /**
+ * The service closed its own daemon link: DaemonClient.close() is the only source of this error, and the clients of worker starts belong to
+ * the catalog, which closes them only when the service stops. 10-18 12:29:18Z the release cut "check-in metal-management 21:29" 3.3 s in, the
+ * daemon made the session anyway, and the next service's retry at 12:30:15Z found its name and the duty adopted it.
+ */
+const OWN_STOP = /Prime Agent daemon client closed before the operation completed/;
+/**
+ * An agent message the outbox held while its target's worker stopped or started (src/agent-outbox.ts). The wait counts once it passes
+ * SLOW_MS, as a send that slow would; the refusals before it are no fault of their own, since the outbox delivered each such message.
+ */
+const OUTBOX_MOVED = /^outbox ([0-9a-f]{8}): m-\S+ went after its target's worker was (\w+) for (\d+) s$/;
+/**
  * The service.log lines whose calls are opens, status reads or sends, by their prefix. Others, such as the catalog's copies of the Mac's
  * session files (591 "read ECONNRESET" lines from 11:15Z on 10-18) and the session list, are background reads outside the rule.
  */
@@ -100,7 +111,12 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
       continue;
     }
     if ((found = WORKER_NO_ANSWER.exec(text))) {
+      if (OWN_STOP.test(found[4]!)) continue;
       faults.push({ at: at + Number(found[3]) * 1000, host: hostOf(text, local), ...titleOrSession(found[2]!), what: `its ${found[1]} got no answer, ${faultReason(found[4]!) ?? found[4]!.slice(0, 80)}` });
+      continue;
+    }
+    if ((found = OUTBOX_MOVED.exec(text))) {
+      if (Number(found[3]) * 1000 > SLOW_MS) faults.push({ at, host: local, session: found[1]!, what: `an outbox send waited ${found[3]} s while its worker was ${found[2]}` });
       continue;
     }
     const prefix = PREFIXED.exec(text);

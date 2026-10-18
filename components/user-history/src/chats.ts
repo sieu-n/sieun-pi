@@ -799,7 +799,7 @@ export class Chats {
         const fresh = !first && !seen.has(id);
         seen.add(id);
         if (agent.state === "done" || reportedRoot(agent, said) || (agent.state === "working" && !fresh)) continue;
-        this.queue("#reload", () => this.refreshJob(id, fresh));
+        this.queue("#reload", () => this.refreshJob(id, fresh, row.id));
       }
     }
   }
@@ -846,11 +846,16 @@ export class Chats {
     }
   }
 
-  private async refreshJob(id: string, fresh: boolean): Promise<void> {
+  /**
+   * A duty job is never reloaded: its run ends with an archive, and 10-18 at 12:30:36Z the reload of check-in AI harness developer environment
+   * 21:27 met the stop of that archive, queued 15 s before, and the daemon refused it with "Daemon worker client closed".
+   */
+  private async refreshJob(id: string, fresh: boolean, chat: string): Promise<void> {
     if (this.jobsCurrent.has(id)) return;
     try {
       const loaded = await this.loads.get(id);
       if (!(loaded === undefined && fresh) && reloadAction(loaded, this.build, false) === "reload") {
+        if ((await this.source.dutyJobs?.(chat).catch((): readonly string[] => []))?.includes(id)) { this.jobsCurrent.add(id); return; }
         const result = await this.threads.reloadIdle(id);
         if (result === "busy") return;
         if (result === "reloaded") this.log(`job ${id.slice(0, 8)}: extension reloaded, build ${this.build}`);
