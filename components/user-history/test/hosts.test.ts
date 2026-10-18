@@ -28,7 +28,7 @@ before(async () => {
   relay = createRelay({ listen: "127.0.0.1", port: 0, daemonSocket, roots: [join(dir, "sessions")], token: TOKEN });
   await new Promise<void>(resolve => (relay as unknown as { listen(port: number, host: string, cb: () => void): void }).listen(0, "127.0.0.1", resolve));
   registry = parseHosts({ version: 1, hosts: [
-    { name: "box", hostname: "box-host", address: "127.0.0.1", relayPort: relay.address().port, token: `file:${join(dir, "token")}`, daemonSocket: "/tmp/x.sock", ssh: null,
+    { name: "box", hostname: "box-host", address: "127.0.0.1", relayPort: relay!.address().port, token: `file:${join(dir, "token")}`, daemonSocket: "/tmp/x.sock", ssh: null,
       roles: { pool: { port: 7781 } } },
     { name: "here", hostname: "here-host.local", address: "127.0.0.1", relayPort: 1, token: "file:t", daemonSocket: daemonSocket, ssh: null, roles: {} },
   ] });
@@ -79,7 +79,7 @@ test("a bridge socket carries bytes both ways to the remote daemon socket, and t
     assert.equal(bridge.socketPath("here"), registry.hosts[1]!.daemonSocket);
     const socket = createConnection(bridge.socketPath("box"));
     const received: Buffer[] = [];
-    socket.on("data", chunk => received.push(chunk));
+    socket.on("data", (chunk: Buffer) => received.push(chunk));
     socket.write("{\"type\":\"list\"}\n");
     const expected = "{\"type\":\"daemon_hello\"}\n{\"type\":\"list\"}\n";
     for (let wait = 0; Buffer.concat(received).toString() !== expected && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 20));
