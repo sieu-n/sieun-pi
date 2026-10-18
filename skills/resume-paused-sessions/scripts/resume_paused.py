@@ -95,6 +95,8 @@ Usage:
 import argparse
 import concurrent.futures
 import datetime as dt
+import hashlib
+import http.client
 import json
 import mmap
 import os
@@ -102,9 +104,9 @@ import re
 import shutil
 import socket
 import subprocess
-import urllib.error
+import threading
+import time
 import urllib.parse
-import urllib.request
 import sys
 from pathlib import Path
 
@@ -205,6 +207,9 @@ class LocalBox:
     def size(self, path):
         return os.path.getsize(path)
 
+    def tail(self, path, nbytes):
+        return self.read(path, max(0, self.size(path) - nbytes))
+
     def mtime(self, path):
         return os.path.getmtime(path)
 
@@ -226,22 +231,35 @@ class RelayBox:
 
     def __init__(self, host, token):
         self.name = host["name"]
-        self.base = f"http://{host['address']}:{host['relayPort']}"
+        self.address = host["address"]
+        self.port = int(host["relayPort"])
         self.token = token
         self.home = None
         self.rows = None
+        self.local = threading.local()
 
     def _get(self, path, start=None, timeout=20):
-        request = urllib.request.Request(f"{self.base}/v1/file?path={urllib.parse.quote(str(path))}",
-                                         headers={"Authorization": f"Bearer {self.token}", **({"Range": f"bytes={start}-"} if start is not None else {})})
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as answer:
-                return answer.status, dict(answer.headers), answer.read()
-        except urllib.error.HTTPError as error:
-            with error:
-                return error.code, dict(error.headers or {}), error.read()
-        except (OSError, ValueError) as error:
-            raise OSError(f"relay {self.name}: {error}") from None
+        """One GET /v1/file on this thread's kept-alive connection. Until 10-18 each read opened its own TCP connection, so a pass paid a
+        handshake, a request and a cold slow start at 185 ms a round trip for each of its 265 reads. A connection the relay closed while idle
+        is opened again once."""
+        target = f"/v1/file?path={urllib.parse.quote(str(path))}"
+        headers = {"Authorization": f"Bearer {self.token}", **({"Range": f"bytes={start}-"} if start is not None else {})}
+        for attempt in (0, 1):
+            connection = getattr(self.local, "connection", None)
+            if connection is None:
+                connection = self.local.connection = http.client.HTTPConnection(self.address, self.port, timeout=timeout)
+            try:
+                connection.request("GET", target, headers=headers)
+                answer = connection.getresponse()
+                body = answer.read()
+                if answer.will_close:
+                    connection.close()
+                return answer.status, dict(answer.headers), body
+            except (OSError, http.client.HTTPException) as error:
+                connection.close()
+                self.local.connection = None
+                if attempt:
+                    raise OSError(f"relay {self.name}: {error}") from None
 
     def _cli(self, *args):
         return run([shutil.which("node") or "node", str(HOSTS_CLI), "daemon", self.name, *args])
@@ -273,6 +291,52 @@ class RelayBox:
             return b""
         raise OSError(f"relay {self.name}: {path}: {status}")
 
+    def tail(self, path, nbytes):
+        """The last `nbytes` of the file, kept between passes in TAIL_CACHE with the size they end at, so a pass reads only the bytes the file
+        grew by. From 07:52 to 07:57Z on 10-18 each pass read about 265 Mac tails of 256 KB whole, 34 MB a pass and five passes in five minutes,
+        on the link the box's attach snapshots of Mac chats also need. A session file only grows; one shorter than the kept size was rewritten
+        and is read again from its end."""
+        if nbytes > TAIL_KEEP:
+            return self.read(path, max(0, self.size(path) - nbytes))
+        kept_at = TAIL_CACHE / self.name / (hashlib.sha256(str(path).encode()).hexdigest() + ".tail")
+        try:
+            head, _, kept = kept_at.read_bytes().partition(b"\n")
+            size = int(head)
+        except (OSError, ValueError):
+            size, kept = None, b""
+        grown = size is None
+        if size is not None:
+            status, headers, body = self._get(path, start=size or None)
+            if status in (200, 206):
+                size, kept, grown = size + len(body), (kept + body)[-TAIL_KEEP:], bool(body)
+            elif status != 416:
+                raise OSError(f"relay {self.name}: {path}: {status}")
+            elif int(headers.get("X-File-Size") or headers.get("x-file-size") or -1) != size:
+                size = None
+        if size is None:
+            size = self.size(path)
+            kept, grown = self.read(path, max(0, size - TAIL_KEEP)), True
+        if grown:
+            kept_at.parent.mkdir(parents=True, exist_ok=True)
+            fresh = kept_at.with_name(f"{kept_at.name}.{os.getpid()}.{threading.get_ident()}")
+            fresh.write_bytes(str(size).encode() + b"\n" + kept)
+            os.replace(fresh, kept_at)
+        else:
+            os.utime(kept_at)
+        return kept[-nbytes:]
+
+    def saved(self, ids):
+        """The rows of `ids` from the chat service's copy of this box's full list (src/session-peer.ts, saved at most every 5 min and fully
+        listed every 30), so a pass does not list the box whole: the Mac's `list --all` was 38.6 MB on every pass on 10-18. A copy older than
+        COPY_FRESH_S, or none, lists the box."""
+        try:
+            if time.time() - COPY_DIR.joinpath(f"{self.name}.sessions.json").stat().st_mtime < COPY_FRESH_S:
+                rows = json.loads(COPY_DIR.joinpath(f"{self.name}.sessions.json").read_text()).get("rows") or []
+                return [row for row in rows if (row.get("sessionId") or row.get("id")) in ids]
+        except (OSError, ValueError, AttributeError):
+            pass
+        return [row for row in self.list(all_rows=True) if (row.get("sessionId") or row["id"]) in ids]
+
     def mtime(self, path):
         status, _, body = self._get(Path(path).parent)
         if status != 200:
@@ -297,14 +361,45 @@ class RelayBox:
         for entry in json.loads(body).get("entries", []):
             if entry.get("type") == "file" and re.match(r"daemon\.sock\..*\.log", entry.get("name", "")):
                 try:
-                    texts.append(self.read(folder / entry["name"]).decode("utf-8", "ignore"))
+                    texts.append(self.log(folder / entry["name"], entry).decode("utf-8", "ignore"))
                 except OSError:
                     continue
         return texts
 
+    def log(self, path, entry):
+        """A daemon log, kept whole in TAIL_CACHE: the Mac's two logs were 8.8 MB, read whole on every pass on 10-18. A log only grows until it
+        rotates, so a longer one reads only its new bytes; a shorter one, or a rotated `.log.old` with a new mtime, is read again whole."""
+        kept_at = TAIL_CACHE / self.name / (hashlib.sha256(str(path).encode()).hexdigest() + ".log")
+        size, mtime = int(entry.get("size") or 0), entry.get("mtimeMs")
+        try:
+            head, _, kept = kept_at.read_bytes().partition(b"\n")
+            had, had_mtime = json.loads(head)
+        except (OSError, ValueError, TypeError):
+            had, had_mtime, kept = None, None, b""
+        if had == size and (had_mtime == mtime or not str(path).endswith(".old")):
+            os.utime(kept_at)
+            return kept
+        if had is not None and had < size and not str(path).endswith(".old"):
+            kept += self.read(path, had)
+        else:
+            kept = self.read(path)
+        kept_at.parent.mkdir(parents=True, exist_ok=True)
+        fresh = kept_at.with_name(f"{kept_at.name}.{os.getpid()}.{threading.get_ident()}")
+        fresh.write_bytes(json.dumps([len(kept), mtime]).encode() + b"\n" + kept)
+        os.replace(fresh, kept_at)
+        return kept
+
 
 # Tail reads through one relay at a time.
 RELAY_READS = 16
+# Another box's session file tails, kept between passes (RelayBox.tail), and how much of each is kept: the most any reader asks for.
+TAIL_CACHE = Path.home() / ".cache" / "sieun-pi" / "resume-tails"
+TAIL_KEEP = 256_000
+# A kept tail no pass read for this long is deleted.
+TAIL_IDLE_S = 2 * 86400
+# The chat service's copies of the other boxes' session lists (src/host-catalogs.ts copyPath), and how old one may be to stand in for a full list.
+COPY_DIR = Path.home() / ".cache" / "sieun-pi" / "hosts"
+COPY_FRESH_S = 40 * 60
 HOSTS_FILE = Path(os.environ.get("SIEUN_PI_HOSTS") or Path.home() / ".config" / "sieun-pi" / "hosts.json")
 HOSTS_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "hosts-cli.mjs"
 BOX = LocalBox()
@@ -359,7 +454,7 @@ def saved_rows(ids):
     """A row like `prime-agent list --all` gives for each session in `ids` the daemon does not hold, read from its file on disk. Another box's
     rows come from its daemon's full list, since its disk is read through the relay."""
     if BOX.remote:
-        return [row for row in BOX.list(all_rows=True) if (row.get("sessionId") or row["id"]) in ids] if ids else []
+        return BOX.saved(ids) if ids else []
     rows = []
     for sid, path in session_files(ids).items():
         try:
@@ -444,10 +539,25 @@ def with_saved_owners(sessions, saved_rows, owners):
     return [*listed, *extra]
 
 
+def prune_tails(name):
+    """Deletes the kept tails of box `name` that no pass read for TAIL_IDLE_S, so the files of finished sessions do not pile up."""
+    cutoff = time.time() - TAIL_IDLE_S
+    try:
+        entries = list(os.scandir(TAIL_CACHE / name))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.stat().st_mtime < cutoff:
+                os.unlink(entry.path)
+        except OSError:
+            continue
+
+
 def tail_entries(path, nbytes=256_000):
     """Parsed entries from the tail of a session jsonl."""
     try:
-        chunk = BOX.read(path, max(0, BOX.size(path) - nbytes)).decode("utf-8", "ignore")
+        chunk = BOX.tail(path, nbytes).decode("utf-8", "ignore")
     except OSError:
         return []
     entries = []
@@ -1167,6 +1277,7 @@ def resume_box(box, args, seen=None):
     finally:
         BOX = LocalBox()
     if box.remote:
+        prune_tails(box.name)
         for key in ("paused", "heads", "children"):
             part[key] = [{**row, "host": box.name} for row in part[key]]
     return part

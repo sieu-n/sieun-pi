@@ -47,6 +47,11 @@ class ResumePausedTests(unittest.TestCase):
         hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
         hosts.start()
         self.addCleanup(hosts.stop)
+        for name, value in (("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
+            kept = patch.object(resume_paused, name, value)
+            kept.start()
+            self.addCleanup(kept.stop)
+        self.served = []
 
     def session(self, sid, entries, parent=None, activity="idle", **flags):
         path = self.root / f"{sid}.jsonl"
@@ -676,32 +681,37 @@ class ResumePausedTests(unittest.TestCase):
         import threading
         import urllib.parse as parse
 
+        served = self.served
+
         class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, *args):
                 pass
 
+            def reply(self, status, body=b"", **headers):
+                self.send_response(status)
+                for name, value in {**headers, "Content-Length": len(body)}.items():
+                    self.send_header(name.replace("_", "-"), str(value))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self):
                 if self.headers.get("Authorization") != "Bearer t0ken":
-                    self.send_response(401), self.end_headers()
-                    return
+                    return self.reply(401)
                 path = parse.parse_qs(parse.urlparse(self.path).query)["path"][0]
                 if path in files:
                     body = files[path]
                     start = int(self.headers.get("Range", "bytes=0-")[6:-1] or 0)
                     if start >= len(body) and start:
-                        self.send_response(416), self.send_header("X-File-Size", str(len(body))), self.end_headers()
-                        return
-                    self.send_response(206 if start else 200), self.send_header("X-File-Size", str(len(body))), self.end_headers()
-                    self.wfile.write(body[start:])
-                    return
+                        return self.reply(416, X_File_Size=len(body))
+                    served.append(len(body) - start)
+                    return self.reply(206 if start else 200, body[start:], X_File_Size=len(body))
                 entries = [{"name": name[len(path) + 1:], "type": "file", "size": len(body), "mtimeMs": 1792296000000}
                            for name, body in files.items() if name.startswith(path + "/") and "/" not in name[len(path) + 1:]]
                 if not entries:
-                    self.send_response(403), self.end_headers()
-                    self.wfile.write(b'{"error":"path is outside the relay roots"}')
-                    return
-                self.send_response(200), self.end_headers()
-                self.wfile.write(json.dumps({"entries": entries}).encode())
+                    return self.reply(403, b'{"error":"path is outside the relay roots"}')
+                self.reply(200, json.dumps({"entries": entries}).encode())
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -795,6 +805,37 @@ class ResumePausedTests(unittest.TestCase):
         box.list = lambda all_rows=False: rows
         args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
         self.assertEqual(resume_paused.resume_box(box, args)["paused"], [])
+
+    def test_a_second_pass_reads_only_the_bytes_a_mac_tail_grew_by(self):
+        # us-metal02 to the Mac, 07:52 to 07:57Z on 10-18: five dry-run passes read about 265 tails of 256 KB whole and listed the Mac whole
+        # (38.6 MB) each, 72 MB a pass, while frontend bro's 10 MB attach snapshot timed out at 30 s on the same link.
+        body = self.mac_job()
+        files = {self.MAC_JOB: body}
+        box = self.fake_relay(files)
+        with patch.object(resume_paused, "BOX", box):
+            self.assertEqual(len(resume_paused.tail_entries(self.MAC_JOB)), 3)
+            self.assertEqual(self.served, [len(body)])
+            line = (json.dumps(role(1, "user")) + "\n").encode()
+            files[self.MAC_JOB] = body + line
+            self.assertEqual([e["type"] for e in resume_paused.tail_entries(self.MAC_JOB)], ["message", "message", "session_state", "message"])
+            self.assertEqual(resume_paused.tail_entries(self.MAC_JOB, 200)[-1]["message"]["role"], "user")
+            self.assertEqual(self.served, [len(body), len(line)])
+            files[self.MAC_JOB] = line
+            self.assertEqual(len(resume_paused.tail_entries(self.MAC_JOB)), 1)
+        self.assertEqual(self.served, [len(body), len(line), len(line)])
+        log = "/Users/sieunpark/.prime/agent/logs/daemon.sock.bab13329.log"
+        files[log] = b"[2026-10-18T07:41:30.962Z] supervisor: listening\n"
+        box.home = Path("/Users/sieunpark")
+        self.assertEqual(box.logs(), box.logs())
+        first = len(files[log])
+        files[log] += b"[2026-10-18T07:42:02.894Z] supervisor: attach failed\n"
+        self.assertEqual(box.logs()[0].count("supervisor"), 2)
+        self.assertEqual(self.served[3:], [first, len(files[log]) - first])
+        full = "01a14d38-d851-77a8-969c-29b2acca24f6"
+        resume_paused.COPY_DIR.mkdir()
+        (resume_paused.COPY_DIR / "mac.sessions.json").write_text(json.dumps({"version": 1, "fullAt": 0, "rows": [{"id": full, "sessionId": full}, {"id": "other"}]}))
+        box.list = lambda all_rows=False: self.fail("listed the Mac whole")
+        self.assertEqual(box.saved({full}), [{"id": full, "sessionId": full}])
 
 if __name__ == "__main__":
     unittest.main()
