@@ -495,6 +495,30 @@ def tip_entry(rev, rel):
     return TREES[rev].get(rel)
 
 
+BLOBS = {}
+
+
+def prefetch(entries):
+    """Read every blob of entries into BLOBS with one git cat-file --batch, for put()."""
+    ids = sorted({e[1] for e in entries if e and e[1] not in BLOBS})
+    if not ids:
+        return
+    data = git("cat-file", "--batch", inp="".join(i + "\n" for i in ids).encode()).stdout
+    pos = 0
+    for _ in ids:
+        end = data.index(b"\n", pos)
+        blob, _type, size = data[pos:end].decode().split(" ")
+        BLOBS[blob] = data[end + 1:end + 1 + int(size)]
+        pos = end + 1 + int(size) + 1
+
+
+def set_entries(pairs):
+    """Set each (rel, entry) in the index, removing rel when entry is None, in one git update-index.
+    One call per path rewrote the whole index each time, and 86 of them took over 2 minutes at load 182 on the Mac (2026-10-18 12:12Z)."""
+    if pairs:
+        git("update-index", "--index-info", inp="".join(f"{e[0]} {e[1]}\t{rel}\n" if e else f"0 {'0' * 40}\t{rel}\n" for rel, e in pairs).encode())
+
+
 def disk_states(rels):
     """{rel: disk_state(rel)} with one git hash-object for every regular file."""
     states, files = {}, []
@@ -550,12 +574,8 @@ def main():
     halfway = [rel for rel in staged if idx.get(rel) == tip_entry(tip, rel)]
     held = left_behind(head, {rel: idx.get(rel) for rel in staged if rel not in halfway})
     stale_index = [rel for rel in staged if rel in held]
-    for rel in [] if "--dry-run" in sys.argv else halfway + stale_index:
-        entry = tip_entry(head, rel)
-        if entry is None:
-            git("update-index", "--force-remove", "--", rel)
-        else:
-            git("update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{rel}")
+    if "--dry-run" not in sys.argv:
+        set_entries([(rel, tip_entry(head, rel)) for rel in halfway + stale_index])
     staged = [rel for rel in staged if rel not in halfway and rel not in stale_index]
     if staged:
         return log("skip", reason="the index stages changes", head=head[:10], tip=tip[:10], staged=staged[:20], staged_count=len(staged))
@@ -615,15 +635,10 @@ def main():
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(os.path.join(REPO, rel), "rb") as src, open(dst, "wb") as f:
                 f.write(src.read())
+        prefetch([c[2] for c in carried])
         for rel, _old, new, _disk, _merged in carried:
             put(rel, new)
             preapplied.append((rel, _old, new))
-
-    def set_index(rel, entry):
-        if entry is None:
-            git("update-index", "--force-remove", "--", rel)
-        else:
-            git("update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{rel}")
 
     def restore(rel, disk):
         if disk is None:
@@ -632,14 +647,12 @@ def main():
             write_file(rel, disk[0], open(os.path.join(saved, rel), "rb").read())
 
     def undo():
-        for rel, old, _new in preapplied:
-            set_index(rel, old)
+        set_entries([(rel, old) for rel, old, _new in preapplied])
         for rel, _old, _new, disk, _merged in carried:
             restore(rel, disk)
 
     try:
-        for rel, _old, new in preapplied:
-            set_index(rel, new)
+        set_entries([(rel, new) for rel, _old, new in preapplied])
     except Exception:
         undo()
         raise
