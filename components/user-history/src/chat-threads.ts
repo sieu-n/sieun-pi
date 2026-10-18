@@ -116,7 +116,7 @@ class Thread {
   lastEventAt = Date.now();
   /** The hub clock at the thread's last attach, session event, children change or tab close: its idle time for `rest` counts from here. */
   activeAt = Date.now();
-  private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
+  private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent | null } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread, before: readonly ChildAgent[]) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
     // A snapshot from the daemon carries no board or wait; a chat keeps both until their own events replace them.
@@ -127,17 +127,32 @@ class Thread {
     for (const listener of [...this.listeners]) listener(event);
     if (this.state.children !== children) this.onChildren(this, children);
   }
+  /**
+   * Stream updates go out at most once per `delayMs`. The first update of a quiet stream goes out at once and opens the window, so the first
+   * token reaches the page with no wait; updates inside the window keep only the latest, which goes out when the window ends and opens the next.
+   */
   coalesce(event: ProjectedSessionEvent, delayMs: number): void {
     if (event.type !== "message_update") { this.flush(); this.broadcast({ type: "event", event }); return; }
     if (this.pendingUpdate) { this.pendingUpdate.event = event; return; }
-    this.pendingUpdate = { event, timer: setTimeout(() => this.flush(), delayMs) };
+    this.broadcast({ type: "event", event });
+    this.openWindow(delayMs);
+  }
+  private openWindow(delayMs: number): void {
+    const window: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent | null } = { event: null, timer: setTimeout(() => {
+      if (this.pendingUpdate !== window) return;
+      this.pendingUpdate = undefined;
+      if (!window.event) return;
+      this.broadcast({ type: "event", event: window.event });
+      this.openWindow(delayMs);
+    }, delayMs) };
+    this.pendingUpdate = window;
   }
   flush(): void {
     if (!this.pendingUpdate) return;
     const { timer, event } = this.pendingUpdate;
     clearTimeout(timer);
     this.pendingUpdate = undefined;
-    this.broadcast({ type: "event", event });
+    if (event) this.broadcast({ type: "event", event });
   }
 }
 
@@ -833,8 +848,10 @@ export class ThreadHub {
     return thread;
   }
 
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode }, trigger = "prompt"): Promise<void> {
+  /** `ready` (the owner-turn mark) runs while the thread resumes and lands before the prompt goes. */
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined }, trigger = "prompt"): Promise<void> {
     const thread = await this.resume(id, false, trigger);
+    await input.ready;
     const live = thread.live!;
     if (input.images.length) {
       const [state, catalog] = await Promise.all([live.connection.getState(), live.connection.getModelCatalog()]);

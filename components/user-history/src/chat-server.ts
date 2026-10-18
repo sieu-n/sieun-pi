@@ -874,7 +874,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           let pending = sends.get(rid);
           if (pending && pending.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to a different message.");
           // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
-          if (!pending) { pending = { fingerprint, result: (async () => { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message, images, mode }); })() }; sends.set(rid, pending); }
+          if (!pending) { pending = { fingerprint, result: backend.threads.prompt(id, { message, images, mode, ready: backend.ownerTurn?.(id) }) }; sends.set(rid, pending); }
           await pending.result;
           json(res, 200, { accepted: true }); return;
         }
