@@ -872,8 +872,15 @@ export class Catalog {
     return client;
   }
 
-  /** A connected client of the daemon that runs `id`. */
-  daemonFor(id: string): Promise<DaemonClient> { return this.hostClient(this.hostOf(id)); }
+  /**
+   * A connected client of the daemon that runs `id`. Until every other box listed once, an id this box does not list may be another box's, so
+   * it throws rather than send it here: at 04:22Z on 10-18 the box service's first wake tick ran 2 s before the Mac's list and dropped 3 Mac
+   * jobs' wakes as "no such session".
+   */
+  daemonFor(id: string): Promise<DaemonClient> {
+    if (this.hosts && !this.hosts.allListed() && !this.own.has(id)) return Promise.reject(new Error(`Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`));
+    return this.hostClient(this.hostOf(id));
+  }
 
   /** The socket a new DaemonClient opens for the named box: its bridge socket, else this box's daemon socket. */
   socketPathFor(name?: string | null): string {
