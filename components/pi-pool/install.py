@@ -138,6 +138,16 @@ def borrow(home, holder):
     return {"remote_changed": changed, "enable": enabled}
 
 
+def compile_pool(release):
+    """Bytecode for pool/, written once before the release turns read-only. Every run uses -B and writes
+    none, and the token hook loads these modules on every provider request, so without it each call compiles them."""
+    if not (release / "pool").is_dir():
+        return
+    done = subprocess.run(["/usr/bin/python3", "-m", "compileall", "-q", str(release / "pool")], capture_output=True, text=True)
+    if done.returncode:
+        raise InstallError("could not compile pool/ in the staged release:\n" + (done.stdout + done.stderr)[-4000:])
+
+
 def run_tests(release):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     done = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "discover", "-s", "tests"],
@@ -262,6 +272,7 @@ def install(home, ref, holder=None):
         try:
             export(commit, staging)
             tests = run_tests(staging)
+            compile_pool(staging)
             (staging / "RELEASE.json").write_text(json.dumps(
                 {"id": release_id, "commit": commit, "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "tests": tests}, indent=2) + "\n")
             set_writable(staging, False)

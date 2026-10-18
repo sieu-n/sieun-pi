@@ -56,5 +56,19 @@ class FileSecrets(unittest.TestCase):
         self.assertEqual(out.stdout.split(), ["True", "x", os.path.join(home, "pool", "accounts", "secrets")])
 
 
+@unittest.skipUnless(os.path.isdir("/proc/self"), "Linux reads /proc")
+class CallerIdentity(unittest.TestCase):
+    def test_proc_info_reads_from_proc_what_ps_prints(self):
+        sleeper = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        for pid in (os.getpid(), os.getppid(), sleeper.pid):
+            out = subprocess.run(["ps", "-o", "ppid=,lstart=,comm=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
+            self.assertEqual(base.proc_info(pid), {"ppid": int(out[0]), "start": " ".join(out[1:6]), "comm": out[-1]})
+
+    def test_proc_info_is_none_for_a_process_that_is_gone(self):
+        self.assertIsNone(base.proc_info(2 ** 22 + 1))
+
+
 if __name__ == "__main__":
     unittest.main()

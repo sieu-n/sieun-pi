@@ -17,7 +17,6 @@ Credential values and exception messages never enter that record.
 import json
 import os
 import re
-from pathlib import Path
 import runpy
 import signal
 import sys
@@ -184,7 +183,7 @@ def main():
         return refuse(f"unknown argument {argv[0]!r}; not printing a token")
     elif "--status" not in argv and sys.stdout.isatty():
         return refuse("stdout is a terminal; not printing a token")
-    source = Path(__file__).resolve().parents[1] / "vend.py"
+    source = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "vend.py")
     sys.argv = [str(source), *argv]
     if argv and argv[0] == "--cli" or "--status" in argv:
         runpy.run_path(str(source), run_name="__main__")

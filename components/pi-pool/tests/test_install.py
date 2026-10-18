@@ -112,6 +112,14 @@ class Install(unittest.TestCase):
         self.assertFalse((self.home / ".config/pi-pool/remote.json").exists())
         self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
 
+    def test_pool_modules_ship_with_bytecode_for_the_hook_interpreter(self):
+        (self.repo / "components/pi-pool/pool").mkdir()
+        self.commit("pool", **{"pool/__init__.py": "VALUE = 1\n"})
+        code, out = self.run_installer()
+        self.assertEqual(code, 0, out)
+        cached = list((self.home / ".local/share/pi-pool/current/pool/__pycache__").glob("__init__.*.pyc"))
+        self.assertEqual(len(cached), 1, cached)
+
     def test_only_committed_source_ships(self):
         (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")
         code, out = self.run_installer()

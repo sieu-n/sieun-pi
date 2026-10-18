@@ -6,7 +6,7 @@ serve.json (holder) and remote.json (client) live in the pool folder, mode 0600:
     serve.json   {"host": "<tailnet ip>", "port": 7781, "secret": "..."}
     remote.json  {"url": "http://<tailnet ip>:7781", "secret": "..."}
 """
-import hmac, http.server, json, os, socket, subprocess, sys, urllib.error, urllib.request
+import json, os, sys
 
 from . import base, registry
 
@@ -48,6 +48,7 @@ def session_fields():
 
 def ask(cfg, argv, stdin=None):
     """(exit code, stdout, stderr) of argv run by the holder's pool, with `stdin` as its input."""
+    import socket, urllib.error, urllib.request
     token = not (argv and argv[0] == "--cli")
     body = json.dumps({"argv": argv, "session": session_fields(), "stdin": stdin}).encode()
     request = urllib.request.Request(cfg["url"].rstrip("/") + "/run", data=body, method="POST", headers={
@@ -101,6 +102,7 @@ def valid_argv(argv):
 
 
 def make_handler(cfg, root):
+    import hmac, http.server, subprocess
     secret = cfg["secret"].encode()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -133,6 +135,7 @@ def make_handler(cfg, root):
 
 
 def cmd_serve(rest=()):
+    import http.server
     cfg = base.load_json(SERVE)
     if not (isinstance(cfg, dict) and cfg.get("host") and cfg.get("port") and cfg.get("secret")):
         raise SystemExit(f"pi-pool serve: {SERVE} needs host, port and secret")

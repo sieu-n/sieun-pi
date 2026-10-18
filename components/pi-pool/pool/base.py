@@ -1,6 +1,6 @@
 """Paths, config, the pool log and locks, the account store, the Keychain, token refresh,
 refusal probes and rotation journals."""
-import base64, fcntl, json, os, pwd, re, subprocess, time, urllib.request, urllib.error
+import base64, fcntl, json, os, pwd, re, subprocess, time
 
 
 HOME = os.path.expanduser("~")
@@ -308,6 +308,7 @@ def refresh_token(creds):
     """Rotate an anthropic grant. The server may omit refresh_token (reuse the
     old one) and may return updated scope / refresh_token_expires_in. Non-token
     fields are preserved."""
+    import urllib.error, urllib.request
     scopes = creds.get("scopes") or DEFAULT_SCOPES
     body = json.dumps({
         "grant_type": "refresh_token",
@@ -374,6 +375,7 @@ def anthropic_refusal(access_token, infer=False):
     fine). 401 is a revoked token. `infer` sends a one-token message instead,
     for the terms check, which count_tokens is not known to apply. Any other
     answer (429, 5xx, network) is not a refusal."""
+    import urllib.error, urllib.request
     url, payload, timeout = (
         (INFER_URL, {"model": INFER_MODEL, "max_tokens": 1, "system": OAUTH_SYSTEM}, INFER_TIMEOUT) if infer
         else (PROBE_URL, {"model": PROBE_MODEL}, PROBE_TIMEOUT))
@@ -447,6 +449,7 @@ def mark_needs_reauth(provider, account_id):
 def refresh_codex_token(refresh_token_value):
     """Rotate a codex grant. The response has no expiry field; expiry is
     always read back out of the new access token's own exp claim."""
+    import urllib.error, urllib.request
     body = json.dumps({
         "client_id": CODEX_CLIENT_ID,
         "grant_type": "refresh_token",
@@ -560,6 +563,10 @@ class CodexFileAdapter:
 
 # ------------------------------------------------------------ caller identity
 def proc_info(pid):
+    """{"ppid", "start", "comm"} as `ps -o ppid=,lstart=,comm=` gives them, or None for no such process.
+    Linux reads /proc instead of running ps, which costs about 80 ms of CPU on every hook call."""
+    if os.path.isdir("/proc/self"):
+        return linux_proc_info(pid)
     r = subprocess.run(["ps", "-o", "ppid=,lstart=,comm=", "-p", str(pid)],
                        capture_output=True, text=True)
     out = r.stdout.strip()
@@ -568,3 +575,19 @@ def proc_info(pid):
     ppid, rest = out.split(None, 1)
     parts = rest.split()
     return {"ppid": int(ppid), "start": " ".join(parts[:5]), "comm": parts[-1]}
+
+
+def linux_proc_info(pid):
+    """procps' lstart is the boot time in /proc/stat plus the start tick in /proc/<pid>/stat, in local time."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as f:
+            stat = f.read()
+        with open("/proc/stat", "rb") as f:
+            boot = next(int(line.split()[1]) for line in f if line.startswith(b"btime "))
+    except (OSError, StopIteration, ValueError):
+        return None
+    comm, fields = stat[stat.index(b"(") + 1:stat.rindex(b")")], stat[stat.rindex(b")") + 2:].split()
+    at = time.localtime(boot + int(fields[19]) // os.sysconf("SC_CLK_TCK"))
+    words = comm.decode(errors="replace").split() or [""]
+    return {"ppid": int(fields[1]), "start": time.strftime(f"%a %b {at.tm_mday} %H:%M:%S %Y", at),
+            "comm": "<defunct>" if fields[0] == b"Z" else words[-1]}
