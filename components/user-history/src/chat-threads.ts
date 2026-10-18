@@ -14,7 +14,6 @@ import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, history
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
 import { firstPage } from "./first-page.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
-import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
@@ -560,15 +559,9 @@ export class ThreadHub {
   private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
     const file = await this.sessionFile(summary);
     const page = await readBranchPage(file, from, limits);
-    if (!page) return { entries: this.linked(from ? [] : this.branch(summary, file), file), older: undefined, whole: true };
+    if (!page) return { entries: from ? [] : this.branch(summary, file), older: undefined, whole: true };
     if (page.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    return { entries: this.linked(page.entries, file), older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
-  }
-
-  /** The entries, with each image that `scripts/session-compact.ts` moved out of `file` linked in the image store, so its URL serves the file. */
-  private linked(entries: SessionEntry[], file: string): SessionEntry[] {
-    for (const image of movedImages(entries, file)) this.images.link(image.key, image.mimeType, image.path);
-    return entries;
+    return { entries: page.entries, older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
   }
 
   /** A saved thread's snapshot from its newest `limit` messages, with what the file says of its name, model and effort. */

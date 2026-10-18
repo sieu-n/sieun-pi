@@ -700,9 +700,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         if (image) {
           const entry = backend.threads.images.get(image[1]!);
           if (!entry) throw new RequestError(404, "Image is no longer cached. Reopen the thread.");
-          const bytes = "bytes" in entry ? entry.bytes : await readFile(entry.path).catch(() => { throw new RequestError(404, "The image file is gone."); });
-          res.writeHead(200, { "Content-Type": entry.mimeType, "Content-Length": bytes.length, "Cache-Control": "private, max-age=3600, immutable" });
-          res.end(bytes);
+          res.writeHead(200, { "Content-Type": entry.mimeType, "Content-Length": entry.bytes.length, "Cache-Control": "private, max-age=3600, immutable" });
+          res.end(entry.bytes);
           return;
         }
         const thread = /^api\/threads\/([^/]+)\/([a-z-]+)$/.exec(route);

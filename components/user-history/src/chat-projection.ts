@@ -1,7 +1,7 @@
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
-import { imageKey, movedImage } from "./moved-images.ts";
 import { TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import type { AssistantMessage, ChildAgent, ImagePart, ModelInfo, ProjectedSessionEvent, TextPart, ThinkingPart, ThreadInfo, ThreadMessage, ToolCallPart, ToolResultMessage } from "./shared/types.ts";
 
@@ -19,14 +19,12 @@ type NativeModel = NonNullable<NativeState["model"]>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-export type StoredImage = { mimeType: string; bytes: Buffer } | { mimeType: string; path: string };
-
 export class ImageStore {
-  private readonly entries = new Map<string, StoredImage>();
+  private readonly entries = new Map<string, { mimeType: string; bytes: Buffer }>();
   private size = 0;
   constructor(private readonly limit = IMAGE_STORE_BYTES) {}
   put(mimeType: string, data: string): string {
-    const hash = imageKey(mimeType, data);
+    const hash = createHash("sha256").update(mimeType).update("\0").update(data).digest("hex");
     const existing = this.entries.get(hash);
     if (existing) { this.entries.delete(hash); this.entries.set(hash, existing); return hash; }
     const bytes = Buffer.from(data, "base64");
@@ -34,17 +32,12 @@ export class ImageStore {
     this.size += bytes.length;
     while (this.size > this.limit && this.entries.size > 1) {
       const oldest = this.entries.keys().next().value!;
-      const evicted = this.entries.get(oldest)!;
-      if ("bytes" in evicted) this.size -= evicted.bytes.length;
+      this.size -= this.entries.get(oldest)!.bytes.length;
       this.entries.delete(oldest);
     }
     return hash;
   }
-  /** An image whose bytes sit in a file (moved out of its session file): the route reads the file, so it holds no memory here. */
-  link(hash: string, mimeType: string, path: string): void {
-    if (!this.entries.has(hash)) this.entries.set(hash, { mimeType, path });
-  }
-  get(hash: string): StoredImage | undefined {
+  get(hash: string): { mimeType: string; bytes: Buffer } | undefined {
     const entry = this.entries.get(hash);
     if (entry) { this.entries.delete(hash); this.entries.set(hash, entry); }
     return entry;
@@ -68,9 +61,8 @@ function textPart(text: string, limit: number): TextPart {
 export class Projector {
   constructor(readonly images: ImageStore) {}
 
-  private image(part: { mimeType: string; data: string; file?: unknown }): ImagePart {
-    const moved = part.data === "" ? movedImage({ type: "image", ...part }) : undefined;
-    return { type: "image", mimeType: part.mimeType, url: "api/images/" + (moved ? moved.key : this.images.put(part.mimeType, part.data)) };
+  private image(part: { mimeType: string; data: string }): ImagePart {
+    return { type: "image", mimeType: part.mimeType, url: "api/images/" + this.images.put(part.mimeType, part.data) };
   }
   /** A skill invocation is stored expanded; show what the user typed plus the skill name, like the TUI. */
   private user(content: unknown, timestamp: number): ThreadMessage {
@@ -89,7 +81,7 @@ export class Projector {
     return content.flatMap((part: unknown): (TextPart | ImagePart)[] => {
       if (!isRecord(part)) return [];
       if (part.type === "text" && typeof part.text === "string") return [textPart(part.text, limit)];
-      if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") return [this.image({ mimeType: part.mimeType, data: part.data, file: part.file })];
+      if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") return [this.image({ mimeType: part.mimeType, data: part.data })];
       return [];
     });
   }

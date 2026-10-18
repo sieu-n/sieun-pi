@@ -89,7 +89,7 @@
       "designs": [
         "p98"
       ],
-      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix",
+      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix; a hand-run scripts.engage_jar_check exec in prod crawler-api (account 16, 10-18) checks a parked jar before a hand activation, which the same design replaces",
       "match": {
         "engage_event": {
           "kind": "status",
@@ -101,7 +101,8 @@
         "config_key_prefixes": [
           "pause.engage",
           "proxy_endpoints.gateway"
-        ]
+        ],
+        "box_exec_regex": "engage_jar_check"
       }
     },
     {
@@ -284,6 +285,18 @@
         "config_key_prefixes": [
           "media.video_concurrency"
         ]
+      }
+    },
+    {
+      "id": "F20",
+      "title": "Meta Ads sweeps fed by a hand-run feeder because the scheduler claims advertiser walks first",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "commit:5d75bc7d93"
+      ],
+      "owner": "Meta Ads (01a10db4): 5d75bc7d93 makes the Meta Ads scheduler claim sweeps before advertiser walks (CLAIM_ORDER, land 39), so /tmp/mw_sweep_feeder.py in prod crawler-worker goes",
+      "match": {
+        "box_exec_regex": "mw_sweep_feeder"
       }
     }
   ],
