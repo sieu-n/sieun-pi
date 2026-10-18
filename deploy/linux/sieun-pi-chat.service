@@ -11,7 +11,7 @@ Environment=SIEUN_PI_CHAT_OPEN_AT_LOGIN=0
 EnvironmentFile=-%h/.config/sieun-pi/agent.env
 EnvironmentFile=-%h/.config/sieun-pi/chat.env
 ExecStart=%h/.local/node/bin/node %h/.local/share/sieun-pi-chat/current/components/user-history/src/chat-service-cli.mjs serve --data-dir %h/.prime/agent/browser-chat --port 5182 --socket /tmp/prime-agent-%U/daemon.sock
-KillMode=process
+KillMode=mixed
 Restart=always
 RestartSec=10
 UMask=0077

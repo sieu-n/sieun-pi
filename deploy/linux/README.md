@@ -17,7 +17,9 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `ci-cache.service` | The one GitHub Actions poller for auto-sns-agent, `scripts/dev/ci-cache.mjs poll` from a copy in `~/.local/share/ci-cache`, which writes `~/.cache/virev/ci-runs.json` for `ci-run-status`, the gh shim and `board.wake(run=)`. |
 | `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
-The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
+The daemon has its own unit, so a chat restart never stops a running agent, and the chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` so the chat never starts a daemon in its own cgroup.
+The chat unit sets `KillMode=mixed`, so a stop sends SIGTERM to the chat alone and SIGKILL to the helpers it left, such as `resume_paused.py` or `ci-run-status`, once the chat has exited.
+Under `KillMode=process` each stop left those helpers in the unit, as pids 2829488 (python3) and 2831540 (node) at the 10-18 05:53Z stop and pid 3458523 (python3) at the 06:07Z stop.
 The daemon unit sets `KillMode=process` too, so a daemon restart signals only the daemon and the new one adopts the running workers. On 10-18 at 03:38Z a restart under the default `control-group` mode sent SIGTERM to every worker and the new daemon failed to adopt 7 of them.
 
 The daemon unit is `Type=forking` with `PIDFile=%t/prime-agent-daemon.pid`, because the supervisor that owns the socket is often not the process the unit started.

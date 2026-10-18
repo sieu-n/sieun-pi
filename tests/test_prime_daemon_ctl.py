@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CTL = ROOT / "deploy/linux/prime-agent-daemon-ctl"
 UNIT = ROOT / "deploy/linux/prime-agent-daemon.service"
+CHAT_UNIT = ROOT / "deploy/linux/sieun-pi-chat.service"
 
 FAKE = textwrap.dedent(
     """\
@@ -211,6 +212,13 @@ class DaemonUnitTest(unittest.TestCase):
             argv = unit[key].split()
             self.assertEqual(argv[:2], ["%h/.local/bin/prime-agent-daemon-ctl", command])
             self.assertEqual(argv[3:], ["/tmp/prime-agent-%U/daemon.sock", unit["PIDFile"]])
+
+
+class ChatUnitTest(unittest.TestCase):
+    def test_a_chat_stop_kills_the_helpers_it_left_and_never_starts_a_daemon(self):
+        lines = CHAT_UNIT.read_text().splitlines()
+        self.assertIn("KillMode=mixed", lines)
+        self.assertIn("Environment=SIEUN_PI_CHAT_START_DAEMON=0", lines)
 
 
 if __name__ == "__main__":
