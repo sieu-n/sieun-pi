@@ -61,7 +61,7 @@ try {
     const age = Number.isNaN(at) || !/\d/.test(size) ? UNMEASURED : (now - at) / 3_600_000;
     ages.push(age);
     if (age > FRESH_H) {
-      flagged.push({ kind: "stale_gap", item: gap, excerpt: age === UNMEASURED ? `${gap} has no measured size or time on ${view.url}`
+      flagged.push({ kind: "stale_gap", item: gap!, excerpt: age === UNMEASURED ? `${gap} has no measured size or time on ${view.url}`
         : `${gap} was last measured ${new Date(at).toISOString()}, ${age.toFixed(1)} h ago, on ${view.url}` });
     }
   }
