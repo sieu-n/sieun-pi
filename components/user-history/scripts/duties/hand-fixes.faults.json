@@ -267,9 +267,10 @@
       "designs": [
         "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
         "01a115e2-9544-7204-b8db-8ce4d5319048/p700",
-        "commit:e0d09f5a42"
+        "commit:e0d09f5a42",
+        "commit:91723f13ee"
       ],
-      "owner": "Crawler VP p700 (supply hold zero d2): e0d09f5a42 makes a gateway that answers no CONNECT hold no read and retries a fresh exit, so supply_hold.enabled (audit 14032) stays on with no hand switch once it is on prod",
+      "owner": "Crawler VP p700 (supply hold zero d2): e0d09f5a42 makes a gateway that answers no CONNECT hold no read and retries a fresh exit, so supply_hold.enabled (audit 14032) stays on with no hand switch once it is on prod; 91723f13ee (d3 p162) gives a hand switch-off of supply_hold.enabled an owner and an end (expires_at, else 2 h, or off_release next), and the rate-controller writes it back on with source hold-expiry, so no hand write like audit 14098 turns it on again",
       "match": {
         "config_key_prefixes": [
           "supply_hold."
