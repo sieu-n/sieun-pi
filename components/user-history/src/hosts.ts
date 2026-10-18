@@ -3,6 +3,7 @@ import { Agent, request as httpRequest } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { DELTA_HEADER, decodeLineDeltas } from "../../prime-relay/line-delta.ts";
 
 /**
  * The hosts registry, ~/.config/sieun-pi/hosts.json: every box sieun-pi drives, its relay and the services it holds.
@@ -197,12 +198,14 @@ export async function listHostDir(host: Host, path: string): Promise<HostDirEntr
 /**
  * A byte stream to the host's daemon socket through its relay. It asks for attach snapshots whose chunks but the last carry no image data
  * (`slimSnapshots`), since this box reads a session's older messages from its copy of the file: frontend bro's snapshot went from 8.7 MB to 1.9 MB.
+ * It also asks for each message update as a delta against the one before it (`encodeLineDeltas`), so a reader must pass the stream through
+ * `decodeLineDeltas`, as HostBridge does.
  */
 export async function openDaemonTunnel(host: Host, timeoutMs = 10_000): Promise<Socket> {
   const token = await hostToken(host);
   return await new Promise((resolve, reject) => {
     const request = httpRequest({ host: host.address, port: host.relayPort, path: "/v1/daemon", timeout: timeoutMs,
-      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}`, [SLIM_HEADER]: "images" } });
+      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}`, [SLIM_HEADER]: "images", [DELTA_HEADER]: "1" } });
     request.on("upgrade", (response, socket, head) => {
       socket.setTimeout(0);
       if (head.length) socket.unshift(head);
@@ -244,10 +247,17 @@ export class HostBridge {
         client.once("close", () => this.sockets.delete(client));
         client.pause();
         openDaemonTunnel(host).then(remote => {
-          client.pipe(remote).pipe(client);
+          const decoder = decodeLineDeltas();
+          client.pipe(remote);
+          remote.pipe(decoder).pipe(client);
+          decoder.on("error", error => {
+            this.options.log?.(`hosts: ${host.name}: ${error.message}`);
+            client.destroy();
+          });
           remote.on("error", () => client.destroy());
           client.on("error", () => remote.destroy());
-          remote.on("close", () => client.destroy());
+          // The client ends once the decoder has passed on every byte the relay sent; destroying it at once dropped the tail of a stream.
+          remote.on("close", () => { if (!decoder.writableEnded) decoder.end(); });
           client.on("close", () => remote.destroy());
         }, error => {
           this.options.log?.(`hosts: ${host.name}: ${error instanceof Error ? error.message : String(error)}`);

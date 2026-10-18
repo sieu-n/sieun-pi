@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostStats, usableRaw } from "./host-stats.ts";
+import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
 const VERSION = 1;
@@ -120,7 +121,7 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-/** The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim snapshots, `slimSnapshots`), serves reads under the roots and the box's CPU, memory and turn queue. */
+/** The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`), serves reads under the roots and the box's CPU, memory and turn queue. */
 export function createRelay(config, log = () => {}) {
   const server = createServer(async (request, response) => {
     try {
@@ -147,9 +148,12 @@ export function createRelay(config, log = () => {}) {
       socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ${UPGRADE}\r\n\r\n`);
       if (head.length) daemon.write(head);
       const slim = request.headers[SLIM_HEADER] === "images";
+      const deltas = request.headers[DELTA_HEADER] === "1";
       socket.pipe(daemon);
-      (slim ? daemon.pipe(slimSnapshots()) : daemon).pipe(socket);
-      log(`tunnel open from ${socket.remoteAddress}${slim ? ", snapshots without older images" : ""}`);
+      let out = slim ? daemon.pipe(slimSnapshots()) : daemon;
+      if (deltas) out = out.pipe(encodeLineDeltas());
+      out.pipe(socket);
+      log(`tunnel open from ${socket.remoteAddress}${slim ? ", snapshots without older images" : ""}${deltas ? ", message updates as deltas" : ""}`);
     });
     daemon.once("error", error => { if (opened) socket.destroy(); else refuse("502 Bad Gateway"); log(`daemon socket: ${error.message}`); });
     socket.once("error", () => daemon.destroy());
