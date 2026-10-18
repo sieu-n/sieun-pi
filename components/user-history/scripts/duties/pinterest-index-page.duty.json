@@ -1,0 +1,39 @@
+{
+  "name": "Pinterest index",
+  "ownerWords": "fix plan and duties based on the board skill and pursue completion of plans",
+  "goal": "The wiki page projects/pinterest-index-gaps/index.html shows the top 10 Pinterest index gaps, ranked by who each gap hurts, and every gap's size on it was measured from prod data in the last day. The precheck reruns each gap's measure every morning and patches the live page, so the owner who opens it sees today's numbers.",
+  "metrics": [
+    {
+      "key": "page_age_hours",
+      "label": "Hours since the oldest number on the top 10 page was measured",
+      "op": "<=",
+      "target": 24,
+      "unit": " h",
+      "headline": true
+    },
+    {
+      "key": "gaps_fresh",
+      "label": "Gaps on the page with a number measured in the last 24 h",
+      "op": ">=",
+      "target": 10,
+      "unit": " of 10"
+    },
+    {
+      "key": "refresh_errors",
+      "label": "Gap measures that failed in today's refresh",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/pinterest-index-page.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "The precheck already reran every gap's measure and patched the live page; read its flagged items. A source_error is one gap's measure_ function in auto-sns-agent apps/crawler-v3/scripts/pinterest_index_gaps/gaps/ failing: fix the query and rerun `uv run --no-project --with requests --with python-dotenv python -m pinterest_index_gaps --page projects/pinterest-index-gaps/index.html` in apps/crawler-v3/scripts until it lists no errors. A refresh_failed item is the runner itself (ssh to us-metal01, the wiki API or uv); fix that first. A stale_gap or no_rows item with no source error means a page row lacks <tr data-gap>, <td data-cell=\"size\"> or <time datetime>, or names a gap with no measure_ function: fix the page through one subagent (c20) or add the function. When a gap measures 0 for 3 runs, have a subagent swap it for the next measured gap and say so on the page. Prod reads stay read-only (PG BEGIN READ ONLY, ClickHouse --readonly=1, OpenSearch _search and _count). Each missed metric gets a fix step under p1 with duty \"<duty id>/<metric key>\" and a live job. Nothing goes outside (c37), and prod promotes need no ask (c74).",
+  "boardGoal": "p1"
+}
