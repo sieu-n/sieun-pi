@@ -137,7 +137,23 @@ export class SendOnce {
    * Sends `text` to `session`, or resolves "sent" without a send when an earlier send of it that timed out landed. Throws, so its caller keeps
    * its wake or alert for the next tick, when the send times out or an earlier copy is still queued or cannot be looked at.
    */
-  async deliver(session: string, text: string): Promise<"sent" | "gone"> {
+  deliver(session: string, text: string): Promise<"sent" | "gone"> {
+    const send = this.deliverOnce(session, text);
+    const tracked: Promise<void> = send.then(() => {}, () => {}).finally(() => { this.inFlight.delete(tracked); });
+    this.inFlight.add(tracked);
+    return send;
+  }
+
+  /**
+   * Resolves once every send out now has its answer or its own timeout. The service waits for it before it closes its
+   * daemon links: on 10-18 a release closed the link under a relay of 01a142eb's wake at 06:33:00Z, the daemon refused that send at 06:33:02Z
+   * (pending limit), but the record still read it as possibly held, so the wake sat behind "the target is busy" until 06:43Z.
+   */
+  async idle(): Promise<void> { while (this.inFlight.size) await Promise.all([...this.inFlight]); }
+
+  private readonly inFlight = new Set<Promise<void>>();
+
+  private async deliverOnce(session: string, text: string): Promise<"sent" | "gone"> {
     const key = sendKey(session, text);
     const record = await this.load();
     const earlier = record.get(key);

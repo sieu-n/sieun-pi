@@ -755,7 +755,10 @@ export class Catalog {
     let summary = this.find(sessionId);
     if (!summary) { await this.refresh(); summary = this.find(sessionId); }
     // Until every other box listed once, a session this box lacks may run there: the service start's adopt would forget a chat on the Mac.
-    if (!summary && this.hosts && !this.hosts.allListed()) throw new Error(`Session ${sessionId.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
+    if (!summary && await this.unplaced(sessionId)) {
+      summary = this.find(sessionId);
+      if (!summary) throw new Error(`Session ${sessionId.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
+    }
     // Another box's session file is read here from its local copy, so the copy is brought up to date for whoever asked (check-ins, briefs, history).
     if (summary && this.hosts && this.hostOf(sessionId)) await this.localFile(summary).catch(error => {
       process.stderr.write(`catalog: copy of ${sessionId.slice(0, 8)} from ${this.hostOf(sessionId)}: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -865,9 +868,21 @@ export class Catalog {
    * it throws rather than send it here: at 04:22Z on 10-18 the box service's first wake tick ran 2 s before the Mac's list and dropped 3 Mac
    * jobs' wakes as "no such session".
    */
-  daemonFor(id: string): Promise<DaemonClient> {
-    if (this.hosts && !this.hosts.allListed() && !this.own.has(id)) return Promise.reject(new Error(`Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`));
+  async daemonFor(id: string): Promise<DaemonClient> {
+    if (await this.unplaced(id)) throw new Error(`Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
     return this.hostClient(this.hostOf(id));
+  }
+
+  /**
+   * True while `id` is not this box's and some other box has not listed yet, so it may run there. It first waits for the disk copies of the
+   * last run: at 06:57:21Z on 10-18 a restart read the Mac's 3,060-row copy 2 s after its start, and a chat list at 06:57:22.8Z still found
+   * the Mac unlisted. Before the copies each restart refused every Mac session for the 8 to 43 s the Mac's full list took (11 restarts from
+   * 05:41 to 06:53Z; the first wake tick after the 06:15:41Z one refused 16 wakes).
+   */
+  private async unplaced(id: string): Promise<boolean> {
+    if (!this.hosts || this.hosts.allListed() || this.own.has(id)) return false;
+    await Promise.all([this.peer.loaded(), this.hosts.loaded()]);
+    return !this.hosts.allListed() && !this.own.has(id);
   }
 
   /** The socket a new DaemonClient opens for the named box: its bridge socket, else this box's daemon socket. */

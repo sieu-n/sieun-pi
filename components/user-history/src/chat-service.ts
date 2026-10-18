@@ -374,7 +374,11 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (removeInstance && instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close(); }
+      finally {
+        // Sends still out get their answers before the links close, so none is left unconfirmed (SendOnce.idle).
+        await backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`));
+        stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close();
+      }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }

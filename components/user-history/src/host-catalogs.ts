@@ -53,6 +53,9 @@ export class HostCatalogs {
   /** True once every other box's copy holds a full list, this run's or the disk copy's; before that a session missing from the rows may be on one. */
   allListed(): boolean { return [...this.remotes.values()].every(remote => remote.peer.listed); }
 
+  /** Resolves once every other box's disk copy is read; after it `allListed` reads true for each box whose copy the last run saved. */
+  async loaded(): Promise<void> { await Promise.all([...this.remotes.values()].map(remote => remote.peer.loaded())); }
+
   /** The name the rows of this box carry; null when this machine is not in hosts.json. */
   get selfName(): string | null { return this.self?.name ?? null; }
 

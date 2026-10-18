@@ -159,6 +159,9 @@ export class SessionPeer {
 
   get name(): string { return this.options.name; }
 
+  /** Resolves once the disk copy of the last run is read (or found missing), so a caller right after a start sees what it saved. */
+  loaded(): Promise<void> { return this.loading; }
+
   /** The rows as the box's daemon gave them; every live row reads as saved while the box is down. */
   list(): SessionSummary[] {
     const rows = [...this.rows.values()];

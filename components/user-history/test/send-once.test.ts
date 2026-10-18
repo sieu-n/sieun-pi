@@ -231,3 +231,29 @@ test("send once: a child's session file is found under session-artifacts", async
   assert.equal(await sessionFileOf(SESSION, agentDir), join(folder, `${SESSION}.jsonl`));
   assert.equal(await sessionFileOf("01a1ffff-0000-7000-8000-000000000000", agentDir), null);
 });
+
+// 10-18 06:33:00Z: a release closed the chat service's daemon link while a relay of 01a142eb's wake was out. The daemon refused that send at
+// 06:33:02Z (pending limit), but the record read it as possibly held, and the wake sat behind "the target is busy" until 06:43Z.
+test("send once: idle waits for a send that is out, so a refusal it gets during a service stop leaves no record and the next service sends at once", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "send-once-drain-"));
+  await mkdir(join(agentDir, "sessions"), { recursive: true });
+  await writeFile(join(agentDir, "sessions", `${SESSION}.jsonl`), other(NOW - 3_600_000));
+  const record = join(agentDir, "unconfirmed-sends.json");
+  let answer: (error: Error) => void = () => {};
+  const sends: string[] = [];
+  const deps = (send: (session: string, text: string) => Promise<"sent" | "gone">) => ({ file: record, now: () => NOW, log: () => {}, send,
+    target: async () => ({ queued: [], busy: true }), fileOf: (session: string) => sessionFileOf(session, agentDir) });
+  const old = new SendOnce(deps(async (_session, text) => { sends.push(text); return new Promise((_, reject) => { answer = reject; }); }));
+  const out = old.deliver(SESSION, "[wake] It is 06:30Z, the time you set.").catch((error: Error) => error.message);
+  let drained = false;
+  const drain = old.idle().then(() => { drained = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(drained, false, "the stop waits while the send is out");
+  answer(new Error("Target session has too many pending messages: 20 unfinished, limit is 20"));
+  await drain;
+  assert.match(await out, /too many pending messages/);
+  assert.deepEqual(JSON.parse(await readFile(record, "utf8")), {}, "a refused send leaves no record");
+  const next = new SendOnce(deps(async (_session, text) => { sends.push(text); return "sent"; }));
+  assert.equal(await next.deliver(SESSION, "[wake] It is 06:31Z, the time you set."), "sent", "the next service sends though the target is busy");
+  assert.equal(sends.length, 2);
+});

@@ -89,6 +89,8 @@ export interface ChatBackend {
    * daemon no longer lists (`sessionFileFor`); null for a session with no session file. Absent in tests that fake a backend.
    */
   prompt?: (id: string, via?: readonly string[]) => Promise<PromptView | null>;
+  /** Stops the wake ticker and resolves once every agent message out now has its answer (`SendOnce.idle`); the service runs it before it closes its daemon links. */
+  drainSends?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -324,6 +326,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
+    drainSends: async () => { stopWakes(); await sendOnce.idle(); },
     prompt: async (id, via) => {
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
       const title = catalog.title(id);
