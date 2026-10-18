@@ -41,7 +41,7 @@ test("the watch samples at each wall-clock minute's middle, so a lagging tick st
 // From 04:22:55Z on 10-18 the chat ran on us-metal02, whose lines carried usable: null (the Mac's feed has no Linux side) and measured only the
 // box's workers, so clean_min_30 counted every box minute dirty and the Mac's workers left sleeping_gb.
 const BOX_RUN = Date.parse("2026-10-18T05:00:10Z");
-const linux = (memFullAvg10: number, loadPerCore: number): LinuxUsable => ({ kind: "linux", memSomeAvg10: 0, memFullAvg10, cpuSomeAvg10: 0, swapoutsPerS: 0, loadPerCore });
+const linux = (memFullAvg10: number, runnablePerCore: number): LinuxUsable => ({ kind: "linux", memSomeAvg10: 0, memFullAvg10, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore, allowedCpus: 32 });
 const mac: UsableReading = { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 20 };
 const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading | null, sleeping = 0): WatchLine => ({
   at: new Date(BOX_RUN - 10_000 - (30 - minute) * 60_000 + 30_000).toISOString(), host: "us-metal02", usable: box,
@@ -51,7 +51,7 @@ const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading |
     sleeping: { gb: sleeping, workers: sleeping ? 1 : 0, kernels: 0, trees: sleeping ? [{ root: "lmb", tree: "launch main bro", gb: sleeping }] : [] },
     ...other ? {} : { error: "relay mac answered 502 to /v1/watch" } }] });
 
-test("each box is judged on its own reading, a Linux box by memory stall and load a core, and a box with no reading is unknown", () => {
+test("each box is judged on its own reading, a Linux box by memory stall and runnable tasks a core, and a box with no reading is unknown", () => {
   const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, minute === 3 ? linux(72, 0.6) : minute === 4 ? linux(0, 1.2) : linux(0, 0.58),
     minute === 10 ? null : mac));
   const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
@@ -63,6 +63,23 @@ test("each box is judged on its own reading, a Linux box by memory stall and loa
   assert.equal(metrics.usable_min_30_mac, 29);
   assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /us-metal02 unusable \(pressure\).*us-metal02 unusable \(cpu\)/);
   assert.match(flagged?.find(slice => slice.kind === "unknown_minutes")?.excerpt ?? "", /mac unread \(relay mac answered 502/);
+});
+
+test("a kept Linux reading with loadPerCore and no runnablePerCore reads its box unknown, never clean, in its own line or through a relay", () => {
+  // us-metal02's line at 05:06:30Z on 10-18, from before host-stats.ts read the CPU set: loadPerCore 0.25 was the loadavg over all 80 CPUs.
+  const old = { kind: "linux", memSomeAvg10: 0.07, memFullAvg10: 0.07, cpuSomeAvg10: 0.12, swapoutsPerS: 736, loadPerCore: 0.25 } as unknown as LinuxUsable;
+  const lines = Array.from({ length: 30 }, (_, minute) => {
+    const line = boxLine(minute, minute < 20 ? old : linux(0, 0.58), mac);
+    return minute === 25 ? { ...line, hosts: [{ ...line.hosts![0]!, usable: old }] } : line;
+  });
+  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
+  assert.equal(metrics.unknown_min_30_us_metal02, 20);
+  assert.equal(metrics.usable_min_30_us_metal02, 10);
+  assert.equal(metrics.unknown_min_30_mac, 1, "an old Linux reading through a relay is checked the same way");
+  assert.equal(metrics.usable_min_30_mac, 29);
+  assert.equal(metrics.clean_min_30, 9);
+  assert.equal(metrics.unknown_min_30, 21);
+  assert.match(flagged?.find(slice => slice.kind === "unknown_minutes")?.excerpt ?? "", /us-metal02 unread \(an old-format or invalid Linux reading\)/);
 });
 
 test("sleeping_gb sums every box's sleeping sessions, and the flag names each box", () => {

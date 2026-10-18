@@ -8,7 +8,7 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type HostUsable, isLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
@@ -18,13 +18,23 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
+/** A Linux reading a line kept from before host-stats.ts read the CPU set, or a malformed one, is no reading (`parseLinuxReading`). */
+export const OLD_LINUX_READING = "an old-format or invalid Linux reading";
+const checked = (usable: HostUsable | null | undefined): { usable: HostUsable | null; error?: string } =>
+  !usable || !isLinuxReading(usable) || parseLinuxReading(usable) ? { usable: usable ?? null } : { usable: null, error: OLD_LINUX_READING };
+
 /** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
 export function hostViews(line: WatchLine): HostView[] {
+  const own = checked(line.usable);
   return [
-    { name: line.host ?? UNNAMED_HOST, usable: line.usable ?? null, workers: line.workers, workerGb: line.workerGb, top: line.top,
-      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.sleeping ? { sleeping: line.sleeping } : {} },
-    ...(line.hosts ?? []).map(host => ({ name: host.name, usable: host.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-      ...host.sleeping ? { sleeping: host.sleeping } : {}, ...host.error ? { error: host.error } : {} })),
+    { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
+      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.sleeping ? { sleeping: line.sleeping } : {}, ...own.error ? { error: own.error } : {} },
+    ...(line.hosts ?? []).map(host => {
+      const read = checked(host.usable);
+      const error = host.error ?? read.error;
+      return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
+        ...host.sleeping ? { sleeping: host.sleeping } : {}, ...error ? { error } : {} };
+    }),
   ];
 }
 

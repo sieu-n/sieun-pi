@@ -57,11 +57,12 @@ export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promi
 
 /**
  * A Linux box's usable minute, from its own kernel: memory full stall (avg10) under 70%, the mark at which Android lmkd's default
- * psi_complete_stall_ms (700 ms of a 1 s window) reads critical, as macOS's level 4 does (host-stats.ts parsePsi uses the same mark), and a
- * 1-minute load under one runnable task a core, where the box's CPU is saturated by definition. The swap-out rate is kept as context with no
- * mark: the Mac's 6,000 a second was measured in 16 KiB macOS pages, and no Linux measurement backs a number yet.
+ * psi_complete_stall_ms (700 ms of a 1 s window) reads critical, as macOS's level 4 does (host-stats.ts parsePsi uses the same mark), and
+ * under one runnable task a core on the CPUs the harness may run on over the sample window (host-stats.ts `runnablePerCore`), where those
+ * CPUs are saturated by definition. The swap-out rate is kept as context with no mark: the Mac's 6,000 a second was measured in 16 KiB macOS
+ * pages, and no Linux measurement backs a number yet.
  */
-export const LINUX_USABLE = { memFullAvg10: 70, loadPerCore: 1 } as const;
+export const LINUX_USABLE = { memFullAvg10: 70, runnablePerCore: 1 } as const;
 /** One box's reading: ops guy's feed on the Mac, the kernel's own numbers on Linux. */
 export type HostUsable = UsableReading | LinuxUsable;
 export const isLinuxReading = (reading: HostUsable): reading is LinuxUsable => (reading as { kind?: unknown }).kind === "linux";
@@ -71,7 +72,7 @@ export function unusable(reading: HostUsable): UsableMiss[] {
   const missed: UsableMiss[] = [];
   if (isLinuxReading(reading)) {
     if (reading.memFullAvg10 >= LINUX_USABLE.memFullAvg10) missed.push("pressure");
-    if (reading.loadPerCore >= LINUX_USABLE.loadPerCore) missed.push("cpu");
+    if (reading.runnablePerCore >= LINUX_USABLE.runnablePerCore) missed.push("cpu");
     return missed;
   }
   if (reading.pressureLevel >= USABLE.pressureLevel) missed.push("pressure");
@@ -83,16 +84,24 @@ export function unusable(reading: HostUsable): UsableMiss[] {
 /** This box's reading now: ops guy's feed on macOS, the kernel's pressure, swap and load on Linux. */
 export const readUsable = async (now: number): Promise<HostUsable | null> => process.platform === "darwin" ? await readPressureFeed(now) : await linuxUsable(now);
 
+const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+/**
+ * A Linux reading checked at the edge, from a relay's answer or a watch line on disk: every stall, rate and runnablePerCore a finite number of
+ * 0 or more and allowedCpus a whole number above 0. Null otherwise, so the box reads unknown.
+ */
+export function parseLinuxReading(reading: unknown): LinuxUsable | null {
+  if (!isRecord(reading) || reading.kind !== "linux") return null;
+  const { memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus } = reading;
+  if (!count(memSomeAvg10) || !count(memFullAvg10) || !count(cpuSomeAvg10) || !count(runnablePerCore) || !(Number.isInteger(allowedCpus) && (allowedCpus as number) > 0) ||
+    (swapoutsPerS !== null && !count(swapoutsPerS))) return null;
+  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number };
+}
+
 /** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */
 export function parseUsableRaw(value: unknown, now: number): HostUsable | null {
   if (!isRecord(value)) return null;
   if (value.platform === "darwin") return parseFeed(value.feed, now);
-  const reading = value.platform === "linux" && isRecord(value.reading) ? value.reading : null;
-  if (!reading || reading.kind !== "linux") return null;
-  const { memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, loadPerCore } = reading;
-  if (typeof memSomeAvg10 !== "number" || typeof memFullAvg10 !== "number" || typeof cpuSomeAvg10 !== "number" || typeof loadPerCore !== "number" ||
-    (swapoutsPerS !== null && typeof swapoutsPerS !== "number")) return null;
-  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, loadPerCore };
+  return value.platform === "linux" ? parseLinuxReading(value.reading) : null;
 }
 
 /** One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. */

@@ -228,9 +228,15 @@ export async function hostStats(): Promise<HostStats> {
 
 /**
  * A Linux box's usability reading for the chat service's watch (sieun-pi src/mac-usable-watch.ts `unusable` judges it): memory and CPU
- * pressure stall (avg10, % of the last 10 s), swap-outs a second since the previous call (null on the first), and the 1-minute load a core.
+ * pressure stall (avg10, % of the last 10 s), swap-outs a second since the previous call (null on the first), and `runnablePerCore`.
+ *
+ * `runnablePerCore` estimates the mean number of tasks running or waiting to run, for each of the `allowedCpus` CPUs this process may run on,
+ * between this call and the one before. It is the growth of /proc/schedstat's per-CPU run time plus run-queue wait time over the window,
+ * divided by the window and the CPU count. That makes it a sample-window estimate: the kernel adds a task's run time when it leaves a CPU
+ * and its wait when it gets one, so time still open at the window's end shows up in the next window, and it is no instant queue length.
+ * 1.0 means one runnable task for each of those CPUs.
  */
-export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; loadPerCore: number }
+export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; runnablePerCore: number; allowedCpus: number }
 /** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
 export function psiAvg10(text: string, kind: "some" | "full"): number | null {
   const value = new RegExp(`^${kind} avg10=([\\d.]+)`, "m").exec(text)?.[1];
@@ -241,18 +247,71 @@ export function parsePswpout(text: string): number | null {
   const value = /^pswpout (\d+)$/m.exec(text)?.[1];
   return value === undefined ? null : Number(value);
 }
+/**
+ * The CPUs of a /proc/<pid>/status Cpus_allowed_list line ("9,11,13-15"), sorted and each once. Null when the line is absent or any part is not
+ * a CPU number or an ascending "from-to" range, such as "-1", "1-2-3", "3-1", an empty part, or digits past Number.MAX_SAFE_INTEGER.
+ */
+export function parseCpusAllowed(status: string): number[] | null {
+  const list = /^Cpus_allowed_list:[ \t]*(\S*)[ \t]*$/m.exec(status)?.[1];
+  if (!list) return null;
+  const cpus = new Set<number>();
+  for (const part of list.split(",")) {
+    const range = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!range) return null;
+    const from = Number(range[1]), to = Number(range[2] ?? range[1]);
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || to < from) return null;
+    for (let cpu = from; cpu <= to; cpu++) cpus.add(cpu);
+  }
+  return [...cpus].sort((a, b) => a - b);
+}
+/**
+ * Each CPU's nanoseconds of task run time plus run-queue wait since boot, from /proc/schedstat's cpuN lines (fields 7 and 8 in versions 15
+ * to 17, kept by CONFIG_SCHED_INFO even with the kernel.sched_schedstats counters off); null for another version or no cpu line.
+ */
+export function parseSchedstat(text: string): Map<number, number> | null {
+  const version = Number(/^version (\d+)$/m.exec(text)?.[1]);
+  if (!(version >= 15 && version <= 17)) return null;
+  const times = new Map<number, number>();
+  for (const match of text.matchAll(/^cpu(\d+)(?: \d+){6} (\d+) (\d+)/gm)) times.set(Number(match[1]), Number(match[2]) + Number(match[3]));
+  return times.size ? times : null;
+}
+/**
+ * Tasks running or waiting a CPU, averaged over `cores` between two schedstat readings `ms` apart. Null, so the box reads unknown, when the
+ * window is empty, a CPU is missing from either reading (hotplug), a counter went back (a reset), or no CPU of the set counted any time.
+ */
+export function runnablePerCore(before: ReadonlyMap<number, number>, after: ReadonlyMap<number, number>, cores: readonly number[], ms: number): number | null {
+  if (!cores.length || !(ms > 0)) return null;
+  let ns = 0;
+  for (const core of cores) {
+    const from = before.get(core), to = after.get(core);
+    if (from === undefined || to === undefined || to < from) return null;
+    ns += to - from;
+  }
+  const counted = ns > 0;
+  return counted ? ns / (ms * 1e6 * cores.length) : null;
+}
 let lastSwap: { at: number; pages: number } | null = null;
-/** The box's LinuxUsable now; null when /proc/pressure/memory cannot be read (a kernel without PSI). */
+let lastSched: { at: number; times: Map<number, number> } | null = null;
+/**
+ * The box's LinuxUsable now. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be
+ * read, and on the first call, which has no earlier schedstat reading to take a window from.
+ */
 export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null> {
-  const [memory, cpu, vmstat] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat"].map(path => readFile(path, "utf8").catch(() => "")));
+  const [memory, cpu, vmstat, schedstat, status] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat", "/proc/schedstat", "/proc/self/status"]
+    .map(path => readFile(path, "utf8").catch(() => "")));
   const memSome = psiAvg10(memory!, "some"), memFull = psiAvg10(memory!, "full");
-  if (memSome === null || memFull === null) return null;
   const pages = parsePswpout(vmstat!);
   const previous = lastSwap;
   lastSwap = pages === null ? null : { at: now, pages };
   const swapoutsPerS = pages !== null && previous && now > previous.at ? Math.max(0, (pages - previous.pages) * 1000 / (now - previous.at)) : null;
+  const times = parseSchedstat(schedstat!);
+  const before = lastSched;
+  lastSched = times ? { at: now, times } : null;
+  const cores = parseCpusAllowed(status!);
+  const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
+  if (memSome === null || memFull === null || runnable === null || !cores) return null;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
-    swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), loadPerCore: Math.round(100 * loadavg()[0]! / Math.max(1, cpus().length)) / 100 };
+    swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length };
 }
 /** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
 export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };
