@@ -194,8 +194,8 @@ export interface Inputs {
   limits: readonly LimitChange[];
   /** pi-pool's limit when the Mac reads ok (`mac_working_max`). */
   okLimit: number;
-  /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused). */
-  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number }[];
+  /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
+  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
   cut?: readonly CutJob[];
 }
@@ -233,7 +233,9 @@ export function measure(input: Inputs): PrecheckOutput {
   }
   // Each chat's newest measured check-in, as its run measured it, and only while it is under one check-in interval old. On 10-17 the count read
   // VP of CI's after-job value, 1, while its 19:36Z run measured 26, and took counts 20 h old as current after no check-in ran from 00:05Z on.
-  const stuck = input.chats.map(chat => {
+  // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
+  // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
+  const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "skipped" && entry.verdict !== "error");
     const fresh = run !== undefined && (chat.everyMs === undefined || now - run.at <= chat.everyMs);
     return { chat, value: fresh ? run.metrics.stuck_steps?.value ?? 0 : 0, at: run?.at };
@@ -437,7 +439,7 @@ async function main(): Promise<void> {
     const file = await store.read(id);
     const paused = activePause(await settings.get(id), now) !== null;
     if (paused) pausedChats.add(id);
-    chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs,
+    chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs, paused,
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
   const live = ids.filter(id => !archived.has(id));

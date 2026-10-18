@@ -1,7 +1,7 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep, planJob } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
-import type { WakeWatch } from "./checkin-load.ts";
+import type { CiRun, WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
@@ -114,7 +114,20 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
  * turns), and the labels that wait in the fleet budget (`FleetBudget.queued`): the job names of this chat whose start or send-back waits
  * there, and the session ids whose due wake has its place there (`FleetBudget.place`). Absent: none.
  */
-export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>; starting?: ReadonlySet<string> }
+export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>; starting?: ReadonlySet<string>;
+  /** Every CI run the cache holds by id (`Train.all`), for a step whose wait names a run that is queued or running (`runMover`). Absent: none. */
+  runs?: ReadonlyMap<string, CiRun> }
+
+/**
+ * A step whose wait names a CI run that the cache reads as queued or running, with an owner that has not failed or been cancelled, moves: the
+ * run goes on by itself and its owner lands on its result. At 00:09Z on 10-18 frontend bro's p160 and p174 waited on queued runs 39080012885
+ * and 39079924185 (attempt 2), and the Whole system duty counted both as stuck.
+ */
+export function runMover(item: Pick<PlanItem, "waitFor">, owner: JobFact | undefined, runs: ReadonlyMap<string, CiRun> | undefined): string | undefined {
+  if (!runs?.size || !owner || owner.cancelled || owner.state === "failed") return undefined;
+  const id = [...firstClause(item.waitFor ?? "").matchAll(/\b(\d{9,})\b/g)].map(match => match[1]!).find(run => runs.get(run)?.running);
+  return id ? `its wait is on run ${id}, which CI still runs, and ${ownerLabel(owner)} lands on its result` : undefined;
+}
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
  * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names), or its job's
@@ -124,7 +137,7 @@ export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: Rea
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>): string | undefined {
   const { item, owner, mine } = view;
-  const woke = wakeMover(item, movers.watches ?? new Map(), rows, self);
+  const woke = wakeMover(item, movers.watches ?? new Map(), rows, self) ?? runMover(item, owner, movers.runs);
   if (woke) return woke;
   const queued = movers.queued ?? new Map<string, unknown>();
   const slot = "waits for a working slot in pi-pool's queue";

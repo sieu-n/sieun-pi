@@ -223,10 +223,21 @@ const LOWER_IS_BETTER = /\b(waits?|waiting|times?|latenc(?:y|ies)|durations?|del
 /**
  * Which way a goal's number must go to reach its target: `<=` for lower is better, else `>=`. The target's `direction` decides, then its metric
  * words. VP of CI's p1 "m1-air job start wait from the push, p90" read 157.8 against 10 min and p60 "passed land run time, p50" 141.7 against
- * 45 min, and both were taken as at target on 10-18, which hid the two biggest CI goals from goal_gaps.
+ * 45 min, and both were taken as at target on 10-18, which hid the two biggest CI goals from goal_gaps. A target of 0 is always lower is better,
+ * and a metric's words count across underscores: AI harness p529 "stuck_steps_all" 6 of target 0 read as done on 10-18.
  */
-export const targetOp = (target: Pick<GoalTarget, "metric" | "direction">): ">=" | "<=" =>
-  target.direction ? (target.direction === "down" ? "<=" : ">=") : LOWER_IS_BETTER.test(target.metric) ? "<=" : ">=";
+export const targetOp = (target: Pick<GoalTarget, "metric" | "direction"> & Partial<Pick<GoalTarget, "target">>): ">=" | "<=" =>
+  target.direction ? (target.direction === "down" ? "<=" : ">=") : target.target === 0 || LOWER_IS_BETTER.test(target.metric.replace(/_/g, " ")) ? "<=" : ">=";
+/**
+ * The target to store when an op sets `next` over `kept`: the newer reading of the same metric wins. A check-in job writes the number its
+ * precheck read, which can be older than a reading taken since (AI harness p453 10-17: a check-in wrote 29.7% back over the 31.5% that
+ * duty-fleet.ts had measured at 22:27Z), and a target given with no measurement keeps the reading it had.
+ */
+export function newerReading(next: GoalTarget, kept: GoalTarget | undefined): GoalTarget {
+  if (!kept?.measuredAt || kept.current === undefined || kept.metric !== next.metric) return next;
+  if (next.measuredAt && Date.parse(next.measuredAt) >= Date.parse(kept.measuredAt)) return next;
+  return { ...next, current: kept.current, measuredAt: kept.measuredAt, ...(kept.source !== undefined ? { source: kept.source } : {}) };
+}
 /** Whether a measured goal reaches its target in its direction (`targetOp`). */
 export const targetMet = (target: GoalTarget): boolean =>
   target.current !== undefined && (targetOp(target) === "<=" ? target.current <= target.target : target.current >= target.target);
@@ -465,7 +476,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const kept = itemId === input.id ? find(board.plan, itemId)?.item : undefined;
         const job = planJob(input.job);
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
-        const target = input.target ?? kept?.target;
+        const target = input.target ? newerReading(input.target, kept?.target) : kept?.target;
         const duty = input.duty ?? kept?.duty;
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
@@ -529,9 +540,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.duty === null) { delete next.duty; if (item.duty) parts.push("unlinked its duty metric"); }
       else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
-      else if (op.target && JSON.stringify(op.target) !== JSON.stringify(item.target)) {
+      else if (op.target && JSON.stringify(newerReading(op.target, item.target)) !== JSON.stringify(item.target)) {
         measuredBy(op.target, now);
-        next.target = op.target; parts.push(`set its target: ${targetText(op.target)}`);
+        next.target = newerReading(op.target, item.target);
+        parts.push(`set its target: ${targetText(next.target)}${next.target.current !== op.target.current ? ", keeping its newer reading" : ""}`);
       }
       if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
       // The item moves with its steps and keeps its id; an open item under a finished goal reopens it and every finished goal above it, as plan_add does.

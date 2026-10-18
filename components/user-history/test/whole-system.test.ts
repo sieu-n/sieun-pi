@@ -68,6 +68,18 @@ test("stuck steps count each chat's check-in as its run measured it, and drop a 
   assert.deepEqual(output.flagged?.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["VP of CI", "Crawler VP"]);
 });
 
+test("a chat whose check-in is paused adds no stuck steps, though its last run is under one interval old (slack green guy 10-18 00:09Z)", () => {
+  const run = (minutesAgo: number, stuck: number) => ({ duty: "checkin", at: NOW - minutesAgo * 60_000, slot: 0, trigger: "schedule", ms: 1, verdict: "missed",
+    metrics: { stuck_steps: { value: stuck, target: 0, op: "<=", met: false } }, summary: "" }) as unknown as Inputs["chats"][number]["runs"][number];
+  // slack green guy's 22:11Z check-in read 3 stuck steps; the owner's focus pause stopped the chat at 23:03Z, and d7 ran at 00:09Z, inside its 2 h interval.
+  const output = measure(inputs({ chats: [
+    { id: "slack green guy", name: "slack green guy", duties: [], runs: [run(118, 3)], everyMs: 2 * 60 * 60_000, paused: true },
+    { id: "frontend bro", name: "frontend bro", duties: [{ id: "checkin", name: "Check-in" }], runs: [run(10, 2)], everyMs: 30 * 60_000 },
+  ] }));
+  assert.equal(output.metrics.stuck_steps_all, 2);
+  assert.deepEqual(output.flagged?.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["frontend bro"]);
+});
+
 test("whole-system.duty.json: a duty every 30 minutes on the owner's words, whose metrics the precheck writes", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/whole-system.duty.json"), "utf8")), "d7", 0);
   assert.deepEqual(duty.schedule, { kind: "every", minutes: 30 });

@@ -439,6 +439,12 @@ export class Chats {
     catch (error) { this.log(`check-in settings: ${error instanceof Error ? error.message : String(error)}`); return {}; }
   }
 
+  /** The chats whose check-in the owner paused now (`ownerPause`): their threads are parked by him, so a check-in asks them for nothing. */
+  private async ownerPaused(now: number): Promise<Set<string>> {
+    const settings = await this.settings();
+    return new Set(Object.entries(settings).filter(([id, setting]) => this.chatIds.has(id) && activePause(setting, now) !== null && ownerPause(setting)).map(([id]) => id));
+  }
+
   /**
    * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one and that is not paused; the time is
    * taken before the run is queued, so a second wake in the same slot does not queue it again. Every chat the owner has not paused is also
@@ -1006,7 +1012,10 @@ export class Chats {
         if (everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, this.now() - everyMs + CHECK_IN_RETRY_MS);
         return;
       }
-      for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
+      const paused = await this.ownerPaused(this.now());
+      for (const fact of facts) {
+        if (fact.state === "failed" && fact.key.startsWith("thread:") && !paused.has(fact.key.slice("thread:".length))) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
+      }
       if (!checkInDue(facts, board, boardError)) { this.log(`chat ${id.slice(0, 8)}: check-in: nothing to check (no job at work, no open plan step, no board error)`); return; }
       const at = this.now();
       const everyMs = (await this.source.settings.get(id)).everyMs;
@@ -1119,6 +1128,7 @@ export class Chats {
     const doneFacts = await this.doneFacts(id, board, rows);
     const precheck = checkInPrecheck(previous, facts, board, at,
       { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+        paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
   }

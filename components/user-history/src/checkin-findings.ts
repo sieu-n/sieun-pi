@@ -7,7 +7,7 @@ import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shar
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
-import { type Movers, outsideMover } from "./checkin-end-state.ts";
+import { heldByTodo, type Movers, outsideMover } from "./checkin-end-state.ts";
 import { localTime } from "./checkin-settings.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses and owner gates, each with the line the duty job reads (goals: src/checkin-goals.ts). */
@@ -63,16 +63,21 @@ export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.l
  */
 export interface HeldGoal { goal: { id: string; text: string }; steps: { item: PlanItem; thread: { id: string; name: string } }[] }
 export function heldElsewhere(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
-  jobs: readonly string[] = []): HeldGoal[] {
+  jobs: readonly string[] = [], paused: ReadonlySet<string> = new Set()): HeldGoal[] {
   const settled = (goal: PlanItem): boolean => goal.children.some(child => CLOSED.has(child.status)) &&
     (!goal.target || targetMet(goal.target));
   const tops = new Map((board?.plan ?? []).map(goal => [goal.id, goal]));
   const own = new Set([...jobs, ...rows.filter(row => jobs.includes(row.name)).map(row => row.id)]);
   const other = (thread: { id: string; name: string } | undefined) => thread && !own.has(thread.id) && !own.has(thread.name) ? thread : undefined;
+  // A step the owner holds is no other thread's to move, so the goal is never handed to that thread: an open For you todo links it, or the
+  // thread's chat is paused by him (`paused`). At 00:00Z on 10-18 the AI harness check-in told p200's two wiki threads to finish p534 and p535,
+  // which both waited on t51 for his focus pause.
+  const todos = board?.todos ?? [];
   const holder = (view: StepView): { id: string; name: string } | undefined => {
-    if (view.mine || view.cls === "foryou") return undefined;
-    if (view.owner) return view.owner.key.startsWith("thread:") ? other({ id: view.owner.key.slice("thread:".length), name: view.owner.name }) : undefined;
-    return other(waitTarget(view.item.waitFor, rows, self));
+    if (view.mine || view.cls === "foryou" || heldByTodo(view.item, todos)) return undefined;
+    const thread = view.owner ? view.owner.key.startsWith("thread:") ? { id: view.owner.key.slice("thread:".length), name: view.owner.name } : undefined
+      : waitTarget(view.item.waitFor, rows, self);
+    return thread && !paused.has(thread.id) ? other(thread) : undefined;
   };
   const goals = new Map<string, HeldGoal | null>();
   for (const view of views) {

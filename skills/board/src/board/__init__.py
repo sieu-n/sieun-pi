@@ -67,11 +67,26 @@ def _has_open(item: dict) -> bool:
     return item.get("status") in _OPEN or any(_has_open(child) for child in item.get("children", []))
 
 
+_LOWER_IS_BETTER = re.compile(r"\b(waits?|waiting|times?|latenc(?:y|ies)|durations?|delays?|lag|miss(?:es|ed)?|errors?|fail(?:s|ed|ures?)?|cancel(?:l?ed|s)?|stuck)\b", re.I)
+
+
+def _lower_is_better(target: dict) -> bool:
+    """The goal's direction as targetOp in chat-board.ts reads it: its direction, else a target of 0 or lower-is-better metric words."""
+    if target.get("direction"):
+        return target["direction"] == "down"
+    return target["target"] == 0 or bool(_LOWER_IS_BETTER.search(target["metric"].replace("_", " ")))
+
+
 def _target_text(target: dict) -> str:
     unit = target["unit"] if target["unit"] == "%" else f" {target['unit']}"
     if target.get("current") is None:
         return f"target {target['target']:g}{unit}, not measured"
-    return f"{target['current']:g} / {target['target']:g}{unit} ({round(target['current'] / target['target'] * 100)}%)"
+    current, goal = target["current"], target["target"]
+    if _lower_is_better(target):
+        ratio = 1 if current <= goal else goal / current
+        return f"{current:g}{unit}, target at most {goal:g}{unit} ({round(ratio * 100)}%, {'met' if current <= goal else 'not met'})"
+    ratio = 1 if goal == 0 else current / goal
+    return f"{current:g} / {goal:g}{unit} ({round(ratio * 100)}%)"
 
 
 def _marks(item: dict) -> str:

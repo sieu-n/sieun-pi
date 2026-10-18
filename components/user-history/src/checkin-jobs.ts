@@ -7,7 +7,10 @@ import { zTime } from "./checkin-goals.ts";
  * quiescence wait cancelled", and in the AI harness chat 9 jobs sat 1 to 3 hours with no progress and no report while its check-ins steered
  * none. Each run, a job of the chat with no progress for one check-in interval gets a nudge that says what it owes; after two intervals, or
  * when its last turn ended in an error, the server restarts it with that message. Progress is a report that carries a fact (`factsAt`) or a
- * change to a step it owns; activity alone is not. A job asleep on a board.wake, queued for a slot, or cancelled is left alone.
+ * change to a step it owns; activity alone is not. A job asleep on a board.wake, queued for a slot, or cancelled is left alone, and so is a job
+ * the owner holds (`held.job`, a thread of a chat whose check-in he paused) or whose every open step he holds (`held.step`: For you, parked by
+ * his correction, or a waitUntil still ahead). On 10-18 the old job "checkin pushes goals" owned 6 steps that all waited on For you t51 for
+ * the owner's focus pause, and each check-in counted it as a job to push.
  */
 
 /** What the check-in keeps per job: when its progress mark last moved, that mark, and when the check-in last pushed it. */
@@ -20,7 +23,8 @@ export interface JobPush { fact: JobFact; act: JobAct; idleMs: number; owes: str
  * started); `movedAt` is when a step's record last moved (`recordedAt`).
  */
 export function jobPushes(facts: readonly JobFact[], views: readonly StepView[], memos: Readonly<Record<string, JobMemo>> | undefined, everyMs: number, now: number,
-  coordinated: (fact: JobFact) => boolean, movedAt: (view: StepView) => number): { pushes: JobPush[]; memos: Record<string, JobMemo> } {
+  coordinated: (fact: JobFact) => boolean, movedAt: (view: StepView) => number,
+  held: { job?: (fact: JobFact) => boolean; step?: (view: StepView) => boolean } = {}): { pushes: JobPush[]; memos: Record<string, JobMemo> } {
   const kept: Record<string, JobMemo> = {};
   const pushes = facts.flatMap((fact): JobPush[] => {
     if (!coordinated(fact) || fact.cancelled) return [];
@@ -32,6 +36,7 @@ export function jobPushes(facts: readonly JobFact[], views: readonly StepView[],
     const memo: JobMemo = { mark, since, ...(before?.pushed !== undefined ? { pushed: before.pushed } : {}) };
     kept[fact.key] = memo;
     if (fact.wake || fact.queued || (memo.pushed !== undefined && now - memo.pushed < everyMs && memo.pushed >= since)) return [];
+    if (held.job?.(fact) || (owned.length && held.step && owned.every(held.step))) return [];
     const idleMs = now - since;
     const failed = fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined);
     const act: JobAct | null = failed || idleMs >= 2 * everyMs ? "restart" : idleMs >= everyMs ? "nudge" : null;

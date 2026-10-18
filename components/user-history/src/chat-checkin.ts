@@ -16,8 +16,8 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stuckLine } from "./checkin-end-state.ts";
-import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded } from "./checkin-goals.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stuckLine } from "./checkin-end-state.ts";
+import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
 export { finishedOpen, looksDone };
@@ -61,6 +61,11 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   duties?: readonly DutyRef[];
   /** The roots the chat started (the job registry's names or ids): its own jobs, never another session's load (`oneSessionLoad`) or a thread that holds a goal (`heldElsewhere`). */
   jobs?: readonly string[];
+  /**
+   * The chats whose check-in the owner paused, by session id: a thread among them is parked by him, so no goal push, job push or held-elsewhere
+   * line asks it for anything (`goalWait`, `jobPushes`, `heldElsewhere`). Not given: none.
+   */
+  paused?: ReadonlySet<string>;
   /** The chat's own schedules (`readHeartbeats`), for the heartbeats the check-in covers (`redundantHeartbeats`); none when not given. */
   heartbeats?: readonly ScheduledJob[];
   /** The release train in the CI cache (`readTrain`), for steps that wait on it (`trainMoves`); not given: no step counts as on a moving train. */
@@ -114,6 +119,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const views: StepView[] = [];
   const notes: string[] = [];
   const active = context.corrections ? new Set(context.corrections) : undefined;
+  const paused = context.paused ?? new Set<string>();
   const visit = (item: PlanItem): boolean => {
     let openBelow = false;
     for (const child of item.children) openBelow = visit(child) || openBelow;
@@ -147,22 +153,25 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
-  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []) };
+  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []), ...(context.train?.all ? { runs: context.train.all } : {}) };
   const doneFacts = context.doneFacts ?? NO_FACTS;
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
-    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)));
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused);
   const roots = new Set(context.jobs ?? []);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
       fact => !fact.name.startsWith("check-in ") && (!fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length))),
-      view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt);
+      view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt,
+      { job: fact => threadPaused(fact, fact, paused),
+        step: view => view.cls === "foryou" || view.cls === "parked" || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||
+          threadPaused(view.owner, view.item, paused) });
   return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: goals.pushes, blocked, done,
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
-    held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
+    held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,

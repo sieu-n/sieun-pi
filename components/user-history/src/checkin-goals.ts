@@ -1,7 +1,8 @@
 import type { MetricFact } from "./checkin-done.ts";
+import { heldByTodo } from "./checkin-end-state.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { targetOp, targetStaleMs } from "./shared/chat-board.ts";
-import type { ChatBoard, PlanItem } from "./shared/types.ts";
+import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
 import { type JobFact, OPEN, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
 
 /**
@@ -36,8 +37,11 @@ export type GoalTrend =
   | { kind: "still"; runs: number }
   | { kind: "moving"; delta: number; since: number; etaMs: number | null };
 
-/** What the check-in does about a goal: steer its owner job, start one, nothing (on pace or met), wait on the owner's answer, or give it a number first. */
-export type GoalAct = "steer" | "start" | "on_pace" | "owner" | "no_number";
+/**
+ * What the check-in does about a goal: steer its owner job, start one, nothing (on pace or met), wait on the owner's answer, wait for a time or
+ * the owner's pause of the thread that owns it, or give it a number first.
+ */
+export type GoalAct = "steer" | "start" | "on_pace" | "owner" | "waiting" | "no_number";
 
 export interface GoalPush {
   goal: PlanItem;
@@ -48,8 +52,10 @@ export interface GoalPush {
   owner?: JobFact;
   /** The goal's open push step, live or not: a start sets a job on it instead of adding a second one. */
   pushStep?: string;
-  /** The open steps under the goal that wait on the owner's answer in For you, when nothing else under it is open (`ownerHeld`). */
+  /** The items that wait on the owner's answer in For you (`ownerHeld`): the goal or its push step, or every open step under it. */
   asks?: string[];
+  /** What a goal that waits holds on (`goalWait`): "until 10-18 20:00Z", or the owner's pause of the thread that owns its push step. */
+  waits?: string;
   act: GoalAct;
   /** The owner's words for the goal: its open and unmet requirement lines. */
   words: string[];
@@ -129,15 +135,39 @@ export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact |
 }
 
 /**
- * The goal's open steps that wait on the owner's answer, when every open step under it besides its push step is For you or parked by his
- * correction, with at least one For you; undefined otherwise. Such a number moves only when he answers, so no job can push it. frontend bro
- * 10-16 to 10-18: p106 "Connections parts the owner accepts" 0 of 5 and p118 "Email parts the owner accepts" 0 of 3 waited on For you t28 and
- * t25, with every part built and walked on Staging, and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again.
+ * The items that hold a goal on the owner's answer, or undefined. The goal is held when its own wait or its push step is held by an open For you
+ * todo (`heldByTodo`), whatever its other steps do: AI harness p453 "duties green" waited on t51 through its push step p530 from 10-17 23:10Z,
+ * while p523 and p528 under it were live, and goal_gaps flagged it 27 times in a row. It is also held when every open step under it besides its
+ * push step is For you or parked by his correction, with at least one For you. frontend bro 10-16 to 10-18: p106 "Connections parts the owner
+ * accepts" 0 of 5 and p118 "Email parts the owner accepts" 0 of 3 waited on For you t28 and t25, with every part built and walked on Staging,
+ * and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again.
  */
-export function ownerHeld(goal: PlanItem, views: readonly StepView[]): string[] | undefined {
+export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: Parameters<typeof heldByTodo>[1] = []): string[] | undefined {
+  const named = new Set(goal.waitFor?.match(/\bt\d+\b/g) ?? []);
+  if (todos.some(todo => todo.from === "agent" && !todo.done && (todo.step === goal.id || (todo.id !== undefined && named.has(todo.id))))) return [goal.id];
+  const push = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
+  if (push && heldByTodo(push.item, todos)) return [push.item.id];
   const open = views.filter(view => view.goal?.id === goal.id && view.item.duty !== GOAL_PUSH_LINK);
   const asks = open.filter(view => view.cls === "foryou").map(view => view.item.id);
   return asks.length && open.every(view => view.cls === "foryou" || view.cls === "parked") ? asks : undefined;
+}
+
+/** Whether a thread's chat is paused by the owner: the thread is in `paused`, by the `thread:` key of its owner or by the step's session id. */
+export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick<PlanItem, "sessionId">, paused: ReadonlySet<string>): boolean =>
+  (owner?.key.startsWith("thread:") === true && paused.has(owner.key.slice("thread:".length))) || (item.sessionId !== undefined && paused.has(item.sessionId));
+
+/**
+ * What a goal waits on, so no job can push its number now, or undefined: a waitUntil still ahead on the goal or its push step, or the owner's
+ * pause of the thread that owns its push step (`paused`, the chats whose check-in he paused). The owner's focus pause at 23:03Z on 10-17 stopped
+ * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
+ */
+export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set()): string | undefined {
+  for (const item of [goal, push?.item]) {
+    const until = Date.parse(item?.waitUntil ?? "");
+    if (Number.isFinite(until) && until > now) return `until ${zTime(until)}`;
+  }
+  if (push && threadPaused(push.owner, push.item, paused)) return `on the owner's pause of ${push.owner?.name ?? push.item.sessionId}`;
+  return undefined;
 }
 
 /** The owner's words for a goal: its requirement lines still open or unmet, else the goal's own text. */
@@ -152,24 +182,27 @@ export const goalWords = (goal: PlanItem): string[] => {
  */
 export function goalPushes(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, GoalMemo>> | undefined,
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
-  folded: ReadonlySet<string> = new Set()): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set()): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
   const pushes = (board?.plan ?? []).flatMap((goal): GoalPush[] => {
     if (!OPEN.has(goal.status) || folded.has(goal.id)) return [];
     const words = goalWords(goal);
     const owner = goalOwner(goal, views);
-    const step = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK)?.item.id;
+    const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
+    const step = pushView?.item.id;
     const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     if (!number) return [{ ...base, stale: false, act: "no_number" }];
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
     if (memo) kept[goal.id] = memo;
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
-    const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views);
-    const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
-    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), act }];
+    const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views, todos);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused);
+    const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
+    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), act }];
   });
-  const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, owner: 3, on_pace: 4 };
+  const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, owner: 3, waiting: 4, on_pace: 5 };
   const short = (push: GoalPush): number => !push.number || push.number.value === undefined ? 1
     : Math.max(0, (push.number.target - push.number.value) * (push.number.op === "<=" ? -1 : 1) / Math.abs(push.number.target || 1));
   return { pushes: pushes.sort((a, b) => rank[a.act] - rank[b.act] || short(b) - short(a)), memos: kept };
@@ -221,6 +254,7 @@ function askText(push: GoalPush): string {
   if (push.act === "steer") return `${ownerLabel(owner!)} owns it and it is off pace: steer it to name and attack the biggest blocker now`;
   if (push.act === "no_number") return "it has no target and no linked duty metric: set a target from the owner's words in this run";
   if (push.act === "owner") return `it moves when the owner answers the For you ask on ${ownerAsks(push)}`;
+  if (push.act === "waiting") return `it waits ${push.waits}`;
   return `${owner ? ownerLabel(owner) : "its owner"} moves it on pace`;
 }
 
@@ -271,7 +305,8 @@ const paceText = (push: GoalPush): string => {
   const trend = push.trend;
   if (!trend || trend.kind === "unmeasured") return "not measured yet";
   if (trend.kind === "met") return "at target";
-  const pace = push.act === "owner" ? `waits on the owner's answer on ${ownerAsks(push)}` : pushNeeded(push) ? "off pace" : "on pace";
+  const pace = push.act === "owner" ? `waits on the owner's answer on ${ownerAsks(push)}` : push.act === "waiting" ? `waits ${push.waits}`
+    : pushNeeded(push) ? "off pace" : "on pace";
   return `${trendText(push.number!, trend, push.stale)}, ${pace}`;
 };
 
