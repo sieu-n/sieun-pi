@@ -351,8 +351,10 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
+export async function startChatServer({ backend, bundle, port, listenFd = null, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
   backend: ChatBackend; bundle: ClientBundle | Promise<ClientBundle>; port: number; capability: string; csrfToken: string;
+  /** The port's socket that systemd holds across restarts (`takeListenFd`); the server listens on it instead of binding `port`. */
+  listenFd?: number | null;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
@@ -631,9 +633,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             json(res, 200, await backend.threads.toolOutput(id, toolCallId)); return;
           }
           if (action === "part") {
-            const message = Number(url.searchParams.get("message")); const part = Number(url.searchParams.get("part") ?? 0);
-            if (!Number.isSafeInteger(message) || message < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
-            json(res, 200, await backend.threads.part(id, message, part)); return;
+            const at = Number(url.searchParams.get("at")); const n = Number(url.searchParams.get("n") ?? 0); const part = Number(url.searchParams.get("part") ?? 0);
+            if (!Number.isSafeInteger(at) || at < 0 || !Number.isSafeInteger(n) || n < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
+            json(res, 200, await backend.threads.part(id, { at, n }, part)); return;
+          }
+          if (action === "older") {
+            const cursor = url.searchParams.get("cursor") ?? "";
+            if (!cursor || cursor.length > 256) throw new RequestError(400, "Choose where the earlier messages start.");
+            json(res, 200, await backend.threads.olderPage(id, cursor)); return;
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
@@ -918,7 +925,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await slack.chat(id, input).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
           json(res, 200, slack.view(origin === `http://${host}`)); return;
         }
-        case "older": await backend.threads.older(id); break;
         case "board": {
           // The owner's side of the chat board: todo ops. The chat then gets a steer that says in plain words what the owner did.
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
@@ -1017,7 +1023,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+      const listening = () => { server.removeListener("error", reject); resolve(); };
+      if (listenFd === null) server.listen(port, "127.0.0.1", listening);
+      else server.listen({ fd: listenFd }, listening);
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a loopback TCP address.");

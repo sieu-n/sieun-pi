@@ -14,6 +14,7 @@ import { remoteChatService } from "./chat-host.ts";
 import { openChat } from "./chat-open.ts";
 import { RemoteAccess, tailnetOwner, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
+import { takeListenFd } from "./listen-fd.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
 /**
@@ -303,7 +304,10 @@ async function serve(options: Options): Promise<void> {
   const service = await loadService({ ...options, socketPath: options.socketPath ?? await defaultSocket() }, true);
   if (!service) throw new Error("Could not create chat configuration.");
   const instancePath = join(service.directory, "instance.json");
-  if (options.supervised) {
+  // Under socket activation systemd owns the port and queues connections while this process starts, so the identity check below would wait on
+  // this process itself; only one service of the unit runs, so no other chat can hold the port.
+  const listenFd = takeListenFd();
+  if (options.supervised && listenFd === null) {
     if (!service.primary || !service.config.keepRunning) { process.stdout.write("Keep running is off for this chat. The login item exits.\n"); return; }
     // Another chat process owns the port. Wait for it: take over after a crash, stay idle after chat stop.
     let waited = false;
@@ -317,7 +321,7 @@ async function serve(options: Options): Promise<void> {
       process.stdout.write("The chat stopped cleanly. The login item stays idle until chat start or the next login.\n"); return;
     }
   }
-  const existing = await running(service);
+  const existing = listenFd === null ? await running(service) : null;
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
@@ -405,7 +409,7 @@ async function serve(options: Options): Promise<void> {
     },
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
-  const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
+  const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close, tailnetOwner: () => tailnetOwner() }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;

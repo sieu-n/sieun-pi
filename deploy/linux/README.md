@@ -72,9 +72,9 @@ node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
 /usr/bin/python3 -B components/prime-sync/install.py --ref "$(git rev-parse HEAD)"   # needs gh auth login, and origin set to GitHub
 
 # Units
-mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/ && install -m 0755 deploy/linux/prime-agent-daemon-ctl ~/.local/bin/
+mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.socket deploy/linux/*.timer ~/.config/systemd/user/ && install -m 0755 deploy/linux/prime-agent-daemon-ctl ~/.local/bin/
 systemctl --user daemon-reload
-systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.service prime-agent-watchdog.timer
+systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.socket sieun-pi-chat.service prime-agent-watchdog.timer
 ```
 
 The main chat adds itself to Tailscale Serve at `https://<host>.<tailnet>.ts.net/`.
@@ -92,6 +92,7 @@ The watchdog code is not in this repository. Copy `watchdog.py`, `cron_cycle.py`
 ## Update
 
 Release a commit to the chat with `node scripts/release-chat.mjs <sha>`. On Linux it restarts `sieun-pi-chat.service` instead of kickstarting the LaunchAgent.
+`sieun-pi-chat.socket` holds port 5182 across a restart, so the kernel queues the page's requests while the service stops and starts instead of refusing them. When the release's `sieun-pi-chat.service` or `sieun-pi-chat.socket` differs from the installed one, release-chat copies both into `~/.config/systemd/user`, runs `daemon-reload`, stops the service, enables and starts the socket, then starts the service.
 Update the pool with `/usr/bin/python3 -B components/pi-pool/install.py --ref <sha>`.
 
 ## Tools

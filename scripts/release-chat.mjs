@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 const USAGE = `usage: node scripts/release-chat.mjs <commit|release-id> [--rollback] [--no-kickstart] [--repo <dir>]
 
 Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points current at it and kickstarts com.sieun.agent-chat (:5182),
-or on Linux restarts the systemd user unit sieun-pi-chat.service.
+or on Linux restarts the systemd user unit sieun-pi-chat.service. When the release's deploy/linux sieun-pi-chat.service or .socket differs from
+~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 One release runs at a time: a second command waits for the first one's lock, then checks again.
 A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip.
@@ -179,13 +180,42 @@ function restart(options, home, sha) {
     log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which restarts once for both`);
     return;
   }
-  kickstart();
+  kickstart(home);
   rmSync(owed, { force: true });
 }
 
-function kickstart() {
+const SOCKET = "sieun-pi-chat.socket";
+
+/**
+ * Installs the live release's deploy/linux units when they differ from the installed ones, and switches the port over: the service lets go of
+ * 5182, the socket takes it, the service starts on the socket's fd. A release without the socket unit (a rollback) takes the socket away the same
+ * way, since its code binds the port itself. False when the units match and a plain restart is enough.
+ */
+function switchUnits(home, systemctl) {
+  const units = process.env.SIEUN_PI_CHAT_UNIT_DIR || join(homedir(), ".config/systemd/user");
+  const source = join(home, "current", "deploy/linux");
+  const read = path => { try { return readFileSync(path, "utf8"); } catch { return null; } };
+  if (read(join(source, UNIT)) === null) return false;
+  const wants = Object.fromEntries([UNIT, SOCKET].map(name => [name, read(join(source, name))]));
+  if (Object.entries(wants).every(([name, text]) => read(join(units, name)) === text)) return false;
+  log(`installing ${Object.keys(wants).filter(name => wants[name] !== null).join(" and ")} from ${source} into ${units}`);
+  mkdirSync(units, { recursive: true });
+  if (wants[SOCKET] === null && read(join(units, SOCKET)) !== null) spawnSync(systemctl, ["--user", "disable", "--now", SOCKET], { stdio: ["ignore", process.stderr, process.stderr] });
+  for (const [name, text] of Object.entries(wants)) {
+    if (text === null) rmSync(join(units, name), { force: true });
+    else writeFileSync(join(units, name), text, { mode: 0o644 });
+  }
+  run(systemctl, ["--user", "daemon-reload"], process.cwd());
+  run(systemctl, ["--user", "stop", UNIT], process.cwd());
+  if (wants[SOCKET] !== null) run(systemctl, ["--user", "enable", "--now", SOCKET], process.cwd());
+  run(systemctl, ["--user", "start", UNIT], process.cwd());
+  return true;
+}
+
+function kickstart(home) {
   if ((process.env.SIEUN_PI_CHAT_SERVICE_MANAGER || (process.platform === "linux" ? "systemd" : "launchd")) === "systemd") {
-    run(process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl", ["--user", "restart", UNIT], process.cwd());
+    const systemctl = process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl";
+    if (!switchUnits(home, systemctl)) run(systemctl, ["--user", "restart", UNIT], process.cwd());
     return;
   }
   const launchctl = process.env.SIEUN_PI_CHAT_LAUNCHCTL || "/bin/launchctl";
