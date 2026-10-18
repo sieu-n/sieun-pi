@@ -171,21 +171,27 @@ export interface ThreadSnapshot {
   messages: ThreadMessage[];
   streaming: AssistantMessage | null;
   queue: QueueState;
-  children: ChildAgent[];
+  /** The thread's subagents. The feed sends them as a `children` event after the snapshot and leaves them out of it: absent keeps the ones held. */
+  children?: ChildAgent[];
   tools: ToolRun[];
   retry: RetryState | null;
   runStartedAt: number | null;
-  /** Chats only: the shared board, null until the first op. */
+  /** Chats only: the shared board, null until the first op. The feed sends it as a `board` event and leaves it out of snapshots: absent keeps the one held. */
   board?: ChatBoard | null;
   /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
   wait?: ChatWait | null;
-  /** The session file holds messages before `messages[0]` that the server did not read; `POST api/threads/<id>/older` reads them. */
-  older?: true;
+  /**
+   * Messages before `messages[0]` exist: the opaque cursor `GET api/threads/<id>/older?cursor=` takes (src/shared/message-key.ts `OlderCursor`).
+   * A feed snapshot carries the newest page only (session-tail.ts PAGE_MESSAGES).
+   */
+  older?: string;
 }
+/** An older page: `GET api/threads/<id>/older?cursor=` answers the messages just before the cursor, oldest first, and the cursor before them. */
+export interface OlderPage { messages: ThreadMessage[]; older?: string }
 /** `retry`: the turn is restarted at `at`. `account`: no Claude account can serve the selected Anthropic model; `until` is when one frees up. Epoch ms. */
 export type ChatWait = { kind: "retry"; error: string; at: number } | { kind: "account"; until: number | null };
 
-export interface ThreadState extends ThreadSnapshot { connection: ThreadConnection; error?: string }
+export interface ThreadState extends ThreadSnapshot { children: ChildAgent[]; connection: ThreadConnection; error?: string }
 
 export type ProjectedSessionEvent =
   | { type: "agent_start" }

@@ -10,12 +10,13 @@ import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { isReopenable } from "./reopen-send.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
-import { readBranchTail } from "./session-tail.ts";
+import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
+import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -33,38 +34,6 @@ type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubs
 
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
 const STOP_PENDING = /^Session worker \S+ did not stop/;
-
-/**
- * Display messages for stored branch entries, in file order: messages, custom messages (agent replies and notices), branch summaries, and a
- * compaction marker where each compaction happened.
- */
-export function historyMessages(entries: readonly SessionEntry[]): AgentMessage[] {
-  return entries.flatMap((entry): AgentMessage[] => {
-    const timestamp = new Date(entry.timestamp).getTime();
-    switch (entry.type) {
-      case "message": return [entry.message];
-      case "custom_message": return [{ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp }];
-      case "branch_summary": return entry.summary ? [{ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp }] : [];
-      case "compaction": return [{ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp }];
-      default: return [];
-    }
-  });
-}
-
-/**
- * The live context after a compaction starts at its summary, so the turns it replaced are only in the session file. These are the branch entries
- * before the latest compaction's first kept entry. `whole` false: the entries are the branch's tail, and one that does not reach back to the
- * first kept entry holds none of the replaced turns.
- */
-export function compactedEntries(branch: readonly SessionEntry[], whole = true): SessionEntry[] {
-  let compaction = -1;
-  for (let index = branch.length - 1; index >= 0; index--) if (branch[index]!.type === "compaction") { compaction = index; break; }
-  if (compaction < 0) return [];
-  const entry = branch[compaction]!;
-  const firstKept = entry.type === "compaction" ? branch.findIndex((candidate, index) => index < compaction && candidate.id === entry.firstKeptEntryId) : -1;
-  if (firstKept < 0 && !whole) return [];
-  return branch.slice(0, firstKept >= 0 ? firstKept : compaction);
-}
 
 /** Background daemon attaches that may run at once; a restart pins 10 chats, and at a load of 90 each attach took 16 to 41 s when all ran together. */
 export const BACKGROUND_ATTACHES = 2;
@@ -103,12 +72,40 @@ export class ThreadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+/**
+ * The page of `messages` before index `end`: `size` back, and never between two messages that share a timestamp, so a message key
+ * (src/shared/message-key.ts) counts the same in any list that holds the page. `older` names what is before the page: a message cursor inside
+ * the list, else `start`, the cursor of what is before the list.
+ */
+export function pageBefore(messages: readonly ThreadMessage[], end: number, start: string | undefined, size = PAGE_MESSAGES): OlderPage {
+  let first = Math.max(0, end - size);
+  while (first > 0 && messages[first - 1]!.timestamp === messages[first]!.timestamp) first--;
+  const older = first > 0 ? formatCursor({ kind: "message", key: messageKey(messages, first) }) : start;
+  return { messages: messages.slice(first, end), ...(older ? { older } : {}) };
+}
+
+/**
+ * The messages a live snapshot adds to the ones read from the session file: those after the file's last. The daemon writes each message to the
+ * file when it ends, so this is what landed between the file read and the snapshot, or a new session's messages before its file exists. A custom
+ * entry is stamped by a second clock read, so it matches its live message within a few ms.
+ */
+export function liveGap(held: readonly ThreadMessage[], live: readonly ThreadMessage[]): ThreadMessage[] {
+  const last = held.at(-1);
+  if (!last) return [...live];
+  const same = (message: ThreadMessage) => message.role === last.role && (message.timestamp === last.timestamp ||
+    (message.role === "custom" && last.role === "custom" && Math.abs(message.timestamp - last.timestamp) <= 5 && JSON.stringify(message.content) === JSON.stringify(last.content)));
+  for (let index = live.length - 1; index >= 0 && live[index]!.timestamp >= last.timestamp - 5; index--) if (same(live[index]!)) return live.slice(index + 1);
+  return live.filter(message => message.timestamp > last.timestamp);
+}
+
 class Thread {
   state: ThreadState;
   live: Live | null = null;
   sessionFile: string | undefined;
-  /** The owner asked for older messages (`ThreadHub.older`): every later read of the session file takes the whole branch. */
-  full = false;
+  /** Settles when the open is done: the daemon attach landed, or the thread stays saved. A failed attach rejects it and closes the thread. */
+  ready: Promise<void> = Promise.resolve();
+  /** The open is not done yet (`ready`): eviction and the idle sweep leave the thread alone. */
+  opening = false;
   readonly listeners = new Set<Listener>();
   touched = Date.now();
   idleSince: number | null = Date.now();
@@ -118,15 +115,31 @@ class Thread {
   activeAt = Date.now();
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent | null } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread, before: readonly ChildAgent[]) => void) { this.state = threadStateFromSnapshot(snapshot); }
+  /**
+   * The state as a feed sends it: a snapshot with the newest page of messages and no board or children, then the children and, with `board`,
+   * the board as their own events. Until 10-18 a snapshot carried about 1,000 messages, the board and the children, 0.45 to 1.28 MB per frame.
+   */
+  send(listener: Listener, board: boolean, children = this.state.children.length > 0): void {
+    const { connection: _connection, error: _error, board: _board, children: held, messages, older, ...rest } = this.state;
+    listener({ type: "snapshot", snapshot: { ...rest, ...pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES) } });
+    if (children) listener({ type: "children", children: held });
+    if (board && this.state.board) listener({ type: "board", board: this.state.board });
+  }
   broadcast(event: ThreadEvent): void {
-    // A snapshot from the daemon carries no board or wait; a chat keeps both until their own events replace them.
-    if (event.type === "snapshot" && event.snapshot.board === undefined && this.state.board !== undefined) event = { ...event, snapshot: { ...event.snapshot, board: this.state.board } };
-    if (event.type === "snapshot" && event.snapshot.wait === undefined && this.state.wait) event = { ...event, snapshot: { ...event.snapshot, wait: this.state.wait } };
     const children = this.state.children;
     this.state = applyThreadEvent(this.state, event);
-    for (const listener of [...this.listeners]) listener(event);
+    for (const listener of [...this.listeners]) {
+      if (event.type === "snapshot") this.send(listener, false, this.state.children.length > 0 || children.length > 0);
+      else listener(event);
+    }
     if (this.state.children !== children) this.onChildren(this, children);
   }
+  /** Older messages read after the first page went out: the thread holds them for the chat's own reads, and the feed's cursor still names them. */
+  prepend(messages: readonly ThreadMessage[], older: string | undefined): void {
+    const { older: _older, ...state } = this.state;
+    this.state = { ...state, messages: [...messages, ...state.messages], ...(older ? { older } : {}) };
+  }
+
   /**
    * Stream updates go out at most once per `delayMs`. The first update of a quiet stream goes out at once and opens the window, so the first
    * token reaches the page with no wait; updates inside the window keep only the latest, which goes out when the window ends and opens the next.
@@ -168,6 +181,14 @@ const UPDATE_COALESCE_MS = 40;
  */
 function liveSessionId(summary: SessionSummary): string | undefined {
   return summary.workerState === "failed" ? undefined : summary.activeSessionId;
+}
+
+/** What a thread shows of a resident session before its file or the daemon said more: the catalog's name, folder and usage. */
+function emptyInfo(summary: SessionSummary): ThreadInfo {
+  const name = summary.sessionName?.trim();
+  return { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: null, thinkingLevel: summary.thinkingLevel ?? "off", availableThinkingLevels: [],
+    isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0, messageCount: summary.messageCount ?? 0, context: null, usage: sessionUsage(summary.usage),
+    sessionAction: null, queuedActions: 0 };
 }
 
 /** A pinned thread whose resume failed (a daemon timeout, a refused attach) is tried again after 15 s, doubling per failure up to 5 min. */
@@ -212,7 +233,7 @@ export class ThreadHub {
   private sweep(): void {
     const now = Date.now();
     for (const [id, thread] of this.threads) {
-      if (!this.pinned.has(id) && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
+      if (!this.pinned.has(id) && !thread.opening && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
     }
     void this.rest().catch(error => { process.stderr.write(`rest: ${error instanceof Error ? error.message : String(error)}\n`); });
   }
@@ -277,7 +298,7 @@ export class ThreadHub {
 
   /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */
   private evict(kind: "live" | "saved"): void {
-    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !this.pinned.has(thread.id))
+    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !thread.opening && !this.pinned.has(thread.id))
       .sort((left, right) => left.touched - right.touched);
     const total = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && !this.pinned.has(thread.id)).length;
     const limit = kind === "live" ? MAX_LIVE : MAX_SAVED;
@@ -466,14 +487,19 @@ export class ThreadHub {
     } catch (error) { client.close(); throw error; }
   }
 
-  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined, full = false): Promise<ThreadSnapshot> {
+  /** The daemon's side of an attached session: its state, queue, streaming message, children, and its live context's messages for `liveGap`. */
+  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined): Promise<ThreadSnapshot> {
     const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
-    const history = await this.compactedHistory(snapshot.messages, summary, full);
-    const messages = this.projector.messages([...history.messages, ...snapshot.messages]);
+    const messages = this.projector.messages(snapshot.messages);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
     return { kind: "live", info: projectInfo(snapshot.state, summary, this.catalogModel(snapshot.state.model ?? null)), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
-      children: (snapshot.children ?? []).map(projectChild), tools: [], retry: null,
-      runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null, ...(history.older ? { older: true } : {}) };
+      children: (snapshot.children ?? []).map(projectChild), tools: [], retry: null, runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null };
+  }
+
+  /** The live snapshot over the messages the thread read from its session file: those, then what the file did not have yet (`liveGap`). */
+  private merged(thread: Thread, live: ThreadSnapshot): ThreadSnapshot {
+    const held = thread.state.messages;
+    return { ...live, messages: [...held, ...liveGap(held, live.messages)], ...(thread.state.older ? { older: thread.state.older } : {}) };
   }
 
   private branch(summary: SessionSummary, file: string): SessionEntry[] {
@@ -501,32 +527,22 @@ export class ThreadHub {
   }
 
   /**
-   * The branch a thread shows: its tail (`readBranchTail`), so an open costs the same for a 64 MB transcript as for a small one, or the whole
-   * branch once the owner asked for older messages (`older`). `older` in the result: the file holds entries before the ones returned.
+   * Branch entries back from `from` (the leaf when null), read backwards from the end of the file (`readBranchPage`), so a read costs the same
+   * for a 171 MB transcript as for a small one. `older` is the cursor of the entries before them. A file at another version is read whole
+   * through SessionManager, which migrates it: those are the files from before version 3, 3,432 files and 91 MB in all on 10-18.
    */
-  private async history(summary: SessionSummary, full: boolean): Promise<{ entries: SessionEntry[]; older: boolean }> {
+  private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
     const file = await this.sessionFile(summary);
-    const tail = full ? undefined : await readBranchTail(file);
-    if (!tail) return { entries: this.branch(summary, file), older: false };
-    if (tail.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    return { entries: tail.entries, older: !tail.whole };
+    const page = await readBranchPage(file, from, limits);
+    if (!page) return { entries: from ? [] : this.branch(summary, file), older: undefined, whole: true };
+    if (page.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
+    return { entries: page.entries, older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
   }
 
-  /** Turns a compaction removed from a live context, read back from the session file: the ones in its tail, or all of them after `older`. */
-  private async compactedHistory(live: readonly AgentMessage[], summary: SessionSummary | undefined, full: boolean): Promise<{ messages: AgentMessage[]; older: boolean }> {
-    if (live[0]?.role !== "compactionSummary" || !summary?.sessionFile) return { messages: [], older: false };
-    try {
-      const { entries, older } = await this.history(summary, full);
-      return { messages: historyMessages(compactedEntries(entries, !older)), older };
-    } catch (error) {
-      process.stderr.write(`history ${summary.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`);
-      return { messages: [], older: false };
-    }
-  }
-
-  private async savedMessages(summary: SessionSummary, full: boolean): Promise<{ messages: AgentMessage[]; info: ThreadInfo; older: boolean }> {
-    const { entries, older } = await this.history(summary, full);
-    const messages = historyMessages(entries);
+  /** A saved thread's snapshot from its newest `limit` messages, with what the file says of its name, model and effort. */
+  private async savedSnapshot(summary: SessionSummary, limit = FIRST_PAGE_MESSAGES): Promise<ThreadSnapshot> {
+    const { entries, older } = await this.entries(summary, null, { messages: limit, bytes: TAIL_BYTES });
+    const messages = this.projector.messages(historyMessages(entries));
     let name: string | undefined;
     let thinkingLevel: ThinkingLevel = "off";
     let ran: { provider: string; id: string } | null = null;
@@ -540,24 +556,69 @@ export class ThreadHub {
     const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: this.catalogModel(summary.model ?? ran),
       thinkingLevel: summary.thinkingLevel ?? thinkingLevel, availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
       messageCount: older ? Math.max(summary.messageCount ?? 0, messages.length) : messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
-    return { messages, info, older };
+    return { kind: "saved", info, messages, streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null, ...(older ? { older } : {}) };
   }
 
-  private async savedSnapshot(summary: SessionSummary, full: boolean): Promise<ThreadSnapshot> {
-    const { messages, info, older } = await this.savedMessages(summary, full);
-    return { kind: "saved", info, messages: this.projector.messages(messages), streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null,
-      runStartedAt: null, ...(older ? { older: true } : {}) };
+  /**
+   * After the first page went out, the thread reads back to TAIL_MESSAGES in all, the depth the chat's own reads (job notices, agent rows,
+   * unread counts) had before pages, and holds them in front of the page. The feed does not resend: its cursor already names them.
+   */
+  private async fill(thread: Thread, summary: SessionSummary): Promise<void> {
+    const cursor = thread.state.older ? parseCursor(thread.state.older) : null;
+    const want = TAIL_MESSAGES - thread.state.messages.length;
+    if (cursor?.kind !== "file" || want <= 0) return;
+    const { entries, older } = await this.entries(summary, { end: cursor.end, id: cursor.id }, { messages: want, bytes: TAIL_BYTES });
+    if (this.threads.get(thread.id) !== thread || thread.state.older !== formatCursor(cursor)) return;
+    thread.prepend(this.projector.messages(historyMessages(entries)), older);
   }
 
-  /** The owner's Show earlier: the thread reads its whole session file once, and keeps the whole branch on every later snapshot until it closes. */
-  async older(id: string): Promise<void> {
-    const thread = await this.open(id);
-    if (thread.full) return;
-    thread.full = true;
-    if (thread.live) { await this.resnapshot(thread); return; }
-    const snapshot = await this.savedSnapshot(await this.summary(id), true);
-    if (thread.live) return;
-    thread.broadcast({ type: "snapshot", snapshot });
+  /** The newest TAIL_MESSAGES from the file, for a snapshot after a compaction or a reconnect; none for a session whose file is not written yet. */
+  private async fileTail(summary: SessionSummary | undefined): Promise<{ messages: ThreadMessage[]; older?: string }> {
+    if (!summary?.sessionFile) return { messages: [] };
+    try {
+      const { entries, older } = await this.entries(summary, null, { messages: TAIL_MESSAGES, bytes: TAIL_BYTES });
+      return { messages: this.projector.messages(historyMessages(entries)), ...(older ? { older } : {}) };
+    } catch (error) {
+      process.stderr.write(`history ${summary.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`);
+      return { messages: [] };
+    }
+  }
+
+  /**
+   * The owner scrolled up: the page before `cursor`. A message cursor inside what the thread holds answers from memory; otherwise the server
+   * reads that page back from the session file, and never the whole file. Until 10-18 Show earlier read the whole branch through SessionManager,
+   * 171 MB for the biggest chat, and kept it for every later snapshot.
+   */
+  async olderPage(id: string, text: string): Promise<OlderPage> {
+    let cursor = parseCursor(text);
+    if (!cursor) throw new ThreadError(400, "Choose where the earlier messages start.");
+    const thread = this.threads.get(id);
+    if (cursor.kind === "message" && thread) {
+      const index = keyIndex(thread.state.messages, cursor.key);
+      if (index > 0) return pageBefore(thread.state.messages, index, thread.state.older);
+      if (index === 0) {
+        if (!thread.state.older) return { messages: [] };
+        cursor = parseCursor(thread.state.older)!;
+      }
+    }
+    const summary = await this.summary(id);
+    let from: FilePlace;
+    if (cursor.kind === "file") from = { end: cursor.end, id: cursor.id };
+    else {
+      const file = await this.sessionFile(summary);
+      const found = await findMessage(file, cursor.key.at, cursor.key.n);
+      if (found === undefined) {
+        const messages = this.projector.messages(historyMessages(this.branch(summary, file)));
+        const index = keyIndex(messages, cursor.key);
+        if (index < 0) throw new ThreadError(409, "That message is no longer in the thread. Open it again.");
+        return pageBefore(messages, index, undefined);
+      }
+      if (!found) throw new ThreadError(409, "That message is no longer in the thread. Open it again.");
+      if (!found.before) return { messages: [] };
+      from = found.before;
+    }
+    const { entries, older } = await this.entries(summary, from, { messages: PAGE_MESSAGES, bytes: TAIL_BYTES });
+    return { messages: this.projector.messages(historyMessages(entries)), ...(older ? { older } : {}) };
   }
 
   /**
@@ -601,13 +662,16 @@ export class ThreadHub {
     thread.broadcast({ type: "queue", queue: { steering: [...queue.steering], followUp: [...queue.followUp] } });
   }
 
+  /** A compaction, a resync or a reconnect: the newest messages again from the file, with the daemon's state and what the file lacks. */
   private async resnapshot(thread: Thread): Promise<void> {
     const live = thread.live;
     if (!live) return;
-    const snapshot = await this.liveSnapshot(live.connection, await this.catalog.summary(thread.id), thread.full);
+    const summary = await this.catalog.summary(thread.id);
+    const [snapshot, tail] = await Promise.all([this.liveSnapshot(live.connection, summary), this.fileTail(summary)]);
     if (thread.live !== live) return;
     thread.flush();
-    thread.broadcast({ type: "snapshot", snapshot });
+    const { older: _older, ...rest } = snapshot;
+    thread.broadcast({ type: "snapshot", snapshot: { ...rest, messages: [...tail.messages, ...liveGap(tail.messages, snapshot.messages)], ...(tail.older ? { older: tail.older } : {}) } });
   }
 
   private async onNativeEvent(thread: Thread, event: NativeEvent): Promise<void> {
@@ -650,50 +714,51 @@ export class ThreadHub {
 
   /**
    * `background` (a pin coming back, a stall check) waits its turn in the attach queue; a foreground open promotes a waiting one. `attach`
-   * false reads the saved file even when the session is resident. A dormant chat comes back as its cached thread with no attach.
+   * false reads the saved file even when the session is resident. A dormant chat comes back as its cached thread with no attach. Resolves once
+   * the open is done (`Thread.ready`); `subscribe` takes the thread as soon as its first page is read.
    */
   async open(id: string, background = false, attach = true): Promise<Thread> {
-    if (this.closed) throw new ThreadError(410, "Chat is stopping.");
+    const thread = await this.start(id, background, attach);
+    await thread.ready;
+    return thread;
+  }
+
+  /**
+   * The thread as soon as it holds its newest page from the session file; the daemon attach goes on behind it (`finish`). Until 10-18 a feed got
+   * nothing until the attach and the live snapshot landed: 7.8 to 20.3 s on a cold open after a service restart, and those restarts are the
+   * common case. A session the daemon has not written to its file yet starts with no messages and gets them from the live snapshot.
+   */
+  private start(id: string, background: boolean, attach: boolean): Promise<Thread> {
+    if (this.closed) return Promise.reject(new ThreadError(410, "Chat is stopping."));
     const cached = this.threads.get(id);
-    if (cached) { cached.touched = Date.now(); return cached; }
+    if (cached) { cached.touched = Date.now(); if (!background) this.attaches.promote(id); return Promise.resolve(cached); }
     const pending = this.opening.get(id);
     if (pending) { if (!background) this.attaches.promote(id); return pending; }
     const promise = (async () => {
       const started = performance.now();
-      const summary = await this.summary(id);
-      let thread: Thread;
       const marks: string[] = [];
       const mark = (label: string, from: number) => { marks.push(`${label} ${Math.round(performance.now() - from)}ms`); return performance.now(); };
-      let at = mark("catalog", started);
+      const summary = await this.summary(id);
+      const at = mark("catalog", started);
       const activeSessionId = attach ? liveSessionId(summary) : undefined;
-      const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
-        at = mark("queue", at);
-        const connection = await this.attach(activeSessionId).catch(error => {
-          if (!isReopenable(error)) throw error;
-          marks.push(`listed active but the daemon has no live ${activeSessionId}: read saved`);
-          return null;
-        });
-        if (!connection) return null;
-        at = mark("attach", at);
-        try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
-        catch (error) { await connection.dispose().catch(() => {}); throw error; }
-      });
-      if (activeSessionId !== undefined && live) {
-        this.evict("live");
-        thread = new Thread(id, live.snapshot, (candidate, before) => this.childrenChanged(candidate, before));
-        at = mark("snapshot+project", at);
-        this.bind(thread, live.connection, activeSessionId);
-      } else {
-        this.evict("saved");
-        thread = new Thread(id, await this.savedSnapshot(summary, false), (candidate, before) => this.childrenChanged(candidate, before));
-        mark("read+project", at);
-        thread.sessionFile = summary.sessionFile;
-      }
-      const board = await this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
-      if (board !== undefined) thread.state = { ...thread.state, board };
+      const board = this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
+      const first = activeSessionId === undefined ? await this.savedSnapshot(summary)
+        : await this.savedSnapshot(summary).catch(error => { marks.push(`no file page (${error instanceof Error ? error.message : String(error)})`); return null; });
+      const snapshot: ThreadSnapshot = first ? { ...first, kind: activeSessionId === undefined ? "saved" : "live" } : { kind: "live", info: emptyInfo(summary), messages: [], streaming: null,
+        queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null };
+      this.evict("saved");
+      const thread = new Thread(id, snapshot, (candidate, before) => this.childrenChanged(candidate, before));
+      thread.sessionFile = summary.sessionFile;
+      thread.opening = true;
       this.threads.set(id, thread);
-      process.stderr.write(`open ${id.slice(0, 8)} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
-      if (thread.live) this.attached(thread);
+      mark("first page", at);
+      void board.then(found => {
+        if (found === undefined || this.threads.get(id) !== thread) return;
+        if (found === null) thread.state = { ...thread.state, board: null };
+        else thread.broadcast({ type: "board", board: found });
+      });
+      thread.ready = this.finish(thread, summary, activeSessionId, background, marks, started).finally(() => { thread.opening = false; });
+      thread.ready.catch(() => {});
       return thread;
     })().finally(() => { this.opening.delete(id); });
     this.opening.set(id, promise);
@@ -701,16 +766,70 @@ export class ThreadHub {
   }
 
   /**
+   * The rest of an open: the older messages the thread holds (`fill`), and for a resident session the attach, whose live snapshot replaces the
+   * first page's state. A failed attach closes the thread and tells its tabs, as a failed open did before.
+   */
+  private async finish(thread: Thread, summary: SessionSummary, activeSessionId: string | undefined, background: boolean, marks: string[], started: number): Promise<void> {
+    const id = thread.id;
+    let at = performance.now();
+    const mark = (label: string) => { marks.push(`${label} ${Math.round(performance.now() - at)}ms`); at = performance.now(); };
+    const filled = this.fill(thread, summary).catch(error => { process.stderr.write(`history ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
+    const log = () => process.stderr.write(`open ${id.slice(0, 8)} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
+    try {
+      const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
+        mark("queue");
+        const connection = await this.attach(activeSessionId).catch(error => {
+          if (!isReopenable(error)) throw error;
+          marks.push(`listed active but the daemon has no live ${activeSessionId}: read saved`);
+          return null;
+        });
+        if (!connection) return null;
+        mark("attach");
+        try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
+        catch (error) { await connection.dispose().catch(() => {}); throw error; }
+      });
+      await filled;
+      if (this.threads.get(id) !== thread) {
+        await live?.connection.dispose().catch(() => {});
+        throw new ThreadError(409, "This thread was closed while it was opening.");
+      }
+      if (!live) {
+        if (thread.state.kind === "live") {
+          // The catalog listed it running but the daemon has none: the thread is saved, and a session with no file page reads its file once more.
+          const saved = thread.state.messages.length ? { ...thread.state, kind: "saved" as const } : await this.savedSnapshot(summary, TAIL_MESSAGES);
+          thread.broadcast({ type: "snapshot", snapshot: { ...saved, kind: "saved" } });
+        }
+        log();
+        return;
+      }
+      mark("snapshot+project");
+      this.evict("live");
+      this.bind(thread, live.connection, activeSessionId!);
+      thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, live.snapshot) });
+      log();
+      this.attached(thread);
+    } catch (error) {
+      marks.push(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      log();
+      if (this.threads.get(id) === thread) {
+        thread.broadcast({ type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
+        await this.dispose(id);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * `background` for a listener no person waits on (the Slack bridge): its attach waits its turn in the queue, and it neither wakes a dormant
-   * chat nor counts as activity. A tab's open and close count as activity, so the chat rests its idle time from the later one.
+   * chat nor counts as activity. A tab's open and close count as activity, so the chat rests its idle time from the later one. The tab gets
+   * the newest page at once, from what the thread holds or from the session file, and the live snapshot when the attach lands.
    */
   async subscribe(id: string, listener: Listener, background = false): Promise<() => void> {
-    const thread = await this.open(id, background);
+    const thread = await this.start(id, background, true);
     thread.listeners.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
-    const { connection: _connection, error: _error, ...snapshot } = thread.state;
-    listener({ type: "snapshot", snapshot });
+    thread.send(listener, true);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
     if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
@@ -786,7 +905,7 @@ export class ThreadHub {
     const summary = await this.summary(id);
     const attachLive = (activeSessionId: string) => this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
-      try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary, thread.full) }; }
+      try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
     });
     // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
@@ -800,7 +919,7 @@ export class ThreadHub {
     }
     this.evict("live");
     this.bind(thread, connection, activeSessionId);
-    thread.broadcast({ type: "snapshot", snapshot });
+    thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, snapshot) });
     this.attached(thread);
     return thread;
   }
@@ -1112,14 +1231,43 @@ export class ThreadHub {
     return { tokens: { ...stats.tokens }, cost: stats.cost };
   }
 
-  private async rawMessages(id: string): Promise<AgentMessage[]> {
-    const thread = await this.open(id);
-    if (thread.live) return thread.live.connection.getMessages();
-    return (await this.savedMessages(await this.summary(id), thread.full)).messages;
+  /**
+   * A message the feed shows, whole, by its key (src/shared/message-key.ts): found in the session file walking back from the newest entry, so it
+   * works for any page; a message the file does not hold yet comes from the live context. Until 10-18 `part` took an index into the messages
+   * the server held, which pointed at another message once older pages loaded.
+   */
+  private async rawMessage(id: string, key: MessageKey): Promise<AgentMessage> {
+    const summary = await this.summary(id);
+    if (summary.sessionFile) {
+      const file = await this.sessionFile(summary);
+      const found = await findMessage(file, key.at, key.n);
+      if (found) return found.message;
+      if (found === undefined) {
+        const messages = historyMessages(this.branch(summary, file)).filter(shownMessage);
+        const index = keyIndex(messages, key);
+        if (index >= 0) return messages[index]!;
+      }
+    }
+    const live = this.threads.get(id)?.live;
+    if (live) {
+      const messages = (await live.connection.getMessages()).filter(shownMessage);
+      const index = keyIndex(messages, key);
+      if (index >= 0) return messages[index]!;
+    }
+    throw new ThreadError(404, "This message is not in the thread.");
   }
 
+  /** A tool call and its whole output by the call's id, from the session file walking back from the newest entry, else from the live context. */
   async toolOutput(id: string, toolCallId: string): Promise<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }> {
-    const messages = await this.rawMessages(id);
+    const summary = await this.summary(id);
+    let messages: AgentMessage[] = [];
+    if (summary.sessionFile) {
+      const file = await this.sessionFile(summary);
+      const found = await findToolCall(file, toolCallId);
+      messages = found === undefined ? historyMessages(this.branch(summary, file)) : [found.call, found.result].filter(message => message !== undefined);
+    }
+    const live = this.threads.get(id)?.live;
+    if (!messages.length && live) messages = await live.connection.getMessages();
     let call: { name: string; arguments: unknown } | undefined;
     let result: { text: string; isError: boolean } | undefined;
     for (const message of messages) {
@@ -1130,23 +1278,15 @@ export class ThreadHub {
     return { toolCallId, toolName: call?.name ?? "", arguments: call?.arguments ?? {}, output: result?.text ?? "", isError: result?.isError ?? null };
   }
 
-  async part(id: string, messageIndex: number, partIndex: number): Promise<{ text: string }> {
-    const messages = await this.rawMessages(id);
-    let seen = -1;
-    for (const message of messages) {
-      const projected = this.projector.message(message);
-      if (!projected) continue;
-      seen++;
-      if (seen !== messageIndex) continue;
-      const content = "content" in message ? message.content : undefined;
-      if (typeof content === "string") return { text: content };
-      const part = Array.isArray(content) ? content[partIndex] : undefined;
-      if (!part) throw new ThreadError(404, "This part is not in the thread.");
-      if (part.type === "text") return { text: part.text };
-      if (part.type === "thinking") return { text: part.thinking };
-      throw new ThreadError(400, "This part has no text.");
-    }
-    throw new ThreadError(404, "This message is not in the thread.");
+  async part(id: string, key: MessageKey, partIndex: number): Promise<{ text: string }> {
+    const message = await this.rawMessage(id, key);
+    const content = "content" in message ? message.content : undefined;
+    if (typeof content === "string") return { text: content };
+    const part = Array.isArray(content) ? content[partIndex] : undefined;
+    if (!part) throw new ThreadError(404, "This part is not in the thread.");
+    if (part.type === "text") return { text: part.text };
+    if (part.type === "thinking") return { text: part.thinking };
+    throw new ThreadError(400, "This part has no text.");
   }
 
   async warm(id: string): Promise<void> { await this.open(id); }

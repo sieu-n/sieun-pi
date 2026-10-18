@@ -11,7 +11,7 @@ export function runStartedAtFromMessages(messages: readonly ThreadMessage[]): nu
 }
 
 export function threadStateFromSnapshot(snapshot: ThreadSnapshot): ThreadState {
-  return { ...snapshot, connection: "connected" };
+  return { ...snapshot, children: snapshot.children ?? [], connection: "connected" };
 }
 
 function upsertChild(children: readonly ChildAgent[], child: ChildAgent): ChildAgent[] {
@@ -81,7 +81,12 @@ function applySessionEvent(state: ThreadState, event: ProjectedSessionEvent, now
 
 export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = Date.now()): ThreadState {
   switch (event.type) {
-    case "snapshot": return { ...threadStateFromSnapshot(event.snapshot), connection: state.connection };
+    case "snapshot": {
+      // The board, the wait and the children come as their own events: a snapshot without them keeps the ones held.
+      const { snapshot } = event;
+      return { ...snapshot, children: snapshot.children ?? state.children, connection: state.connection,
+        ...(snapshot.board === undefined && state.board !== undefined ? { board: state.board } : {}), ...(snapshot.wait === undefined && state.wait !== undefined ? { wait: state.wait } : {}) };
+    }
     case "event": return applySessionEvent(state, event.event, now);
     case "info": return { ...state, info: event.info };
     case "queue": return { ...state, queue: event.queue };

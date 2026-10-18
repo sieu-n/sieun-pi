@@ -15,7 +15,7 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { childrenByParent, isListed, isTopLevel, parseSummaries, projectRow, rosterChildren, subtreeOf } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { historyMessages } from "../src/chat-threads.ts";
+import { historyMessages } from "../src/session-tail.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type ChatThreads, type CheckInSource, jobRegistry } from "../src/chat-sources.ts";

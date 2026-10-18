@@ -2,7 +2,7 @@ import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
 import { buildReload, onLeave } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
-import { applyThreadEvent } from "../shared/thread-state.ts";
+import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
 import { hashFor, parseHash } from "./permalink.ts";
@@ -145,7 +145,7 @@ class Store {
       if (!current) return;
       if (event.type === "snapshot") {
         performance.measure("thread-snapshot:" + id, "thread-open:" + id);
-        this.patch(id, { state: applyThreadEvent({ ...event.snapshot, connection: "connected" }, event), loading: false, error: null });
+        this.patch(id, { state: applyThreadEvent(current.state ?? threadStateFromSnapshot(event.snapshot), event), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });

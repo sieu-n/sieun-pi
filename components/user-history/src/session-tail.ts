@@ -1,80 +1,243 @@
-import { open } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "prime-agent";
 import { CURRENT_SESSION_VERSION } from "prime-agent";
 
 /**
- * How much of a session file a thread opens with. The feed draws every message the hub holds (Thread.svelte `turns`, chat-feed.ts `chatFeed`)
- * and marks each compaction with "Older messages were summarized to free space" (chat-feed.ts `linesOf`). Frontend bro's 64 MB transcript had
- * 10 compactions across 10,854 feed messages, about 1,000 per compaction, so 1,000 messages is one compaction's worth of the busiest chat.
- * 8 MiB caps the bytes when the messages are large: the VP chat averages 19 KB per message, and 64 MB took 1.28 s to parse.
+ * How much of a session file the server holds for an open thread. The feed draws every message the hub holds and the chat's own logic reads
+ * them (job notices, agent rows, unread counts). Frontend bro's 64 MB transcript had 10 compactions across 10,854 feed messages, about 1,000 per
+ * compaction, so 1,000 messages is one compaction's worth of the busiest chat. 8 MiB caps the bytes when the messages are large: the VP chat
+ * averages 19 KB per message, and 64 MB took 1.28 s to parse.
  */
 export const TAIL_MESSAGES = 1000;
 export const TAIL_BYTES = 8 * 1024 * 1024;
+/**
+ * The messages a thread feed's first frame carries. The owner's Mac in Korea reads this box at about 370 KB/s (10-18), and the 1,000 messages a
+ * snapshot carried before were 150 to 250 KB deflated, 0.5 to 0.8 s on the wire. In the 7 biggest chats on 10-18 the newest 100 messages were
+ * 66 to 87 KB of JSON and 22 to 30 KB deflated (about 60 to 80 ms at 370 KB/s), 1 to 18 chat feed items; the page asks for more as he scrolls.
+ */
+export const FIRST_PAGE_MESSAGES = 100;
+/** The messages of each older page: 200 were 135 to 168 KB of JSON and 43 to 57 KB deflated in the same chats, so a scroll back takes few round trips. */
+export const PAGE_MESSAGES = 200;
 const CHUNK = 1024 * 1024;
 const HEADER_BYTES = 64 * 1024;
 
-/** The entries the feed draws (`historyMessages`). */
-const shown = (entry: SessionEntry): boolean => entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" || entry.type === "compaction";
+/**
+ * Display messages for stored branch entries, in file order: messages, custom messages (agent replies and notices), branch summaries, and a
+ * compaction marker where each compaction happened.
+ */
+export function historyMessages(entries: readonly SessionEntry[]): AgentMessage[] {
+  return entries.flatMap((entry): AgentMessage[] => {
+    const timestamp = new Date(entry.timestamp).getTime();
+    switch (entry.type) {
+      case "message": return [entry.message];
+      case "custom_message": return [{ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp }];
+      case "branch_summary": return entry.summary ? [{ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp }] : [];
+      case "compaction": return [{ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp }];
+      default: return [];
+    }
+  });
+}
+
+/** Whether the feed shows the message: the roles the projection draws (chat-projection.ts `Projector.message`), and custom ones marked for display. */
+export function shownMessage(message: AgentMessage): boolean {
+  switch (message.role) {
+    case "user": case "assistant": case "toolResult": case "bashExecution": case "branchSummary": case "compactionSummary": return true;
+    case "custom": return Boolean(message.display);
+    default: return false;
+  }
+}
+
+/** The message the feed shows for one branch entry, if any. */
+function shown(entry: SessionEntry): AgentMessage | undefined {
+  const [message] = historyMessages([entry]);
+  return message && shownMessage(message) ? message : undefined;
+}
+
+/** A place in a session file's branch: the next entry back is `id`, and its line ends at or before byte `end`. */
+export interface FilePlace { end: number; id: string }
 
 export interface BranchTail {
   sessionId: string;
-  /** The last entries of the current branch, oldest first. */
+  /** The entries read, oldest first. */
   entries: SessionEntry[];
   /** The tail reached the first entry, so nothing older is left in the file. */
   whole: boolean;
 }
 
+export interface BranchPage extends BranchTail {
+  /** Where the entries before these start; null when the page reached the first entry. */
+  before: FilePlace | null;
+  /** The bytes this read took from the file. */
+  bytesRead: number;
+}
+
+/** One line of the current branch, newest first: its entry's ids from the start of the line, and its bytes. */
+interface BranchLine { id: string; parentId: string | null; time: number; start: number; end: number; bytes: Buffer }
+
+const HEAD = /^\{"type":"[^"]*","id":"([^"]*)","parentId":(?:null|"([^"]*)"),"timestamp":"([^"]*)"/;
+
+function lineHead(bytes: Buffer): { id: string; parentId: string | null; time: number } | undefined {
+  const match = HEAD.exec(bytes.toString("utf8", 0, Math.min(bytes.length, 400)));
+  if (match) return { id: match[1]!, parentId: match[2] ?? null, time: Date.parse(match[3]!) };
+  try {
+    const entry = JSON.parse(bytes.toString("utf8")) as { id?: unknown; parentId?: unknown; timestamp?: unknown };
+    if (typeof entry.id !== "string") return undefined;
+    return { id: entry.id, parentId: typeof entry.parentId === "string" ? entry.parentId : null, time: typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN };
+  } catch { return undefined; }
+}
+
+function parse(line: BranchLine): SessionEntry | undefined {
+  try { return JSON.parse(line.bytes.toString("utf8")) as SessionEntry; } catch { return undefined; }
+}
+
+/** An open session file at the current version: its id and where its entries start. Undefined for a file a full open must migrate. */
+async function header(handle: FileHandle, size: number): Promise<{ sessionId: string; first: number } | undefined> {
+  const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
+  await handle.read(head, 0, head.length, 0);
+  const headerEnd = head.indexOf(0x0a);
+  if (headerEnd < 0) return undefined;
+  const parsed = JSON.parse(head.subarray(0, headerEnd).toString("utf8")) as { type?: unknown; id?: unknown; version?: unknown };
+  if (parsed.type !== "session" || typeof parsed.id !== "string" || parsed.version !== CURRENT_SESSION_VERSION) return undefined;
+  return { sessionId: parsed.id, first: headerEnd + 1 };
+}
+
 /**
- * The end of a session's current branch, read backwards from the end of the file in 1 MiB chunks: the leaf is the last entry, as SessionManager
- * takes it, and each entry's `parentId` leads to the one before. Reading stops once `limits.messages` feed entries are found, the first entry is
- * reached, or `limits.bytes` were read. Undefined for a file a full open must migrate (another version) or whose header does not fit 64 KiB.
+ * The current branch backwards from `from` (from the leaf, the last complete line, when null), in 1 MiB chunks read from the end towards the
+ * start. A parent is always written before its child, so the walk keeps one id and parses no line off the branch. A line still being written
+ * (no newline yet) is not an entry. `read.bytes` counts what it read. `read.more` false before a chunk ends the walk there, and `read.stopped`
+ * names where it would go on: a branch whose next entry is not in the file (the VP of CI chat's points at a parent its file lacks) would
+ * otherwise read on to the start, 136 MB.
  */
-export async function readBranchTail(file: string, limits = { messages: TAIL_MESSAGES, bytes: TAIL_BYTES }): Promise<BranchTail | undefined> {
+async function* branchLines(handle: FileHandle, first: number, size: number, from: FilePlace | null, read: { bytes: number; more?: () => boolean; stopped?: FilePlace }): AsyncGenerator<BranchLine> {
+  let cursor: string | null | undefined = from ? from.id : undefined;
+  let pos = from ? Math.min(from.end, size) : size;
+  let tail = Buffer.alloc(0);
+  let trimmed = from !== null;
+  while (pos > first && cursor !== null) {
+    if (cursor !== undefined && read.more && !read.more()) { read.stopped = { end: pos + tail.length, id: cursor }; return; }
+    const start = Math.max(first, pos - CHUNK);
+    const chunk = Buffer.alloc(pos - start);
+    await handle.read(chunk, 0, chunk.length, start);
+    read.bytes += chunk.length;
+    pos = start;
+    let data = tail.length ? Buffer.concat([chunk, tail]) : chunk;
+    tail = Buffer.alloc(0);
+    if (!trimmed) {
+      const last = data.lastIndexOf(0x0a);
+      if (last < 0) continue;
+      data = data.subarray(0, last + 1);
+      trimmed = true;
+    }
+    let end = data.length;
+    while (end > 0) {
+      const newline = end >= 2 ? data.lastIndexOf(0x0a, end - 2) : -1;
+      if (newline < 0 && start > first) { tail = data.subarray(0, end); break; }
+      const lineStart = newline + 1;
+      const bytes = data.subarray(lineStart, data[end - 1] === 0x0a ? end - 1 : end);
+      const lineEnd = end;
+      end = lineStart;
+      if (!bytes.length) continue;
+      const head = lineHead(bytes);
+      if (!head) continue;
+      if (cursor === undefined) cursor = head.id;
+      if (head.id !== cursor) continue;
+      yield { ...head, start: start + lineStart, end: start + lineEnd, bytes };
+      cursor = head.parentId;
+      if (cursor === null) return;
+    }
+  }
+}
+
+/**
+ * A page of the current branch, newest entries back from `from` (the leaf when null), oldest first. Reading stops once `limits.messages` feed
+ * messages are in, or `limits.bytes` were read with at least one in, but never between two shown messages with the same timestamp: a message
+ * is named by its timestamp and its place among those that share it (src/shared/message-key.ts), so a page holds all of them or none.
+ * Undefined for a file a full open must migrate (another version) or whose header does not fit 64 KiB.
+ */
+export async function readBranchPage(file: string, from: FilePlace | null, limits = { messages: PAGE_MESSAGES, bytes: TAIL_BYTES }): Promise<BranchPage | undefined> {
   const handle = await open(file, "r");
   try {
     const { size } = await handle.stat();
-    const head = Buffer.alloc(Math.min(size, HEADER_BYTES));
-    await handle.read(head, 0, head.length, 0);
-    const headerEnd = head.indexOf(0x0a);
-    if (headerEnd < 0) return undefined;
-    const header = JSON.parse(head.subarray(0, headerEnd).toString("utf8")) as { type?: unknown; id?: unknown; version?: unknown };
-    if (header.type !== "session" || typeof header.id !== "string" || header.version !== CURRENT_SESSION_VERSION) return undefined;
-
-    const byId = new Map<string, SessionEntry>();
-    const branch: SessionEntry[] = [];
-    let cursor: string | null | undefined;
+    const head = await header(handle, size);
+    if (!head) return undefined;
     let found = 0;
-    let read = 0;
-    let end = size;
-    let carry = Buffer.alloc(0);
-    const first = headerEnd + 1;
-    while (end > first && cursor !== null && found < limits.messages && !(read >= limits.bytes && found > 0)) {
-      const start = Math.max(first, end - CHUNK);
-      const chunk = Buffer.alloc(end - start);
-      await handle.read(chunk, 0, chunk.length, start);
-      read += chunk.length;
-      end = start;
-      const data = carry.length ? Buffer.concat([chunk, carry]) : chunk;
-      // The bytes before the first newline may be the end of a line that starts in the next chunk back.
-      const cut = start === first ? -1 : data.indexOf(0x0a);
-      if (start !== first && cut < 0) { carry = data; continue; }
-      carry = cut < 0 ? Buffer.alloc(0) : data.subarray(0, cut);
-      const lines = data.subarray(cut + 1).toString("utf8").split("\n");
-      for (let index = lines.length - 1; index >= 0; index--) {
-        const line = lines[index]!;
-        if (!line) continue;
-        let entry: SessionEntry;
-        try { entry = JSON.parse(line) as SessionEntry; } catch { continue; }
-        if (typeof entry.id !== "string") continue;
-        byId.set(entry.id, entry);
-        if (cursor === undefined) cursor = entry.id;
-      }
-      for (let entry = cursor ? byId.get(cursor) : undefined; entry && found < limits.messages; entry = cursor ? byId.get(cursor) : undefined) {
-        branch.push(entry);
-        if (shown(entry)) found++;
-        cursor = entry.parentId;
-      }
+    const read: { bytes: number; more: () => boolean; stopped?: FilePlace } = { bytes: 0, more: () => read.bytes < limits.bytes || found === 0 };
+    const entries: SessionEntry[] = [];
+    let lastStamp: number | undefined;
+    let before: FilePlace | null = null;
+    for await (const line of branchLines(handle, head.first, size, from, read)) {
+      const entry = parse(line);
+      if (!entry) break;
+      const message = shown(entry);
+      // An entry the feed does not show may end a page that ran out of bytes, so long runs of them (the VP of CI chat holds 130 MB of entries
+      // around 529 messages) do not read on to the start of the file.
+      const full = read.bytes >= limits.bytes && found > 0;
+      if (message ? (found >= limits.messages || full) && message.timestamp !== lastStamp : full) { before = { end: line.end, id: line.id }; break; }
+      entries.push(entry);
+      if (message) { found++; lastStamp = message.timestamp; }
     }
-    return { sessionId: header.id, entries: branch.reverse(), whole: cursor === null || (cursor === undefined && end <= first) };
+    before ??= read.stopped ?? null;
+    return { sessionId: head.sessionId, entries: entries.reverse(), before, whole: before === null, bytesRead: read.bytes };
+  } finally { await handle.close(); }
+}
+
+/** The end of a session's current branch: `readBranchPage` from the leaf, sized for what the hub holds by default. */
+export async function readBranchTail(file: string, limits = { messages: TAIL_MESSAGES, bytes: TAIL_BYTES }): Promise<BranchTail | undefined> {
+  const page = await readBranchPage(file, null, limits);
+  return page && { sessionId: page.sessionId, entries: page.entries, whole: page.whole };
+}
+
+/** How far before a message's time its entry may be written: an assistant reply is stamped when it starts and saved when it ends. */
+const WRITE_LAG_MS = 30 * 60_000;
+/** How far after its message a branch entry's own time may run back (custom entries take a second clock read). */
+const CLOCK_SKEW_MS = 60_000;
+
+export interface FoundMessage { entry: SessionEntry; message: AgentMessage; before: FilePlace | null }
+
+/**
+ * The shown message with timestamp `at` that has `n` shown messages with the same timestamp before it on the branch, found by walking back from
+ * the leaf; only entries written near `at` are parsed. `before` is where the entries before it start. Undefined when no such message is there,
+ * and for a file a full open must migrate.
+ */
+export async function findMessage(file: string, at: number, n: number): Promise<FoundMessage | undefined> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const head = await header(handle, size);
+    if (!head) return undefined;
+    const hits: FoundMessage[] = [];
+    for await (const line of branchLines(handle, head.first, size, null, { bytes: 0 })) {
+      if (line.time < at - CLOCK_SKEW_MS) break;
+      if (line.time > at + WRITE_LAG_MS) continue;
+      const entry = parse(line);
+      const message = entry && shown(entry);
+      if (entry && message?.timestamp === at) hits.push({ entry, message, before: entry.parentId ? { end: line.start, id: entry.parentId } : null });
+    }
+    return hits[hits.length - 1 - n];
+  } finally { await handle.close(); }
+}
+
+/**
+ * A tool call and its result on the current branch, by the call's id, walking back from the leaf; a line is parsed only when it holds the id.
+ * Undefined for a file a full open must migrate.
+ */
+export async function findToolCall(file: string, toolCallId: string): Promise<{ call?: AgentMessage; result?: AgentMessage } | undefined> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const head = await header(handle, size);
+    if (!head) return undefined;
+    const needle = Buffer.from(JSON.stringify(toolCallId));
+    const found: { call?: AgentMessage; result?: AgentMessage } = {};
+    for await (const line of branchLines(handle, head.first, size, null, { bytes: 0 })) {
+      if (line.bytes.indexOf(needle) < 0) continue;
+      const entry = parse(line);
+      if (entry?.type !== "message") continue;
+      const message = entry.message;
+      if (message.role === "toolResult" && message.toolCallId === toolCallId) found.result = message;
+      if (message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === toolCallId)) { found.call = message; break; }
+    }
+    return found;
   } finally { await handle.close(); }
 }
