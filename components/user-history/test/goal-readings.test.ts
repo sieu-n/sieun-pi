@@ -70,3 +70,23 @@ test("the link a goal's metric names wins over an open step's link to another me
   assert.equal(op.target?.current, 0);
   assert.match(op.target?.source ?? "", /^duty d3 metric new_unbacked_limits/);
 });
+
+// VP of CI's p1 on 10-18: the goal's own duty field names d1/air_work_start_wait_p90_min, and its three 10-min steps link other d1 metrics.
+// d1 wrote push_to_verdict 221 min into it through the open step p258, then nothing once f04bbeaa saw several metrics share its target.
+test("a goal's own duty field picks the one metric that writes its number, whatever its steps link", () => {
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-18T17:30:00.000Z", plan: [{
+    id: "p1", text: "Every CI run is quick and never waits in a queue", status: "doing", duty: "d1/air_work_start_wait_p90_min",
+    target: { metric: "Mac job start wait p90 over 24 h, all labels except poll loops", target: 10, unit: "min", current: 152.9, measuredAt: "2026-10-18T17:27:57.000Z", source: "wait-p90-win.mjs" },
+    children: [step("p258", "d1/push_to_verdict_p90_min", "doing"), step("p275", "d1/run_time_p90_min", "doing"), step("p276", "d1/verdict_wait_p90_min", "done")],
+  }] };
+  const ten = (value: number) => ({ value, target: 10, op: "<=" as const, met: value <= 10 });
+  const ops = goalReadingOps(board, "d1", Date.parse("2026-10-18T17:53:00.000Z"),
+    { push_to_verdict_p90_min: ten(221), run_time_p90_min: ten(258.4), verdict_wait_p90_min: ten(30), air_work_start_wait_p90_min: ten(7) });
+  assert.equal(ops.length, 1);
+  const op = ops[0]!;
+  assert.ok(op.op === "plan_update" && op.id === "p1");
+  assert.equal(op.target?.current, 7);
+  assert.match(op.target?.source ?? "", /^duty d1 metric air_work_start_wait_p90_min/);
+  assert.deepEqual(goalReadingOps(board, "d1", Date.parse("2026-10-18T17:53:00.000Z"), { push_to_verdict_p90_min: ten(221), run_time_p90_min: ten(258.4) }), []);
+  assert.deepEqual(goalReadingOps(board, "d3", Date.parse("2026-10-18T17:53:00.000Z"), { air_work_start_wait_p90_min: ten(7) }), []);
+});

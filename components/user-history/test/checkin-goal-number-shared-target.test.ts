@@ -31,3 +31,10 @@ test("a duty run writes no reading into a goal when two of its metrics share the
   const run = { push_to_verdict_p90_min: { value: 221.5, target: 10, op: "<=" as const, met: false }, run_time_p90_min: { value: 258.4, target: 10, op: "<=" as const, met: false } };
   assert.deepEqual(goalReadingOps(board, "d1", Date.parse("2026-10-18T16:53:00Z"), run), []);
 });
+
+test("a goal's own duty field is its number even when its steps link other metrics with its target", () => {
+  const p1 = { ...goal(step("p258", "d1/push_to_verdict_p90_min"), step("p275", "d1/run_time_p90_min")), duty: "d1/air_work_start_wait_p90_min" } as PlanItem;
+  const number = goalNumber(p1, 30 * 60_000, new Map([...metrics, ["d1/air_work_start_wait_p90_min", fact(7)]]));
+  assert.equal(number?.value, 7);
+  assert.equal(number?.source, "the last run of duty metric d1/air_work_start_wait_p90_min");
+});
