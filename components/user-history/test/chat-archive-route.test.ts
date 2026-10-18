@@ -180,7 +180,7 @@ for (const failure of ["kill", "write"] as const) test(`a failed ${failure} stil
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   const archived = new IdIndex(join(dir, "archived-chats.json"), "Archived chat index");
   await index.add(id);
-  const catalog = { summary: async () => ({ sessionId: id, activeSessionId: "fixture-active", sessionFile: file }), connect: async () => {},
+  const catalog = { summary: async () => ({ sessionId: id, activeSessionId: "fixture-active", sessionFile: file }), connect: async () => {}, hostOf: () => null,
     client: { request: async () => failure === "kill" ? { success: false, error: "kill refused" } : { success: true } } } as unknown as Catalog;
   const hub = new ThreadHub("/none", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const chats = new Chats(index, hub, async () => undefined, "test", loadRecord(join(dir, "loads.json")), { ...source(dir), archived });

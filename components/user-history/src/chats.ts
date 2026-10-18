@@ -311,11 +311,12 @@ export class Chats {
 
   async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
 
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string }): Promise<{ id: string; name: string }> {
+  /** `host` is the hosts.json box whose daemon runs the chat; absent means this box. */
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; host?: string }): Promise<{ id: string; name: string }> {
     await this.load();
     const name = input.name?.trim() || chatName();
     const { id } = await this.threads.create({ cwd: input.cwd, ...(input.provider ? { provider: input.provider } : {}), ...(input.modelId ? { modelId: input.modelId } : {}),
-      ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), name, kind: "chat" });
+      ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), ...(input.host ? { host: input.host } : {}), name, kind: "chat" });
     await this.source.owned?.add(id);
     await this.index.add(id);
     this.chatIds.add(id);

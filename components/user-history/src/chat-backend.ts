@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, type SessionSummary, SettingsManager } from "prime-agent";
 import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
+import type { HostCatalogs } from "./host-catalogs.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatBookmarks } from "./chat-bookmarks.ts";
 import { ChatReadState } from "./chat-read-state.ts";
@@ -122,8 +123,11 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
   };
 }
 
-/** `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`). */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean } = {}): Promise<ChatBackend> {
+/**
+ * `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`).
+ * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
+ */
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; hosts?: HostCatalogs | null } = {}): Promise<ChatBackend> {
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
@@ -139,7 +143,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   let chats: Chats;
   // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created));
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created), options.hosts ?? null);
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
@@ -221,15 +225,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
   const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
     send: async (session, text) => {
-      await catalog.connect();
-      const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
+      const response = await (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
       if (response.success) return "sent";
       if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
       throw new Error(response.error);
     },
     target: async session => {
-      await catalog.connect();
-      const response = await catalog.client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
+      const client = await catalog.daemonFor(session).catch(() => null);
+      const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
       if (!response) return null;
       if (!response.success) return response.error.startsWith(UNKNOWN_ACTIVE) ? { queued: [], busy: false } : null;
       const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
@@ -244,7 +247,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     startRoot: async (root: string): Promise<void> => {
       const sessionPath = (await catalog.summary(root))?.sessionFile;
       if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);
-      const response = await catalog.client.request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
+      const response = await (await catalog.daemonFor(root)).request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
       if (!response.success) throw new Error(response.error);
     },
   };

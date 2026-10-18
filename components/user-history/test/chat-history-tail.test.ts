@@ -81,7 +81,7 @@ after(async () => {
 });
 
 function hubFor(summary: SessionSummary): ThreadHub {
-  const catalog = { summary: async () => summary, refresh: async () => {}, connect: async () => {} } as unknown as Catalog;
+  const catalog = { summary: async () => summary, refresh: async () => {}, connect: async () => {}, hostOf: () => null } as unknown as Catalog;
   return new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
 }
 

@@ -121,7 +121,7 @@ test("attach queue: background attaches run two at a time in order; a foreground
 
 test("thread hub: after a restart the pinned chats attach two at a time in pin order, an open tab goes first, and a failed attach waits before its retry", async () => {
   let fire: (event: { daemon: string }) => void = () => {};
-  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }),
+  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }), hostOf: () => null,
     subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const started: string[] = [];
@@ -170,7 +170,7 @@ test("thread hub: a session the daemon list calls active but the daemon does not
   manager.appendMessage({ role: "user", content: "build it", timestamp: 1000 });
   manager.flushNow();
   const summary = { sessionId: manager.getSessionId(), activeSessionId: "fa0261485da9", sessionFile: manager.getSessionFile(), cwd: dir };
-  const hub = new ThreadHub("/nonexistent.sock", { summary: async () => summary } as unknown as Catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  const hub = new ThreadHub("/nonexistent.sock", { summary: async () => summary, hostOf: () => null } as unknown as Catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const attached: string[] = [];
   (hub as unknown as { attach(id: string): Promise<never> }).attach = async id => { attached.push(id); throw new Error(`Unknown active session: ${id}`); };
   assert.equal(await hub.view(summary.sessionId), null, "not live: no throw");

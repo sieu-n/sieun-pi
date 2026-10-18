@@ -12,6 +12,7 @@ import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
+import type { HostCatalogs } from "./host-catalogs.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -476,8 +477,13 @@ export class Catalog {
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
-    private readonly origins: ThreadOrigins) {
+    private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null) {
     this.client = new DaemonClient(socketPath);
+    if (hosts) {
+      // Another box's list or reachability changed: its rows go into the next frame with this box's last list.
+      hosts.onChange = () => { if (this.scanned && !this.closed) void this.apply(this.scanned).catch(() => {}); };
+      hosts.start();
+    }
     this.client.onMessage(message => {
       if (message.type === "roster_update") this.scheduleRefresh();
       if (message.type === "heartbeats_changed") this.scheduleSchedulesRefresh();
@@ -618,7 +624,7 @@ export class Catalog {
     this.scanned = rows;
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
-    for (const row of rows) {
+    for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
       if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
@@ -663,7 +669,9 @@ export class Catalog {
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
-    const listed = [...this.summaries.values()].filter(row => isListed(row));
+    // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
+    const listed = [...this.summaries.values()].filter(row => isListed(row, this.hosts?.hostOf(row.sessionId) ? () => true : undefined));
+    const selfName = this.hosts?.selfName ?? null;
     const rows = listed
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
@@ -675,8 +683,10 @@ export class Catalog {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
           ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
+        const host = this.hosts?.hostOf(row.sessionId)?.name ?? selfName;
+        const tagged = host ? { ...projected, host } : projected;
         // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
-        return archivedByOwner?.has(row.sessionId) ? { ...projected, archived: true } : projected;
+        return archivedByOwner?.has(row.sessionId) ? { ...tagged, archived: true } : tagged;
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
@@ -803,6 +813,41 @@ export class Catalog {
 
   forget(sessionId: string): void { this.summaries.delete(sessionId); }
 
+  /** The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. */
+  hostOf(id: string): string | null { return this.hosts?.hostOf(id)?.name ?? null; }
+
+  /** The client of the daemon that runs `id`: another box's through its bridge socket, else this box's. It may still be connecting. */
+  clientFor(id: string): DaemonClient {
+    const host = this.hosts?.hostOf(id);
+    return (host && this.hosts?.client(host.name)) || this.client;
+  }
+
+  /** True for a hosts.json box other than this one, whose folders and files are on its own disk. */
+  isOtherHost(name: string | null | undefined): boolean { return !!name && !!this.hosts?.client(name); }
+
+  /** A connected client for the named box, this box's when the name is absent or its own; it throws for a name hosts.json does not list. */
+  async hostClient(name?: string | null): Promise<DaemonClient> {
+    if (!name || name === this.hosts?.selfName) { await this.connect(); return this.client; }
+    const client = await this.hosts?.ready(name);
+    if (!client) throw new Error(`There is no host ${name} in hosts.json.`);
+    return client;
+  }
+
+  /** A connected client of the daemon that runs `id`. */
+  daemonFor(id: string): Promise<DaemonClient> { return this.hostClient(this.hostOf(id)); }
+
+  /** The socket a new DaemonClient opens for the named box: its bridge socket, else this box's daemon socket. */
+  socketPathFor(name?: string | null): string {
+    return name && this.hosts && name !== this.hosts.selfName ? this.hosts.socketPath(name) : this.socketPath;
+  }
+
+  /** A path on this disk that holds the session's file: the file itself, or for another box's session a copy kept current through its relay. */
+  async localFile(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): Promise<string | undefined> {
+    if (!summary.sessionFile) return undefined;
+    const host = this.hosts?.hostOf(summary.sessionId);
+    return host ? await this.hosts!.mirror(host, summary.sessionFile) : summary.sessionFile;
+  }
+
   /**
    * The row shows this lifecycle until the daemon list agrees (archived: listed as archived with no active session). The daemon scan can lag
    * behind the session file, and the terminal agents view hides a deactivated row the same way until it does.
@@ -840,5 +885,6 @@ export class Catalog {
     clearTimeout(this.ratesTimer);
     this.listeners.clear();
     this.client.close();
+    this.hosts?.close();
   }
 }

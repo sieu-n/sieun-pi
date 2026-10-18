@@ -229,16 +229,20 @@ function startTimeoutMs(): number {
   return Number.isSafeInteger(value) && value > 0 ? value : START_TIMEOUT_MS;
 }
 const adoptFlag = (options: Options): string[] => options.adopt === "own" ? ["--no-adopt"] : options.adopt === "live" ? ["--adopt-live"] : [];
-/** The host bridge for hosts.json; null without the file. A bad file or a socket that cannot open is logged and leaves the chat running. */
-async function startHostBridge(): Promise<{ close(): Promise<void> } | null> {
+/**
+ * The other boxes of hosts.json; null without the file. `primary` opens the bridge sockets, and another instance lists the boxes through the
+ * main instance's sockets. A bad file or a socket that cannot open is logged and leaves the chat running on this box alone.
+ */
+async function startHosts(primary: boolean): Promise<{ bridge: { close(): Promise<void> } | null; catalogs: import("./host-catalogs.ts").HostCatalogs } | null> {
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
-  const { HOSTS_FILE, HostBridge, loadHosts } = await import("./hosts.ts");
+  const [{ HOSTS_FILE, HostBridge, loadHosts }, { HostCatalogs }] = await Promise.all([import("./hosts.ts"), import("./host-catalogs.ts")]);
   if (!(await access(HOSTS_FILE).then(() => true, () => false))) return null;
   try {
-    const bridge = new HostBridge(await loadHosts(), { log });
-    await bridge.start();
-    log(`hosts: bridges open for ${HOSTS_FILE}`);
-    return bridge;
+    const registry = await loadHosts();
+    const bridge = new HostBridge(registry, { log });
+    if (primary) await bridge.start();
+    log(`hosts: ${registry.hosts.map(host => host.name).join(", ")} from ${HOSTS_FILE}${primary ? ", bridges open" : ""}`);
+    return { bridge: primary ? bridge : null, catalogs: new HostCatalogs(registry, bridge, undefined, log) };
   } catch (error) { log(`hosts: ${error instanceof Error ? error.message : String(error)}`); return null; }
 }
 
@@ -329,10 +333,11 @@ async function serve(options: Options): Promise<void> {
   bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
   const adopt = options.adopt ?? (service.primary ? "live" : "own");
   if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
+  // The other boxes in ~/.config/sieun-pi/hosts.json: the main instance opens a local socket per box, tunneled to its relay (src/hosts.ts), and
+  // the catalog lists every box's sessions through them (src/host-catalogs.ts).
+  const hosts = await startHosts(service.primary);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
-    ownChatsOnly: adopt === "own" });
-  // One local socket per other host in ~/.config/sieun-pi/hosts.json, tunneled to that host's relay, so a DaemonClient reaches it unchanged (src/hosts.ts).
-  const hostBridge = service.primary ? await startHostBridge() : null;
+    ownChatsOnly: adopt === "own", hosts: hosts?.catalogs ?? null });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
@@ -360,7 +365,7 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hostBridge?.close(); await server.close(); }
+      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }

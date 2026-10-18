@@ -43,6 +43,13 @@ class RequestError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
+/** A folder path for another box, taken as typed: it must be absolute there, and that box's daemon refuses one it does not have. */
+function remoteWorkspace(input: string, host: string): string {
+  const typed = input.trim().replace(/\/+$/, "") || "/";
+  if (!typed.startsWith("/")) throw new WorkspaceError(`Type the full folder path on ${host}, starting with /: ${input.trim()}`);
+  return typed;
+}
+
 export function renderShell(csrfToken: string, version: string, wiki: string | null): string {
   return `<!doctype html>
 <html lang="en">
@@ -651,7 +658,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       const body = record(await jsonBody(req));
       if (route === "api/threads") {
         const id = requestId(body.requestId);
-        const cwd = await resolveWorkspace(text(body.cwd, "cwd", 1024));
+        // The hosts.json box the New chat picker chose; absent means the box this service runs on.
+        const host = typeof body.host === "string" ? text(body.host, "host", 64) : undefined;
+        // Another box's folder is on its disk, so its daemon checks it when it starts the session.
+        const cwd = backend.catalog.isOtherHost(host) ? remoteWorkspace(text(body.cwd, "cwd", 1024), host!) : await resolveWorkspace(text(body.cwd, "cwd", 1024));
         const message = text(body.message, "message");
         const images = parseImages(body.images);
         if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
@@ -662,14 +672,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const name = typeof body.name === "string" ? text(body.name, "name").trim() : "";
         const kind = parseKind(body.kind);
         const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
-        // The hosts.json box the New chat picker chose; absent means the box this service runs on.
-        const host = typeof body.host === "string" ? text(body.host, "host", 64) : undefined;
         const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
           creation = { fingerprint, result: (async () => {
-            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) };
+            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}) };
             // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
             const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.

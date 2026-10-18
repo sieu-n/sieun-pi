@@ -352,7 +352,7 @@ export class ThreadHub {
     const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
     if (activeSessionId === undefined) return "saved";
     if (await this.daemonBusy(activeSessionId)) return "busy";
-    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, async () => (await this.daemon(activeSessionId)).request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
     return "reloaded";
   }
@@ -367,8 +367,7 @@ export class ThreadHub {
   }
 
   private async daemonBusy(activeSessionId: string): Promise<boolean> {
-    await this.catalog.connect();
-    const state = await this.catalog.client.request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
+    const state = await (await this.daemon(activeSessionId)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
     return now.isSessionActive !== false || now.isStreaming === true || now.isCompacting === true || now.isBashRunning === true;
@@ -422,14 +421,25 @@ export class ThreadHub {
     }
   }
 
+  /** A connected client for the named hosts.json box, this box's own when the name is null. */
+  private async hostDaemon(host: string | null): Promise<DaemonClient> {
+    if (host) return this.catalog.hostClient(host);
+    await this.catalog.connect();
+    return this.catalog.client;
+  }
+
+  /** A connected client of the daemon that runs `id`, a session id or an active session id. */
+  private daemon(id: string): Promise<DaemonClient> { return this.hostDaemon(this.catalog.hostOf(id)); }
+
   private async summary(id: string): Promise<SessionSummary> {
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "This thread is not in the Prime Agent catalog.");
     return summary;
   }
 
-  private async attach(activeSessionId: string): Promise<DaemonAgentConnection> {
-    const client = new DaemonClient(this.socketPath);
+  /** `host` names the box for a session the catalog does not list yet (just created or resumed); else the catalog's row says which box runs it. */
+  private async attach(activeSessionId: string, host: string | null = this.catalog.hostOf(activeSessionId)): Promise<DaemonAgentConnection> {
+    const client = new DaemonClient(host ? this.catalog.socketPathFor(host) : this.socketPath);
     try {
       await client.connect(3000);
       await client.waitForHello(3000);
@@ -447,20 +457,25 @@ export class ThreadHub {
       runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null, ...(history.older ? { older: true } : {}) };
   }
 
-  private branch(summary: SessionSummary): SessionEntry[] {
+  private branch(summary: SessionSummary, file: string): SessionEntry[] {
     const manager = SessionManager.inMemory(summary.cwd);
-    manager.setSessionFile(this.sessionFile(summary));
+    manager.setSessionFile(file);
     if (manager.getSessionId() !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
     return manager.getBranch();
   }
 
-  private sessionFile(summary: SessionSummary): string {
+  /** The session file on this disk; another box's session reads a copy the catalog keeps current through that box's relay. */
+  private async sessionFile(summary: SessionSummary): Promise<string> {
     if (!summary.sessionFile) throw new ThreadError(409, "This saved thread has no session file.");
-    if (!existsSync(summary.sessionFile)) {
+    const host = this.catalog.hostOf(summary.sessionId);
+    const file = !host ? summary.sessionFile : await this.catalog.localFile(summary).catch(error => {
+      throw new ThreadError(502, `The session file on ${host} did not read: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    if (!file || !existsSync(file)) {
       void this.catalog.refresh().catch(() => {});
       throw new ThreadError(404, "The session file for this thread was moved or deleted after Prime Agent scanned it: " + summary.sessionFile);
     }
-    return summary.sessionFile;
+    return file;
   }
 
   /**
@@ -468,9 +483,9 @@ export class ThreadHub {
    * branch once the owner asked for older messages (`older`). `older` in the result: the file holds entries before the ones returned.
    */
   private async history(summary: SessionSummary, full: boolean): Promise<{ entries: SessionEntry[]; older: boolean }> {
-    const file = this.sessionFile(summary);
+    const file = await this.sessionFile(summary);
     const tail = full ? undefined : await readBranchTail(file);
-    if (!tail) return { entries: this.branch(summary), older: false };
+    if (!tail) return { entries: this.branch(summary, file), older: false };
     if (tail.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
     return { entries: tail.entries, older: !tail.whole };
   }
@@ -750,12 +765,12 @@ export class ThreadHub {
     let activeSessionId = liveSessionId(summary);
     if (activeSessionId === undefined) {
       if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
-      await this.catalog.connect();
+      const client = await this.daemon(id);
       // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
-      // A folder that is gone resumes in the daemon's folder rather than not at all.
-      const config = await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
+      // A folder that is gone resumes in the daemon's folder rather than not at all. Another box's folder is that box's to check.
+      const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
       const sessionPath = summary.sessionFile;
-      const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
+      const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
       if (!response.success) throw new ThreadError(502, response.error);
       const data = response.data;
       if (typeof data !== "object" || data === null || !("sessionId" in data) || data.sessionId !== id ||
@@ -765,7 +780,7 @@ export class ThreadHub {
       activeSessionId = data.activeSessionId;
     }
     const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
-      const connection = await this.attach(activeSessionId);
+      const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
       try { return { connection, snapshot: await this.liveSnapshot(connection, summary, thread.full) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
     });
@@ -781,9 +796,10 @@ export class ThreadHub {
   }
 
   /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat" }): Promise<Thread> {
-    await this.catalog.connect();
-    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => this.catalog.client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
+  /** `host` is the hosts.json box whose daemon runs the new session; absent means this box. */
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string }): Promise<Thread> {
+    const client = await this.hostDaemon(input.host ?? null);
+    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
       ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
@@ -792,7 +808,7 @@ export class ThreadHub {
       throw new ThreadError(502, "Prime Agent returned no session for the new thread.");
     }
     this.evict("live");
-    const connection = await this.attach(data.activeSessionId);
+    const connection = await this.attach(data.activeSessionId, input.host ?? null);
     let thread: Thread;
     try {
       thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), (candidate, before) => this.childrenChanged(candidate, before));
@@ -856,8 +872,7 @@ export class ThreadHub {
    */
   async resumeQueue(id: string): Promise<void> {
     const { live } = await this.requireLive(id, "resume_queue");
-    await this.catalog.connect();
-    const response = await this.catalog.client.request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
+    const response = await (await this.daemon(live.activeSessionId)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
 
@@ -868,8 +883,7 @@ export class ThreadHub {
   async deleteSubagent(id: string, childId: string): Promise<SubagentDelete> {
     if (this.dormant.has(id)) throw new ThreadError(409, "The chat is dormant; its finished jobs go with its worker, or at the next service start after it wakes.");
     const { live } = await this.requireLive(id, "delete_subagent");
-    await this.catalog.connect();
-    const response = await this.catalog.client.request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
+    const response = await (await this.daemon(live.activeSessionId)).request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data as { deleted?: boolean; reason?: string } | undefined;
     if (data?.reason === "running") return "running";
@@ -904,8 +918,7 @@ export class ThreadHub {
     this.threads.get(id)?.broadcast({ type: "status", connection: "closed", error: "This thread was archived." });
     await this.dispose(id);
     if (summary.activeSessionId) {
-      await this.catalog.connect();
-      const response = await this.catalog.client.request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
+      const response = await (await this.daemon(summary.activeSessionId)).request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
       if (!response.success && !response.error.startsWith(UNKNOWN_ACTIVE)) {
         if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
         this.finishKill(id, summary.activeSessionId);
@@ -922,9 +935,9 @@ export class ThreadHub {
       void (async () => {
         await this.catalog.refresh().catch(() => {});
         if ((await this.catalog.summary(id))?.activeSessionId !== activeSessionId) return;
-        await this.catalog.client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
+        await (await this.daemon(activeSessionId)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
         await this.catalog.refresh().catch(() => {});
-      })();
+      })().catch(() => {});
     }, 5000).unref();
   }
 
