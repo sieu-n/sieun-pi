@@ -10,7 +10,7 @@ import { CorrectionLedger } from "../src/chat-corrections.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import { CHAT_SYSTEM_THREAD, flagStreaks, repeatLines } from "../src/checkin-repeats.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent, PlanItem } from "../src/shared/types.ts";
@@ -57,8 +57,7 @@ test("check-in: a finding the last check-in flagged and the board did not fix he
   // The chat ran its check-in every 15 min then, under today's 120 min default.
   await writeFile(join(dir, "check-in-settings.json"), JSON.stringify(Object.fromEntries(Object.keys(boards).map(id => [id, { everyMs: 15 * MIN }]))));
   const source: CheckInSource = {
-    board: async id => boards[id] ?? null, rows: async () => sessionRows(sessions), memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
+    board: async id => boards[id] ?? null, rows: async () => sessionRows(sessions), memory, settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
     corrections: () => new CorrectionLedger(dir).read(),
     duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); }, async lastCheckIn(id) { return runs.get(id)?.at(-1)?.at; } },
   };

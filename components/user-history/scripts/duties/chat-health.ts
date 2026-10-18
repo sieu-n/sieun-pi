@@ -10,9 +10,8 @@ import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts"
 import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { foldReply, JOB_NOTICE_PREFIX, serverNote, TELL_OWNER_TOOL, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { JOB_NOTICE_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import { agentMessageSender } from "../../src/no-report.ts";
-import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, daemonSessions, type DaemonSession } from "./board-classes.ts";
@@ -20,7 +19,6 @@ import { dutyFleet } from "./duty-fleet.ts";
 import { endStateKpi, endStateLine, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, stuckPastCheckIn, stuckStepHours, unfixedFlags } from "./checkin-quality.ts";
-import { unlinkedJobSentence } from "../../src/shared/job-mentions.ts";
 import { OpsReader, unapplied } from "../../src/checkin-ops.ts";
 
 const HOUR = 60 * 60_000;
@@ -39,32 +37,23 @@ const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
  * if the retry also fails. 10-13: all 87 breaks were such waits (78 provider 429s, 9 hook slot waits), each counted because the slot note was not read.
  */
 const POOL_RETRY_NOTE = / pi-pool: [\s\S]*(?:; the retry uses |this session waits for its slot at )[\s\S]*$/;
-const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
 const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number;
+type Metrics = { corrections: number; repeat_corrections: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number;
   duties_green_pct: number; stuck_duties: number; steps_moving_pct: number; stuck_step_hours: number; open_step_hours: number; stuck_after_checkin: number; owner_paused_stuck: number; checkin_not_running: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
 /** The duty's state between runs: each watched signature, when a run first flagged it, and the window end of the last run that did. */
 type Watch = Record<string, { firstAt: number; lastRun: number }>;
-/** A reply the owner reads as a bubble, with the tell_owner call id when it is one. */
-interface Said { text: string; at: number; id?: string }
-/**
- * `told` holds the turn's tell_owner calls the tool did not refuse and `texts` the chat's own text messages. The page shows the told text as
- * the reply and folds the turn's own text into updates when the turn has a told call (`chatLines`), so the metrics read the same.
- */
-interface Turn { starter: TurnStarter; at: number; lastText: string; lastTextAt: number; told: Said[]; texts: Said[] }
 interface Failure { at: number; reason: string }
-interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
+interface Tally { metrics: Metrics; deadMs: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
 
 const clip = (text: string): string => text.slice(0, EXCERPT);
-const words = (text: string): number => text.match(WORD)?.length ?? 0;
 const signature = (kind: string, text: string): string => `${kind}:${text.toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").slice(0, 160)}`;
 
 /** The part of an owner message the owner wrote: a board answer after "and answered: ", none for a board choice, and no injected skill text. */
@@ -97,37 +86,11 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (watch) tally.seen.push({ signature: watch, slice });
   };
   const seen = new Set<string>();
-  let turn: Turn | undefined;
-  let settled = true;
   let failure: Failure | undefined;
   const ops = new OpsReader();
   /** The latest token hook failure the pool queued a retry for. It is a break only if the turn ends on it; a later request that gets past the hook clears it. */
   let hookRetry: Failure | undefined;
 
-  const closeTurn = () => {
-    if (!turn) return;
-    // What the owner reads: the told text when the turn has a told call, else the chat's text on a turn the owner started. Text on a wake-up is notes.
-    const read = turn.told.length ? turn.told : turn.starter === "owner" ? turn.texts : [];
-    for (const said of read.filter(said => inWindow(said.at))) {
-      const sentence = unlinkedJobSentence(said.text);
-      if (sentence) { tally.metrics.unlinked_job_mentions++; flag("unlinked_job_mentions", said.at, sentence); }
-    }
-    if (turn.starter !== "owner" || !inWindow(turn.at)) return;
-    const replies = turn.told.length ? turn.told : turn.lastText ? [{ text: turn.lastText, at: turn.lastTextAt }] : [];
-    if (!replies.length) return;
-    tally.ownerTurns++;
-    // Long is what the page folds under "More": words outside code fences, a markdown link one word. A diagram or a link list the owner sees whole is not long.
-    const long = replies.find(said => foldReply(said.text).folded);
-    if (long) { tally.longTurns++; flag("long_replies", long.at, `${words(long.text)} words: ${long.text}`); }
-    // slop_replies: the reply lint's findings other than length (src/shared/reply-lint.ts), with the owner's words of that turn spared.
-    for (const said of replies) {
-      const slop = lintOwnerReply(said.text, ownerSaid).filter(finding => finding.kind !== "long");
-      if (slop.length) { tally.metrics.slop_replies++; flag("slop_replies", said.at, `${findingsLine(slop)}: ${said.text}`); break; }
-    }
-  };
-  /** The owner's words in the message that started the latest owner turn: a word the owner used is not jargon in the reply. */
-  let ownerSaid = "";
-  const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at, told: [], texts: [] }; };
   const settleFailure = (nextAt: number | undefined) => {
     if (!failure) return;
     const end = nextAt ?? now;
@@ -164,31 +127,18 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       // next full wake, each counted because a note came between.
       if (!serverNote(text)) settleHookRetry();
       if (serverNote(text)) {
-        if (settled) openTurn("agent", at);
-        settled = false;
         if (!inWindow(at)) continue;
         if (seen.has(text)) { tally.metrics.off_brief++; flag("off_brief", at, `repeated line: ${text}`, signature("repeat", text)); }
         seen.add(text);
         continue;
       }
-      openTurn("owner", at);
-      settled = false;
       const own = ownerWords(text);
-      ownerSaid = own;
       if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
       // owner_board_asks: the owner had to ask the chat to tidy its plan, which the check-in should keep tidy (owner 10-12: remove the odd leftover steps and tidy the plan hierarchy).
       if (inWindow(at) && own && ownerBoardAsk(own.replace(QUOTED, ""))) { tally.metrics.owner_board_asks++; flag("owner_board_asks", at, own); }
     } else if (message.role === "assistant") {
       failure = undefined;
       hookRetry = undefined;
-      settled = message.stopReason !== "toolUse";
-      const text = messageText(message).trim();
-      if (turn && text) { turn.lastText = text; turn.lastTextAt = at; turn.texts.push({ text, at }); }
-      if (turn && Array.isArray(message.content)) for (const part of message.content) {
-        if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string" && part.arguments.text.trim()) {
-          turn.told.push({ text: part.arguments.text.trim(), at, id: part.id });
-        }
-      }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
         if (SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) {
@@ -196,16 +146,10 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
           else if (inWindow(at)) breakSieunPi(failure);
         }
       }
-    } else if (message.role === "toolResult") {
-      // A refused tell_owner never reached the owner (the feed shows nothing for it).
-      if (message.isError && turn) turn.told = turn.told.filter(said => said.id !== message.toolCallId);
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
-      if (settled) openTurn("agent", at);
-      settled = false;
     }
   }
-  closeTurn();
   settleFailure(undefined);
   settleHookRetry();
   // checkin_ops_dropped: a duty job's board ops the chat left off the board through the turn that read them and the [board] line's turn after it.
@@ -277,10 +221,10 @@ function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const picked = [...newest("stuck_duties"), ...(flagged.get("stuck_step_hours") ?? []).slice(0, FEW * 2), ...newest("stuck_after_checkin", FEW * 2), ...newest("repeat_corrections"), ...newest("sieun_pi_breaks", FEW), ...newest("recurred"), ...newest("end_state_pct"),
     ...newest("owner_paused_stuck"), ...newest("recheck"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
     ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
-  const queues = [newest("stuck_steps", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
+  const queues = [newest("stuck_steps", FEW), newest("unretried_errors"), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
     newest("finished_open", FEW), newest("loose_goals", FEW), newest("extra_goals", FEW), newest("open_under_closed", FEW), newest("held_elsewhere", FEW), newest("wait_met", FEW), newest("stale_steps", FEW), newest("goals_to_fold", FEW), newest("one_session_load", FEW), newest("redundant_heartbeats", FEW),
-    newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW)];
+    newest("placeholder_todos", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -296,9 +240,9 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
     no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
-    deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
+    deadMs: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
   const unfixed = (await Promise.all(ids.map(id => unfixedFlags(dataDir, id, now - WINDOW_MS, now)))).flat();
@@ -370,7 +314,6 @@ async function main(): Promise<void> {
   tally.flagged.set("stuck_step_hours", hours.sort((a, b) => b.hours - a.hours).map(entry => entry.slice));
   tally.flagged.set("stuck_after_checkin", left);
   tally.flagged.set("owner_paused_stuck", paused);
-  tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
   const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
   const fixes = fixCommits(process.env.CHAT_HEALTH_GIT_DIR || join(import.meta.dirname, "..", ".."), now - 2 * WINDOW_MS, now - WINDOW_MS);
   tally.flagged.set("recheck", recheckSlices(fixes, { ...tally.metrics }).map(slice => ({ ...slice, excerpt: clip(slice.excerpt) })));

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInPrecheck, checkInRecord, convergenceMisses, lastJobMessages } from "../src/chat-checkin.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { Chats } from "../src/chats.ts";
@@ -42,8 +42,7 @@ async function server() {
     async reload() {}, observe() { return () => {}; },
   } as unknown as ChatThreads;
   const source: CheckInSource = {
-    board: async () => board, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
+    board: async () => board, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source, () => {});
   await (chats as unknown as { roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> }).roster(new Map([[CHAT, [working]]]));

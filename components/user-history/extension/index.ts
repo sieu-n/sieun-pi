@@ -6,7 +6,7 @@ import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withMessageIds } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_TOOL } from "../src/chats.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
@@ -16,11 +16,10 @@ import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
-import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
-import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
+import { REQUIREMENT_STATUSES, type ChatAgent } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
@@ -80,12 +79,13 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // A chat pins the brief its system prompt carries at its first start and after each compaction, when the prompt is rewritten anyway; a
   // reload in between keeps the pinned one, and the chat server's [brief] notice tells it what changed.
   const pinBrief = () => pi.appendEntry(CHAT_BRIEF_ENTRY, { lines: [...CHAT_BRIEF] });
-  // The feed shows this call's text as a bubble on any turn. On a wake-up it is the only text the owner sees; on an owner turn that calls it,
-  // the chat's own text folds into notes.
+  // The feed shows each call's text as its own bubble on any turn. On a wake-up it is the only text the owner sees; on an owner turn that calls
+  // it, the chat's own text folds into notes. It refuses only empty text (c97).
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: "The only text the owner reads: one or two plain sentences. Dashes, labels, headings or jargon are refused with fixes.",
+    description: "Send the owner one chat message, its own bubble. Markdown, images and mermaid diagrams render at any length. Call it " +
+      "again in the same turn to send a second message.",
     parameters: {
       type: "object",
       properties: {
@@ -94,10 +94,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
       },
       required: ["text"],
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      let owner = "";
-      try { owner = lastOwnerText(ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : [])); } catch { /* no owner words */ }
-      const result = tellOwner((params as { text?: unknown }).text, owner);
+    async execute(_toolCallId, params) {
+      const result = tellOwner((params as { text?: unknown }).text);
       if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },
@@ -133,7 +131,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.on("context", async (event, ctx) => {
     if (!marked && !job && !underChat) return undefined;
     let messages = event.messages;
-    if (marked) try { messages = withReplyCap(messages) ?? messages; } catch { /* no cap */ }
+    if (marked) try { messages = withMessageIds(messages) ?? messages; } catch { /* no ids */ }
     let ledger: Ledger | null = null;
     try { ledger = await corrections().read(); } catch { /* no ledger */ }
     messages = deliverCorrections({ messages, branch: ctx.sessionManager.getBranch(), ledger, job: !marked, brief: BRIEF_CORRECTIONS,

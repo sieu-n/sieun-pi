@@ -190,22 +190,20 @@ test("check-in precheck: a note-only edit is no change, a step the chat owns is 
   assert.equal(checkInPrecheckText(checkInPrecheck(undefined, [], board([]), now), [], [], now), "The board has no open step and no job.");
 });
 
-test("check-in precheck: a board read error, an ask overflow, steps that can start, and owner waits with no question are facts; the error keeps the steps", () => {
+test("check-in precheck: a board read error, steps that can start, and owner waits with no question are facts; open asks are none; the error keeps the steps", () => {
   const now = 10 * STEP_STALE_MS;
   const asks = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `t${index + 1}`, text: `ask ${index + 1}`, done: false, from: "agent" as const, at: "" }));
   const plan = board([step("p1", "Goal", "doing", { children: [step("p2", "Plan", "doing")] })], asks(3));
   const first = checkInPrecheck(undefined, [], plan, now);
-  assert.deepEqual(first.facts, [], "3 open asks is the limit, not past it");
+  assert.deepEqual(first.facts, [], "open asks are no fact");
   const broken = checkInPrecheck(first.memory, [], null, now + MIN, { boardError: "Chat board file is malformed." });
   assert.deepEqual(broken.facts, ["the board cannot be read: Chat board file is malformed."]);
   assert.deepEqual(Object.keys(broken.memory.steps), ["p2", "p1"], "the steps stay for when the board reads again");
   assert.deepEqual(broken.steps, []);
   const fixed = checkInPrecheck(broken.memory, [], plan, now + 40 * MIN);
   assert.equal(fixed.memory.steps.p2!.at, first.memory.steps.p2!.at, "the board reads again: no step looks new");
-  const nine = board(plan.plan, [...asks(9), { id: "t10", text: "done one", done: true, from: "agent", at: "" }, { id: "t11", text: "mine", done: false, from: "owner", at: "" }]);
-  assert.deepEqual(checkInPrecheck(fixed.memory, [], nine, now).facts, ["9 open owner todos; the limit is 3"], "the agent's open asks only");
-  assert.equal(checkInDue([], board([], asks(4))), true, "an ask overflow wakes a chat with no open step");
-  assert.equal(checkInDue([], board([], asks(3))), false);
+  assert.deepEqual(checkInPrecheck(fixed.memory, [], board(plan.plan, asks(9)), now).facts, [], "9 open asks are no fact either (c96)");
+  assert.equal(checkInDue([], board([], asks(9))), false, "open asks alone wake no check-in");
   assert.equal(checkInDue([], null, "Chat board file is malformed."), true, "so does a board it cannot read");
   const ready = board([step("p1", "Goal", "doing", { children: [step("p2", "Plan", "done"), step("p3", "Build", "todo")] })]);
   assert.deepEqual(checkInPrecheck(undefined, [], ready, now).facts, ['p3 "Build" can start: the steps before it are done and it has no job']);

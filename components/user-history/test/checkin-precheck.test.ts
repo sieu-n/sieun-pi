@@ -9,7 +9,7 @@ import { checkInSettings } from "../src/checkin-settings.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent } from "../src/shared/types.ts";
@@ -46,7 +46,6 @@ test("check-in precheck: one tick gives each chat's classes, misses and findings
   const runs = new Map<string, CheckInRun[]>();
   const source: CheckInSource = {
     board: async id => boards[id] ?? null, rows: async () => sessionRows(sessions), memory: checkInRecord(join(dir, "check-ins.json")),
-    replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => capturedAt + 16 * MIN, noReportGraceMs: 0,
     corrections: () => new CorrectionLedger(dir).read(),
     duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); }, async lastCheckIn(id) { return runs.get(id)?.at(-1)?.at; } },

@@ -9,7 +9,7 @@ metadata:
 
 # Poteto mode
 
-In a browser chat, its jobs and their subagents, the chat brief, the job lines and the owner's corrections win where they differ from this skill: the chat hands real work to jobs and reaches the owner only through tell_owner within its cap, outside sends wait for his ok (c37), deploys, merges and promotes need none (c50, c74), spawns name the chat's model (c31), a brief opens with the owner's words, a live job is steered by message instead of respawned, and a repeated correction gets a text fix before a code gate (c81).
+In a browser chat, its jobs and their subagents, the chat brief, the job lines and the owner's corrections win where they differ from this skill: the chat hands real work to jobs, reaches the owner only through tell_owner, asks him clarifying questions when scope or intent is open (c96), outside sends wait for his ok (c37), deploys, merges and promotes need none (c50, c74), spawns name the chat's model (c31), a brief opens with the owner's words, a live job is steered by message instead of respawned, and a repeated correction gets a text fix before a code gate (c81).
 
 ## Source paths
 

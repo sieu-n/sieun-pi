@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, foldReply, ownerMessageId, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, splitReplyTo, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, ownerMessageId, unreadCount, senderName, settledPending, splitReplyTo, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -170,19 +170,10 @@ test("a chat_board call that changed the chat's own check-in shows its first res
   assert.deepEqual(notices, [{ kind: "notice", id: "m1-c0", text: "The chat set its check-in: paused until 2026-10-08 15:03", at: 1100 }]);
 });
 
-test("an owner-turn reply over 60 words folds after its 60th word; fences are not words and are never cut; tell_owner lines are marked", () => {
-  const words = (count: number, from = 1) => Array.from({ length: count }, (_, index) => `w${from + index}`).join(" ");
-  assert.equal(REPLY_FOLD_WORDS, 60);
-  assert.deepEqual(foldReply(words(60)), { shown: words(60), folded: false }, "60 words stay whole");
-  assert.deepEqual(foldReply(words(61)), { shown: `${words(60)}…`, folded: true });
-  assert.deepEqual(foldReply(`- ${words(30)}\n- ${words(40, 31)}`), { shown: `- ${words(30)}\n- ${words(30, 31)}…`, folded: true }, "list marks are no words");
-  const diagram = "```mermaid\nflowchart LR\n" + "  a --> b\n".repeat(80) + "```\n";
-  assert.deepEqual(foldReply(`${words(20)}\n${diagram}${words(20, 21)}`).folded, false, "a diagram is not words");
-  const long = `${words(50)}\n${diagram}${words(30, 51)}`;
-  assert.deepEqual(foldReply(long), { shown: `${words(50)}\n${diagram}${words(10, 51)}…`, folded: true }, "the cut lands after the fence, in prose");
-  assert.deepEqual(foldReply(`${words(59)} last, ${words(5, 61)}`), { shown: `${words(59)} last…`, folded: true }, "no trailing comma before the mark");
-  const lines = chatLines([user("status?", 1000), assistant([{ type: "text", text: words(80) }], 1100), user("and the rest?", 1200), assistant([tell("t9", "Short note.")], 1300)]);
-  assert.deepEqual(lines.flatMap(line => line.kind === "agent" ? [[line.text.length > 20, line.told ?? false]] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
+test("two tell_owner calls in one turn are two agent lines, and a long reply shows whole (c97)", () => {
+  const words = (count: number) => Array.from({ length: count }, (_, index) => `w${index + 1}`).join(" ");
+  const lines = chatLines([user("status?", 1000), assistant([tell("t1", words(120)), tell("t2", "```mermaid\nflowchart LR\n  a --> b\n```")], 1100)]);
+  assert.deepEqual(lines.flatMap(line => line.kind === "agent" ? [[line.text, line.told ?? false]] : []), [[words(120), true], ["```mermaid\nflowchart LR\n  a --> b\n```", true]]);
 });
 
 test("unreadCount: the chat's replies and folded update runs after the read marker count once each; the owner's own messages and older rows do not (owner 10-09)", () => {

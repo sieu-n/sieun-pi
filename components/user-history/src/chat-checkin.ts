@@ -8,7 +8,7 @@ import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-boa
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
-import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, ownerState, parkedBy, quote, readySteps,
+import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
@@ -136,8 +136,6 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   };
   if (!context.boardError) for (const item of board?.plan ?? []) visit(item);
   if (context.boardError) notes.push(`the board cannot be read: ${clip(context.boardError, 160)}`);
-  const asks = openAsks(board);
-  if (!context.boardError && asks > BOARD_LIMITS.openAsks) notes.push(`${asks} open owner todos; the limit is ${BOARD_LIMITS.openAsks}`);
   const gates = context.boardError ? [] : gateFindings(board, facts, active);
   const held = new Set(gates.map(gate => gate.item.id));
   if (!context.boardError) {

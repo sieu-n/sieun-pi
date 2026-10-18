@@ -79,14 +79,14 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
   };
 }
 
-/** The time of each chat's last owner reply the reply lint checked, on disk so a server restart neither loses nor repeats a `[reply check]`. */
-export interface ReplyCheckRecord {
-  /** Records `at` as the chat's last checked reply; true when it is newer than the one on record, so this caller sends the check. */
+/** The time of the newest item each chat got a check for, on disk so a server restart neither loses nor repeats the check. */
+export interface CheckRecord {
+  /** Records `at` as the chat's last checked item; true when it is newer than the one on record, so this caller sends the check. */
   claim(id: string, at: number): Promise<boolean>;
 }
-/** `<data dir>/reply-checks.json` through locked-json: `{ [sessionId]: at }`. */
-export function replyCheckRecord(path: string): ReplyCheckRecord {
-  const file: JsonFile<Record<string, number>> = { path, label: "Reply check record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+/** A record file such as `<data dir>/correction-checks.json` through locked-json: `{ [key]: at }`. */
+export function checkRecord(path: string): CheckRecord {
+  const file: JsonFile<Record<string, number>> = { path, label: "Check record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
     ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => Number.isFinite(entry[1]))) : {} };
   return {
     async claim(id, at) {
@@ -94,8 +94,8 @@ export function replyCheckRecord(path: string): ReplyCheckRecord {
     },
   };
 }
-/** A reply older than this when the server first looks at it gets no `[reply check]`: the owner has moved on. */
-export const REPLY_CHECK_MAX_AGE_MS = 60 * 60_000;
+/** An owner message older than this when the server first looks at it gets no `[correction check]`: the owner has moved on. */
+export const CHECK_MAX_AGE_MS = 60 * 60_000;
 
 /** The jobs a `[brief check]` was sent for, on disk so a server restart does not send it again. */
 export interface BriefCheckRecord {
@@ -247,10 +247,8 @@ export interface CheckInSource {
   queue?: () => Promise<ReadonlyMap<string, QueuePlace>>;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
-  /** The last owner reply each chat's `[reply check]` looked at (`<data dir>/reply-checks.json`). */
-  replyChecks: ReplyCheckRecord;
   /** The newest correction each chat's `/refine` or `[correction check]` covered (`<data dir>/correction-checks.json`, keys `<chat>` and `<chat>:ask`). Absent: none is sent. */
-  correctionChecks?: ReplyCheckRecord;
+  correctionChecks?: CheckRecord;
   /** The jobs that got a `[brief check]` (`<data dir>/brief-checks.json`). Absent: no brief check runs. */
   briefChecks?: BriefCheckRecord;
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
-import { type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
@@ -74,7 +74,7 @@ test("chats: replay of Crawler VP 10-13 10:06Z: the 9th chat in the index is pin
   let now = Date.parse("2026-10-13T10:09:03.186Z");
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => CHATS.map(id => ({ id, name: id }) as SessionRow), home: dir,
-    memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
+    memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: () => now, noReportGraceMs: 0 };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   const { pinned } = await chats.adopt();

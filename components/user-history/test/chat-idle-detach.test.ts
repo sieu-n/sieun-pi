@@ -7,7 +7,7 @@ import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
 import { CHILD_SILENT_MS } from "../src/chat-dormancy.ts";
-import { type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
@@ -232,7 +232,7 @@ test("thread hub and chats: reads and ticks do not attach a dormant chat, and a 
   await index.add("c1");
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], home: dir,
-    memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
+    memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: fake.now, noReportGraceMs: 0 };
   const chats = new Chats(index, fake.threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();
@@ -270,7 +270,7 @@ test("chats: replay of a daemon restart with Crawler VP's failed turn 2 h old: t
   for (const id of ["crawler", "quiet", "busy"]) await index.add(id);
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => ["crawler", "quiet", "busy"].map(id => ({ id, name: id }) as SessionRow), home: dir,
-    memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
+    memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: fake.now, noReportGraceMs: 0 };
   const chats = new Chats(index, fake.threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();

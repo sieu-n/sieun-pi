@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { loadRecord } from "../src/chat-brief.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -62,8 +62,7 @@ async function checkInFindings(chat: string, board: ChatBoard, rows: SessionRow[
   const findings: string[] = [];
   const source: CheckInSource = {
     board: async () => board, rows: async () => rows,
-    memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
+    memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
     duty: { async checkIn(_id, run) { findings.push(run.findings); }, async lastCheckIn() { return undefined; } }, ...more,
   } as CheckInSource;
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);

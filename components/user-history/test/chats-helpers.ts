@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord, type SubagentDelete, type ThreadView } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource, type SubagentDelete, type ThreadView } from "../src/chat-sources.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import type { ChatBoard, ChatWait, ModelInfo, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
@@ -10,7 +10,7 @@ type Observer = Parameters<ChatThreads["observe"]>[0];
 const LISTED: SessionRow[] = [{ id: "other-session", name: "other" } as SessionRow];
 export function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0, rows: () => SessionRow[] = () => LISTED): CheckInSource {
   return { board: async id => boards[id] ?? null, rows: async () => rows(), memory: checkInRecord(join(dir, "check-ins.json")),
-    replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
+    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }
 export function fakeThreads(calls: string[]) {
   let observer: Observer | undefined;

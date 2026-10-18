@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
-import { tellOwner } from "../src/chat-guard.ts";
-import { lintOwnerReply, boardLimitClaims } from "../src/shared/reply-lint.ts";
+import { boardLimitClaims } from "../src/shared/reply-lint.ts";
 
 // The exact owner-facing lines the Crawler VP chat (01a115e2) sent on 10-12 before the owner repeated c43. Each one carried a limit no
 // measurement backed. 129f66c refused only (2): (1) went out as a For you todo, which no lint read, and (3) passed because the reply said
@@ -24,12 +23,35 @@ const TOLD_2236 = "None of them yet. Today's limit is Instagram blocking new-pro
   "about 2%, Postgres CPU 45%, connections half used. The 2,100 cap is metal's 75 MB/s disk-write line, a caution limit, not the drive being full. " +
   "I've asked metal what that line rests on.";
 
-const unmeasured = (text: string): string[] => lintOwnerReply(text).filter(finding => finding.kind === "unmeasured").map(finding => finding.what);
+const unmeasured = (text: string): string[] => boardLimitClaims([{ op: "todo_add", text }]);
 
-test("c43 (Crawler VP 10-12 22:37): tell_owner refuses the 22:36 reply that named a caution line as the census cap", () => {
-  assert.deepEqual(unmeasured(TOLD_2236), ['limit with no measurement "cap is metal\'s 75 MB/s disk-write line, a caution limit, no\u2026"']);
-  assert.equal(tellOwner(TOLD_2236).ok, false);
-  assert.equal(tellOwner(TOLD_2009).ok, false, "the 20:09 reply that 129f66c already refuses stays refused");
+test("c43 (Crawler VP 10-12 22:37): the 22:36 reply's caution line and the 20:09 reply's cap are claims with no measurement, so a todo with either is refused", () => {
+  assert.deepEqual(unmeasured(TOLD_2236), ['"cap is metal\'s 75 MB/s disk-write line, a caution limit, no\u2026"']);
+  assert.equal(unmeasured(TOLD_2009).length, 1);
+});
+
+test("c43: a limit with a rate or size needs the measured resource and how full it was in the same sentence (owner 10-12)", () => {
+  const refused = [
+    "Each new Instagram profile writes about 1.7 MB to the server disk, which caps new profiles near 2,200 a minute.",
+    "Census new reads cap near 2,100/min because of metal's 75 MB/s NVMe write line.",
+    "Each account can only scrape about 50 pages per account before Instagram bans it.",
+    "The proxy pool tops out at 300 requests a minute, so the backfill takes 4 days.",
+    "We can go up to 1,500 profiles/min on one box.",
+    "계정당 하루 최대 50장까지만 긁을 수 있어요.",
+  ];
+  for (const text of refused) assert.equal(unmeasured(text).length, 1, text);
+  const passed = [
+    "Census new reads hit 2,100/min, and iostat showed the NVMe 98% busy, so disk is the cap.",
+    "CPU sat at 400% on 4 cores, so the box tops out near 900 profiles a minute.",
+    "We hit Instagram's rate limit at 200 requests an hour, with 429s on 40% of calls after that.",
+    "The API ceiling is above 1,500 req/s; p99 latency was 40 ms there.",
+    "The NVMe is rated 7,000 MB/s and we write 75 MB/s, so disk is not the bottleneck.",
+    "The brief allows at most 6 open goals and max 3 bullets.",
+    "Claude Max costs $200 a month.",
+    "The crawler wrote 2,100 profiles a minute for the last hour.",
+    'You asked "what caps us at 2,100/min", and I am measuring disk, CPU and RAM now.',
+  ];
+  for (const text of passed) assert.deepEqual(unmeasured(text), [], text);
 });
 
 test("c43: a measurement counts only in the sentence that states the limit, and calling the line a caution line does not excuse it", () => {

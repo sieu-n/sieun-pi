@@ -23,8 +23,10 @@ test("brief: the core rules stay in the prompt in one short line each, and the b
   assert.ok(CHAT_BRIEF.includes("Name every job and thread like the owner names threads: a few plain lowercase words naming the topic (stripe and payments), with no " +
     "kebab-case, ids or numbered suffixes like -2."), "the naming line, verbatim");
   assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or a thread as `thread:<id>`\) and its next action, or is blocked with the exact thing that unblocks it\. A step waiting on someone else is still yours: chase a stuck owner once, then replace it with a job\./);
-  assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn, within the \[reply cap\]\./);
-  assert.match(brief, /On a wake-up the owner did not start, call it once when a goal finished, something is blocked or you need a decision, with several updates in one call; never write 'nothing needs you', 'already handled' or a relay line\./);
+  assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn\./);
+  assert.match(brief, /On a wake-up the owner did not start, message him when a goal finished, something is blocked or you need a decision; never write 'nothing needs you', 'already handled' or a relay line\./);
+  assert.match(brief, /When a request leaves the scope, a choice or the intent open, ask the owner at once: send the question as a chat message and add a For you todo with 2 to 4 choices, your pick first, then keep working on what does not depend on the answer \(c96\)\./);
+  assert.doesNotMatch(brief, /ask the owner only about|at most 3 open/, "a clarifying question is welcome (c96)");
   assert.match(brief, /A brief, in English, opens with `Owner's words \(verbatim\):` and the 1 or 2 owner messages that started it, numbered, timed and exact \(or `Owner's words: none, started by <who>`\), then `My read:`, a `Split:` line/);
   assert.match(brief, /End state: every open step is done, moved by a live owner \(a job at work, or a thread active in the last 2 h\), or blocked only by an open For you todo\./);
   assert.match(brief, /Never ask the owner to relay a message to another thread\./);
@@ -72,7 +74,8 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/check-ins.md", "words, lines or file size (c39)", "duty metrics"],
     ["references/git.md", "rebase, amend) before a push needs no owner ask (c21)", "unpushed sieun-pi commits"],
     ["references/git.md", "run `git add -- <your files>` on the shared index afterwards", "private index commits"],
-    ["references/owner.md", "ask yourself whether the CTO would be annoyed to be asked", "few asks"],
+    ["references/owner.md", "ask the owner a clarifying question at once, because he wants to be asked (c96)", "clarifying asks (c96)"],
+    ["references/owner.md", "split a long answer into 2 or 3 messages like a person texting", "split replies (c97)"],
     ["references/owner.md", "one screenshot per variant inline in the chat message itself", "UI picks inline (c3)"],
     ["references/owner.md", "complete the Google or GitHub sign-in there", "logins through Aside (c4)"],
     ["references/owner.md", "`gh auth login --web`, a GitHub web sign-in, a device code or browser flow) is yours or the job's to start and finish (c4)", "GitHub sign-ins are the agent's too (c4, owner 10-14)"],
@@ -163,8 +166,8 @@ test("stale extension: the decision, and the reload once a chat attaches (now wh
   await cp(join(import.meta.dirname, "..", "extension"), join(tree, "components", "user-history", "extension"), { recursive: true });
   await cp(join(import.meta.dirname, "..", "..", "global-rules"), join(tree, "components", "global-rules"), { recursive: true });
   let before = extensionBuild(src);
-  // The context hook (correction-delivery, prime-notices, context-images, the reply cap's reply-lint notes and turns text), the board tool's schema
-  // (chat-board, types) and global-rules, which runs in every session.
+  // The context hook (correction-delivery, prime-notices, context-images, turns text), the board tool's schema (chat-board, types, the board
+  // text checks in reply-lint) and global-rules, which runs in every session.
   for (const file of ["correction-delivery.ts", "prime-notices.ts", "context-images.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "shared/chat-board.ts",
     "../../global-rules/index.ts"]) {
     await appendFile(join(src, file), "\n");

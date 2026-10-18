@@ -18,7 +18,7 @@ import { startMacUsableWatch } from "./mac-usable-watch.ts";
 import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
-import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
+import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { unloadPlan } from "./idle-unload.ts";
@@ -179,7 +179,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
-      replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")), correctionChecks: replyCheckRecord(join(dataDir, "correction-checks.json")),
+      correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),

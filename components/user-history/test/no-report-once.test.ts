@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { checkInSettings, clockTime } from "../src/checkin-settings.ts";
 import { Chats, NO_REPORT_BUSY_TRIES } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -42,8 +42,7 @@ async function server(messages: ThreadMessage[], busy: () => boolean) {
     observe() { return () => {}; },
   } as unknown as ChatThreads;
   const source: CheckInSource = {
-    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
+    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source, () => {});
   const roster = (children: ChildAgent[]) => (chats as unknown as { roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> }).roster(new Map([[CHAT, children]]));

@@ -39,7 +39,7 @@ test("prompt view: every message part names its source", async () => {
     "user:harness:Harness digest",
     "user:instructions:[corrections]",
     "user:message:Owner",
-    "user:instructions:[reply cap]",
+    "user:instructions:[message id]",
     "assistant:message:Assistant thinking",
     "assistant:message:Assistant tool call",
     "toolResult:message:Tool result: ipython",
@@ -98,7 +98,7 @@ test("prompt view: with a capture the origin is exact and the provider's count o
     assert.deepEqual([at("Owner"), at("Assistant thinking"), at("Assistant tool call"), at("Tool result: ipython"), at("[check-in]"), at("Agent message from ci bot"), at("Harness digest")],
       ["2026-10-15T10:40:01.000Z", "2026-10-15T10:40:03.000Z", "2026-10-15T10:40:03.000Z", "2026-10-15T10:40:04.000Z", "2026-10-15T10:40:06.000Z", "2026-10-15T10:00:05.000Z", "2026-10-15T10:00:00.400Z"],
       "each payload part takes the time of the session message it came from, by tool call id or the opening of its text");
-    assert.deepEqual([at("[corrections]"), at("[reply cap]")], ["2026-10-15T10:00:00.400Z", "2026-10-15T10:40:01.000Z"],
+    assert.deepEqual([at("[corrections]"), at("[message id]")], ["2026-10-15T10:00:00.400Z", "2026-10-15T10:40:01.000Z"],
       "a block the context hook adds has no entry of its own and takes the time of the block before it in the same message");
     assert.equal(view.parts.filter(part => !part.role).some(part => part.at), false);
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -166,7 +166,6 @@ test("prompt view: without a capture it rebuilds from the session file and names
       "instructions:[corrections]",
       "message:Owner",
       "instructions:[message id]",
-      "instructions:[reply cap]",
       "message:Assistant thinking",
       "message:Assistant tool call",
       "message:Tool result: ipython",

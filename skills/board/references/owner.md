@@ -4,12 +4,13 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 
 ## Owner todos
 
-1. Before you add a todo, ask yourself whether the CTO would be annoyed to be asked, and if so, decide yourself.
-2. An ask is an owner todo plus one short line in chat.
-3. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
-4. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
-5. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
-6. Never ask for a go on a merge, a push to main or master or a prod promote, because the owner pre-approves them all until the proper launch (c74, 2026-10-15).
+1. When a request leaves the scope, a choice or the intent open, ask the owner a clarifying question at once, because he wants to be asked (c96).
+2. An ask is a chat message with the question plus a For you todo with 2 to 4 choices, your pick first, and you keep working on what does not depend on the answer.
+3. Decide small wording, code and fix choices yourself, and put each decision in the note of the step it concerns.
+4. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
+5. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
+6. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
+7. Never ask for a go on a merge, a push to main or master or a prod promote, because the owner pre-approves them all until the proper launch (c74, 2026-10-15).
 
 ## Review asks and logins
 
@@ -31,3 +32,4 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 6. Put at most one board id in a message, at the end, and only when it helps, because the page turns it into a link.
 7. Use no parenthetical asides in a reply.
 8. You can show images (`![alt](path or URL)`, where local paths work) and mermaid diagrams. Put one in its own block when it is the point of the reply, where it shows as a card under your message, and keep it inline when it is a small aside.
+9. Each tell_owner call is its own chat message, so split a long answer into 2 or 3 messages like a person texting, and send a diagram or a longer explanation right in the chat (c97).

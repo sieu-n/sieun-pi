@@ -1,13 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
-import { findingsList, lintOwnerReply, replyNotes } from "./shared/reply-lint.ts";
+import { messageIdNote, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
-import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 
-/** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner check, the reply cap, and the shell guard. */
+/** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
 
 /** The extension flag the chat server sets on `create`. The extension turns it into the session entry at the first session_start. */
 export const CHAT_FLAG = "chat";
@@ -18,7 +16,6 @@ export const CHAT_BOARD_TOOL = "chat_board";
 /** The only way the chat reaches the owner on a turn the owner did not start; active with the board tool. The feed reads its calls from the transcript. */
 export const CHAT_TOOLS: readonly string[] = [CHAT_BOARD_TOOL, TELL_OWNER_TOOL];
 export const TELL_OWNER_DONE = "told the owner";
-export const TELL_OWNER_REFUSED = "Refused: the owner did not see it. Rewrite it and call tell_owner again:";
 
 /** A chat with no name from the owner gets one, so a create_session root can reply to it by name. */
 export function chatName(): string { return `chat-${randomBytes(2).toString("hex")}`; }
@@ -58,47 +55,33 @@ export function withChatTool(active: readonly string[], on: boolean): string[] |
   return missing.length === CHAT_TOOLS.length ? null : active.filter(name => !CHAT_TOOLS.includes(name));
 }
 
-/**
- * The line the context hook adds to every message the owner typed in a chat: the brief's reply cap, read next to the message it governs.
- * Chat health long_replies, 10-09: after the cap entered the brief (4be3ceb) the median owner reply was 68 words and 65% ran past 60.
- */
-export const REPLY_CAP_NOTE = `[reply cap] Answer this in at most ${REPLY_FOLD_WORDS} words, bullets included: the answer first, then at most 3 short lines. ` +
-  `Anything longer goes in a wiki page; reply with its link. Send the reply with tell_owner. The page folds every word past ${REPLY_FOLD_WORDS} under More.`;
-
 type ContextMessage = { role: string; content?: unknown; timestamp?: unknown };
 /**
- * The model's view of a chat with its id (`messageIdNote`) and REPLY_CAP_NOTE after each message the owner typed, and after it the reply lint's findings on the reply the
- * owner read before that message (`replyNotes`); undefined when there is no owner message. Every owner message gets its notes from the
- * messages before it, so the cached prefix holds.
+ * The model's view of a chat with each owner message's id (`messageIdNote`) after it, so the chat can pass it to tell_owner as `reply_to`;
+ * undefined when no owner message has a timestamp. Every note depends only on its own message, so the cached prefix holds.
  */
-export function withReplyCap<M extends ContextMessage>(messages: readonly M[]): M[] | undefined {
-  let capped = false;
-  const checks = replyNotes(messages as unknown as readonly ThreadMessage[]);
-  const view = messages.map((message, index) => {
+export function withMessageIds<M extends ContextMessage>(messages: readonly M[]): M[] | undefined {
+  let changed = false;
+  const view = messages.map(message => {
     const content = message.content;
-    if (message.role !== "user" || !(typeof content === "string" || Array.isArray(content))) return message;
+    if (message.role !== "user" || typeof message.timestamp !== "number" || !(typeof content === "string" || Array.isArray(content))) return message;
     const text = messageText({ content: content as string | { type: string; text?: string }[] }).trim();
     if (!text || serverNote(text)) return message;
-    capped = true;
-    const check = checks.get(index);
-    const id = typeof message.timestamp === "number" ? [{ type: "text", text: messageIdNote(message.timestamp) }] : [];
-    const notes = [...id, { type: "text", text: REPLY_CAP_NOTE }, ...(check ? [{ type: "text", text: check }] : [])];
-    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, ...notes] : [...content, ...notes] };
+    changed = true;
+    const id = { type: "text", text: messageIdNote(message.timestamp) };
+    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, id] : [...content, id] };
   });
-  return capped ? view : undefined;
+  return changed ? view : undefined;
 }
 
 /**
- * What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused for reply-lint findings, which come back
- * with their fixes so the chat rewrites it in the same turn (the feed shows a refused call as nothing). `ownerText` is the owner's last message:
- * a word the owner used is not jargon.
+ * What `tell_owner` answers: any text reaches the owner as its own bubble, markdown, mermaid diagrams and length included, and the chat may
+ * call it several times in one turn to send several bubbles. The reply rules live in the chat brief, not in a code check (c81, c97; owner
+ * 10-18: "also is this a hard cap (code-level) or something? if so strip all these").
  */
-export function tellOwner(text: unknown, ownerText = ""): { ok: true; text: string } | { ok: false; text: string } {
+export function tellOwner(text: unknown): { ok: true; text: string } | { ok: false; text: string } {
   const told = typeof text === "string" ? text.trim() : "";
-  if (!told) return { ok: false, text: "nothing to tell: give text" };
-  const findings = lintOwnerReply(told, ownerText);
-  if (findings.length) return { ok: false, text: `${TELL_OWNER_REFUSED}\n${findingsList(findings)}` };
-  return { ok: true, text: TELL_OWNER_DONE };
+  return told ? { ok: true, text: TELL_OWNER_DONE } : { ok: false, text: "nothing to tell: give text" };
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;

@@ -1,5 +1,5 @@
 import { bridgeHolds } from "./alert-bridge.ts";
-import { BOARD_LIMITS, coversStep, planJob } from "./shared/chat-board.ts";
+import { coversStep, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
@@ -290,15 +290,12 @@ export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap
 export const LIVE_GAP_MS = 30 * 60_000;
 export const liveWindowMs = (everyMs: number): number => Math.min(everyMs, LIVE_GAP_MS);
 
-/** The agent's todos the owner has not answered yet; the board refuses a new one past BOARD_LIMITS.openAsks, but older ones stay. */
-export const openAsks = (board: ChatBoard | null): number => (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done).length;
-
 /**
- * The check-in runs for a chat with a job at work, an open plan step (todo, doing, blocked), a board it cannot read, or more open owner asks
- * than the limit; a chat with none of these has nothing to check, and no duty job starts.
+ * The check-in runs for a chat with a job at work, an open plan step (todo, doing, blocked) or a board it cannot read; a chat with none of
+ * these has nothing to check, and no duty job starts.
  */
 export function checkInDue(facts: readonly JobFact[], board: ChatBoard | null, boardError?: string): boolean {
-  if (boardError || openAsks(board) > BOARD_LIMITS.openAsks || facts.some(fact => fact.state === "working")) return true;
+  if (boardError || facts.some(fact => fact.state === "working")) return true;
   let open = false;
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open = true; });
   return open;

@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { chatModeAt, chatShellNote, hasChatMarker, judgeChatCode, REPLY_CAP_NOTE, tellOwner, withChatTool, withReplyCap } from "../src/chat-guard.ts";
-import { lintOwnerReply } from "../src/shared/reply-lint.ts";
+import { chatModeAt, chatShellNote, hasChatMarker, judgeChatCode, tellOwner, withChatTool, withMessageIds } from "../src/chat-guard.ts";
 import { reply } from "./chats-helpers.ts";
 
 const ALLOWED = [
@@ -87,8 +86,7 @@ test("chat marker: written once in a flagged root, read back later, never in a c
   assert.deepEqual(withChatTool(["ipython"], false), null);
 });
 
-test("the reply cap follows every message the owner typed, and no server note, wake, reply or tool result", () => {
-  const cap = { type: "text", text: REPLY_CAP_NOTE };
+test("each message the owner typed gets its id after it, and no server note, wake, reply or tool result does; nothing else is added", () => {
   const image = { type: "image", data: "x", mimeType: "image/png" };
   const messages = [
     { role: "user", content: "why is CI slow?", timestamp: 1 },
@@ -99,18 +97,17 @@ test("the reply cap follows every message the owner typed, and no server note, w
     { role: "toolResult", toolCallId: "c1", content: [{ type: "text", text: "ok" }], timestamp: 6 },
     { role: "user", content: [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image], timestamp: 7 },
   ];
-  const view = withReplyCap(messages);
+  const view = withMessageIds(messages);
   const id = (text: string) => ({ type: "text", text: `[message id: ${text}]` });
   assert.deepEqual(view?.map(message => message.content), [
-    [{ type: "text", text: "why is CI slow?" }, id("1"), cap], messages[1]!.content, messages[2]!.content, messages[3]!.content, messages[4]!.content, messages[5]!.content,
-    [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image, id("7"), cap],
+    [{ type: "text", text: "why is CI slow?" }, id("1")], messages[1]!.content, messages[2]!.content, messages[3]!.content, messages[4]!.content, messages[5]!.content,
+    [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image, id("7")],
   ]);
-  assert.deepEqual(withReplyCap([{ role: "user", content: "hi", timestamp: 1760000000000 }])?.[0]?.content, [{ type: "text", text: "hi" }, id("mgj6k3cw"), cap],
+  assert.deepEqual(withMessageIds([{ role: "user", content: "hi", timestamp: 1760000000000 }])?.[0]?.content, [{ type: "text", text: "hi" }, id("mgj6k3cw")],
     "the id is the message's timestamp in base 36");
-  assert.deepEqual(withReplyCap([{ role: "user", content: "hi" }])?.[0]?.content, [{ type: "text", text: "hi" }, cap], "no timestamp, no id");
+  assert.equal(withMessageIds([{ role: "user", content: "hi" }]), undefined, "no timestamp, no id");
   assert.equal(messages[0]!.content, "why is CI slow?", "the transcript is not changed");
-  assert.equal(withReplyCap(messages.slice(1, 6)), undefined, "no owner message, no new view");
-  assert.match(REPLY_CAP_NOTE, /at most 60 words, bullets included/);
+  assert.equal(withMessageIds(messages.slice(1, 6)), undefined, "no owner message, no new view");
 });
 
 test("brief: a reply that answers an older owner message sets reply_to; one to the last message does not", async () => {
@@ -118,24 +115,22 @@ test("brief: a reply that answers an older owner message sets reply_to; one to t
   assert.ok(extension.includes('reply_to: { type: "string", description: "[message id] of an older owner message it answers." }'), "tell_owner's reply_to says when to set it");
 });
 
-test("tell_owner takes plain text and refuses empty text", () => {
+test("tell_owner sends any text that is not empty, long, labeled or with a diagram, and refuses only empty text (c97)", () => {
   assert.deepEqual(tellOwner("The audit is done; nothing failed."), { ok: true, text: "told the owner" });
+  const long = `Update: ${Array.from({ length: 100 }, (_, index) => `word${index}`).join(" ")} \u2014 the digest and the duty.`;
+  assert.deepEqual(tellOwner(long), { ok: true, text: "told the owner" }, "a label opener, a dash, internal terms and 100 words go through");
+  assert.deepEqual(tellOwner("Here is the flow:\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n- one\n- two\n- three\n- four"), { ok: true, text: "told the owner" });
   assert.equal(tellOwner("   ").ok, false);
   assert.equal(tellOwner(undefined).ok, false);
 });
 
-test("brief: a reply to the owner always goes through tell_owner, and every example sentence the brief and its owner reference tell chats to write passes the reply lint (W59)", async () => {
+test("brief: the owner hears from a chat only through tell_owner, which may run 2 or more times a turn and carry diagrams and length (c97)", async () => {
   const brief = CHAT_BRIEF.join("\n");
   assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn/);
-  assert.match(REPLY_CAP_NOTE, /Send the reply with tell_owner\./);
+  assert.match(brief, /split a long answer into 2 or 3 calls, and put a mermaid diagram/);
+  assert.doesNotMatch(brief, /reply cap|60 words/);
   const extension = await readFile(new URL("../extension/index.ts", import.meta.url), "utf8");
-  assert.ok(!extension.includes("reply with text instead"), "tell_owner no longer tells the model to skip it on an owner turn");
-  assert.match(extension, /The only text the owner reads/);
-  const owner = await readFile(new URL("../../../skills/board/references/owner.md", import.meta.url), "utf8");
-  const examples = [...`${brief}\n${owner}`.matchAll(/\blike "([^"]+)"/g)].map(match => match[1]!);
-  assert.ok(examples.length >= 1, "the plural example is found");
-  for (const example of examples) assert.deepEqual(lintOwnerReply(example), [], `the example "${example}" passes the lint a chat's reply must pass`);
-  assert.ok(examples.includes("jobs now report to the chat when they finish"));
+  assert.match(extension, /again in the same turn to send a second message/);
 });
 
 test("extension: a chat's git push runs (no block) and its result gets the soft-cap note; a look-up gets none", async () => {

@@ -8,7 +8,7 @@ import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { CHAT_MODE_ENTRY } from "../src/chat-guard.ts";
 import { messageCheckPrelude, withMessageCheck } from "../src/message-limit-check.ts";
-import { boardLimitClaims, lintOwnerReply } from "../src/shared/reply-lint.ts";
+import { boardLimitClaims } from "../src/shared/reply-lint.ts";
 
 // c43 came back on 10-12 through text no lint read. Metal box owner (01a11d24) sent the Crawler VP (01a115e2) its canary lines at 04:40:20Z
 // (13:40 KST) as an agent message; the Crawler VP wrote them into board step p23's note 5 s later and later named p118 after "metal's 75 MB/s
@@ -26,14 +26,14 @@ test("c43: a threshold on a rate or size needs a measurement, a vendor limit or 
     "At +15 I need the NVMe 15-min mean <75 MB/s.",
     "Keep census under metal's 75 MB/s step line.",
     "Gate: writes under 75 MB/s, a safety line, while IO sits at 2% busy.",
-  ]) assert.equal(lintOwnerReply(text).filter(finding => finding.kind === "unmeasured").length, 1, text);
+  ]) assert.equal(boardLimitClaims([{ op: "todo_add", text }]).length, 1, text);
   for (const text of [
     "The stop line is NVMe writes above 1,900 MB/s, the drive's rated sequential write.",
     "Hold census under 300 profiles a minute: above it the 10-12 incident put 429s on 33% of calls.",
     "Stop the ramp above 120 MB/s, where the NVMe ran 97% busy in the 10-09 load test.",
     "NVMe sat under 20 MB/s all day.",
     "The IO avg300 line is under 5%.",
-  ]) assert.deepEqual(lintOwnerReply(text).filter(finding => finding.kind === "unmeasured"), [], text);
+  ]) assert.deepEqual(boardLimitClaims([{ op: "todo_add", text }]), [], text);
 });
 
 test("c43: board step text, notes and waitFor with an unbacked limit are refused; todos stay refused", () => {

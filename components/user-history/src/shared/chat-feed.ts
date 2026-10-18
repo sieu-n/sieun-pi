@@ -12,7 +12,7 @@ export const TELL_OWNER_TOOL = "tell_owner";
  */
 export const CHECK_IN_PREFIX = "[check-in] ";
 export const JOB_NOTICE_PREFIX = "[job] ";
-/** The server's note after an owner-turn reply that failed the reply lint (src/shared/reply-lint.ts); the turn it starts is not the owner's. */
+/** The note the server sent until 10-18 after an owner-turn reply that failed the reply lint; older transcripts hold it, and the turn it starts is not the owner's. */
 export const REPLY_CHECK_PREFIX = "[reply check] ";
 /** The server's note after a chat spawned a job whose brief failed the brief check (src/shared/brief-check.ts); the turn it starts is not the owner's. */
 export const BRIEF_CHECK_PREFIX = "[brief check] ";
@@ -69,7 +69,7 @@ export type ChatLine =
 export interface ReplyQuote { id: string; text: string }
 
 /**
- * The id the model reads after each owner message (`[message id: <id>]`, src/chat-guard.ts withReplyCap) and passes back as `reply_to`: the
+ * The id the model reads after each owner message (`[message id: <id>]`, src/chat-guard.ts withMessageIds) and passes back as `reply_to`: the
  * message's timestamp in base 36, so it survives compaction and needs no index. The feed finds the owner line by its `at`.
  */
 export const ownerMessageId = (at: number): string => at.toString(36);
@@ -353,48 +353,5 @@ export function waitText(wait: ChatWait): string {
   return wait.until === null ? "Waiting for a Claude account. Your selected model stays unchanged." : `Waiting for a Claude account until ${clock(wait.until)}. Your selected model stays unchanged.`;
 }
 
-/** An owner-turn reply longer than this many words shows only its first ones, with "More" to show the rest. */
-export const REPLY_FOLD_WORDS = 60;
+/** A code fence line: a reply's diagram or code block starts and ends with one. */
 export const FENCE = /^\s*(?:```|~~~)/;
-/** One counted piece of a line: an image, a markdown link (its label's words), a code span (one word), a bare URL (none), or any other token. */
-const WORD_UNIT = /!\[[^\]]*\]\([^)]*\)|\[([^\]]*)\]\([^)]*\)|`[^`]+`|https?:\/\/\S+|\S+/gu;
-const HAS_WORD = /[\p{L}\p{N}]/u;
-const unitWords = (unit: string, label: string | undefined): number => {
-  if (unit.startsWith("![") || /^https?:\/\//.test(unit)) return 0;
-  if (label !== undefined) return label.split(/\s+/).filter(word => HAS_WORD.test(word)).length;
-  if (unit.startsWith("`") && unit.endsWith("`") && unit.length > 1) return 1;
-  return HAS_WORD.test(unit) ? 1 : 0;
-};
-/**
- * The words the page counts in a reply, each piece with its offset: outside code fences (a diagram is not words), a markdown link counts its
- * label's words, a code span one word, an image or a bare URL none, and a list mark ("-", "3.") none.
- */
-function* replyWordUnits(text: string): Generator<{ at: number; words: number }> {
-  let offset = 0, fence = false;
-  for (const line of text.split(/(?<=\n)/)) {
-    if (FENCE.test(line)) fence = !fence;
-    else if (!fence) {
-      const mark = /^\s*\d+[.)](?=\s)/.exec(line)?.[0].length ?? 0;
-      for (const match of line.matchAll(WORD_UNIT)) yield { at: offset + match.index!, words: match.index! + match[0].length === mark ? 0 : unitWords(match[0], match[1]) };
-    }
-    offset += line.length;
-  }
-}
-/** How many words the page counts in a reply (`foldReply` folds past REPLY_FOLD_WORDS of them). */
-export function replyWordCount(text: string): number {
-  let words = 0;
-  for (const unit of replyWordUnits(text)) words += unit.words;
-  return words;
-}
-/**
- * The part of an owner-turn reply shown before "More": the text up to its `limit`-th word (`replyWordUnits`), then "…"; `folded` false when the
- * reply has no more words than that. A cut never falls inside a fence or a link.
- */
-export function foldReply(text: string, limit = REPLY_FOLD_WORDS): { shown: string; folded: boolean } {
-  let words = 0;
-  for (const unit of replyWordUnits(text)) {
-    if ((words += unit.words) <= limit) continue;
-    return { shown: text.slice(0, unit.at).trimEnd().replace(/[\s,;:—-]+$/, "") + "…", folded: true };
-  }
-  return { shown: text, folded: false };
-}

@@ -16,10 +16,9 @@ export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add",
 export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
   "(plan_update {id, note}).";
 /**
- * `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. `openGoals` is the number of open goals
- * past which the check-in asks the chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
+ * `openGoals` is the number of open goals past which the check-in asks the chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
  */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, openGoals: 6, links: 5, label: 120,
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openGoals: 6, links: 5, label: 120,
   requirements: 30, choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 /** The open goals: top-level plan items that are todo, doing or blocked. */
@@ -564,9 +563,6 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "todo_add": {
       if (board.todos.length >= BOARD_LIMITS.todos) invalid(`The todo list holds at most ${BOARD_LIMITS.todos} items; remove done ones first.`);
-      if (actor === "agent" && board.todos.filter(todo => todo.from === "agent" && !todo.done).length >= BOARD_LIMITS.openAsks) {
-        invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and put it in the step's note, or remove an ask first.`);
-      }
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}),
         ...(op.links ? { links: op.links } : {}), from: actor, at: now };

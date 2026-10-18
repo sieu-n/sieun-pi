@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
@@ -33,8 +33,7 @@ async function setup(board: ChatBoard, waking: ReadonlySet<string> = new Set(), 
     observe() { return () => {}; },
   } as unknown as ChatThreads;
   const source: CheckInSource = {
-    board: async () => board, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0, waking: async session => waking.has(session),
+    board: async () => board, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0, waking: async session => waking.has(session),
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   const roster = chats as unknown as { roster(children: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> };

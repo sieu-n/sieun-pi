@@ -1,6 +1,5 @@
 import { BOARD_LIMITS } from "../shared/chat-board.ts";
 import { ERROR_PAUSE_RUNS } from "../shared/chat-duties.ts";
-import { REPLY_FOLD_WORDS } from "../shared/chat-feed.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type PoolConfig } from "../shared/types.ts";
 import { POOL_DEFAULTS, poolValue, type PoolKey } from "./pool-config.ts";
 
@@ -62,10 +61,6 @@ export function settingText({ setting, default: fallback }: Rule): string {
 const CHAT_RULES: Rule[] = [
   { id: "check-in-every", title: "Check-in interval", value: q(CHECK_IN_MS, "ms"), setting: { kind: "chat", where: `the chat's Check-in control (${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES} min)` },
     text: "How often the app runs a chat's check-in. A check-in with nothing open starts no job.", source: { file: USER_HISTORY + "checkin-settings.ts", symbol: "CHECK_IN_MS" } },
-  { id: "reply-words", title: "Reply length", value: q(REPLY_FOLD_WORDS, "words"), setting: CODE,
-    text: "A chat's reply to you aims at this length. A longer reply folds behind More, and a long explanation goes to a linked page.", source: { file: USER_HISTORY + "shared/chat-feed.ts", symbol: "REPLY_FOLD_WORDS" } },
-  { id: "open-asks", title: "Open asks in For you", value: q(BOARD_LIMITS.openAsks, "count"), setting: CODE,
-    text: "The most questions a chat may leave open for you. Past it the chat decides by itself.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openAsks" } },
   { id: "open-goals", title: "Open goals", value: q(BOARD_LIMITS.openGoals, "count"), setting: CODE,
     text: "Past this many open goals the check-in asks the chat to fold goals of one area. New work goes under the goal it belongs to.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openGoals" } },
   { id: "plan-items", title: "Plan size", value: q(BOARD_LIMITS.planItems, "count"), setting: CODE,

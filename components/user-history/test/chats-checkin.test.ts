@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { CHECK_IN_MS, clockTime, localTime, OWNER_UI } from "../src/checkin-settings.ts";
 import type { Ledger } from "../src/chat-corrections.ts";
-import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord } from "../src/chat-sources.ts";
+import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { type CheckInRun, Duties } from "../src/chat-duty-run.ts";
@@ -233,68 +233,27 @@ test("chats: a board the server cannot read is a fact in the duty job's findings
   chats.close();
 });
 
-test("reply check: kept on disk, so a restart right after a long reply still sends one [reply check], and no later server sends it again (W59, 19:34Z)", async () => {
+test("a long, labeled reply to the owner gets no steer after it, at attach or at turn end (c97)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("vp");
   const replyAt = 1_000_000;
-  let clock = replyAt + 30_000;
-  const long = Array.from({ length: 80 }, (_, at) => `word${at}`).join(" ");
+  const long = `Update: ${Array.from({ length: 100 }, (_, at) => `word${at}`).join(" ")}`;
   const messages: ThreadMessage[] = [
     { role: "user", content: "youre so far back, push hard", timestamp: replyAt - 60_000 },
     { role: "assistant", content: [{ type: "text", text: long }], stopReason: "stop", timestamp: replyAt } as unknown as ThreadMessage,
   ];
-  const start = () => {
-    const calls: string[] = [];
-    const threads = fakeThreads(calls);
-    threads.transcripts.set("vp", messages);
-    const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => clock));
-    return { calls, threads, chats, checks: () => calls.filter(call => call.startsWith("steer vp [reply check]")) };
-  };
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  threads.transcripts.set("vp", messages);
   await loadRecord(join(dir, "extension-loads.json")).set("vp", "b1");
-  const first = start();
-  await first.chats.adopt();
-  first.threads.fire().live("vp", []);
-  await first.chats.settled();
-  assert.equal(first.checks().length, 1, "a server started 30 s after the reply sends its check when the chat attaches");
-  assert.match(first.checks()[0]!, /- 80 words: /);
-  first.threads.fire().idle("vp");
-  await first.chats.settled();
-  assert.equal(first.checks().length, 1, "the turn end after it sends none");
-  first.chats.close();
-  const second = start();
-  await second.chats.adopt();
-  second.threads.fire().live("vp", []);
-  second.threads.fire().idle("vp");
-  await second.chats.settled();
-  assert.deepEqual(second.checks(), [], "a second restart on the same data dir sends none");
-  assert.deepEqual(JSON.parse(await readFile(join(dir, "reply-checks.json"), "utf8")), { vp: replyAt });
-  second.chats.close();
-
-  await index.add("busy");
-  const third = start();
-  third.threads.transcripts.set("busy", messages);
-  third.threads.busyIds.add("busy");
-  await third.chats.adopt();
-  third.threads.fire().live("busy", []);
-  await third.chats.settled();
-  assert.deepEqual(third.calls.filter(call => call.startsWith("steer busy")), [], "a chat attached mid-turn waits for its turn end");
-  third.threads.busyIds.delete("busy");
-  third.threads.fire().idle("busy");
-  await third.chats.settled();
-  assert.equal(third.calls.filter(call => call.startsWith("steer busy [reply check]")).length, 1);
-  third.chats.close();
-
-  await index.add("old");
-  clock = replyAt + REPLY_CHECK_MAX_AGE_MS + 1;
-  const fourth = start();
-  fourth.threads.transcripts.set("old", messages);
-  await fourth.chats.adopt();
-  fourth.threads.fire().idle("old");
-  await fourth.chats.settled();
-  assert.deepEqual(fourth.calls.filter(call => call.startsWith("steer old")), [], "a reply over an hour old gets no check");
-  assert.equal(await replyCheckRecord(join(dir, "reply-checks.json")).claim("old", replyAt), true, "and is not recorded as checked");
-  fourth.chats.close();
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => replyAt + 30_000));
+  await chats.adopt();
+  threads.fire().live("vp", []);
+  threads.fire().idle("vp");
+  await chats.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("steer vp")), []);
+  chats.close();
 });
 
 test("brief check: a new job of a chat whose brief has it wait for the owner's ok gets one [brief check] steer, once across restarts", async () => {

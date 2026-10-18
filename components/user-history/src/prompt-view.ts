@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { buildSessionContext, convertToLlm, loadProjectContextFiles, SessionManager, type SessionEntry } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, pinnedBrief } from "./chat-brief.ts";
-import { withReplyCap } from "./chat-guard.ts";
+import { withMessageIds } from "./chat-guard.ts";
 import { deliverCorrections } from "./correction-delivery.ts";
 import { shortNotices } from "./prime-notices.ts";
 import { readCapture } from "./prompt-capture.ts";
@@ -136,7 +136,7 @@ function entryTimes(entries: readonly SessionEntry[]): Map<string, string[]> {
 
 /**
  * Payload parts with the time of the session message each came from. A key's times are taken oldest first, so a repeated notice gets each of its
- * times in turn; parts of one assistant reply share one lookup. A block the context hook adds to a user message ([message id], [reply cap],
+ * times in turn; parts of one assistant reply share one lookup. A block the context hook adds to a user message ([message id],
  * [corrections]) or an image has no entry of its own and takes the time of the nearest block of the same message, the one before it first.
  */
 function withTimes(drafts: Draft[], entries: readonly SessionEntry[]): Draft[] {
@@ -303,7 +303,6 @@ const PREFIXES: readonly [RegExp, (match: RegExpExecArray) => Source][] = [
   [/^\[compaction-summary\]/, () => ({ kind: "message", label: "Compaction summary", source: "Prime compaction" })],
   [/^\[branch-summary\]/, () => ({ kind: "message", label: "Branch summary", source: "Prime" })],
   [/^\[corrections\]/, () => ({ kind: "instructions", label: "[corrections]", source: `${HOOK}: the owner's corrections ledger` })],
-  [/^\[reply cap\]/, () => ({ kind: "instructions", label: "[reply cap]", source: `${HOOK}: reply length note on an owner message` })],
   [/^\[message id: /, () => ({ kind: "instructions", label: "[message id]", source: `${HOOK}: the owner message's id for tell_owner reply_to` })],
   [/^\[reply check\]/, () => ({ kind: "message", label: "[reply check]", source: SERVER })],
   [/^\[brief check\]/, () => ({ kind: "message", label: "[brief check]", source: SERVER })],
@@ -466,7 +465,7 @@ async function sessionCwd(sessionFile: string): Promise<string> {
 
 /**
  * The prompt rebuilt from the session file: the messages of the current context (Prime's buildSessionContext and convertToLlm) after the same
- * steps the user-history context hook runs (shortNotices, the chat reply cap, deliverCorrections from the checkpoints in the file), the
+ * steps the user-history context hook runs (shortNotices, the chat's owner message ids, deliverCorrections from the checkpoints in the file), the
  * AGENTS.md files through Prime's loadProjectContextFiles, and a chat's pinned brief.
  */
 export async function rebuild(sessionFile: string, chat: boolean, agentDir: string, read?: BranchTail): Promise<{ reason: string; parts: Draft[] }> {
@@ -474,7 +473,7 @@ export async function rebuild(sessionFile: string, chat: boolean, agentDir: stri
   const entries = tail?.entries ?? SessionManager.open(sessionFile).getBranch();
   const context = buildSessionContext(entries);
   let messages: AgentMessage[] = shortNotices(context.messages) ?? context.messages;
-  if (chat) messages = withReplyCap(messages) ?? messages;
+  if (chat) messages = withMessageIds(messages) ?? messages;
   messages = deliverCorrections({ messages, branch: entries, ledger: null, job: false, brief: BRIEF_CORRECTIONS, append: () => {} });
   const parts: Draft[] = [];
   try {

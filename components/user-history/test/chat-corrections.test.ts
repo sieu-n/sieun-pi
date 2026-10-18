@@ -8,10 +8,9 @@ import historyExtension from "../extension/index.ts";
 import { applyCorrection, briefCorrections, CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, JOB_RULES, jobLedgerPrompt, type Ledger, ledgerPrompt,
   matchCorrection, OUTSIDE_ACTION_RULE, ownerSaid, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { CHAT_MODE_ENTRY, REPLY_CAP_NOTE } from "../src/chat-guard.ts";
+import { CHAT_MODE_ENTRY } from "../src/chat-guard.ts";
 import { jobRegistry } from "../src/chat-sources.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
-import { unlinkedJobSentence } from "../src/shared/job-mentions.ts";
 
 const VP: ChatRef = { id: "vp", name: "dev VP" };
 const CI: ChatRef = { id: "ci", name: "VP of CI" };
@@ -290,7 +289,7 @@ test("extension: the corrections block goes in once and stays put through a new 
     await other.run("session_start", {}, false);
     const chat = loadExtension(dataDir);
     await chat.run("session_start", {}, true);
-    const capped = [{ ...messages[0]!, content: [...messages[0]!.content, { type: "text", text: "[message id: 1]" }, { type: "text", text: REPLY_CAP_NOTE }] }];
+    const capped = [{ ...messages[0]!, content: [...messages[0]!.content, { type: "text", text: "[message id: 1]" }] }];
     assert.deepEqual(await chat.run("context", { messages }, true), { messages: capped });
     const store = new CorrectionLedger(dataDir);
     await store.apply(add("one", "first theme words", "Rule one."), VP, "2026-10-09T10:00:00.000Z");
@@ -333,7 +332,7 @@ test("extension: every job under a chat, a duty root too, gets the outside-actio
     for (const { label, job } of jobs) {
       const seen = await job.run("context", { messages }, false) as { messages: { content: { text: string }[] }[] };
       assert.equal(seen.messages[1]!.content[0]!.text, jobLedgerPrompt(null), label);
-      assert.deepEqual(seen.messages.slice(0, 1), messages, `${label}: no reply cap in a job`);
+      assert.deepEqual(seen.messages.slice(0, 1), messages, `${label}: no message id in a job`);
     }
     // A job reads only the rules that bind jobs (JOB_RULES), so the new rule is c37, written straight to the file.
     await writeFile(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ id: "c37", at: "2026-10-10T07:11:00.000Z", chat: CI, words: "이메일 보내기 전에 먼저 물어봐",
@@ -403,35 +402,9 @@ test("brief: one line tells the chat to record each owner correction in the same
   assert.match(reference, /board\.corrections\("c12"\)/);
 });
 
-test("unlinked job mentions: a job named as a noun with no job: link anywhere in the message; code, link targets and compound words do not count", () => {
-  const cases: [string, string | null][] = [
-    ["I started a job for that. It reports in 10 min.", "I started a job for that."],
-    ["The job finished.\nNext I will check the board.", "The job finished."],
-    ["Two jobs are still running", "Two jobs are still running"],
-    ["JOB done", "JOB done"],
-    ["The job finished: [report](job:seo daily).", null],
-    ["job:seo daily finished, and the other job too", null],
-    ["Ran `rlm.spawn(job)` and [x](wiki:jobs/page.html)", null],
-    ["job_reply and job-name and jobless", null],
-    ["Nothing to report.", null],
-    // A job word that points at no one agent job (Chat health 10-09 triage: 12 of 89 flagged messages were only these).
-    ["Job reports are folded again and open in full when you click them.", null],
-    ["Wiki, file and job paths are clickable now.", null],
-    ["On our M1, every CI job runs as the same user, so any job could read the billing keys.", null],
-    ["Land 28 is now in its deploy job.", null],
-    ["Your split rule is live now: one goal per job, and each job spawns one subagent per output.", null],
-    ["Jobs must report back when they finish.", null],
-    ["Check-ins now hand bigger work to check-in jobs.", null],
-    ["My tools are back. I can't reach my jobs this check-in.", "I can't reach my jobs this check-in."],
-    ["The job reports in 10 min.", "The job reports in 10 min."],
-    ["Check-ins now hand bigger work to a check-in job.", "Check-ins now hand bigger work to a check-in job."],
-  ];
-  for (const [text, sentence] of cases) assert.equal(unlinkedJobSentence(text), sentence, text);
-});
-
 const NOW = Date.parse("2026-10-09T14:00:00Z");
 const line = (message: Record<string, unknown>) => JSON.stringify({ type: "message", timestamp: new Date(message.timestamp as number).toISOString(), message });
-test("chat health: repeat_corrections counts ledger repeats in the last 24 h and names entry and chat; unlinked_job_mentions reads tell_owner, and owner-turn text only on a turn with no tell_owner (the page folds it into updates), not wake-up notes", async () => {
+test("chat health: repeat_corrections counts ledger repeats in the last 24 h and names entry and chat", async () => {
   const dir = await mkdtemp(join(tmpdir(), "corrections-health-"));
   try {
     await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["vp"] }));
@@ -460,13 +433,10 @@ test("chat health: repeat_corrections counts ledger repeats in the last 24 h and
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
     assert.equal(health.metrics.repeat_corrections, 1);
-    assert.equal(health.metrics.unlinked_job_mentions, 2);
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.filter(slice => slice.kind === "repeat_corrections"), [{ chat: "vp", at: Date.parse("2026-10-09T13:06:51.000Z"), kind: "repeat_corrections",
       excerpt: "c1 \"Mac load goes to ops guy.\" repeated in dev VP (first 2026-10-07 in dev VP): didn't i tell you" }]);
     assert.equal(flagged[0]!.kind, "repeat_corrections", "a repeat leads the flagged list");
-    assert.deepEqual(flagged.filter(slice => slice.kind === "unlinked_job_mentions").map(slice => [slice.chat, slice.excerpt]).sort(),
-      [["vp", "The job is blocked on a login."], ["vp", "Two jobs are left."]]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -9,14 +9,14 @@ import { checkInSettings } from "../src/checkin-settings.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { CHAT_BRIEF, CHAT_BRIEF_ENTRY, chatBrief, loadRecord, pinnedBrief, reloadAction } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { briefRows, briefStatus, currentBrief } from "../src/client/brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 
 type Observer = Parameters<ChatThreads["observe"]>[0];
 const source = (dir: string): CheckInSource => ({ board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")),
-  replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0 });
+  settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0 });
 /** The hub calls a reload touches: reload, notice and every way to start a turn, logged in order. */
 function fakeThreads(calls: string[]) {
   let observer: Observer | undefined;

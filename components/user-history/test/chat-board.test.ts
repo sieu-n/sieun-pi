@@ -134,7 +134,7 @@ test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_ad
   throwsKind(() => run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 501 }, (_, i) => ({ text: `g${i}` })) }]), "invalid");
 });
 
-test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; at most 3 open agent asks", () => {
+test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; a chat may leave any number of asks open (c96)", () => {
   const { board, summaries } = run(emptyBoard(T0), [{ op: "todo_add", text: "Deploy now?", choices: ["Yes", "Wait for QA"] }]);
   assert.deepEqual(board.todos[0], { id: "t1", text: "Deploy now?", done: false, choices: ["Yes", "Wait for QA"], from: "agent", at: T1 });
   assert.equal(summaries[0], 'Added a todo t1 "Deploy now?" with choices "Yes" / "Wait for QA"');
@@ -146,10 +146,7 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
     throwsKind(() => parseBoardOps([{ op: "todo_add", text: "q", choices }]), "invalid");
   }
   const three = run(emptyBoard(T0), [{ op: "todo_add", text: "a" }, { op: "todo_add", text: "b" }, { op: "todo_add", text: "c" }]).board;
-  throwsKind(() => run(three, [{ op: "todo_add", text: "d" }]), "invalid");
-  assert.equal(run(three, [{ op: "todo_add", text: "mine" }], "owner").board.todos.length, 4, "the owner's own todos are not capped");
-  const oneDone = run(three, [{ op: "todo_update", id: "t1", done: true }], "owner").board;
-  assert.equal(run(oneDone, [{ op: "todo_add", text: "d" }]).board.todos.length, 4, "a checked ask frees a slot");
+  assert.equal(run(three, [{ op: "todo_add", text: "d" }, { op: "todo_add", text: "e" }]).board.todos.filter(todo => !todo.done).length, 5);
 });
 
 test("chat board: placeholderTodo finds a todo that only holds a place, and a todo with choices is a real ask (owner 10-09)", () => {

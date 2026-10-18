@@ -1,6 +1,5 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { SvelteSet } from "svelte/reactivity";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { ui, BOARD_DEFAULT, boardMax, BOARD_MIN } from "./ui.svelte.ts";
@@ -10,7 +9,7 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
   import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem, type ReplyQuote } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, settledPending, turnStarter, updatesLabel, type ChatItem, type ReplyQuote } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { bubbleBlocks, renderMarkdown } from "./markdown.ts";
   import { ownerExcerpt, renderSaid, replyExcerpt } from "./reply.ts";
@@ -53,8 +52,6 @@
   /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
   const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
-  /** Long owner-turn replies the owner opened with "More" (`foldReply`), as `<chat id>:<item id>`. */
-  const unfolded = new SvelteSet<string>();
   /** Three dots while the chat answers the owner and no reply text has started. A turn a job or a check-in started shows nothing until a tell_owner lands. */
   const busy = $derived(thread ? isThreadBusy({ ...thread, children: [] }) : false);
   const typing = $derived(busy && thread !== null && turnStarter(thread.messages) === "owner" && !feed.some(item => item.kind === "agent" && item.streaming));
@@ -352,8 +349,7 @@
             <div class="see-reply"><button type="button" class="more" onclick={() => seeReply(item)}>{item.replies.length === 1 ? "See reply" : `See replies (${item.replies.length})`}</button></div>
           {/if}
         {:else if item.kind === "agent"}
-          {@const fold = item.streaming || item.told || unfolded.has(`${id}:${item.id}`) ? null : foldReply(item.text)}
-          {@const blocks = bubbleBlocks(fold?.folded ? fold.shown : item.text)}
+          {@const blocks = bubbleBlocks(item.text)}
           <div class="line agent" data-at={item.at} data-line={item.id}>
             <div class="blocks">
               {#if item.replyTo && blocks[0]?.kind !== "prose"}
@@ -367,7 +363,6 @@
                     {#if item.replyTo && position === 0}{@render replyQuote(item.replyTo)}{/if}
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
                     <div class="prose plain bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
-                    {#if fold?.folded && position === blocks.length - 1}<button type="button" class="more" aria-label="Show the whole reply" onclick={() => unfolded.add(`${id}:${item.id}`)}>More</button>{/if}
                   </div>
                 {:else}
                   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->

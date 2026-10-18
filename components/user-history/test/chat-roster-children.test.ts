@@ -8,7 +8,7 @@ import { Catalog, rosterChildren } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInSettings, clockTime } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
@@ -69,8 +69,7 @@ test("Chats takes a chat's children from the roster while the hub has no attach:
     observe() { return () => {}; },
   } as unknown as ChatThreads;
   const source: CheckInSource = {
-    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
+    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
   };
   const logged: string[] = [];
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source, line => { logged.push(line); });
@@ -111,8 +110,7 @@ test("an attached chat's children take the daemon row's later activity and runni
   } as unknown as ChatThreads;
   let now = Date.parse("2026-10-13T09:45:44.000Z");
   const source: CheckInSource = {
-    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
+    board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   const roster = chats as unknown as { roster(children: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> };

@@ -8,7 +8,7 @@ import { checkInRecord } from "../src/chat-checkin.ts";
 import { CHECK_IN_MS, checkInSettings } from "../src/checkin-settings.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { CheckInView } from "../src/shared/types.ts";
@@ -20,7 +20,7 @@ test("api/threads/:id/check-in: GET reads a chat's setting, POST sets the interv
   const now = new Date(2026, 9, 8, 14, 0).getTime();
   const threads = { observe: () => () => {} } as unknown as ChatThreads;
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
+    { board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
       tickMs: 0, now: () => now });
   let notified = 0;
   const backend = { chats, catalog: { notify: async () => { notified++; } }, close: async () => {} } as unknown as ChatBackend;

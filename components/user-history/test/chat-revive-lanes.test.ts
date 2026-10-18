@@ -7,7 +7,7 @@ import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings, OWNER_UI } from "../src/checkin-settings.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -51,7 +51,7 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
   // `home: dir`: the check-in reads heartbeats and the release train under the home folder; the owner's real ~/.cache/virev/ci-runs.json made
   // the check-in slower than the ticks of the test below, so it failed at random (0 check-ins started).
   const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], home: dir, memory: checkInRecord(join(dir, "check-ins.json")),
-    replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(settingsFile), tickMs: 0, now: () => now, noReportGraceMs: 0,
+    settings: checkInSettings(settingsFile), tickMs: 0, now: () => now, noReportGraceMs: 0,
     ...(duty ? { duty } : {}) };
   const logs: string[] = [];
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source, line => { logs.push(line); });

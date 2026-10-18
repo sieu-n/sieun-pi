@@ -11,7 +11,7 @@ import { checkInSettings } from "../src/checkin-settings.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import { Chats } from "../src/chats.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
 
@@ -290,8 +290,7 @@ test("check-in of a chat that is not attached finds its subagent jobs through th
   const row = { id: CHAT, name: "frontend bro", archived: false, working: true, messageCount: 11634, lastActivityAt: "2026-10-12T15:40:00.000Z", chat: true, agents } as unknown as SessionRow;
   const runs: CheckInRun[] = [];
   const source: CheckInSource = {
-    board: async () => board, rows: async () => [row], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
+    board: async () => board, rows: async () => [row], memory: checkInRecord(join(dir, "check-ins.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
     duty: { async checkIn(_id, run) { runs.push(run); }, async lastCheckIn() { return runs.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
@@ -323,8 +322,7 @@ test("check-in waits while the catalog has no rows and the hub has not attached 
   const runs: CheckInRun[] = [];
   const memory = checkInRecord(join(dir, "check-ins.json"));
   const source: CheckInSource = {
-    board: async () => board, rows: async () => [], memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
+    board: async () => board, rows: async () => [], memory, settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
     duty: { async checkIn(_id, run) { runs.push(run); }, async lastCheckIn() { return runs.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);

@@ -26,9 +26,6 @@ const toolCall = (at: number, name: string, text = ""): Line =>
 const toolResult = (at: number): Line => entry({ role: "toolResult", toolCallId: "c" + (at - 1), toolName: "t", content: [], isError: false, timestamp: at });
 const custom = (at: number, customType: string, content: string): Line => ({ type: "custom_message", customType, content, display: true, timestamp: new Date(at).toISOString() });
 
-/** VP of SEO (01a11a24), 10-12 13:56Z: the tell_owner reply the owner read, and the turn's own text the page folded into updates. */
-const TOLD_QUIET_PLAN = "Okay, no emails or listings. [quiet authority plan](job:quiet authority plan) looks at getting quoted in ChatGPT answers, which already brings 11 of our 29 signups. It also looks at embeddable charts and helpful Reddit answers through your Google login. I'll show you every Reddit reply before it goes out.";
-const NOTES_QUIET_PLAN = "I dropped the emails and listings and started [quiet authority plan](job:quiet authority plan) to find quieter ways to grow. Nothing goes out without you.\n\nIt is looking into five channels at once:\n- **AI answers:** getting our studies quoted by ChatGPT, Perplexity and Google's AI answers. ChatGPT already sent 11 of our 29 signups in the last 28 days, more than any other source.\n- **Embeds:** charts and calculators that other sites can embed, with a credit link back to us.\n- **Open data:** free downloads of our study numbers, credited back to us.\n- **Our own sites:** cross-links between the blog, the tools and the API docs.\n- **Reddit:** it can sign in with your Google account in Aside and draft a few helpful answers that use our numbers.\n\nFor Reddit, it may only read and draft. No posts, comments, messages, votes or follows. Every draft comes to me with the thread link and the exact text, and I show it to you before anything is sent.\n\nIt will come back with the top three moves, the evidence for each, and which ones can ship on the blog now. Moves that need main-app changes wait until you say the 5180 demo is good enough.";
 
 const API_KEY_ERROR = "Failed to resolve API key for provider \"anthropic\" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token";
 
@@ -109,15 +106,13 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 0, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 0, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
       "3 chats' check-ins with no measured run are not green");
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 4).map(slice => [slice.chat, slice.excerpt]), [["chat-a", API_KEY_ERROR], ["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]],
       "a judged metric's lines (sieun_pi_breaks) come before the context ones");
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
     assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
-    assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
-    assert.deepEqual(kinds("slop_replies").map(slice => [slice.chat, slice.excerpt.split(":")[0]]), [["chat-a", "6 bullets"], ["chat-a", "7 bullets"]], "length alone is long_replies");
     assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
     assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300)],
       "text on a wake is the chat's notes (the brief allows it since W27); only repeated server lines are off brief");
@@ -127,97 +122,14 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
   }
 });
 
-test("chat health: a reply is long when the page folds it, so a diagram or a link list the owner sees whole is not long", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
-  const diagram = "```mermaid\nflowchart LR\n" + Array.from({ length: 20 }, (_, index) => `  A${index}[Agent test push] --> B${index}[Prod keys]`).join("\n") + "\n```";
-  const links = Array.from({ length: 6 }, (_, index) => `- [variant ${index}](http://localhost:5180/configure?scenario=kbeauty-brand&v.watchlist=v${index})`).join("\n");
-  const chat: Line[] = [
-    user(ago(3 * HOUR), "show me why"), reply(ago(3 * HOUR) + MIN, `${wordsOf(40)}\n\n${diagram}`),
-    user(ago(2 * HOUR), "send the links"), reply(ago(2 * HOUR) + MIN, `Open each one:\n\n${links}`),
-    user(ago(1 * HOUR), "and the rest?"), reply(ago(1 * HOUR) + MIN, `${wordsOf(55)} [the page](wiki:a/b/c.html) ${wordsOf(5)}`),
-  ];
-  try {
-    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat"] }));
-    await writeFile(join(dir, "chat.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
-    const output = join(dir, "health.json");
-    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
-    assert.equal(result.status, 0, result.stderr);
-    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.long_replies, 33.3);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "long_replies").map(slice => slice.excerpt.split(":")[0]), ["64 words"]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("chat health: slop_replies counts owner replies the reply lint flags for more than length, quoting the findings, with the owner's words spared", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
-  const stages = SLOP_REPLIES["two stages"]!, builtIn = SLOP_REPLIES["built-in duty"]!, pro = SLOP_REPLIES["pro bullets"]!, clean = CLEAN_REPLIES["clean pro check"]!;
-  const chat: Line[] = [
-    user(ago(5 * HOUR), stages.owner), reply(ago(5 * HOUR) + MIN, stages.reply),
-    user(ago(4 * HOUR), builtIn.owner), reply(ago(4 * HOUR) + MIN, builtIn.reply),
-    user(ago(3 * HOUR), pro.owner), reply(ago(3 * HOUR) + MIN, pro.reply),
-    user(ago(2 * HOUR), clean.owner), reply(ago(2 * HOUR) + MIN, clean.reply),
-    user(ago(1 * HOUR), "[check-in] What changed"), reply(ago(1 * HOUR) + MIN, "Update: notes on a wake-up \u2014 the owner reads them folded."),
-  ];
-  try {
-    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["dev-vp"] }));
-    await writeFile(join(dir, "dev-vp.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
-    const output = join(dir, "health.json");
-    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
-    assert.equal(result.status, 0, result.stderr);
-    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.slop_replies, 3, "the two stages, the built-in duty and the 4 bullets; not the clean one, not wake-up notes");
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "slop_replies").map(slice => [slice.chat, slice.excerpt.slice(0, slice.excerpt.indexOf(": "))]), [
-      ["dev-vp", "4 bullets"],
-      ["dev-vp", 'internal terms "기본으로 들어가", "보드 관리"'],
-      ["dev-vp", 'label opener "**코드 체크.**", "**프롬프트.**"; abstract words "단계", "계산"'],
-    ], "newest first; duty is spared since the owner said it");
-    assert.deepEqual(fixTargets("fix(user-history): a reply lint runs before the owner sees slop"), ["slop_replies"]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("chat health: an owner turn answered with tell_owner counts the told text, since the page folds the turn's own text into updates (VP of SEO, 10-12 22:56 KST)", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
-  const call = (at: number, id: string, text: string): Line =>
-    entry({ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text } }], provider: "p", model: "m", stopReason: "toolUse", timestamp: at });
-  const result = (at: number, id: string, isError: boolean): Line =>
-    entry({ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: isError ? "Refused" : "told the owner" }], isError, timestamp: at });
-  const chat: Line[] = [
-    user(ago(3 * HOUR), "you can use my google account via reddit but tell me ANYTIME before jessage"),
-    call(ago(3 * HOUR) + MIN, "t1", TOLD_QUIET_PLAN), result(ago(3 * HOUR) + MIN + 1, "t1", false),
-    reply(ago(3 * HOUR) + 2 * MIN, NOTES_QUIET_PLAN),
-    user(ago(2 * HOUR), "[job] land 33 test finished"),
-    call(ago(2 * HOUR) + MIN, "t2", "Five more jobs are building in parallel."), result(ago(2 * HOUR) + MIN + 1, "t2", true),
-    call(ago(2 * HOUR) + 2 * MIN, "t3", "A new job is fixing the test for land 33."), result(ago(2 * HOUR) + 2 * MIN + 1, "t3", false),
-    reply(ago(2 * HOUR) + 3 * MIN, "Notes on the wake-up: the job is done."),
-  ];
-  try {
-    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["seo-vp"] }));
-    await writeFile(join(dir, "seo-vp.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
-    const output = join(dir, "health.json");
-    const run1 = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
-    assert.equal(run1.status, 0, run1.stderr);
-    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.long_replies, 0, "the owner read the 47-word told text; the 202-word text shows folded in updates");
-    assert.equal(health.metrics.slop_replies, 0, "the **AI answers:** labels sit in the folded notes, not in the reply");
-    assert.equal(health.metrics.unlinked_job_mentions, 1, "the accepted tell_owner counts, the refused one and the wake-up notes do not");
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "unlinked_job_mentions").map(slice => slice.excerpt), ["A new job is fixing the test for land 33."]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits nonzero with a message", async () => {
+test("chat health: no chats gives every metric its empty value; no OUTPUT_FILE exits nonzero with a message", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {
     await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: [] }));
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);
@@ -416,14 +328,14 @@ test("check-in quality: owner asks to tidy the plan count in owner_board_asks, p
 });
 
 test("chat health recheck: each fix names the metrics its subject targets, with today's value; one that names none is for a person to judge", () => {
-  assert.deepEqual(fixTargets("fix(user-history): long owner replies get a reply rule; text on wake-ups is notes; a stalled step sets waitUntil"), ["long_replies", "off_brief"]);
+  assert.deepEqual(fixTargets("fix(user-history): text on wake-ups is notes; a stalled step sets waitUntil"), ["off_brief"]);
   assert.deepEqual(fixTargets("fix(user-history): plain derived thread names"), []);
-  const metrics = { corrections: 4, dead_hours: 0, unretried_errors: 0, long_replies: 82.8, off_brief: 21, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 0 };
+  const metrics = { corrections: 4, dead_hours: 0, unretried_errors: 0, off_brief: 21, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 0 };
   assert.deepEqual(recheckSlices([
-    { sha: "abc1234", at: 5, subject: "fix(user-history): owner replies stay under 60 words" },
+    { sha: "abc1234", at: 5, subject: "fix(user-history): text on wake-ups is notes" },
     { sha: "def5678", at: 6, subject: "fix(user-history): plain derived thread names" },
   ], metrics), [
-    { at: 5, kind: "recheck", excerpt: "fixed yesterday, recheck today: long_replies 82.8 today; abc1234 owner replies stay under 60 words" },
+    { at: 5, kind: "recheck", excerpt: "fixed yesterday, recheck today: off_brief 21 today; abc1234 text on wake-ups is notes" },
     { at: 6, kind: "recheck", excerpt: "fixed yesterday, recheck today: no metric named; judge it by hand; def5678 plain derived thread names" },
   ]);
 });

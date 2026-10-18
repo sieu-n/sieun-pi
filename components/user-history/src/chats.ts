@@ -25,13 +25,12 @@ import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, h
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
-import { replyCheck } from "./shared/reply-lint.ts";
 import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
-import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
+import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers } from "./job-leftovers.ts";
 
@@ -216,14 +215,13 @@ export class Chats {
         for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
         this.queue(id, () => this.attached(id));
         this.queue(id, () => this.refreshExtension(id));
-        // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
-        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.correctionCheck(id)); }
+        // A turn that ended just before a restart ended on the old server; an idle chat gets its correction check when it attaches.
+        if (!this.threads.busy(id)) this.queue(id, () => this.correctionCheck(id));
       },
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => {
         if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id));
         this.cleanSoon(id);
-        this.queue(id, () => this.replyCheck(id));
         this.queue(id, () => this.correctionCheck(id));
       },
     });
@@ -1341,23 +1339,6 @@ export class Chats {
   }
 
   /**
-   * At a turn's end, and when an idle chat attaches: when the chat's last reply on an owner turn has reply-lint findings (`replyCheck`) and is
-   * at most REPLY_CHECK_MAX_AGE_MS old, one `[reply check]` steer naming them, once per reply across restarts (`replyChecks`). Plain text is
-   * not stopped before the owner reads it; this asks for a corrected short reply when it misled, and the model's view carries the findings into
-   * the next owner message either way.
-   */
-  private async replyCheck(id: string): Promise<void> {
-    await this.load();
-    const messages = this.chatIds.has(id) ? this.messages(id) : undefined;
-    const check = messages && replyCheck(messages);
-    if (!check || this.now() - check.at > REPLY_CHECK_MAX_AGE_MS) return;
-    try {
-      if (!await this.source.replyChecks.claim(id, check.at)) return;
-      await this.threads.prompt(id, { message: check.message, images: [], mode: "steer" });
-    } catch (error) { this.log(`chat ${id.slice(0, 8)}: reply check: ${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  /**
    * At a turn's end, and when an idle chat attaches: a correction the chat recorded since the owner's newest message gets one global `/refine`
    * aimed at it, which Prime runs in the chat's session, and an owner message that reads as a correction with nothing recorded gets one
    * `[correction check]` line (`correctionStep`). Each once across restarts (`correctionChecks`). The owner asked on 10-15 that every correction
@@ -1371,7 +1352,7 @@ export class Chats {
     if (!messages) return;
     try {
       const scratch = await this.source.cleanRoom?.(id) ?? null;
-      const step = correctionStep(id, scratch ?? await this.source.corrections(), messages, this.now(), REPLY_CHECK_MAX_AGE_MS, scratch === null);
+      const step = correctionStep(id, scratch ?? await this.source.corrections(), messages, this.now(), CHECK_MAX_AGE_MS, scratch === null);
       if (!step || !await record.claim(step.kind === "ask" ? `${id}:ask` : id, step.at)) return;
       await this.threads.prompt(id, { message: step.message, images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: correction ${step.kind === "ask" ? "check sent" : "refine started"}`);
