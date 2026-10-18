@@ -177,7 +177,8 @@ export async function killHooks(run: string, until: number, windowMs: number): P
     if (active.size) for (const pid of childrenOf(daemons)) parents.add(pid);
     // The hook answers through pi-pool's hookd in a few ms, faster than a kill (runs 12 and 13), so the tree is also named in hook-deny.json,
     // which bin/pi-pool-token reads before it vends. The entry ends with the window, and the file is cleared after it.
-    if (active.size) { first ??= Date.now(); denyHooks([...active], first + windowMs); }
+    // The hook's session is the full id the pool log shows (run-14 wrote only active ids at 17:31Z, and no hook was denied), so both go in.
+    if (active.size) { first ??= Date.now(); denyHooks([...jobs, ...active], first + windowMs); }
     for (const hook of active.size ? hookRuns(parents) : []) {
       if (!active.has(hook.session) && !jobs.has(hook.session)) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
