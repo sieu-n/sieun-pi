@@ -29,7 +29,7 @@ import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { fixJobLive } from "./shared/duty-fixes.ts";
-import { archiveDutyJob, dutyJobHost, savedChat } from "./chat-duty-job.ts";
+import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
@@ -268,6 +268,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => pollHealth.poll(() => withHookAlert(readGrafanaAlerts(grafanaConfig), hookWatch)),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
+    startJob: async (chatId, steps) => {
+      const chat = await dutyJobs.chat(chatId);
+      if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
+      const at = Date.now();
+      const name = dutyJobName("alert", chat.name, at);
+      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, steps), false, at);
+    },
+    jobWorking: job => dutyJobs.working(job),
     boards, log: dutyLog, ...agentMessage });
   const stopProdTurns = options.ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),

@@ -100,3 +100,54 @@ test("reconcile: a step closed while its rule fires reopens after 24 h, and its 
   await f.bridge.tick();
   assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 1);
 });
+
+// Guards 10-18 05:50:35Z: one staging Prometheus restart put 20 DatasourceError steps on ops guy's board with no owner, they resolved by 05:54Z,
+// and they sat until the 06:49Z check-in started a job, so d7 read 27 stuck steps.
+test("owner: an alert burst's new steps go to one job at once, a working job gets the next burst by message, and an ended one is replaced", async () => {
+  const datasource = (n: number, at: string) => raw(`dddd00000000000${n}`, { alertname: "DatasourceError", __alert_rule_uid__: `metal-rule-${n}`,
+    datasource_uid: "estate_prometheus_stg" }, at);
+  let list: unknown[] = [1, 2, 3].map(n => datasource(n, "2026-10-18T05:49:30.000Z"));
+  const dir = await mkdtemp(join(tmpdir(), "alert-owner-"));
+  const boards = new BoardStore(dir);
+  let now = Date.parse("2026-10-18T05:50:35Z");
+  const started: { chat: string; steps: string[] }[] = [];
+  const sent: { session: string; text: string }[] = [];
+  let working = true;
+  const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), boards, now: () => now, log: () => {}, alerts: async () => parseAlerts(list),
+    owners: async () => null, deliver: async (session, text) => { sent.push({ session, text }); return "sent"; },
+    startJob: async (chat, steps) => { started.push({ chat, steps: steps.map(line => line.step) }); return { id: `job-${started.length}`, name: `alert ops guy ${started.length}` }; },
+    jobWorking: async () => working });
+  const steps = async (): Promise<PlanItem[]> => {
+    const found: PlanItem[] = [];
+    walkItems((await boards.read(OPS))?.plan ?? [], item => { if (item.note?.startsWith("Grafana alert ")) found.push(item); });
+    return found;
+  };
+  await bridge.tick();
+  const burst = await steps();
+  assert.equal(burst.length, 3);
+  assert.deepEqual(started, [{ chat: OPS, steps: burst.map(item => item.id) }]);
+  for (const item of burst) assert.deepEqual([item.job, item.sessionId], ["alert ops guy 1", "job-1"]);
+  list = [];
+  now += 30_000;
+  await bridge.tick();
+  assert.equal(started.length, 1);
+  assert.ok((await steps()).every(item => item.sessionId === "job-1" && item.status === "todo"));
+  list = [datasource(4, "2026-10-18T06:04:00.000Z")];
+  now += 30_000;
+  await bridge.tick();
+  const fourth = (await steps()).find(item => !burst.some(old => old.id === item.id))!;
+  assert.equal(started.length, 1);
+  assert.equal(fourth.sessionId, "job-1");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.session, "job-1");
+  assert.match(sent[0]!.text, new RegExp(`^\\[alert\\] The alert bridge put one more alert step on this chat's board and gave it to you: ${fourth.id} "DatasourceError"`));
+  working = false;
+  list = [datasource(4, "2026-10-18T06:04:00.000Z"), datasource(5, "2026-10-18T06:40:00.000Z")];
+  now += 30_000;
+  await bridge.tick();
+  const fifth = (await steps()).find(item => item.id !== fourth.id && !burst.some(old => old.id === item.id))!;
+  assert.equal(started.length, 2);
+  assert.deepEqual(started[1]!.steps, [fifth.id]);
+  assert.equal(fifth.sessionId, "job-2");
+  assert.equal(sent.length, 1);
+});

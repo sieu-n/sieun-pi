@@ -37,7 +37,9 @@ export interface OwnerRoute { name: string; match: Record<string, string>; owner
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
 export interface Resolve { key: string; chat: string; step: string | null; at: string }
-export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number }
+export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number; resolved?: boolean }
+/** A job the bridge started for a chat's alert steps (`AlertBridge.own`): its session id and name. */
+export interface AlertJob { id: string; name: string }
 export interface Merge { step: string | null; into: string }
 /**
  * One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away.
@@ -456,6 +458,39 @@ export function escalationText(steps: readonly (StepLine & { chat: string })[]):
     `put ${steps.length === 1 ? "it" : "them"} on the owning chat's board: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
 }
 
+/** One alert step as a job reads it: its id, title, rule, start, and whether it still fires. */
+export const alertStepLine = (line: StepLine): string =>
+  `${line.step} "${line.title}" (${ruleIn(line.title, line.alertname)}${line.resolved ? "fired from" : "firing since"} ${line.startsAt.slice(0, 16)}Z${line.resolved ? ", now resolved" : ""})`;
+
+/**
+ * The open steps of the bridge's rules on `board` that nobody owns: no job, thread or wait. The bridge gives them to a job at once
+ * (`AlertBridge.own`). At 05:50:35Z on 10-18 it put 20 steps on ops guy's board when the staging Prometheus on us-metal01 was recreated and
+ * every rule on that datasource failed; they resolved by 05:54Z and sat with no owner until the 06:49Z check-in started a job, so d7 read 27
+ * stuck steps. Ops guy's own steps never escalate (`dueEscalations`), so only a check-in could reach them.
+ */
+export function unownedSteps(board: ChatBoard, rules: readonly Tracked[]): StepLine[] {
+  const lines = new Map<string, StepLine>();
+  for (const rule of rules) {
+    const item = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
+    if (!item || lines.has(item.id) || !OPEN.has(item.status) || item.job || item.sessionId || item.waitFor || item.waitUntil) continue;
+    lines.set(item.id, { step: item.id, title: item.text, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule), resolved: isResolved(rule) });
+  }
+  return [...lines.values()];
+}
+
+/** The board ops that give `job` each of `steps` still open with no owner. */
+export function ownOps(board: ChatBoard, steps: readonly string[], job: AlertJob): BoardOp[] {
+  return steps.flatMap((id): BoardOp[] => {
+    const item = findItem(board.plan, id)?.item;
+    return item && OPEN.has(item.status) && !item.job && !item.sessionId ? [{ op: "plan_update", id, job: job.name, sessionId: job.id }] : [];
+  });
+}
+
+/** The message that gives a working alert job more steps of its chat. */
+export const moreStepsText = (steps: readonly StepLine[]): string =>
+  `[alert] The alert bridge put ${steps.length === 1 ? "one more alert step" : `${steps.length} more alert steps`} on this chat's board and gave ` +
+  `${steps.length === 1 ? "it" : "them"} to you: ${steps.map(alertStepLine).join("; ")}. Find the cause and close ${steps.length === 1 ? "it" : "them"} the same way.`;
+
 const chatName = (session: string): string => ALERT_ROUTES.find(route => route.session === session)?.chat ?? session;
 
 const OPEN = new Set(["todo", "doing", "blocked"]);
@@ -468,6 +503,10 @@ export interface AlertBridgeDeps {
   startRoot?: (root: string) => Promise<void>;
   owners?: () => Promise<OwnerMap | null>;
   hasBoard?: (session: string) => Promise<boolean>;
+  /** Starts a job of `chat` for `steps`, its alert steps with no owner. Absent, those steps wait for the chat's check-in. */
+  startJob?: (chat: string, steps: readonly StepLine[]) => Promise<AlertJob>;
+  /** Whether a job the bridge started still works its turn. */
+  jobWorking?: (job: AlertJob) => Promise<boolean>;
   now?: () => number;
   log: (line: string) => void;
 }
@@ -477,6 +516,8 @@ const firingSets = (rule: Tracked): number => Object.values(rule.instances).filt
 
 export class AlertBridge {
   private readonly now: () => number;
+  /** The job the bridge last started for each chat (`jobFor`). */
+  private readonly jobs = new Map<string, AlertJob>();
   constructor(private readonly deps: AlertBridgeDeps) { this.now = deps.now ?? Date.now; }
 
   async tick(): Promise<void> {
@@ -493,6 +534,7 @@ export class AlertBridge {
     const reopened = checked.changes.flatMap(change => [...change.reopen ?? []]);
     if (found.length || reopened.length) this.deps.log(`alerts: reconcile found ${found.length} firing rules with no open step: ${found.join("; ") || "none"}; reopened ${reopened.join(", ") || "none"}`);
     state = await this.apply(state, checked.changes, now);
+    if (this.deps.startJob) await this.own(state);
     const steps = await this.steps(state);
     const escalate = dueEscalations(state, steps, now);
     if (!escalate.length) return;
@@ -508,6 +550,33 @@ export class AlertBridge {
       await this.write(state);
       this.deps.log(`alerts: escalated ${escalate.length} unowned rule steps to ops guy`);
     } catch (error) { this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`); }
+  }
+
+  /**
+   * Gives each chat's alert steps that have no owner (`unownedSteps`) to a job: the job the bridge last started for that chat while it still
+   * works, by message, or else a new one. A chat whose start fails keeps its steps unowned and is tried again next tick.
+   */
+  private async own(state: BridgeState): Promise<void> {
+    const byChat = new Map<string, Tracked[]>();
+    for (const rule of Object.values(state.rules)) if (rule.step !== null) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], rule]);
+    for (const [chat, rules] of byChat) {
+      try {
+        const board = await this.deps.boards.read(chat);
+        const lines = board ? unownedSteps(board, rules) : [];
+        if (!lines.length) continue;
+        const job = await this.jobFor(chat, lines);
+        await this.deps.boards.apply(chat, board => ownOps(board, lines.map(line => line.step), job), "agent");
+        this.deps.log(`alerts: ${chat.slice(0, 8)}: gave ${lines.map(line => line.step).join(", ")} to job ${job.name} (${job.id.slice(0, 8)})`);
+      } catch (error) { this.deps.log(`alerts: owner for ${chat.slice(0, 8)}: ${message(error)}; tried again next tick`); }
+    }
+  }
+
+  private async jobFor(chat: string, lines: readonly StepLine[]): Promise<AlertJob> {
+    const last = this.jobs.get(chat);
+    if (last && await this.deps.jobWorking?.(last) && await this.deps.deliver(last.id, moreStepsText(lines)) === "sent") return last;
+    const job = await this.deps.startJob!(chat, lines);
+    this.jobs.set(chat, job);
+    return job;
   }
 
   /** Places each chat's change and writes the state after each one, so a chat whose board write fails keeps its old entries for the next tick. */

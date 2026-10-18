@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { alertStepLine, type StepLine } from "./alert-bridge.ts";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { clockTime, localTime } from "./checkin-settings.ts";
@@ -101,6 +102,36 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
         "in a few plain sentences that name at most 2 step ids in a paragraph, and the other steps by a few words of their title: on 10-18 the " +
         "12:40 steer to a gaps job read \"your step is p5 ... set p1's target ... Run p3 and p4\", a list of ids the job had to look up.",
       `${report ?? "Send the chat one short report when your work is done."} Send it with \`${reportCall(chat)}\`.`,
+    ].map(line => `- ${line}`).join("\n"),
+  ].join("\n\n") + "\n";
+}
+
+/** The owner's words an alert job opens with, from ops guy's goal p195. */
+export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and a firing prod alert wakes the thread that owns it";
+
+/**
+ * The brief of the job the alert bridge starts for a chat's alert steps that have no owner (`AlertBridge.own`). At 05:50:35Z on 10-18 the bridge
+ * put 20 steps on ops guy's board with no owner, and they sat until the 06:49Z check-in started "alert 0549 datasource burst" for them.
+ */
+export function alertJobBrief(chat: DutyChat, job: string, at: number, steps: readonly StepLine[]): string {
+  const agentDir = dirname(dirname(dirname(chat.board)));
+  return [
+    `# ${job}: alert steps on the chat "${chat.name}"`,
+    `Owner's words (verbatim):\n\n> ${ALERT_OWNER_WORDS}`,
+    `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge. The chat's board is ` +
+      `${chat.board}, and its conversation is ${join(agentDir, "sessions", `${chat.id}.jsonl`)}. The bridge put these alert steps on that board and gave them to you:`,
+    steps.map(line => `- ${alertStepLine(line)}`).join("\n"),
+    "Alerts that fire in the same minute are often one incident. Find the cause of each step from evidence: the Grafana rule and its query, the " +
+      "metrics and logs, and read-only reads on the box. Close each step with its cause in one or two plain sentences in its note, and one cause " +
+      "can close several steps. A fix in our code or alert rules goes through the repo's normal land path, and its step stays doing with its " +
+      "waitFor naming the run. Follow the chat's rules for any box or repo you touch, and send nothing outside (no email, ticket or vendor chat). " +
+      "The bridge may send you more alert steps of this chat by message while you work, so take those the same way.",
+    "## How to act",
+    [
+      `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,
+      `Apply board changes with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops are chat_board ops such as ` +
+        `[{"op":"plan_update","id":"${steps[0]?.step ?? "p1"}","status":"done","note":"<the cause and its evidence>"}].`,
+      `When every step is closed, or you are blocked, report in 3 short lines that lead with the cause, with \`${reportCall(chat)}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
 }
