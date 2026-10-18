@@ -29,6 +29,8 @@ export const CONFIG_DIR = join(homedir(), ".config/sieun-pi");
 export const HOSTS_FILE = join(CONFIG_DIR, "hosts.json");
 export const BRIDGE_DIR = join(homedir(), ".local/state/sieun-pi/hosts");
 const UPGRADE = "prime-daemon";
+/** The relay's opt-in for slim attach snapshots (SLIM_HEADER in components/prime-relay/slim-snapshot.mjs). */
+const SLIM_HEADER = "x-prime-slim-snapshot";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -179,12 +181,15 @@ export async function listHostDir(host: Host, path: string): Promise<HostDirEntr
   return body.entries;
 }
 
-/** A raw byte stream to the host's daemon socket through its relay. */
+/**
+ * A byte stream to the host's daemon socket through its relay. It asks for attach snapshots whose chunks but the last carry no image data
+ * (`slimSnapshots`), since this box reads a session's older messages from its copy of the file: frontend bro's snapshot went from 8.7 MB to 1.9 MB.
+ */
 export async function openDaemonTunnel(host: Host, timeoutMs = 10_000): Promise<Socket> {
   const token = await hostToken(host);
   return await new Promise((resolve, reject) => {
     const request = httpRequest({ host: host.address, port: host.relayPort, path: "/v1/daemon", timeout: timeoutMs,
-      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}` } });
+      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}`, [SLIM_HEADER]: "images" } });
     request.on("upgrade", (response, socket, head) => {
       socket.setTimeout(0);
       if (head.length) socket.unshift(head);
