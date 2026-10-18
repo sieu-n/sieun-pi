@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
@@ -135,55 +137,215 @@ export function resetsNotice(value: Record<string, unknown>): string {
   return [head, ...failed.map(row => `${text(row.label) ?? text(row.email) ?? "An account"}: ${text(row.error)}.`)].filter(Boolean).join(" ");
 }
 
-const session = (sessionId: string | null) => sessionId ? ["--session", sessionId] : [];
+/** pi-pool's folder: PI_POOL_DIR, else ~/.config/pi-pool. `pi-pool hookd` listens on hook.sock there. */
+export const poolDir = (env: Record<string, string | undefined> = process.env, home: string = homedir()): string => env.PI_POOL_DIR || join(home, ".config", "pi-pool");
+/** What one pi-pool command printed and its exit code: a part of `pi-pool snapshot --json`, or a hookd answer. */
+export interface PoolPart { code: number; out: string; err: string }
+/** One thread's parts of a snapshot: `who --json` and `ls --json --provider <p>`, both with the thread's --session and --model. */
+export interface ThreadParts { who: PoolPart; ls: Record<PooledProvider, PoolPart> }
+/** A thread as the pool reads it; null session or model reads with neither flag, as `ls --json --provider anthropic` alone does. */
+export interface PoolThread { session: string | null; model: string | null }
+/** `pi-pool snapshot --json`: `queue --json` and `config` once, and each asked thread's parts. */
+export interface PoolSnapshot { queue: PoolPart; config: PoolPart; threads: (PoolThread & ThreadParts)[] }
+/** What readPoolStatus gives: the newest queue and config parts and the asked threads' parts, each with the epoch ms its read started. */
+export interface PoolStatus { at: number; queue: PoolPart; config: PoolPart; threads: ReadonlyMap<string, ThreadParts & { at: number }> }
 
-/**
- * The last accounts reading for each thread and model, newest ask last. On 10-18 one read ran 4 pi-pool processes of 0.25 to 0.33 s each, and
- * under load 40 api/accounts took 1.0 to 2.2 s on the box and 5.1 to 14 s from the owner's Mac, twice past the page's 30 s timeout, on every
- * chat switch. An answer is about 17 KB, so 100 readings, 2.5 times the 40 rows the sidebar showed that day, keep under 2 MB.
- */
-const readings = new Map<string, { view: AccountsView | null; read: Promise<AccountsView> | null }>();
-const KEPT_READINGS = 100;
+export const threadKey = (thread: PoolThread): string => (thread.session ?? "") + "|" + (thread.model ?? "");
 
-/** A pool change this service makes (an account action, a key, a priority, a login, a usage refresh) drops every reading, so the next ask waits for a new one. */
-export function forgetAccountReadings(): void { readings.clear(); }
+const isPart = (value: unknown): value is PoolPart => isRecord(value) && Number.isInteger(value.code) && typeof value.out === "string" && typeof value.err === "string";
 
-/**
- * `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. With a reading for
- * the thread and model it answers at once with it and starts the next one behind it, one at a time, so the chip is at most one ask behind.
- * `fresh` waits for a new reading.
- */
-export function listAccounts(sessionId: string | null, model: string | null = null, { fresh = false, read = readAccounts }: { fresh?: boolean; read?: typeof readAccounts } = {}): Promise<AccountsView> {
-  const key = (sessionId ?? "") + "|" + (model ?? "");
-  const entry = readings.get(key) ?? { view: null, read: null };
-  readings.delete(key);
-  readings.set(key, entry);
-  if (readings.size > KEPT_READINGS) readings.delete(readings.keys().next().value!);
-  if (!entry.read) {
-    const next = read(sessionId, model);
-    entry.read = next;
-    const settle = () => { if (entry.read === next) entry.read = null; };
-    next.then(view => { entry.view = view; settle(); }, settle);
-  }
-  return entry.view && !fresh ? Promise.resolve(entry.view) : entry.read;
+export function parsePoolSnapshot(value: unknown): PoolSnapshot {
+  if (!isRecord(value) || !isPart(value.queue) || !isPart(value.config) || !Array.isArray(value.threads)) throw new Error("pi-pool returned an invalid snapshot");
+  return { queue: value.queue, config: value.config, threads: value.threads.map((entry: unknown) => {
+    if (!isRecord(entry) || !isPart(entry.who) || !isRecord(entry.ls) || !pooledProviders.every(provider => isPart((entry.ls as Record<string, unknown>)[provider])) ||
+      !(entry.session === null || typeof entry.session === "string") || !(entry.model === null || typeof entry.model === "string")) throw new Error("pi-pool returned an invalid snapshot thread");
+    return { session: entry.session, model: entry.model, who: entry.who, ls: entry.ls as Record<PooledProvider, PoolPart> };
+  }) };
 }
 
-async function readAccounts(sessionId: string | null, model: string | null): Promise<AccountsView> {
-  const forModel = model ? ["--model", model] : [];
-  const [resolution, poolConfig] = await Promise.all([run(["who", "--json", ...session(sessionId), ...forModel]).then(JSON.parse).catch(() => null),
-    run(["config"]).then(stdout => parsePoolConfig(JSON.parse(stdout))).catch(() => null)]);
-  const providers = await Promise.all(pooledProviders.map(async (provider): Promise<PoolProvider> => {
+/** A part's stdout, or the error `run` gives for the same exit: the command's stderr, else the error its JSON names. */
+export function partOut(part: PoolPart): string {
+  if (part.code !== 0) throw new Error("pi-pool failed: " + (part.err.trim() || reportedError(part.out) || `exit code ${part.code}`).slice(0, 300));
+  return part.out;
+}
+
+/** The argv of one `pi-pool snapshot --json` for `threads`; "" stands for no session or no model. */
+export const snapshotArgs = (threads: readonly PoolThread[]): string[] =>
+  ["snapshot", "--json", ...threads.flatMap(thread => ["--thread", thread.session ?? "", thread.model ?? ""])];
+
+/** How long `pi-pool hookd` may take before the CLI runs instead. */
+export const HOOKD_TIMEOUT_MS = 10_000;
+
+/**
+ * One command through `pi-pool hookd` on `socket`, the resident server that forks a warm pool per call instead of starting Python: the
+ * request is "PPH1\0" and NUL-ended fields ("pipe", this pid, the cwd, the bin's real path, argc, argv, envc, KEY=VALUE), the answer one
+ * line, "J <json>" with {code, out, err}, or "F" when the caller must run the CLI (pool/hookd.py). Null for F, a socket that does not
+ * connect, an answer that does not parse, or none within `timeoutMs`, so the caller runs the CLI as before.
+ */
+export function askHookd(socket: string, script: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs = HOOKD_TIMEOUT_MS): Promise<PoolPart | null> {
+  const entries = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string").map(([name, value]) => `${name}=${value}`);
+  const fields = ["pipe", String(process.pid), process.cwd(), script, String(args.length), ...args, String(entries.length), ...entries];
+  const request = Buffer.concat([Buffer.from("PPH1\0"), ...fields.map(field => Buffer.from(field + "\0"))]);
+  return new Promise(resolve => {
+    const chunks: Buffer[] = [];
+    let done = false;
+    const finish = (part: PoolPart | null) => { if (done) return; done = true; clearTimeout(timer); connection.destroy(); resolve(part); };
+    const connection = createConnection(socket);
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    // No half-close: hookd takes a client that goes away before the answer as a cancel and stops the run.
+    connection.on("connect", () => connection.write(request));
+    connection.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      const answer = Buffer.concat(chunks);
+      const newline = answer.indexOf(10);
+      if (newline < 0) return;
+      const line = answer.subarray(0, newline).toString("utf8");
+      if (!line.startsWith("J ")) { finish(null); return; }
+      try { const value: unknown = JSON.parse(line.slice(2)); finish(isPart(value) ? value : null); } catch { finish(null); }
+    });
+    connection.on("error", () => finish(null));
+    connection.on("close", () => finish(null));
+  });
+}
+
+/** One `pi-pool snapshot --json`: through hookd when it answers, else the CLI process, which is all that runs until hookd is installed. */
+async function readSnapshot(threads: readonly PoolThread[]): Promise<PoolSnapshot> {
+  const args = snapshotArgs(threads);
+  const env = poolEnv();
+  const script = await realpath(executable).catch(() => executable);
+  const said = await askHookd(join(poolDir(), "hook.sock"), script, args, env);
+  const stdout = said ? partOut(said) : await run(args);
+  return parsePoolSnapshot(JSON.parse(stdout));
+}
+
+/**
+ * How often the pool is read at most: one `pi-pool snapshot` per 2 s, the fastest poll of a pane that shows pool numbers (Settings > Hosts,
+ * which shows each box's queue). Before it each reader ran its own CLI: on 10-18 at 11:44Z the chat on us-metal02 ran `ls`, `who`, `queue`
+ * and `config` about 3 times a second at 0.2 CPU s each, 4 processes for each accounts frame of a thread feed.
+ */
+export const POOL_TICK_MS = 2_000;
+/** Thread readings kept for an instant answer: an answer is about 17 KB, so 100, 2.5 times the 40 rows the sidebar showed on 10-18, keep under 2 MB. */
+const KEPT_THREADS = 100;
+
+/**
+ * The pool's status for every reader in this service: one `pi-pool snapshot` at a time, at most one per `tickMs`, that every ask made while
+ * it waits for its turn joins, with the threads those asks name. `current` answers from the last reading when it is at most `maxAgeMs` old
+ * and names the asked threads; else it waits for the next read. A read that fails leaves the last good reading in place and answers with it;
+ * only an ask that nothing was ever read for fails. `forget` drops every reading after a pool change this service made.
+ */
+export class PoolStatusReader {
+  private base: { at: number; queue: PoolPart; config: PoolPart } | null = null;
+  private readonly threads = new Map<string, { at: number; parts: ThreadParts }>();
+  private readonly pending = new Map<string, PoolThread>();
+  private next: Promise<void> | null = null;
+  private running: Promise<void> = Promise.resolve();
+  private lastStart = -Infinity;
+  private generation = 0;
+  private error: unknown = null;
+
+  constructor(private readonly read: (threads: readonly PoolThread[]) => Promise<PoolSnapshot> = readSnapshot, private readonly tickMs = POOL_TICK_MS,
+    private readonly now: () => number = Date.now, private readonly sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))) {}
+
+  current(threads: readonly PoolThread[] = [], { maxAgeMs = this.tickMs }: { maxAgeMs?: number } = {}): Promise<PoolStatus> {
+    const since = this.now() - maxAgeMs;
+    const stale = threads.filter(thread => !((this.threads.get(threadKey(thread))?.at ?? -Infinity) >= since));
+    if (this.base && this.base.at >= since && !stale.length) return Promise.resolve(this.status(threads));
+    for (const thread of stale) this.pending.set(threadKey(thread), thread);
+    const generation = this.generation;
+    return this.turn().then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs }));
+  }
+
+  /** The last reading of a thread however old, for an answer that must not wait; null when none was read since the last pool change. */
+  cached(thread: PoolThread): (ThreadParts & { at: number; config: PoolPart | null }) | null {
+    const entry = this.threads.get(threadKey(thread));
+    return entry ? { ...entry.parts, at: entry.at, config: this.base?.config ?? null } : null;
+  }
+
+  forget(): void {
+    this.generation++;
+    this.base = null;
+    this.threads.clear();
+    this.lastStart = -Infinity;
+  }
+
+  private status(threads: readonly PoolThread[]): PoolStatus {
+    const found = new Map(threads.map(thread => { const entry = this.threads.get(threadKey(thread)); return [threadKey(thread), entry && { ...entry.parts, at: entry.at }] as const; }));
+    if (!this.base || [...found.values()].some(parts => !parts)) throw this.error instanceof Error ? this.error : new Error("pi-pool gave no reading");
+    return { at: this.base.at, queue: this.base.queue, config: this.base.config, threads: found as Map<string, ThreadParts & { at: number }> };
+  }
+
+  private turn(): Promise<void> {
+    this.next ??= (async () => {
+      await this.running;
+      const wait = this.lastStart + this.tickMs - this.now();
+      if (wait > 0) await this.sleep(wait);
+      this.next = null;
+      const asked = [...this.pending.values()];
+      this.pending.clear();
+      const generation = this.generation, at = this.lastStart = this.now();
+      this.running = this.read(asked).then(snapshot => {
+        if (generation !== this.generation) return;
+        this.error = null;
+        this.base = { at, queue: snapshot.queue, config: snapshot.config };
+        for (const { session, model, who, ls } of snapshot.threads) {
+          const key = threadKey({ session, model });
+          this.threads.delete(key);
+          this.threads.set(key, { at, parts: { who, ls } });
+        }
+        while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
+      }, error => { this.error = error; });
+      await this.running;
+    })();
+    return this.next;
+  }
+}
+
+const poolStatus = new PoolStatusReader();
+
+/**
+ * The one read of the pool's status in this service: `pi-pool queue --json`, `config`, and per thread `who --json` and `ls --json` for each
+ * provider, from one shared `pi-pool snapshot` per tick (PoolStatusReader). Every reader calls it: the accounts frame and api/accounts
+ * (listAccounts), the Agent queue pane and Settings > Hosts (readAgentQueue, readQueueTimers), the board's queue places, the check-ins and
+ * the duties (chat-turn-queue.ts), and the Claude watch (claudeReader).
+ */
+export function readPoolStatus(threads: readonly PoolThread[] = [], options: { maxAgeMs?: number } = {}): Promise<PoolStatus> {
+  return poolStatus.current(threads, options);
+}
+
+/** A pool change this service makes (an account action, a key, a priority, a login, a usage refresh) drops every reading, so the next ask waits for a new one. */
+export function forgetAccountReadings(): void { poolStatus.forget(); }
+
+/** The accounts view of one thread from its snapshot parts, as `who`, `config` and `ls` for each provider gave it at `parts.at`. */
+export function accountsView(sessionId: string | null, parts: ThreadParts & { at: number }, config: PoolPart | null): AccountsView {
+  const json = (part: PoolPart | null): unknown => { try { return part ? JSON.parse(partOut(part)) : null; } catch { return null; } };
+  const resolution = json(parts.who);
+  const poolConfig = parsePoolConfig(json(config));
+  const providers = pooledProviders.map((provider): PoolProvider => {
     try {
-      const listing: unknown = JSON.parse(await run(["ls", "--json", "--provider", provider, ...session(sessionId), ...forModel]));
+      const listing: unknown = JSON.parse(partOut(parts.ls[provider]));
       if (isRecord(listing) && typeof listing.error === "string") return { provider, rows: [], resolution: null, error: listing.error };
       const poolPin = isRecord(listing) && isRecord(listing.pin) ? text(listing.pin.id) : null;
       const said = isRecord(resolution) && isRecord(resolution.providers) && isRecord(resolution.providers[provider]) ? resolution.providers[provider] : null;
       const wait = parsePoolWait(isRecord(listing) && "wait" in listing ? listing.wait : said?.wait);
       return { provider, rows: parsePoolRows(listing, provider), resolution: resolution ? parsePoolResolution(resolution, provider) : null, wait, poolPin };
     } catch (error) { return { provider, rows: [], resolution: null, error: error instanceof Error ? error.message : String(error) }; }
-  }));
+  });
   const priority = sessionId && isRecord(resolution) ? parsePoolPriority(resolution.priority) : null;
-  return { sessionId, checkedAt: new Date().toISOString(), providers, poolConfig, priority };
+  return { sessionId, checkedAt: new Date(parts.at).toISOString(), providers, poolConfig, priority };
+}
+
+/**
+ * `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. With a reading for
+ * the thread and model it answers at once with it, and asks for the thread in the next shared read; the accounts frame of a thread feed thus
+ * starts no pi-pool process of its own. Without one, or with `fresh`, it waits for that read.
+ */
+export function listAccounts(sessionId: string | null, model: string | null = null, { fresh = false, status = poolStatus }: { fresh?: boolean; status?: PoolStatusReader } = {}): Promise<AccountsView> {
+  const thread = { session: sessionId, model };
+  const next = status.current([thread], fresh ? { maxAgeMs: 0 } : {}).then(read => accountsView(sessionId, read.threads.get(threadKey(thread))!, read.config));
+  const cached = fresh ? null : status.cached(thread);
+  if (!cached) return next;
+  next.catch(() => {});
+  return Promise.resolve(accountsView(sessionId, cached, cached.config));
 }
 
 /**
@@ -201,16 +363,11 @@ export function claudeStateOf(rows: readonly PoolAccount[], now: number): Claude
   return { serves: live.some(row => row.usable), freeAt: frees.length ? Math.min(...frees) : null };
 }
 
-/** A reader of `claudeStateOf` over `pi-pool ls --json --provider anthropic`, one CLI call per `ttlMs` at most; null when the pool cannot be read. */
+const ANY_THREAD: PoolThread = { session: null, model: null };
+/** A reader of `claudeStateOf` over `pi-pool ls --json --provider anthropic` from the shared read, at most `ttlMs` old; null when the pool cannot be read. */
 export function claudeReader(ttlMs = 60_000, now: () => number = Date.now,
-  read: () => Promise<string> = () => run(["ls", "--json", "--provider", "anthropic"])): () => Promise<ClaudeState | null> {
-  let cached: { at: number; value: Promise<ClaudeState | null> } | null = null;
-  return () => {
-    if (cached && now() - cached.at < ttlMs) return cached.value;
-    const value = read().then(stdout => claudeStateOf(parsePoolRows(JSON.parse(stdout), "anthropic"), now()), () => null);
-    cached = { at: now(), value };
-    return value;
-  };
+  read: () => Promise<string> = async () => partOut((await readPoolStatus([ANY_THREAD], { maxAgeMs: ttlMs })).threads.get(threadKey(ANY_THREAD))!.ls.anthropic)): () => Promise<ClaudeState | null> {
+  return () => read().then(stdout => claudeStateOf(parsePoolRows(JSON.parse(stdout), "anthropic"), now()), () => null);
 }
 
 /** The pi-pool command lines this service runs for account changes. A CLI contract change is a one-line fix here. */
@@ -221,7 +378,6 @@ export const poolCommand = {
   refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
-  queue: () => ["queue", "--json"],
   set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
   admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
@@ -277,14 +433,14 @@ function setRecord(value: unknown): PoolSetRecord | null {
   return { by: value.by as string | null, at };
 }
 
-export async function readAgentQueue(): Promise<AgentQueueReading> {
-  return parseAgentQueue(JSON.parse(await run(poolCommand.queue())));
+/** `pi-pool queue --json` from the shared read, at most `maxAgeMs` old (the tick by default). */
+export async function readAgentQueue(maxAgeMs?: number): Promise<AgentQueueReading> {
+  return parseAgentQueue(JSON.parse(partOut((await readPoolStatus([], maxAgeMs === undefined ? {} : { maxAgeMs })).queue)));
 }
 
-/** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */
-/** `queue_aging_s` and `lease_s` from `pi-pool config`, which `queue --json` does not carry. Throws when either is missing. */
+/** `queue_aging_s` and `lease_s` from `pi-pool config` in the shared read, which `queue --json` does not carry. Throws when either is missing. */
 export async function readQueueTimers(): Promise<AgentQueueTimers> {
-  return parseQueueTimers(JSON.parse(await run(["config"])));
+  return parseQueueTimers(JSON.parse(partOut((await readPoolStatus()).config)));
 }
 export function parseQueueTimers(value: unknown): AgentQueueTimers {
   const config = parsePoolConfig(value);

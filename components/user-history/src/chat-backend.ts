@@ -15,7 +15,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
-import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
+import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
@@ -176,7 +176,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...scratch ? { tickMs: 0 } : {} });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
   const turns = dutyAdmitter({ log: dutyLog });
-  const queueReading = sharedQueueRead();
+  const queueReading = boardQueueRead;
   const queued = queueReader(queueReading);
   const poolWaiting = async (): Promise<Set<string>> => {
     const pool = await queueReading().catch(() => null);
