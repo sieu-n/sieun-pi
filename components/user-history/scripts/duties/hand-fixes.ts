@@ -71,7 +71,8 @@ export interface StatusEvent { accountId: number; at: number; outcome: string; e
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
 export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
-export interface BoxContainer { name: string; status: string; service: string }
+/** `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable) and docker restart policy. */
+export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string } }
 export interface BoxExec { container: string; service: string; running: boolean; command: string }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
 
@@ -163,7 +164,7 @@ export function stepRefs(faults: readonly Fault[], boards: ReadonlyMap<string, R
   return refs;
 }
 
-/** The ssh output: `C<TAB>name<TAB>status|service|execids` per container and `E<TAB>name<TAB><exec json>` per exec session. */
+/** The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart` per container and `E<TAB>name<TAB><exec json>` per exec session. */
 export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[] } {
   const containers: BoxContainer[] = [];
   const execs: BoxExec[] = [];
@@ -172,8 +173,9 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
     const [tag, name, rest] = line.split("\t");
     if (!name || rest === undefined) continue;
     if (tag === "C") {
-      const [status = "", svc = ""] = rest.split("|");
-      containers.push({ name, status, service: svc });
+      const [status = "", svc = "", , oneoff = "", expires = "", restart = ""] = rest.split("|");
+      const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
+      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}) });
       service.set(name, svc);
     } else if (tag === "E") {
       const exec = JSON.parse(rest) as { Running?: boolean; ProcessConfig?: { entrypoint?: string; arguments?: string[] } };
@@ -184,8 +186,16 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   return { containers, execs };
 }
 
-/** Running containers with no compose service; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
-export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service && container.status === "running");
+/**
+ * A one-off that runs itself: scripts/copy-oneoff.sh started it with a restart policy, so docker starts it again after a failure and an
+ * exit 0 ends it, and deploy.sh starts it again after the deploy stopped it (start_oneoffs), until its expires_at. Before 10-18 every
+ * deploy left the copy one-off stopped and its owner restarted it by hand. One past its expires_at, or with no restart policy, counts.
+ */
+export const keptOneOff = (container: BoxContainer, now: number): boolean =>
+  !!container.oneoff && container.oneoff.expiresAt !== null && container.oneoff.expiresAt * 1000 > now && ["on-failure", "unless-stopped", "always"].includes(container.oneoff.restart);
+/** Running containers with no compose service and no kept one-off; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
+export const oneOffs = (containers: readonly BoxContainer[], now: number): BoxContainer[] =>
+  containers.filter(container => !container.service && container.status === "running" && !keptOneOff(container, now));
 /** A one-shot script piped in on stdin (`python -`, `bash -s`), the way session tools read or set controls; session_loops_writing counts those tools. */
 const STDIN_SCRIPT = /\s(?:-|-s)$/;
 /** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
@@ -290,10 +300,12 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   }
   if (data.box) {
     const execs = handExecs(data.box.execs, registry?.exempt.box_exec_regex);
-    const left = oneOffs(data.box.containers);
+    const left = oneOffs(data.box.containers, at);
+    const kept = data.box.containers.filter(container => !container.service && container.status === "running" && keptOneOff(container, at));
     metrics.unsupervised_box_processes = execs.length + left.length;
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
     if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status})`).join(", ")}` });
+    if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker and deploy.sh start again, not counted: ${kept.map(container => `${container.name} (until ${utc(container.oneoff!.expiresAt! * 1000)})`).join(", ")}` });
   }
   if (data.mac && data.box) metrics.hand_run_processes = metrics.session_loops_writing! + metrics.unsupervised_box_processes!;
   const detail: Record<string, number> = { source_errors: data.errors.length };
@@ -330,7 +342,7 @@ export const eventsSql = (after: number): string =>
 /** The one read-only box read: every container's status, compose service and running exec sessions, and each exec's command. */
 export const BOX_SCRIPT = `set -u
 for c in $(docker ps -a --format '{{.Names}}'); do
-  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}' "$c")
+  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
     printf 'E\\t%s\\t%s\\n' "$c" "$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")"

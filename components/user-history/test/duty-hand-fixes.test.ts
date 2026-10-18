@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, oneOffs, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, oneOffs, parseBox, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -107,6 +107,21 @@ test("a CI gate or test script in a session folder and an exited container are n
   assert.equal(isSessionProcess(`node ${session}/0900-x/data/watch.test.mjs`), false);
   assert.equal(isSessionProcess(`python3 ${session}/0900-x/data/watch_proxy.py --act`), true);
   const left = oneOffs([{ name: "posts-backfill-handrun", status: "exited", service: "" }, { name: "virev-prod-remote-gw", status: "running", service: "" },
-    { name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }]);
+    { name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }], Date.parse("2026-10-18T16:00:00Z"));
   assert.deepEqual(left.map(container => container.name), ["virev-prod-remote-gw"]);
+});
+
+// The d3 run at 16:17Z on 10-18: every deploy left virev-prod-copy-oneoff stopped and its owner restarted it by hand. copy-oneoff.sh now
+// sets a restart policy and deploy.sh starts it again, so a labelled one-off before its expires_at is not counted; a hand container is.
+test("a copy-oneoff.sh one-off with a restart policy before its expires_at is not a hand-run process; an expired or unlabelled one is", () => {
+  const now = Date.parse("2026-10-18T16:17:55Z");
+  const { containers } = parseBox([
+    "C\tvirev-prod-copy-oneoff\trunning|||true|1792348746|on-failure",
+    "C\tvirev-prod-old-oneoff\trunning|||true|1792340000|on-failure",
+    "C\tvirev-prod-norestart-oneoff\trunning|||true|1792348746|no",
+    "C\tposts-backfill-handrun\trunning|||||no",
+    "C\tvirev-prod-remote-gw\trunning|remote-gw||||unless-stopped",
+  ].join("\n"));
+  assert.deepEqual(containers[0], { name: "virev-prod-copy-oneoff", status: "running", service: "", oneoff: { expiresAt: 1792348746, restart: "on-failure" } });
+  assert.deepEqual(oneOffs(containers, now).map(container => container.name), ["virev-prod-old-oneoff", "virev-prod-norestart-oneoff", "posts-backfill-handrun"]);
 });
