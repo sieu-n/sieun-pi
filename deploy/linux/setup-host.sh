@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Sets up the dev half of us-metal02 as root. Run it again any time; each step converges.
-# Split agreed with VP of CI on 2026-10-15: CI gets 24 of the 40 cores and 60% of RAM and disk,
-# dev gets 16 cores and about 100 GB of RAM in dev.slice. Dev takes the last 16 cores of NUMA node 1
-# with their hyperthread siblings, so CI keeps all of node 0 plus 4 cores of node 1.
-# Memory lives in setup-memory.sh, which this script runs last: the harness first, the CI guests next, the dev
-# apps last, with no MemoryHigh and no tight MemoryMax in the dev half (owner rules c88, c92 and c98). Neither
-# slice sets AllowedMemoryNodes: a cpuset.mems pin to node 1 made the slices reclaim and swap while node 0 had
-# free RAM, and without it the kernel allocates on node 1 first and spills to node 0.
+# Split agreed with VP of CI on 2026-10-15, then changed on 2026-10-18: dev.slice (docker) is pinned to the last
+# 16 cores of NUMA node 1 with their hyperthread siblings, and the dev user's slice (the harness and agent work)
+# spans every cpu. Memory and CPU priority live in setup-order.sh, which this script runs last: the harness
+# first, the CI guests next, the dev apps last, with no MemoryHigh and no tight MemoryMax in the dev half (owner
+# rules c88, c92 and c98). Neither slice sets AllowedMemoryNodes: a cpuset.mems pin to node 1 made the slices
+# reclaim and swap while node 0 had free RAM, and without it the kernel allocates on node 1 first and spills to
+# node 0.
 set -euo pipefail
 DEV_USER=${DEV_USER:-sieun}
 NODE=${DEV_NODE:-1}
@@ -39,21 +39,21 @@ Description=Dev half of us-metal02: the owner's Prime Agent and sieun-pi chat
 AllowedCPUs=$cpus
 IOWeight=200
 EOF
-# The dev user's logins and user services (the chat, the daemon, the wiki) land under the same fence.
+# The dev user's logins and user services (the chat, the daemon, the wiki) span every cpu; setup-order.sh gives
+# them CPU priority by weight.
 uid=$(id -u "$DEV_USER")
 install -d /etc/systemd/system/user-$uid.slice.d
 cat > /etc/systemd/system/user-$uid.slice.d/dev.conf <<EOF
 [Slice]
-AllowedCPUs=$cpus
 IOWeight=200
 EOF
 loginctl enable-linger "$DEV_USER"
 systemctl daemon-reload
 systemctl start dev.slice
-bash "$(dirname "$0")/setup-memory.sh"
+bash "$(dirname "$0")/setup-order.sh"
 
 command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
 systemctl enable --now tailscaled
 tailscale set --operator="$DEV_USER" 2>/dev/null || true
 tailscale status >/dev/null 2>&1 || echo "run: tailscale up --ssh --hostname us-metal02-dev --operator=$DEV_USER"
-echo "dev: cpus $cpus (node $NODE, $DEV_CORES cores), memory order from setup-memory.sh; CI takes every other cpu, listed by: cat /etc/virev-dev-cpus"
+echo "dev: cpus $cpus (node $NODE, $DEV_CORES cores), memory and CPU weights from setup-order.sh; CI takes every other cpu, listed by: cat /etc/virev-dev-cpus"
