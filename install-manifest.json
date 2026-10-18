@@ -223,6 +223,13 @@
       "target": ".prime/agent/skills/principle-sequence-verifiable-units"
     },
     {
+      "id": "skill:principle-soft-caps",
+      "kind": "link",
+      "source": "skills/principle-soft-caps",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-soft-caps"
+    },
+    {
       "id": "skill:principle-subtract-before-you-add",
       "kind": "link",
       "source": "skills/principle-subtract-before-you-add",
