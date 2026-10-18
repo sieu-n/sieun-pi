@@ -156,6 +156,8 @@ export function createRelay(config, log = () => {}) {
     daemon.once("close", () => socket.destroy());
     socket.once("close", () => daemon.destroy());
   });
+  // A box's chat service keeps its file reads on open connections (src/hosts.ts agentFor); Node's 5 s default closed them between bursts.
+  server.keepAliveTimeout = 10 * 60_000;
   return server;
 }
 

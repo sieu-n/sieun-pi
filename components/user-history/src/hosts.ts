@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile, rm } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -126,10 +126,23 @@ export async function relayWatch(host: Host, pids: readonly number[]): Promise<{
 
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };
 
+/**
+ * One kept-alive agent per relay, with no idle timeout of its own, so a relay read reuses an open connection. With Node's default agent the
+ * sockets closed after 5 s idle, so each burst of mirror reads opened its connections again: at 07:54:35Z on 10-18 one burst opened 70, each
+ * paying a TCP handshake, a 185 ms round trip to the Mac, before its request.
+ */
+const agents = new Map<string, Agent>();
+function agentFor(host: Host): Agent {
+  const key = `${host.address}:${host.relayPort}`;
+  let agent = agents.get(key);
+  if (!agent) { agent = new Agent({ keepAlive: true, keepAliveMsecs: 30_000 }); agents.set(key, agent); }
+  return agent;
+}
+
 async function relayRequest(host: Host, path: string, headers: Record<string, string> = {}, method = "GET", timeoutMs = 15_000): Promise<RelayResponse> {
   const token = await hostToken(host);
   return await new Promise((resolve, reject) => {
-    const request = httpRequest({ host: host.address, port: host.relayPort, path, method, headers: { ...headers, authorization: `Bearer ${token}` }, timeout: timeoutMs }, response => {
+    const request = httpRequest({ host: host.address, port: host.relayPort, path, method, agent: agentFor(host), headers: { ...headers, authorization: `Bearer ${token}` }, timeout: timeoutMs }, response => {
       const chunks: Buffer[] = [];
       response.on("data", chunk => chunks.push(chunk));
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }));
