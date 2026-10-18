@@ -22,6 +22,7 @@ import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-que
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
+import { resumesNow } from "./cut-end.ts";
 import { IdleUnloader } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
@@ -222,6 +223,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...scratch ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
+  catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
   catalog.onSupervisorChange(() => {
     dutyLog("chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon");
     chats.interruptedSoon();

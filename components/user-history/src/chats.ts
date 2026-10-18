@@ -200,6 +200,7 @@ export class Chats {
    * had then: a root that runs again (an agent message resumes it) gets a newer stamp and is looked at again.
    */
   private rootsSweptAt = -Infinity;
+  private passWaits = false;
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -719,10 +720,13 @@ export class Chats {
   }
 
   /**
-   * A new daemon supervisor (a Prime update or a restart) cut the turns it stopped: the pass over interrupted jobs runs SUPERVISOR_RESUME_MS
-   * from now instead of up to JOB_CLEANUP_EVERY_MS later. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
+   * The pass over interrupted jobs runs `inMs` from now, at the next tick after that, instead of up to JOB_CLEANUP_EVERY_MS later, and never
+   * later than it was due. A new daemon supervisor (a Prime update or a restart) cut the turns it stopped and passes SUPERVISOR_RESUME_MS; a
+   * cut job the catalog just read (`resumesNow`) passes 0. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
    */
-  interruptedSoon(): void { this.rootsSweptAt = this.now() - JOB_CLEANUP_EVERY_MS + SUPERVISOR_RESUME_MS; }
+  interruptedSoon(inMs = SUPERVISOR_RESUME_MS): void {
+    this.rootsSweptAt = Math.min(this.rootsSweptAt, this.now() - JOB_CLEANUP_EVERY_MS + inMs);
+  }
 
   /**
    * The jobs of the chats, from the catalog rows: tells `awake` whether any chat or job works, and looks at each subagent and create_session
@@ -739,12 +743,17 @@ export class Chats {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
     }
-    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
+    // A pass waiting behind a running one already covers every cut seen since: one run per pass at most stays queued, however many jobs are cut.
+    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS && !this.passWaits) {
       this.rootsSweptAt = this.now();
       if (this.source.interrupted) {
         const resume = this.source.interrupted;
         const swept = chatRows.filter(row => active.has(row.id));
-        this.queue("#interrupted", async () => resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept)));
+        this.passWaits = true;
+        this.queue("#interrupted", async () => {
+          this.passWaits = false;
+          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept));
+        });
       }
     }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));

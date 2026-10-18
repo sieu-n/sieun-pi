@@ -127,6 +127,11 @@ export const CUT_LOOKBACK_MS = 24 * 60 * MINUTE;
  * read before its age check, took 106 s under load and the precheck hit its 60 s limit.
  */
 const WALK_AT_ONCE = 16;
+/**
+ * When a cut job starts to wait on nobody: at its cut, or at the slot pi-pool gave its provider error, since until then it waits in pi-pool's
+ * queue, the ordinary queueing this duty leaves out, and a continue meets the same refusal (`Cut.slotAt`).
+ */
+export const heldFrom = (job: Pick<CutJob, "at" | "slotAt">): number => Math.max(job.at, job.slotAt ?? job.at);
 /** About 3 h of service.log at 10-16's rate (1.7 MB an hour, most of it held wakes), so a hold that began before the window is seen whole. */
 const LOG_TAIL_BYTES = 6_000_000;
 
@@ -139,6 +144,8 @@ export interface LogFacts { holds: Hold[]; grants?: Grant[]; firstAt?: number }
  * came. A resumed cut still held its minutes up to that input.
  */
 export interface CutJob { session: string; name: string; chat: string; at: number; cause: CutCause; resumedAt?: number; root?: { session: string; name: string }; proof?: string;
+  /** The slot pi-pool gave its provider error (`Cut.slotAt`): until then it waits in pi-pool's queue, which is not a hold (`heldFrom`). */
+  slotAt?: number;
   /** A later session in the same chat that carries the job's name: the work went to that replacement. */
   replacedBy?: string }
 
@@ -365,9 +372,9 @@ export function measure(input: Inputs): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   const queueHolds: Hold[] = [
     ...input.log.holds,
-    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: job.at, to: job.resumedAt ?? now })),
+    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: heldFrom(job), to: job.resumedAt ?? now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
-  const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - job.at > HOLD_MS);
+  const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
@@ -560,7 +567,8 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
     };
     const job = await jobOf(chain.at(-1)!);
     const later = end.resumedAt === undefined ? latest.get(chat)?.get(job.name) : undefined;
-    found.push({ ...job, chat, at: end.at, cause: end.cause, ...end.resumedAt === undefined ? {} : { resumedAt: end.resumedAt }, root: await jobOf(chain[0]!),
+    found.push({ ...job, chat, at: end.at, cause: end.cause, ...end.resumedAt === undefined ? {} : { resumedAt: end.resumedAt },
+      ...end.slotAt === undefined ? {} : { slotAt: end.slotAt }, root: await jobOf(chain[0]!),
       ...(proof ? { proof } : {}), ...(later !== undefined && later > job.session ? { replacedBy: later } : {}) });
   }
   return found;

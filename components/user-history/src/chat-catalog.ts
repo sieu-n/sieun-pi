@@ -5,7 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import { chatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
-import { cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
+import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
@@ -478,8 +478,11 @@ export class Catalog {
    * agent on each projection took 12% of its time.
    */
   private childById = new Map<string, SessionSummary>();
-  /** Children's cut ends (`SessionCuts`), read after each list. */
-  readonly cuts = new SessionCuts();
+  private readonly cutListeners = new Set<(cut: Cut) => void>();
+  /** Children's cut ends (`SessionCuts`), read after each list; each cut that came or moved goes to `onCut`'s listeners. */
+  readonly cuts = new SessionCuts(cut => { for (const listener of this.cutListeners) listener(cut); });
+  /** Runs `listener` for each job cut a read of the children's transcripts finds new. */
+  onCut(listener: (cut: Cut) => void): void { this.cutListeners.add(listener); }
   private cutsReading = false;
   private schedules = new Map<string, ThreadSchedule>();
   private observedDaemonVersion: { version: string | undefined } | undefined;
