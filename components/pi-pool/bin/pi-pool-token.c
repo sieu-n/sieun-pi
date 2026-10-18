@@ -1,9 +1,10 @@
 /* pi-pool-token: the models.json token hook as a thin client of `pi-pool hookd` (pool/hookd.py).
 
-   With token arguments and a stdout that is not a terminal it hands its argv, environment, cwd, parent
-   pid and fds 0, 1 and 2 to hookd on <pool dir>/hook.sock, so the token goes straight to Prime's pipe and
-   no Python starts. Anything else (--status, --cli, other arguments, a terminal), a socket that does not
-   answer, or an "F" answer runs the Python hook, pi-pool-token.py next to this file, with the same argv.
+   With token arguments, or `--cli <command>` (the /account extension's calls), and a stdout that is not a
+   terminal, it hands its argv, environment, cwd, parent pid and fds 0, 1 and 2 to hookd on
+   <pool dir>/hook.sock, so the output goes straight to the caller's pipe and no Python starts. Anything else
+   (--status, `--cli token` and `--cli watch`, other arguments, a terminal), a socket that does not answer,
+   or an "F" answer runs the Python hook, pi-pool-token.py next to this file, with the same argv.
    Once the whole request is sent hookd may have run it, so a connection that drops then exits 1 and
    never runs the Python path: one request never vends twice.
 
@@ -100,6 +101,17 @@ static int token_args(int argc, char **argv) {
     return 1;
 }
 
+/* `--cli <command>` for a command hookd runs. token prints a credential and watch holds a terminal, so they
+   stay on the Python hook; serve and hookd are servers of their own. */
+static int cli_args(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "--cli") != 0) return 0;
+    if (argc == 2) return 1;
+    static const char *python_only[] = {"token", "watch", "serve", "hookd"};
+    for (size_t i = 0; i < sizeof python_only / sizeof *python_only; i++)
+        if (strcmp(argv[2], python_only[i]) == 0) return 0;
+    return 1;
+}
+
 /* <pool dir>/hook.sock, with the pool dir as pool/base.py computes it. */
 static int socket_path(char *out, size_t size) {
     const char *dir = getenv("PI_POOL_DIR");
@@ -117,9 +129,21 @@ static int socket_path(char *out, size_t size) {
     return snprintf(out, size, "%s/.config/pi-pool/hook.sock", home) < (int)size ? 0 : -1;
 }
 
+static volatile sig_atomic_t termed = 0;
+
 static void on_term(int signum) {
     (void)signum;
+    termed = 1;
     if (sock >= 0) send(sock, "T", 1, SEND_FLAGS);
+}
+
+/* The run ended with no answer. After a SIGTERM that is the kill the Python path would have died of. */
+static int dropped(void) {
+    if (termed) {
+        signal(SIGTERM, SIG_DFL);
+        raise(SIGTERM);
+    }
+    return 1;
 }
 
 static int send_all(const char *data, size_t len, int with_fds) {
@@ -164,7 +188,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "pi-pool-token: cannot find its own folder\n");
         return 127;
     }
-    if (!token_args(argc, argv) || isatty(1)) run_python(argv);
+    if (!(token_args(argc, argv) || cli_args(argc, argv)) || isatty(1)) run_python(argv);
 
     char path[sizeof(((struct sockaddr_un *)0)->sun_path)], cwd[PATH_MAX];
     if (socket_path(path, sizeof path) != 0 || !getcwd(cwd, sizeof cwd)) run_python(argv);
@@ -204,12 +228,12 @@ int main(int argc, char **argv) {
     while (got < sizeof answer - 1) {
         ssize_t n = recv(sock, answer + got, sizeof answer - 1 - got, 0);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return 1;
+        if (n <= 0) return dropped();
         got += (size_t)n;
         answer[got] = '\0';
         if (strchr(answer, '\n')) break;
     }
     if (strncmp(answer, "F\n", 2) == 0) run_python(argv);
     if (strncmp(answer, "X ", 2) == 0) return atoi(answer + 2);
-    return 1;
+    return dropped();
 }

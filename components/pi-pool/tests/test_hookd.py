@@ -51,11 +51,31 @@ def vends(pool):
     with open(os.path.join(pool, "state.json")) as f:
         sessions = json.load(f)["sessions"]
 
-    def timeless(value):
-        if isinstance(value, dict):
-            return {k: timeless(v) for k, v in value.items() if not isinstance(v, float)}
-        return value
     return timeless(sessions)
+
+
+def timeless(value):
+    """`value` with every float, a clock reading in the pool's records, taken out."""
+    if isinstance(value, dict):
+        return {k: timeless(v) for k, v in value.items() if not isinstance(v, float)}
+    if isinstance(value, list):
+        return [timeless(v) for v in value if not isinstance(v, float)]
+    return value
+
+
+def printed(text):
+    """Printed output, whole or line by line, with the clock readings out of the JSON."""
+    try:
+        return timeless(json.loads(text))
+    except ValueError:
+        pass
+    lines = []
+    for line in text.splitlines():
+        try:
+            lines.append(timeless(json.loads(line)))
+        except ValueError:
+            lines.append(line)
+    return lines
 
 
 def ask(path, fields, fds=None):
@@ -148,8 +168,103 @@ class Hookd(unittest.TestCase):
         self.assertEqual([e["event"] for e in events(self.pool) if e["event"] != "hookd_start"],
                          [e["event"] for e in events(twin)])
 
+    def queue_of_one(self, *pools):
+        for pool in pools:
+            with open(os.path.join(pool, "config.json"), "w") as f:
+                json.dump({"agent_queue_on": 1, "working_max": 1, "tree_working_max": 1}, f)
+
+    def agent_dir(self, pool):
+        folder = os.path.join(pool, "agent")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "models.json"), "w") as f:
+            json.dump({"providers": {"openai-codex": {"apiKey": "!/x/pi-pool/bin/pi-pool-token --provider openai-codex"}}}, f)
+        with open(os.path.join(folder, "auth.json"), "w") as f:
+            json.dump({"openai-codex": {"type": "oauth", "access": "fixture-own-login"}}, f)
+        return folder
+
+    def test_cli_commands_print_what_the_python_path_prints(self):
+        twin = os.path.join(self.root, "twin")
+        make_pool(twin)
+        self.queue_of_one(self.pool, twin)
+        with open(os.path.join(self.pool, "accounts", "anthropic.json"), "w") as f, \
+                open(os.path.join(twin, "accounts", "anthropic.json"), "w") as g:
+            json.dump({"version": 1, "accounts": []}, f)
+            json.dump({"version": 1, "accounts": []}, g)
+        here = dict(self.env, PRIME_AGENT_CODING_AGENT_DIR=self.agent_dir(self.pool))
+        there = dict(self.env, PI_POOL_DIR=twin, PRIME_AGENT_CODING_AGENT_DIR=self.agent_dir(twin))
+        commands = [["admit", "fixture-turn-1"], ["admit", "fixture-turn-2"], ["queue", "--json"], ["who", "--json"],
+                    ["model", "fixture-model", "--provider", "openai-codex", "--source", "fixture-hookd"],
+                    ["ls", "--json", "--provider", "openai-codex"], ["adopt-logins"], ["probe", "--force"],
+                    ["release", "fixture-turn-1"], ["release", "fixture-turn-2"], ["config"], ["no-such-command"]]
+        for command in commands:
+            with self.subTest(command=command):
+                served = self.client("--cli", *command, env=here)
+                python = subprocess.run(["/usr/bin/python3", "-B", self.real_hook, "--cli", *command], env=there,
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                self.assertEqual((served.returncode, printed(served.stdout), served.stderr),
+                                 (python.returncode, printed(python.stdout), python.stderr))
+        self.assertEqual(self.fallback_runs(), 0)
+        self.assertEqual(vends(self.pool)["fixture-hookd"].get("models"), vends(twin)["fixture-hookd"].get("models"))
+        for pool in (self.pool, twin):
+            with open(os.path.join(pool, "fallback.json")) as f:
+                self.assertEqual(json.load(f)["openai-codex"]["access"], "fixture-own-login")
+
+    def state(self):
+        with open(os.path.join(self.pool, "state.json")) as f:
+            return json.load(f)
+
+    def waiting_admit(self, session, shell):
+        """A blocked `admit --wait`, started under sh when `shell` is set, and the pid the queue should name."""
+        args = [os.path.join(self.link, "bin", "pi-pool-token"), "--cli", "admit", session, "--wait"]
+        argv = ["/bin/sh", "-c", " ".join(args) + "; exit $?"] if shell else args
+        waiting = subprocess.Popen(argv, env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: waiting.poll() is None and (waiting.kill(), waiting.communicate()))
+        self.assertEqual(json.loads(waiting.stdout.readline())["state"], "queued")
+        return waiting, waiting.pid if shell else os.getpid()
+
+    def test_admit_wait_blocks_in_hookd_for_the_clients_parent(self):
+        self.queue_of_one(self.pool)
+        first = self.client("--cli", "admit", "fixture-turn-1")
+        self.assertEqual(json.loads(first.stdout)["state"], "admitted", first.stderr)
+        waiting, parent = self.waiting_admit("fixture-turn-2", shell=True)
+        self.assertEqual(self.state()["turns"]["queued"]["fixture-turn-2"]["pid"], parent)
+        time.sleep(1.5)
+        self.assertIsNone(waiting.poll(), "admit --wait still waits")
+        self.client("--cli", "release", "fixture-turn-1")
+        out, err = waiting.communicate(timeout=30)
+        self.assertEqual((waiting.returncode, json.loads(out.splitlines()[-1])["state"]), (0, "admitted"), err)
+        self.assertEqual(self.fallback_runs(), 0)
+
+    def test_a_sigterm_ends_a_waiting_cli_run(self):
+        self.queue_of_one(self.pool)
+        self.client("--cli", "admit", "fixture-turn-1")
+        waiting, _ = self.waiting_admit("fixture-turn-2", shell=False)
+        waiter = self.state()["turns"]["queued"]["fixture-turn-2"]["waiter"]
+        os.kill(waiter, 0)
+        waiting.send_signal(signal.SIGTERM)
+        waiting.communicate(timeout=10)
+        self.assertEqual(waiting.returncode, -signal.SIGTERM)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                os.kill(waiter, 0)
+            except ProcessLookupError:
+                break
+            self.assertLess(time.monotonic(), deadline, "the run in hookd outlived its client")
+            time.sleep(0.05)
+
+    def test_a_cli_run_reads_the_clients_stdin(self):
+        harvest = json.dumps({"provider": "fixture-provider"})
+        for script in (os.path.join(self.link, "bin", "pi-pool-token"), self.real_hook):
+            with self.subTest(script=script):
+                run = subprocess.run([script, "--cli", "file-login"], env=self.env, input=harvest, capture_output=True,
+                                     text=True, timeout=60)
+                self.assertEqual((run.returncode, run.stdout, run.stderr), (1, "", "unknown provider fixture-provider\n"))
+        self.assertEqual(self.fallback_runs(), 0)
+
     def test_a_tty_or_other_arguments_run_the_python_hook(self):
-        for args in (["--status"], ["--cli", "config"], ["--help"]):
+        for args in (["--status"], ["--cli", "token", "c@x"], ["--cli", "watch"], ["--help"]):
             with self.subTest(args=args):
                 run = self.client(*args)
                 self.assertEqual(run.stdout, "fallback-ran")

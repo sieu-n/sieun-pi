@@ -100,9 +100,11 @@ On us-metal02 on 10-18 Prime ran the token hook 16 times a second at 0.2 CPU s e
 same hook or CLI code with the client's argv, environment, cwd and parent pid, so every
 pool decision is the same code as before.
 
-The C hook client sends its fds 0, 1 and 2 with the request, so the token goes straight to
-Prime's pipe. It runs the Python hook itself for `--status`, `--cli`, other arguments and a
-terminal, when the socket does not answer, and when hookd answers `F`. Once the whole
+The C hook client sends its fds 0, 1 and 2 with the request, so the token, and the output of
+the /account extension's `--cli` calls, go straight to the caller's pipe. It runs the Python
+hook itself for `--status`, `--cli token`, `--cli watch`, other arguments and a terminal, when
+the socket does not answer, and when hookd answers `F`. A `--cli admit --wait` blocks in its
+hookd child, and its default `--pid` is the client's parent, as on the Python path. Once the whole
 request is sent it never runs the Python hook, so one request never vends twice. A
 SIGTERM to the client, or a client that goes away, reaches the run as a SIGTERM, which
 logs `hook_killed` and `hook_no_token` `interrupted` as before.
