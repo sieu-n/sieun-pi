@@ -53,6 +53,9 @@ A parent the daemon does not hold either gets that note through its own parent.
 A run named with --only is read from its file under session-artifacts when the
 daemon does not list it, and an archive or abort before its cut turn does not
 hide it, so `--direct --only <id>` resumes a subagent stopped mid-turn.
+Only a run the list did not show live is relayed: a live job whose root came
+back after it can answer "Unknown active session" for a while, and its
+continue waits for the next pass.
 
 
 --owners names the sessions that own an open step of a chat. Each one is looked
@@ -1039,8 +1042,9 @@ def direct_resume(paused, args, state, now):
             try:
                 res = send(p.get("target", p["id"]), text)
             except CommandError as error:
-                gone = UNKNOWN_SESSION in str(error)
-                live = live_id(p["session_id"]) if "target" in p and gone else None
+                unlisted = "target" in p
+                gone = unlisted and UNKNOWN_SESSION in str(error)
+                live = live_id(p["session_id"]) if gone else None
                 try:
                     res = send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]}
                 except CommandError as again:

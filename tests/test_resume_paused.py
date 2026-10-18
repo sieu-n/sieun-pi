@@ -449,6 +449,46 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered"}])
         self.assertEqual(self.sent, [("56018fdc0c63", "continue")])
 
+    def test_a_live_job_its_root_shadows_is_never_relayed_to_its_parent(self):
+        chat = "01a14d7b-8a50-70eb-acee-f9dee8fd65d3"
+        shadowed, unroutable, holder = "ca0b85d07bae", "21d9a875c833", "4ac980f7fd82"
+        (self.root / "sessions").mkdir()
+        (self.root / "sessions" / f"{chat}.jsonl").write_text(json.dumps(role(60, "user")) + "\n")
+        call = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "toolUse", "content": [
+            {"type": "toolCall", "name": "ipython", "arguments": {"code": "r = await bash('sleep 1500')"}}]}}
+        rows = {}
+        for sub, sid, short in (("sub-2bee831a", "01a14d7b-a53c-757a-bd91-ca0b85d07bae", shadowed),
+                                ("sub-3cff942b", "01a14d7c-b64d-768b-ce02-db1c96e18cbf", unroutable)):
+            folder = self.root / "artifacts" / chat / sub
+            folder.mkdir(parents=True)
+            (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": sub}))
+            (folder / f"{sid}.jsonl").write_text(json.dumps(call) + "\n")
+            rows[short] = str(folder / f"{sid}.jsonl")
+            self.sessions.append({"id": sid if short == shadowed else short, "sessionId": sid, "lifecycle": "live", "activity": "idle",
+                                  "sessionFile": rows[short], "sessionName": sub, "runtimeKind": "subagent", "lastActivityAt": at(1),
+                                  "parentActiveSessionId": "4ebe1d14227f"})
+
+        def send(target, text):
+            if target == shadowed:
+                raise resume_paused.CommandError(f"prime-agent send --json {shadowed} continue failed (1): "
+                                                 f"Error: Session is already active in {holder}: {rows[shadowed]}")
+            if target == unroutable:
+                raise resume_paused.CommandError(f"prime-agent send --json {unroutable} continue failed (1): Error: Unknown active session: {unroutable}")
+            self.sent.append((target, text))
+            return {"deliveryStatus": "delivered"}
+
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                  only="", state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                patch.object(resume_paused, "send", side_effect=send), patch.object(resume_paused, "pool_bin", return_value=None):
+            report = resume_paused.resume(self.sessions, args, NOW)
+        results = {child["id"]: child["result"] for child in report["children"]}
+        self.assertEqual([target for target, _ in self.sent], [], "the root that shadows a live job never gets its continue")
+        self.assertIn(f"Session is already active in {holder}", results[shadowed]["error"])
+        self.assertIn(f"Unknown active session: {unroutable}", results[unroutable]["error"])
+        self.assertFalse((self.root / "state.json").exists(), "the next pass sends the continue again")
+
     def test_a_named_subagent_the_daemon_dropped_mid_tool_gets_its_continue_through_its_parent(self):
         # 10-18 04:45:48Z: census writer speed, a Crawler VP subagent, was archived mid tool call; the daemon no longer held it, so a send to
         # it answered "Unknown active session", and `prime-agent send` could not resume it. Its parent's rlm handle reopens it.
