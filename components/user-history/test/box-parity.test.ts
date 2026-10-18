@@ -1,0 +1,97 @@
+// Owner 10-18 (goal p1): us-metal02 matches the owner's MacBook Pro for every tool; these cases pin how the Box tools parity duty judges a row, a limit and port 22.
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
+  from "../scripts/duties/box-parity.ts";
+
+const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, checkout: {}, versions: {}, ms: 1 });
+
+test("shortfall takes the Mac as the standard and lets a box set hold more", () => {
+  assert.equal(shortfall("v:10.33.0", "v:10.33.0"), null);
+  assert.equal(shortfall("v:10.33.0", "v:10.32.1"), "Mac v:10.33.0, box v:10.32.1");
+  assert.equal(shortfall("absent", "absent"), null);
+  assert.equal(shortfall("fail: token invalid", "fail: nope"), null);
+  assert.equal(shortfall('set:["a","b"]', 'set:["a","b","c"]'), null);
+  assert.equal(shortfall('set:["a","b"]', 'set:["a"]'), "box lacks 1 of the Mac's 2: b");
+  assert.equal(shortfall("ok", undefined), "the box gave no value");
+});
+
+test("judgeRows counts misses, folds in panel outcomes and keeps intended and by-design rows out of the count", () => {
+  const rows: Row[] = [
+    { id: "pnpm", tool: "cli pnpm", probes: [{ version: ["pnpm", "--version"] }] },
+    { id: "poppler", tool: "cli pdftotext", probes: [{ version: ["pdftotext", "-v"], intended: "no Linux build" }] },
+    { id: "hermes", tool: "cli hermes", probes: [{ which: "hermes" }], byDesign: "Mac-only agent" },
+    { id: "panel", tool: "tools-panel check gh_auth", mac: [{ const: "ok" }], box: [{ panel: "gh_auth" }] },
+    { id: "panel-off", tool: "tools-panel check paper_mcp", mac: [{ const: "ok" }], box: [{ panel: "paper_mcp" }] },
+  ];
+  const mac = output("mac", { pnpm: ["v:10.33.0"], poppler: ["v:26.08.0"], hermes: ["ok"], panel: ["ok"], "panel-off": ["ok"] });
+  const box = output("box", { pnpm: ["v:10.32.1"], poppler: ["v:26.07.0"], hermes: ["absent"], panel: ["panel"], "panel-off": ["panel"] });
+  const panel = new Map([["gh_auth", { status: "fail" as const, fixer: "agent" as const, detail: "not logged in", fix: "log in" }],
+    ["paper_mcp", { status: "off" as const, detail: "Paper closed" }]]);
+  const result = judgeRows(rows, mac, box, panel);
+  assert.deepEqual(result.off.map(verdict => verdict.row.id), ["pnpm", "panel"]);
+  assert.match(result.off[1]!.why, /not logged in/);
+  assert.deepEqual(result.intended.map(verdict => verdict.row.id), ["poppler"]);
+  assert.deepEqual(result.byDesign.map(verdict => verdict.row.id), ["hermes"]);
+  assert.equal(result.matched, 3);
+});
+
+const context = (files: Record<string, string>, nice: Record<number, number> = {}): LimitContext =>
+  ({ scope: "user", defaultTasksMax: "272774", memTotal: 1000, read: path => files[path], niceOf: pid => nice[pid] });
+
+test("unitLimits counts our unit files and runtime settings, and skips vendor files, defaults and RAM-sized limits", () => {
+  const ours = { Id: "box-textfile.service", FragmentPath: "/home/sieun/.config/systemd/user/box-textfile.service", Nice: "10", IOSchedulingClass: "3", TasksMax: "272774" };
+  assert.deepEqual(unitLimits(ours, context({ [ours.FragmentPath]: "[Service]\nNice=10\nIOSchedulingClass=idle\n" })).map(finding => finding.key),
+    ["user box-textfile.service Nice", "user box-textfile.service IOSchedulingClass"]);
+  const vendor = { Id: "logrotate.service", FragmentPath: "/usr/lib/systemd/system/logrotate.service", Nice: "19" };
+  assert.deepEqual(unitLimits(vendor, context({ [vendor.FragmentPath]: "Nice=19\n" })), []);
+  const docker = { Id: "docker-abc.scope", FragmentPath: "/run/systemd/transient/docker-abc.scope", MemoryMax: "1000" };
+  assert.deepEqual(unitLimits(docker, context({})), []);
+  const guest = { Id: "machine-qemu\\x2d513\\x2dci\\x2dg9.scope", FragmentPath: "/run/systemd/transient/x.scope", TasksMax: "16384" };
+  assert.deepEqual(unitLimits(guest, context({ "/run/systemd/transient/x.scope": "TasksMax=16384\n" })), []);
+  const runtime = { Id: "ci.slice", MemoryHigh: "500" };
+  assert.match(unitLimits(runtime, context({}))[0]!.excerpt, /sets MemoryHigh \(MemoryHigh=500\) at runtime/);
+  const wrapped = { Id: "r3g-collect.service", ActiveState: "active", MainPID: "42", Nice: "0" };
+  assert.match(unitLimits(wrapped, context({}, { 42: 10 }))[0]!.excerpt, /main process 42 runs at nice 10/);
+});
+
+test("foldName folds instance numbers and ids so one setting on many units counts once", () => {
+  assert.equal(foldName("machine-qemu\\x2d534\\x2dci\\x2dg7.scope"), "machine-qemu-N-ci-gN.scope");
+  assert.equal(foldName("docker-0050f625d5dca8df1bc7f113a45c2ce6.scope"), "docker-<id>.scope");
+  assert.equal(foldName("r3g-collect.service"), "r3g-collect.service");
+});
+
+test("containerLimits and managerLimits name only real caps", () => {
+  const findings = containerLimits([{ Name: "/a", HostConfig: { Memory: 1000, CpuShares: 1024, PidsLimit: null } }, { Name: "/b", HostConfig: { NanoCpus: 2e9 } }], 1000);
+  assert.deepEqual(findings.map(finding => finding.key), ["docker b NanoCpus"]);
+  assert.deepEqual(managerLimits([{ path: "/etc/systemd/system.conf", text: "#DefaultTasksMax=15%\nDefaultTasksMax=infinity\nDefaultMemoryMax=4G\n" }]).map(finding => finding.key),
+    ["manager /etc/systemd/system.conf DefaultMemoryMax"]);
+});
+
+test("publicSsh needs a refused control port to call 22 closed", () => {
+  const on = { ActiveState: "active", Result: "success" };
+  assert.equal(publicSsh({ ssh: "dropped", control: "refused" }, on).value, 0);
+  assert.equal(publicSsh({ ssh: "open", control: "refused" }, on).value, 1);
+  assert.equal(publicSsh({ ssh: "dropped", control: "dropped" }, on).value, undefined);
+  assert.equal(publicSsh(new Error("ssh failed"), { ActiveState: "inactive", Result: "success" }).value, 1);
+});
+
+test("parseShow splits systemctl show records", () => {
+  assert.deepEqual(parseShow("Id=a.service\nNice=0\n\nId=b.slice\nTasksMax=infinity\n"), [{ Id: "a.service", Nice: "0" }, { Id: "b.slice", TasksMax: "infinity" }]);
+});
+
+test("the probe reads files on the Mac side and refuses calls there", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-"));
+  mkdirSync(join(home, "skills/a"), { recursive: true });
+  writeFileSync(join(home, "skills/a/SKILL.md"), "x");
+  const rows: Row[] = [{ id: "skill", tool: "skill a", probes: [{ path: "~/skills/a/SKILL.md" }, { ls: "~/skills" }, { path: "~/skills/b/SKILL.md" }] },
+    { id: "call", tool: "cli gh", mac: [{ run: ["gh", "auth", "status"] }], box: [{ const: "ok" }] }];
+  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, boxTip: null, known: {} })).toString("base64");
+  const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+  assert.deepEqual(out.values.skill, ["ok", 'set:["a"]', "absent"]);
+  assert.match(out.values.call![0]!, /^fail: run is not a read/);
+});
