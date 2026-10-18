@@ -32,6 +32,12 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CRAWLER_OPENAPI = "https://crawler.virev.ai/openapi.json";
 const PROD_OPENAPI = "https://api.virev.ai/openapi.json";
+/**
+ * The prod org key: VIREV_API_KEY_PROD from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.
+ * The key source in apps/llm-wiki/specs/envs/prod.json exits 1 since auto-sns-agent 4a68dc4b85 (2026-10-18 11:28Z), which left
+ * the 12:36Z run with prod_working_pct -1 and 150 routes unprobed. The key is never printed.
+ */
+const PROD_KEY_CMD = "cd apps/api-portal && npx dotenvx get VIREV_API_KEY_PROD -f .env";
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/ci-guarantees.mjs prints. */
 export const UNMEASURED = 999999;
 /**
@@ -473,7 +479,7 @@ async function main(): Promise<void> {
     attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)),
     env ? attempt("VERCEL_AUTOMATION_BYPASS_SECRET key source", () => sh(env.keySources.VERCEL_AUTOMATION_BYPASS_SECRET!.cmd, REPO)) : null,
     env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
-    prodEnv ? attempt("VIREV_API_KEY_PROD key source", () => sh(prodEnv.keySources.VIREV_API_KEY_PROD!.cmd, REPO)) : null,
+    process.env.VIREV_API_KEY_PROD || attempt("VIREV_API_KEY_PROD from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
     attempt("SPEC-93 prod skips in apps/llm-wiki/specs/lib/api-portal", prodSkips),
   ]);
   const base = env?.urls.apiPortal ?? "";
