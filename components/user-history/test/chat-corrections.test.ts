@@ -10,7 +10,6 @@ import { applyCorrection, briefCorrections, CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CO
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { CHAT_MODE_ENTRY } from "../src/chat-guard.ts";
 import { jobRegistry } from "../src/chat-sources.ts";
-import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 
 const VP: ChatRef = { id: "vp", name: "dev VP" };
 const CI: ChatRef = { id: "ci", name: "VP of CI" };
@@ -400,43 +399,5 @@ test("brief: one line tells the chat to record each owner correction in the same
   assert.match(reference, /In the same turn, call `correction_add` with the owner's exact words/);
   assert.match(reference, /When the tool says repeat, the earlier fix did not hold\. Make the smallest change that gets agents to follow the rule, first a brief, skill or prompt line/);
   assert.match(reference, /board\.corrections\("c12"\)/);
-});
-
-const NOW = Date.parse("2026-10-09T14:00:00Z");
-const line = (message: Record<string, unknown>) => JSON.stringify({ type: "message", timestamp: new Date(message.timestamp as number).toISOString(), message });
-test("chat health: repeat_corrections counts ledger repeats in the last 24 h and names entry and chat", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "corrections-health-"));
-  try {
-    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["vp"] }));
-    await writeFile(join(dir, "vp.jsonl"), [
-      line({ role: "user", content: [{ type: "text", text: "status?" }], timestamp: NOW - 3_600_000 }),
-      line({ role: "assistant", content: [{ type: "text", text: "Started a job on it. More soon." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_500_000 }),
-      line({ role: "assistant", content: [{ type: "toolCall", id: "t", name: "tell_owner", arguments: { text: "The job is blocked on a login." } }], provider: "p", model: "m",
-        stopReason: "toolUse", timestamp: NOW - 3_400_000 }),
-      line({ role: "assistant", content: [{ type: "text", text: "The [audit](job:audit run) job finished." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_300_000 }),
-      line({ role: "user", content: [{ type: "text", text: "and the rest?" }], timestamp: NOW - 3_250_000 }),
-      line({ role: "assistant", content: [{ type: "text", text: "Two jobs are left." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_240_000 }),
-      JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from w]\n\nDone.", display: true, timestamp: new Date(NOW - 3_200_000).toISOString() }),
-      line({ role: "assistant", content: [{ type: "text", text: "Wake-up note: the job is done." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_100_000 }),
-      line({ role: "assistant", content: [{ type: "text", text: "Old job note." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 30 * 3_600_000 }),
-      line({ role: "user", content: [{ type: "text", text: "didn't i tell you" }], timestamp: NOW - 3_000_000 }),
-    ].join("\n") + "\n");
-    const store = new CorrectionLedger(dir);
-    await store.apply(add("ops guy owns it", "mac load ops guy", "Mac load goes to ops guy."), VP, "2026-10-07T10:00:00.000Z");
-    await store.apply(add("didn't i tell you", "mac load delegate", "Mac load goes to ops guy."), VP, "2026-10-09T13:06:51.000Z");
-    await store.apply(add("long ago", "mac load ops", "Mac load goes to ops guy."), CI, "2026-10-07T11:00:00.000Z");
-    await store.apply(add("(my own note) the owner said this before", "mac load ops guy", "Mac load goes to ops guy."), VP, "2026-10-09T13:30:00.000Z");
-    const output = join(dir, "health.json");
-    const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts")], { cwd: join(import.meta.dirname, ".."),
-      encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW),
-        CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir } });
-    assert.equal(result.status, 0, result.stderr);
-    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.repeat_corrections, 1);
-    const flagged = health.flagged ?? [];
-    assert.deepEqual(flagged.filter(slice => slice.kind === "repeat_corrections"), [{ chat: "vp", at: Date.parse("2026-10-09T13:06:51.000Z"), kind: "repeat_corrections",
-      excerpt: "c1 \"Mac load goes to ops guy.\" repeated in dev VP (first 2026-10-07 in dev VP): didn't i tell you" }]);
-    assert.equal(flagged[0]!.kind, "repeat_corrections", "a repeat leads the flagged list");
-  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

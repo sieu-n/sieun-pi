@@ -313,14 +313,6 @@ function choices(value: unknown): string[] {
 }
 
 /**
- * A todo that only holds a place for something not ready yet ("Read: ... the link lands here when ready"). Owner 10-09: "what the fuck is  this???".
- * For you holds only what the owner must decide or do now; a pending explanation is a plan step, and its link goes in a chat message when it exists.
- * A todo with choices is a real ask and never a placeholder.
- */
-const PLACEHOLDER = /^read:|lands here|link lands|when ready|when it['\u2019]?s ready|when it is ready/i;
-export const placeholderTodo = (todo: Pick<OwnerTodo, "text" | "choices">): boolean => !todo.choices?.length && PLACEHOLDER.test(todo.text.trim());
-
-/**
  * A review ask with nothing to open (c32 repeat, owner 10-14: "is any other tabs ready for review? keep listing them in FOR YOU with the links i
  * need to check"): a todo that asks the owner to review, look at or pick something carries the page he checks, in `links` or as an http URL in
  * its text. "Links and screenshots are in the chat" sent him searching the feed (t11 to t14).

@@ -66,7 +66,7 @@ test("board classes: one class per open leaf step, and the convergence misses", 
   assert.match(report, /All chats: End state: 2 of 6 open steps \(33\.3%\)[^\n]*\nAll chats, classes: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0/);
 });
 
-test("board classes CLI: prints the classes report for Chat health's misses; it is no duty precheck and writes no OUTPUT_FILE", async () => {
+test("board classes CLI: prints the classes report; it is no duty precheck and writes no OUTPUT_FILE", async () => {
   const { dir, sessions } = await fixture();
   const output = join(dir, "out.json");
   const { stdout } = await run(process.execPath, ["--import", "tsx", "scripts/duties/board-classes.ts", "--chat", "c1", "--data-dir", dir, "--sessions", sessions, "--now", String(NOW)],

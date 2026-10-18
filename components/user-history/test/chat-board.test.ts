@@ -8,7 +8,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
-import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, nextIds, parseBoard, parseBoardOps, placeholderTodo, renderOpenPlan, SCRATCHPAD_REMOVED } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, nextIds, parseBoard, parseBoardOps, renderOpenPlan, SCRATCHPAD_REMOVED } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 const T0 = "2026-10-06T00:00:00.000Z";
@@ -159,18 +159,6 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
   throwsKind(() => parseBoardOps([{ op: "todo_add", text: "q", choices: ["a", " "] }]), "invalid");
   const three = run(emptyBoard(T0), [{ op: "todo_add", text: "a" }, { op: "todo_add", text: "b" }, { op: "todo_add", text: "c" }]).board;
   assert.equal(run(three, [{ op: "todo_add", text: "d" }, { op: "todo_add", text: "e" }]).board.todos.filter(todo => !todo.done).length, 5);
-});
-
-test("chat board: placeholderTodo finds a todo that only holds a place, and a todo with choices is a real ask (owner 10-09)", () => {
-  const placeholders = ["Read: GitHub Pro vs Team, the link lands here when ready", "  read: the pool article", "Pool explainer: link lands in t3",
-    "Article on swap, lands here", "Cost report when ready", "I'll send it when it's ready", "Team plan when it\u2019s ready", "Notes when it is ready"];
-  for (const text of placeholders) {
-    assert.equal(placeholderTodo({ text }), true, text);
-  }
-  for (const text of ["Pick the price", "Approve the Read replica cost", "Ready to deploy?", "Sign the contract"]) assert.equal(placeholderTodo({ text }), false, text);
-  assert.equal(placeholderTodo({ text: "Read: which plan?", choices: ["Pro", "Team"] }), false, "an ask with choices is real");
-  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: which plan?", choices: ["Pro", "Team"] }]).board.todos.length, 1);
-  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: the pool article" }]).board.todos.length, 1, "the board takes it; the brief keeps For you for real asks (c14, c81)");
 });
 
 test("chat board: a v2 file passes; anything else throws", () => {

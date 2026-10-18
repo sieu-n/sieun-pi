@@ -103,7 +103,7 @@ test("add.ts stores each checked-in duty with its relative precheck cwd resolved
   const component = join(import.meta.dirname, "..");
   const dataDir = await mkdtemp(join(tmpdir(), "duty-add-"));
   try {
-    for (const name of ["local-dev-uptime", "harness-health", "chat-health", "limits-evidence"]) {
+    for (const name of ["local-dev-uptime", "whole-system", "wiki-dream", "limits-evidence"]) {
       const file = join(component, "scripts", "duties", `${name}.duty.json`);
       assert.equal(JSON.parse(await readFile(file, "utf8")).precheck.cwd, "../..");
       await promisify(execFile)(process.execPath, ["--import", "tsx", "scripts/duties/add.ts", "chat1", file, "--data-dir", dataDir], { cwd: component });

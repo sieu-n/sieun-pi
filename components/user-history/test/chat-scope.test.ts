@@ -9,11 +9,9 @@ import { fixArgs } from "../scripts/corrections-fix.ts";
 import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
 import { isHandoffTarget, matchTopic, scopeLine, scopeMisses } from "../src/checkin-findings.ts";
 import { applyCorrection, type ChatRef, CorrectionLedger, correctionResult, handoffRules, type HandoffRule, type Ledger, ledgerPrompt, parseCorrectionCall, parseLedger } from "../src/chat-corrections.ts";
-import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const MIN = 60_000;
-const HOUR = 60 * MIN;
 const NOW = Date.parse("2026-10-09T15:00:00Z");
 const VP: ChatRef = { id: "vp", name: "dev VP" };
 const OPS = "ops guy (+observability)";
@@ -21,7 +19,6 @@ const TOPICS = ["M1 Air", "M2 Air", "Mac load", "load average", "swap", "memory 
 const RULE: HandoffRule = { correction: "c7", to: OPS, topics: TOPICS };
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
 const board = (plan: PlanItem[], todos: OwnerTodo[] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos, plan });
-const todo = (id: string, text: string, extra: Partial<OwnerTodo> = {}): OwnerTodo => ({ id, text, done: false, from: "agent", at: "", ...extra });
 
 test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad one is dropped alone, the prompt shows the rule, a retired entry has none", async () => {
   const ledger: Ledger = { corrections: [] };
@@ -113,7 +110,7 @@ test("check-in precheck: a step on another thread's work is listed with its scop
   assert.deepEqual(checkInPrecheck(undefined, [], plan, NOW, { ...context, handoffs: [] }).scope, [], "without the handoff");
 });
 
-test("board classes: a step on another thread's work is a scope miss; chat health counts scope_misses and placeholder_todos per chat", async () => {
+test("board classes: a step on another thread's work is a scope miss", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scope-health-"));
   try {
     await mkdir(join(dir, "boards"), { recursive: true });
@@ -128,22 +125,6 @@ test("board classes: a step on another thread's work is a scope miss; chat healt
     assert.deepEqual(chats.map(chat => [chat.id, chat.misses.scope_misses]), [["vp", 1], ["ops", 0]]);
     assert.deepEqual(chats[0]!.flagged.filter(slice => slice.kind === "scope_misses").map(slice => slice.excerpt),
       [`p1 "Lower the Mac load" belongs to ${OPS} (correction c1): hand it off with a message to that thread and remove it from this plan`]);
-
-    // Chat health: closed plans (the daemon's sessions are not read); placeholder todos from the agent, open, with no choices.
-    await writeFile(join(dir, "boards", "vp.json"), JSON.stringify(board([step("p2", "Docs", "done")], [todo("t3", "Read: GitHub Pro vs Team, the link lands here when ready", { at: new Date(NOW - HOUR).toISOString() }),
-      todo("t4", "Read: done one, when ready", { done: true }), todo("t5", "Read: which plan?", { choices: ["Pro", "Team"] }), todo("t6", "Pick the price")])));
-    await writeFile(join(dir, "boards", "ops.json"), JSON.stringify(board([], [todo("t1", "Read: my own note", { from: "owner" })])));
-    const output = join(dir, "health.json");
-    const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts")], { cwd: join(import.meta.dirname, ".."),
-      encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW),
-        CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir } });
-    assert.equal(result.status, 0, result.stderr);
-    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.placeholder_todos, 1);
-    assert.equal(health.metrics.article_link_not_in_todo, undefined, "c5's row is gone");
-    assert.equal(health.metrics.scope_misses, 0);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "placeholder_todos"), [{ chat: "vp", at: NOW - HOUR, kind: "placeholder_todos",
-      excerpt: 't3 "Read: GitHub Pro vs Team, the link lands here when ready" is a placeholder in For you: make it a plan step and send the link in a chat message when it exists' }]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

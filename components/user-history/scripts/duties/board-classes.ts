@@ -25,8 +25,7 @@ import { ownerChats } from "../../src/owner-chats.ts";
  * Board classes: every open leaf step of every chat board in one class (`stepClass`), from the boards, the check-in memory (each step's last
  * change), the check-in settings (one tick is the chat's interval) and the daemon's session list (jobs and threads).
  *
- * Chat health sums the check-in duty's misses over every chat from here, apart from the check-ins themselves, so a check-in that stops running
- * still shows. `node --import tsx scripts/duties/board-classes.ts [--chat <id>] [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints
+ * `node --import tsx scripts/duties/board-classes.ts [--chat <id>] [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints
  * the counts per chat and a line per step to act on.
  */
 
