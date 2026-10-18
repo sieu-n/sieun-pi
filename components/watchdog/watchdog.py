@@ -105,7 +105,7 @@ def snapshot():
             sleepy=sleepy,
             busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
             tls=tls,
-            stopped=stop_reason(s.get('sessionId'), f, evs, archived, test_chats),
+            stopped=stop_reason(s.get('sessionId'), f, archived, test_chats),
         ))
     # Attribute a parked shell to a session: a deliberate wait sleeps INSIDE the kernel, so a
     # shell child alive for as long as the session has been silent is that session's wedge.

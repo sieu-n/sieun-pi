@@ -1,9 +1,9 @@
 """Plan-and-duties run-1 on 10-18: the clean-room teardown archived the test chat "Pinterest gaps" at 14:28:10Z, the chat service re-adopted it
 at 14:29:52Z, and at 14:34:58Z a watchdog cycle read it as a dropped turn (input 94.8 min old) and sent it resume_queue and "[watchdog] Your
 last turn was dropped". The chat worked on into run-2 and voided it. A cycle now sends nothing to a session whose chat is in
-archived-chats.json or clean-room-chats.json, or whose newest session_state is archived.
+archived-chats.json or clean-room-chats.json.
 
-WATCHDOG_DIR=<folder with the old watchdog files> runs the same cases against the old cycle, where the three archived cases fail."""
+WATCHDOG_DIR=<folder with the old watchdog files> runs the same cases against the old cycle, where the archived cases fail."""
 import datetime as dt, json, os, sys, tempfile, unittest
 from pathlib import Path
 
@@ -82,9 +82,11 @@ class Run1(unittest.TestCase):
         self.session(self.run1_events())
         self.assert_untouched()
 
-    def test_a_live_listed_session_whose_newest_state_is_archived_gets_nothing(self):
+    def test_a_session_whose_file_ends_archived_but_is_in_neither_record_is_still_resumed(self):
         self.session(self.run1_events(ended_archived=True))
-        self.assert_untouched()
+        verdict, sends, _ = self.cycle()
+        self.assertEqual(verdict, 'DROPPED_TURN', "the daemon's eviction and the Mac copy write an archived state too")
+        self.assertEqual(len(sends), 1)
 
     def test_the_same_dropped_turn_on_a_chat_nobody_archived_is_still_resumed(self):
         self.session(self.run1_events())

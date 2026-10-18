@@ -70,9 +70,10 @@ def chat_ids(name):
     return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
 
 
-def stop_reason(sid, file, events, archived, test_chats):
-    """Why no recovery may wake this session, or None: its chat (the session or the root of its session-artifacts tree) is archived or a
-    clean-room test chat, or its newest session_state entry in `events` is archived. Only the owner's unarchive brings such a chat back."""
+def stop_reason(sid, file, archived, test_chats):
+    """Why no recovery may wake this session, or None: its chat (the session or the root of its session-artifacts tree) is in
+    archived-chats.json or clean-room-chats.json. An archived session_state in the file is no reason: the daemon's eviction and the Mac
+    copy write it too. Only the owner's unarchive brings such a chat back."""
     parts = Path(file).parts if file else ()
     root = parts[parts.index('session-artifacts') + 1] if 'session-artifacts' in parts[:-2] else None
     ids = {sid, root} - {None}
@@ -80,9 +81,6 @@ def stop_reason(sid, file, events, archived, test_chats):
         return 'archived by the owner (archived-chats.json)'
     if ids & test_chats:
         return 'a clean-room test chat (clean-room-chats.json)'
-    last = next((e for e in reversed(events) if e.get('type') == 'session_state'), None)
-    if last and (last.get('state') or {}).get('status') == 'archived':
-        return 'its newest session state is archived'
     return None
 
 

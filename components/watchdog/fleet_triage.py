@@ -125,7 +125,7 @@ def classify(s, t, archived=frozenset(), test_chats=frozenset()):
              kids=bool(s.get('hasRunningRlmChildren')), last_role=role, stop=stop, err=err[:200],
              last_age=round(last_age, 1) if last_age is not None else None,
              asst_age=round(asst_age, 1) if asst_age is not None else None, tail=txt[-240:], recent=recent[-6000:],
-             stopped=stop_reason(s.get('sessionId'), s.get('sessionFile'), evs, archived, test_chats))
+             stopped=stop_reason(s.get('sessionId'), s.get('sessionFile'), archived, test_chats))
     if last_age is None:
         v = 'UNKNOWN'
     elif last_age > STALE_H * 60 and not stream:
@@ -191,7 +191,7 @@ def triage():
             continue
         r = classify(s, t, archived, test_chats)
         h = head_of(s, by)
-        r['stopped'] = r['stopped'] or stop_reason(h['sessionId'], h.get('sessionFile'), [], archived, test_chats)
+        r['stopped'] = r['stopped'] or stop_reason(h['sessionId'], h.get('sessionFile'), archived, test_chats)
         r['head_sid'], r['head_name'] = h['sessionId'], h.get('sessionName') or ''
         r['head_active'] = h.get('activeSessionId')
         out.append(r)

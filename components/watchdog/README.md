@@ -25,7 +25,7 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 
 ## Archived chats
 
-1. A cycle never wakes a session whose chat the owner archived (`archived-chats.json`), a clean-room test chat (`clean-room-chats.json`), or a session listed live whose newest `session_state` entry is archived. Its verdict is `ARCHIVED`, and `fleet_triage.py --apply` skips the same sessions.
+1. A cycle never wakes a session whose chat the owner archived (`archived-chats.json`) or a clean-room test chat (`clean-room-chats.json`). Its verdict is `ARCHIVED`, and `fleet_triage.py --apply` skips the same sessions. An archived `session_state` in the file is no reason, because the daemon's eviction and the Mac copy write it too.
 2. Both files come from the chat service's data folder, `$AGENT_CHAT_DATA_DIR` or `~/.prime/agent/browser-chat`. A subagent counts by the root of its session-artifacts tree.
 3. On 10-18 a cycle sent plan-and-duties run-1's test chat "Your last turn was dropped" at 14:34:58Z, 6.8 min after its teardown archived it, and the chat went on working into run-2. `tests/test_archived.py` replays that case.
 
