@@ -118,7 +118,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     const proof = JSON.parse(run(process.execPath, [join(roots[0], "scripts/prove_runtime.mjs"), "--home", home,
       "--cwd", cwd], { env }));
     assert.equal(proof.passes, 2);
-    for (const name of ["account", "what-did-i-say", "agent-chat"]) {
+    for (const name of ["what-did-i-say", "agent-chat"]) {
       assert.equal(proof.commands.filter(command => command === name).length, 1, name);
     }
     for (const name of ["virev-status", "virev-reload"]) assert(!proof.commands.includes(name));

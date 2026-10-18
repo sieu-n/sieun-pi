@@ -1,6 +1,6 @@
 import { open } from "node:fs/promises";
 import type { SessionEntry } from "prime-agent";
-import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
+import { CURRENT_SESSION_VERSION } from "prime-agent";
 
 /**
  * How much of a session file a thread opens with. The feed draws every message the hub holds (Thread.svelte `turns`, chat-feed.ts `chatFeed`)

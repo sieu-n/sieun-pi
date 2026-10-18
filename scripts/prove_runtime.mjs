@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, realpathSync, existsSync, readFileSync } from "node:fs";
+import { realpathSync, existsSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -36,8 +36,9 @@ const loader = new DefaultResourceLoader({
   noThemes: true,
   noContextFiles: true,
 });
-const expectedSkills = readdirSync(join(source, "skills"))
-  .map(name => join(source, "skills", name, "SKILL.md"))
+const expectedSkills = JSON.parse(readFileSync(join(source, "install-manifest.json"), "utf8")).entries
+  .filter(entry => entry.kind === "link" && entry.scope === "home" && entry.target.startsWith(".prime/agent/skills/"))
+  .map(entry => join(source, entry.source, "SKILL.md"))
   .filter(path => existsSync(path))
   .map(path => realpathSync(path)).sort();
 const aiEntry = execFileSync(process.execPath, ["--input-type=module", "-e",
@@ -84,11 +85,10 @@ for (let pass = 1; pass <= 2; pass++) {
   assert.deepEqual(actualSkills, expectedSkills, "Native loader must discover every custom skill exactly once");
   const commands = result.extensions.flatMap(extension => [...extension.commands.keys()]);
   for (const command of ["virev-status", "virev-reload"]) assert.equal(commands.includes(command), false, `Removed /${command} must not load`);
-  for (const command of ["account", "what-did-i-say", "agent-chat"]) {
+  for (const command of ["what-did-i-say", "agent-chat"]) {
     assert.equal(commands.filter(name => name === command).length, 1, `Expected one /${command} after pass ${pass}`);
   }
   const extensionPaths = result.extensions.map(extension => realpathSync(extension.resolvedPath));
-  assert(extensionPaths.includes(realpathSync(join(home, ".local/share/pi-pool/current/app/extension/index.ts"))));
   assert(extensionPaths.includes(realpathSync(join(source, "components/user-history/extension/index.ts"))));
   const history = result.extensions.find(extension => realpathSync(extension.resolvedPath) === realpathSync(join(source, "components/user-history/extension/index.ts")));
   assert(history.flags.has("agent-chat-socket"), "Native history package must register --agent-chat-socket");
@@ -103,11 +103,15 @@ for (let pass = 1; pass <= 2; pass++) {
   assert.deepEqual([...rules.tools.keys()], [], "global-rules adds no tool and no prompt text");
   const ctx = { cwd, hasUI: false };
   try {
-    const handlers = Object.fromEntries(["tool_call"].map(name => {
-      const registered = rules.handlers.get(name);
-      assert.equal(registered.length, 1, `Expected one global-rules ${name} handler`);
-      return [name, registered[0]];
-    }));
+    const registered = rules.handlers.get("tool_call");
+    assert.equal(registered.length, 3, "Expected the guard, kernel-guard and rlm-delete tool_call handlers");
+    const handlers = { tool_call: async (event, context) => {
+      for (const handler of registered) {
+        const outcome = await handler(event, context);
+        if (outcome !== undefined) return outcome;
+      }
+      return undefined;
+    } };
     for (const where of [cwd, home]) {
       const blocked = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "guard-proof",
         input: { code: 'bash("curl -sS -X POST https://acme.zendesk.com/api/v2/tickets/1.json -d x")' } }, { ...ctx, cwd: where });
