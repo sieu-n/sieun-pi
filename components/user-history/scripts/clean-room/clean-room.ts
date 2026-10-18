@@ -25,6 +25,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { chatService, throughRestart } from "../../src/chat-host.ts";
 import { jobRegistry } from "../../src/chat-sources.ts";
+import { wikiOrigin } from "../../src/chat-wiki.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
@@ -47,6 +48,7 @@ import { ordinaryHour } from "./ordinary-hour.ts";
 import { ownerAsks } from "./owner-asks.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 import { softCaps } from "./soft-caps.ts";
+import { archiveTestPages } from "./wiki-pages.ts";
 import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
 import { wakeLive } from "./wake-live.ts";
 
@@ -403,8 +405,8 @@ function runProcesses(run: string): number[] {
 }
 
 /**
- * Ends a run whatever its verdict: stops its processes, archives the chat and every job it had through the archive route, removes its todos,
- * corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
+ * Ends a run whatever its verdict: stops its processes, archives the chat and every job it had through the archive route, marks the wiki
+ * pages the chat made as test output (wiki-pages.ts), removes its todos, corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
  * command can run again; a run already torn down is left as it is.
  */
 async function teardown(flags: Record<string, string>): Promise<void> {
@@ -419,6 +421,19 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   const jobs = await ownSessions(run, state);
   const chats = [state.chat.id, ...(state.control ? [state.control.id] : [])];
   const failed: string[] = [];
+  const wiki = await wikiOrigin();
+  if (wiki) {
+    const transcripts = [...new Set([...knownSessions(run, state), ...jobs])].flatMap(id => {
+      const file = join(homedir(), ".prime/agent/sessions", `${id}.jsonl`);
+      return existsSync(file) ? [readFileSync(file, "utf8")] : [];
+    });
+    const pages = await archiveTestPages(wiki, transcripts, state.setupAt).catch((error: unknown) => {
+      log(run, `wiki pages: ${error instanceof Error ? error.message : String(error)}`);
+      return { archived: [], failed: ["wiki changes"] };
+    });
+    for (const path of pages.archived) log(run, `archived the wiki page ${path} as test output`);
+    for (const path of pages.failed) { failed.push(path); log(run, `archive the wiki page ${path} failed`); }
+  }
   const archive = (id: string, what: string) => call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived ${what} ${id}`), (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (/: 404 /.test(message)) { log(run, `${what} ${id} is gone already`); return; }
