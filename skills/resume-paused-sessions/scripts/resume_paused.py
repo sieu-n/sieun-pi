@@ -26,8 +26,11 @@ helper its parent deleted, do not count, with two exceptions: an abort that
 ended the retry of an interruption error counts as that error, and an abort
 written when the daemon shut the run's worker down (a "received SIGTERM" line
 in the daemon log at that moment) counts as "worker_stopped", and an abort
-or archive written while the daemon supervisor restarted (from its last log
-line to the new supervisor's "listening" line) counts as "daemon_restart". Rate limits (429), overloaded (529),
+with no archive written while the daemon supervisor restarted (from its last log
+line to the new supervisor's "listening" line) counts as "daemon_restart". An
+archive that stopped the turn counts only when the idle unload's record names
+it; a stop record keeps the run stopped, and with neither the run is listed
+under "unresolved" and gets nothing, since the archive line has no cause. Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
@@ -94,6 +97,7 @@ Usage:
 """
 import argparse
 import concurrent.futures
+import contextlib
 import datetime as dt
 import hashlib
 import http.client
@@ -102,6 +106,7 @@ import mmap
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -132,6 +137,7 @@ DEFAULT_STATE = Path.home() / ".prime" / "agent" / "resume-paused-sessions.json"
 SESSIONS_DIR = Path.home() / ".prime" / "agent" / "sessions"
 ARTIFACTS_DIR = Path.home() / ".prime" / "agent" / "session-artifacts"
 DELETED_JOBS = Path.home() / ".prime" / "agent" / "browser-chat" / "deleted-jobs.json"
+ARCHIVED_CHATS = Path.home() / ".prime" / "agent" / "browser-chat" / "archived-chats.json"
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -178,8 +184,50 @@ class CommandError(Exception):
     pass
 
 
+class Stopped(Exception):
+    """A SIGTERM came while the pass read. With Python's default handler the pass died with no output: the chat service's old 90 s
+    execFile kill logged "Command failed" with no cause at 06:52Z and 06:57Z on 10-18, although the 06:57Z pass had sent 8 continues."""
+
+
+DOING = [""]
+# {full session id: its transcript} for each session a pass looked at, so each send rechecks the stop records right before it goes.
+FILES = {}
+# Boxes or runs the pass could not finish, beyond a box that failed whole: a stop record that went unreadable during the sends.
+INCOMPLETE = []
+# Cut runs whose turn an archive with no recorded cause stopped. They are reported and never resumed.
+UNRESOLVED = []
+SENDING = []
+STOP = []
+STARTED = time.monotonic()
+
+
+def on_term(signum, _frame):
+    STOP.append(signum)
+    if not SENDING:
+        raise Stopped()
+
+
+@contextlib.contextmanager
+def sending():
+    """A SIGTERM inside this block waits until the current send and its state record end, then the send loop stops."""
+    SENDING.append(True)
+    try:
+        yield
+    finally:
+        SENDING.pop()
+
+
+def stop_note(where):
+    return (f"stopped by {signal.Signals(STOP[0]).name} after {time.monotonic() - STARTED:.1f} s {where}"
+            + (f", last step: {DOING[0]}" if DOING[0] else ""))
+
+
 def run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    DOING[0] = " ".join([Path(cmd[0]).name, *(Path(part).name if part.endswith((".mjs", ".py")) else part for part in cmd[1:5])])
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise CommandError(f"{' '.join(cmd[:6])} gave no answer in 60 s") from None
     if p.returncode != 0:
         raise CommandError(f"{' '.join(cmd)} failed ({p.returncode}): {p.stderr.strip() or p.stdout.strip()}")
     return p.stdout
@@ -236,12 +284,14 @@ class RelayBox:
         self.token = token
         self.home = None
         self.rows = None
+        self.log_texts = None
         self.local = threading.local()
 
     def _get(self, path, start=None, timeout=20):
         """One GET /v1/file on this thread's kept-alive connection. Until 10-18 each read opened its own TCP connection, so a pass paid a
         handshake, a request and a cold slow start at 185 ms a round trip for each of its 265 reads. A connection the relay closed while idle
         is opened again once."""
+        DOING[0] = f"GET {path} from {self.name}"
         target = f"/v1/file?path={urllib.parse.quote(str(path))}"
         headers = {"Authorization": f"Bearer {self.token}", **({"Range": f"bytes={start}-"} if start is not None else {})}
         for attempt in (0, 1):
@@ -255,7 +305,7 @@ class RelayBox:
                 if answer.will_close:
                     connection.close()
                 return answer.status, dict(answer.headers), body
-            except (OSError, http.client.HTTPException) as error:
+            except (OSError, ValueError, http.client.HTTPException) as error:
                 connection.close()
                 self.local.connection = None
                 if attempt:
@@ -284,18 +334,32 @@ class RelayBox:
         raise OSError(f"relay {self.name}: {path}: {status}")
 
     def read(self, path, start=0):
+        """The bytes of `path` from `start`. FileNotFoundError only when the relay says the file does not exist (404 "no such file", from
+        components/prime-relay/relay.mjs); any other failure is an OSError, so a failed read is never taken for a missing file."""
         status, _, body = self._get(path, start=start or None)
         if status in (200, 206):
             return body
         if status == 416:
             return b""
+        if status == 404 and relay_error(body) == "no such file":
+            raise FileNotFoundError(f"relay {self.name}: {path}: no such file")
+        raise OSError(f"relay {self.name}: {path}: {status}")
+
+    def grown(self, path, size, kept):
+        seam = min(RECHECK_BYTES, size, len(kept))
+        status, _, body = self._get(path, start=(size - seam) or None)
+        if status in (200, 206):
+            return body[seam:] if len(body) >= seam and body[:seam] == kept[len(kept) - seam:] else None
+        if status == 416:
+            return None
+        if status == 404 and relay_error(body) == "no such file":
+            raise FileNotFoundError(f"relay {self.name}: {path}: no such file")
         raise OSError(f"relay {self.name}: {path}: {status}")
 
     def tail(self, path, nbytes):
         """The last `nbytes` of the file, kept between passes in TAIL_CACHE with the size they end at, so a pass reads only the bytes the file
         grew by. From 07:52 to 07:57Z on 10-18 each pass read about 265 Mac tails of 256 KB whole, 34 MB a pass and five passes in five minutes,
-        on the link the box's attach snapshots of Mac chats also need. A session file only grows; one shorter than the kept size was rewritten
-        and is read again from its end."""
+        on the link the box's attach snapshots of Mac chats also need."""
         if nbytes > TAIL_KEEP:
             return self.read(path, max(0, self.size(path) - nbytes))
         kept_at = TAIL_CACHE / self.name / (hashlib.sha256(str(path).encode()).hexdigest() + ".tail")
@@ -304,23 +368,15 @@ class RelayBox:
             size = int(head)
         except (OSError, ValueError):
             size, kept = None, b""
-        grown = size is None
-        if size is not None:
-            status, headers, body = self._get(path, start=size or None)
-            if status in (200, 206):
-                size, kept, grown = size + len(body), (kept + body)[-TAIL_KEEP:], bool(body)
-            elif status != 416:
-                raise OSError(f"relay {self.name}: {path}: {status}")
-            elif int(headers.get("X-File-Size") or headers.get("x-file-size") or -1) != size:
-                size = None
-        if size is None:
-            size = self.size(path)
-            kept, grown = self.read(path, max(0, size - TAIL_KEEP)), True
-        if grown:
-            kept_at.parent.mkdir(parents=True, exist_ok=True)
-            fresh = kept_at.with_name(f"{kept_at.name}.{os.getpid()}.{threading.get_ident()}")
-            fresh.write_bytes(str(size).encode() + b"\n" + kept)
-            os.replace(fresh, kept_at)
+        new = None if size is None else self.grown(path, size, kept)
+        if new is None:
+            start = max(0, self.size(path) - TAIL_KEEP)
+            kept = self.read(path, start)
+            size = start + len(kept)
+        else:
+            size, kept = size + len(new), (kept + new)[-TAIL_KEEP:]
+        if new != b"":
+            write_atomically(kept_at, str(size).encode(), kept)
         else:
             os.utime(kept_at)
         return kept[-nbytes:]
@@ -329,11 +385,13 @@ class RelayBox:
         """The rows of `ids` from the chat service's copy of this box's full list (src/session-peer.ts, saved at most every 5 min and fully
         listed every 30), so a pass does not list the box whole: the Mac's `list --all` was 38.6 MB on every pass on 10-18. A copy older than
         COPY_FRESH_S, or none, lists the box."""
+        copy = COPY_DIR / f"{self.name}.sessions.json"
         try:
-            if time.time() - COPY_DIR.joinpath(f"{self.name}.sessions.json").stat().st_mtime < COPY_FRESH_S:
-                rows = json.loads(COPY_DIR.joinpath(f"{self.name}.sessions.json").read_text()).get("rows") or []
-                return [row for row in rows if (row.get("sessionId") or row.get("id")) in ids]
-        except (OSError, ValueError, AttributeError):
+            if time.time() - copy.stat().st_mtime < COPY_FRESH_S:
+                rows = json.loads(copy.read_text()).get("rows") or []
+                return [{**{key: row[key] for key in COPY_IDENTITY_FIELDS if key in row}, "lifecycle": "archived", "activity": "idle"}
+                        for row in rows if (row.get("sessionId") or row.get("id")) in ids]
+        except (OSError, ValueError, AttributeError, TypeError):
             pass
         return [row for row in self.list(all_rows=True) if (row.get("sessionId") or row["id"]) in ids]
 
@@ -347,7 +405,13 @@ class RelayBox:
         return entry["mtimeMs"] / 1000
 
     def logs(self):
-        """The daemon logs, when the relay's roots include ~/.prime/agent/logs; else none, so no restart or shutdown window is known there."""
+        """The daemon logs, when the relay's roots include ~/.prime/agent/logs; else none, so no restart or shutdown window is known there.
+        Read once per pass: the Mac's 17 logs held 8.7 MB and took 12.8 s through the relay at 07:05Z on 10-18."""
+        if self.log_texts is None:
+            self.log_texts = self.read_logs()
+        return self.log_texts
+
+    def read_logs(self):
         if self.home is None:
             return []
         folder = self.home / ".prime" / "agent" / "logs"
@@ -367,8 +431,6 @@ class RelayBox:
         return texts
 
     def log(self, path, entry):
-        """A daemon log, kept whole in TAIL_CACHE: the Mac's two logs were 8.8 MB, read whole on every pass on 10-18. A log only grows until it
-        rotates, so a longer one reads only its new bytes; a shorter one, or a rotated `.log.old` with a new mtime, is read again whole."""
         kept_at = TAIL_CACHE / self.name / (hashlib.sha256(str(path).encode()).hexdigest() + ".log")
         size, mtime = int(entry.get("size") or 0), entry.get("mtimeMs")
         try:
@@ -376,18 +438,34 @@ class RelayBox:
             had, had_mtime = json.loads(head)
         except (OSError, ValueError, TypeError):
             had, had_mtime, kept = None, None, b""
-        if had == size and (had_mtime == mtime or not str(path).endswith(".old")):
+        rotated = str(path).endswith(".old")
+        if had is None or len(kept) != had:
+            new = None
+        elif rotated:
+            new = b"" if (had, had_mtime) == (size, mtime) else None
+        else:
+            new = self.grown(path, had, kept)
+        if new == b"":
             os.utime(kept_at)
             return kept
-        if had is not None and had < size and not str(path).endswith(".old"):
-            kept += self.read(path, had)
-        else:
-            kept = self.read(path)
-        kept_at.parent.mkdir(parents=True, exist_ok=True)
-        fresh = kept_at.with_name(f"{kept_at.name}.{os.getpid()}.{threading.get_ident()}")
-        fresh.write_bytes(json.dumps([len(kept), mtime]).encode() + b"\n" + kept)
-        os.replace(fresh, kept_at)
+        kept = self.read(path) if new is None else kept + new
+        write_atomically(kept_at, json.dumps([len(kept), mtime]).encode(), kept)
         return kept
+
+
+def write_atomically(kept_at, head, body):
+    kept_at.parent.mkdir(parents=True, exist_ok=True)
+    fresh = kept_at.with_name(f"{kept_at.name}.{os.getpid()}.{threading.get_ident()}")
+    fresh.write_bytes(head + b"\n" + body)
+    os.replace(fresh, kept_at)
+
+
+def relay_error(body):
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        return None
+    return answer.get("error") if isinstance(answer, dict) else None
 
 
 # Tail reads through one relay at a time.
@@ -395,11 +473,13 @@ RELAY_READS = 16
 # Another box's session file tails, kept between passes (RelayBox.tail), and how much of each is kept: the most any reader asks for.
 TAIL_CACHE = Path.home() / ".cache" / "sieun-pi" / "resume-tails"
 TAIL_KEEP = 256_000
+RECHECK_BYTES = 256
 # A kept tail no pass read for this long is deleted.
 TAIL_IDLE_S = 2 * 86400
 # The chat service's copies of the other boxes' session lists (src/host-catalogs.ts copyPath), and how old one may be to stand in for a full list.
 COPY_DIR = Path.home() / ".cache" / "sieun-pi" / "hosts"
 COPY_FRESH_S = 40 * 60
+COPY_IDENTITY_FIELDS = ("id", "sessionId", "sessionFile", "sessionName", "runtimeKind", "parentSessionId", "created", "modified", "lastActivityAt")
 HOSTS_FILE = Path(os.environ.get("SIEUN_PI_HOSTS") or Path.home() / ".config" / "sieun-pi" / "hosts.json")
 HOSTS_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "hosts-cli.mjs"
 BOX = LocalBox()
@@ -482,17 +562,56 @@ def parent_of(path):
     return next((p.name[:-6] for p in above.glob("*.jsonl") if len(p.name) == 42), None)
 
 
+class RecordError(Exception):
+    """A stop record (deleted-jobs.json, archived-chats.json) exists but cannot be read or parsed. The pass then sends nothing it would
+    need that record for, and reports the box as incomplete: an unreadable record is not proof that nobody stopped a run."""
+
+
+class JobRecordError(RecordError):
+    """A stop record of one job (its rlm-subagent.json on another box, or the transcript above it) could not be read. That job gets nothing
+    and is listed as incomplete; the other jobs go on."""
+
+
+def read_record(path, shape):
+    """The parsed JSON of the stop record at `path`, or None when the file does not exist. Raises RecordError when it is unreadable, is not
+    JSON or fails `shape`. The chat service replaces each of these files whole, so an empty or partial file is a fault, not an empty record."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RecordError(f"{Path(path).name} is unreadable ({error.strerror or type(error).__name__})") from None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise RecordError(f"{Path(path).name} is not valid JSON ({len(text)} bytes)") from None
+    if not shape(data):
+        raise RecordError(f"{Path(path).name} does not have the expected shape")
+    return data
+
+
+def stop_record(path):
+    """Why the session at `path` was stopped on purpose, by a record that says so, or None. Raises RecordError (see read_record).
+
+    Only recorded stops count here. A Stop pressed in Prime itself writes the same abort and archive lines as a daemon restart and leaves
+    no record of who pressed it, so a Stop inside a restart window that no record names cannot be told apart from the restart."""
+    if not path:
+        return None
+    if deleted_on_purpose(path):
+        return "deleted on purpose"
+    if owner_archived(path):
+        return "archived by the owner"
+    return None
+
+
 def deleted_on_purpose(path):
     """The job at `path` or a job above it was deleted on purpose: the chat service deleted it (deleted-jobs.json, the parker included), or
     its parent called rlm.delete_subagent and got it back. Every such delete archives the job and aborts its turn within milliseconds, the
     same lines a daemon restart writes: on 10-16 the Whole system duty counted ci train, new ci server, fair-self-heal, spec-junit and the two
     jobs under the parked checkin pushes goals as cut by a restart, and a continue would have revived all six."""
     folder = Path(path).parent
-    try:
-        deleted = json.loads(DELETED_JOBS.read_text())
-    except (OSError, ValueError):
-        deleted = {}
-    gone = {child for chat in deleted.values() if isinstance(chat, dict) for child in chat}
+    deleted = read_record(DELETED_JOBS, lambda data: isinstance(data, dict) and all(isinstance(chat, dict) for chat in data.values())) or {}
+    gone = {child for chat in deleted.values() for child in chat}
     while folder.name.startswith("sub-"):
         if folder.name in gone or (remote_deleted(folder) if BOX.remote else parent_deleted(folder)):
             return True
@@ -500,13 +619,42 @@ def deleted_on_purpose(path):
     return False
 
 
-def remote_deleted(folder):
-    """Another box's job folder whose rlm-subagent.json the RLM runtime marked deleted. Its parent's transcript is not read: a chat's reached
-    152 MB on 10-16, too much to pull through the relay on every pass."""
+def owner_archived(path):
+    """The session at `path`, or the chat whose session-artifacts tree holds it, is one the owner archived (archived-chats.json, written by
+    the chat service's archive). That record wins over the archive line's timing: the owner archived the run-3 test chat python refs per
+    folder at 06:52:53Z on 10-18, and an archive line inside a restart window reads as the restart's."""
+    record = read_record(ARCHIVED_CHATS, lambda data: isinstance(data, dict) and isinstance(data.get("ids"), list)
+                         and all(isinstance(sid, str) for sid in data["ids"]))
+    archived = set(record["ids"]) if record else set()
     try:
-        return json.loads(BOX.read(folder / "rlm-subagent.json")).get("status") == "deleted"
-    except (OSError, ValueError, AttributeError):
+        parts = Path(path).relative_to(ARTIFACTS_DIR).parts
+    except ValueError:
+        parts = Path(path).parts
+        parts = parts[parts.index("session-artifacts") + 1:] if "session-artifacts" in parts else ()
+    return Path(path).stem in archived or (len(parts) > 1 and parts[0] in archived)
+
+
+def remote_deleted(folder):
+    """Another box's job folder whose rlm-subagent.json the RLM runtime marked deleted. A record the relay says does not exist means not
+    deleted; a failed read or a record that is not a JSON object raises JobRecordError, so the job gets nothing this pass.
+
+    Its parent's transcript is not read: a chat's reached 152 MB on 10-16, too much to pull through the relay on every pass. So on another
+    box a delete counts only when the runtime wrote status "deleted" into the record, and a delete_subagent call the record does not show
+    cannot be established from here."""
+    where = f"{folder.name}/rlm-subagent.json on {BOX.name}"
+    try:
+        body = BOX.read(folder / "rlm-subagent.json")
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise JobRecordError(f"{where} could not be read ({error})") from None
+    try:
+        record = json.loads(body)
+    except ValueError:
+        raise JobRecordError(f"{where} is not valid JSON ({len(body)} bytes)") from None
+    if not isinstance(record, dict):
+        raise JobRecordError(f"{where} does not have the expected shape")
+    return record.get("status") == "deleted"
 
 
 def parent_deleted(folder):
@@ -515,6 +663,15 @@ def parent_deleted(folder):
     above = folder.parent
     parent = next((p for p in above.glob("*.jsonl") if len(p.name) == 42), None) if above.name.startswith("sub-") else SESSIONS_DIR / f"{above.name}.jsonl"
     named = f"rlm_child_id='{folder.name}'".encode()
+    if parent is None:
+        return False
+    try:
+        if parent.stat().st_size == 0:
+            return False
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise JobRecordError(f"{parent.name}, the transcript above {folder.name}, could not be read ({error.strerror or type(error).__name__})") from None
     try:
         with open(parent, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as text:
             at = text.find(named)
@@ -524,8 +681,8 @@ def parent_deleted(folder):
                 if text.find(b'"toolResult"', start, at) >= 0 and call >= 0 and text.find(b"delete_subagent", text.rfind(b"\n", 0, call) + 1, start) >= 0:
                     return True
                 at = text.find(named, at + len(named))
-    except (OSError, TypeError, ValueError):
-        return False
+    except OSError as error:
+        raise JobRecordError(f"{parent.name}, the transcript above {folder.name}, could not be read ({error.strerror or type(error).__name__})") from None
     return False
 
 
@@ -599,11 +756,38 @@ def load_unloaded(path):
     return {sid: stamp for sid, stamp in stamps.items() if stamp}
 
 
+def is_archive(entry):
+    return entry.get("type") == "session_state" and (entry.get("state") or {}).get("status") == "archived"
+
+
+def unload_archive(archive, unloaded_at):
+    """The archive `archive` came from the idle unload's stop at `unloaded_at`."""
+    stamp = parse_ts(archive.get("timestamp"))
+    return bool(unloaded_at and stamp) and 0 <= (unloaded_at - stamp).total_seconds() <= UNLOAD_MATCH_S
+
+
 def archived_by_unload(entries, unloaded_at):
     """The session's last archive came from the idle unload's stop at `unloaded_at`."""
-    archives = [e for e in entries if e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived"]
-    stamp = parse_ts(archives[-1].get("timestamp")) if archives else None
-    return bool(unloaded_at and stamp) and 0 <= (unloaded_at - stamp).total_seconds() <= UNLOAD_MATCH_S
+    archives = [e for e in entries if is_archive(e)]
+    return bool(archives) and unload_archive(archives[-1], unloaded_at)
+
+
+def stop_archive(entries, last):
+    """The archive that stopped the turn ending in `last`: the latest one after it, else one right before it with no message between. An
+    older archive stopped an earlier turn: air reboot proof 2 was unloaded at 06:22Z on 10-18, woken at 06:40Z and cut by the mem.3 update
+    at 06:46Z, and its 06:22Z archive hid that cut."""
+    index = entries.index(last) if last in entries else len(entries)
+    later = [e for e in entries[index + 1:] if is_archive(e)]
+    if later:
+        return later[-1]
+    ts = parse_ts(last.get("timestamp"))
+    for entry in reversed(entries[:index]):
+        if entry.get("type") == "message":
+            return None
+        if entry.get("type") == "session_state":
+            stamp = parse_ts(entry.get("timestamp"))
+            return entry if is_archive(entry) and ts and stamp and (ts - stamp).total_seconds() <= ARCHIVE_ABORT_S else None
+    return None
 
 
 def hook_blocker(root_session_id, provider, cache):
@@ -702,21 +886,15 @@ def is_busy(session):
 
 
 def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
-    """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted.
-
-    An archive that a daemon restart or the idle unload wrote does not count, and an archive written just before the aborted reply outside a
-    restart does, even next to a worker's SIGTERM, since an archive stops the worker too. `find_paused` also drops a recorded delete
-    (`deleted_on_purpose`)."""
-    if archived_by_restart(entries, restarts) or archived_by_unload(entries, unloaded_at) or update_before(entries, last):
+    """The run's tool call reads "Request was aborted" with no archive and no update notice in that turn, the line an Esc abort writes. Its
+    cause is not recorded either, so the run is left stopped without a claim of who stopped it. An archive that stopped the turn is not decided here: `find_paused` resumes it only when the idle unload's
+    record names it, skips it when a stop record names it, and otherwise lists it as `unresolved`. Prime's archive line has no cause, and a
+    restart window's timing does not prove one."""
+    if stop_archive(entries, last) or update_before(entries, last):
         return False
     msg = last.get("message") or {}
-    if msg.get("role") == "assistant" and msg.get("stopReason") == "aborted" and archive_before(entries, last):
-        return True
-    if msg.get("role") == "toolResult" and any(
-            isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or []):
-        return True
-    after = entries[entries.index(last) + 1:] if last in entries else []
-    return any(e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived" for e in after)
+    return msg.get("role") == "toolResult" and any(
+        isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or [])
 
 
 def hung_since(session, now, entries=None):
@@ -787,29 +965,18 @@ def daemon_restarts():
 ARCHIVE_ABORT_S = 5.0
 
 
-def archive_before(entries, last):
-    """An archive came right before the aborted reply `last`, with no message between them."""
-    ts = parse_ts(last.get("timestamp"))
-    index = entries.index(last) if last in entries else -1
-    for entry in reversed(entries[:max(index, 0)]):
-        if entry.get("type") == "message":
-            return False
-        if entry.get("type") == "session_state":
-            stamp = parse_ts(entry.get("timestamp"))
-            return (entry.get("state") or {}).get("status") == "archived" and bool(ts and stamp) and (ts - stamp).total_seconds() <= ARCHIVE_ABORT_S
-    return False
-
-
 def update_before(entries, last):
-    """The daemon's update notice came at most UPDATE_ABORT_S before `last`, with no message between them: the update stopped the turn."""
+    """The daemon's update notice came at most UPDATE_ABORT_S before `last` in the same turn, with no new input between them: the update
+    stopped the turn. The turn may run more steps first: probe queue trust ran three tool steps after the mem.3 notice at 06:46:02Z on 10-18
+    and its tool call was aborted 37 s after it."""
     ts = parse_ts(last.get("timestamp"))
     index = entries.index(last) if last in entries else -1
     for entry in reversed(entries[:max(index, 0)]):
-        if entry.get("type") == "message":
-            return False
         if entry.get("type") == "custom_message" and entry.get("customType") == UPDATE_NOTICE:
             stamp = parse_ts(entry.get("timestamp"))
             return bool(ts and stamp) and 0 <= (ts - stamp).total_seconds() <= UPDATE_ABORT_S
+        if entry.get("type") == "custom_message" or (entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "user"):
+            return False
     return False
 
 
@@ -968,13 +1135,17 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             hung = listed and (now - listed).total_seconds() / 60 >= HUNG_MIN
             return bool(s.get("sessionFile")) and (full in OWNERS or full in UNLOADED or full in only or (fresh and (not is_busy(s) or hung)))
         ids = [short_id(s) for s in sessions if wanted(s)]
-        with concurrent.futures.ThreadPoolExecutor(RELAY_READS) as pool:
+        pool = concurrent.futures.ThreadPoolExecutor(RELAY_READS)
+        try:
             tails.update(zip(ids, pool.map(lambda sid: tail_entries(by_id[sid]["sessionFile"]), ids)))
+        finally:
+            pool.shutdown(wait=not STOP, cancel_futures=True)
 
     paused = []
     for s in sessions:
         sid = short_id(s)
         full = s.get("sessionId") or s["id"]
+        FILES[full] = s.get("sessionFile")
         if only and full not in only:
             continue
         owner = full in OWNERS
@@ -987,7 +1158,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue  # an old archive, read no further
         if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
-                and not archived_by_restart(entries_of(sid), restarts):
+                and not archived_by_restart(entries_of(sid), restarts) and not update_before(entries_of(sid), last_message(entries_of(sid)) or {}):
             continue
         if s.get("workerState") == "failed":
             if BOX.remote:
@@ -1030,12 +1201,28 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner or named, restarts)
             if not verdict:
                 continue
+            stopper = stop_archive(entries_of(sid), last)
+            if stopper and not unload_archive(stopper, unloaded_at) and not unstuck and not named:
+                try:
+                    recorded = stop_record(s.get("sessionFile"))
+                except JobRecordError as error:
+                    INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
+                    continue
+                if not recorded:
+                    UNRESOLVED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
+                                       "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": stopper.get("timestamp"),
+                                       "error": "An archive with no recorded cause stopped its turn, so it is not resumed.",
+                                       **({"host": BOX.name} if BOX.remote else {})})
+                continue
             # The unload's stop counts only for a turn that failed on the token hook; any other run it stopped stays stopped.
-            hidden = archived_by_unload(entries_of(sid), unloaded_at) and not archived_by_restart(entries_of(sid), restarts) \
-                and (s.get("lifecycle") != "live" or stopped_on_purpose(entries_of(sid), last, restarts))
+            hidden = bool(stopper) and unload_archive(stopper, unloaded_at) and s.get("lifecycle") != "live"
             if hidden and not unstuck and not named and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
                 continue
-        if s.get("sessionFile") and deleted_on_purpose(s["sessionFile"]):
+        try:
+            if stop_record(s.get("sessionFile")):
+                continue
+        except JobRecordError as error:
+            INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None
@@ -1157,34 +1344,51 @@ def relay(session_id, text, describe=True):
     return {**result, "relayed_through": parent}
 
 
+def send_guard(p):
+    """None when the run `p` may get its message now, else what to report instead. The stop records are read again right before each send:
+    a chat or a parent may delete or archive a run after the pass found it and before its turn in the send loop."""
+    try:
+        why = stop_record(FILES.get(p["session_id"]))
+    except RecordError as error:
+        INCOMPLETE.append({"host": BOX.name, "error": f"not sent to {p['id']}: {error}"})
+        return {"error": f"not sent: {error}"}
+    return f"skipped: {why} after the pass found it" if why else None
+
+
+def sent_ok(res):
+    return isinstance(res, dict) and "error" not in res
+
+
 def direct_resume(paused, args, state, now):
     """--direct: each interrupted run gets the message itself, and no head gets a list. A hung run takes no message until
     it is aborted, and a run in a dead worker takes none at all."""
     actions = []
-    sent_any = False
-    for p in paused:
-        if p["reason"] in ("hung", "worker_failed") and not p.get("aborted"):
-            res = f"skipped: {p['reason']}"
-        elif args.dry_run:
-            res = "dry-run"
-        else:
-            text = NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message
-            try:
-                res = send(p.get("target", p["id"]), text)
-            except CommandError as error:
-                unlisted = "target" in p
-                gone = unlisted and UNKNOWN_SESSION in str(error)
-                live = live_id(p["session_id"]) if gone else None
+    with sending():
+        for p in paused:
+            if STOP:
+                break
+            if p["reason"] in ("hung", "worker_failed") and not p.get("aborted"):
+                res = f"skipped: {p['reason']}"
+            elif args.dry_run:
+                res = "dry-run"
+            elif (blocked := send_guard(p)) is not None:
+                res = blocked
+            else:
+                text = NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message
                 try:
-                    res = send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]}
-                except CommandError as again:
-                    res = {"error": str(again)[:300]}
-            if "error" not in res:
-                state[p["session_id"]] = p["errored_at"]
-                sent_any = True
-        actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
-    if sent_any:
-        save_state(args.state, state, now, args.since_minutes)
+                    res = send(p.get("target", p["id"]), text)
+                except CommandError as error:
+                    unlisted = "target" in p
+                    gone = unlisted and UNKNOWN_SESSION in str(error)
+                    live = live_id(p["session_id"]) if gone else None
+                    try:
+                        res = send_guard(p) or (send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]})
+                    except CommandError as again:
+                        res = {"error": str(again)[:300]}
+                if sent_ok(res):
+                    state[p["session_id"]] = p["errored_at"]
+                    save_state(args.state, state, now, args.since_minutes)
+            actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
     return {"paused": paused, "heads": [], "children": actions, "message": args.message,
             "since_minutes": args.since_minutes, "checked_at": now.isoformat()}
 
@@ -1203,58 +1407,71 @@ def resume(sessions, args, now):
         heads.setdefault(p["head"], []).append(p)
 
     actions = []
-    sent_any = False
-    for h, runs in heads.items():
-        hs = by_id.get(h, {})
-        working = is_busy(hs)
-        row = {
-            "id": h,
-            "name": hs.get("sessionName") or "(unnamed)",
-            "activity": hs.get("activity"),
-            "working": working,
-            "paused_in_tree": [p["id"] for p in runs],
-        }
-        own_hang = any(p["id"] == h and p["reason"] == "hung" and not p.get("aborted") for p in runs)
-        if hs.get("workerState") == "failed" and not args.dry_run:
-            row["result"] = "skipped: its worker failed, reopen it first (the chat's Resume button does)"
-        elif own_hang and not args.dry_run:
-            row["result"] = "skipped: hung, abort it first (the chat's Resume button does)"
-        elif working and not own_hang and all(p["id"] == h for p in runs):
-            row["result"] = "skipped: already working"
-        elif args.dry_run:
-            row["result"] = "dry-run"
-        else:
-            try:
-                row["result"] = send(h, compose(args.message, h, runs, working))
-            except CommandError as error:
-                row["result"] = {"error": str(error)[:300]}
+    with sending():
+        for h, runs in heads.items():
+            if STOP:
+                break
+            hs = by_id.get(h, {})
+            working = is_busy(hs)
+            row = {
+                "id": h,
+                "name": hs.get("sessionName") or "(unnamed)",
+                "activity": hs.get("activity"),
+                "working": working,
+                "paused_in_tree": [p["id"] for p in runs],
+            }
+            own_hang = any(p["id"] == h and p["reason"] == "hung" and not p.get("aborted") for p in runs)
+            if hs.get("workerState") == "failed" and not args.dry_run:
+                row["result"] = "skipped: its worker failed, reopen it first (the chat's Resume button does)"
+            elif own_hang and not args.dry_run:
+                row["result"] = "skipped: hung, abort it first (the chat's Resume button does)"
+            elif working and not own_hang and all(p["id"] == h for p in runs):
+                row["result"] = "skipped: already working"
+            elif args.dry_run:
+                row["result"] = "dry-run"
             else:
-                for p in runs:
-                    state[p["session_id"]] = p["errored_at"]
-                sent_any = True
-        actions.append(row)
+                guards = [(p, send_guard(p)) for p in runs]
+                runs = [p for p, blocked in guards if blocked is None]
+                failed = next((blocked for _, blocked in guards if isinstance(blocked, dict)), None)
+                row["paused_in_tree"] = [p["id"] for p in runs]
+                if failed or not runs:
+                    row["result"] = failed or "skipped: every run below it was stopped on purpose after the pass found it"
+                    actions.append(row)
+                    continue
+                try:
+                    row["result"] = send(h, compose(args.message, h, runs, working))
+                except CommandError as error:
+                    row["result"] = {"error": str(error)[:300]}
+                else:
+                    for p in runs:
+                        state[p["session_id"]] = p["errored_at"]
+                    save_state(args.state, state, now, args.since_minutes)
+            actions.append(row)
 
     child_actions = []
     if args.include_children:
-        for p in paused:
-            if p["id"] in heads:
-                continue
-            if args.dry_run:
-                res = "dry-run"
-            elif p["reason"] == "worker_failed":
-                res = "skipped: its worker failed, its head is reopened instead"
-            else:
-                try:
-                    res = send(p["id"], args.message)
-                except CommandError as error:
-                    res = {"error": str(error)[:300]}
+        with sending():
+            for p in paused:
+                if STOP:
+                    break
+                if p["id"] in heads:
+                    continue
+                if args.dry_run:
+                    res = "dry-run"
+                elif p["reason"] == "worker_failed":
+                    res = "skipped: its worker failed, its head is reopened instead"
+                elif (blocked := send_guard(p)) is not None:
+                    res = blocked
                 else:
-                    state[p["session_id"]] = p["errored_at"]
-                    sent_any = True
-            child_actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
+                    try:
+                        res = send(p["id"], args.message)
+                    except CommandError as error:
+                        res = {"error": str(error)[:300]}
+                    else:
+                        state[p["session_id"]] = p["errored_at"]
+                        save_state(args.state, state, now, args.since_minutes)
+                child_actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
 
-    if sent_any:
-        save_state(args.state, state, now, args.since_minutes)
     return {"paused": paused, "heads": actions, "children": child_actions, "message": args.message,
             "since_minutes": args.since_minutes, "checked_at": now.isoformat()}
 
@@ -1302,25 +1519,49 @@ def main():
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.since_minutes or 1e7)
     UNLOADED.update({sid: stamp for sid, stamp in load_unloaded(UNLOADED_FILE).items() if stamp >= since})
 
+    signal.signal(signal.SIGTERM, on_term)
     report = None
     seen = set()
+    incomplete = []
     for box in [LocalBox(), *([] if args.this_box else other_boxes())]:
         try:
             part = resume_box(box, args, seen)
-        except (CommandError, OSError, ValueError) as error:
+        except Stopped:
+            incomplete.append({"host": box.name, "error": stop_note(f"while it checked {box.name or 'this box'}")})
+            break
+        except RecordError as error:
+            sys.stderr.write(f"resume: {box.name or 'this box'}: {error}\n")
+            incomplete.append({"host": box.name, "error": f"sent nothing: {error}"})
+            continue
+        except (CommandError, OSError, ValueError, KeyError) as error:
             if not box.remote:
                 raise SystemExit(str(error))
             sys.stderr.write(f"resume: {box.name}: {error}\n")
+            incomplete.append({"host": box.name, "error": str(error)[:300]})
             continue
         report = part if report is None else {**report, **{key: report[key] + part[key] for key in ("paused", "heads", "children")}}
+        if STOP:
+            incomplete.append({"host": box.name, "error": stop_note(f"during the sends on {box.name or 'this box'}")})
+            break
+    signal.signal(signal.SIGTERM, lambda signum, _frame: STOP.append(signum))
+    report = report or {"paused": [], "heads": [], "children": [], "checked_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    incomplete = [*INCOMPLETE, *incomplete]
+    if incomplete:
+        report["incomplete"] = incomplete
+    if UNRESOLVED:
+        report["unresolved"] = UNRESOLVED
     if args.json:
         print(json.dumps(report, indent=1))
-        return
+        return finish()
 
+    for entry in incomplete:
+        print(f"not finished on {entry['host'] or 'this box'}: {entry['error']}")
+    for entry in UNRESOLVED:
+        print(f"not resumed, cause unknown: {entry['id']}  {entry['name'][:40]}  archived {entry['archived_at']}")
     paused, actions, child_actions = report["paused"], report["heads"], report["children"]
     if not paused:
         print(f"no interrupted live run in the last {args.since_minutes:g} min")
-        return
+        return finish()
     print(f"interrupted runs ({len(paused)}):")
     for p in paused:
         print(f"  {p['id']}  {p['name'][:40]:<40} {p['kind'] or '':<9} head={p['head']}  {p['errored_at']}  {p['error'][:80]}")
@@ -1331,6 +1572,14 @@ def main():
         print(f"\nchildren ({len(child_actions)}):")
         for c in child_actions:
             print(f"  {c['id']}  {c['name'][:40]:<40} head={c['head']} -> {c['result']}")
+    return finish()
+
+
+def finish():
+    """After a stop the pass exits at once with the signal's code, so a relay read still in flight cannot hold it past the caller's kill."""
+    if STOP:
+        sys.stdout.flush()
+        os._exit(128 + STOP[0])
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ Type=oneshot
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/.cache/virev/head-export
 ExecStart=%h/.local/node/bin/node %h/.cache/virev/head-export/current/scripts/dev/run-from-head.mjs %h/Documents/Github/auto-sns-agent scripts/dev/ci-monitor.mjs run --output-dir %h/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/08/0624-ci-access-monitor/logs --interval-seconds 600
-Nice=10
 TimeoutStartSec=15min
 # Until auto-sns-agent 95b09baa50 lands (dashboard limit 60 s to 180 s), the monitor's own chart step times out on this box,
 # so this step draws the charts after each run. Remove it once the tip has that commit.

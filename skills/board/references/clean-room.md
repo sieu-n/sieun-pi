@@ -18,7 +18,7 @@ A clean-room chat gets a real, ordinary task and never learns it is a test. Its 
 6. Run `clean-room.ts evaluate --run <run folder>`, or read the verdict collect left, which is `<run>.pass.md`, `<run>.fail.md`, `<run>.void.md` or `<run>.open.md` next to the run folder. An open run has not reached a state a criterion needs: evaluated before the window ends it keeps running, and one still open at the end needs a new run with a longer window.
 7. On a fail, send the failing criteria with their evidence quotes to the job that owns the change. After its next release, run setup again with a new run folder.
 8. Run a void run again as it is, because someone stepped in and the system did not run alone.
-9. Evaluate tears down every run with a pass, fail or void verdict and every run whose window ended, so nothing is left in the owner's chat list, For you, agents panel or boxes: it stops the run's processes, archives the chat and its jobs, removes their todos and wakes, and deletes the run folder but keeps the verdict file (owner 10-18: "btw when blind test done always clean up").
+9. Evaluate tears down every run with a pass, fail or void verdict and every run whose window ended, so nothing is left in the owner's chat list, For you, agents panel or boxes: it stops the run's processes, archives the chat and its jobs, marks each curated wiki page the chat made as test output with status archived (the wiki API has no delete), removes their todos and wakes, and deletes the run folder but keeps the verdict file (owner 10-18: "btw when blind test done always clean up").
 
 ## Keep it real and safe
 

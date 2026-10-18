@@ -10,9 +10,9 @@ export interface InterruptedRun {
    * "worker_failed": its Prime worker died, so it takes no command; Resume reopens its head from the saved file.
    * "worker_stopped": the daemon shut its worker down in the middle of the turn, which wrote "Request was aborted".
    * "aborted": a step owner's turn was aborted with no reply (--owners). "never_started": a spawned step owner whose worker stopped before its
-   * first task reached it; it gets that task.
+   * first task reached it; it gets that task. "daemon_restart": a daemon restart or a Prime update stopped the turn.
    */
-  reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed" | "worker_stopped" | "aborted" | "never_started";
+  reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed" | "worker_stopped" | "aborted" | "never_started" | "daemon_restart";
   session_id?: string;
   head_session_id?: string;
   /** The box the run is on, when it is not this one. */
@@ -39,4 +39,22 @@ export interface InterruptedReport {
   heads: InterruptedHead[];
   children?: InterruptedChild[];
   checked_at: string;
+  /** Each box the pass did not finish and why, such as a SIGTERM from the caller's timeout while it read another box. `host` null is this box. */
+  incomplete?: { host: string | null; error: string }[];
+  /** Cut runs whose turn an archive with no recorded cause stopped: Prime's archive line has no cause, so they are reported and never resumed. */
+  unresolved?: UnresolvedStop[];
+}
+
+/** What decides whether a run or an unresolved stop belongs to the chats' jobs. */
+export type JobOf = Pick<InterruptedRun, "session_id" | "head_session_id">;
+
+export interface UnresolvedStop {
+  id: string;
+  name: string;
+  session_id: string;
+  head: string;
+  head_session_id: string;
+  archived_at?: string;
+  error: string;
+  host?: string;
 }

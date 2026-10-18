@@ -7,5 +7,4 @@ Wants=network-online.target
 Type=oneshot
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/git -C %h/Documents/Github/auto-sns-agent -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --no-write-fetch-head --no-recurse-submodules --quiet origin +refs/heads/sieun/dev:refs/remotes/origin/sieun/dev
-Nice=10
 TimeoutStartSec=2min
