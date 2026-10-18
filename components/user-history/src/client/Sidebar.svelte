@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { pulseOf, BUCKET_LABEL, createdAge, elapsed, groupRows, inSidebar, matchesQuery, modelShort, money, needsResponse, nextRun, originOf, tabOf, compareRows } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, inSidebar, machinesOf, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, originOf, sidebarSections, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, SIDEBAR_VIEWS, type SidebarSort } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import { treeJobs } from "./jobs.ts";
   import type { Anchor } from "./ui/floating.ts";
@@ -11,6 +11,7 @@
   import PriorityBars from "./PriorityBars.svelte";
   import TagChip from "./TagChip.svelte";
   import ThreadMenu from "./ThreadMenu.svelte";
+  import FilterSelects from "./FilterSelects.svelte";
   import InterruptedRuns from "./InterruptedRuns.svelte";
   import PoolMeters from "./PoolMeters.svelte";
   import StatusMark from "./StatusMark.svelte";
@@ -25,6 +26,8 @@
   let renaming = $state<{ id: string; name: string } | null>(null);
   let menu = $state<{ id: string; at: Anchor } | null>(null);
   let tagging = $state<{ id: string; anchor: HTMLElement } | null>(null);
+  let filterButton: HTMLButtonElement | undefined = $state();
+  let filterOpen = $state(false);
   let list: HTMLElement | undefined = $state();
   let warmTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -33,15 +36,24 @@
   const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
   /** Agent-created rows the archive toggle would let through; the count the toggle under the list names. */
   const agentCreatedCount = $derived(store.sessions.filter(row => originOf(row) === "agent" && (showArchived || !row.archived)).length);
-  const shown = $derived(visible.filter(row => matchesQuery(row, query.trim(), tagMap)));
+  /** The machine has its own row of buttons, so the Filter button counts only what its panel sets. */
+  const filterCount = $derived(activeFilters({ ...ui.sidebarFilter, host: "any" }));
+  const machines = $derived(machinesOf(store.sessions));
+  const host = $derived(ui.sidebarFilter.host);
+  const machineChoices = $derived(host === "any" || machines.includes(host) ? machines : [...machines, host]);
+  const shown = $derived(visible.filter(row => matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)));
   /** Chats sit first, in the grouped order; a chat's own check-in heartbeat never makes it a heartbeat row. */
-  const chats = $derived(shown.filter(row => row.chat).sort(compareRows));
+  const sections = $derived(sidebarSections(shown, ui.sidebarView, ui.sidebarSort));
+  const chats = $derived(sections.chats);
   const chatsNeeding = $derived(chats.filter(needsResponse).length);
   const forYouTotal = $derived(chats.reduce((sum, row) => sum + (row.forYou ?? 0), 0));
   /** Heartbeat threads sit in their own section above Needs response, in the same order as the grouped list. */
-  const beats = $derived(shown.filter(row => !row.chat && tabOf(row) === "heartbeats").sort(compareRows));
+  const beats = $derived(sections.beats);
   const beatsNeeding = $derived(beats.filter(needsResponse).length);
-  const groups = $derived(groupRows(shown.filter(row => !row.chat && tabOf(row) === "threads")));
+  const groups = $derived(sections.groups);
+  const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
+  const VIEW_ICON = { current: "list", tags: "tag", chats: "message" } as const;
+  const setMachine = (next: string) => ui.setSidebarFilter({ ...ui.sidebarFilter, host: next });
   const minute = $derived(Math.floor(clock.now / 60_000));
   /** Freshness marks move on a 5 s step of the page clock. */
   const tick = $derived(Math.floor(clock.now / 5000) * 5000);
@@ -171,7 +183,10 @@
             {:else if row.chat && row.unread && row.unreadCount}<span class="unread-count" role="img" aria-label="{row.unreadCount} unread">{row.unreadCount > 99 ? "99+" : row.unreadCount}</span>
             {:else if row.chat ? row.unread : needsResponse(row)}<span class="dot" role="img" aria-label={row.chat ? "New since you left" : "Needs response"}></span>{/if}
           </span>
-          {#if pulse?.level === "failed" || (!row.working && row.failure)}
+          {#if ui.sidebarView === "tags"}
+          {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
+          {#if shownTags.length}<span class="line sub"><span class="chips all">{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}</span></span>{/if}
+          {:else if pulse?.level === "failed" || (!row.working && row.failure)}
           {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
           <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
           {:else}
@@ -252,7 +267,24 @@
         <Icon name="search" size={14} />
         <input type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query} />
       </label>
+      <div class="segmented view" role="radiogroup" aria-label="Sidebar view">
+        {#each SIDEBAR_VIEWS as view (view)}
+          <button type="button" role="radio" aria-checked={ui.sidebarView === view} class:on={ui.sidebarView === view} aria-label={SIDEBAR_VIEW_LABEL[view]}
+            use:tooltip={SIDEBAR_VIEW_LABEL[view]} onclick={() => ui.setSidebarView(view)}><Icon name={VIEW_ICON[view]} size={14} /></button>
+        {/each}
+      </div>
+      <button type="button" class="filter-button" class:on={filterCount > 0} bind:this={filterButton} aria-haspopup="dialog" aria-expanded={filterOpen}
+        aria-label={filterCount ? `Filter, ${filterCount} active` : "Filter and sort"} use:tooltip={"Filter and sort"} onclick={() => { filterOpen = !filterOpen; }}>
+        <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
+      </button>
     </div>
+    {#if machineChoices.length > 1}
+      <div class="segmented machines" role="radiogroup" aria-label="Machine">
+        {#each ["any", ...machineChoices] as choice (choice)}
+          <button type="button" role="radio" aria-checked={host === choice} class:on={host === choice} onclick={() => setMachine(choice)}>{choice === "any" ? "All" : choice}</button>
+        {/each}
+      </div>
+    {/if}
     <div class="list" bind:this={list}>
       {#if chats.length}
         <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if forYouTotal}<span class="foryou-total" use:tooltip={"Open For you todos across all chats"}>{forYouTotal} for you</span>{/if}{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
@@ -274,7 +306,8 @@
       {#if !groups.length && !beats.length && !chats.length}
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
-          {:else if query}<span>No threads match.</span>
+          {:else if query || filterCount || host !== "any"}<span>No threads match.{#if filterCount || host !== "any"}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
+          {:else if ui.sidebarView === "chats"}No chats yet.
           {:else if agentCreatedCount}Only agent-created threads.
           {:else}No threads yet.{/if}
         </div>
@@ -282,7 +315,7 @@
       {#if archivedCount}
         <button type="button" class="archived-toggle" onclick={() => { showArchived = !showArchived; }}>{showArchived ? "Hide archived" : `Show ${archivedCount} archived`}</button>
       {/if}
-      {#if agentCreatedCount}
+      {#if agentCreatedCount && ui.sidebarView !== "chats"}
         <button type="button" class="archived-toggle" aria-pressed={ui.agentCreatedShown} onclick={() => ui.setAgentCreatedShown(!ui.agentCreatedShown)}>{ui.agentCreatedShown ? "Hide agent-created" : `Show agent-created (${agentCreatedCount})`}</button>
       {/if}
     </div>
@@ -305,6 +338,24 @@
   {@const id = menu.id}
   <ThreadMenu ids={[id]} at={menu.at} onclose={() => { focusRow(id); menu = null; }} onrename={() => { const row = store.session(id); if (row) startRename(row); }}
     onarchive={() => { const row = store.session(id); menu = null; if (row) archive(row); }} />
+{/if}
+{#if filterOpen && filterButton}
+  <Floating anchor={filterButton} width={300} maxHeight={420} label="Filter and sort" onclose={() => { filterOpen = false; }}>
+    <div class="panel-head">
+      <span class="menu-heading">Filter</span>
+      {#if filterCount}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter({ ...emptyRowFilter(), host })}>Clear</button>{/if}
+    </div>
+    <div class="filter-chips"><FilterSelects filter={ui.sidebarFilter} machine={false} onchange={patch => ui.setSidebarFilter({ ...ui.sidebarFilter, ...patch })} /></div>
+    <div class="menu-separator"></div>
+    <div class="menu-heading" id="sidebar-sort">Sort</div>
+    <div role="radiogroup" aria-labelledby="sidebar-sort">
+      {#each SORTS as sort (sort)}
+        <button type="button" class="menu-item" role="radio" aria-checked={ui.sidebarSort === sort} onclick={() => ui.setSidebarSort(sort)}>
+          <span class="check">{#if ui.sidebarSort === sort}<Icon name="check" size={13} />{/if}</span>{SIDEBAR_SORT_LABEL[sort]}
+        </button>
+      {/each}
+    </div>
+  </Floating>
 {/if}
 {#if tagging}
   <Floating anchor={tagging.anchor} width={260} maxHeight={360} label="Tags" onclose={() => { if (tagging) focusRow(tagging.id); tagging = null; }}>
@@ -344,6 +395,20 @@
   .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 13px; }
   .search input::-webkit-search-cancel-button { appearance: none; }
+  .view { flex: none; }
+  .view > button { padding: 0 5px; }
+  .machines { display: flex; margin: 0 10px 6px; overflow-x: auto; scrollbar-width: none; }
+  .machines > button { flex: 1 0 auto; height: 22px; padding: 0 8px; font-size: 11.5px; }
+  .filter-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; min-width: 30px; height: 30px; padding: 0 7px; border-radius: var(--radius-small);
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted); transition: border-color 0.12s, color 0.12s, background-color 0.12s; }
+  .filter-button:hover, .filter-button[aria-expanded="true"] { color: var(--text); border-color: var(--border-strong); }
+  .filter-button.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent-bold); }
+  .filter-count { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; padding-right: 4px; }
+  .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 8px; }
+  .check { display: inline-flex; width: 14px; flex: none; color: var(--accent-bold); }
+  .link-button { padding: 2px 6px; border-radius: var(--radius-small); font-size: 12px; color: var(--accent-bold); }
+  .link-button:hover { background: var(--accent-soft); }
   .count { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; font-weight: 500; }
   .list { flex: 1; overflow-y: auto; padding: 0 6px 10px; }
   .group-label { padding: 12px 8px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }

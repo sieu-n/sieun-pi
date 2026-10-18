@@ -58,11 +58,30 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
   return words.every(word => haystack.includes(word));
 }
 
-/** Sidebar sections: Needs response, Working, then the rest. */
-export function groupRows(rows: readonly SessionRow[]): { bucket: Bucket; rows: SessionRow[] }[] {
+export type SidebarSort = "grouped" | "recent";
+export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, idle", recent: "Chronological" };
+/** Details: each card in full. Tags: only the tag chips under the title. Chats: only chat rows, without heartbeats and plain threads. */
+export type SidebarView = "current" | "tags" | "chats";
+export const SIDEBAR_VIEWS: readonly SidebarView[] = ["current", "tags", "chats"];
+export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Show details", tags: "Show tags only", chats: "Chats only" };
+
+/** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
+export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {
+  if (sort === "recent") return rows.length ? [{ bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
   const sorted = [...rows].sort(compareRows);
   return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ bucket, rows: items }] : []; });
 }
+
+/** The sidebar's three parts for a view: chats first, then heartbeats, then the grouped threads; the Chats view keeps only the chats. */
+export function sidebarSections(rows: readonly SessionRow[], view: SidebarView, sort: SidebarSort = "grouped"): { chats: SessionRow[]; beats: SessionRow[]; groups: ReturnType<typeof groupRows> } {
+  const chats = rows.filter(row => row.chat).sort(compareRows);
+  if (view === "chats") return { chats, beats: [], groups: [] };
+  const beats = rows.filter(row => !row.chat && tabOf(row) === "heartbeats").sort(compareRows);
+  return { chats, beats, groups: groupRows(rows.filter(row => !row.chat && tabOf(row) === "threads"), sort) };
+}
+
+/** The boxes the rows run on, by hosts.json name, for the machine filter. */
+export const machinesOf = (rows: readonly SessionRow[]): string[] => [...new Set(rows.flatMap(row => row.host ? [row.host] : []))].sort();
 
 const MINUTE = 60_000;
 export function elapsed(ms: number): string {
@@ -101,12 +120,12 @@ export function nextRun(value: string | undefined, now = Date.now()): string {
 }
 
 export type SortKey = "status" | "name" | "priority" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
-/** The label filters of the Agents view. "any" means unset; tag also takes "none" for threads without tags. */
-export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; cwd: string; model: string }
+/** The label filters the Agents view and the sidebar share. "any" means unset; tag also takes "none" for threads without tags; host is a hosts.json name. */
+export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; cwd: string; model: string; host: string }
 export interface AgentFilter extends RowFilter { query: string; from: string; to: string; kind: Tab | "any"; origin: Origin | "any"; archived: boolean }
-export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", cwd: "any", model: "any" });
+export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", cwd: "any", model: "any", host: "any" });
 export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "", from: "", to: "", kind: "any", origin: "any", archived: false });
-export const ROW_FILTER_KEYS = ["status", "tag", "priority", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
+export const ROW_FILTER_KEYS = ["status", "tag", "priority", "cwd", "model", "host"] as const satisfies readonly (keyof RowFilter)[];
 export const activeFilters = (filter: RowFilter): number => ROW_FILTER_KEYS.filter(key => filter[key] !== "any").length;
 
 export function matchesRowFilter(row: SessionRow, filter: RowFilter, now = Date.now()): boolean {
@@ -115,6 +134,7 @@ export function matchesRowFilter(row: SessionRow, filter: RowFilter, now = Date.
   if (filter.priority !== "any" && row.priority !== filter.priority) return false;
   if (filter.cwd !== "any" && row.cwd !== filter.cwd) return false;
   if (filter.model !== "any" && (row.model ?? "") !== filter.model) return false;
+  if (filter.host !== "any" && row.host !== filter.host) return false;
   return true;
 }
 
