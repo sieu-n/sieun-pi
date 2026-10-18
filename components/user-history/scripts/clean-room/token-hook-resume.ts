@@ -2,20 +2,20 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readSession, readSessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for the continue after a token hook failure (resume_paused.py, src/unloaded.ts). In the 10-16 to 10-17 hook outage
  * the idle unload stopped 16 root jobs right after their last turn failed on the pi-pool token hook, the resume pass read the stop's archive
  * as a stop on purpose, and none got a continue once the hook worked again. A fresh chat gets one ordinary task for a job. `clean-room.ts
- * kill-hooks` SIGKILLs every pi-pool-token run of the chat's tree, for a window from its first kill after the chat spawned a job, so the
- * tree's turns fail the way they did in the outage. Prime names the worker's root in the hook's session variable, so a subagent's hook
- * cannot be told from its chat's, and the chat fails too, as every chat did in the outage. The run passes when the job's turn ends on the hook failure, the job gets
+ * kill-hooks` SIGKILLs every pi-pool-token run of the chat's create_session root jobs, for a window from its first kill, so their turns fail
+ * the way the 16 roots' did while the chat keeps its token. A subagent's hook names its chat's worker, so a subagent fails and recovers with
+ * its chat, which steered it back first in runs 5 to 7 (10-18); only a root shows whether the resume pass brings a job back. The run passes when the job's turn ends on the hook failure, the job gets
  * a continue from the service after the window with nobody stepping in, the chat answers, and the job the unload stops
  * after it finished gets no continue. The criteria live in the run folder's
  * criteria.md.
  */
-export const TASK = "have a job go through every .ts file under components/user-history/src and, for each exported function longer than 80 lines, write one plain sentence on what it does, put the list in a file, and tell me the ten longest";
+export const TASK = "start a separate thread for this: go through every .ts file under components/user-history/src, write one plain sentence on what each exported function over 80 lines does, put the list in a file, and tell me the ten longest";
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
 const ARTIFACTS = join(HOME, ".prime/agent/session-artifacts");
@@ -29,18 +29,6 @@ interface Check { id: string; ok: boolean | null; detail: string }
 /** One hook run `kill-hooks` stopped. */
 export interface HookKill { at: number; pid: number; session: string }
 
-/** The session ids of the chat's jobs at any depth, from their session files under the chat's folder. */
-function jobIds(chat: string): Set<string> {
-  const ids = new Set<string>();
-  const walk = (dir: string): void => {
-    for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
-      if (entry.isDirectory() && entry.name.startsWith("sub-")) walk(join(dir, entry.name));
-      else if (/^[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl$/.test(entry.name) && dir !== join(ARTIFACTS, chat)) ids.add(entry.name.slice(0, -6));
-    }
-  };
-  walk(join(ARTIFACTS, chat));
-  return ids;
-}
 /**
  * The short ids the hook names the jobs by: Prime sets the hook's session variable to the active id, the last 12 characters of the session id
  * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from `prime-agent list`, with the pids of
@@ -58,6 +46,19 @@ function activeIds(jobs: ReadonlySet<string>): { ids: Set<string>; workers: Set<
     }
   } catch { /* the suffix still matches */ }
   return { ids, workers };
+}
+/**
+ * The chat's create_session root jobs, by the names the chat service files in chat-jobs.json, with their session ids from `prime-agent list`.
+ * Each root runs on its own worker, so its hook names it and not the chat: the 16 jobs the 10-16 to 10-17 outage left dead were all such roots.
+ */
+function rootJobs(chat: string): { id: string; name: string }[] {
+  try {
+    const registry = JSON.parse(readFileSync(join(DATA, "chat-jobs.json"), "utf8")) as { jobs?: Record<string, { chatId?: string }> };
+    const names = new Set(Object.entries(registry.jobs ?? {}).filter(([, entry]) => entry.chatId === chat).map(([name]) => name));
+    if (!names.size) return [];
+    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; sessionName?: string; runtimeKind?: string }[] }).sessions;
+    return rows.flatMap(row => row.sessionId && row.sessionName && names.has(row.sessionName) && row.runtimeKind !== "subagent" ? [{ id: row.sessionId, name: row.sessionName }] : []);
+  } catch { return []; }
 }
 /** The pids of the chat services on this box, which run a hook check for a tree; empty off Linux. */
 function chatServices(): Set<number> {
@@ -130,13 +131,16 @@ export async function killHooks(run: string, until: number, windowMs: number): P
     const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : undefined;
     if (chat && Date.now() - looked > 5000) {
       looked = Date.now();
-      jobs = jobIds(chat);
-      const tree = jobs.size ? activeIds(new Set([chat, ...jobs])) : { ids: new Set<string>(), workers: new Set<number>() };
+      // Only the chat's root jobs: the chat keeps its token, as the chats of the 16 dead roots did, so nothing above a root steers it back.
+      const roots = rootJobs(chat);
+      if (roots.length) writeFileSync(join(run, "roots.json"), JSON.stringify(roots, null, 1));
+      jobs = new Set(roots.map(root => root.id));
+      const tree = jobs.size ? activeIds(jobs) : { ids: new Set<string>(), workers: new Set<number>() };
       active = tree.ids;
       parents = new Set([...tree.workers, ...active.size ? chatServices() : []]);
     }
     for (const hook of active.size ? hookRuns(parents) : []) {
-      if (!active.has(hook.session) && !jobs.has(hook.session) && hook.session !== chat) continue;
+      if (!active.has(hook.session) && !jobs.has(hook.session)) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
       const kill = { at: Date.now(), pid: hook.pid, session: hook.session };
       first ??= kill.at;
@@ -185,7 +189,8 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const checks: Check[] = [];
   const window = existsSync(join(run, "hook-window.json")) ? JSON.parse(readFileSync(join(run, "hook-window.json"), "utf8")) as { from: number | null; to: number | null; kills: number } : null;
   const killed = existsSync(join(run, "kills.jsonl")) ? readFileSync(join(run, "kills.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as HookKill) : [];
-  const files = sessionFiles(chat).filter(file => /\/[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl$/.test(file) && !file.endsWith(`${chat}.jsonl`));
+  const roots = existsSync(join(run, "roots.json")) ? JSON.parse(readFileSync(join(run, "roots.json"), "utf8")) as { id: string; name: string }[] : [];
+  const files = roots.map(root => join(HOME, ".prime/agent/sessions", `${root.id}.jsonl`)).filter(existsSync);
   const jobs = files.map(file => {
     const id = file.split("/").at(-1)!.replace(/\.jsonl$/, "");
     const messages = messagesOf(file);
@@ -206,7 +211,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const unloaded = (() => { try { return JSON.parse(readFileSync(join(DATA, "unloaded.json"), "utf8")) as Record<string, string>; } catch { return {}; } })();
   const stoppedAt = hit && unloaded[hit.id] ? Date.parse(unloaded[hit.id]!) : undefined;
   const service = existsSync(join(DATA, "service.log")) ? readFileSync(join(DATA, "service.log"), "utf8").split("\n") : [];
-  const name = hit ? (() => { try { return (JSON.parse(readFileSync(join(hit.file, "..", "rlm-subagent.json"), "utf8")) as { sessionName?: string }).sessionName ?? ""; } catch { return ""; } })() : "";
+  const name = hit ? roots.find(root => root.id === hit.id)?.name ?? "" : "";
   const continueLine = name ? service.find(line => line.startsWith(`job ${name}: interrupted (error at `) && line.includes("continue:")) : undefined;
   // The fix's path: the idle unload stopped the job between its failed turn and its first input after the window, and that input is the
   // resume pass's continue (its service.log line). Any other input after such a stop fails the run.
