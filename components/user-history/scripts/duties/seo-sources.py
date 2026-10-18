@@ -50,14 +50,13 @@ def gsc_read() -> dict[str, Any]:
     wins = {w.name: w for w in gsc.windows(datetime.fromisoformat(last_final).date())}
     for name in ("d7", "d7_prior"):
         out[name] = {"start": wins[name].start.isoformat(), "end": wins[name].end.isoformat(), **gsc._totals(sess, wins[name])}
-    # Impressions per page over the last 7 final days and the 14 days before them, for dropped_pages in seo-search-visits.ts.
+    # Impressions per page and day over the 17 final days that end on the last one (DROP_BASE_DAYS + DROP_RECENT_DAYS), for dropped_pages
+    # in seo-search-visits.ts, which splits them into its base and recent windows.
     end = datetime.fromisoformat(last_final).date()
-    spans = {"recent": (end - timedelta(days=6), end), "base": (end - timedelta(days=20), end - timedelta(days=7))}
-    out["pages"] = {
-        name: {"start": start.isoformat(), "end": stop.isoformat(),
-               "rows": [{"page": r["page"], "impressions": r["impressions"]} for r in gsc.query(sess, start, stop, ["page"])]}
-        for name, (start, stop) in spans.items()
-    }
+    start = end - timedelta(days=16)
+    rows = gsc.query(sess, start, end, ["page", "date"])
+    out["pages"] = {"start": start.isoformat(), "end": end.isoformat(),
+                    "rows": [{"page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}
     return out
 
 

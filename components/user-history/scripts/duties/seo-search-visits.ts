@@ -26,11 +26,15 @@ export const UNMEASURED = 999_999;
  */
 export const GSC_STALE_DAYS = 3;
 /**
- * dropped_pages: a page with at least DROP_MIN_DAILY impressions a day over the 14 days before the last 7 final days, whose last 7 days
- * average under DROP_SHARE of that. On 10-13 /ja/blog/how-much-does-youtube-pay-per-view went from 136 to 2 impressions a day and
- * /blog/instagram-algorithm to about 0, and nobody saw it for days.
+ * dropped_pages: a page with at least DROP_MIN_DAILY impressions a day over the DROP_BASE_DAYS before the last DROP_RECENT_DAYS final days,
+ * whose last DROP_RECENT_DAYS average under DROP_SHARE of that. A page's base days start at its first day with impressions, so a page
+ * published inside the base window is not averaged over days it did not exist. On 10-13 /ja/blog/how-much-does-youtube-pay-per-view went
+ * from 136 to 2 impressions a day and /blog/instagram-algorithm from 26 to 0, and the old rule (7 days against 14, 20+ a day, every base day
+ * counted) caught neither until 10-15 and the second one never.
  */
-export const DROP_MIN_DAILY = 20;
+export const DROP_RECENT_DAYS = 3;
+export const DROP_BASE_DAYS = 14;
+export const DROP_MIN_DAILY = 5;
 export const DROP_SHARE = 0.2;
 /**
  * unshipped_blog_changes: a commit under apps/blog on the sieun/dev tip that is not on GitHub's sieun/dev UNSHIPPED_AFTER_MS after its commit
@@ -81,9 +85,11 @@ type Err = { error: string };
 interface Window { start: string; end: string; per_day: Record<string, number>; goal_by_source_per_day: Record<string, number> }
 export interface TrafficRead { windows: Record<string, Window>; last_day: Record<string, unknown> & { date: string }; sessions_read: number; top_goal_entries_d28?: { path: string; visits: number }[] }
 interface Totals { start: string; end: string; clicks: number; impressions: number; position: number | null }
-export interface PageImpressions { page: string; impressions: number }
-export interface PagesWindow { start: string; end: string; rows: PageImpressions[] }
-export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: { base: PagesWindow; recent: PagesWindow } }
+export interface PageDay { page: string; date: string; impressions: number }
+/** Search Console impressions per page and day over the DROP_BASE_DAYS + DROP_RECENT_DAYS days that end on the last final day. */
+export interface PagesDaily { start: string; end: string; rows: PageDay[] }
+export interface Span { start: string; end: string }
+export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: PagesDaily }
 export interface SignupsRead { clerk_users: number; d28: number; attribution: string; attribution_error?: string; matched?: number; by_section?: Record<string, number> }
 export interface TipCommit { sha: string; committedAt: number; subject: string }
 export interface ShipRead { tipRef: string; commits: TipCommit[] }
@@ -93,16 +99,31 @@ export interface DroppedPage { page: string; baseDaily: number; recentDaily: num
 
 const isErr = (value: unknown): value is Err => typeof value === "object" && value !== null && "error" in value;
 const daysBetween = (from: string, to: string): number => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
-const daysIn = (window: Pick<PagesWindow, "start" | "end">): number => daysBetween(window.start, window.end) + 1;
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
+const addDays = (day: string, days: number): string => new Date(Date.parse(day) + days * 86_400_000).toISOString().slice(0, 10);
 
-/** The pages that fell, from Search Console impressions per page over the base window and the recent one, biggest base first. */
-export function droppedPages(base: PagesWindow, recent: PagesWindow): DroppedPage[] {
-  const recentByPage = new Map(recent.rows.map(row => [row.page, row.impressions]));
-  return base.rows.flatMap(row => {
-    const baseDaily = row.impressions / daysIn(base);
-    const recentDaily = (recentByPage.get(row.page) ?? 0) / daysIn(recent);
-    return baseDaily >= DROP_MIN_DAILY && recentDaily < DROP_SHARE * baseDaily ? [{ page: row.page, baseDaily: round(baseDaily, 1), recentDaily: round(recentDaily, 1) }] : [];
+/** The base and recent windows of dropped_pages for a last final day. */
+export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
+  const recentStart = addDays(lastFinal, 1 - DROP_RECENT_DAYS);
+  return { base: { start: addDays(recentStart, -DROP_BASE_DAYS), end: addDays(recentStart, -1) }, recent: { start: recentStart, end: lastFinal } };
+}
+
+/** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first. */
+export function droppedPages(daily: PagesDaily): DroppedPage[] {
+  const { base, recent } = dropWindows(daily.end);
+  const pages = new Map<string, { first: string; base: number; recent: number }>();
+  for (const { page, date, impressions } of daily.rows) {
+    if (date < base.start || date > recent.end) continue;
+    const entry = pages.get(page) ?? { first: date, base: 0, recent: 0 };
+    if (date < entry.first) entry.first = date;
+    if (date <= base.end) entry.base += impressions; else entry.recent += impressions;
+    pages.set(page, entry);
+  }
+  return [...pages].flatMap(([page, entry]) => {
+    if (entry.first > base.end) return [];
+    const baseDaily = entry.base / (daysBetween(entry.first, base.end) + 1);
+    const recentDaily = entry.recent / DROP_RECENT_DAYS;
+    return baseDaily >= DROP_MIN_DAILY && recentDaily < DROP_SHARE * baseDaily ? [{ page, baseDaily: round(baseDaily, 1), recentDaily: round(recentDaily, 1) }] : [];
   }).sort((a, b) => b.baseDaily - a.baseDaily);
 }
 
@@ -144,8 +165,8 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   else if (!gsc.last_final || !gsc.d7 || !gsc.pages) fail("Search Console (virev_seo.gsc)", `no final day in the 10 days before ${gsc.today}`, gscKeys);
   else if (daysBetween(gsc.last_final, gsc.today) > GSC_STALE_DAYS) fail("Search Console (virev_seo.gsc)", `the last final day is ${gsc.last_final}, ${daysBetween(gsc.last_final, gsc.today)} days before ${gsc.today}`, gscKeys);
   else {
-    const { base, recent } = gsc.pages;
-    const dropped = droppedPages(base, recent);
+    const { base, recent } = dropWindows(gsc.pages.end);
+    const dropped = droppedPages(gsc.pages);
     metrics.dropped_pages = dropped.length;
     flagged.push({ at, kind: "dropped_pages", excerpt: dropped.length
       ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
