@@ -1,6 +1,7 @@
-// Guards three duty runner faults found by the duty failures page on 2026-10-18. Whole system (AI harness chat) got 30 skipped records in 72
+// Guards four duty runner faults found by the duty failures page on 2026-10-18. Whole system (AI harness chat) got 30 skipped records in 72
 // runs from 10-15 to 10-18, one per slot that came while a run's job start waited up to 2 h. GeoNode proxy use read working_exits_dropped
-// 999999 in every run and counted it as a miss. Wiki dream's 10-18 04:23Z run on us-metal02 failed git log on ~/Documents/Github/sieun-pi, a Mac path.
+// 999999 in every run and counted it as a miss. Wiki dream's 10-18 04:23Z run on us-metal02 failed git log on ~/Documents/Github/sieun-pi, a Mac path. At 05:20Z
+// 8 red duties had no live fix job and nothing ran them until their next daily slot, so a red duty now gets a push run.
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
@@ -9,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { type Duty, type DutyMetric, judge } from "../src/shared/chat-duties.ts";
+import { dailySlot, type Duty, type DutyMetric, judge } from "../src/shared/chat-duties.ts";
+import type { ChatBoard, CheckInView, PlanItem } from "../src/shared/types.ts";
 import { piCheckout } from "../scripts/duties/wiki-dream.ts";
 
 const CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200";
@@ -97,4 +99,71 @@ test("wiki-dream finds the sieun-pi checkout from a release folder on any box", 
     assert.equal(piCheckout(join(checkout, "components/user-history/scripts/duties"), undefined), checkout);
     assert.equal(piCheckout(join(release, "components/user-history/scripts/duties"), "/elsewhere/sieun-pi"), "/elsewhere/sieun-pi");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+const PUSH_NOW = Date.parse("2026-10-18T05:20:00Z");
+const RED = { clean_min_30: { value: 2, target: 30, op: ">=" as const, met: false } };
+
+/** A daily duty that is not due, one missed run 3 h old with an ended job, and the chat's check-in every 2 h; `change` sets up each case. */
+async function pushCase(change: { after?: "met"; working?: boolean; liveFix?: boolean; lastAgoMin?: number } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "duty-push-"));
+  const precheck = join(dir, "precheck.mjs");
+  await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { clean_min_30: 2 } }));`);
+  const store = new DutyStore(dir);
+  const lastSlotAt = dailySlot("07:00", PUSH_NOW);
+  const duty: Duty = {
+    id: "d1", name: "Portal stays up", ownerWords: "keep the portal up", goal: "clean minutes",
+    metrics: [{ key: "clean_min_30", label: "Clean minutes", op: ">=", target: 30, headline: true }], schedule: { kind: "daily", at: "07:00" },
+    precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix it", status: "active",
+    createdAt: PUSH_NOW - 3 * 24 * 60 * MIN, updatedAt: PUSH_NOW - 3 * 24 * 60 * MIN, runCount: 1, lastSlotAt, lastRunAt: lastSlotAt,
+  };
+  await store.update(CHAT, duties => { duties.push(duty); });
+  const at = PUSH_NOW - (change.lastAgoMin ?? 180) * MIN;
+  await store.appendRun(CHAT, { duty: "d1", at, slot: at, trigger: "schedule", ms: 1000, verdict: "missed", metrics: RED, summary: "clean_min_30 2 < 30",
+    job: { id: "job-0", name: "Portal stays up 1" },
+    ...change.after ? { after: { at: at + 30 * MIN, verdict: "met" as const, metrics: { clean_min_30: { ...RED.clean_min_30, value: 31, met: true } }, summary: "met" } } : {} });
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [],
+    plan: [{ id: "p7", text: "Fix the portal", status: "doing", job: "fix-job", duty: "d1/clean_min_30", children: [] } as PlanItem] };
+  const started: string[] = [];
+  const lines: string[] = [];
+  const duties = new Duties(store, {
+    isChat: async () => true, now: () => PUSH_NOW, tickMs: 0, node: process.execPath, log: line => lines.push(line),
+    jobs: {
+      chat: async id => ({ id, name: "Ops", cwd: dir, board: id }),
+      working: async () => change.working ?? false,
+      retire: async () => {},
+      start: async (_chat, name) => { started.push(name); return { id: `job-${started.length}`, name }; },
+    },
+    checkIn: { view: async () => ({ everyMs: 120 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
+    board: async () => board,
+    fixLive: async () => change.liveFix ?? false,
+  });
+  await duties.tick();
+  await duties.settled();
+  const runs = await store.runs(CHAT);
+  const [after] = await store.list(CHAT);
+  duties.close();
+  await rm(dir, { recursive: true, force: true });
+  return { runs, after: after!, started, lines, lastSlotAt };
+}
+
+test("a red daily duty with no job at work gets a push run at the check-in interval, and its schedule stays", async () => {
+  const { runs, after, started, lines, lastSlotAt } = await pushCase();
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0]!.trigger, "push");
+  assert.equal(runs[0]!.verdict, "missed");
+  assert.equal(runs[0]!.slot, PUSH_NOW);
+  assert.equal(runs[0]!.job?.id, "job-1");
+  assert.equal(started.length, 1);
+  assert.equal(after.lastSlotAt, lastSlotAt);
+  assert.equal(after.lastRunAt, lastSlotAt);
+  assert.ok(lines.some(line => line.includes("red on clean_min_30") && line.includes("a push run starts")));
+});
+
+test("no push run when the after-job measure is met, a fix job is live, the last job works, or the newest run is younger than the interval", async () => {
+  for (const change of [{ after: "met" as const }, { liveFix: true }, { working: true }, { lastAgoMin: 60 }]) {
+    const { runs, started } = await pushCase(change);
+    assert.equal(runs.length, 1, JSON.stringify(change));
+    assert.equal(started.length, 0, JSON.stringify(change));
+  }
 });

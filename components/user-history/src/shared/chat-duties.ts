@@ -79,7 +79,8 @@ export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutySta
 
 /** What started a run: its schedule, a catch-up, or the owner's Run now. */
 /** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
-export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify";
+/** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/chat-duty-run.ts). */
+export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean }
 /** A duty job the server started: its session id and name. */

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
-import type { CheckInActor } from "./checkin-settings.ts";
+import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
@@ -11,7 +11,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
-import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
@@ -153,10 +153,29 @@ type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | n
 /** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
 type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string } | null;
 
+/** What a tick reads once per chat for its push runs: the chat's runs, newest first, and its check-in interval. */
+type PushContext = { runs: DutyRunRecord[]; everyMs: number };
+
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 /** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
 const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
+
+/**
+ * The counted metrics a push run of a standing duty goes after, or null when the duty gets no push now. `runs` are the duty's runs, newest
+ * first. The duty is red when its newest met-or-missed run (`effectiveRun`, so a run whose after-job measure is met counts green) missed a
+ * counted metric. It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
+ * cadence for the chat. Without it a red daily duty waited a whole day after its fix job ended, and forever when its job did not start: from
+ * 10-16 to 10-18 four daily duties sat red with no job for 1 to 2 days after "the catalog cannot list the chat".
+ */
+export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, everyMs: number, now: number): string[] | null {
+  const newest = runs[0];
+  if (!newest || now - newest.at < everyMs) return null;
+  const measured = runs.map(effectiveRun).find(run => run.verdict === "met" || run.verdict === "missed");
+  if (measured?.verdict !== "missed") return null;
+  const keys = missedKeys(measured).filter(key => counted.has(key));
+  return keys.length ? keys : null;
+}
 
 /** The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck. */
 export function stuckFindings(misses: readonly MetricStreak[]): string {
@@ -238,16 +257,38 @@ export class Duties {
         const board = await this.host.board?.(chatId).catch(() => null);
         if (board && !this.boards.has(chatId)) this.boards.set(chatId, board);
       }
+      let context: Promise<PushContext> | undefined;
+      const pushContext = () => context ??= Promise.all([this.store.runs(chatId), this.host.checkIn?.view(chatId).catch(() => null)])
+        .then(([runs, checkIn]) => ({ runs, everyMs: checkIn?.everyMs ?? CHECK_IN_MS }));
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
         else if (due.kind === "run" && !this.start(chatId, duty.id, due.trigger, due.slot)) await this.skipBusy(chatId, duty, due.slot);
+        else if (due.kind === "no" && duty.status === "active") await this.push(chatId, duty, pushContext);
       }
     }
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
     await this.stopEnded(runs);
     await this.retireGone(gone);
+  }
+
+  /**
+   * Starts a push run of a red standing duty that is not due (`pushMisses`) when no job is at work on it: its last duty job has ended, and no
+   * open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts as ended, so the push run's own
+   * start records why it failed. The push run is an ordinary run that leaves the schedule where it was.
+   */
+  private async push(chatId: string, duty: Duty, context: () => Promise<PushContext>): Promise<void> {
+    if (this.running.has(`${chatId}/${duty.id}`)) return;
+    const { runs, everyMs } = await context();
+    const own = runs.filter(run => run.duty === duty.id);
+    const misses = pushMisses(own, verdictKeys(duty.metrics), everyMs, this.now());
+    if (!misses) return;
+    const last = own.find(run => run.job)?.job;
+    if (last && await this.host.jobs.working(last).catch(() => false)) return;
+    const board = await this.host.board?.(chatId).catch(() => null) ?? null;
+    if (Object.values(await this.fixesOn(board, chatId, duty.id, misses)).some(fix => fix.live)) return;
+    if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
   }
 
   /**
@@ -712,7 +753,8 @@ export class Duties {
     const started = this.now();
     const at = slot ?? started;
     this.steps.set(key, { at: started, step: "measuring" });
-    await this.store.update(chatId, duties => {
+    // A push run leaves lastRunAt and lastSlotAt alone, since they set when the duty is due next.
+    if (trigger !== "push") await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
       if (!found) return;
       found.lastRunAt = started;
