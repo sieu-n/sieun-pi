@@ -21,8 +21,9 @@ or when its commit was rebased off main. --rollback onto a commit not built yet 
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
-A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
-A release that was left that restart makes it at its end even when another release waits, so the chat never trails current by more than one build.
+A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), and that release makes it as soon as it takes
+the lock, before its own build, so a build that hangs or fails never holds the chat on older code.
+A restart counts as applied only while the service manager reports the service running (systemctl is-active, launchctl print).
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main.`;
 
 const LABEL = "com.sieun.agent-chat";
@@ -234,24 +235,33 @@ function waiting(home) {
 const OWED = "restart.owed";
 
 /**
- * Restarts the service for this release, or for an earlier one whose restart it owes (restart.owed), unless a release that descends from `sha`
- * waits for the lock: that one then restarts once for all of them. On us-metal02 releases from several jobs restarted the chat 6 times between
- * 04:39 and 04:52Z on 10-18, and each restart cut frontend bro's check-in job between its turn-queue admission and its creation.
- * A release that found restart.owed when it took the lock (`inherited`) restarts now instead of leaving it again: on 10-18 a steady queue of
- * releases passed one restart on 12 times and the chat ran code 51 min older than current.
+ * Restarts the service for this release unless the chat already runs current, or leaves it in restart.owed when a release that descends from
+ * `sha` waits for the lock. That waiter pays it as soon as it takes the lock (payOwed), before its own build, so a waiter whose build hangs or
+ * fails never holds the chat on older code: on 10-18 a steady queue of releases passed one restart on 12 times and the chat ran code 51 min
+ * older than current.
  */
-function restart(options, home, sha, inherited) {
+function restart(options, home, sha) {
   const owed = join(home, OWED);
   if (applied(home)) { rmSync(owed, { force: true }); return; }
   if (!options.kickstart && !existsSync(owed)) return;
   const later = waiting(home).filter(entry => spawnSync("git", ["-C", options.repo, "merge-base", "--is-ancestor", sha, entry.sha], { env: gitEnv }).status === 0);
-  if (later.length && !inherited) {
+  if (later.length) {
     writeFileSync(owed, JSON.stringify({ sha, at: new Date().toISOString() }) + "\n");
-    log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which restarts once for both`);
+    log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which makes it when it takes the lock`);
     return;
   }
-  if (later.length) log(`restarting now for the restart this release was left, before the waiting release of ${later.map(entry => entry.sha.slice(0, 7)).join(", ")}`);
   kickstart(home);
+  rmSync(owed, { force: true });
+}
+
+/** Makes the restart restart.owed holds, onto the release current already points at, right after this release takes the lock. */
+function payOwed(home) {
+  const owed = join(home, OWED);
+  if (!existsSync(owed)) return;
+  if (!applied(home)) {
+    log(`restarting onto ${liveRelease(home)} for the restart this release was left (restart.owed), before its own build`);
+    kickstart(home);
+  }
   rmSync(owed, { force: true });
 }
 
@@ -260,6 +270,16 @@ const STARTED = "started.json";
 const readText = path => { try { return readFileSync(path, "utf8"); } catch { return null; } };
 const unitDir = () => process.env.SIEUN_PI_CHAT_UNIT_DIR || join(homedir(), ".config/systemd/user");
 const systemd = () => (process.env.SIEUN_PI_CHAT_SERVICE_MANAGER || (process.platform === "linux" ? "systemd" : "launchd")) === "systemd";
+const systemctl = () => process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl";
+const launchctl = () => process.env.SIEUN_PI_CHAT_LAUNCHCTL || "/bin/launchctl";
+const launchdTarget = () => `gui/${userInfo().uid}/${LABEL}`;
+
+/** Whether the service manager reports the chat service running now: systemctl is-active, or launchctl print's state line. */
+function serviceRunning() {
+  if (systemd()) return spawnSync(systemctl(), ["--user", "is-active", "--quiet", UNIT], { stdio: "ignore" }).status === 0;
+  const printed = spawnSync(launchctl(), ["print", launchdTarget()], { encoding: "utf8" });
+  return printed.status === 0 && /^\s*state = running\s*$/m.test(printed.stdout);
+}
 
 /** The live release's deploy/linux unit texts, null for one it lacks, when they differ from the installed ones; null when they match or it has no service unit. */
 function unitsToInstall(home) {
@@ -270,12 +290,13 @@ function unitsToInstall(home) {
 }
 
 /**
- * Whether the chat runs current: the service was last started by a release when current pointed where it points now (started.json), and on
- * systemd the installed units are current's. A --no-kickstart release or a changed unit file leaves this false until a release restarts.
+ * Whether the chat runs current: the last restart a release made was onto the release current points at now (started.json), on systemd the
+ * installed units are current's, and the service manager reports the service running. The marker alone proves only what was started, so a
+ * stopped service, a --no-kickstart release or a changed unit file leaves this false until a release restarts.
  */
 function applied(home) {
   const started = (() => { try { return JSON.parse(readText(join(home, STARTED))).id; } catch { return null; } })();
-  return typeof started === "string" && started === liveRelease(home) && !(systemd() && unitsToInstall(home));
+  return typeof started === "string" && started === liveRelease(home) && !(systemd() && unitsToInstall(home)) && serviceRunning();
 }
 
 /**
@@ -283,21 +304,22 @@ function applied(home) {
  * 5182, the socket takes it, the service starts on the socket's fd. A release without the socket unit (a rollback) takes the socket away the same
  * way, since its code binds the port itself. False when the units match and a plain restart is enough.
  */
-function switchUnits(home, systemctl) {
+function switchUnits(home) {
+  const ctl = systemctl();
   const wants = unitsToInstall(home);
   if (!wants) return false;
   const units = unitDir();
   log(`installing ${Object.keys(wants).filter(name => wants[name] !== null).join(" and ")} from ${join(home, "current", "deploy/linux")} into ${units}`);
   mkdirSync(units, { recursive: true });
-  if (wants[SOCKET] === null && readText(join(units, SOCKET)) !== null) spawnSync(systemctl, ["--user", "disable", "--now", SOCKET], { stdio: ["ignore", process.stderr, process.stderr] });
+  if (wants[SOCKET] === null && readText(join(units, SOCKET)) !== null) spawnSync(ctl, ["--user", "disable", "--now", SOCKET], { stdio: ["ignore", process.stderr, process.stderr] });
   for (const [name, text] of Object.entries(wants)) {
     if (text === null) rmSync(join(units, name), { force: true });
     else writeFileSync(join(units, name), text, { mode: 0o644 });
   }
-  run(systemctl, ["--user", "daemon-reload"], process.cwd());
-  run(systemctl, ["--user", "stop", UNIT], process.cwd());
-  if (wants[SOCKET] !== null) run(systemctl, ["--user", "enable", "--now", SOCKET], process.cwd());
-  run(systemctl, ["--user", "start", UNIT], process.cwd());
+  run(ctl, ["--user", "daemon-reload"], process.cwd());
+  run(ctl, ["--user", "stop", UNIT], process.cwd());
+  if (wants[SOCKET] !== null) run(ctl, ["--user", "enable", "--now", SOCKET], process.cwd());
+  run(ctl, ["--user", "start", UNIT], process.cwd());
   return true;
 }
 
@@ -305,12 +327,8 @@ function switchUnits(home, systemctl) {
 function kickstart(home) {
   const id = liveRelease(home);
   if (systemd()) {
-    const systemctl = process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl";
-    if (!switchUnits(home, systemctl)) run(systemctl, ["--user", "restart", UNIT], process.cwd());
-  } else {
-    const launchctl = process.env.SIEUN_PI_CHAT_LAUNCHCTL || "/bin/launchctl";
-    run(launchctl, ["kickstart", "-k", `gui/${userInfo().uid}/${LABEL}`], process.cwd());
-  }
+    if (!switchUnits(home)) run(systemctl(), ["--user", "restart", UNIT], process.cwd());
+  } else run(launchctl(), ["kickstart", "-k", launchdTarget()], process.cwd());
   writeFileSync(join(home, STARTED), JSON.stringify({ id, at: new Date().toISOString() }) + "\n");
 }
 
@@ -335,11 +353,11 @@ async function main() {
   }
   if (!live) checkNewer(options.repo, home, sha, options.rollback);
   await takeLock(home, sha);
-  held = { options, home, sha, inherited: existsSync(join(home, OWED)) };
+  payOwed(home);
   const kept = holding();
   if (kept) {
     log(applied(home) ? `${short} already live in ${kept}; nothing to do` : `${short} is already in ${kept}, which the chat does not run yet with its units`);
-    restart(options, home, releaseCommit(options.repo, resolve(home, kept)) ?? sha, held.inherited);
+    restart(options, home, releaseCommit(options.repo, resolve(home, kept)) ?? sha);
     console.log(kept);
     return;
   }
@@ -350,19 +368,12 @@ async function main() {
   const before = liveRelease(home);
   flip(home, id);
   log(`current: ${before ?? "(none)"} -> ${id}`);
-  restart(options, home, sha, held.inherited);
+  restart(options, home, sha);
   console.log(id);
 }
 
-/** Set once this process holds the lock: a release that fails after that still restarts for one whose restart it owes. */
-let held = null;
-
 main().catch(error => {
   log(error.message);
-  // A release that fails after it took the lock still restarts for one that left it the restart.
-  if (held && existsSync(join(held.home, OWED))) {
-    try { restart({ ...held.options, kickstart: false }, held.home, held.sha, held.inherited); } catch (restartError) { log(restartError.message); }
-  }
   if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
   process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : 1);
