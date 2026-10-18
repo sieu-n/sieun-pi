@@ -103,8 +103,9 @@ class HookWriter:
     def prune(self, cfg, now):
         """Drop expired cooldowns and limits, admissions older than
         ADMISSION_KEEP_SEC, moves older than a day, waits whose slot passed
-        WAIT_STALE_SEC ago, and sessions that have not vended for pin_ttl_sec.
-        Returns whether anything changed, so a request that prunes nothing does
+        WAIT_STALE_SEC ago, and sessions that have not vended for pin_ttl_sec, and
+        moves a record quiet for active_session_sec with no wait to the session
+        archive (registry.Sessions). Returns whether anything changed, so a request that prunes nothing does
         not rewrite the file. Liveness is NOT a pid test: a session resumed in a
         new worker keeps its pin, which is the whole point of keying by uuid."""
         dropped = 0
@@ -135,11 +136,11 @@ class HookWriter:
                         admissions[account_id] = kept
                     else:
                         del admissions[account_id]
-        ttl = cfg["pin_ttl_sec"]
+        ttl, quiet = cfg["pin_ttl_sec"], cfg["active_session_sec"]
+        archived = 0
         for key in list(self._state["sessions"]):
             rec = self._state["sessions"][key]
-            last = max([rec.get("last_seen") or 0]
-                       + [(p or {}).get("at", 0) for p in (rec.get("pins") or {}).values()])
+            last = registry.last_active(rec)
             if now - last > ttl:
                 del self._state["sessions"][key]
                 dropped += 1
@@ -157,7 +158,12 @@ class HookWriter:
                         moves[provider] = kept
                     else:
                         del moves[provider]
-        return dropped > 0
+            if now - last > quiet and not rec.get("wait") and registry.archive_record(key, rec):
+                del self._state["sessions"][key]
+                archived += 1
+        if archived:
+            registry.sweep_archive(now, ttl)
+        return dropped + archived > 0
 
 
 class IntentWriter:
@@ -223,6 +229,10 @@ class IntentWriter:
             prov["pin"] = None
         for key in ("disabled", "cooldowns", "cooldown_reasons", "limits", "admissions"):
             (prov.get(key) or {}).pop(account_id, None)
+        for key, rec in registry.each_archived():
+            if ((rec.get("pins") or {}).get(provider) or {}).get("account_id") == account_id:
+                del rec["pins"][provider]
+                registry.archive_record(key, rec)
         for rec in self._state["sessions"].values():
             pins = rec.get("pins") or {}
             if (pins.get(provider) or {}).get("account_id") == account_id:
@@ -637,7 +647,9 @@ def vend(provider):
                 base.save_json(base.STATE, state)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
-        account = last_vend_account(base.load_json(base.STATE, {}) or {}, key, provider, accounts, time.time())
+        unlocked = base.load_json(base.STATE, {}) or {}
+        unlocked["sessions"] = registry.Sessions(unlocked.get("sessions") or {}, time.time(), cfg["pin_ttl_sec"])
+        account = last_vend_account(unlocked, key, provider, accounts, time.time())
         if account is None:
             raise
         token, source = credential_for(account, cfg)

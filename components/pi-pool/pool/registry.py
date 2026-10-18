@@ -108,6 +108,7 @@ def tree_records(state, key):
     sessions = state["sessions"]
     recs = [sessions[key.key]] if key.key in sessions else []
     if key.active_id:
+        sessions.get(key.active_id)  # brings an archived record filed under the short id back for the scan below
         recs += [rec for k, rec in sessions.items()
                  if k != key.key and not rec.get("uuid") and rec.get("active_id") == key.active_id]
     return recs
@@ -241,6 +242,8 @@ def resolve_session_arg(id_str, state):
         return SessionKey(id_str, rec.get("uuid"), rec.get("active_id"))
     hits = [k for k, rec in state["sessions"].items()
             if rec.get("active_id") == id_str or k.startswith(id_str)]
+    if not hits:
+        hits = [k for k, rec in each_archived() if rec.get("active_id") == id_str or k.startswith(id_str)]
     if len(hits) == 1:
         rec = state["sessions"][hits[0]]
         return SessionKey(hits[0], rec.get("uuid"), rec.get("active_id"))
@@ -375,4 +378,127 @@ def normalize(raw, now, pin_ttl=base.DEFAULTS["pin_ttl_sec"]):
 
 def load_state():
     """Read state.json. Call under the pool flock."""
-    return normalize(base.load_json(base.STATE, {}) or {}, time.time(), base.config()["pin_ttl_sec"])
+    now, ttl = time.time(), base.config()["pin_ttl_sec"]
+    state = normalize(base.load_json(base.STATE, {}) or {}, now, ttl)
+    state["sessions"] = Sessions(state["sessions"], now, ttl)
+    return state
+
+
+# The session archive: one file per session record that has gone quiet. state.json holds only the records a
+# full scan can count (in_use_counts, waits, admissions all look back at most active_session_sec), and every
+# hook reads and writes all of state.json under the pool flock. On us-metal02 on 10-18 it held 7,718 records,
+# 5,886 of them quiet for over a day, the 2.7 MB file cost about 80 ms a hold, and the flock was held 91% of
+# the time. A record looked up by key comes back from the archive whole, so pins, models, moves and priority
+# work as before.
+SAFE_KEY = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$")
+
+
+def archive_dir():
+    return os.path.join(base.POOL, "sessions-archive")
+
+
+def last_active(rec):
+    """When a session record last changed: its last request or its newest pin."""
+    return max([rec.get("last_seen") or 0] + [(p or {}).get("at", 0) for p in (rec.get("pins") or {}).values()])
+
+
+def archive_record(key, rec):
+    """Write one record to the archive in one rename. False for a key that is no plain file name."""
+    if not SAFE_KEY.match(key):
+        return False
+    folder = archive_dir()
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    path = os.path.join(folder, key + ".json")
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(rec, separators=(",", ":")))
+    os.chmod(tmp, 0o600)
+    stamp = last_active(rec)
+    os.utime(tmp, (stamp, stamp))
+    os.replace(tmp, path)
+    return True
+
+
+def archived_record(key, now, pin_ttl):
+    """The archived record under `key` with its expired pins dropped, or None when there is none or it is older than pin_ttl."""
+    if not isinstance(key, str) or not SAFE_KEY.match(key):
+        return None
+    rec = base.load_json(os.path.join(archive_dir(), key + ".json"))
+    if not isinstance(rec, dict) or now - last_active(rec) > pin_ttl:
+        return None
+    return normalize({"version": 2, "sessions": {key: rec}}, now, pin_ttl)["sessions"][key]
+
+
+def sweep_archive(now, pin_ttl):
+    """Delete archived records quiet for over pin_ttl, which prune would have dropped from state.json, by the file's mtime,
+    which archive_record sets to the record's last activity; and temp files a killed writer left."""
+    try:
+        entries = list(os.scandir(archive_dir()))
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        try:
+            if now - entry.stat().st_mtime > pin_ttl or (".tmp." in entry.name and not pid_alive(entry.name.rsplit(".", 1)[-1])):
+                os.remove(entry.path)
+        except FileNotFoundError:
+            pass
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def each_archived():
+    """(key, record) for every archived record, for the rare command that must change them all (forget_account)."""
+    try:
+        names = sorted(os.listdir(archive_dir()))
+    except FileNotFoundError:
+        return
+    for name in names:
+        if name.endswith(".json"):
+            rec = base.load_json(os.path.join(archive_dir(), name))
+            if isinstance(rec, dict):
+                yield name[:-5], rec
+
+
+class Sessions(dict):
+    """state["sessions"]: the records in state.json, and on a lookup by key (`in`, [], get, setdefault) the
+    archived record under that key, which then joins state.json at the next save. Iterating sees state.json's
+    records only."""
+
+    def __init__(self, hot, now, pin_ttl):
+        super().__init__(hot)
+        self._now, self._ttl, self._absent = now, pin_ttl, set()
+
+    def _promote(self, key):
+        if key in self._absent:
+            return None
+        rec = archived_record(key, self._now, self._ttl)
+        if rec is None:
+            self._absent.add(key)
+        else:
+            dict.__setitem__(self, key, rec)
+        return rec
+
+    def __missing__(self, key):
+        rec = self._promote(key)
+        if rec is None:
+            raise KeyError(key)
+        return rec
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or self._promote(key) is not None
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            dict.__setitem__(self, key, default)
+        return dict.__getitem__(self, key)

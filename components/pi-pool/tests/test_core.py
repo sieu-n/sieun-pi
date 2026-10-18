@@ -504,6 +504,65 @@ class OneHoldStay(unittest.TestCase):
             self.assertEqual(vending.credential_for(B, CFG), ("new", "refreshed"))
             self.assertEqual(locked, ["anthropic"])
 
+
+class SessionArchive(unittest.TestCase):
+    """us-metal02, 10-18: state.json held 7,718 session records, 5,886 quiet for over a day, and every hook read
+    and wrote all 2.7 MB of it under the pool flock, which was held 91% of the time."""
+
+    def setUp(self):
+        import shutil
+        shutil.rmtree(registry.archive_dir(), ignore_errors=True)
+
+    def sessions(self, records, now=NOW):
+        return registry.Sessions(records, now, CFG["pin_ttl_sec"])
+
+    def test_prune_moves_quiet_records_out_and_a_lookup_by_key_brings_them_back_whole(self):
+        quiet = NOW - CFG["active_session_sec"] - 1
+        old = {"uuid": "old", "active_id": "o1", "last_seen": quiet, "priority": "high",
+               "pins": {"anthropic": {"account_id": "b", "at": quiet, "by": "owner"}},
+               "vends": {"anthropic": vend_record("b", quiet)}, "moves": {"anthropic": [quiet]}}
+        waiting = {"uuid": "w", "active_id": "w1", "last_seen": quiet, "pins": {},
+                   "wait": {"anthropic": {"account": "a", "slot_at": NOW + 60, "since": quiet}}}
+        live = {"uuid": "live", "active_id": "l1", "last_seen": NOW - 5, "pins": {}, "vends": {"anthropic": vend_record("a", NOW - 5)}}
+        state = state_v2()
+        state["sessions"] = self.sessions({"old": json.loads(json.dumps(old)), "w": waiting, "live": live})
+        self.assertTrue(vending.HookWriter(state).prune(CFG, NOW))
+        self.assertEqual(sorted(dict.keys(state["sessions"])), ["live", "w"], "a quiet record with a wait stays for book_for")
+        self.assertEqual(json.loads(json.dumps(state))["sessions"].keys(), {"live", "w"})
+        self.assertEqual(sched.in_use_counts(state, "anthropic", NOW, CFG["active_session_sec"]), {"a": 1})
+        later = self.sessions(json.loads(json.dumps(state["sessions"])))
+        self.assertIn("old", later)
+        self.assertEqual(later["old"], old)
+        self.assertEqual(sched.tree_for({**state, "sessions": later}, registry.SessionKey("old", "old", "o1"), "anthropic").pin, "b")
+        self.assertIn("old", dict.keys(later), "the record joins state.json at the next save")
+        self.assertNotIn("never-seen", later)
+        self.assertIsNone(later.get("never-seen"))
+
+    def test_a_record_quiet_past_pin_ttl_is_gone_from_the_archive_too(self):
+        stale = NOW - CFG["pin_ttl_sec"] - 1
+        registry.archive_record("stale", {"uuid": "stale", "last_seen": stale, "pins": {}})
+        self.assertNotIn("stale", self.sessions({}))
+        registry.sweep_archive(NOW + 10**9, CFG["pin_ttl_sec"])
+        self.assertEqual(list(registry.each_archived()), [])
+
+    def test_an_archived_pre_uuid_record_still_gives_its_tree_its_model(self):
+        stub = {"uuid": None, "active_id": "35abe469e594", "last_seen": NOW - 7200,
+                "models": {"anthropic": {"s": {"model": "claude-opus-5-5", "at": NOW - 7200}}}}
+        registry.archive_record("35abe469e594", stub)
+        state = {"sessions": self.sessions({})}
+        self.assertEqual(registry.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
+
+    def test_forgetting_an_account_drops_archived_pins_on_it(self):
+        registry.archive_record("old", {"uuid": "old", "last_seen": NOW - 7200, "pins": {"anthropic": {"account_id": "b", "at": NOW - 7200}}})
+        state = state_v2()
+        vending.IntentWriter(state).forget_account("anthropic", "b")
+        self.assertEqual(dict(registry.each_archived())["old"]["pins"], {})
+
+    def test_a_session_arg_matches_an_archived_record(self):
+        registry.archive_record("01a0-archived", {"uuid": "01a0-archived", "active_id": "abc123abc123", "last_seen": NOW - 7200, "pins": {}})
+        state = {"sessions": self.sessions({})}
+        self.assertEqual(registry.resolve_session_arg("abc123abc123", state).key, "01a0-archived")
+
 class IndexWindows(unittest.TestCase):
     """Index windows, classified by windowSeconds and name
     rather than array position, for both providers."""
