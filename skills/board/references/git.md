@@ -10,6 +10,7 @@ Read this before a sieun-pi commit, a :5182 chat release, a merge, a push or a p
 4. Other jobs commit in the same sieun-pi checkout, so run `git add -- <new files>` first, then `git commit -m "..." -- <your files>`.
 5. If you commit through a private index, run `git add -- <your files>` on the shared index afterwards so it does not go stale.
 6. Never use --no-verify.
+7. A skill or `config/AGENTS.md` edit reaches the other boxes only after it is pushed to GitHub `main`, because each box's prime-sync timer fast-forwards its checkout from there about once a minute.
 
 ## Releasing the :5182 chat
 
