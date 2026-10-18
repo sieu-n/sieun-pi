@@ -263,6 +263,47 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   return { holds, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
 }
 
+/** A tree pi-pool refused while `room` named accounts that took its class, from the first such refusal to its next account or `now`. */
+export interface PoolHold { session: string; from: number; to: number; room: readonly string[] }
+/**
+ * pi-pool.log on us-metal02 grew 2.6 MB from 21:34Z on 10-17 to 16:38Z on 10-18, about 140 KB an hour, so this tail holds about 14 h, past the
+ * window and the longest backoff draw (2 h).
+ */
+const POOL_LOG_TAIL_BYTES = 2_000_000;
+const POOL_LOG = join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "pi-pool.log");
+
+/**
+ * The pool's refusals that held a tree while the pool had accounts for it, from pi-pool.log's `parked` lines (one per refused request, with
+ * `room`, the accounts that take the tree's class on their last read) and `unparked` lines (its first account after a wait). A hold opens at the
+ * first refusal with room and ends at the tree's next account, at a refusal with no room, or at `now`. On 10-18 01a14eaf was refused at
+ * 15:55Z on a backoff draw for 16:45Z and got no account until 16:38Z, while claude12, krenerd77 and claude3 took its class, and queue_holds_30 and
+ * queued_free_slot_min_30 both read 0.
+ */
+export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
+  const open = new Map<string, PoolHold>();
+  const holds: PoolHold[] = [];
+  for (const line of lines) {
+    if (!line.includes('"parked"') && !line.includes('"unparked"')) continue;
+    let entry: { event?: unknown; session?: unknown; at?: unknown; room?: unknown };
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    if (typeof entry.session !== "string" || typeof entry.at !== "number") continue;
+    const at = entry.at * 1000;
+    const hold = open.get(entry.session);
+    const room = entry.event === "parked" && Array.isArray(entry.room) ? entry.room.filter((name): name is string => typeof name === "string") : [];
+    if (room.length) {
+      if (hold) { hold.to = at; continue; }
+      const fresh = { session: entry.session, from: at, to: at, room };
+      open.set(entry.session, fresh);
+      holds.push(fresh);
+    } else if (hold) {
+      hold.to = at;
+      open.delete(entry.session);
+    }
+  }
+  for (const hold of open.values()) hold.to = now;
+  return holds;
+}
+
 /**
  * The tree of a turn queued QUEUED_WAIT_S or longer that pi-pool was allowed to admit and did not, by its own rule (`admit_pass` in
  * pool/turns.py): the machine under working_max slots and the turn's tree under tree_working_max, each with FREE_SLOTS to spare, since a
@@ -326,6 +367,8 @@ export interface Inputs {
   /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
   day?: readonly WatchLine[];
   log: LogFacts;
+  /** Trees pi-pool refused while an account took their class (`readPoolLog`). */
+  pool?: readonly PoolHold[];
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
@@ -416,6 +459,8 @@ export function measure(input: Inputs): PrecheckOutput {
     ...input.log.holds,
     ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: heldFrom(job), to: job.resumedAt ?? now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
+  const poolHeld = (input.pool ?? []).filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
+  const poolAt = (from: number, to: number): PoolHold | undefined => poolHeld.find(hold => hold.from + HOLD_MS < to && hold.to >= from);
   const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
@@ -471,10 +516,10 @@ export function measure(input: Inputs): PrecheckOutput {
     else if (sides.size) other++;
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     const waited = line && freeSlotWait(line);
-    if (waited) {
-      freeSlot++;
-      why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
-    }
+    const parked = poolAt(from, to);
+    if (waited || parked) freeSlot++;
+    if (waited) why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
+    if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
     const minuteFaults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
     const faults = minuteFaults.filter(fault => !offline.has(fault.host));
@@ -521,7 +566,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const oversize = oversized(latest, input.day ?? []);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
-    queue_holds_30: queueHolds.length,
+    queue_holds_30: queueHolds.length + poolHeld.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     sleeping_gb: Math.round(100 * (sleepingTotals.reduce((sum, gb) => sum + gb, 0) / (sleepingTotals.length || 1))) / 100,
     oversized_procs: oversize.length,
@@ -551,7 +596,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable}, unknown in ${count.unknown} and offline in ${count.offline}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
-    `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}; ` +
+    `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
@@ -566,6 +611,9 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
+  }
+  for (const hold of poolHeld.sort((a, b) => a.from - b.from).slice(0, 12)) {
+    flagged.push({ kind: "queue_hold", item: hold.session, excerpt: `pi-pool refused ${hold.session} for ${minutes(hold.to - hold.from)} min, ${clock(hold.from)} to ${clock(hold.to)}, while ${hold.room.join(", ")} took its class.` });
   }
   for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id, excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves, from its check-in at ${clock(entry.at!)}.` });
   for (const line of redDuties) flagged.push({ kind: "stuck_duty", excerpt: line });
@@ -820,6 +868,7 @@ async function main(): Promise<void> {
   const result = measure({
     now, watch, day,
     log: readServiceLog(serviceLines),
+    pool: readPoolLog(await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES), now),
     daemonFaults,
     workerMisses: workerPolls,
     listed: listedSessions(await catalogCopies(dataDir), daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : [])),
