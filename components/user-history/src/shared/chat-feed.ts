@@ -73,8 +73,11 @@ export interface ReplyQuote { id: string; text: string }
  * message's timestamp in base 36, so it survives compaction and needs no index. The feed finds the owner line by its `at`.
  */
 export const ownerMessageId = (at: number): string => at.toString(36);
-/** The note after an owner message in the model's view that gives its id. */
-export const messageIdNote = (at: number): string => `[message id: ${ownerMessageId(at)}]`;
+/**
+ * The note after an owner message in the model's view that gives its id and when to quote it. Clean room dm-replies/run-4 (10-18 07:30Z)
+ * quoted the owner's latest message on its own direct answer, under a brief and tool text that said not to (c104).
+ */
+export const messageIdNote = (at: number): string => `[message id: ${ownerMessageId(at)}; reply_to it only after he sends a newer message]`;
 /** The marker line a chat's text reply opens with to answer an older owner message: `reply_to: <id>`, then the reply. */
 export const REPLY_TO_MARKER = "reply_to:";
 const MARKER_LINE = /^reply_to:[ \t]*(\S*)[ \t]*(?:\n+|$)/;
