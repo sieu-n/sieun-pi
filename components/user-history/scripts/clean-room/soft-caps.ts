@@ -74,11 +74,17 @@ export const softCaps: Scenario = {
 
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
   const chat = state.chat.id;
+  const events = readSession(chat);
+  const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") && !state.seeds.some(seed => event.text.includes(seed)));
+  const outside = events.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child" && !/^check-in /.test(event.from ?? ""));
+  // The window ends at the first message from outside the chat's own sessions, so a later duty's message never judges the run.
+  const cut = Math.min(Infinity, ...[...typed, ...outside].map(event => event.at));
+  const inWindow = (at: number): boolean => at >= state.windowStart && at < cut;
   const files = sessionFiles(chat);
   const read = files.map(readFile);
-  const results = read.flatMap(file => file.results).filter(result => result.at >= state.windowStart);
-  const calls = read.flatMap(file => file.calls).filter(call => call.at >= state.windowStart);
-  const snaps = boards(run);
+  const results = read.flatMap(file => file.results).filter(result => inWindow(result.at));
+  const calls = read.flatMap(file => file.calls).filter(call => inWindow(call.at));
+  const snaps = boards(run).filter(board => inWindow(Date.parse(board.updatedAt) || 0));
   const checks: Check[] = [];
 
   const refused = results.filter(result => REFUSAL.test(result.text) && (result.error || /^(refused|blocked)/i.test(result.text.trim())));
@@ -110,17 +116,16 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   checks.push({ id: "c", ok: told.length && duties >= 10 ? true : told.length ? false : null, detail: `${duties} steps on the last board, ${told.length} replies to the owner` +
     (told.length ? `, the longest ${longest} words: "${clip(told.reduce((a, b) => (words(b) > words(a) ? b : a)), 400)}"` : "") });
 
-  const events = readSession(chat);
-  const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") && !state.seeds.some(seed => event.text.includes(seed)));
-  const outside = events.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child" && !/^check-in /.test(event.from ?? ""));
-  checks.push({ id: "d", ok: typed.length === 0 && outside.length === 0, detail: typed.length || outside.length
-    ? [...typed.map(event => `typed at ${iso(event.at)}`), ...outside.map(event => `message from ${event.kind === "text" ? event.from : ""}`)].join("; ")
-    : "only the owner-style message, server notes, the chat's check-ins and its own jobs reached the chat" });
-
+  const before = (cut === Infinity ? [] : [...typed, ...outside].filter(event => event.at === cut));
+  const settled = checks.every(check => check.ok === true);
+  checks.push({ id: "d", ok: cut === Infinity || settled, detail: cut === Infinity
+    ? "only the owner-style message, server notes, the chat's check-ins and its own jobs reached the chat"
+    : `the window ends at ${iso(cut)}, when ${before.map(event => event.kind === "text" && event.from ? `${event.from} messaged the chat` : "someone typed in the chat").join(" and ")}; ` +
+      (settled ? "every other criterion was met before that, so nobody stepped in while the chat did the task" : "the run had not met every criterion before then") });
   const verdict: Verdict = checks.find(check => check.id === "d")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail" : checks.some(check => check.ok === null) ? "open" : "pass";
   const text = [
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
-    `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
+    `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Math.min(cut, Date.now()))}. Judged by \`clean-room.ts evaluate\`.`,
     `Criteria: ${join(run, "criteria.md")}. Evidence: ${files.length} session files, ${snaps.length} board snapshots.`, "",
     ...checks.map(check => `- ${check.id} ${yes(check.ok)}: ${check.detail}`), "",
   ].join("\n");
