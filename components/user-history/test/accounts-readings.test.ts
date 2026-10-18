@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { askHookd, listAccounts, parsePoolSnapshot, PoolStatusReader, snapshotArgs, threadKey, type PoolPart, type PoolSnapshot, type PoolThread } from "../src/chat-pool.ts";
+import { askHookd, listAccounts, parsePoolSnapshot, readSnapshot, PoolStatusReader, snapshotArgs, threadKey, type PoolPart, type PoolSnapshot, type PoolThread } from "../src/chat-pool.ts";
 
 const part = (out: unknown, code = 0): PoolPart => ({ code, out: typeof out === "string" ? out : JSON.stringify(out), err: "" });
 const listing = (provider: string, email: string) => ({ provider, rows: [{ id: email, email, usage: "1%", reason: null, usable: true, current: true, pinned: false }] });
@@ -206,4 +206,26 @@ test("the client keeps its side open until the answer, since hookd stops a run w
     assert.equal(ended, false);
     assert.equal(await answer, null);
   } finally { hookd.server.close(); }
+});
+
+test("a pool installed before `snapshot` answers with its usage text, and the tick runs the separate reads instead", async () => {
+  const asked: string[][] = [];
+  const oldPool = async (args: readonly string[]): Promise<PoolPart> => {
+    asked.push([...args]);
+    if (args[0] === "snapshot") return { code: 1, out: "", err: "usage: pi-pool [command]\n  status [--provider <p>] ...\n" };
+    return part({ argv: args });
+  };
+  const snapshot = await readSnapshot([{ session: "s1", model: "opus" }, { session: null, model: null }], oldPool);
+  assert.deepEqual(asked.slice(1).map(args => args.join(" ")).sort(), ["config", "ls --json --provider anthropic", "ls --json --provider anthropic --session s1 --model opus",
+    "ls --json --provider openai-codex", "ls --json --provider openai-codex --session s1 --model opus", "queue --json", "who --json", "who --json --session s1 --model opus"]);
+  assert.deepEqual(JSON.parse(snapshot.queue.out).argv, ["queue", "--json"]);
+  assert.deepEqual(snapshot.threads.map(thread => [thread.session, thread.model, JSON.parse(thread.ls["openai-codex"].out).argv.at(-1)]),
+    [["s1", "opus", "opus"], [null, null, "openai-codex"]]);
+});
+
+test("a snapshot that fails for another reason fails the read, so readers keep the last good reading", async () => {
+  const asked: string[][] = [];
+  const broken = async (args: readonly string[]): Promise<PoolPart> => { asked.push([...args]); return { code: 1, out: "", err: "Traceback: boom\n" }; };
+  await assert.rejects(readSnapshot([], broken), /boom/);
+  assert.equal(asked.length, 1);
 });

@@ -78,8 +78,10 @@ class Snapshot(unittest.TestCase):
 
     def test_the_cli_answers_one_json_line_and_writes_nothing(self):
         before = files(base.POOL)
+        # The pool this module wrote, named outright: under discover, test_tmp_sweep.py moves os.environ's PI_POOL_DIR when it loads.
         env = {k: v for k, v in os.environ.items() if k not in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
                                                                 "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL")}
+        env.update(PI_POOL_DIR=base.POOL, HOME=base.POOL)
         run = subprocess.run(["/usr/bin/python3", "-B", os.path.join(SOURCE, "bin", "pi-pool"), "snapshot", "--json", "--thread", KEY.key, ""],
                              env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 0, run.stderr)
