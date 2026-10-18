@@ -482,8 +482,8 @@ class OneHoldStay(unittest.TestCase):
         self.assertEqual((out, len(calls)), ("fixture-token", 2))
         self.assertEqual(state["sessions"][KEY.key]["vends"]["anthropic"]["account_id"], "a")
 
-    def test_credential_for_called_as_the_cliproxy_sync_calls_it_still_refreshes_under_the_index_lock(self):
-        # auto-sns-agent 36c65d3d8f: cliproxy_claude_sync.py runs credential_for(account, base.config()) every minute.
+    def test_credential_for_with_two_arguments_still_refreshes_under_the_index_lock(self):
+        # An outside reader still calls credential_for(account, cfg) until it moves to `pi-pool token`.
         expiring = {"accessToken": "old", "refreshToken": "r", "expiresAt": time.time() * 1000}
         locked = []
 

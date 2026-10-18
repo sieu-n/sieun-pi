@@ -195,6 +195,10 @@ until the session's next provider request runs the hook.
                                   account, or null and retry_at, the session's own slot time
     pi-pool refused <error text> [--provider p] [--session id]
                                   an account-level refusal (terms, OAuth off) cools this session's account down; prints the next account or null
+    pi-pool token <email|id> [--provider p] | <reader>
+                                  the account's access token, to a pipe only (a terminal gets an error),
+                                  refreshed under the index lock as the hook does; it records no vend,
+                                  logs `token_read`, and only the holder runs it (`serve` refuses it)
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
 

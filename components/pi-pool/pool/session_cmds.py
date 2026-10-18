@@ -376,3 +376,25 @@ def cmd_rm(rest):
     base.log("account_removed", provider=provider, account=account.label)
     print(f"removed {account.label} from the {provider} pool")
     return 0
+
+
+def cmd_token(rest):
+    """`pi-pool token <email|id> [--provider <p>]`: print the named account's access
+    token to a pipe, refreshed under the index lock when it is near expiry, as the
+    hook vends it. A terminal gets nothing, so the token never lands in a scrollback.
+    It records no vend and moves no tree, and it runs only on the machine that holds
+    the accounts."""
+    f = status_view.parse_flags(rest)
+    provider, positional = f["provider"], f["positional"]
+    if len(positional) != 1:
+        raise SystemExit("usage: pi-pool token <email|id> [--provider <p>] | <reader>")
+    if os.isatty(1):
+        raise SystemExit("pi-pool token prints only to a pipe, never a terminal")
+    accounts = registry.load_index(provider)
+    account = registry.find_account(accounts, positional[0])
+    if account is None:
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
+    token, source = vending.credential_for(account, base.config())
+    base.log("token_read", provider=provider, account=account.label, source=source)
+    os.write(1, token.encode())
+    return 0

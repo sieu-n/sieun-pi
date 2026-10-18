@@ -18,8 +18,8 @@ OFF_ENV = "PI_POOL_REMOTE"
 # A sign-in runs where its browser is and files the login with the holder (file-login).
 LOCAL_COMMANDS = {"admit", "release", "owner-turn", "prod", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
                   "login"}
-# This holds a terminal open; run it on the machine that holds the accounts.
-HOLDER_ONLY = {"watch"}
+# watch holds a terminal open and token hands out a credential; run them on the machine that holds the accounts.
+HOLDER_ONLY = {"watch", "token"}
 # Prime gives the token hook 10 s (vend.log_when_killed); answer before that so the hook can log why.
 TOKEN_WAIT_SEC = 9
 
