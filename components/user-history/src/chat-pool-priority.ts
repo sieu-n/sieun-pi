@@ -1,3 +1,4 @@
+import { CHECK_IN_DUTY } from "./shared/chat-duties.ts";
 import type { PoolPriority, Priority, SessionRow } from "./shared/types.ts";
 
 /** The sidebar priority label as a pool class. None (0) leaves the thread's own class; Low (1) is low, Medium (2) normal, High (3) high. */
@@ -9,7 +10,8 @@ export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PR
 /**
  * The pool class of every live root thread, first match wins (pi-pool scheduler design, "Priority"):
  * 1. its own sidebar priority label, when set (LABEL_POOL_PRIORITY);
- * 2. a duty or check-in job (`duties`, the session ids the duty runner registered) is low;
+ * 2. a duty job (`duties`, the session ids the duty runner registered) is low, except a check-in job (`isCheckInJob`), which is normal
+ *    (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low;
  * 3. a chat is high;
  * 4. a job a chat started (an Agents entry linked as root) or gave a step to (linked as step) takes the highest class among those chats;
  * 5. a thread the owner started is high, and any other thread is normal.
@@ -28,8 +30,27 @@ export function poolPriorities(rows: readonly SessionRow[], duties: ReadonlySet<
       if (!before || RANK[own] > RANK[before]) owned.set(agent.sessionId, own);
     }
   }
-  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? "low" : row.chat ? "high" : owned.get(row.id) ?? (row.origin === "user" ? "high" : "normal"))]));
+  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? (isCheckInJob(row.name) ? checkInClass(owned.get(row.id) ?? "normal") : "low")
+    : row.chat ? "high" : owned.get(row.id) ?? (row.origin === "user" ? "high" : "normal"))]));
 }
+
+/**
+ * Whether a duty job is its chat's check-in job, by the name `dutyJobName` gives it ("check-in frontend bro 19:05"). A check-in job is the
+ * one turn that gives the chat's stuck steps an owner. As low, from 08:25Z to 11:05Z on 10-18 the check-in jobs of frontend bro, AI harness,
+ * VP of CI and ops guy waited 57 to 90 min for a slot (R5 orders waits by class), and the runner skipped every slot meanwhile, so d7 read 6 to
+ * 9 stuck steps.
+ */
+export const isCheckInJob = (name: string): boolean => name.trim().toLowerCase().startsWith(`${CHECK_IN_DUTY.name.toLowerCase()} `);
+
+/**
+ * A check-in job's class: normal, so the chats themselves still go first when slots are short, or its chat's class when that is lower. On
+ * 10-18 from 08:00Z to 12:00Z normal trees waited 3 min at p50 for a slot, high 18 min and low 97 min (pi-pool.log); the AI harness VP picked
+ * normal over high.
+ */
+export const checkInClass = (chat: PoolPriority): PoolPriority => chat === "low" ? "low" : "normal";
+
+/** The class a duty job's first request carries: `checkInClass` of its chat for a check-in job (`isCheckInJob`), low for every other duty job. */
+export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority => isCheckInJob(name) ? checkInClass(chat) : "low";
 
 /** What a sync needs: the catalog rows, the duty job ids, and the pi-pool call that sets one root's class. */
 export interface PoolPrioritySource {

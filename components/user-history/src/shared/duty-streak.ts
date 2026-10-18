@@ -20,8 +20,14 @@ export interface MetricStreak {
   /** The fix step the newest run of the streak found, if any. */
   fix?: FixLink;
   /**
-   * CHANGE_APPROACH_MISSES or more misses and no move toward the target. With a fix step, only the misses its run records name the same fix
-   * for count (`fixMisses`): a fix job younger than the misses has not had them yet.
+   * For a count over a trailing window (its result has `lastEventAt`), the time of the newest counted event when it is older than the previous
+   * measured run: no new event came since, so the number only waits for old events to leave the window.
+   */
+  quietSince?: number;
+  /**
+   * CHANGE_APPROACH_MISSES or more misses, no move toward the target, and not `quietSince`. With a fix step, only the misses its run records name
+   * the same fix for count (`fixMisses`): a fix job younger than the misses has not had them yet. Demo sandbox 10-18: restarts_24h read 4 from
+   * stops at 02:17Z to 06:53Z, the fix landed at 08:24Z and no stop came after, yet every hourly run until the window emptied said "change approach".
    */
   stuck: boolean;
 }
@@ -71,8 +77,10 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     const moved = gap(result) < gap(oldest);
     const fix = newest.fixes?.[key];
     const judged = fix ? fixMisses(streak, key, fix) : misses;
+    const previous = ordered[1];
+    const quiet = result.lastEventAt !== undefined && previous !== undefined && result.lastEventAt < previous.at;
     streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
-      stuck: judged >= CHANGE_APPROACH_MISSES && !moved });
+      ...(quiet ? { quietSince: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
   }
   return streaks;
 }

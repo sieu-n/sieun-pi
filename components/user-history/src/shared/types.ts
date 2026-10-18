@@ -1,3 +1,4 @@
+import type { OutboxEntry } from "./outbox.ts";
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -52,6 +53,8 @@ export interface ThreadInfo {
 export type ChildStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export interface ChildAgent {
   id: string; parentId?: string; sessionName?: string; model?: string; label: string; status: ChildStatus;
+  /** The feed sent the first `LABEL_CHARS` of `label` (src/first-page.ts); `GET api/threads/<id>/child-labels` has the whole one. */
+  labelMore?: true;
   /** Its daemon session id, when the daemon's list gave it (`rosterChildren`); the hub's snapshots have none. */
   sessionId?: string;
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
@@ -149,7 +152,9 @@ export interface OwnerTodo {
   /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
   links?: ArtifactLink[];
 }
-export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string }
+export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string;
+  /** The highest plan and todo numbers the board has given (`idsTop`), so a removed item's id never goes to a new one. */
+  lastIds?: { p: number; t: number } }
 export type BoardActor = "agent" | "owner";
 /** The gate fields a plan op can set: `go` only to "needed" (it never clears), `kind` and `requirements` (null clears them on plan_update). */
 type GateInput = { go?: "needed"; kind?: "build"; requirements?: Requirement[] };
@@ -180,12 +185,21 @@ export interface ThreadSnapshot {
   board?: ChatBoard | null;
   /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
   wait?: ChatWait | null;
+  /** The owner's sends the server holds on disk and has not delivered yet, and the failed ones (src/outbox.ts). Absent keeps the list held. */
+  outbox?: OutboxEntry[];
   /**
    * Messages before `messages[0]` exist: the opaque cursor `GET api/threads/<id>/older?cursor=` takes (src/shared/message-key.ts `OlderCursor`).
    * A feed snapshot carries the newest page only (session-tail.ts PAGE_MESSAGES).
    */
   older?: string;
+  /**
+   * A reconnect's snapshot for a page that named its newest message (`ThreadHave.last`): `messages` are only the ones after that message,
+   * which the page keeps with everything before it and its own `older` cursor (shared/thread-state.ts `applyThreadEvent`).
+   */
+  after?: string;
 }
+/** What a reconnecting page holds of a thread: its newest message's key as a message cursor (`m<at>.<n>`) and its board's `boardKey`. */
+export interface ThreadHave { last?: string; board?: string }
 /** An older page: `GET api/threads/<id>/older?cursor=` answers the messages just before the cursor, oldest first, and the cursor before them. */
 export interface OlderPage { messages: ThreadMessage[]; older?: string }
 /** `retry`: the turn is restarted at `at`. `account`: no Claude account can serve the selected Anthropic model; `until` is when one frees up. Epoch ms. */
@@ -224,6 +238,8 @@ export type ThreadEvent =
   | { type: "children"; children: ChildAgent[] }
   | { type: "board"; board: ChatBoard }
   | { type: "wait"; wait: ChatWait | null }
+  /** The thread's queued, sending and failed owner sends; a send just delivered is listed once as "delivered", then dropped. */
+  | { type: "outbox"; outbox: OutboxEntry[] }
   | { type: "status"; connection: ThreadConnection; error?: string };
 
 export type SessionKind = "live" | "saved";
@@ -262,6 +278,12 @@ export interface SessionRow {
   chat?: true;
   /** Chats only: every thread linked to it (`chatAgents`), running first, for the Agents card and the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
   agents?: ChatAgent[];
+  /**
+   * Chats only, in a page's sessions feed, which leaves `agents` out: how many agents work and how many are listed, for the collapsed sidebar row.
+   * The page reads a chat's agents from its own agents feed (`{ feed: "agents", id }`) while the chat is open or its row is unfolded.
+   */
+  agentsRunning?: number;
+  agentsTotal?: number;
   /** Chats only: plan steps done and in total (dropped ones left out), for the sidebar line; absent with no plan. */
   plan?: { done: number; total: number };
   /** Chats only: open For you todos on its board, the sidebar's "N for you"; absent at 0. */

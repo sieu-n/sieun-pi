@@ -3,7 +3,8 @@ import { isPromptCustom, messageText, toolResults, triggerSummary } from "./turn
 import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
 
 /** A message the owner sent from the chat composer that the thread has not echoed back yet. `images` are data URLs for the bubble. */
-export interface PendingSend { id: string; text: string; images: ImagePart[]; at: number }
+/** An owner send the thread has not echoed: sending (dim), `sent` (delivered, drawn as a normal bubble), or `failed` with the reason. */
+export interface PendingSend { id: string; text: string; images: ImagePart[]; at: number; sent?: true; failed?: string }
 
 /** The tool a chat calls to reach the owner on a turn the owner did not start. Its `text` shows as an agent bubble unless the tool refused it. */
 export const TELL_OWNER_TOOL = "tell_owner";
@@ -49,7 +50,7 @@ export function serverNote(text: string): string | undefined {
 
 /**
  * One message of a chat as a line, before the feed collapses the quiet ones. Who started the turn decides what the chat's own text is:
- * - user: what the owner typed (right side); `pending` until the thread echoes the message back.
+ * - user: what the owner typed (right side); `pending` while it is on its way, `failed` with the reason when it cannot go.
  * - agent: what the owner reads from the chat (left side): the chat's text on a turn the owner started, or a `tell_owner` call on any turn
  *   (`told`); `streaming` while the model is still writing it.
  * - job: a message another agent sent the chat; `from` is its display name. `clipped` names the message and part to fetch through
@@ -58,7 +59,7 @@ export function serverNote(text: string): string | undefined {
  * - notice: an error, a stopped reply, a restart or a compaction, as one muted line.
  */
 export type ChatLine =
-  | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true; replies?: string[] }
+  | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true; failed?: string; replies?: string[] }
   | { kind: "agent"; id: string; text: string; at: number; streaming?: true; told?: true; replyTo?: ReplyQuote }
   | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
   | { kind: "notes"; id: string; text: string; at: number }
@@ -161,8 +162,24 @@ function assistantLines(message: AssistantMessage, id: string, shown: "reply" | 
     lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp, told: true, ...(quote ? { replyTo: quote } : {}) });
   });
   if (message.stopReason === "aborted") lines.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
-  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: "Error: " + (message.errorMessage?.trim() || "the model returned an error"), at: message.timestamp });
+  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: failureText(message.errorMessage), at: message.timestamp });
   return lines;
+}
+
+/** The note pi-pool's extension adds to a failure it turned into a wait for the session's own slot or backoff time (`waitFailure`). */
+const POOL_SLOT = / pi-pool: [\s\S]*?this session waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+/** The slot (epoch ms) the pool gave the session in a failure's text, or null when the text carries none. */
+export function poolSlot(error: string): number | null {
+  const at = Date.parse(POOL_SLOT.exec(error)?.[1] ?? "");
+  return Number.isFinite(at) ? at : null;
+}
+/**
+ * How a failed assistant message reads. A pool wait is no failure: Prime sleeps until the slot and continues the turn itself, so it reads
+ * as a wait with its time. On 10-18 at 08:32Z a Mac session waiting 23 min for its slot showed "Error: Failed to resolve API key".
+ */
+export function failureText(error: string | undefined): string {
+  const slot = poolSlot(error ?? "");
+  return slot === null ? "Error: " + (error?.trim() || "the model returned an error") : `Waiting for a Claude account until ${clock(slot)}.`;
 }
 
 function customLines(message: CustomMessage, id: string, index: number, nameOf: NameOf): ChatLine[] {
@@ -317,13 +334,16 @@ export function updatesLabel(item: Extract<ChatItem, { kind: "updates" }>): { co
   return { count, names: more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ") };
 }
 
-/** Ids of the pending sends a user message in `messages` has settled: same text, and not from before the send (minus clock skew). Each message settles at most one. */
+/**
+ * Ids of the pending sends a user message in `messages` has settled: same text, and not from before the send (minus clock skew). Each message
+ * settles at most one. A failed send never went, so no message settles it.
+ */
 export function settledPending(messages: readonly ThreadMessage[], pending: readonly PendingSend[]): Set<string> {
   const settled = new Set<string>();
   for (const message of messages) {
     if (message.role !== "user") continue;
     const text = messageText(message).trim();
-    const match = pending.find(send => !settled.has(send.id) && send.text === text && message.timestamp >= send.at - PENDING_SKEW_MS);
+    const match = pending.find(send => send.failed === undefined && !settled.has(send.id) && send.text === text && message.timestamp >= send.at - PENDING_SKEW_MS);
     if (match) settled.add(match.id);
   }
   return settled;
@@ -340,7 +360,8 @@ export function chatFeed(state: Pick<ThreadState, "messages" | "streaming" | "wa
   const settled = settledPending(state.messages, pending);
   for (const send of pending) {
     if (settled.has(send.id)) continue;
-    items.push({ kind: "user", id: "p" + send.id, text: send.text, images: send.images, at: send.at, pending: true });
+    items.push({ kind: "user", id: "p" + send.id, text: send.text, images: send.images, at: send.at,
+      ...(send.failed !== undefined ? { failed: send.failed } : send.sent ? {} : { pending: true as const }) });
   }
   if (state.wait) items.push({ kind: "notice", id: "wait", text: waitText(state.wait), at: items.at(-1)?.at ?? 0 });
   return items;

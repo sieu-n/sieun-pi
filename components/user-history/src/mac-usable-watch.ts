@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
+import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
@@ -98,7 +100,17 @@ export function parseLinuxReading(reading: unknown): LinuxUsable | null {
     (swapoutsPerS !== null && !count(swapoutsPerS))) return null;
   const sides = reading.cpuCores;
   const cpuCores = isRecord(sides) && CPU_SIDES.every(side => count(sides[side])) ? Object.fromEntries(CPU_SIDES.map(side => [side, sides[side]])) as CpuSides : undefined;
-  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {} };
+  const split = parseHarnessSplit(reading.harnessSplit);
+  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {},
+    ...split ? { harnessSplit: split } : {} };
+}
+
+/** A harnessSplit (rig-cpu.ts) whose own and rigs cores are counts and whose top lines each name an owner, a count and a command; else undefined. */
+export function parseHarnessSplit(value: unknown): HarnessSplit | undefined {
+  if (!isRecord(value) || !count(value.own) || !count(value.rigs) || !Array.isArray(value.top)) return undefined;
+  const top = value.top.filter((line): line is RigLine => isRecord(line) && typeof line.owner === "string" && count(line.cores) && typeof line.command === "string")
+    .map(line => ({ owner: line.owner, cores: line.cores, command: line.command }));
+  return { own: value.own, rigs: value.rigs, top };
 }
 
 /** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */
@@ -131,7 +143,8 @@ export interface WaitingTree { tree: string; oldestWaitS: number; slots: number 
 /**
  * Another box's numbers in a watch line, read through its relay (POST /v1/watch): its usability reading, its Prime workers and what its idle
  * sessions hold. From 04:20Z on 10-18 the chat ran on us-metal02, and its lines measured only the box, so the Mac's workers left d7's numbers.
- * `error` names a box whose relay did not answer; its numbers are then unknown, not zero.
+ * `error` names a box whose relay did not answer, or whose footprint helper failed while `usable` still holds its reading; its worker numbers are
+ * then unknown, not zero.
  */
 export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
   sleeping?: SleepingLine; swapGb: number | null; error?: string }
@@ -159,6 +172,8 @@ export interface WatchLine {
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
   cpuMs: number;
+  /** How slow the chat service on this box was to the owner since the last line (src/chat-latency.ts); absent on lines written before it. */
+  chat?: ChatLatency;
 }
 
 /**
@@ -423,16 +438,22 @@ export interface WatchSource {
   /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
   remotes?: () => readonly RemoteWatch[];
 }
-export interface RemoteWatch { name: string; rows: readonly unknown[]; read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints }> }
+/** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
+export interface RemoteWatch { name: string; rows: readonly unknown[];
+  read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string }> }
 
 /** The pids of the workers that host the rows' sessions. */
 const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
 
-/** One other box's numbers from its relay, judged with this box's chat ids, titles and idle window; a failed read keeps the box with its error. */
+/**
+ * One other box's numbers from its relay, judged with this box's chat ids, titles and idle window. A failed read keeps the box with its error;
+ * a read with a reading and no footprints keeps the reading, and its worker numbers are unknown.
+ */
 export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleMs?: number | null }): Promise<HostWatchLine> {
   try {
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
+    if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
       ...input.idleMs === undefined ? {} : { idleMs: input.idleMs } });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working,
@@ -442,8 +463,16 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
   }
 }
 
-/** Takes one sample and appends its line; null when the catalog holds no rows yet. */
-export async function sample(source: WatchSource): Promise<WatchLine | null> {
+/** What a box's relay read says when the service stopped before it answered, or stopped with no read made. */
+export const UNREAD_AT_STOP = "unread: the chat service stopped before the relay answered";
+const unreadHost = (name: string): HostWatchLine => ({ name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: UNREAD_AT_STOP });
+
+/**
+ * Takes one sample and appends its line; null when the catalog holds no rows yet. Once `stopping` resolves, each relay read still out reads
+ * unread and the line goes out with this box's own numbers, so a stop never drops a sample in flight. On 10-18 the Mac's relay timed out at
+ * 35 s (hosts.ts relayWatch) while restarts at 10:46:55Z and 10:58:45Z stopped the service, and the 10:46:30Z and 10:58:30Z samples left no line.
+ */
+export async function sample(source: WatchSource, stopping?: Promise<void>): Promise<WatchLine | null> {
   const now = source.now ?? Date.now;
   const started = process.cpuUsage();
   const rows = source.rows();
@@ -456,10 +485,14 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const chatIds = source.chats();
   const [footprints, queue, chats, usable, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
     (source.feed ?? readUsable)(at),
-    chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } }))))]);
+    chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
+      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } });
+      return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
+    })))]);
   const resumed = process.cpuUsage();
+  const latency = takeLatency();
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
-    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB) };
+    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };
@@ -497,22 +530,31 @@ export const nextSampleAt = (at: number): number => Math.floor((at - MINUTE / 2)
  * without a line, and on Linux their window starts at that process's last reading (`seedSchedstat`). On 10-18 each restart line came about 10 s
  * after the service started, and its window held only the service's boot: 06:07:39Z read 1.48, 06:11:15Z 1.17, 06:15:49Z 1.43 and 06:21:27Z
  * 1.48 runnable a core against 0.6 to 0.9 for the lines around them, and 06:15:49Z was the last line of a minute whose 06:15:30Z line read 0.61.
+ *
+ * The stop writes the sample in flight with its relay reads still out marked unread (`sample`), then a sample of its own when the minute it
+ * stops in has no line yet, so a restart leaves no wall-clock minute without a line. On 10-18 the service began to stop at about 06:00:28Z
+ * and the next one listened at 06:01:28Z, so 06:00Z had none. Of the 29 minutes the 10-18 file had with no line, 27 sat within
+ * 2 minutes of a service start.
  */
-export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => void {
+export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => Promise<void> {
   const now = source.now ?? Date.now;
   const last = readLastSample(source.dataDir);
   if (last?.sched && !source.feed) seedSchedstat(last.sched);
-  let running = false;
+  let lastAt = last?.at ?? null;
+  let running: Promise<void> | null = null;
   let landed = false;
+  let markStopping!: () => void;
+  const stopping = new Promise<void>(resolve => { markStopping = resolve; });
+  const written = () => lastAt !== null && Math.floor(lastAt / MINUTE) === Math.floor(now() / MINUTE);
   const startTick = () => {
-    if (last && Math.floor(last.at / MINUTE) === Math.floor(now() / MINUTE) && source.rows().length) landed = true;
+    if (written() && source.rows().length) landed = true;
     else tick();
   };
+  const run = () => sample(source, stopping).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
+    .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
   const tick = () => {
     if (running) return;
-    running = true;
-    void sample(source).then(line => { if (line) landed = true; })
-      .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
+    running = run().finally(() => { running = null; });
   };
   let due = nextSampleAt(now());
   let timer: NodeJS.Timeout;
@@ -524,5 +566,11 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
   const first = setInterval(() => { if (landed) clearInterval(first); else startTick(); }, firstMs);
   first.unref();
   startTick();
-  return () => { clearTimeout(timer); clearInterval(first); };
+  return async () => {
+    clearTimeout(timer);
+    clearInterval(first);
+    markStopping();
+    await running;
+    if (!written()) await run();
+  };
 }

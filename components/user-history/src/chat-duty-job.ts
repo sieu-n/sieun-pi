@@ -141,13 +141,18 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
 
 /**
  * One line per missed metric: its streak and what this run must do about it. A metric with a live fix job gets a steer, one with none gets a
- * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work.
+ * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work. A
+ * windowed count with no new event since the last run (`quietSince`) gets no job.
  */
 export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = ""): string {
   const link = JSON.stringify(dutyLink(dutyId, streak.key));
   const where = `${streak.key} (${label}) is ${streak.value}${unit}, target ${streak.op} ${streak.target}${unit}, missed ${runs(streak.misses)} in a row` +
     `${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}.`;
   const fix = streak.fix;
+  if (streak.quietSince !== undefined) {
+    return `${where} Its newest counted event is from ${localTime(streak.quietSince)}, before the last run, so no new event came since and the number ` +
+      `falls as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
+  }
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +
       "root-cause job with rlm.create_session that finds why the last fix did not move the number and fixes that cause in code. Do not run the " +
@@ -322,8 +327,8 @@ export async function savedChat(file: string): Promise<{ name: string; cwd: stri
  */
 export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(job: DutyJobRef): Promise<void> }; rows: () => Promise<readonly SessionRow[]>;
   registry: JobRegistry; board: (chatId: string) => string;
-  /** Runs after the job is registered and before its brief, so its first request already carries its pool class (low). */
-  started?: (id: string) => Promise<void>;
+  /** Runs after the job is registered and before its brief, so its first request already carries its pool class (`dutyJobPriority`). */
+  started?: (id: string, chat: DutyChat, name: string) => Promise<void>;
   /**
    * Runs before the brief of a job whose run the turn queue admitted under its duty key, so the job's first turn takes that place and does not
    * queue again behind every turn that asked meanwhile. On 10-15 a duty key waited 1,604 s and then the d4 job's own first turn 2,083 s more
@@ -404,7 +409,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const { id, name } = await createOrAdopt(chat, planned, since);
       try {
         await input.registry.add([id], chat.name, chat.id);
-        await input.started?.(id);
+        await input.started?.(id, chat, name);
         if (admitted) await input.handoff?.(id).catch(error => input.log?.(`duty job ${name}: hand its queue place over: ${reason(error)}`));
         await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
       } catch (error) {

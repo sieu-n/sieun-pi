@@ -88,10 +88,17 @@ function diffRow(before: SessionRow, after: SessionRow): SessionRowPatch {
 }
 
 const rowJson = new WeakMap<SessionsEvent, Map<string, string>>();
+/** Each row object's JSON: the catalog hands out an unchanged row as the same object in each event (`KeptRow` in src/chat-catalog.ts) and never changes a row it sent. */
+const rowText = new WeakMap<SessionRow, string>();
+function textOf(row: SessionRow): string {
+  let text = rowText.get(row);
+  if (text === undefined) { text = JSON.stringify(row); rowText.set(row, text); }
+  return text;
+}
 /** Each row's JSON, computed once per catalog event and shared by every socket that gets it. */
 function jsonOf(event: SessionsEvent): Map<string, string> {
   let rows = rowJson.get(event);
-  if (!rows) { rows = new Map(event.sessions.map(row => [row.id, JSON.stringify(row)])); rowJson.set(event, rows); }
+  if (!rows) { rows = new Map(event.sessions.map(row => [row.id, textOf(row)])); rowJson.set(event, rows); }
   return rows;
 }
 
@@ -111,15 +118,101 @@ export function withoutArchived(event: SessionsEvent): SessionsEvent {
   return view;
 }
 
-/** One subscriber's view: the first event goes out whole, each later one as a delta against what this subscriber holds, or not at all when nothing changed. */
+/** JSON with each object's keys sorted, so the page and the server write a row the same way whatever order its fields were set in. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(item => item === undefined ? "null" : canonical(item)).join(",")}]`;
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  const fields = Object.keys(value).filter(key => (value as Fields)[key] !== undefined).sort();
+  return `{${fields.map(key => `${JSON.stringify(key)}:${canonical((value as Fields)[key])}`).join(",")}}`;
+}
+
+/** A short hash of a row's content (FNV-1a over its canonical JSON): a reconnecting page names each row it holds by it (`SessionsDiff.resume`). */
+export function rowHash(row: SessionRow): string {
+  const text = canonical(row);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return hash.toString(36);
+}
+
+/** A page names at most this many rows on a reconnect; one that holds more (the archived rows too) gets the whole list. */
+export const RESUME_ROWS = 1000;
+
+/** What a reconnecting page holds, as the feed's `have`: `id:hash` per row, comma-separated. */
+export function sessionsHave(rows: readonly SessionRow[]): string | undefined {
+  return rows.length && rows.length <= RESUME_ROWS ? rows.map(row => `${row.id}:${rowHash(row)}`).join(",") : undefined;
+}
+
+export function parseSessionsHave(text: string): Map<string, string> | null {
+  const held = new Map<string, string>();
+  for (const item of text.split(",")) {
+    const at = item.lastIndexOf(":");
+    if (at <= 0) return null;
+    held.set(item.slice(0, at), item.slice(at + 1));
+  }
+  return held.size <= RESUME_ROWS ? held : null;
+}
+
+/**
+ * A chat row without its `agents`, with `agentsRunning` and `agentsTotal` in their place; any other row as it is. On 10-18 the agents lists were
+ * 385 KB of the 482 KB sessions frame from the Mac (1,074 agents, 423 of them done) while the page shows one chat's agents at a time. Kept per
+ * row object, so a row the catalog kept stays the same object here too.
+ */
+const slimRows = new WeakMap<SessionRow, SessionRow>();
+function slimRow(row: SessionRow): SessionRow {
+  if (!row.agents) return row;
+  let slim = slimRows.get(row);
+  if (!slim) {
+    const { agents, ...rest } = row;
+    slim = { ...rest, agentsRunning: agents.filter(agent => agent.state === "working").length, agentsTotal: agents.length };
+    slimRows.set(row, slim);
+  }
+  return slim;
+}
+const slimEvents = new WeakMap<SessionsEvent, SessionsEvent>();
+/** The event with every chat row's agents left out (`slimRow`); one view per event, shared by every socket. */
+export function withoutAgents(event: SessionsEvent): SessionsEvent {
+  let view = slimEvents.get(event);
+  if (!view) { view = { ...event, sessions: event.sessions.map(slimRow) }; slimEvents.set(event, view); }
+  return view;
+}
+
+/** One `agents` feed frame: the chat's agents, and for a job's session the chat whose agent it is and what `store.openJob` takes for it. */
+export interface AgentsView { chat: string | null; open?: string; agents: ChatAgent[] }
+/** The agents a page asks for with `{ feed: "agents", id }`: `id` is a chat, or a job's session that a chat lists as its subagent or root. */
+export function agentsView(rows: readonly SessionRow[], id: string): AgentsView {
+  const chat = rows.find(row => row.id === id && row.chat);
+  if (chat) return { chat: chat.id, agents: chat.agents ?? [] };
+  for (const row of rows) {
+    if (!row.chat) continue;
+    const agent = row.agents?.find(entry => entry.sessionId === id && (entry.link === "subagent" || entry.link === "root"));
+    if (agent) return { chat: row.id, open: agent.job, agents: row.agents ?? [] };
+  }
+  return { chat: null, agents: [] };
+}
+
+/**
+ * One subscriber's view: the first event goes out whole, each later one as a delta against what this subscriber holds, or not at all when
+ * nothing changed. A page that reconnects names the rows it holds (`resume`), and its first frame is a delta with only the rows that differ.
+ */
 export class SessionsDiff {
   private sent: { rows: readonly SessionRow[]; json: Map<string, string>; rest: string } | null = null;
+  private held: Map<string, string> | null = null;
+
+  /** The rows the page holds, by `rowHash`, from a reconnect's `have`. */
+  resume(held: Map<string, string>): void { if (!this.sent) this.held = held; }
 
   frame(event: SessionsEvent): SessionsEvent | SessionsDelta | null {
     const rows = jsonOf(event);
     const rest = JSON.stringify([event.tags, event.daemon, event.error ?? null, event.archived ?? null]);
     const previous = this.sent;
     this.sent = { rows: event.sessions, json: rows, rest };
+    const held = this.held;
+    this.held = null;
+    if (!previous && held) {
+      return { type: "sessions-delta", add: event.sessions.filter(row => held.get(row.id) !== rowHash(row)), patch: [], remove: [...held.keys()].filter(id => !rows.has(id)),
+        order: event.sessions.map(row => row.id), tags: event.tags, daemon: event.daemon, ...(event.error !== undefined ? { error: event.error } : {}),
+        ...(event.archived !== undefined ? { archived: event.archived } : {}) };
+    }
     if (!previous) return event;
     const before = new Map(previous.rows.map(row => [row.id, row]));
     const add: SessionRow[] = [];

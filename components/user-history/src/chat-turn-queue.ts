@@ -21,33 +21,17 @@ export function withQueuePlaces(facts: readonly JobFact[], places: ReadonlyMap<s
 }
 
 /**
- * How long one read of the queue serves the board and the check-ins. The catalog sends its rows every 2 s while an agent works (RATES_MS), and
- * one pi-pool call took 0.16 to 0.20 s at load 20 on 10-14, so a read per send would run pi-pool 30 times a minute; the chip shows whole minutes.
+ * How old a queue reading the board, the check-ins, the duties and the Mac usable watch take. The catalog sends its rows every 2 s while an
+ * agent works (RATES_MS), and the chip shows whole minutes, so they share a reading for 10 s instead of asking at every send.
  */
 export const QUEUE_READ_MS = 10_000;
 
-/** One pi-pool queue read shared by its readers for `ttlMs`, so the Mac usable watch adds no pi-pool call while the catalog reads every 10 s; a failed read is not kept. */
-export function sharedQueueRead(read: () => Promise<AgentQueueReading> = readAgentQueue, ttlMs = QUEUE_READ_MS, now: () => number = Date.now): () => Promise<AgentQueueReading> {
-  let cached: { at: number; value: Promise<AgentQueueReading> } | null = null;
-  return () => {
-    if (cached && now() - cached.at < ttlMs) return cached.value;
-    const value = read();
-    const entry = { at: now(), value };
-    cached = entry;
-    value.catch(() => { if (cached === entry) cached = null; });
-    return value;
-  };
-}
+/** The queue from the shared pool read (chat-pool.ts readPoolStatus), at most QUEUE_READ_MS old. */
+export const boardQueueRead = (): Promise<AgentQueueReading> => readAgentQueue(QUEUE_READ_MS);
 
-/** The queued sessions, read at most once per `ttlMs`; a read that fails gives none, so everything reads as it did before the queue. */
-export function queueReader(read: () => Promise<AgentQueueReading> = readAgentQueue, ttlMs = QUEUE_READ_MS, now: () => number = Date.now): () => Promise<ReadonlyMap<string, QueuePlace>> {
-  let cached: { at: number; value: Promise<ReadonlyMap<string, QueuePlace>> } | null = null;
-  return () => {
-    if (cached && now() - cached.at < ttlMs) return cached.value;
-    const value = read().then(queuedPlaces, () => new Map<string, QueuePlace>());
-    cached = { at: now(), value };
-    return value;
-  };
+/** The queued sessions; a read that fails gives none, so everything reads as it did before the queue. */
+export function queueReader(read: () => Promise<AgentQueueReading> = boardQueueRead): () => Promise<ReadonlyMap<string, QueuePlace>> {
+  return () => read().then(queuedPlaces, () => new Map<string, QueuePlace>());
 }
 
 /** A duty run's key in the turn queue before its job's session exists: one per chat and duty, as a duty runs one run at a time. */

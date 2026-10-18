@@ -1,12 +1,13 @@
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
+import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
@@ -49,11 +50,6 @@ export const NO_REPORT_GRACE_MS = 90_000;
 export const NO_REPORT_SAME_END_MS = 60_000;
 /** How many graces a no-report check waits while the chat is mid-turn before it tells the chat anyway. */
 export const NO_REPORT_BUSY_TRIES = 6;
-/**
- * A root session's artifacts folder, where the daemon keeps each direct subagent's folder by child id: `session-artifacts/<session id>`
- * beside the folder of its session file (prime-agent `getSessionArtifactPathForFile`).
- */
-export const artifactsDir = (sessionFile: string): string => join(dirname(dirname(sessionFile)), "session-artifacts", basename(sessionFile, ".jsonl"));
 /**
  * The daemon's rows say only whether a subagent runs. The hub's attach keeps a finished job "done" while a follow-up task runs and shows the work
  * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too.
@@ -204,6 +200,7 @@ export class Chats {
    * had then: a root that runs again (an agent message resumes it) gets a newer stamp and is looked at again.
    */
   private rootsSweptAt = -Infinity;
+  private passWaits = false;
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -723,10 +720,13 @@ export class Chats {
   }
 
   /**
-   * A new daemon supervisor (a Prime update or a restart) cut the turns it stopped: the pass over interrupted jobs runs SUPERVISOR_RESUME_MS
-   * from now instead of up to JOB_CLEANUP_EVERY_MS later. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
+   * The pass over interrupted jobs runs `inMs` from now, at the next tick after that, instead of up to JOB_CLEANUP_EVERY_MS later, and never
+   * later than it was due. A new daemon supervisor (a Prime update or a restart) cut the turns it stopped and passes SUPERVISOR_RESUME_MS; a
+   * cut job the catalog just read (`resumesNow`) passes 0. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
    */
-  interruptedSoon(): void { this.rootsSweptAt = this.now() - JOB_CLEANUP_EVERY_MS + SUPERVISOR_RESUME_MS; }
+  interruptedSoon(inMs = SUPERVISOR_RESUME_MS): void {
+    this.rootsSweptAt = Math.min(this.rootsSweptAt, this.now() - JOB_CLEANUP_EVERY_MS + inMs);
+  }
 
   /**
    * The jobs of the chats, from the catalog rows: tells `awake` whether any chat or job works, and looks at each subagent and create_session
@@ -743,12 +743,17 @@ export class Chats {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
     }
-    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
+    // A pass waiting behind a running one already covers every cut seen since: one run per pass at most stays queued, however many jobs are cut.
+    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS && !this.passWaits) {
       this.rootsSweptAt = this.now();
       if (this.source.interrupted) {
         const resume = this.source.interrupted;
         const swept = chatRows.filter(row => active.has(row.id));
-        this.queue("#interrupted", async () => resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept)));
+        this.passWaits = true;
+        this.queue("#interrupted", async () => {
+          this.passWaits = false;
+          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept));
+        });
       }
     }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
@@ -1162,10 +1167,11 @@ export class Chats {
    * The job is named by its name or its session id. A board step's stored session id names its job's session when the hub and the catalog do
    * not: on 10-16 at 07:5xZ the daemon's list timed out, the catalog had no rows, and "blog reader demo" got a 404 by name and by its session
    * id though step p146 held both. A job whose session the server cannot reach gets the message through its chat (`relay`). Null for a thread
-   * that is not a chat; `jobs` lists the chat's job names when none matches. A job asleep on its own board.wake gets the message in that wake's
-   * note (`wakeNote`), so the wake delivers it and nothing wakes the job early.
+   * that is not a chat; `jobs` lists the chat's job names when none matches. A job asleep on a board.wake, a time or a CI run, gets the message
+   * at once and its wake stays as a later backstop: on 10-18 VP of CI's check-in told "repo design count" to attack p75 at 12:00Z and the message
+   * waited in its wake note for 19:50Z, 7.5 h away.
    */
-  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" | "held" } | { jobs: string[] } | null> {
+  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | null> {
     await this.load();
     if (!this.chatIds.has(chat)) return null;
     // The daemon's list can time out for minutes after a restart (502 at 08:2xZ on 10-16), so the board alone then names the job's session.
@@ -1183,11 +1189,6 @@ export class Chats {
     if (!session) return { jobs: facts.map(candidate => candidate.name) };
     const act = fact && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();
-    // A job asleep on its own board.wake gets the message with the wake, not now: a steer would wake it early.
-    if (act === "steer" && fact?.wake !== undefined && await this.source.wakeNote?.(session, `Check-in message while you slept: ${message}`).catch(() => false)) {
-      this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${name} waits in its wake note (${fact.wake})`);
-      return { session, act: "held" };
-    }
     try {
       if (act === "restart") await this.threads.restart(session, CHECK_IN_PREFIX + message, true);
       else await this.threads.prompt(session, { message: CHECK_IN_PREFIX + message, images: [], mode: "steer" });
@@ -1243,10 +1244,10 @@ export class Chats {
     // A chat not attached on this serve has no hub children; its row lists the daemon's sessions under it. A step's owner may be a subagent of
     // one of its duty jobs (10-13 02:39: busy chat inbox ran under the 01:54 check-in job, and p334 read "(busy chat inbox not found)").
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
-    const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
     // A job that ended its turn on a board.wake the service still owes is at work until the wake is due (`withWakes`).
     const wakes = await this.source.wakes?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in wakes: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     const children = withLiveRoster(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), this.subagents.get(id) ?? [], wakes, this.below);
+    const nested = nestedJobs(dutyJobs, children, this.subagents);
     const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);

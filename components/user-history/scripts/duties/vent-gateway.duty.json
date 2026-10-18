@@ -1,0 +1,47 @@
+{
+  "name": "Vent gateway",
+  "ownerWords": "is Vent fully implemented and functioning rn? make it so it is. follow the original proposal discussion, all external API/webhook should pass here, we should be tracking OTEL ...\n\ncompletely remove all legacy sdk, API keys from old deployments.",
+  "goal": "Every in-scope outside API call site and inbound webhook goes through Vent in prod, with GeoNode proxy egress the one allowed exception. Prod Vent calls succeed at least 99% of the time over 24 h, not counting the caller's own 4xx. No deployment other than Vent still holds a provider key, except the Slack token the alarm fallback keeps. vent.virev.ai and vent-staging.virev.ai both answer 200 on /healthz.",
+  "metrics": [
+    {
+      "key": "through_vent_pct",
+      "label": "In-scope call sites and webhooks that go through Vent in prod",
+      "op": ">=",
+      "target": 100,
+      "unit": "%",
+      "headline": true
+    },
+    {
+      "key": "vent_success_24h_pct",
+      "label": "Prod Vent call success over 24 h, without the caller's own 4xx",
+      "op": ">=",
+      "target": 99,
+      "unit": "%"
+    },
+    {
+      "key": "provider_keys_outside_vent",
+      "label": "Provider keys still held by deployments other than Vent",
+      "op": "<=",
+      "target": 0,
+      "unit": " keys"
+    },
+    {
+      "key": "vent_hosts_down",
+      "label": "Vent hosts not answering 200 on /healthz (prod and staging)",
+      "op": "<=",
+      "target": 0,
+      "unit": " hosts"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/vent-gateway.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Read the flagged rows and steer the live job that owns each one, or start one fix job when none is live. vent_hosts_down above 0 (host_down rows) goes to the p2 job 'vent landing and deploy'. site_direct rows go to the p3 job 'vent cutover train' by app, and webhook_direct rows go to the p4 job 'vent webhooks'; a site counts only once its code is on main, which prod runs. A no_prod_traffic row means the code at main calls Vent but prod Vent logged no successful vent.call for it in 7 days: check the caller's VENT_URL and VENT_KEY in prod. vent-share.py takes Vent's integrations from apps/vent/src/vent/tables.py, so a provider with no integration there (the script prints them) needs one in Vent, not an edit to the script. vent_success_24h_pct under 99: read the call_failed rows and start one fix job for the largest outcome. vent_success_24h_pct at -1 means prod Vent took no calls in 24 h, which follows the hosts and the cutover. provider_keys_outside_vent above 0: each key_outside_vent row names a location and key names; the cutover train removes a key once no caller there reads it, and .bak copies on us-metal01 go too. Never print or copy a key value. A source_error row means a source was not read, so fix the read before trusting the number. No outside sends (c37). Merges, pushes and prod promotes need no go before the launch (c74). All on target: end the turn with no message.",
+  "boardGoal": "p1"
+}

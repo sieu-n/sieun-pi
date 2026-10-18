@@ -1,0 +1,38 @@
+{
+  "name": "DM outreach works",
+  "ownerWords": "why the fuck would Making the readers send is real engineering work\n\nyes, just limit num outbound to 1/day.\n\n2/day/account\n\nthings are meant to be first written in plan -> achieved -> cleared & written on duty for maintanence only -> and valiantly persued whenever not met. JUST DO IT",
+  "goal": "A signed-in customer on https://api.virev.ai/playground/dm-playground sees Start conversation enabled with no Paused line, prod has reader accounts free to send, and every prod DM send of the last 24 h went out.",
+  "metrics": [
+    {
+      "key": "sending_available",
+      "label": "Prod DM playground can start a conversation (1 yes, 0 Paused)",
+      "op": ">=",
+      "target": 1,
+      "headline": true
+    },
+    {
+      "key": "sendable_accounts",
+      "label": "Prod reader accounts that can send now (new or active)",
+      "op": ">=",
+      "target": 1
+    },
+    {
+      "key": "failed_sends_24h",
+      "label": "Prod DM sends that failed, last 24 h (daily limit refusals left out)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/dm-outreach.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read the flagged rows and name the cause in one line. A paused or unknown row with new or active accounts in the census is the portal's sendingState in apps/api-portal/src/lib/server/engage-dm.ts at the deployed commit: fix it on staging (c50), and when the fix is already on sieun/dev, name the promote that carries it, since the release owner runs prod promotes without a go (c74). A no_capacity row is reader account capacity, which the launch chat 01a11bd7's Engage reads scale safely duty owns: name its job, or send that chat the census once. A failed_sends row is the crawler send path in apps/crawler-v3 (service.py _web_send and conversations.py _do_send): read the code, and a proxy or egress code is the proxy, which Crawler ops (chat 01a115e2) owns. A source_error row is the measure itself: fix this precheck. A miss gets one live fix job in this chat unless one is live, and the fix job proves its fix with this duty's next run. Send nothing to anyone outside our own accounts (c37). All on target: end the turn with no message.",
+  "boardGoal": "p17"
+}

@@ -70,7 +70,11 @@ function captures(run: string, chat: string): { at: number; tools: string[]; cha
   });
 }
 
-function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
+/** One numbered criterion of the run: met, not met, or not reached yet (null). */
+export interface Check { id: number; ok: boolean | null; detail: string }
+
+/** Criteria 1 to 10 of chat-tools-reopen/criteria.md against the run's evidence, with the verdict and its text. */
+export function judge(run: string, state: RunState): { verdict: Verdict; text: string; checks: Check[] } {
   const chat = state.chat.id;
   const entries = chatEntries(chat);
   const markFile = join(run, "archive.json");
@@ -78,7 +82,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const reopen = mark ? entries.find(entry => entry.at > mark.at && entry.role === "user" && entry.text.includes(FOLLOW_UP)) : undefined;
   const before = entries.filter(entry => entry.at >= state.windowStart && (!mark || entry.at < mark.at));
   const after = reopen ? entries.filter(entry => entry.at >= reopen.at) : [];
-  const checks: { id: number; ok: boolean | null; detail: string }[] = [];
+  const checks: Check[] = [];
   const add = (id: number, ok: boolean | null, detail: string) => checks.push({ id, ok, detail });
 
   const pre = toolOutcomes(before, ["chat_board", "tell_owner"]);
@@ -127,7 +131,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const verdict: Verdict = checks.some(check => check.ok === false) ? "fail" : checks.every(check => check.ok === true) ? "pass" : "open";
   const lines = [`# ${state.chat.name}: ${verdict}`, "", `Chat ${chat} on ${state.release}, set up ${iso(state.setupAt)}.`, "",
     ...checks.map(check => `${check.id}. ${check.ok === null ? "not reached yet" : check.ok ? "met" : "not met"}: ${check.detail}`), ""];
-  return { verdict, text: lines.join("\n") };
+  return { verdict, text: lines.join("\n"), checks };
 }
 
 export const chatToolsReopen: Scenario = {

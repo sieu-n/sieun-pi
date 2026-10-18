@@ -132,7 +132,13 @@ class Refresh(Store):
         code, out = self.run_refresh("--stream", "--provider", "anthropic")
         events = [json.loads(line) for line in out.splitlines()]
         self.assertEqual(code, 0)
-        self.assertEqual([e["event"] for e in events], ["accounts", "reading", "reading", "read", "read", "end"][:len(events)])
+        kinds = [e["event"] for e in events]
+        # The reads run in parallel, so a read may land before the next reading starts.
+        self.assertEqual((kinds[0], kinds[-1], sorted(kinds[1:-1])), ("accounts", "end", ["read", "read", "reading", "reading"]))
+        for e in events[1:-1]:
+            if e["event"] == "read":
+                self.assertLess(kinds.index("reading"), events.index(e))
+                self.assertTrue(any(x["event"] == "reading" and x["id"] == e["id"] for x in events[:events.index(e)]), e)
         reads = {e["id"]: e for e in events if e["event"] == "read"}
         self.assertEqual((reads["a"]["ok"], reads["a"]["label"], reads["b"]["ok"]), (True, "a@x", False))
         self.assertEqual(self.probed, [{"b"}])

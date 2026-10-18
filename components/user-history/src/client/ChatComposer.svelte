@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import { drafts, readImage, type DraftAttachment } from "./drafts.ts";
+  import { drafts, nextAttachmentId, readImage, type DraftAttachment } from "./drafts.ts";
 </script>
 
 <script lang="ts">
@@ -12,12 +12,12 @@
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The chat box. Enter sends at once and the box is free again before the server answers; Shift+Enter adds a line. Images paste or
-   * drop in. `send` resolves false when the server refused the message, and the text comes back into an empty box. The draft lives under `draftKey`.
+   * The chat box. Enter puts the message in the page outbox and the box is free again at once; Shift+Enter adds a line. Images paste or
+   * drop in. Edit on a send that failed (`store.editSend` for this chat) puts its text and images back. The draft lives under `draftKey`.
    * A Reply on a bubble (`store.replyQuote` for this chat) puts a quote chip over the box; the send is `> ` lines of it, a blank line, then the text.
    * The x on the chip or Escape drops the quote.
    */
-  let { draftKey, send, acceptsImages = true, focusOnMount = false }: { draftKey: string; send: (text: string, images: ImageInput[]) => Promise<boolean>; acceptsImages?: boolean; focusOnMount?: boolean } = $props();
+  let { draftKey, send, acceptsImages = true, focusOnMount = false }: { draftKey: string; send: (text: string, images: ImageInput[]) => Promise<void>; acceptsImages?: boolean; focusOnMount?: boolean } = $props();
 
   const restored = drafts.get(untrack(() => draftKey));
   let text = $state(restored?.text ?? "");
@@ -32,6 +32,17 @@
     const request = store.replyQuote;
     if (!request || request.chat !== draftKey) return;
     untrack(() => { quote = request.text; store.replyQuote = null; textarea?.focus(); });
+  });
+  $effect(() => {
+    const request = store.editSend;
+    if (!request || request.chat !== draftKey) return;
+    untrack(() => {
+      text = text.trim() ? text + "\n\n" + request.text : request.text;
+      images = [...images, ...request.images.map(image => ({ id: nextAttachmentId(), name: "image", mimeType: image.mimeType, size: Math.floor(image.data.length * 3 / 4),
+        data: image.data, url: "data:" + image.mimeType + ";base64," + image.data }))];
+      store.editSend = null;
+      textarea?.focus();
+    });
   });
   $effect(() => {
     void text;
@@ -62,11 +73,7 @@
     quote = null;
     drafts.delete(draftKey);
     void tick().then(() => textarea?.focus());
-    void send(replyText(quoted, message), payload).then(ok => {
-      if (ok) { for (const image of sent) URL.revokeObjectURL(image.url); return; }
-      if (!text.trim() && !images.length && quote === null) { text = message; images = sent; quote = quoted; }
-      else for (const image of sent) URL.revokeObjectURL(image.url);
-    });
+    void send(replyText(quoted, message), payload).then(() => { for (const image of sent) URL.revokeObjectURL(image.url); });
   }
 
   async function addFiles(files: Iterable<File>): Promise<void> {

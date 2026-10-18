@@ -1,19 +1,21 @@
 import { api, ApiError, requestId } from "./api.ts";
-import { hasUnsentDrafts } from "./drafts.ts";
-import { buildReload, onLeave } from "./build-reload.ts";
-import { retryFeeds } from "./feeds.ts";
-import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
-import { messageKey } from "../shared/message-key.ts";
+import { saveDrafts } from "./drafts.ts";
+import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
+import { primeThread, retryFeeds } from "./feeds.ts";
+import { applyThreadEvent, boardKey, threadStateFromSnapshot } from "../shared/thread-state.ts";
+import { formatCursor, messageKey } from "../shared/message-key.ts";
 import { rememberAccounts } from "./accounts.ts";
 import { dutiesFeed } from "./duties.svelte.ts";
 import { childUsage, pushedAccounts } from "./thread-side.svelte.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
 import { keepOlder, newestPage, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
+import { indexedDbStorage, memoryStorage, PageOutbox, pendingOf } from "./outbox.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
+import type { AgentsView } from "../shared/sessions-delta.ts";
 import type { PromptTarget } from "../shared/prompt-view.ts";
 import type { SettingsSection } from "./settings-sections.ts";
 
@@ -55,6 +57,13 @@ class Store {
   daemonError = $state<string | null>(null);
   /** Read from the hash at once, so the first render on a thread URL never mounts the new-chat screen and its five requests. */
   selectedId = $state<string | null>(pageTarget()?.id ?? null);
+  /**
+   * Each thread's entry as the store last wrote it, and `threads` mirrors it for the views. An effect's teardown reads `$state` as it was
+   * before the change that tore it down, so a patch from one (Chat and Thread mark a thread read as it closes) spread the map from before the
+   * switch and dropped the entry of the thread just opened. That thread then subscribed again and kept both feeds: on 10-18 every cold switch
+   * away from a plain thread pulled the snapshot twice over the 185 ms link from Korea.
+   */
+  private entries: Record<string, ThreadEntry> = {};
   threads = $state.raw<Record<string, ThreadEntry>>({});
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
@@ -63,8 +72,17 @@ class Store {
   drawer = $state<SettingsSection | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
-  /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */
+  /** Chat sends each thread has not echoed back yet, by thread id, oldest first: the outbox's sends and the delivered ones (`pendingOf`). */
   pendingSends = $state.raw<Record<string, PendingSend[]>>({});
+  /** Edit on a failed send: the chat's composer takes its text and images and clears this. */
+  editSend = $state.raw<{ chat: string; text: string; images: ImageInput[] } | null>(null);
+  readonly outbox = new PageOutbox({
+    storage: typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage(),
+    post: send => api.prompt(send.threadId, { message: send.text, images: send.images, mode: "steer", requestId: send.id }),
+    status: error => error instanceof ApiError ? error.status : null,
+    onChange: view => { this.pendingSends = pendingOf(view); this.idle(); },
+    log: line => console.warn(line),
+  });
   /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
@@ -90,17 +108,41 @@ class Store {
     window.addEventListener("hashchange", () => this.readHash());
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (this.selectedId) this.seenAt.set(this.selectedId, this.hides); this.trimHidden(); } });
     this.subscribeSessions();
+    void this.outbox.resend();
+  }
+
+  /** The sessions feed's rows as they came, before `withAgents`. */
+  private listed: SessionRow[] = [];
+  /** The agents feeds this page holds, by the id it asked for: the open thread and each chat whose sidebar row is unfolded. */
+  private agentFeeds = new Map<string, () => void>();
+  private agentViews = new Map<string, AgentsView>();
+  /** The rows with each shown chat's agents laid in, so every reader of `row.agents` works as before the feed left them out. */
+  private withAgents(rows: SessionRow[]): SessionRow[] {
+    const byChat = new Map([...this.agentViews.values()].flatMap(view => view.chat ? [[view.chat, view.agents] as const] : []));
+    return byChat.size ? rows.map(row => { const agents = row.chat ? byChat.get(row.id) : undefined; return agents ? { ...row, agents } : row; }) : rows;
+  }
+  /** Starts the agents feeds for `ids` and stops the others. */
+  showAgents(ids: readonly string[]): void {
+    const wanted = new Set(ids);
+    let dropped = false;
+    for (const [id, stop] of this.agentFeeds) if (!wanted.has(id)) { stop(); this.agentFeeds.delete(id); dropped = this.agentViews.delete(id) || dropped; }
+    if (dropped) this.sessions = this.withAgents(this.listed);
+    for (const id of wanted) {
+      if (this.agentFeeds.has(id)) continue;
+      this.agentFeeds.set(id, api.agentsStream(id, view => { this.agentViews.set(id, view); this.sessions = this.withAgents(this.listed); }));
+    }
   }
 
   private subscribeSessions(): void {
     this.sessionsStop = api.sessionsStream(this.archivedWanted, event => {
-      this.sessions = event.sessions;
+      this.listed = event.sessions;
+      this.sessions = this.withAgents(event.sessions);
       this.archivedCount = event.archived;
       this.tags = event.tags;
       this.daemon = event.daemon;
       this.daemonError = event.error ?? null;
       this.checkArchived();
-    }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, version => this.onBuild(version));
+    }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, build => this.onBuild(build));
   }
 
   /** The sidebar's or the agents list's archived toggle, or an open thread the list lacks: the feed starts again with the archived rows. */
@@ -117,21 +159,40 @@ class Store {
     if (!this.archivedWanted && id && !this.created.has(id) && this.archivedCount > 0 && this.daemon !== "unknown" && !this.sessions.some(row => row.id === id)) this.wantArchived();
   }
 
-  private updateOffered = false;
-  /** A restarted service with new client code: `buildReload` picks a reload now, one when the owner leaves the page, or a Reload offer. */
-  private onBuild(version: string): void {
-    if (!version || version === document.body.dataset.build || this.updateOffered) return;
-    this.updateOffered = true;
-    const unsent = () => this.pending !== null || hasUnsentDrafts();
-    const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), unsent: unsent() });
-    if (plan === "now") location.reload();
-    else if (plan === "on-leave") onLeave(() => { if (unsent()) this.offerReload(); else location.reload(); });
-    else this.offerReload();
+  /** Set once the service runs client code this page lacks; the page then reloads at its first chance (see `buildReload`). */
+  private newBuild = false;
+  private reloadPlanned = false;
+  /** Prompts outside the outbox whose POST has not answered; a reload now would drop them. */
+  private posting = 0;
+  /** The new build's app.js and app.css on their way into the browser's cache, so the reload paints from it. */
+  private warmed: Promise<void> | null = null;
+  private onBuild(build: { version: string; assets?: string[] }): void {
+    if (!build.version || build.version === document.body.dataset.build) return;
+    this.warmed ??= warmAssets(build.assets ?? []);
+    this.newBuild = true;
+    this.planReload();
   }
 
-  private offerReload(): void {
-    this.toast("A new version of this page is ready.", "info", { label: "Reload", run: () => location.reload() }, null);
+  private busy(): boolean { return this.pending !== null || this.posting > 0 || this.outbox.onlyInPage(); }
+
+  /** Plans the reload onto new client code; a busy page plans again from `idle` once it is not. */
+  private planReload(): void {
+    if (!this.newBuild || this.reloadPlanned) return;
+    const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), busy: this.busy() });
+    if (plan === "wait") return;
+    this.reloadPlanned = true;
+    if (plan === "now") this.reloadNow();
+    else onLeave(() => this.reloadNow());
   }
+
+  private reloadNow(): void {
+    void (this.warmed ?? Promise.resolve()).then(() => {
+      if (this.busy() || !saveDrafts()) { this.reloadPlanned = false; return; }
+      location.reload();
+    });
+  }
+
+  private idle(): void { if (!this.busy()) this.planReload(); }
 
   retry(): void {
     this.sessionsStop?.();
@@ -195,8 +256,9 @@ class Store {
   thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
 
   private patch(id: string, change: Partial<ThreadEntry>): void {
-    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
-    this.threads = { ...this.threads, [id]: { ...current, ...change } };
+    const current = this.entries[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
+    this.entries = { ...this.entries, [id]: { ...current, ...change } };
+    this.threads = this.entries;
   }
 
   /**
@@ -205,7 +267,7 @@ class Store {
    * only after the snapshot landed, three round trips from Korea before the view was whole.
    */
   open(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (entry?.close && !entry.error) return;
     // Retry after an error: drop the failed subscription and start a fresh one on a socket that reconnects now.
     entry?.close?.();
@@ -227,22 +289,31 @@ class Store {
       apply(event);
     }, () => {
       this.dropSide(id);
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
-    }, side => this.side(id, side));
+    }, side => this.side(id, side), () => {
+      // A reconnect names the newest message and the board this page holds, and gets only what came after them.
+      const state = this.threads[id]?.state;
+      if (!state?.messages.length) return undefined;
+      return { last: formatCursor({ kind: "message", key: messageKey(state.messages, state.messages.length - 1) }), ...(state.board ? { board: boardKey(state.board) } : {}) };
+    });
     const apply = (event: ThreadEvent) => {
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (!current) return;
       if (event.type === "snapshot") {
+        // Each subscribe and socket reconnect brings one: the sends the server has not delivered go again with their ids.
+        if (event.snapshot.outbox) void this.outbox.server(event.snapshot.outbox);
+        void this.outbox.resend(id);
         if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
         const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
-        this.patch(id, { state: keepOlder(current.state, page), newest: newestPage(page), loading: false, error: null });
+        this.patch(id, { state: keepOlder(current.state, page), newest: event.snapshot.after !== undefined ? current.newest : newestPage(page), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) {
         this.dropSide(id);
         this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
       }
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
+      if (event.type === "outbox") void this.outbox.server(event.outbox);
     };
     this.expectSide(id);
     this.patch(id, { close });
@@ -276,7 +347,7 @@ class Store {
    * `resting`). Any other thread closes it, since a listener keeps a plain thread attached on the server (`sweep`).
    */
   release(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (!entry?.close || this.session(id)?.chat) return;
     entry.close();
     this.dropSide(id);
@@ -285,25 +356,25 @@ class Store {
 
   /** Part `part` of the message at `index` in the thread's loaded messages, whole: the snapshot clips long parts. */
   part(id: string, index: number, part: number): Promise<{ text: string }> {
-    const messages = this.threads[id]?.state?.messages;
+    const messages = this.entries[id]?.state?.messages;
     if (!messages?.[index]) return Promise.reject(new Error("That message is not loaded any more."));
     return api.part(id, messageKey(messages, index), part);
   }
 
   /** The page before the oldest loaded message, put in front of it; true when it was. A session file that changed under the cursor (409) opens the thread again. */
   async loadOlder(id: string): Promise<boolean> {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     const cursor = entry?.state?.older;
     if (!entry || cursor === undefined || entry.olderLoading) return false;
     this.patch(id, { olderLoading: true });
     try {
       const page = await api.olderPage(id, cursor);
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (!current?.state || current.state.older !== cursor) return false;
       this.patch(id, { state: prependOlder(current.state, page) });
       return true;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) { this.threads[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
+      if (error instanceof ApiError && error.status === 409) { this.entries[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
       else this.toast(error instanceof Error ? error.message : String(error));
       return false;
     } finally { this.patch(id, { olderLoading: false }); }
@@ -315,20 +386,51 @@ class Store {
    */
   private trimHidden(): void {
     this.hides++;
-    let threads = this.threads;
+    let threads = this.entries;
     for (const [id, entry] of Object.entries(threads)) {
       if (id === this.selectedId || !entry.state || this.hides - (this.seenAt.get(id) ?? 0) < 2) continue;
       const state = trimToNewest(entry.state, entry.newest);
       if (state !== entry.state) threads = { ...threads, [id]: { ...entry, state } };
     }
-    if (threads !== this.threads) this.threads = threads;
+    if (threads !== this.entries) this.threads = this.entries = threads;
   }
   private hides = 0;
   /** The `hides` count when each thread was last open. */
   private seenAt = new Map<string, number>();
 
+  /** Each prefetched thread's row `lastActivityAt` when its first frame was fetched, so a row that moved since is fetched again. */
+  private prefetched = new Map<string, string>();
+  private prefetchQueue: string[] = [];
+  private prefetching = false;
+
+  /**
+   * Fetches the first frame of each thread that has no feed or state yet, one request at a time so a click never waits behind a burst, and
+   * primes its feed with it (`primeThread`): a click then paints at once and the feed's snapshot replaces it. `front` puts them first (a hover).
+   */
+  prefetch(ids: readonly string[], front = false): void {
+    const wanted = ids.filter(id => !this.entries[id] && this.prefetched.get(id) !== (this.session(id)?.lastActivityAt ?? ""));
+    if (!wanted.length) return;
+    const rest = this.prefetchQueue.filter(id => !wanted.includes(id));
+    this.prefetchQueue = front ? [...wanted, ...rest] : [...rest, ...wanted];
+    void this.drainPrefetch();
+  }
+
+  private async drainPrefetch(): Promise<void> {
+    if (this.prefetching) return;
+    this.prefetching = true;
+    try {
+      for (let id = this.prefetchQueue.shift(); id !== undefined; id = this.prefetchQueue.shift()) {
+        if (this.entries[id]) continue;
+        const activity = this.session(id)?.lastActivityAt ?? "";
+        const frames = await api.firstFrame(id).catch(() => null);
+        this.prefetched.set(id, activity);
+        if (frames && !this.entries[id]) primeThread(id, frames);
+      }
+    } finally { this.prefetching = false; }
+  }
+
   warm(id: string): void {
-    if (this.threads[id]?.state) return;
+    if (this.entries[id]?.state) return;
     void api.warm(id).catch(() => {});
   }
 
@@ -337,7 +439,7 @@ class Store {
    * arrives after you leave still counts as unread. Skipped only when nothing happened since this page last marked it.
    */
   markRead(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     const row = this.session(id);
     if (!entry?.state || !row) return;
     const activity = Date.parse(row.lastActivityAt ?? "") || 0;
@@ -363,21 +465,30 @@ class Store {
   }
 
   async send(id: string, message: string, images: ImageInput[], mode: SendMode): Promise<boolean> {
-    const result = await this.run(api.prompt(id, { message, images, mode, requestId: requestId() }));
-    return result !== undefined;
+    this.posting++;
+    try {
+      const result = await this.run(api.prompt(id, { message, images, mode, requestId: requestId() }));
+      return result !== undefined;
+    } finally { this.posting--; this.idle(); }
   }
 
   /**
-   * A chat send: the bubble appears at once as pending and the box is free again; the message steers the thread so it lands
-   * even while it is busy. A refused send drops the bubble and shows the error; the composer gets its text back.
+   * A chat send goes into the page outbox (outbox.ts) and shows at once as a sending bubble; the outbox posts it until the server holds it,
+   * and the message steers the thread so it lands even while it is busy. It never shows a toast: a send that cannot go gets a note under
+   * its bubble with Retry and Edit.
    */
-  async sendChat(id: string, text: string, images: ImageInput[]): Promise<boolean> {
-    const send: PendingSend = { id: requestId(), text, at: Date.now(),
-      images: images.map(image => ({ type: "image", mimeType: image.mimeType, url: "data:" + image.mimeType + ";base64," + image.data })) };
-    this.pendingSends = { ...this.pendingSends, [id]: [...(this.pendingSends[id] ?? []), send] };
-    const ok = await this.send(id, text, images, "steer");
-    if (!ok) this.settleSends(id, new Set([send.id]));
-    return ok;
+  sendChat(id: string, text: string, images: ImageInput[]): Promise<void> {
+    return this.outbox.submit({ id: requestId(), threadId: id, text, images, at: Date.now() });
+  }
+
+  retrySend(sendId: string): Promise<void> { return this.outbox.retry(sendId, requestId(), Date.now()); }
+
+  /** Puts a failed send's text and images back in its chat's composer and drops it. */
+  editFailed(sendId: string): void {
+    const send = this.outbox.view.sends.find(held => held.id === sendId);
+    if (!send) return;
+    this.editSend = { chat: send.threadId, text: send.text, images: send.images };
+    void this.outbox.drop(sendId);
   }
 
   /**
@@ -385,25 +496,19 @@ class Store {
    * puts the previous board back and shows the error. The server's board event lands after and wins either way.
    */
   async boardOps(id: string, next: ChatBoard, ops: BoardOp[]): Promise<boolean> {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (!entry?.state) return false;
     const previous = entry.state.board ?? null;
     this.patch(id, { state: { ...entry.state, board: next } });
     const result = await this.run(api.board(id, ops));
     if (result) return true;
-    const current = this.threads[id];
+    const current = this.entries[id];
     if (current?.state && current.state.board === next) this.patch(id, { state: { ...current.state, board: previous } });
     return false;
   }
 
   /** Forget pending sends the thread has echoed back (the chat view reports them), so the list never grows. */
-  settleSends(id: string, ids: ReadonlySet<string>): void {
-    const sends = this.pendingSends[id] ?? [];
-    if (!sends.some(send => ids.has(send.id))) return;
-    const left = sends.filter(send => !ids.has(send.id));
-    const { [id]: _dropped, ...rest } = this.pendingSends;
-    this.pendingSends = left.length ? { ...rest, [id]: left } : rest;
-  }
+  settleSends(ids: ReadonlySet<string>): void { void this.outbox.echoed(ids); }
 
   private slackLoad: Promise<void> | null = null;
   /** One read in flight: the page start and a chat header that mounts before it answers share it. */
@@ -424,7 +529,7 @@ class Store {
   async createChat(input: Omit<PendingChat, "startedAt">): Promise<string | null> {
     this.pending = { ...input, startedAt: Date.now() };
     const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
-    if (!result) { this.pending = null; return null; }
+    if (!result) { this.pending = null; this.idle(); return null; }
     if (result.notice) this.toast(result.notice);
     if (input.slack) void this.loadSlack();
     this.created.add(result.id);
@@ -432,6 +537,7 @@ class Store {
     if (input.kind === "chat") await this.awaitRow(result.id);
     this.select(result.id);
     this.pending = null;
+    this.idle();
     return result.id;
   }
 

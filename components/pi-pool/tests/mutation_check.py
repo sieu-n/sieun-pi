@@ -22,6 +22,12 @@ MUTATIONS = {
     "R5 wait, not a hop onto a depleted account": (
         "    candidates = [a for a in ranked if allowed(a)]",
         "    candidates = [a for a in ranked if allowed(a)] + sorted([a for a in accounts if allowed(a) and a not in ranked and serve_reason(a, cooldowns, now) is None], key=lambda a: a.session_pct)"),
+    "R5 backoff on a depleted pool": (
+        "    if not any(admit_reason(a, cooldowns, cfg, now, p) in (None, \"unsampled\") for a in accounts):",
+        "    if False:"),
+    "R5 backoff held until its draw": (
+        "    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None",
+        "    held = None"),
     "R6 move budget": ("    stuck = own_ok and moved >= budget and (p != \"high\" or optional)", "    stuck = False"),
     "R6 wait cap": ("    if stuck and admissible_at(cur, cooldowns, cfg, now, p) - now > cfg[\"budget_wait_max_sec\"]:",
                     "    if False:"),
@@ -53,7 +59,7 @@ def main():
                 target.write_text(source.replace(old, new))
             run = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "test_scheduler"], cwd=copy / "tests",
                                  capture_output=True, text=True, timeout=300)
-            failed = sorted(set(re.findall(r"^(?:FAIL|ERROR): (\w+) \(test_scheduler\.(\w+)\)", run.stderr, re.M)))
+            failed = sorted(set(re.findall(r"^(?:FAIL|ERROR): (\w+) \(test_scheduler\.(\w+)(?:\.\w+)?\)", run.stderr, re.M)))
             out[rule] = [f"{cls}.{name}" for name, cls in failed]
     print(json.dumps(out, indent=1))
     if out.pop("none (must pass)"):

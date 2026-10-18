@@ -63,6 +63,8 @@ const FLAG_WORDS: Record<string, { noun: string; words: string } | string> = {
   one_session_load: { noun: "goal", words: "with too much on one job" },
   redundant_heartbeats: { noun: "heartbeat", words: "repeating a duty's work" },
   goals_without_duty: "open goals with no duty",
+  no_done_line: { noun: "goal", words: "with no done line" },
+  plan_risks: { noun: "step", words: "holding a standing risk" },
   stuck_steps: { noun: "step", words: "stuck" },
 };
 

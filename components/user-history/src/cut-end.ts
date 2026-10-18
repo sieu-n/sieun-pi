@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import { clockTime } from "./checkin-settings.ts";
+import { poolSlot } from "./shared/chat-feed.ts";
 
 /**
  * How a job's last turn ended when it was cut and nothing came after it, read from its transcript. On 10-16 at 00:19:57Z queued jobs (local agents
@@ -13,7 +14,13 @@ export type CutCause = "archived" | "error" | "length" | "mid-tool";
  * traced all 6 cut jobs the Whole system duty listed at 07:50Z to a parent's rlm.delete_subagent (4) or the parker ending the job above them (2),
  * and only 1 of 40 archive cuts fell inside a supervisor restart. The duty counts an archived cut only with proof of an interruption.
  */
-export interface Cut { at: number; cause: CutCause; archivedAt?: number }
+export interface Cut { at: number; cause: CutCause; archivedAt?: number;
+  /**
+   * The slot pi-pool gave a provider error (`poolSlot`): the session waits in pi-pool's queue until then and Prime's retry starts it at the slot.
+   * On 10-18 from 09:05Z to 10:43Z 13 jobs on such errors read 11 to 15 min cut holds each, every check-in restart before the slot got the same
+   * refusal ("waits for its slot at 10:43:30"), and each job started within a minute of its slot.
+   */
+  slotAt?: number }
 
 /** An archive writes `archived` and then the aborted reply within milliseconds; a Stop that does not archive writes the abort alone. */
 export const ARCHIVE_ABORT_MS = 5_000;
@@ -42,7 +49,9 @@ export const cutActivity = (cut: Cut): string => `${cutWords(cut.cause)} at ${cl
  */
 export function cutEnd(lines: readonly string[]): Cut | null {
   const end = lastCut(lines);
-  return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause, ...(end.archivedAt === undefined ? {} : { archivedAt: end.archivedAt }) } : null;
+  if (!end || reportedBefore(lines, end.index)) return null;
+  const { index: _, ...cut } = end;
+  return cut;
 }
 
 /** A cut and the input that ended it, if one came since: `resumedAt` is that input's time. */
@@ -62,7 +71,8 @@ export function cutSpans(lines: readonly string[]): CutSpan[] {
   const add = (end: number, resumedAt?: number) => {
     const cut = lastCut(lines, end);
     if (!cut || reportedBefore(lines, cut.index)) return;
-    spans.push({ at: cut.at, cause: cut.cause, ...cut.archivedAt === undefined ? {} : { archivedAt: cut.archivedAt }, ...resumedAt === undefined ? {} : { resumedAt } });
+    const { index: _, ...span } = cut;
+    spans.push({ ...span, ...resumedAt === undefined ? {} : { resumedAt } });
   };
   lines.forEach((line, index) => {
     if (!isInput(line)) return;
@@ -87,7 +97,7 @@ function reportedBefore(lines: readonly string[], index: number): boolean {
 function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: number }) | null {
   let archivedAfter: number | undefined;
   for (let index = end - 1; index >= 0; index--) {
-    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string } };
+    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string; errorMessage?: string } };
     try { entry = JSON.parse(lines[index]!); } catch { continue; }
     if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
     if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
@@ -100,7 +110,11 @@ function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: 
     // 23:04:28.977Z and its running tool read "Request was aborted" 29 ms later. That is an archive of the turn, so its archivedAt is set.
     if (role === "toolResult") return { at, cause: "mid-tool", index, ...archivedAfter === undefined ? archivedJustBefore(lines, index, at) : archived };
     if (role !== "assistant") return null;
-    if (stopReason === "error" || stopReason === "length") return { at, cause: stopReason, index, ...archived };
+    if (stopReason === "length") return { at, cause: stopReason, index, ...archived };
+    if (stopReason === "error") {
+      const slotAt = poolSlot(entry.message.errorMessage ?? "");
+      return { at, cause: stopReason, index, ...archived, ...slotAt === null ? {} : { slotAt } };
+    }
     if (stopReason !== "aborted") return null;
     for (let back = index - 1; back >= 0; back--) {
       let before: { type?: string; timestamp?: string; state?: { status?: string } };
@@ -176,6 +190,13 @@ export async function readCut(file: string): Promise<Cut | null> {
   return cut;
 }
 
+/**
+ * Whether a cut just seen gets the pass over interrupted jobs now. An archive is left to the job sweep, which reads its cause first (`Cut`), and
+ * a provider error pi-pool holds until its slot is left to Prime's retry at that slot (`slotAt`). Every other cut waited for the next 10 min
+ * sweep plus a 45 to 67 s pass: census writer speed, stopped mid-tool at 06:46:13Z on 10-18, got its next message at 07:15:10Z.
+ */
+export const resumesNow = (cut: Cut, now: number): boolean => cut.cause !== "archived" && !(cut.slotAt !== undefined && cut.slotAt > now);
+
 /** A session file to check and the key that changes when the session gets a new message (the daemon row's `modified` and message count). */
 export interface CutSource { file: string; key: string }
 
@@ -190,6 +211,9 @@ const READS_AT_ONCE = 8;
 export class SessionCuts {
   private readonly known = new Map<string, { key: string; cut: Cut | null }>();
 
+  /** `seen` gets each cut that came or moved on a read, so the server can send its continue then instead of at the next job sweep. */
+  constructor(private readonly seen: (cut: Cut) => void = () => {}) {}
+
   /** The cut last read for a session file; null when it ended well or was not read yet. */
   of(file: string | undefined): Cut | null {
     return file ? this.known.get(file)?.cut ?? null : null;
@@ -203,7 +227,10 @@ export class SessionCuts {
       await Promise.all(stale.slice(index, index + READS_AT_ONCE).map(async ({ file, key }) => {
         const cut = await readCut(file).catch(() => null);
         const before = this.known.get(file)?.cut ?? null;
-        if (before?.at !== cut?.at || before?.cause !== cut?.cause) changed = true;
+        if (before?.at !== cut?.at || before?.cause !== cut?.cause) {
+          changed = true;
+          if (cut) this.seen(cut);
+        }
         this.known.set(file, { key, cut });
       }));
     }

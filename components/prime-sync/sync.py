@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """One prime-sync run: make this box's Prime setup match every other box's.
 
-1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its dirty files kept.
+1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its live edits carried onto the new bytes.
 2. Every home link in install-manifest.json points at the checkout, so skills, the global AGENTS.md,
    pstack-models.json and the extensions match the commit. A copy in a link's place is deleted.
 3. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
 4. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
    merge three ways with the private state repo, one file per entry, and the newer side wins a clash.
+5. When the checkout has not followed main for 10 min, the session that wrote a blocking path hears of it, and at 30 min the AI harness chat gets a todo.
 
 Prime and the chat only read local files, so this run writes them in place, the way each of them writes:
 harness_state.json by atomic replace, the ledger under the chat's <file>.lock directory.
@@ -20,8 +21,10 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,7 +52,11 @@ GIT_ENV = git_env()
 
 
 class Skip(Exception):
-    """This step leaves everything as it is this run; the next run tries again."""
+    """This step leaves everything as it is this run; the next run tries again. paths names what holds it, for the block watch."""
+
+    def __init__(self, message: str, paths: list[str] | None = None):
+        super().__init__(message)
+        self.paths = paths or []
 
 
 class Alert(Skip):
@@ -116,6 +123,7 @@ def host_name() -> str:
 def pull_checkout(checkout: Path) -> str:
     """Move a checkout on main to GitHub main. Local commits are replayed on top of it and never pushed, and dirty files ride along.
     Anything that does not apply cleanly leaves the checkout as it was, and the next run tries again."""
+    git(checkout, "rev-parse", "--git-dir")
     branch = git(checkout, "symbolic-ref", "--short", "-q", "HEAD", check=False)
     if branch != "main":
         return f"checkout is on {branch or 'a detached HEAD'}, not main"
@@ -127,13 +135,12 @@ def pull_checkout(checkout: Path) -> str:
         return f"ahead of origin/main {remote[:7]} at {head[:7]}"
     check_drop(checkout, head, remote)
     if _ancestor(checkout, head, remote):
-        move_checkout(checkout, head, remote)
-        return f"pulled {head[:7]}..{remote[:7]}"
+        return f"pulled {head[:7]}..{remote[:7]}" + move_checkout(checkout, head, remote, remote)
     target, count = replay(checkout, head, remote)
-    move_checkout(checkout, head, target)
+    carried = move_checkout(checkout, head, target, remote)
     if not count:
-        return f"pulled {head[:7]}..{remote[:7]}, whose local commits origin/main already holds"
-    return f"rebased {count} local commits from {head[:7]} onto origin/main {remote[:7]} as {target[:7]}"
+        return f"pulled {head[:7]}..{remote[:7]}, whose local commits origin/main already holds" + carried
+    return f"rebased {count} local commits from {head[:7]} onto origin/main {remote[:7]} as {target[:7]}" + carried
 
 
 def _paths(checkout: Path, *args: str) -> list[str]:
@@ -167,7 +174,7 @@ def replay(checkout: Path, head: str, remote: str) -> tuple[str, int]:
         merged = subprocess.run(["git", "-C", str(checkout), "merge-tree", "--write-tree", f"--merge-base={commit}^", tip, commit],
                                 capture_output=True, env=GIT_ENV, timeout=120)
         if merged.returncode != 0:
-            raise Skip(f"diverged from origin/main {remote[:7]} at {head[:7]}, and local commit {commit[:7]} conflicts with it")
+            raise Skip(f"diverged from origin/main {remote[:7]} at {head[:7]}, and local commit {commit[:7]} conflicts with it", [f"commit {commit[:9]}"])
         tree = merged.stdout.decode().split()[0]
         if tree == git(checkout, "rev-parse", f"{tip}^{{tree}}"):
             continue
@@ -181,46 +188,148 @@ def replay(checkout: Path, head: str, remote: str) -> tuple[str, int]:
     return tip, count
 
 
-def move_checkout(checkout: Path, head: str, target: str) -> None:
-    """Point main at target and update the worktree like a branch switch. Dirty files on paths the move changes go into a stash first
-    and come back on top; an untracked file in the way, a conflict or a commit made meanwhile puts everything back."""
-    touched = set(filter(None, git(checkout, "diff", "--name-only", "-z", head, target).split("\0")))
-    dirty = set(filter(None, (git(checkout, "diff", "--name-only", "-z", "HEAD") + "\0" + git(checkout, "diff", "--cached", "--name-only", "-z")).split("\0")))
-    carry = sorted(touched & dirty)
-    stash = None
-    if carry:
-        before = rev(checkout, "stash@{0}")
-        git(checkout, "stash", "push", "--quiet", "-m", "prime-sync carry", "--", *carry)
-        stash = rev(checkout, "stash@{0}")
-        if stash == before:
-            raise Skip(f"git stash kept nothing of {', '.join(carry)}")
-        clean = subprocess.run(["git", "-C", str(checkout), "merge-tree", "--write-tree", f"--merge-base={head}", target, stash],
-                               capture_output=True, env=GIT_ENV, timeout=120).returncode == 0
-        if not clean:
-            unstash(checkout, stash)
-            raise Skip(f"local changes to {', '.join(carry)} conflict with origin/main")
+def move_checkout(checkout: Path, head: str, target: str, remote: str) -> str:
+    """Point main at target and update the worktree like a branch switch, keeping every live edit on a path the move changes.
+
+    A live edit is merged onto the target's bytes with git merge-file. When the file was last written before the newest origin/main
+    commit that changed it, it is that commit's draft and takes the target's bytes. Otherwise a hunk both sides changed keeps the live
+    side, and a file that cannot be merged as text (binary, symlink, added or deleted on one side) keeps its bytes as a local edit.
+    The old bytes of every carried or superseded file are saved under carried/ first. asa-tip-sync moves the Mac's auto-sns-agent
+    checkout this way since 10-18, because a stash that refused any overlap held the Mac's checkout from 05:24Z until a chat stashed 15 files.
+    Only a staged edit that differs from both the disk and the target, or a folder in a file's place, holds the move, and it is named."""
+    dirty, preset, carried, kept = [], [], [], []
+    live = set(_paths(checkout, "diff", "--name-only", "-z", "--no-renames", "HEAD"))
+    for rel, old, new in changed_paths(checkout, head, target):
+        if rel not in live and (old is not None or not os.path.lexists(checkout / rel)):
+            continue
+        disk, staged = disk_state(checkout, rel), index_entry(checkout, rel)
+        if staged not in (old, new, disk) or (disk is not None and disk[0] == "dir"):
+            dirty.append(rel)
+        elif disk == old and staged == old:
+            continue
+        elif disk == new:
+            preset.append((rel, old, new))
+        elif (merged := carry(checkout, rel, disk, old, new)) is not None:
+            carried.append((rel, old, new, disk, merged))
+        elif new is not None and disk is not None and disk[0] != "120000" and superseded(checkout, rel, head, remote):
+            carried.append((rel, old, new, disk, None))
+        elif (merged := carry(checkout, rel, disk, old, new, "--ours")) is not None:
+            carried.append((rel, old, new, disk, merged))
+        else:
+            preset.append((rel, old, new))
+            kept.append(rel)
+    if dirty:
+        raise Skip(f"staged changes or folders on {', '.join(dirty[:10])} differ from what the move writes", dirty)
+    saved = SHARE / "carried" / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{head[:9]}-{target[:9]}"
+    for rel, _old, _new, disk, _merged in carried:
+        if disk_state(checkout, rel) != disk:
+            raise Skip(f"{rel} changed while the run read it", [rel])
+        (saved / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(checkout / rel, saved / rel, follow_symlinks=False)
+    for rel, old, new, _disk, _merged in carried:
+        write_file(checkout / rel, new[0], blob(checkout, new[1]))
+        preset.append((rel, old, new))
+
+    def undo(moved: bool) -> None:
+        if moved:
+            git(checkout, "update-ref", "-m", "prime-sync: undo move", "refs/heads/main", head, target)
+        for rel, old, _new in preset:
+            set_index(checkout, rel, old)
+        for rel, _old, _new, disk, _merged in carried:
+            write_file(checkout / rel, disk[0], (saved / rel).read_bytes())
+
+    for rel, _old, new in preset:
+        set_index(checkout, rel, new)
     if subprocess.run(["git", "-C", str(checkout), "update-ref", "-m", "prime-sync: move to origin/main", "refs/heads/main", target, head],
                       capture_output=True, env=GIT_ENV).returncode != 0:
-        if stash:
-            unstash(checkout, stash)
+        undo(False)
         raise Skip("main moved during the run")
     switched = subprocess.run(["git", "-C", str(checkout), "read-tree", "-m", "-u", head, target], capture_output=True, env=GIT_ENV, timeout=120)
     if switched.returncode != 0:
-        git(checkout, "update-ref", "-m", "prime-sync: undo move", "refs/heads/main", head, target)
-        if stash:
-            unstash(checkout, stash)
-        raise Skip(f"the worktree could not move: {switched.stderr.decode(errors='replace').strip()[:300]}")
-    if stash:
-        unstash(checkout, stash)
+        undo(True)
+        reason = switched.stderr.decode(errors="replace").strip()
+        raise Skip(f"the worktree could not move: {reason[:300]}", re.findall(r"^\t(\S.*)$", reason, re.M))
+    for rel, _old, new, _disk, merged in carried:
+        if merged is not None:
+            write_file(checkout / rel, new[0], merged)
+    notes = [f"carried {', '.join(c[0] for c in carried if c[4] is not None)}" if any(c[4] is not None for c in carried) else "",
+             f"took the tip for superseded {', '.join(c[0] for c in carried if c[4] is None)}" if any(c[4] is None for c in carried) else "",
+             f"kept local {', '.join(kept)}" if kept else ""]
+    notes = [note for note in notes if note]
+    return f"; {'; '.join(notes)}; old bytes in {saved}" if notes else ""
 
 
-def unstash(checkout: Path, stash: str) -> None:
-    applied = subprocess.run(["git", "-C", str(checkout), "stash", "apply", "--quiet", stash], capture_output=True, env=GIT_ENV, timeout=120)
-    if applied.returncode != 0:
-        raise Skip(f"stash {stash[:9]} (prime-sync carry) holds local changes that did not apply back: {applied.stderr.decode(errors='replace').strip()[:300]}")
-    stashes = git(checkout, "stash", "list", "--format=%H").split()
-    if stash in stashes:
-        git(checkout, "stash", "drop", "--quiet", f"stash@{{{stashes.index(stash)}}}")
+Entry = tuple[str, str]
+
+
+def changed_paths(checkout: Path, old: str, new: str) -> list[tuple[str, Entry | None, Entry | None]]:
+    raw = git(checkout, "diff-tree", "-r", "-z", "--no-renames", old, new).split("\0")
+    rows = []
+    for meta, rel in zip(raw[0::2], raw[1::2]):
+        old_mode, new_mode, old_blob, new_blob, _ = meta.lstrip(":").split(" ")
+        rows.append((rel, None if old_mode == "000000" else (old_mode, old_blob), None if new_mode == "000000" else (new_mode, new_blob)))
+    return rows
+
+
+def disk_state(checkout: Path, rel: str) -> Entry | None:
+    path = checkout / rel
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        return ("120000", git(checkout, "hash-object", "--stdin", "--no-filters", input=os.readlink(path).encode()))
+    if not stat.S_ISREG(info.st_mode):
+        return ("dir", "")
+    return ("100755" if info.st_mode & 0o111 else "100644", git(checkout, "hash-object", "--", rel))
+
+
+def index_entry(checkout: Path, rel: str) -> Entry | None:
+    row = git(checkout, "ls-files", "-s", "--", rel)
+    if not row:
+        return None
+    mode, sha, _stage = row.split("\t")[0].split(" ")
+    return (mode, sha)
+
+
+def set_index(checkout: Path, rel: str, entry: Entry | None) -> None:
+    if entry is None:
+        git(checkout, "update-index", "--force-remove", "--", rel)
+    else:
+        git(checkout, "update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{rel}")
+
+
+def blob(checkout: Path, sha: str) -> bytes:
+    return subprocess.run(["git", "-C", str(checkout), "cat-file", "blob", sha], capture_output=True, env=GIT_ENV, check=True, timeout=120).stdout
+
+
+def write_file(path: Path, mode: str, data: bytes) -> None:
+    if path.is_symlink():
+        path.unlink()
+    temporary = path.with_name(f"{path.name}.prime-sync.tmp")
+    temporary.write_bytes(data)
+    os.chmod(temporary, 0o755 if mode == "100755" else 0o644)
+    os.replace(temporary, path)
+
+
+def carry(checkout: Path, rel: str, disk: Entry | None, old: Entry | None, new: Entry | None, favor: str | None = None) -> bytes | None:
+    """The live edit on rel merged onto new's bytes, or None when it does not merge as text. favor="--ours" keeps the live side of a clash."""
+    if disk is None or old is None or new is None or "120000" in (disk[0], old[0], new[0]) or disk[0] not in (old[0], new[0]):
+        return None
+    with tempfile.TemporaryDirectory(prefix="prime-sync-carry-") as folder:
+        mine, base, theirs = (Path(folder) / name for name in ("mine", "base", "theirs"))
+        mine.write_bytes((checkout / rel).read_bytes())
+        base.write_bytes(blob(checkout, old[1]))
+        theirs.write_bytes(blob(checkout, new[1]))
+        merged = subprocess.run(["git", "merge-file", "-p", *([favor] if favor else []), str(mine), str(base), str(theirs)],
+                                capture_output=True, env=GIT_ENV, timeout=120)
+    return merged.stdout if merged.returncode == 0 else None
+
+
+def superseded(checkout: Path, rel: str, head: str, remote: str) -> bool:
+    """True when the file on disk is older than the newest commit in head..origin/main that changed it, so it is that commit's draft."""
+    stamp = git(checkout, "log", "-1", "--format=%ct", f"{head}..{remote}", "--", rel)
+    return bool(stamp) and os.lstat(checkout / rel).st_mtime < int(stamp)
 
 
 def _ancestor(repo: Path, older: str, newer: str) -> bool:
@@ -494,6 +603,134 @@ def _diff(before: dict, after: dict) -> str:
     return f"{added} added, {changed} changed, {removed} removed"
 
 
+# 5. The block watch
+
+
+# The AI harness chat asked on 10-18 for asa-mac-sync's two steps here: the session that wrote a blocking path hears of it after 10 min,
+# and its own For you list gets one todo after 30 min. The Mac's checkout sat at 461986e from 08:26Z to 10:45Z that day with nobody told.
+BLOCK_ALERT_S = int(os.environ.get("PRIME_SYNC_BLOCK_ALERT_S") or 600)
+FORYOU_S = int(os.environ.get("PRIME_SYNC_FORYOU_S") or 1800)
+FORYOU_CHAT = os.environ.get("PRIME_SYNC_FORYOU_CHAT") or "01a1164b-4a2d-742d-b27a-82f086ed0200"
+PRIME_BIN = os.environ.get("PRIME_SYNC_PRIME_BIN") or str(HOME / ".local/share/prime-agent/bin/prime-agent")
+TRANSCRIPTS = Path(os.environ.get("PRIME_SYNC_TRANSCRIPTS") or HOME / ".prime/agent")
+USER_HISTORY = HOME / ".local/share/sieun-pi-chat/current/components/user-history"
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+WRITES = re.compile(r"'w'|\\\"w\\\"|write_text|write_bytes|old_str|sed -i|--write|\bcp |\bmv |checkout |git apply|tee | > ")
+FOLLOWING = ("at ", "pulled ", "rebased ", "ahead of ")
+
+
+def board_apply() -> list[str]:
+    if os.environ.get("PRIME_SYNC_BOARD_APPLY"):
+        return os.environ["PRIME_SYNC_BOARD_APPLY"].split()
+    node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), shutil.which("node") or "node")
+    return [node, "--import", "tsx", "scripts/board-apply.ts"]
+
+
+def watch_block(report: dict, config: dict, paths: list[str]) -> None:
+    """Tell the session that wrote each blocking path once the checkout has not followed main for BLOCK_ALERT_S,
+    and put one todo on FORYOU_CHAT's For you list at FORYOU_S. It only tells: a live edit stays until its session commits it or puts it back."""
+    path = SHARE / "blocked.json"
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    code, now = str(report.get("code", "")), time.time()
+    if code.startswith(FOLLOWING):
+        if state.get("todo"):
+            board_ops([{"op": "todo_update", "id": state["todo"], "done": True}])
+        state = {}
+    else:
+        state.setdefault("since", now)
+        minutes = int((now - state["since"]) // 60)
+        owners = state.setdefault("owners", {})
+        if now - state["since"] >= BLOCK_ALERT_S:
+            for rel in paths:
+                if rel in owners:
+                    continue
+                found = writer(config["checkout"], rel)
+                told = bool(found) and send(found[0], f"[prime-sync] {config['host']}'s sieun-pi checkout {config['checkout']} has not followed GitHub main "
+                                                       f"for {minutes} min, because your session last wrote {rel} at {time.strftime('%H:%M:%SZ', time.gmtime(found[1]))} "
+                                                       f"and the run stops on it ({code[:300]}). Please commit it or put it back to HEAD. "
+                                                       f"prime-sync never drops it on its own. Log: {SHARE / 'sync.log'}")
+                owners[rel] = {"session": found and found[0], "told": told}
+        if now - state["since"] >= FORYOU_S and not state.get("todo"):
+            state["todo"] = ask_owner(config, minutes, code, owners)
+    write_atomic(path, json.dumps(state).encode(), 0o644)
+
+
+def send(session: str, text: str) -> bool:
+    try:
+        return subprocess.run([PRIME_BIN, "send", session, text], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def board_ops(ops: list[dict]) -> str:
+    """Applies chat_board ops to FORYOU_CHAT's board with the chat's board-apply script, which forwards them to the chat host. Its output, or ""."""
+    try:
+        result = subprocess.run([*board_apply(), FORYOU_CHAT, json.dumps(ops)], cwd=USER_HISTORY if USER_HISTORY.is_dir() else None,
+                                capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.decode(errors="replace") if result.returncode == 0 else ""
+
+
+def ask_owner(config: dict, minutes: int, code: str, owners: dict) -> str | None:
+    who = "; ".join(f"session {v['session'][:8]} wrote {rel}" + (" and was told" if v["told"] else "") for rel, v in owners.items() if v["session"])
+    held = ", ".join(list(owners)[:3]) or code[:300]
+    text = (f"The {config['host']} copy of sieun-pi has not followed GitHub main for {minutes} min, held up by {held}. "
+            f"{(who[0].upper() + who[1:] + '.') if who else 'No session could be found for it.'} Should this chat get it sorted?")
+    links = [{"label": f"session {v['session'][:8]}", "target": f"thread:{v['session']}"} for v in owners.values() if v["session"]][:4]
+    out = board_ops([{"op": "todo_add", "text": text, "choices": ["Yes, get it sorted", "Leave it"],
+                      "links": links + [{"label": "sync log", "target": f"file:{SHARE / 'sync.log'}"}]}])
+    found = re.search(r"[Aa]dded a todo (t\d+)", out)
+    return found.group(1) if found else None
+
+
+def writer(checkout: Path, rel: str) -> tuple[str, float] | None:
+    """(session id, call time) of the newest Prime tool call that names rel at or before the file's mtime, preferring one that writes it.
+    A transcript is <session id>.jsonl under TRANSCRIPTS/sessions or session-artifacts, and only one written since the file was can hold the call.
+    A "commit <sha>" path is looked up by its sha and the commit's time."""
+    needle = rel.split(" ", 1)[1] if rel.startswith("commit ") else rel
+    try:
+        mtime = float(git(checkout, "log", "-1", "--format=%ct", needle)) if rel.startswith("commit ") else os.lstat(checkout / rel).st_mtime
+    except (OSError, RuntimeError, ValueError):
+        mtime = time.time()
+    best: dict = {}
+    for top in ("sessions", "session-artifacts"):
+        for folder, _dirs, files in os.walk(TRANSCRIPTS / top):
+            for name in files:
+                if not name.endswith(".jsonl") or not SESSION_ID.fullmatch(name[:-6]):
+                    continue
+                try:
+                    if os.stat(os.path.join(folder, name)).st_mtime < mtime:
+                        continue
+                    data = Path(folder, name).read_bytes()
+                except OSError:
+                    continue
+                if needle.encode() not in data:
+                    continue
+                for raw in data.splitlines():
+                    if needle.encode() not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                        at = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp()
+                        calls = [c for c in row["message"]["content"] if c.get("type") in ("toolCall", "tool_use")]
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    if at > mtime + 2:
+                        continue
+                    for call in calls:
+                        args = json.dumps(call.get("arguments", call.get("input")))
+                        if needle not in args:
+                            continue
+                        key = (call.get("name") == "edit" or bool(WRITES.search(args)), at)
+                        if key > best.get("key", (False, 0)):
+                            best = {"key": key, "session": name[:-6]}
+    return (best["session"], best["key"][1]) if best else None
+
+
 def run() -> dict:
     config = load_config()
     SHARE.mkdir(parents=True, exist_ok=True)
@@ -508,6 +745,7 @@ def run() -> dict:
                  ("links", lambda: link_manifest(config["checkout"], HOME, config["agentDir"])),
                  ("settings", lambda: apply_settings(config["checkout"], config["agentDir"])),
                  ("state", lambda: sync_state(config))]
+        blocking: list[str] = []
         for name, step in steps:
             try:
                 report[name] = step()
@@ -515,8 +753,13 @@ def run() -> dict:
                 report[name] = f"alert: {reason}"
             except Skip as reason:
                 report[name] = f"skipped: {reason}"
+                blocking += reason.paths if name == "code" else []
             except Exception as error:
                 report[name] = f"error: {type(error).__name__}: {error}"
+        try:
+            watch_block(report, config, blocking)
+        except Exception as error:
+            report["watch"] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
     if any(report.get(key) for key in ("links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:

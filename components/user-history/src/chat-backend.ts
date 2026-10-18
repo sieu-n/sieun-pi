@@ -7,22 +7,25 @@ import type { HostCatalogs } from "./host-catalogs.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
+import { FirstPages } from "./first-page.ts";
+import { SessionAutoCompact } from "./session-autocompact.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
-import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
+import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
-import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
+import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
-import { IdleUnloader } from "./idle-unload.ts";
+import { resumesNow } from "./cut-end.ts";
+import { IdleUnloader, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -38,7 +41,7 @@ import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
-import { addWakeNote, pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { trainFile } from "./checkin-load.ts";
@@ -46,8 +49,9 @@ import { startProdTurns } from "./prod-turns.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { SendOnce, sessionFileOf } from "./send-once.ts";
-import { deliverThroughParent } from "./subagent-relay.ts";
+import { sessionFileOf } from "./send-once.ts";
+import { AgentOutbox } from "./agent-outbox.ts";
+import { OwnerOutbox } from "./owner-outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
@@ -89,7 +93,11 @@ export interface ChatBackend {
    * daemon no longer lists (`sessionFileFor`); null for a session with no session file. Absent in tests that fake a backend.
    */
   prompt?: (id: string, via?: readonly string[]) => Promise<PromptView | null>;
-  /** Stops the wake ticker and resolves once every agent message out now has its answer (`SendOnce.idle`); the service runs it before it closes its daemon links. */
+  /** `<dataDir>/outbox/`: the owner's sends from the composer, on disk until the daemon takes them (src/owner-outbox.ts). */
+  outbox: OwnerOutbox;
+  /** `<dataDir>/agent-outbox/`: every agent message the service sends, on disk until the daemon takes it (src/agent-outbox.ts). */
+  messages: AgentOutbox;
+  /** Stops the wake ticker and the agent outbox and waits for its disk writes; the service runs it before it closes its daemon links. */
   drainSends?: () => Promise<void>;
   close(): Promise<void>;
 }
@@ -156,7 +164,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
-      file: join(dataDir, "idle-clocks.json") });
+      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")));
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
@@ -168,7 +176,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...scratch ? { tickMs: 0 } : {} });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
   const turns = dutyAdmitter({ log: dutyLog });
-  const queueReading = sharedQueueRead();
+  const queueReading = boardQueueRead;
   const queued = queueReader(queueReading);
   const poolWaiting = async (): Promise<Set<string>> => {
     const pool = await queueReading().catch(() => null);
@@ -176,7 +184,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
-    started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
+    started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))),
+    handoff: id => markOwnerTurn(id) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...scratch ? { tickMs: 0 } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: async (id, item) => {
@@ -197,10 +206,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      wakeNote: (session, text) => addWakeNote(join(dataDir, "wakes"), session, text),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
-        await cutJobs(dataDir, [...await chats.ids()])),
+        await cutJobs(dataDir, [...await chats.ids()]), async id => {
+          await threads.abort(id);
+          await threads.settled(id);
+          // A native abort holds the session's input until the next human prompt; reopen it so the continue gets through (as Resume does).
+          await threads.resumeQueue(id).catch(() => {});
+        }),
       held: now => readHeldTurns(dataDir, now),
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
       settings, claude: claudeReader(), queue: queued,
@@ -212,6 +225,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...scratch ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
+  catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
   catalog.onSupervisorChange(() => {
     dutyLog("chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon");
     chats.interruptedSoon();
@@ -221,6 +235,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     if (!scratch) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
+  // A chat over 100 MB is compacted after its Prime compaction, in a child process (src/session-autocompact.ts). Another box's chat is left to that box.
+  const autoCompact = new SessionAutoCompact({ socketPath, log: dutyLog });
+  const unobserveCompaction = scratch ? () => {} : threads.observe({ live: () => {}, children: () => {}, idle: () => {},
+    compacted: (id, file) => {
+      if (catalog.hostOf(id) !== null) return;
+      void chats.ids().then(ids => ids.has(id) ? autoCompact.compacted(id, file) : null).catch(error => dutyLog(`session compact ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    } });
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
@@ -233,16 +254,17 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
-  const stopWatch = ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+  const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
-  // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
-  const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
+  // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
+  // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
+  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog,
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
       if (response.success) return "sent";
-      // A subagent still unreachable after the reopen is relayed through its parent (deliverThroughParent).
+      // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).
       if (REOPENABLE.test(response.error)) return "gone";
       throw new Error(response.error);
     },
@@ -254,17 +276,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
         isRunningTools?: unknown; unfinishedActionCount?: unknown };
       const actions = data.sessionActions;
+      const unfinished = typeof data.unfinishedActionCount === "number" ? data.unfinishedActionCount : undefined;
       return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
-        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (typeof data.unfinishedActionCount === "number" && data.unfinishedActionCount > 0) };
+        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
     },
-    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir) });
-  const agentMessage = {
-    deliver: (session: string, text: string): Promise<"sent" | "gone"> =>
-      deliverThroughParent(session, text, { fileOf: id => sessionFileOf(id, agentDir), deliver: (id, message) => sendOnce.deliver(id, message) }, dutyLog),
-    startRoot: async (root: string): Promise<void> => {
+    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir),
+    startRoot: async root => {
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
-    },
-  };
+    } });
+  const agentMessage = { deliver: (session: string, text: string, root?: string) => agentOutbox.deliver(session, text, root) };
   const stopWakes = scratch ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopBriefs = scratch ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
@@ -308,8 +328,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     restNow: (id, quietMs) => threads.restNow(id, quietMs),
     title: id => catalog.title(id),
-    request: (row, type) => catalog.clientFor(row.activeSessionId!).request({ type, activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false })
-      .catch(error => ({ success: false as const, error: String(error) })),
+    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type),
     stopped: async (row, isChat, since) => {
       await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       // The daemon's kill writes the archived state, which would hide a chat until the next service start unarchived it (Chats.adopt) and the
@@ -330,29 +349,37 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const prioritySync = scratch ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
   if (!scratch) void poolPriorities.sync();
+  const ownerTurn = (id: string) => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
+  // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
+  const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
-    drainSends: async () => { stopWakes(); await sendOnce.idle(); },
+    drainSends: async () => { stopWakes(); await agentOutbox.close(); },
     prompt: async (id, via) => {
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
       const title = catalog.title(id);
       return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}) }) : null;
     },
-    ownerTurn: id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }),
+    ownerTurn, outbox, messages: agentOutbox,
     async close() {
       if (closed) return;
       closed = true;
+      // First, so the line of the minute it stops in goes out while the rest closes (startMacUsableWatch).
+      const watchStopped = stopWatch();
+      await outbox.close();
+      await agentOutbox.close();
+      await watchStopped;
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
-      stopWatch();
       stopWakes();
       stopBriefs();
       stopAlerts();
       stopProdTurns();
       stopBridgeWatch();
       unwatchBoards();
+      unobserveCompaction();
       stopPublish();
       duties.close();
       archives.close();

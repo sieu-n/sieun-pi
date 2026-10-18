@@ -19,13 +19,22 @@ const gapsTask = (platform: string): string => `research which of our ${platform
  */
 const failuresTask = (platform: string): string => `go through our ${platform} crawler code and keep a page of every way it breaks when ${platform} changes ` +
   "something, each with the file that handles it and what we'd see. just read the code, no prod queries. i want 15 of them written up by tomorrow";
+/**
+ * A longer code-reading task: r3f's YouTube job wrote 42 failure modes against a target of 15 in 28 min, so its goal closed before the second
+ * slot and (f) and (k) could not be judged. 60 fields, each traced from the response to the table, take a job several rounds.
+ */
+const fieldsTask = (platform: string): string => `go through our ${platform} crawler code and keep a page listing every field we pull from ${platform}, ` +
+  "each traced from where it's parsed to the column it lands in, and whether anything reads it. just read the code, no prod queries. " +
+  "i want 60 fields written up by tomorrow";
 /** One task per chat name, so a rerun gets new chats and a platform no earlier run left a top 10 page for (r3 left Instagram's at 10 of 10). */
 export const TASKS: Record<string, string> = { "Instagram index gaps": gapsTask("instagram"), "TikTok Shop index gaps": gapsTask("tiktok shop"),
   "YouTube index gaps": gapsTask("youtube"), "TikTok index gaps": gapsTask("tiktok"), "LinkedIn index gaps": gapsTask("linkedin"),
   "Facebook index gaps": gapsTask("facebook"), "Xiaohongshu index gaps": gapsTask("xiaohongshu"), "Douyin index gaps": gapsTask("douyin"), "Threads index gaps": gapsTask("threads"), "Pinterest index gaps": gapsTask("pinterest"),
   "Reddit index gaps": gapsTask("reddit"), "Bluesky index gaps": gapsTask("bluesky"), "Snapchat index gaps": gapsTask("snapchat"), "Twitch index gaps": gapsTask("twitch"),
   "YouTube crawler failures": failuresTask("youtube"), "TikTok crawler failures": failuresTask("tiktok"), "Instagram crawler failures": failuresTask("instagram"),
-  "LinkedIn crawler failures": failuresTask("linkedin") };
+  "LinkedIn crawler failures": failuresTask("linkedin"), "LinkedIn crawler fields": fieldsTask("linkedin"), "Facebook crawler fields": fieldsTask("facebook"),
+  "Instagram crawler fields": fieldsTask("instagram"), "TikTok crawler fields": fieldsTask("tiktok"), "YouTube crawler fields": fieldsTask("youtube"),
+  "X crawler fields": fieldsTask("x") };
 export const taskOf = (name: string): string => {
   const task = TASKS[name];
   if (!task) throw new Error(`no checkin-push-control task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`);

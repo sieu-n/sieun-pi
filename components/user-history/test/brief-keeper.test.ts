@@ -107,28 +107,25 @@ test("primeWorkers finds the tree's live worker and reads its journal: an agent_
   assert.deepEqual(await primeWorkers(ran)(CHAT, session), { id: "dddddddddddd", ran: true });
 });
 
-test("one tick replays the lost start: gone starts its tree, the next tick sends the brief, and the record goes once the prompt landed", async () => {
+test("one tick replays the lost start: the brief goes to the outbox with its tree's root, and the record goes once the prompt landed", async () => {
   const root = await mkdtemp(join(tmpdir(), "brief-tick-"));
   const data = join(root, "data", BRIEFS_DIR);
   await mkdir(data, { recursive: true });
   const { record, file } = await child(root, fixture.opensearch);
   await writeFile(join(data, `child-${record.id}.json`), JSON.stringify(record));
-  const sends: [string, string][] = [];
-  const roots: string[] = [];
-  let resident = false;
-  const deps = { dir: data, worker: async () => (resident ? { id: "w2", ran: false } : undefined), log: () => {}, startRoot: async (id: string) => { roots.push(id); resident = true; },
-    deliver: async (session: string, text: string) => { if (!resident) return "gone" as const; sends.push([session, text]); return "sent" as const; } };
+  const sends: [string, string, string | undefined][] = [];
+  const deps = { dir: data, worker: async () => undefined, log: () => {},
+    deliver: async (session: string, text: string, tree?: string) => { sends.push([session, text, tree]); } };
   const now = RESTART + 60_000;
-  assert.equal(await briefTick({ ...deps, now: () => now }), 0);
-  assert.deepEqual(roots, [CHAT], "the daemon did not find the child after the restart, so its tree starts");
-  assert.equal(await briefTick({ ...deps, now: () => now + 30_000 }), 1);
+  assert.equal(await briefTick({ ...deps, now: () => now }), 1);
   assert.equal(sends[0]![0], "01a14200-ca11-702a-99db-06c502bc7527");
+  assert.equal(sends[0]![2], CHAT, "the outbox starts the tree when the daemon does not find the child after the restart");
   assert.ok(sends[0]![1].startsWith("[task from parent]\n\nOwner's words (verbatim, 10-16 about 00:01Z)"), "the child gets its brief as Prime labels a task");
   assert.match(sends[0]![1], /started this session at 10-15 23:58Z and its first prompt never reached it/);
-  assert.equal(await briefTick({ ...deps, now: () => now + 60_000 }), 0, "sent once to this worker");
-  assert.equal((await unstartedJobs(data, now + 60_000, deps.worker)).length, 1, "still not started until its file shows the prompt");
-  await appendFile(file, JSON.stringify({ type: "custom_message", customType: "agent_message", content: sends[0]![1], timestamp: new Date(now + 61_000).toISOString() }) + "\n");
-  assert.equal(await briefTick({ ...deps, now: () => now + 90_000 }), 0);
+  assert.equal(await briefTick({ ...deps, now: () => now + 30_000 }), 0, "sent once to this worker");
+  assert.equal((await unstartedJobs(data, now + 30_000, deps.worker)).length, 1, "still not started until its file shows the prompt");
+  await appendFile(file, JSON.stringify({ type: "custom_message", customType: "agent_message", content: sends[0]![1], timestamp: new Date(now + 31_000).toISOString() }) + "\n");
+  assert.equal(await briefTick({ ...deps, now: () => now + 60_000 }), 0);
   assert.deepEqual(await readdir(data), [], "started: the record is dropped");
 });
 
@@ -216,7 +213,7 @@ test("a child whose worker died before Prime wrote anything for it is started ag
   assert.deepEqual(briefAct(record, seen, undefined, record.at + 60_000), { act: "wait" }, "inside the start time Prime may still write it");
   assert.deepEqual(briefAct(record, seen, undefined, record.at + 5 * 60_000), { act: "restart" });
   const started: [string, string][] = [];
-  const deps = { dir: data, worker: async () => undefined, log: () => {}, startRoot: async () => {}, deliver: async () => "sent" as const,
+  const deps = { dir: data, worker: async () => undefined, log: () => {}, deliver: async () => {},
     restart: async (r: BriefRecord, text: (chat: string) => string) => { started.push([r.name, text("user-history ts sum")]); return "01a14bd0-0000-7000-8000-000000000000"; } };
   assert.equal(await briefTick({ ...deps, now: () => record.at + 5 * 60_000 + 1 }), 1);
   assert.equal(started.length, 1);

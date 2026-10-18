@@ -2,6 +2,7 @@
 """Install pi-pool from a commit into its own folder, so Prime never runs checkout files.
 
     /usr/bin/python3 -B components/pi-pool/install.py [install] [--ref <commit>] [--borrow <holder>]
+    (on macOS it re-runs itself under /opt/homebrew/bin/python3)
     /usr/bin/python3 -B components/pi-pool/install.py rollback
     /usr/bin/python3 -B components/pi-pool/install.py status
 
@@ -148,6 +149,55 @@ def compile_pool(release):
         raise InstallError("could not compile pool/ in the staged release:\n" + (done.stdout + done.stderr)[-4000:])
 
 
+def build_client(release):
+    """bin/pi-pool-token becomes the C client of `pi-pool hookd` and the Python hook moves to bin/pi-pool-token.py,
+    which the client runs when hookd does not answer. With no cc the Python hook stays bin/pi-pool-token."""
+    source, hook = release / "bin/pi-pool-token.c", release / "bin/pi-pool-token"
+    if not source.exists():
+        return "no client source"
+    cc = shutil.which("cc")
+    if not cc:
+        print("pi-pool install: no cc on PATH; bin/pi-pool-token stays the Python hook", file=sys.stderr)
+        return "no cc; bin/pi-pool-token is the Python hook"
+    built = release / "bin/.pi-pool-token.built"
+    done = subprocess.run([cc, "-O2", "-Wall", "-o", str(built), str(source)], capture_output=True, text=True)
+    if done.returncode:
+        raise InstallError("could not build bin/pi-pool-token.c:\n" + (done.stdout + done.stderr)[-4000:])
+    os.rename(hook, release / "bin/pi-pool-token.py")
+    os.rename(built, hook)
+    return f"built with {cc}"
+
+
+HOOKD_UNIT = "pi-pool-hookd.service"
+
+
+def systemd_user(home):
+    """The user's systemd, when this machine has one and `home` is this user's own HOME."""
+    return sys.platform.startswith("linux") and bool(shutil.which("systemctl")) and home.resolve() == Path.home().resolve()
+
+
+def install_unit(home):
+    """Write the hookd unit next to pi-pool-serve.service and (re)start it on the release `current` names."""
+    unit = home / ".config/systemd/user" / HOOKD_UNIT
+    text = (root_of(home) / "current/deploy/systemd" / HOOKD_UNIT).read_text()
+    if not unit.exists() or unit.read_text() != text:
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(text)
+    if not systemd_user(home):
+        return {"unit": str(unit), "systemctl": "skipped: not this user's systemd"}
+    for args in (["daemon-reload"], ["enable", HOOKD_UNIT], ["restart", HOOKD_UNIT]):
+        done = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
+        if done.returncode:
+            raise InstallError(f"systemctl --user {' '.join(args)} failed: {done.stderr.strip()}")
+    return {"unit": str(unit), "systemctl": "restarted"}
+
+
+def restart_hookd(home):
+    """After a flip back, start hookd on the release `current` names again."""
+    if systemd_user(home) and (home / ".config/systemd/user" / HOOKD_UNIT).exists():
+        subprocess.run(["systemctl", "--user", "restart", HOOKD_UNIT], capture_output=True)
+
+
 def run_tests(release):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     done = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "discover", "-s", "tests"],
@@ -257,6 +307,7 @@ def checked_switch(home, release_id, before, links_before):
     elif (root / "current").is_symlink():
         (root / "current").unlink()
     restore_links(home, links_before)
+    restart_hookd(home)
     raise InstallError(f"hook check failed on {release_id}; links and current are back as they were: {json.dumps(hooks)}")
 
 
@@ -265,16 +316,18 @@ def install(home, ref, holder=None):
     commit = git("rev-parse", "--verify", f"{ref}^{{commit}}")
     release_id = git("rev-parse", f"{commit}:{COMPONENT}")[:12]
     release = root / "releases" / release_id
-    tests = "already installed"
+    tests = client = "already installed"
     if not release.exists():
         staging = root / "releases" / f".staging-{release_id}-{os.getpid()}"
         staging.parent.mkdir(parents=True, exist_ok=True)
         try:
             export(commit, staging)
             tests = run_tests(staging)
+            client = build_client(staging)
             compile_pool(staging)
             (staging / "RELEASE.json").write_text(json.dumps(
-                {"id": release_id, "commit": commit, "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "tests": tests}, indent=2) + "\n")
+                {"id": release_id, "commit": commit, "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "tests": tests,
+                 "client": client}, indent=2) + "\n")
             set_writable(staging, False)
             os.rename(staging, release)
         except BaseException:
@@ -298,9 +351,11 @@ def install(home, ref, holder=None):
             (root / "current").unlink()
         restore_links(home, links_before)
         raise
+    hookd = install_unit(home) if (release / "deploy/systemd" / HOOKD_UNIT).exists() else None
     hooks = checked_switch(home, release_id, before, links_before)
     prune(root)
-    return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "relinked": linked, "hooks": hooks,
+    return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "client": client, "hookd": hookd,
+            "relinked": linked, "hooks": hooks,
             **({"borrow": borrowed} if holder else {})}
 
 
@@ -316,6 +371,7 @@ def rollback(home):
         raise InstallError("no previous release to roll back to")
     target = os.readlink(root / "previous").split("/")[-1]
     before = flip(root, target)
+    restart_hookd(home)
     return {"current": target, "previous": before, "hooks": checked_switch(home, target, before, link_targets(home))}
 
 
@@ -351,5 +407,22 @@ def main():
     return 0
 
 
+# On macOS the installer reads the checkout under ~/Documents, which launchd refuses the Command Line Tools
+# Python (/usr/bin/python3): on 10-18 a prime-sync reinstall run that way stopped the Mac's sync from 08:28Z.
+# It re-runs itself under Homebrew Python. The pool's tests and token hooks still run /usr/bin/python3, the
+# Python the hooks name, and they read only the release under ~/.local/share.
+MAC_PYTHON = "/opt/homebrew/bin/python3"
+
+
+def mac_python(system, executable, exists=os.path.exists):
+    """The Python the installer should run under, or None to stay on this one."""
+    if system != "Darwin" or not exists(MAC_PYTHON) or os.path.realpath(executable).startswith("/opt/homebrew/"):
+        return None
+    return MAC_PYTHON
+
+
 if __name__ == "__main__":
+    python = mac_python(os.uname().sysname, sys.executable)
+    if python:
+        os.execv(python, [python, "-B", os.path.abspath(__file__), *sys.argv[1:]])
     sys.exit(main())

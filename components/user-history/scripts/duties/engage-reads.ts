@@ -7,7 +7,7 @@ import {
 } from "./estate-reads.ts";
 
 /**
- * The Engage reads scale safely duty's precheck for launch main bro (`node --import tsx scripts/duties/engage-reads.ts`). Code only, no model
+ * The Engage reads working duty's precheck for launch main bro (`node --import tsx scripts/duties/engage-reads.ts`). Code only, no model
  * call, reads only. It measures goal p1, whether prod HAS THE CAPACITY to read 100k logged-in pages a day, years deep, without accounts dying
  * (the owner, 10-14: "i said 'Have the capacity to' which is what you should check"), and his standing canary rule, from:
  * - estate_pg_prod and estate_pg_stg through Grafana (grafana_ro): ig_engage_read_log, ig_engage_accounts, ig_engage_account_events, the
@@ -31,14 +31,20 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   admissible_now plus the active accounts whose proxy session binding ran out while the renewal loop retries it: Instagram did nothing to
  *   them, and they read again on their own once the proxy gives them an exit. A GeoNode outage from 23:05Z on 10-14 let 20 bindings lapse
  *   and dropped admissible_now from 122 to 106 with 0 Instagram verdicts; the proxy outage is the proxy's alert, not lost account capacity.
- * - fleet_ig_killed_pct <= 2 and canary_ig_deaths_1h <= 3: the owner's own numbers, 10-14 02:13Z.
+ * - fleet_ig_killed_pct <= 2: the owner's own number, 10-14 02:13Z. His canary number, at most 3 canary deaths an hour, stays as the run detail
+ *   canary_ig_deaths_1h and on the canary flag line: a daily run reads only its own last hour, and the crawler stops the canary itself at
+ *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
+ * - engage_accounts_stuck <= 0: "without accounts dieing" (10-09). It counts the prod accounts that sit out of reading for over STUCK_HOURS
+ *   on a fault our code is meant to heal, the two standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks):
+ *   frozen for a shared exit IP and not healed (p103), active and reading only 302s, or parked with an invalid jar and not re-logged (p105).
+ *   A challenge or a suspension is Instagram's verdict, which fleet_ig_killed_pct counts, so it is no stuck account.
  * - deep_walk_ok_pct >= 99: the owner, 10-09, "reliable logged-in apis including pagination api for up to years". Measured 10-14 02:30Z on
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
  *   3,664 of 3,681 (99.5%). The target is the 72 h value rounded down to a whole percent. The metric is the walks that reached their end
  *   over those plus the error stops. An error stop is a walk that ended on an error, or an open walk whose last claim errored before it got a
  *   walk_cursor. An open walk with a cursor still reads, so it is left out even when its last claim errored, and the deep_walks flag shows
  *   those walks as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_accounts_short, staging_due_wait_min and source_errors are run detail: report() writes them to the output, the server does not judge
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min and source_errors are run detail: report() writes them to the output, the server does not judge
  *   them, and the canary_short and staging_stall flags carry them to the fix jobs.
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
  * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
@@ -68,7 +74,14 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 };
 /** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
 export const STAGING_WAIT_MIN = 60;
-export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks";
+export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
+/**
+ * How long an account may sit frozen for a shared exit, on 302s, or parked with a dead jar before it counts as stuck. The launch VP's number
+ * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
+ */
+export const STUCK_HOURS = 6;
+/** An active account answering at least this many 302s and no page in STUCK_HOURS is stuck on 302s; account 16 answered 10 in 24 h on 10-18. */
+export const STUCK_302S = 3;
 /**
  * The judged metrics each source feeds; a failed source makes each of them read unmeasured(). The staging sources feed only detail lines, so
  * they fail the headline, the number a run is judged on, and an unread source never leaves the run green.
@@ -81,6 +94,7 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "prod death gauge": ["fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "staging read log": ["prod_capacity_pages_day"], "staging due reads": ["prod_capacity_pages_day"], "staging config": ["prod_capacity_pages_day"],
   "prod deep walks": ["deep_walk_ok_pct"],
+  "prod stuck accounts": ["engage_accounts_stuck"],
 };
 /** The value of a metric a failed source feeds: 0 for an at-least metric (no pages counted, no walk reached), missValue() for an at-most one. */
 export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number => metric.op === ">=" ? Math.min(0, metric.target - 1) : missValue(metric);
@@ -106,10 +120,13 @@ export interface Lapsed { waiting: number; blocked: number; oldestAt: number | n
  * deep_walk_ok_pct; if it keeps failing, the crawler ends it with walk_end 'unavailable' and walk_done_at set, and it counts as an error stop.
  */
 export interface DeepWalks { reached: number; errors: Record<string, number>; reading: Record<string, number> }
+/** Why a prod account is stuck (STUCK_REMOTE): its state, its id, and since when (the freeze or park, or its first 302 in the window). */
+export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar";
+export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
   now: number;
   days?: DayPages[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
-  healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks;
+  healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[];
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
   errors: { source: Source; message: string }[];
@@ -290,6 +307,15 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       + `profile_not_found and fleet_exhausted are not pagination errors and are left out${left.length ? ` (${list(left)})` : ""}`
       + (stillReading ? `; ${stillReading} open walks still reading whose last claim errored: ${list(reading)}` : "") });
   }
+  if (data.stuck) {
+    metrics.engage_accounts_stuck = data.stuck.length;
+    const words: Record<StuckKind, string> = { frozen_shared_exit: "frozen for a shared exit IP, not healed", active_302s: `active, reading only 302s (${STUCK_302S} or more, no page)`, parked_dead_jar: "parked with an invalid jar, not re-logged" };
+    const fixes: Record<StuckKind, string> = { frozen_shared_exit: "the exit_shared heal (p103)", active_302s: "the jar 302 park (p105)", parked_dead_jar: "the re-login worker (p105)" };
+    const kinds = [...new Set(data.stuck.map(account => account.kind))];
+    if (kinds.length) flagged.push({ at, kind: "stuck_accounts", excerpt: (`${data.stuck.length} prod accounts stuck over ${STUCK_HOURS} h: `
+      + kinds.map(kind => `${words[kind]}: ${data.stuck!.filter(account => account.kind === kind).map(account => `${account.accountId} since ${utc(account.since)}`).join(", ")}, fixed in ${fixes[kind]}`).join("; ")
+      + ". Ship the fix in that code path; a hand thaw or activation is a hand fix d3 counts (F5).").slice(0, 900) });
+  }
   metrics.source_errors = data.errors.length;
   const failed = new Set(data.errors.flatMap(error => FEEDS[error.source]));
   const replaced: string[] = [];
@@ -358,6 +384,44 @@ group by 1, 2;
 SQL
 `;
 
+/**
+ * The stuck prod accounts, as stuckOf parses them. A freeze for a shared exit is SHARED_EXIT_FREEZE in
+ * apps/crawler-v3/src/platforms/instagram/engage/shared_exit_freeze.py, read on the account's last status change.
+ */
+export const STUCK_REMOTE = `set -u
+PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
+docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
+set default_transaction_read_only = on;
+with last_change as (
+  select distinct on (e.account_id) e.account_id, e.at, e.outcome, e.error_code from ig_engage_account_events e
+  join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.transition order by e.account_id, e.id desc
+)
+select 'frozen_shared_exit', a.id, round(extract(epoch from e.at) * 1000) from ig_engage_accounts a join last_change e on e.account_id = a.id
+where a.world = 'prod' and a.status = 'frozen' and e.outcome = 'frozen' and e.at < now() - interval '${STUCK_HOURS} hours' and (
+  e.error_code = 'exit_shared' or (coalesce(e.error_code, '') = '' and exists (
+    select 1 from ig_engage_session_bindings fb where fb.account_id = e.account_id and fb.started_at <= e.at and fb.expires_at > e.at and (
+      exists (select 1 from ig_engage_session_bindings pb where pb.account_id <> fb.account_id and pb.egress_ip = fb.egress_ip and pb.started_at <= e.at and pb.expires_at > e.at)
+      or exists (select 1 from ig_engage_accounts pa where pa.id <> fb.account_id and pa.original_egress_ip = fb.egress_ip)))))
+union all
+select 'active_302s', a.id, round(extract(epoch from min(l.at)) * 1000) from ig_engage_accounts a join ig_engage_read_log l on l.account_id = a.id
+where a.world = 'prod' and a.status = 'active' and l.at > now() - interval '${STUCK_HOURS} hours'
+group by a.id having count(*) filter (where l.http_status = 302) >= ${STUCK_302S} and coalesce(sum(l.pages), 0) = 0
+union all
+select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000) from ig_engage_accounts a join last_change e on e.account_id = a.id
+join ig_engage_browser_jars j on j.account_id = a.id
+where a.world = 'prod' and a.status = 'parked' and a.login_mode = 'jar' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';
+SQL
+`;
+
+const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "active_302s", "parked_dead_jar"]);
+export function stuckOf(tsv: string): StuckAccount[] {
+  return tsv.split("\n").filter(Boolean).map(line => {
+    const [kind, id, since, ...rest] = line.split("\t");
+    if (!kind || !STUCK_KINDS.has(kind) || rest.length || !Number.isInteger(Number(id)) || !Number.isFinite(Number(since))) throw new Error(`stuck accounts: unexpected line ${line.slice(0, 80)}`);
+    return { kind: kind as StuckKind, accountId: Number(id), since: Number(since) };
+  });
+}
+
 /** The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. */
 export const STAGING_DUE_REMOTE = `set -u
 PW=$(tr -d '\\n' < /root/staging-pg-owner-ro.txt)
@@ -397,7 +461,7 @@ export function deepWalksOf(tsv: string): DeepWalks {
 }
 
 export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>, stagingRemote: () => Promise<string>,
-  lapsedRemote: () => Promise<string>): Promise<EngageData> {
+  lapsedRemote: () => Promise<string>, stuckRemote: () => Promise<string>): Promise<EngageData> {
   const data: EngageData = { now, errors: [] };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
@@ -405,16 +469,18 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await remote()));
   const stagingDue = step("staging due reads", async () => stagingDueOf(await stagingRemote()));
   const lapsedBindings = step("prod lapsed bindings", async () => lapsedOf(await lapsedRemote()));
+  const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await stuckRemote()));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
     for (const source of ["prod read log", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
-    const [walks, due, lapsed] = await Promise.all([deepWalks, stagingDue, lapsedBindings]);
+    const [walks, due, lapsed, stuck] = await Promise.all([deepWalks, stagingDue, lapsedBindings, stuckAccounts]);
     if (walks) data.deepWalks = walks;
+    if (stuck) data.stuck = stuck;
     if (due) data.stagingDue = due;
     if (lapsed) data.lapsed = lapsed;
     return data;
   }
-  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed] = await Promise.all([
+  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
@@ -430,9 +496,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     deepWalks,
     stagingDue,
     lapsedBindings,
+    stuckAccounts,
   ]);
   Object.assign(data, days && { days }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due });
+    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck });
   return data;
 }
 
@@ -445,7 +512,7 @@ async function main(): Promise<void> {
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal), () => ssh(LAPSED_REMOTE, signal)), dutyMetrics);
+  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal), () => ssh(LAPSED_REMOTE, signal), () => ssh(STUCK_REMOTE, signal)), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`engage-reads: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

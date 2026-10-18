@@ -1,0 +1,11 @@
+#!/bin/sh
+# Used by Match exec in ~/.ssh/config.d/mac.conf: exits 0 when the ssh process that runs this
+# check belongs to mux slot $1, so each ssh to the Mac reuses one of 16 masters, picked by its pid.
+# The Mac's sshd keeps MaxSessions 10, so one master refused sessions past 10 during land bursts.
+p=$PPID
+while [ "$p" -gt 1 ]; do
+  read -r comm < "/proc/$p/comm" || exit 1
+  [ "$comm" = ssh ] && break
+  read -r _ _ _ p _ < "/proc/$p/stat" || exit 1
+done
+[ $((p % 16)) -eq "$1" ]

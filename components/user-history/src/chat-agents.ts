@@ -196,6 +196,19 @@ function kebabWords(name: string): string {
  * from that title.
  */
 export function displayName(name: string, first: string | undefined): string {
+  let byFirst = displayNames.get(name);
+  if (!byFirst) { byFirst = new Map(); displayNames.set(name, byFirst); }
+  let shown = byFirst.get(first);
+  if (shown === undefined) { shown = nameFor(name, first); byFirst.set(first, shown); }
+  return shown;
+}
+/**
+ * `displayName` by name and first task. It is a pure function of the two, and every chat asked it again for each of its agents on each
+ * catalog projection: 2.9 s of a 131 s scratch-serve profile on 10-18. Both strings come from the daemon's rows and the first-task cache, so
+ * the map grows only with the sessions this service has seen.
+ */
+const displayNames = new Map<string, Map<string | undefined, string>>();
+function nameFor(name: string, first: string | undefined): string {
   const plain = plainName(name);
   if (!generatedName(plain) && needsDisplayName(plain)) return kebabWords(plain);
   const titled = !generatedName(plain) && titledFromMessage(plain, first);
@@ -210,6 +223,19 @@ type Draft = {
 const LINK_RANK: Record<AgentLink, number> = { subagent: 0, root: 1, step: 2, message: 3 };
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const atOf = (value: string | number | undefined): number => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
+
+/**
+ * `stepOwner` per plan item, read again only when the item's job, session id or note changes. Every chat walked its whole plan on each catalog
+ * projection: 1.2 s of 100 s of a 10-18 scratch-serve profile.
+ */
+const stepOwners = new WeakMap<PlanItem, { job: string | undefined; sessionId: string | undefined; note: string | undefined; owner: string | undefined }>();
+function ownerName(item: PlanItem): string | undefined {
+  const known = stepOwners.get(item);
+  if (known && known.job === item.job && known.sessionId === item.sessionId && known.note === item.note) return known.owner;
+  const owner = stepOwner(item);
+  stepOwners.set(item, { job: item.job, sessionId: item.sessionId, note: item.note, owner });
+  return owner;
+}
 
 function walk(items: readonly PlanItem[], visit: (item: PlanItem) => void): void {
   for (const item of items) { visit(item); walk(item.children, visit); }
@@ -244,7 +270,7 @@ function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undef
  * and the threads it exchanged agent messages with in the last CONTACT_WINDOW_MS. One row per thread, linked the strongest way it is. A row is
  * working while its own turn or any subagent below it runs, as `SessionRow.working` is.
  */
-export function chatAgents(input: AgentSources): ChatAgent[] {
+export function chatAgents(input: AgentSources, observe?: (who: string, entry: AgentRow | undefined) => void): ChatAgent[] {
   const drafts: Draft[] = [];
   const bySession = new Map<string, Draft>();
   const byName = new Map<string, Draft>();
@@ -257,7 +283,8 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     const raw = who.replace(/^(?:child|sibling|parent):/, "").replace(/^thread:/, "").trim();
     return bySession.get(raw) ?? byName.get(raw);
   };
-  const rowOf = rowFinder(input.rows);
+  const findRow = rowFinder(input.rows);
+  const rowOf = observe ? (who: string) => { const entry = findRow(who); observe(who, entry); return entry; } : findRow;
   const link = (draft: Draft, how: AgentLink) => { if (LINK_RANK[how] < LINK_RANK[draft.link]) draft.link = how; };
 
   const sessions = new Map(input.childSessions.map(session => [session.childId ?? session.sessionId, session]));
@@ -305,7 +332,7 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
   // finds its thread first, so the step keeps its owner when its job is renamed or deleted; a deleted one gets an ended row of its own.
   const owned: PlanItem[] = [];
   const ownerOf = (item: PlanItem): Draft | undefined => {
-    const name = stepOwner(item);
+    const name = ownerName(item);
     return (item.sessionId ? bySession.get(item.sessionId) : undefined) ?? (name !== undefined ? find(name) : undefined);
   };
   const gone = (item: PlanItem, id: string): Draft | undefined => {
@@ -318,7 +345,7 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     return draft;
   };
   walk(input.board?.plan ?? [], item => {
-    const owners = [item.sessionId, stepOwner(item)].filter((who): who is string => who !== undefined);
+    const owners = [item.sessionId, ownerName(item)].filter((who): who is string => who !== undefined);
     if (!owners.length || owners.some(who => who === input.self.id || who === input.self.name)) return;
     owned.push(item);
     if (OPEN.has(item.status) && !ownerOf(item)) { const entry = owners.map(rowOf).find(Boolean); if (entry) thread(entry, "step"); }
@@ -358,8 +385,49 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
       link: draft.link, state, ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: new Date(at).toISOString() } : {}), steps: draft.steps,
       ...(draft.subagents ? { subagentsRunning: draft.subagents } : {}), ...(draft.total ? { subagentsTotal: draft.total } : {}) };
   });
-  const at = (agent: ChatAgent) => atOf(agent.lastActivityAt);
-  return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at(right) - at(left));
+  const at = new Map(agents.map(agent => [agent, atOf(agent.lastActivityAt)]));
+  return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at.get(right)! - at.get(left)!);
+}
+
+/** A chat's agents as the last projection built them, with what they were built from (`keptChatAgents`). */
+type KeptAgents = { self: string; children: readonly ChildAgent[]; sessions: string; board: ChatBoard | null; boardRev: string; roots: string; messages: readonly ThreadMessage[];
+  lookups: Map<string, string>; until: number; agents: ChatAgent[] };
+const keptAgents = new Map<string, KeptAgents>();
+/** The fields of a looked-up row that `chatAgents` reads; empty for no row. */
+const lookupKey = (entry: AgentRow | undefined): string => entry
+  ? [entry.row.id, entry.row.name, entry.row.working, entry.row.failure ?? "", entry.row.statusLabel ?? "", entry.row.lastActivityAt ?? "", entry.row.created ?? "",
+    entry.row.subagentsRunning, entry.first ?? ""].join("\u0000")
+  : "";
+/** The same array, or two empty ones: a chat with no links gets a new empty array each projection. */
+const same = (left: readonly unknown[], right: readonly unknown[]): boolean => left === right || (!left.length && !right.length);
+/** The fields of a child session that `chatAgents` reads, with the first task by its length and head: it is read once from the file and only fills in. */
+const sessionKey = (session: SubagentSession): string => [session.sessionId, session.childId ?? "", session.name ?? "", session.running, session.failed, session.activity ?? "",
+  session.lastActivityAt ?? "", session.subagentsRunning ?? 0, session.subagentsTotal ?? 0, session.first?.length ?? 0, session.first?.slice(0, 80) ?? ""].join("\u0000");
+const boardRev = (board: ChatBoard | null): string => board ? `${board.rev}|${board.updatedAt}` : "";
+
+/**
+ * `chatAgents` for one chat, built again only when its inputs changed: the hub's children, its sessions, the board, the roots, the transcript,
+ * a row it looked up (by the fields it reads), or a contact crossing CONTACT_WINDOW_MS. The live daemon sent 13.3 roster updates a second on
+ * 10-18, which the catalog laid into 4.45 projections a second, and each built every chat's agents again: 6.8 s of 100 s of a scratch serve's
+ * main thread at that rate, while an update touches about 9 agents. Each call gets its own agent objects, since the catalog adds fields to them.
+ */
+export function keptChatAgents(input: AgentSources): ChatAgent[] {
+  const self = `${input.self.id}\n${input.self.name}`;
+  const sessions = input.childSessions.map(sessionKey).join("\n");
+  const roots = input.roots.join("\n");
+  const before = keptAgents.get(input.self.id);
+  if (before && before.self === self && same(before.children, input.children) && before.sessions === sessions && before.board === input.board && before.boardRev === boardRev(input.board)
+    && before.roots === roots && same(before.messages, input.messages) && input.now < before.until) {
+    const rowOf = rowFinder(input.rows);
+    if ([...before.lookups].every(([who, key]) => lookupKey(rowOf(who)) === key)) return before.agents.map(agent => ({ ...agent }));
+  }
+  const lookups = new Map<string, string>();
+  const agents = chatAgents(input, (who, entry) => { lookups.set(who, lookupKey(entry)); });
+  // A contact in the window leaves it at its time plus the window; one before the window never comes back into it.
+  const since = input.now - CONTACT_WINDOW_MS;
+  const until = Math.min(...transcriptLinks(input.messages).contacts.filter(contact => contact.at >= since).map(contact => contact.at + CONTACT_WINDOW_MS));
+  keptAgents.set(input.self.id, { self, children: input.children, sessions, board: input.board, boardRev: boardRev(input.board), roots, messages: input.messages, lookups, until, agents });
+  return agents.map(agent => ({ ...agent }));
 }
 
 /**

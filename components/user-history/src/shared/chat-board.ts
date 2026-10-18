@@ -36,15 +36,25 @@ export class BoardError extends Error {
 export function emptyBoard(now: string): ChatBoard { return { v: 2, rev: 0, plan: [], todos: [], updatedAt: now }; }
 
 export type IdKind = "p" | "t";
-/** A `newId` that continues after the highest `p<n>` (plan) / `t<n>` (todo) already on the board. */
-export function nextIds(board: ChatBoard): (kind: IdKind) => string {
-  const top = { p: 0, t: 0 };
+/**
+ * The highest `p<n>` (plan) and `t<n>` (todo) the board has given: its `lastIds`, or a higher id on it. Before `lastIds`, a new item took the
+ * highest id on the board plus one, so a removed step's id went to the next item: on 10-18 ops guy removed the CLIProxy and CPU steps p370
+ * and p371, the alert bridge put two NVMe alerts on as p370 and p371, and a refire of either old rule would have rewritten the NVMe notes.
+ */
+export function idsTop(board: ChatBoard): { p: number; t: number } {
+  const top = { p: board.lastIds?.p ?? 0, t: board.lastIds?.t ?? 0 };
   const see = (id: string) => {
     const match = /^([pt])(\d+)$/.exec(id);
     if (match) top[match[1] as IdKind] = Math.max(top[match[1] as IdKind], Number(match[2]));
   };
   walk(board.plan, item => see(item.id));
   for (const todo of board.todos) see(todo.id);
+  return top;
+}
+
+/** A `newId` that continues after `idsTop`. */
+export function nextIds(board: ChatBoard): (kind: IdKind) => string {
+  const top = idsTop(board);
   return kind => `${kind}${++top[kind]}`;
 }
 

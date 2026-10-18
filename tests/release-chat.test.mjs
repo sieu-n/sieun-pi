@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -58,6 +58,7 @@ function fixture(t) {
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test");
   write(".gitignore", "node_modules/\n");
+  write("components/user-history/src/chat-assets-prebuild.mjs", "");
   mkdirSync(path.join(dir, "controls"));
   mkdirSync(path.join(dir, "seen"));
   writeFileSync(path.join(dir, "build-step.mjs"), BUILD_STEP);
@@ -123,20 +124,39 @@ test("on a Linux host the release restarts the systemd user unit instead", (t) =
   assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
 });
 
-test("an older release that waited on the lock behind a newer one is refused", async (t) => {
+test("an older release behind the lock of a newer one that holds it exits 0 at once and leaves current alone", async (t) => {
+  // 10-18 11:25Z: three jobs queued da7e7e0c3 behind the release of 8957c594a, which held it already.
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
   while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
-  const older = await f.releaseAsync([f.c2]);
+  for (const sha of [f.c2, f.c3]) {
+    const older = await f.releaseAsync([sha]);
+    assert.equal(older.status, 0, older.stderr);
+    assert.match(older.stderr, new RegExp(`${sha.slice(0, 7)} is already in the release of ${f.c3.slice(0, 7)} that pid \\d+ runs now`));
+    assert.doesNotMatch(older.stderr, /waiting for the release of/);
+  }
   const won = await newer;
   assert.equal(won.status, 0, won.stderr);
-  assert.equal(older.status, 3, older.stderr);
-  assert.match(older.stderr, /waiting for the release of/);
-  assert.match(older.stderr, /does not descend from the live release-/);
+  assert.doesNotMatch(won.stderr, /restart left to/);
   assert.equal(f.current(), id(f.c3));
   assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
   assert.equal(f.kicked().length, 1);
+});
+
+test("a commit the live release already holds exits 0 with nothing built, flipped or restarted", (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c3]).status, 0);
+  for (const sha of [f.c3, f.c2]) {
+    const again = f.release([sha]);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stderr, new RegExp(`${sha.slice(0, 7)} already live in ${id(f.c3)}; nothing to do`));
+    assert.equal(again.stdout.trim(), id(f.c3));
+  }
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "release.lock")), false);
 });
 
 test("two releases started together end on the newer one", async (t) => {
@@ -148,15 +168,17 @@ test("two releases started together end on the newer one", async (t) => {
   assert.equal(f.current(), id(f.c3));
 });
 
-test("going back to an older or unrelated commit needs --rollback", (t) => {
+test("going back to an older or unrelated commit needs --rollback, and an older one without it changes nothing", (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
-  const refused = f.release([f.c1]);
+  const kept = f.release([f.c1]);
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.match(kept.stderr, /already live in/);
+  assert.equal(f.current(), id(f.c3));
+  const refused = f.release([f.side, "--no-kickstart"]);
   assert.equal(refused.status, 3);
   assert.match(refused.stderr, /Pass --rollback/);
-  assert.equal(f.current(), id(f.c3));
-  assert.equal(f.release([f.side, "--no-kickstart"]).status, 3);
   const back = f.release([id(f.c1), "--rollback"]);
   assert.equal(back.status, 0, back.stderr);
   assert.match(back.stderr, /built already/);
@@ -216,7 +238,7 @@ test("a waiting release whose build fails still restarts for the one it was left
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
-test("a release stopped during its tests still makes the restart it owes, onto the current it did not flip", async (t) => {
+test("a release stopped during its tests still makes the restart it owes, onto the current it did not flip", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
@@ -242,7 +264,32 @@ test("a release stopped during its tests still makes the restart it owes, onto t
   assert.equal(existsSync(path.join(f.home, "release.lock")), false);
 });
 
-test("the typecheck and tests see none of the agent's sockets, dirs, tokens or keys, and the restart keeps them", async (t) => {
+test("a release that finds its commit live once it takes the lock still makes the restart it owes, with the live release's units", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  for (const args of [[f.c1, "--no-kickstart"], [f.c3, "--no-kickstart"], [id(f.c1), "--rollback", "--no-kickstart"]]) assert.equal(f.release(args).status, 0);
+  const lock = path.join(f.home, "release.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: f.c1, startedAt: new Date().toISOString() }));
+  const units = path.join(f.dir, "units");
+  const waiter = f.releaseAsync([f.c2], { SIEUN_PI_CHAT_SERVICE_MANAGER: "systemd", SIEUN_PI_CHAT_UNIT_DIR: units });
+  while (!readdirSync(f.home).some((name) => /^release\.lock\.\d+$/.test(name))) await new Promise((done) => setTimeout(done, 20));
+  mkdirSync(path.join(f.home, id(f.c3), "deploy/linux"), { recursive: true });
+  writeFileSync(path.join(f.home, id(f.c3), "deploy/linux/sieun-pi-chat.service"), "[Service]\n");
+  symlinkSync(id(f.c3), path.join(f.home, ".current-test"));
+  renameSync(path.join(f.home, ".current-test"), path.join(f.home, "current"));
+  writeFileSync(path.join(f.home, "restart.owed"), JSON.stringify({ sha: f.c3, at: new Date().toISOString() }));
+  rmSync(lock);
+  const result = await waiter;
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`${f.c2.slice(0, 7)} already live in ${id(f.c3)}; nothing to do`));
+  assert.equal(result.stdout.trim(), id(f.c3));
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(readFileSync(path.join(units, "sieun-pi-chat.service"), "utf8"), "[Service]\n");
+  assert.deepEqual(f.kicked(), ["--user daemon-reload", "--user stop sieun-pi-chat.service", "--user start sieun-pi-chat.service"]);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+  assert.equal(existsSync(lock), false);
+});
+
+test("the typecheck and tests see none of the agent's sockets, dirs, tokens or keys, and the restart keeps them", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   const live = path.join(f.dir, "live");
   const dirs = Object.fromEntries(["HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "RLM_SESSION_DIR", "RLM_HARNESS_STATE_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "PI_POOL_DIR"]

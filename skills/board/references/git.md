@@ -20,7 +20,7 @@ Ship a sieun-pi commit to the live chat with one command from the sieun-pi check
 node scripts/release-chat.mjs <sha> [--no-kickstart]
 ```
 
-1. The command builds `~/.local/share/sieun-pi-chat/release-<sha7>` from `git archive`, links both node_modules folders to the checkout, and runs `npm run typecheck` (tsc and svelte-check) and `npm test` inside the release. Those two get PATH and the locale from your shell and a fresh HOME, TMPDIR and XDG dirs under /tmp, and nothing else, so no agent socket, worker token, session dir or API key reaches a test.
+1. The command builds `~/.local/share/sieun-pi-chat/release-<sha7>` from `git archive`, links both node_modules folders to the checkout, and runs `npm run typecheck` (tsc and svelte-check) and `npm test` inside the release, then writes the packed client bundle. Those three steps get PATH and the locale from your shell and a fresh HOME, TMPDIR and XDG dirs under /tmp, and nothing else, so no agent socket, worker token, session dir or API key reaches a test.
 2. `npm test` runs every file in `components/user-history/test`. Each one guards a real incident or an owner rule and names it on its first line. Add a test only for a failure that happened, with that line.
 3. It points `current` at the release with one rename, restarts the chat and prints the release id on its last line. On a Linux box the restart is `systemctl --user restart sieun-pi-chat.service`, and only the Mac runs `launchctl kickstart -k gui/$UID/com.sieun.agent-chat`.
 4. It takes `~/.local/share/sieun-pi-chat/release.lock` before the build and holds it to the restart, so a second release waits through the first one's whole build and tests.

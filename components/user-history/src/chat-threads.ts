@@ -9,19 +9,24 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { isReopenable } from "./reopen-send.ts";
+import { userMessageAt } from "./send-once.ts";
+import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
-import { firstPage } from "./first-page.ts";
+import { FirstPages, firstPage, wireEvent } from "./first-page.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
+import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
-import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
-export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }
+export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void;
+  /** The session finished a Prime compaction; `file` is its session file on this box. */
+  compacted?(id: string, file: string | undefined): void }
 
 /** Native session-owned slash commands (prime-agent SESSION_SLASH_COMMAND_NAMES). The session runs them from prompt text; getCommands does not list them. */
 const SESSION_COMMANDS: Command[] = [
@@ -31,6 +36,7 @@ const SESSION_COMMANDS: Command[] = [
   { name: "autonomous", description: "Set or view autonomous mode", argumentHint: "[status|on|off]", source: "session" },
 ];
 type NativeEvent = Parameters<Parameters<DaemonAgentConnection["subscribe"]>[0]>[0];
+type NativeSnapshot = Awaited<ReturnType<DaemonAgentConnection["getInitialSnapshot"]>>;
 type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubscribe: () => void };
 
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
@@ -109,6 +115,8 @@ class Thread {
   opening = false;
   readonly listeners = new Set<Listener>();
   touched = Date.now();
+  /** The shell's JSON block made from `state` (ThreadHub.firstPage), so shells of an unchanged thread reuse it. */
+  inlined: { state: ThreadState; text: string } | undefined;
   idleSince: number | null = Date.now();
   /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
   lastEventAt = Date.now();
@@ -121,17 +129,32 @@ class Thread {
    * the board as their own events. Until 10-18 a snapshot carried about 1,000 messages, the board and the children, 0.45 to 1.28 MB per frame.
    * A new feed (`first`) gets `firstFrame` before that snapshot, which is left out when the first frame already held the whole page.
    */
-  send(listener: Listener, board: boolean, children = this.state.children.length > 0, first = false): void {
+  /** The newest message key each listener got in a snapshot, so a later snapshot sends it only the messages after it (`after`). */
+  private readonly lastSent = new WeakMap<Listener, string>();
+  send(listener: Listener, board: boolean, children = this.state.children.length > 0, first = false, have?: ThreadHave): void {
     const { connection: _connection, error: _error, board: _board, children: held, messages, older, ...rest } = this.state;
-    const page = pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES);
-    const small = first ? this.firstFrame() : null;
-    if (small) listener(small);
-    if (small?.type !== "snapshot" || small.snapshot.messages.length < page.messages.length || small.snapshot.messages.some((message, index) => message !== page.messages[index])) {
-      listener({ type: "snapshot", snapshot: { ...rest, ...page } });
+    const after = have?.last ?? this.lastSent.get(listener);
+    const tail = after === undefined ? null : this.after(after);
+    if (tail && after !== undefined) listener({ type: "snapshot", snapshot: { ...rest, messages: tail, after } });
+    else {
+      const page = pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES);
+      const small = first ? this.firstFrame() : null;
+      if (small) listener(small);
+      if (small?.type !== "snapshot" || small.snapshot.messages.length < page.messages.length || small.snapshot.messages.some((message, index) => message !== page.messages[index])) {
+        listener({ type: "snapshot", snapshot: { ...rest, ...page } });
+      }
     }
+    if (messages.length) this.lastSent.set(listener, formatCursor({ kind: "message", key: messageKey(messages, messages.length - 1) }));
     if (children) listener({ type: "children", children: held });
-    if (board && this.state.board) listener({ type: "board", board: this.state.board });
+    if (board && this.state.board && have?.board !== boardKey(this.state.board)) listener({ type: "board", board: this.state.board });
   }
+  /** The messages after the one `cursor` names, when the thread holds it and at most a page follows it; null otherwise. */
+  private after(cursor: string): ThreadMessage[] | null {
+    const parsed = parseCursor(cursor);
+    const index = parsed?.kind === "message" ? keyIndex(this.state.messages, parsed.key) : -1;
+    return index >= 0 && this.state.messages.length - 1 - index <= FIRST_PAGE_MESSAGES ? this.state.messages.slice(index + 1) : null;
+  }
+
   /**
    * What a new feed paints first, and what the page shell inlines: a snapshot of the newest messages that fit FIRST_PAGE_BYTES, with what only
    * an opened work row shows cut to previews (src/first-page.ts). From Korea the full page of 100 messages took more than one round trip.
@@ -199,6 +222,11 @@ function liveSessionId(summary: SessionSummary): string | undefined {
   return summary.workerState === "failed" ? undefined : summary.activeSessionId;
 }
 
+/** A user message's text parts, joined and trimmed. */
+function userText(message: { content: string | readonly { type: string; text?: string }[] }): string {
+  return (typeof message.content === "string" ? message.content : message.content.map(part => part.type === "text" ? part.text ?? "" : "").join("")).trim();
+}
+
 /** What a thread shows of a resident session before its file or the daemon said more: the catalog's name, folder and usage. */
 function emptyInfo(summary: SessionSummary): ThreadInfo {
   const name = summary.sessionName?.trim();
@@ -237,6 +265,8 @@ export class ThreadHub {
   /** Archives through this server under way, and when the last one started or ended, so `keepListed` never undoes one (an explicit archive wins). */
   private readonly archiving = new Map<string, number>();
   private readonly archivedAt = new Map<string, number>();
+  /** When the last archive through this server began, so an owner send that came in before it does not go (`archivedSince`). */
+  private readonly archiveStarts = new Map<string, number>();
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
@@ -244,11 +274,14 @@ export class ThreadHub {
   private readonly catalogRows = new Map<string, SessionRow>();
   private readonly attaches = new AttachQueue();
   private readonly observers = new Set<ThreadObserver>();
+  /** Each thread's owner sends not delivered yet (`setOutbox`), for the threads that open later. */
+  private readonly outboxes = new Map<string, OutboxEntry[]>();
   private closed = false;
 
   /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
-    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {}) {
+    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
+    private readonly firstPages = new FirstPages(null)) {
     this.dormant = new Dormancy(idle);
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
@@ -375,6 +408,7 @@ export class ThreadHub {
   }
 
   private turnEnded(thread: Thread): void {
+    this.firstPage(thread);
     for (const observer of [...this.observers]) observer.idle(thread.id);
   }
 
@@ -475,6 +509,7 @@ export class ThreadHub {
   private async dispose(id: string): Promise<void> {
     const thread = this.threads.get(id);
     if (!thread) return;
+    this.firstPage(thread);
     this.threads.delete(id);
     this.dormant.forget(id);
     thread.flush();
@@ -507,14 +542,16 @@ export class ThreadHub {
     try {
       await client.connect(3000);
       await client.waitForHello(3000);
+      // Events wait until `bind`, so `liveSnapshot` reads the attach snapshot as it came. Otherwise one event between the two made
+      // getInitialSnapshot fetch get_messages and get_session_context, each the whole context with every image.
       return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true,
-        ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
+        deferSessionEvents: true, ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
     } catch (error) { client.close(); throw error; }
   }
 
   /** The daemon's side of an attached session: its state, queue, streaming message, children, and its live context's messages for `liveGap`. */
-  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined): Promise<ThreadSnapshot> {
-    const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
+  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined, given?: NativeSnapshot): Promise<ThreadSnapshot> {
+    const [snapshot, queue] = await Promise.all([given ?? connection.getInitialSnapshot(), connection.getQueue()]);
     const messages = this.projector.messages(snapshot.messages);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
     return { kind: "live", info: projectInfo(snapshot.state, summary, this.catalogModel(snapshot.state.model ?? null)), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
@@ -559,9 +596,15 @@ export class ThreadHub {
   private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
     const file = await this.sessionFile(summary);
     const page = await readBranchPage(file, from, limits);
-    if (!page) return { entries: from ? [] : this.branch(summary, file), older: undefined, whole: true };
+    if (!page) return { entries: this.linked(from ? [] : this.branch(summary, file), file), older: undefined, whole: true };
     if (page.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    return { entries: page.entries, older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
+    return { entries: this.linked(page.entries, file), older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
+  }
+
+  /** The entries, with each image that `scripts/session-compact.ts` moved out of `file` linked in the image store, so its URL serves the file. */
+  private linked(entries: SessionEntry[], file: string): SessionEntry[] {
+    for (const image of movedImages(entries, file)) this.images.link(image.key, image.mimeType, image.path);
+    return entries;
   }
 
   /** A saved thread's snapshot from its newest `limit` messages, with what the file says of its name, model and effort. */
@@ -669,6 +712,7 @@ export class ThreadHub {
     thread.lastEventAt = Date.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };
+    void connection.flushBufferedSessionEvents();
   }
 
   private async refreshInfo(thread: Thread): Promise<void> {
@@ -687,12 +731,12 @@ export class ThreadHub {
     thread.broadcast({ type: "queue", queue: { steering: [...queue.steering], followUp: [...queue.followUp] } });
   }
 
-  /** A compaction, a resync or a reconnect: the newest messages again from the file, with the daemon's state and what the file lacks. */
-  private async resnapshot(thread: Thread): Promise<void> {
+  /** A compaction, a resync or a session switch: the newest messages again from the file, with the daemon's state and what the file lacks. */
+  private async resnapshot(thread: Thread, given?: NativeSnapshot): Promise<void> {
     const live = thread.live;
     if (!live) return;
     const summary = await this.catalog.summary(thread.id);
-    const [snapshot, tail] = await Promise.all([this.liveSnapshot(live.connection, summary), this.fileTail(summary)]);
+    const [snapshot, tail] = await Promise.all([this.liveSnapshot(live.connection, summary, given), this.fileTail(summary)]);
     if (thread.live !== live) return;
     thread.flush();
     const { older: _older, ...rest } = snapshot;
@@ -712,17 +756,20 @@ export class ThreadHub {
           const native = event.event.type;
           if (native === "agent_end") this.turnEnded(thread);
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
-          if (native === "compaction_end" && !event.event.aborted) await this.resnapshot(thread);
+          if (native === "compaction_end" && !event.event.aborted) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
           if (native === "agent_end" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;
         }
+        // A resync carries the snapshot the connection just took; asking for it again went to get_messages once any event had come since. A
+        // reconnect sends its resync before "connected", so "connected" takes no snapshot of its own.
         case "session_resynced":
+          await this.resnapshot(thread, event.snapshot);
+          return;
         case "session_replaced":
           await this.resnapshot(thread);
           return;
         case "connection_status":
           thread.broadcast({ type: "status", connection: event.status === "connected" ? "connected" : "reconnecting", ...(event.error ? { error: event.error } : {}) });
-          if (event.status === "connected") await this.resnapshot(thread);
           return;
         case "closed":
           thread.broadcast({ type: "status", connection: "closed", ...(event.error ? { error: event.error } : {}) });
@@ -772,10 +819,12 @@ export class ThreadHub {
       const snapshot: ThreadSnapshot = first ? { ...first, kind: activeSessionId === undefined ? "saved" : "live" } : { kind: "live", info: emptyInfo(summary), messages: [], streaming: null,
         queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null };
       this.evict("saved");
-      const thread = new Thread(id, snapshot, (candidate, before) => this.childrenChanged(candidate, before));
+      const outbox = this.outboxes.get(id);
+      const thread = new Thread(id, outbox ? { ...snapshot, outbox } : snapshot, (candidate, before) => this.childrenChanged(candidate, before));
       thread.sessionFile = summary.sessionFile;
       thread.opening = true;
       this.threads.set(id, thread);
+      if (first) this.firstPage(thread);
       mark("first page", at);
       void board.then(found => {
         if (found === undefined || this.threads.get(id) !== thread) return;
@@ -831,6 +880,7 @@ export class ThreadHub {
       this.evict("live");
       this.bind(thread, live.connection, activeSessionId!);
       thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, live.snapshot) });
+      this.firstPage(thread);
       log();
       this.attached(thread);
     } catch (error) {
@@ -849,12 +899,13 @@ export class ThreadHub {
    * chat nor counts as activity. A tab's open and close count as activity, so the chat rests its idle time from the later one. The tab gets
    * the newest page at once, from what the thread holds or from the session file, and the live snapshot when the attach lands.
    */
-  async subscribe(id: string, listener: Listener, background = false): Promise<() => void> {
+  /** `have` is what a reconnecting page holds (chat-socket.ts `ThreadHave`): it gets the messages after its newest, and the board only when it changed. */
+  async subscribe(id: string, listener: Listener, background = false, have?: ThreadHave): Promise<() => void> {
     const thread = await this.start(id, background, true);
     thread.listeners.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
-    thread.send(listener, true, undefined, true);
+    thread.send(listener, true, undefined, have === undefined, have);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
     if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
@@ -865,13 +916,39 @@ export class ThreadHub {
   }
 
   /**
-   * What the page shell carries inline for `id` (chat-server.ts `inlineFrames`): the small first snapshot a new feed gets (`Thread.firstFrame`),
-   * then the children and the board. It opens the thread as a feed does, and the page's own feed subscribes a moment later.
+   * The JSON block the page shell carries for `id` (chat-server.ts `inlineFrames`): the small first snapshot a new feed gets (`Thread.firstFrame`)
+   * and nothing else, since the page's own feed brings the board and the children right after it. Until 10-18 the block held them too: 496 KB
+   * of HTML, 147 KB packed, for the biggest chat, of which the board was 414 KB, and the feed sent them again. A thread in memory makes the block
+   * from its state; one that is not answers from `firstPages`, made when its last turn ended, and opens in the background for the page's feed.
    */
-  async firstFrames(id: string): Promise<ThreadEvent[]> {
-    const thread = await this.start(id, false, true);
-    const { children, board } = thread.state;
-    return [thread.firstFrame(), ...(children.length ? [{ type: "children" as const, children }] : []), ...(board ? [{ type: "board" as const, board }] : [])];
+  async firstFrames(id: string): Promise<string> {
+    const held = this.threads.get(id);
+    if (held) return this.firstPage(held);
+    const saved = await this.firstPages.get(id);
+    if (saved === undefined) return this.firstPage(await this.start(id, false, true));
+    void this.start(id, false, true).catch(() => {});
+    return saved;
+  }
+
+  /**
+   * The first frame a sidebar row's prefetch gets (`GET api/threads/<id>/first-frame`): the held thread's, else the last one made, even when the
+   * session file grew since, else one made from the session file. It holds and attaches nothing, so prefetching the rows on screen starts no
+   * session; the click's own feed does that.
+   */
+  async prefetchFrames(id: string): Promise<string> {
+    const held = this.threads.get(id);
+    if (held) return this.firstPage(held);
+    const saved = await this.firstPages.get(id, true);
+    if (saved !== undefined) return saved;
+    const summary = await this.summary(id);
+    const snapshot = await this.savedSnapshot(summary);
+    return this.firstPages.put(id, [wireEvent(new Thread(id, snapshot, () => {}).firstFrame())], summary.sessionFile ?? null);
+  }
+
+  /** The thread's first frame as the shell inlines it, made once per state and kept in `firstPages`. */
+  private firstPage(thread: Thread): string {
+    if (thread.inlined?.state !== thread.state) thread.inlined = { state: thread.state, text: this.firstPages.put(thread.id, [wireEvent(thread.firstFrame())], thread.sessionFile ?? null) };
+    return thread.inlined.text;
   }
 
   state(id: string): ThreadState | undefined { return this.threads.get(id)?.state; }
@@ -882,6 +959,42 @@ export class ThreadHub {
     const current = thread?.state.board;
     if (!thread || (current && current.rev === board.rev && current.updatedAt === board.updatedAt)) return;
     thread.broadcast({ type: "board", board });
+  }
+
+  /**
+   * The thread's owner sends not delivered yet (src/outbox.ts). The open thread's listeners get an outbox event, with `left`, the send just
+   * delivered, listed once as it leaves; a thread opened later starts with the list.
+   */
+  setOutbox(id: string, outbox: OutboxEntry[], left?: OutboxEntry): void {
+    if (outbox.length) this.outboxes.set(id, outbox); else this.outboxes.delete(id);
+    const thread = this.threads.get(id);
+    if (!thread || (!left && JSON.stringify(thread.state.outbox ?? []) === JSON.stringify(outbox))) return;
+    thread.broadcast({ type: "outbox", outbox: left ? [...outbox, left] : outbox });
+    thread.state = { ...thread.state, outbox };
+  }
+
+  /**
+   * Where an owner send that began at `since` and may have reached the daemon is: a user message with its text in the session file (or the
+   * open thread, for another box's session), its text in the worker's queue, neither, or unknown when the daemon did not answer.
+   */
+  async copyOf(id: string, text: string, imageCount: number, since: number): Promise<"landed" | "queued" | "absent" | "unknown"> {
+    const summary = await this.summary(id).catch(() => null);
+    if (!summary) return "unknown";
+    const said = text.trim();
+    const file = this.catalog.hostOf(id) ? undefined : summary.sessionFile;
+    const inFile = async () => file ? await userMessageAt(file, said, imageCount, since) !== null
+      : (this.threads.get(id)?.state.messages ?? []).some(message => message.role === "user" && message.timestamp >= since - 1_000 && userText(message) === said &&
+        (typeof message.content === "string" ? 0 : message.content.filter(part => part.type === "image").length) === imageCount);
+    if (await inFile()) return "landed";
+    const active = this.threads.get(id)?.live?.activeSessionId ?? liveSessionId(summary);
+    if (active) {
+      const response = await (await this.daemon(id)).request({ type: "get_state", activeSessionId: active }, undefined, { recoverable: false }).catch(() => null);
+      if (!response || (!response.success && !isReopenable(response.error))) return "unknown";
+      const actions = response.success ? (response.data as { sessionActions?: { steering?: unknown; followUps?: unknown } } | undefined)?.sessionActions : undefined;
+      if ([actions?.steering, actions?.followUps].some(list => Array.isArray(list) && list.some(item => typeof item === "string" && item.trim() === said))) return "queued";
+    }
+    // The worker may have written it between the file read and the queue read.
+    return await inFile() ? "landed" : "absent";
   }
 
   /** What the server waits for before it restarts a chat's failed owner turn; the open thread's listeners get a wait event when it changes. */
@@ -1009,7 +1122,7 @@ export class ThreadHub {
    * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
    * trip (230 ms to the Mac). Only a session with no live worker, or one whose listed worker is gone, waits for the resume to start it again.
    */
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined }, trigger = "prompt"): Promise<void> {
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
     const resumed = this.resume(id, false, trigger);
     resumed.catch(() => {});
     const held = this.threads.get(id)?.live?.activeSessionId;
@@ -1035,9 +1148,12 @@ export class ThreadHub {
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
     const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) };
+    // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
+    await input.sending?.();
     try { await ask(activeSessionId, "prompt", fields); } catch (error) {
       if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
       activeSessionId = (await resumed).live!.activeSessionId;
+      await input.sending?.();
       await ask(activeSessionId, "prompt", fields);
     }
     const thread = this.threads.get(id);
@@ -1060,6 +1176,21 @@ export class ThreadHub {
   async notice(id: string, text: string): Promise<void> {
     const { live } = await this.requireLive(id, "notice");
     await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
+  }
+
+  /**
+   * Resolves once the thread's turn reads ended (no stream, retry, bash or compaction), polling its state every 250 ms; throws when it still
+   * runs after `timeoutMs`, the daemon's own 30 s request timeout, so a caller never sends a continue into a run its abort did not stop.
+   */
+  async settled(id: string, timeoutMs = 30_000): Promise<void> {
+    const until = Date.now() + timeoutMs;
+    for (;;) {
+      const { live } = await this.requireLive(id, "settled");
+      const state = await live.connection.getState();
+      if (!state.isStreaming && !state.retryAttempt && !state.isBashRunning && !state.isCompacting) return;
+      if (Date.now() >= until) throw new ThreadError(504, `the turn of ${id.slice(0, 8)} still runs ${Math.round(timeoutMs / 1000)} s after its abort`);
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
   }
 
   async abort(id: string, trigger = "abort"): Promise<void> {
@@ -1117,6 +1248,7 @@ export class ThreadHub {
    * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
    */
   async archive(id: string): Promise<void> {
+    this.archiveStarts.set(id, Date.now());
     this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
     this.archivedAt.set(id, Date.now());
     try { await this.archiveNow(id); } finally {
@@ -1155,6 +1287,9 @@ export class ThreadHub {
       })().catch(() => {});
     }, 5000).unref();
   }
+
+  /** Whether an archive through this server began at or after `since`. */
+  archivedSince(id: string, since: number): boolean { return (this.archiveStarts.get(id) ?? -Infinity) >= since; }
 
   /** Undo an archive: the thread comes back as a saved thread that resumes on the next reply. */
   async unarchive(id: string): Promise<void> {
@@ -1352,5 +1487,6 @@ export class ThreadHub {
     clearInterval(this.sweeper);
     this.unwatchCatalog?.();
     await Promise.all([...this.threads.keys()].map(id => this.dispose(id)));
+    await this.firstPages.flush();
   }
 }

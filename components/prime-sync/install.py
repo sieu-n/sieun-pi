@@ -6,8 +6,9 @@ usage: python3 -B components/prime-sync/install.py --ref <commit> [--host <name>
 Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json and the 0600 github-token
 file from `gh auth token` (so the timer never needs the gh keyring helper), clones the state repo,
 installs the timer (prime-sync.timer under systemd --user on Linux, com.sieun.prime-sync under launchd on macOS) and runs one sync.
-The timer runs the Python that ran this installer. On macOS that Python needs access to the checkout's folder: launchd jobs
-under /usr/bin/python3 get "Operation not permitted" in ~/Documents, while /opt/homebrew/bin/python3 reads it.
+The timer runs the Python that ran this installer, except on macOS, where it runs /opt/homebrew/bin/python3 when that exists:
+launchd jobs under /usr/bin/python3 get "Operation not permitted" in ~/Documents, and on 10-18 at 08:28Z a reinstall run as
+`python3 install.py` over ssh put the Command Line Tools Python in the plist and stopped the Mac's sync for over two hours.
 """
 from __future__ import annotations
 
@@ -25,7 +26,8 @@ HOME = Path.home()
 SHARE = HOME / ".local/share/prime-sync"
 CONFIG = HOME / ".config/prime-sync/sync.json"
 STATE_REPO = "https://github.com/sieu-n/prime-shared-state.git"
-PYTHON = sys.executable
+MAC_PYTHON = "/opt/homebrew/bin/python3"
+PYTHON = MAC_PYTHON if platform.system() == "Darwin" and os.path.exists(MAC_PYTHON) else sys.executable
 LABEL = "com.sieun.prime-sync"
 GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 

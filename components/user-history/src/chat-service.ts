@@ -351,8 +351,8 @@ async function serve(options: Options): Promise<void> {
   void keeper?.start();
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts"), import("./chat-sdk.ts"), import("./prompt-prune.ts"), import("prime-agent")]);
-  // The page bundle is the slowest start step (a Svelte compile of the client, 17 s at a load of 90). It builds in a worker while the server
-  // listens; the page and app.js wait for it, the API answers at once.
+  // A release reads its prebuilt page bundle from disk. A checkout without one compiles it in a worker while the server listens (17 s at a
+  // load of 90); the page and app.js wait for it, the API answers at once.
   const bundle = buildClientBundle();
   bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
   const adopt = scratch ? "own" : options.adopt ?? (primary ? "live" : "own");
@@ -393,7 +393,7 @@ async function serve(options: Options): Promise<void> {
       try { if (removeInstance && instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
       finally {
-        // Sends still out get their answers before the links close, so none is left unconfirmed (SendOnce.idle).
+        // Sends still out get their answers before the links close, so a refusal is recorded as one (Outbox.close with drain).
         await backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`));
         stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close();
       }

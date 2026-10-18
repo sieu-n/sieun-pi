@@ -111,7 +111,9 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import sys
 from pathlib import Path
 
@@ -162,6 +164,10 @@ UNLOADED = {}
 # The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
 UNLOAD_MATCH_S = 60.0
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
+# The providers pi-pool vends tokens for; any other provider is not pooled and has no pool answer to read.
+POOLED_PROVIDERS = ("anthropic", "openai-codex")
+# pi-pool's queue hold as its hook or the extension words it: "this session waits for its slot at <time>".
+POOL_HOLD = re.compile(r"waits for its slot", re.IGNORECASE)
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
@@ -572,15 +578,82 @@ class JobRecordError(RecordError):
     and is listed as incomplete; the other jobs go on."""
 
 
+# The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
+# the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
+CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded"}
+# How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
+CHAT_HOST_WAIT_S = 30
+# {file name: (text or None, source)} from the chat host, read once per pass.
+CHAT_HOST_TEXT = {}
+# The (file name, source) pairs the stderr line already named this pass.
+CHAT_FILE_SOURCES_SAID = set()
+
+
+def chat_host():
+    """(base URL, origin) of the chat service when hosts.json puts the chat role on another box, else None, as the board skill finds it.
+    The capability comes from chat-access.json next to hosts.json; a missing or broken one raises."""
+    try:
+        hosts = json.loads(HOSTS_FILE.read_text()).get("hosts") or []
+    except (OSError, ValueError):
+        return None
+    me = socket.gethostname().split(".")[0].lower()
+    holder = next((host for host in hosts if "chat" in (host.get("roles") or {})), None)
+    if holder is None or str(holder.get("hostname", "")).split(".")[0].lower() == me:
+        return None
+    role = holder["roles"]["chat"]
+    origin = (role.get("url") or f"http://{holder['address']}:{role['port']}").rstrip("/")
+    access = json.loads((HOSTS_FILE.parent / "chat-access.json").read_text())
+    return f"{origin}/{access['capability']}/", origin
+
+
+def chat_file_text(path):
+    """(text or None when the file does not exist, source) for the file at `path`. A chat service file comes from the chat host when that is
+    another box; this box's copy answers on the chat host, for other files, or when the chat host cannot be reached. Raises OSError for a
+    local file that cannot be read. Writes one stderr line naming where each chat service file came from."""
+    name = Path(path).name
+    why = ""
+    if name in CHAT_FILES:
+        if name in CHAT_HOST_TEXT:
+            return CHAT_HOST_TEXT[name]
+        try:
+            host = chat_host()
+        except (OSError, ValueError, KeyError) as error:
+            host, why = None, f", because chat-access.json did not read ({error})"
+        if host:
+            base, origin = host
+            try:
+                with urllib.request.urlopen(base + CHAT_FILES[name], timeout=CHAT_HOST_WAIT_S) as response:
+                    found = (response.read().decode(), f"the chat host {origin}")
+            except urllib.error.HTTPError as error:
+                said = error.read().decode(errors="replace")
+                found = (None, f"the chat host {origin}") if error.code == 404 and "on the chat host" in said else None
+                why = f", because the chat host answered {error.code}"
+            except (OSError, http.client.HTTPException) as error:
+                found, why = None, f", because the chat host could not be reached ({error})"
+            if found:
+                CHAT_HOST_TEXT[name] = found
+                print(f"resume_paused: read {name} from {found[1]}", file=sys.stderr)
+                return found
+    source = f"the local file {path}{why}"
+    if name in CHAT_FILES and (name, source) not in CHAT_FILE_SOURCES_SAID:
+        CHAT_FILE_SOURCES_SAID.add((name, source))
+        print(f"resume_paused: read {name} from {source}", file=sys.stderr)
+    try:
+        return Path(path).read_text(), source
+    except FileNotFoundError:
+        return None, source
+
+
 def read_record(path, shape):
     """The parsed JSON of the stop record at `path`, or None when the file does not exist. Raises RecordError when it is unreadable, is not
-    JSON or fails `shape`. The chat service replaces each of these files whole, so an empty or partial file is a fault, not an empty record."""
+    JSON or fails `shape`. The chat service replaces each of these files whole, so an empty or partial file is a fault, not an empty record.
+    The record is the chat host's (chat_file_text)."""
     try:
-        text = Path(path).read_text()
-    except FileNotFoundError:
-        return None
+        text, _ = chat_file_text(path)
     except OSError as error:
         raise RecordError(f"{Path(path).name} is unreadable ({error.strerror or type(error).__name__})") from None
+    if text is None:
+        return None
     try:
         data = json.loads(text)
     except ValueError:
@@ -749,7 +822,8 @@ def run_provider(entries):
 def load_unloaded(path):
     """{full session id: datetime} from the idle unload's record, or {} when there is none."""
     try:
-        data = json.loads(Path(path).read_text())
+        text, _ = chat_file_text(path)
+        data = json.loads(text or "")
     except (OSError, ValueError):
         return {}
     stamps = {sid: parse_ts(value) for sid, value in data.items() if isinstance(value, str)} if isinstance(data, dict) else {}
@@ -816,15 +890,22 @@ def pool_bin():
     return found if Path(found).exists() else None
 
 
-def account_blocker(root_session_id, provider, cache):
+def account_blocker(root_session_id, provider, cache, strict=False):
     """Why the account this tree's next request gets cannot serve, or None when it can (or there is no pool to ask).
 
     A run that stopped on a rate limit or a used-up account fails again at once if it resumes on the same account,
-    so it stays off the list until pi-pool has an account for it.
+    so it stays off the list until pi-pool has an account for it. With `strict` (the abort of a run asleep in its provider retry) a pooled
+    provider whose answer could not be read, or a resolved account `pi-pool ls` does not list, gives "unknown: ..." instead of None, since an
+    unknown answer is no proof the account can serve. A provider pi-pool does not pool gives None either way.
     """
-    tool = pool_bin()
-    if not tool or provider not in ("anthropic", "openai-codex"):
+    unknown = (lambda why: f"unknown: {why}") if strict else (lambda why: None)
+    if provider is None:
+        return unknown("the run's file names no provider")
+    if provider not in POOLED_PROVIDERS:
         return None
+    tool = pool_bin()
+    if not tool:
+        return unknown("no pi-pool binary")
     try:
         if provider not in cache:
             listed = subprocess.run([tool, "ls", "--json", "--provider", provider], capture_output=True, text=True, timeout=30)
@@ -832,15 +913,24 @@ def account_blocker(root_session_id, provider, cache):
         rows = cache[provider]
         who = subprocess.run([tool, "who", "--json", "--session", root_session_id], capture_output=True, text=True, timeout=30)
         resolved = (json.loads(who.stdout).get("providers") or {}).get(provider) if who.returncode == 0 else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    if rows is None or resolved is None:
-        return None
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        return unknown(f"pi-pool did not answer ({type(error).__name__})")
+    if rows is None:
+        return unknown(f"pi-pool ls --provider {provider} failed")
+    if resolved is None:
+        return unknown(f"pi-pool who gave no {provider} answer for the tree")
+    # A tree that pi-pool holds in a wait, its slot or R5's 0 to 120 min backoff draw (30f44c22b), gets no turn before slot_at: a continue
+    # would only meet the same hold, and an abort of a run in its retry would end it early.
+    wait = resolved.get("wait") or {}
+    if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
+        return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}"
     account = resolved.get("account")
     if not account:
         return f"no {provider} account can serve"
     row = rows.get(account)
-    if row and not row.get("usable"):
+    if row is None:
+        return unknown(f"pi-pool ls does not list {account}")
+    if not row.get("usable"):
         return f"{row.get('email')} is {row.get('reason') or 'not usable'}"
     return None
 
@@ -895,6 +985,21 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
     msg = last.get("message") or {}
     return msg.get("role") == "toolResult" and any(
         isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or [])
+
+
+def retry_wait(entries):
+    """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
+    provider retry, not waiting for a pi-pool slot, so an abort loses no queue place. After the account outage of 10-18 ssh tailnet only,
+    admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
+    last = entries[-1] if entries else {}
+    msg = last.get("message") or {}
+    error = str(msg.get("errorMessage") or "")
+    # A token hook answer is pi-pool's own hold (a slot wait, the 0 to 120 min depleted backoff) or a hook failure, never a stuck provider
+    # retry: the hold ends at its slot, and a hook failure has its own path once the hook gives the tree a token.
+    if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
+            and INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error) and not POOL_HOLD.search(error):
+        return {"retry_error": error}
+    return {}
 
 
 def hung_since(session, now, entries=None):
@@ -1123,6 +1228,24 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             tails[sid] = tail_entries(by_id[sid].get("sessionFile", ""))
         return tails[sid]
 
+    def asleep_in_retry(s, sid, head):
+        """retry_wait's mark, which lets the job sweep abort the run and continue it, only when the continue would go through right now: no
+        stop record names the run, and pi-pool has an account that can serve its tree and holds the tree in no wait or backoff. A run asleep
+        in its retry that fails a check gets `retry_blocked` with the reason instead, so a stop record that did not read or a pool answer
+        that is unknown shows in the report (and the record also under "incomplete") and the run stays with the Resume button."""
+        mark = retry_wait(entries_of(sid))
+        if not mark:
+            return {}
+        try:
+            if stop_record(s.get("sessionFile")):
+                return {"retry_blocked": "a stop record names it"}
+        except RecordError as error:
+            INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
+            return {"retry_blocked": f"its stop record did not read: {error}"}
+        root = by_id.get(head, s)
+        blocker = account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts, strict=True)
+        return {"retry_blocked": blocker} if blocker else mark
+
     if BOX.remote:
         # Each relay read takes 0.4 to 1.6 s from us-metal02 to the Mac (10-18), so the tails this pass may read are fetched at once.
         def wanted(s):
@@ -1181,7 +1304,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
-                           "head_session_id": head_session(head, s)})
+                           "head_session_id": head_session(head, s), **asleep_in_retry(s, sid, head)})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:

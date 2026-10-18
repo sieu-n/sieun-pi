@@ -28,14 +28,18 @@ async function fixture(list: unknown[], state?: BridgeState) {
   const boards = new BoardStore(dir);
   let now = NOW;
   const sent: { session: string; text: string }[] = [];
+  let fails = 0;
   const bridge = new AlertBridge({ file, boards, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => null,
-    hasBoard: async session => session !== METAL, deliver: async (session, text) => { sent.push({ session, text }); return "sent"; } });
+    hasBoard: async session => session !== METAL, deliver: async (session, text) => {
+      if (fails > 0) { fails--; throw new Error("Timed out after 10000ms waiting for the Prime Agent daemon handshake."); }
+      sent.push({ session, text });
+    } });
   const steps = async (id: string): Promise<PlanItem[]> => {
     const found: PlanItem[] = [];
     walkItems((await boards.read(id))?.plan ?? [], item => { if (item.note?.startsWith("Grafana alert ")) found.push(item); });
     return found;
   };
-  return { boards, bridge, sent, steps, at: (ms: number) => { now = ms; }, state: async () => JSON.parse(await readFile(file, "utf8")) as BridgeState };
+  return { boards, bridge, sent, steps, at: (ms: number) => { now = ms; }, failNext: (count: number) => { fails = count; }, state: async () => JSON.parse(await readFile(file, "utf8")) as BridgeState };
 }
 
 const recorded = (alert: FiringAlert, chat: string, at: number): BridgeState => ({ v: 2, rules: { [ruleKey(chat, alert.labels.__alert_rule_uid__!)]: {
@@ -57,16 +61,28 @@ test("reconcile: a rule recorded with no step gets one, noted as found by reconc
   assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 1);
 });
 
-test("reconcile: a backup rule recorded for metal box owner, which has no board, moves to ops guy's board", async () => {
+test("reconcile: a backup rule recorded for metal box owner, which has no board, is told to that session until a tell gets through, and ops guy's board gets no step", async () => {
   const [alert] = parseAlerts([backup]);
   const f = await fixture([backup], recorded(alert!, METAL, Date.parse("2026-10-16T06:20:10Z")));
+  f.failNext(1);
   await f.bridge.tick();
-  const [step, ...more] = await f.steps(OPS);
-  assert.equal(more.length, 0);
-  assert.match(step!.note!, /found by reconcile .* has no board, so the step is on this one\.$/m);
+  const key = ruleKey(METAL, "metal-backup-ch-redis-age");
+  assert.equal(f.sent.length, 0);
+  assert.equal((await f.state()).rules[key]!.toldAt, undefined);
+  f.at(NOW + 30_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.sent.map(({ session }) => session), [METAL]);
+  assert.match(f.sent[0]!.text, /^\[alert\] A Grafana rule you own is firing, .*metal-backup-ch-redis-age \(ClickHouse or Redis backup .*, firing since 2026-10-16T06:19Z\)/);
+  f.at(NOW + 60_000);
+  await f.bridge.tick();
+  assert.equal(f.sent.length, 1, "no second tell before the 30 min escalation");
+  f.at(NOW + 30_000 + REOPEN_MS);
+  await f.bridge.tick();
+  assert.equal(f.sent.length, 2, "told again a day later while it still fires");
   const state = await f.state();
-  assert.deepEqual(Object.keys(state.rules), [ruleKey(OPS, "metal-backup-ch-redis-age")]);
-  assert.equal(state.rules[ruleKey(OPS, "metal-backup-ch-redis-age")]!.step, step!.id);
+  assert.deepEqual(Object.keys(state.rules), [key]);
+  assert.equal(state.rules[key]!.step, null);
+  assert.equal((await f.boards.read(OPS))?.plan.length ?? 0, 0);
 });
 
 test("reconcile: a rule whose step is open gets no second step on later ticks", async () => {
@@ -114,7 +130,7 @@ test("owner: an alert burst's new steps go to one job at once, a working job get
   const sent: { session: string; text: string }[] = [];
   let working = true;
   const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), boards, now: () => now, log: () => {}, alerts: async () => parseAlerts(list),
-    owners: async () => null, deliver: async (session, text) => { sent.push({ session, text }); return "sent"; },
+    owners: async () => null, deliver: async (session, text) => { sent.push({ session, text }); },
     startJob: async (chat, steps) => { started.push({ chat, steps: steps.map(line => line.step) }); return { id: `job-${started.length}`, name: `alert ops guy ${started.length}` }; },
     jobWorking: async () => working });
   const steps = async (): Promise<PlanItem[]> => {

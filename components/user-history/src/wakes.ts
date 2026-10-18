@@ -66,16 +66,11 @@ export interface WakeDeps {
   /** The run's CI cache stamp (any string that changes when the run moves), or null when the cache has none. */
   stamp?: (run: number) => Promise<string | null>;
   /**
-   * Sends the session the text; resolves "gone" when the daemon knows no such session. The service's deliver sends a stopped subagent's text
-   * through its parent (`deliverThroughParent`), so its wake is not dropped.
+   * Hands the session the text on disk (src/agent-outbox.ts), which delivers it in the background: through a stopped subagent's parent, and
+   * after starting the tree `root` when the daemon does not find the session. The daemon finds a child only while its tree's worker runs
+   * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped).
    */
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-  /**
-   * Starts the worker of the chat tree `root` with no prompt. The daemon finds a child only while its tree's worker runs, so a child whose tree
-   * was evicted is "gone" until then (10-14 13:37Z: the idle sweep evicted this job's tree, wake-probe-2's wake at 13:39Z was dropped, and the
-   * same message reached it at 13:45Z once a wake had restarted the root). Absent: such a wake is dropped.
-   */
-  startRoot?: (root: string) => Promise<void>;
+  deliver: (session: string, text: string, root?: string) => Promise<void>;
   /**
    * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
@@ -93,8 +88,8 @@ export class Wakes {
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
   /**
-   * One pass: a session's due wakes go out as one message and their files are removed; a wake whose read or send failed stays for the next tick.
-   * Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
+   * One pass: a session's due wakes go to the outbox as one message and their files are removed; a wake whose read or outbox write failed stays
+   * for the next tick. Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
    * message, and the daemon refused the rest with "too many pending messages: 20 unfinished, limit is 20" every 2 s.
    */
   async tick(): Promise<number> {
@@ -109,7 +104,7 @@ export class Wakes {
       parsed.push({ file, wake });
     }
     // Every run is read at once and every session is sent at once: after the chat moved to us-metal02 (10-18 04:19Z) 170 wakes waited, and one
-    // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The send-once record keeps each send single.
+    // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The outbox keeps each send single (src/agent-outbox.ts).
     const runs = new Map<number, Extract<WakeOn, { kind: "run" }>>();
     for (const { wake } of parsed) if (wake.on.kind === "run" && !runs.has(wake.on.run)) runs.set(wake.on.run, wake.on);
     const states = new Map<number, RunState | null>(await Promise.all([...runs].map(async ([run, on]) => [run, await this.look(on, now)] as const)));
@@ -130,14 +125,10 @@ export class Wakes {
       try {
         const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
         const root = wakes.find(({ wake }) => wake.root)?.wake.root;
-        let result = await this.deps.deliver(session, text);
-        if (result === "gone" && root && this.deps.startRoot) {
-          await this.deps.startRoot(root);
-          result = await this.deps.deliver(session, text);
-        }
+        await this.deps.deliver(session, text, root);
         for (const { file } of wakes) await rm(file, { force: true });
-        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, sent ${Math.round((this.now() - now) / 1000)} s after the tick began`);
-        return result === "sent";
+        this.deps.log(`wakes: woke ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
+        return true;
       } catch (error) {
         this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
         return false;
@@ -180,8 +171,16 @@ function run(command: string, args: string[]): Promise<string> {
 
 /** The repo the local CI cache polls (ci-cache.mjs SLUG). */
 export const CI_CACHE_REPO = "sieu-n/auto-sns-agent";
+/**
+ * The other repos whose runs jobs wake on with no repo given, tried in order when the cache's repo has no such run. On 10-18 at 11:32Z two
+ * slack-green jobs set board.wake on runs 39123561025 and 39123644786 with no repo, every read answered 404 in the cache's repo, and the
+ * finished runs held their wakes 12 and 13 min (d7 queue_holds_30 2 at 11:46Z).
+ */
+export const OTHER_RUN_REPOS: readonly string[] = ["sieu-n/slack-green", "sieu-n/sieun-pi"];
 /** ci-run-status's answer for a run the poller has not listed yet. */
 const NOT_CACHED = / is not in the cache /;
+/** gh's answer for a run id its repo does not have. */
+const NO_SUCH_RUN = /HTTP 404/;
 
 /**
  * A run's state from the local CI cache (`ci-run-status <id>`, no GitHub call) or, for a run in another repo, from `gh run view`. A run the
@@ -191,9 +190,19 @@ const NOT_CACHED = / is not in the cache /;
  */
 export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run): Promise<RunState> {
   const gh = (repo: string) => exec("gh", ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
+  const anyRepo = async (): Promise<string> => {
+    let missing: unknown;
+    for (const repo of [CI_CACHE_REPO, ...OTHER_RUN_REPOS]) {
+      try { return await gh(repo); } catch (error) {
+        if (!(error instanceof Error && NO_SUCH_RUN.test(error.message))) throw error;
+        missing = error;
+      }
+    }
+    throw missing;
+  };
   const raw = JSON.parse(on.repo ? await gh(on.repo)
     : await exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
-      if (error instanceof Error && NOT_CACHED.test(error.message)) return gh(CI_CACHE_REPO);
+      if (error instanceof Error && NOT_CACHED.test(error.message)) return anyRepo();
       throw error;
     })) as Record<string, unknown>;
   if (raw.status !== "completed") return { done: false };
@@ -263,21 +272,6 @@ export function wakeWait(wakes: readonly Wake[]): string {
   const what = [...new Set([...wakes].sort((a, b) => (a.on.kind === "time" ? a.on.at : 0) - (b.on.kind === "time" ? b.on.at : 0))
     .map(({ on }) => on.kind === "time" ? `${new Date(on.at).toISOString().slice(11, 16)}Z` : `run ${on.run}`))];
   return `waits for ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0] ?? "a board.wake"}`;
-}
-
-/**
- * Adds `text` to the note of `session`'s soonest wake file in `dir`, so the wake carries it when it fires; false when the session has none. A
- * check-in job's steer to a job asleep on a wake goes here instead of waking it (clean room 10-18 03:56Z: the check-in job steered "mac disk
- * space check" 12 min before its 04:08Z wake with what to do after the reading).
- */
-export async function addWakeNote(dir: string, session: string, text: string): Promise<boolean> {
-  const files = (await readdir(dir).catch(() => [] as string[])).filter(name => name.startsWith(`${session}-`) && name.endsWith(".json"));
-  const read = await Promise.all(files.map(async name => ({ name, wake: await readFile(join(dir, name), "utf8").then(body => parseWake(JSON.parse(body)), () => null) })));
-  const soonest = read.flatMap(entry => entry.wake ? [{ name: entry.name, wake: entry.wake }] : [])
-    .sort((a, b) => (a.wake.on.kind === "time" ? a.wake.on.at : Infinity) - (b.wake.on.kind === "time" ? b.wake.on.at : Infinity))[0];
-  if (!soonest) return false;
-  await writeFile(join(dir, soonest.name), JSON.stringify({ ...soonest.wake, note: [soonest.wake.note, text].filter(Boolean).join("\n") }));
-  return true;
 }
 
 /** Whether `session` has a wake file in `dir`. */

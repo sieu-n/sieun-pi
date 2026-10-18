@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.virev.asa-tip-sync</string>
+<key>ProgramArguments</key><array><string>/Users/sieunpark/.hermes/node/bin/node</string><string>-e</string><string>process.exitCode = require("child_process").spawnSync("/usr/bin/python3", ["-B", "/Users/sieunpark/.local/share/asa-tip-sync/asa-tip-sync.py"], { stdio: "inherit" }).status ?? 1</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/sieunpark</string><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/opt/homebrew/bin</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>60</integer>
+<key>StandardOutPath</key><string>/Users/sieunpark/.local/state/asa-tip-sync/launchd.log</string>
+<key>StandardErrorPath</key><string>/Users/sieunpark/.local/state/asa-tip-sync/launchd.log</string>
+</dict></plist>

@@ -26,7 +26,7 @@
   const streakTip = (line: MissLine) => `Missed ${line.misses} measured run${line.misses === 1 ? "" : "s"} in a row`;
 
   const PRIORITY_TIP = "The chat's priority, from its sidebar label (none is high). A new duty runs daily in its morning band: high from 06:00, normal from 07:40, " +
-    "low from 09:20. Duty jobs always wait in the low class of the agent queue.";
+    "low from 09:20. Duty jobs wait in the low class of the agent queue, and a check-in job in the normal class.";
 
   let open = $state<Record<string, boolean>>({});
   const toggle = (id: string) => { open = { ...open, [id]: !open[id] }; };

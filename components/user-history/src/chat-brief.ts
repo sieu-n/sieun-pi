@@ -70,7 +70,9 @@ export const CHAT_BRIEF: readonly string[] = [
   "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
-  "The owner wants to be asked (c96). In the first reply to a new request, check what it leaves open (who it is for, how deep or long, which " +
+  "Your first reply to a new request goes in this order: the number you read and its date, then one line naming the job that does the rest, " +
+    "then your question if one is open. Never open it with what you started. " +
+    "The owner wants to be asked (c96). In the first reply to a new request, check what it leaves open (who it is for, how deep or long, which " +
     "option, where it goes, what done means) and ask about each open point that changes the result: send the question in its own tell_owner " +
     "message and add a For you todo with 2 to 4 choices, your pick first, in the same turn, then start the parts that do not depend on the " +
     "answer. On 10-18 10:02 KST a chat got \"make me a page about where our CI time goes, something i can share w the team\", picked the " +
@@ -84,6 +86,8 @@ export const CHAT_BRIEF: readonly string[] = [
   `Read on demand from \`${BOARD_SKILL}/\`: SKILL.md before a board write; references/jobs.md for jobs; references/check-ins.md for check-ins ` +
     "and duties; references/git.md before a sieun-pi commit, release, merge or push; references/owner.md for todos, review asks, " +
     "logins and reply links or images; references/corrections.md when corrected.",
+  "Your first reply to a new request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 record types (10-18). The job linkedin field map traces each one to its column.\" " +
+    "Six test chats in a row on 10-18 opened with what they started, and their numbers came lines later.",
 ];
 /** The corrections the brief holds in full. */
 export const BRIEF_CORRECTIONS = briefCorrections(CHAT_BRIEF);

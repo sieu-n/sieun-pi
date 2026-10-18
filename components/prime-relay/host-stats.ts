@@ -4,10 +4,12 @@ import { readdir, readFile } from "node:fs/promises";
 import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot as RigSnapshot } from "./rig-cpu.ts";
 
 /**
  * One box's CPU, memory and turn queue, read on the box itself. The relay serves it as GET /v1/host, and sieun-pi reads its own box the same
- * way, so Settings > Hosts shows every box from one reader. This file imports nothing outside Node, because the relay is installed alone.
+ * way, so Settings > Hosts shows every box from one reader. It imports nothing outside Node and its own folder, because the relay is installed
+ * alone with the files install.mjs copies.
  */
 const run = promisify(execFile);
 
@@ -240,7 +242,9 @@ export async function hostStats(): Promise<HostStats> {
  */
 export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; runnablePerCore: number; allowedCpus: number;
   /** Each side's CPU time over the same window, in cores (`cpuSides`); absent on readings before 10-18 06:5xZ and where the cgroups cannot be read. */
-  cpuCores?: CpuSides }
+  cpuCores?: CpuSides;
+  /** The harness side's cores split into its own work and the rigs jobs started, with the owners of the most (rig-cpu.ts); absent on readings written before it. */
+  harnessSplit?: HarnessSplit }
 /** Who CPU time on a Linux box belongs to: the harness (agents and the services that run them), the apps' servers, the owner, CI and the OS. */
 export type CpuSide = "harness" | "apps" | "owner" | "ci" | "system";
 export type CpuSides = Record<CpuSide, number>;
@@ -365,6 +369,11 @@ const loadSchedstat = (): Sched | null => {
   return times ? { at: Date.now(), times, ...cgroups ? { cgroups } : {} } : null;
 };
 let lastSched = process.platform === "linux" ? loadSchedstat() : null;
+/** The units under app.slice that SIDE_CGROUPS gives another side, which the harness split leaves out. */
+const SIDE_UNITS = new Set(Object.values(SIDE_CGROUPS).flat().filter(path => path.startsWith("{app}/")).map(path => path.slice("{app}/".length)));
+const readRigs = async (now: number): Promise<RigSnapshot | null> => ownSlice && process.getuid ? await rigSnapshot(ownSlice.app, SIDE_UNITS, process.getuid(), now) : null;
+let lastRigs: RigSnapshot | null = null;
+if (process.platform === "linux") void readRigs(Date.now()).then(read => { lastRigs ??= read; });
 /** Where the next linuxUsable window starts: the last reading's time, per-CPU nanoseconds and cgroup usage_usec; null before the module could read schedstat. */
 export type SchedstatMark = { at: number; times: Record<string, number>; cgroups?: Record<string, number> };
 export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times),
@@ -411,9 +420,12 @@ export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null>
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
   if (memSome === null || memFull === null || runnable === null || !cores) return null;
   const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at) : null;
+  const rigs = await readRigs(now);
+  const split = sides && lastRigs && rigs ? harnessSplit(lastRigs, rigs, sides.harness) : null;
+  lastRigs = rigs;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
     swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
-    ...sides ? { cpuCores: sides } : {} };
+    ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {} };
 }
 /** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
 export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };

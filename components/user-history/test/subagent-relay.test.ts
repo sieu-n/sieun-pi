@@ -1,12 +1,13 @@
 // Guards the 10-18 05:00Z drops: the wake ticker dropped the wakes of five stopped Crawler VP subagents ("dropped, no such session"), because
-// the daemon finds a subagent only while its tree's worker holds it. The text now goes to the parent, whose rlm handle reopens the child.
+// the daemon finds a subagent only while its tree's worker holds it. The outbox now sends the text to the parent, whose rlm handle reopens the child.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { sessionFileOf } from "../src/send-once.ts";
-import { deliverThroughParent, relayNote, stoppedSubagent } from "../src/subagent-relay.ts";
+import { relayNote, stoppedSubagent } from "../src/subagent-relay.ts";
+import { AgentOutbox } from "../src/agent-outbox.ts";
 
 const ROOT = "01a115e2-9544-7204-b8db-8ce4d5319048";
 const PARENT = "01a14c59-e9e8-7454-9543-5cd6ffccd7d1";
@@ -32,26 +33,40 @@ test("a subagent's file names its rlm handle and the sessions above it", async (
   assert.equal(await stoppedSubagent(join(agentDir, "sessions", `${ROOT}.jsonl`)), null);
 });
 
-test("a send the daemon answers gone for goes to the parent, and through the grandparent when the parent is gone too", async () => {
+/** An agent outbox in `agentDir` whose daemon answers "sent" for the sessions in `live` and "gone" for the rest. */
+function outbox(t: TestContext, agentDir: string, live: Set<string>, sent: [string, string][]) {
+  const messages = new AgentOutbox(join(agentDir, "agent-outbox"), { log: () => {}, sleep: () => new Promise(done => setImmediate(done)),
+    send: async (session, text) => { sent.push([session, text]); return live.has(session) ? "sent" : "gone"; },
+    target: async () => ({ queued: [], busy: false }), fileOf: id => sessionFileOf(id, agentDir) });
+  t.after(() => messages.close());
+  return messages;
+}
+
+test("a send the daemon answers gone for goes to the parent, and through the grandparent when the parent is gone too", async t => {
   const agentDir = await tree();
   const sent: [string, string][] = [];
   const live = new Set([ROOT]);
-  const deliver = async (session: string, text: string): Promise<"sent" | "gone"> => { sent.push([session, text]); return live.has(session) ? "sent" : "gone"; };
-  const deps = { fileOf: (id: string) => sessionFileOf(id, agentDir), deliver };
+  const messages = outbox(t, agentDir, live, sent);
   const wake = "[wake] It is 2026-10-18T05:00:00Z, the time you set with board.wake.";
-  assert.equal(await deliverThroughParent(CHILD, wake, deps), "sent");
+  await messages.deliver(CHILD, wake);
+  await messages.outbox.idle();
   const toParent = relayNote({ id: CHILD, name: "alerts-h-proxy" }, wake);
   assert.deepEqual(sent, [[CHILD, wake], [PARENT, toParent], [ROOT, relayNote({ id: PARENT, name: "crawler prod alerts" }, toParent)]]);
   assert.match(toParent, /receiver_name="alerts-h-proxy"/);
 
   sent.length = 0;
   live.add(PARENT);
-  assert.equal(await deliverThroughParent(CHILD, wake, deps), "sent");
+  await messages.deliver(CHILD, wake + " Again.");
+  await messages.outbox.idle();
   assert.deepEqual(sent.map(([session]) => session), [CHILD, PARENT]);
 });
 
-test("a root the daemon answers gone for stays gone", async () => {
+test("a root the daemon answers gone for fails its message and is not sent again", async t => {
   const agentDir = await tree();
-  const deliver = async (): Promise<"sent" | "gone"> => "gone";
-  assert.equal(await deliverThroughParent(ROOT, "continue", { fileOf: id => sessionFileOf(id, agentDir), deliver }), "gone");
+  const sent: [string, string][] = [];
+  const messages = outbox(t, agentDir, new Set(), sent);
+  await messages.deliver(ROOT, "continue");
+  await messages.outbox.idle();
+  assert.deepEqual(sent, [[ROOT, "continue"]]);
+  assert.deepEqual(messages.outbox.view(ROOT).map(entry => [entry.state, entry.error]), [["failed", "The daemon has no such session."]]);
 });

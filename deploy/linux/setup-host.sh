@@ -31,4 +31,26 @@ command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh |
 systemctl enable --now tailscaled
 tailscale set --operator="$DEV_USER" 2>/dev/null || true
 tailscale status >/dev/null 2>&1 || echo "run: tailscale up --ssh --hostname us-metal02-dev --operator=$DEV_USER"
+# Port 22 answers only on lo, tailscale0 and wg-prod. The guard owns one nft table; nftables.service stays off because
+# /etc/nftables.conf starts with flush ruleset, which would wipe the Docker, ci and wg-prod tables.
+here=$(cd "$(dirname "$0")" && pwd)
+install -m 644 "$here/ssh-public-guard.nft" /etc/nftables-ssh-guard.nft
+install -m 644 "$here/ssh-public-guard.service" /etc/systemd/system/ssh-public-guard.service
+systemctl daemon-reload
+systemctl enable ssh-public-guard
+systemctl restart ssh-public-guard
+
+# ssh to the Mac reuses one of 16 masters (ssh-mac.conf explains why), and ssh-mac-slot picks one by ssh's pid.
+install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local" "$home/.local/bin"
+install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$home/.ssh/config.d" "$home/.ssh/cm"
+install -m 755 -o "$DEV_USER" -g "$DEV_USER" "$here/ssh-mac-slot" "$home/.local/bin/ssh-mac-slot"
+sed "s#/home/sieun/#$home/#g" "$here/ssh-mac.conf" > "$home/.ssh/config.d/mac.conf"
+chown "$DEV_USER:$DEV_USER" "$home/.ssh/config.d/mac.conf"; chmod 600 "$home/.ssh/config.d/mac.conf"
+touch "$home/.ssh/config"
+if ! grep -qxF 'Include ~/.ssh/config.d/mac.conf' "$home/.ssh/config"; then
+  { echo 'Include ~/.ssh/config.d/mac.conf'; cat "$home/.ssh/config"; } > "$home/.ssh/config.new"
+  mv "$home/.ssh/config.new" "$home/.ssh/config"
+fi
+chown "$DEV_USER:$DEV_USER" "$home/.ssh/config"; chmod 600 "$home/.ssh/config"
+
 echo "dev: no slice limits; dev.slice holds docker, user-$(id -u "$DEV_USER").slice holds the harness and agents"

@@ -32,6 +32,12 @@ GIT_WRITE = re.compile(
     r"(?:^|[\s;&|`('\"/])git\s[\s\S]*\b(?:stash|reset|checkout|switch|restore|merge|rebase|pull|clean|worktree|push|add|commit|branch|filter-branch|replace)\b"
 )
 GIT_PUSH = re.compile(r"\bgit\s[\s\S]*\bpush\b")
+# A lint, type check or test run, as that guard's DANGEROUS reads one. The tool_call guard leaves one in a cell to this half,
+# because a cell often holds its files in an f-string or a computed list and runs it from the kernel's cwd.
+LOCAL_CHECK = re.compile(
+    r"\b(?:svelte-check|vitest|tsc|pytest|ruff|mypy|basedpyright|betterleaks|gitleaks|turbo|secrets-scan)\b"
+    r"|\bpnpm\s+(?:check|test|verify|lint|ci:)|(?:^|[\s;&|(/])ty\s"
+)
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
@@ -99,6 +105,122 @@ def owned_by_skill() -> bool:
     return False
 
 
+class Judge:
+    """One `node send-check.ts --serve` per process, started on first use. A fresh `node send-check.ts` per check started 8 to 12
+    times a second on us-metal02 on 10-18 (one sampler's git ls-files every 0.2 s alone made 4 a second), at 0.11 CPU s each.
+    It exits after 2 minutes with no check, and restarts when it is gone, when this process forks, and when the environment or a global-rules source file changes, so it
+    judges with the rules and environment a fresh run would read. A check another thread is judging meanwhile runs one-shot."""
+
+    TIMEOUT = 30
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.proc = None
+        self.key = None
+        self.pid = None
+        self.next_id = 0
+        self.buffer = b""
+
+    @staticmethod
+    def sources() -> tuple:
+        """The rule files a fresh run would load: every .ts and .json file next to send-check.ts."""
+        return tuple(sorted(
+            (entry.name, entry.stat().st_mtime_ns, entry.stat().st_size)
+            for entry in os.scandir(HERE)
+            if entry.name.endswith((".ts", ".json"))
+        ))
+
+    def stop(self) -> None:
+        proc, self.proc, self.buffer = self.proc, None, b""
+        if proc is not None and self.pid == os.getpid():
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    def forget_after_fork(self) -> None:
+        """A forked child drops its copy of the parent's pipes and starts its own judge when it needs one."""
+        proc, self.proc, self.buffer = self.proc, None, b""
+        self.lock = threading.Lock()
+        for stream in (getattr(proc, "stdin", None), getattr(proc, "stdout", None)):
+            try:
+                stream.close()
+            except (OSError, AttributeError):
+                pass
+
+    def ask(self, check: dict) -> dict:
+        """The verdict, or {} when the check could not run. Raises OSError, SubprocessError or ValueError like a one-shot run."""
+        if not self.lock.acquire(blocking=False):
+            return one_shot(check)
+        try:
+            key = (hash(frozenset(os.environ.items())), self.sources())
+            if self.proc is not None and (self.pid != os.getpid() or self.key != key or self.proc.poll() is not None):
+                self.stop()
+            try:
+                return self.send(check, key)
+            except OSError:
+                # A judge that died after the poll above: one fresh judge gets the check before it falls open.
+                return self.send(check, key)
+        finally:
+            self.lock.release()
+
+    def send(self, check: dict, key) -> dict:
+        if self.proc is None:
+            self.proc = subprocess.Popen(
+                ["node", CHECK, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                bufsize=0, start_new_session=True,
+            )
+            self.key, self.pid = key, os.getpid()
+        self.next_id += 1
+        ask_id = self.next_id
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
+        line = json.dumps({"id": ask_id, "cwd": cwd, "check": check}).encode() + b"\n"
+        try:
+            self.proc.stdin.write(line)
+            return self.answer(ask_id)
+        except BaseException:
+            self.stop()
+            raise
+
+    def answer(self, ask_id: int) -> dict:
+        import select
+        import time
+
+        deadline = time.monotonic() + self.TIMEOUT
+        fd = self.proc.stdout.fileno()
+        while True:
+            while b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                try:
+                    reply = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(reply, dict) and reply.get("id") == ask_id:
+                    return {} if "error" in reply else reply
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(CHECK, self.TIMEOUT)
+            if select.select([fd], [], [], left)[0]:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    raise OSError("send-check.ts --serve exited")
+                self.buffer += chunk
+
+
+def one_shot(check: dict) -> dict:
+    proc = subprocess.run(["node", CHECK], input=json.dumps(check), capture_output=True, text=True, timeout=30)
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+JUDGE = Judge()
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=lambda: JUDGE.forget_after_fork())
+
+
 def judge(check: dict) -> None:
     """Raises SendRefused when send-check.ts refuses the call. A failure to run the check lets the call through, like the tool_call guard."""
     if getattr(state, "busy", False):
@@ -106,8 +228,7 @@ def judge(check: dict) -> None:
     state.busy = True
     try:
         check["approval"] = approval()
-        proc = subprocess.run(["node", CHECK], input=json.dumps(check), capture_output=True, text=True, timeout=30)
-        verdict = json.loads(proc.stdout.strip().splitlines()[-1])
+        verdict = JUDGE.ask(check)
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return
     finally:
@@ -126,17 +247,36 @@ def shell_text(args) -> str:
 
 
 def touches_repo(text: str, cwd: str) -> bool:
-    """A git write that auto-sns-agent's repo guard should judge with the kernel's real cwd, which an os.chdir hides from the tool_call guard."""
-    if not GIT_WRITE.search(text):
+    """A git write or local check that auto-sns-agent's repo guard should judge with the kernel's real cwd, which an os.chdir hides from the tool_call guard."""
+    if not (GIT_WRITE.search(text) or LOCAL_CHECK.search(text)):
         return False
     return "auto-sns-agent" in text or "auto-sns-agent" in os.path.realpath(cwd) or bool(GIT_PUSH.search(text))
 
 
-def on_shell(args, cwd, env) -> None:
+GIT_PROGRAM = re.compile(r"(?:[\w.+-]*/)*git")
+PLAIN_ARG = re.compile(r"[^\n\r\\'\"`$();&|<>]*")
+
+
+def plain_git(executable, args) -> bool:
+    """An argv list that runs git with no shell syntax in any word. send-check.ts lexes its joined text as one command named git,
+    and no send rule judges git (send-guard.ts judgeArgv, cua-guard.ts judgeCuaShell), so its verdict is always a pass. The hint
+    still matched such a call on a path: a sampler's `git ls-files` on files named *.sh started 4 node runs a second on 10-18."""
+    if isinstance(args, (str, bytes, os.PathLike)) or not args:
+        return False
+    argv = [os.fsdecode(a) for a in args]
+    program = os.fsdecode(executable) if executable is not None else argv[0]
+    return (
+        bool(GIT_PROGRAM.fullmatch(argv[0]))
+        and os.path.basename(program) == "git"
+        and all(PLAIN_ARG.fullmatch(a) for a in argv)
+    )
+
+
+def on_shell(args, cwd, env, executable=None) -> None:
     text = shell_text(args)
     where = os.fsdecode(cwd) if cwd else os.getcwd()
     repo = touches_repo(text, where)
-    if not (repo or SHELL_HINT.search(text)) or owned_by_skill():
+    if not (repo or (SHELL_HINT.search(text) and not plain_git(executable, args))) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ
     expanded = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), text)
@@ -173,7 +313,7 @@ def on_connect(address) -> None:
 
 def hook(event: str, args: tuple) -> None:
     if event == "subprocess.Popen":
-        on_shell(args[1], args[2], args[3])
+        on_shell(args[1], args[2], args[3], args[0])
     elif event == "os.system":
         on_shell(args[0], None, None)
     elif event == "socket.connect":

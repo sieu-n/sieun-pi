@@ -206,6 +206,16 @@ export const owns = (fact: JobFact, owner: string): boolean => fact.key === owne
  * The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names, a
  * working one first, so a job the chat started again under the same name owns the steps, not its ended first run.
  */
+/**
+ * A job whose last turn failed on the token pool: pi-pool's hook reply says the session waits for its slot ("pi-pool: claude11@slack.green is
+ * limited until 12:00Z; this session waits for its slot at 10:41Z. Try again in 15 minutes."), or the hook gave no token at all. It waits for
+ * the pool, not for a push: from about 08:49Z to 10:45Z on 10-18, while the Claude pool was depleted, check-ins pushed jobs 103 times, 76 of
+ * them on a last turn that ended this way, and each restart added cache writes while pi-pool's backoff wanted quiet. A pool-wide hook outage
+ * is the token hook alert's (src/token-hook-watch.ts), not the check-in's.
+ */
+export const POOL_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a) slot\b|from shell command: \S*pi-pool-token\b/;
+export const poolWait = (fact: Pick<JobFact, "error"> | undefined): boolean => fact?.error !== undefined && POOL_WAIT.test(fact.error);
+
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
   return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId || fact.sessionId === item.sessionId) : undefined) ??
@@ -261,6 +271,29 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
       ...(Number.isFinite(at) ? { activityAt: at } : {}), ...(row.failure ? { error: row.failure } : {}), messages: row.messageCount, item: link });
   });
   return [...facts.values()];
+}
+
+/**
+ * The subagents a check-in may find a step's owner among besides the chat's direct children: every subagent at any depth below the chat's duty
+ * jobs (`dutyJobs`, session ids) and below its direct children, from the daemon's subagents by parent session id. A chat's job often splits its
+ * step into its own subagents and names one of them on the board: on 10-18 at 10:33Z chat-057a's p37, p43, p44, p45 and p46 were owned by
+ * p8-test-isolation and four more working subagents of its job metal agent runtime, and the check-in read all five "job_ended".
+ */
+export function nestedJobs(dutyJobs: readonly string[], children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>): ChildAgent[] {
+  const direct = new Set(children.map(child => child.id));
+  const seen = new Set<string>();
+  const nested: ChildAgent[] = [];
+  const descend = (session: string | undefined, parentId: string) => {
+    if (session === undefined || seen.has(session)) return;
+    seen.add(session);
+    for (const child of subagents.get(session) ?? []) {
+      if (!direct.has(child.id)) nested.push({ ...child, parentId });
+      descend(child.sessionId, child.id);
+    }
+  };
+  for (const job of dutyJobs) descend(job, job);
+  for (const child of children) descend(child.sessionId, child.id);
+  return nested;
 }
 
 /**

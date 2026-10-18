@@ -1,12 +1,14 @@
 import argparse
 import datetime as dt
 import importlib.util
+import http.server
 import itertools
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -854,6 +856,93 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(sent, [(full, "continue")])
         self.assertIsInstance(resume_paused.BOX, resume_paused.LocalBox)
 
+    def test_a_hung_run_asleep_in_its_retry_is_marked_only_when_its_continue_can_go_through(self):
+        # ssh tailnet only, 10-18: hung 146 min on its 08:20:32Z 429. The job sweep aborts a marked run, so the mark needs no stop record,
+        # an account pi-pool can serve the tree from, and no pi-pool wait or 0 to 120 min backoff (30f44c22b) on the tree.
+        self.session("asleepasleep", [assistant(81, "toolUse"), role(80, "toolResult"),
+                                      assistant(80, "error", "429 This request would exceed your account's rate limit. Please try again later.")],
+                     activity="working", isStreaming=True, lastActivityAt=at(80))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
+
+        def marked(blocker=None, record=None):
+            with patch.object(resume_paused, "account_blocker", return_value=blocker), patch.object(resume_paused, "stop_record", return_value=record):
+                report = self.run_resume(dry_run=True)
+            self.assertEqual([p["reason"] for p in report["paused"]], ["hung"])
+            return "retry_error" in report["paused"][0]
+
+        self.assertTrue(marked())
+        self.assertFalse(marked(blocker="pi-pool holds the tree until 2026-10-18T12:40:00+00:00"))
+        self.assertFalse(marked(record="deleted on purpose"))
+
+    def test_an_unknown_pool_answer_blocks_the_retry_abort_and_a_non_pooled_provider_does_not(self):
+        # chat-057a's review of 19fde4349 (10-18): a pool read that failed returned None, which read as "this account can serve".
+        def strict(ls=None, who=None, tool="pi-pool", provider="anthropic", error=None):
+            def run(cmd, **kwargs):
+                if error:
+                    raise error
+                body = ls if cmd[1] == "ls" else who
+                return resume_paused.subprocess.CompletedProcess(cmd, 0 if body is not None else 1, json.dumps(body or {}), "")
+            with patch.object(resume_paused, "pool_bin", return_value=tool), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
+                return (resume_paused.account_blocker("root", provider, {}, strict=True), resume_paused.account_blocker("root", provider, {}))
+
+        rows = {"rows": [{"id": "acct1", "usable": True}]}
+        good = {"providers": {"anthropic": {"account": "acct1", "wait": None}}}
+        self.assertEqual(strict(rows, good), (None, None))
+        self.assertTrue(strict(None, good)[0].startswith("unknown: pi-pool ls"))
+        self.assertTrue(strict(rows, None)[0].startswith("unknown: pi-pool who"))
+        self.assertTrue(strict(rows, good, tool=None)[0].startswith("unknown: no pi-pool"))
+        self.assertTrue(strict(error=resume_paused.subprocess.TimeoutExpired("pi-pool", 30))[0].startswith("unknown: pi-pool did not answer"))
+        self.assertTrue(strict({"rows": []}, good)[0].startswith("unknown: pi-pool ls does not list"))
+        self.assertTrue(strict(rows, good, provider=None)[0].startswith("unknown:"))
+        self.assertIsNone(strict(None, None, provider="openrouter")[0], "a provider pi-pool does not pool has no pool answer to wait for")
+        self.assertIsNone(strict(None, good)[1], "an ordinary continue keeps its old answer")
+
+    def test_a_stop_record_that_does_not_read_blocks_the_retry_abort_and_shows(self):
+        self.session("asleepasleep", [assistant(81, "toolUse"), role(80, "toolResult"),
+                                      assistant(80, "error", "429 This request would exceed your account's rate limit.")],
+                     activity="working", isStreaming=True, lastActivityAt=at(80))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
+        with patch.object(resume_paused, "account_blocker", return_value=None), \
+                patch.object(resume_paused, "stop_record", side_effect=resume_paused.RecordError("deleted-jobs.json is not JSON")):
+            report = self.run_resume(dry_run=True)
+        run = report["paused"][0]
+        self.assertNotIn("retry_error", run)
+        self.assertIn("did not read", run["retry_blocked"])
+        self.assertTrue(any("deleted-jobs.json" in item["error"] for item in resume_paused.INCOMPLETE))
+
+    def test_a_tree_pi_pool_holds_in_a_wait_or_backoff_has_a_blocker(self):
+        later = NOW.timestamp() + 3600
+
+        def who(wait, account="acct1"):
+            def run(cmd, **kwargs):
+                body = {"rows": [{"id": "acct1", "usable": True}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": account, "wait": wait}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
+                return resume_paused.account_blocker("root", "anthropic", {})
+
+        self.assertIsNone(who(None))
+        self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later}))
+        self.assertIsNone(who({"account": "acct1", "slot_at": NOW.timestamp() - 60}))
+        self.assertIn("no anthropic account", who({"account": "acct1", "slot_at": NOW.timestamp() - 60}, account=None))
+
+    def test_retry_wait_names_the_error_a_hung_run_sleeps_on(self):
+        # ssh tailnet only, 10-18: its last entry is the 08:20:32Z 429, and it showed working for 146 min after it.
+        rate = {"type": "message", "timestamp": "2026-10-18T08:20:32Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
+                "errorMessage": "429 This request would exceed your account's rate limit. Please try again later."}}
+        call = {"type": "message", "timestamp": "2026-10-18T08:20:22Z", "message": {"role": "toolResult", "content": []}}
+        self.assertIn("rate limit", resume_paused.retry_wait([call, rate])["retry_error"])
+        self.assertEqual(resume_paused.retry_wait([rate, call]), {})
+        # pi-pool's hold is no stuck retry: run-8's root failed on it from 08:23 to 10:39Z on 10-18 while the pool pushed its slot back.
+        hold = {"type": "message", "timestamp": "2026-10-18T10:24:40Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
+                "errorMessage": 'Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token '
+                                "pi-pool: this session waits for its slot at 2026-10-18T10:45:00.000Z. Try again in 15 minutes."}}
+        self.assertEqual(resume_paused.retry_wait([call, hold]), {})
+        held = {**hold, "message": {**hold["message"], "errorMessage": "429 rate limit: this session waits for its slot at 2026-10-18T10:45:00Z"}}
+        self.assertEqual(resume_paused.retry_wait([call, held]), {})
+
     def test_a_prime_update_notice_that_ends_the_file_counts_as_a_restart_archive(self):
         # run-6's job, 10-18: its last turn failed on the token hook at 06:45:54Z, Prime's update stopped it with this notice at 06:46:02Z,
         # and the daemon logged its restart window from 06:46:44Z, so the window alone did not cover the stop.
@@ -1227,6 +1316,62 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["id"] for child in report["children"]], sent)
         self.assertEqual([entry["host"] for entry in report["incomplete"]], [None])
         self.assertRegex(report["incomplete"][0]["error"], r"^stopped by SIGTERM after \d+\.\d s during the sends on this box, last step: prime-agent send --json ")
+
+class ChatHostStopRecords(unittest.TestCase):
+    # On 10-18 the chat moved to us-metal02 at 04:19Z and the Mac's browser-chat files stopped there, so a pass on the Mac that read its own
+    # deleted-jobs.json would resume a job deleted after the move. The stop records come from the chat host of hosts.json now.
+    CHAT = "01a11b0b-7c15-73da-9481-8de15903eab4"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        files = {"/cap/api/agent/deleted-jobs": json.dumps({self.CHAT: {"sub-deleted-after-move": "2026-10-18T09:00:00Z"}})}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = files.get(self.path)
+                self.send_response(200 if body else 404)
+                self.end_headers()
+                self.wfile.write((body or '{"error": "Not found."}').encode())
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        port = self.server.server_address[1]
+        hosts = self.root / "hosts.json"
+        hosts.write_text(json.dumps({"version": 1, "hosts": [{"name": "chat-box", "hostname": "chat-box-not-this-one", "address": "127.0.0.1",
+                                                               "roles": {"chat": {"port": port, "url": f"http://127.0.0.1:{port}"}}}]}))
+        (self.root / "chat-access.json").write_text(json.dumps({"capability": "cap", "csrfToken": "token"}))
+        (self.root / "deleted-jobs.json").write_text(json.dumps({self.CHAT: {}}))
+        self.job = self.root / "session-artifacts" / self.CHAT / "sub-deleted-after-move" / "01a14ecc-624e-73df-851a-fc973da7fa4e.jsonl"
+        for name, value in (("HOSTS_FILE", hosts), ("DELETED_JOBS", self.root / "deleted-jobs.json"), ("ARCHIVED_CHATS", self.root / "archived-chats.json"),
+                            ("ARTIFACTS_DIR", self.root / "session-artifacts")):
+            kept = patch.object(resume_paused, name, value)
+            kept.start()
+            self.addCleanup(kept.stop)
+        resume_paused.CHAT_HOST_TEXT.clear()
+        self.addCleanup(resume_paused.CHAT_HOST_TEXT.clear)
+
+    def test_a_deletion_only_the_chat_host_holds_stops_the_resume(self):
+        with patch("sys.stderr") as stderr:
+            self.assertEqual(resume_paused.stop_record(str(self.job)), "deleted on purpose")
+        said = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("read deleted-jobs.json from the chat host http://127.0.0.1:", said)
+
+    def test_an_unreachable_chat_host_falls_back_to_this_box_and_says_so(self):
+        self.server.shutdown()
+        self.server.server_close()
+        with patch("sys.stderr") as stderr:
+            self.assertIsNone(resume_paused.stop_record(str(self.job)))
+        said = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("read deleted-jobs.json from the local file", said)
+        self.assertIn("could not be reached", said)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,8 @@
 to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project, from that repo's root:
 `uv run --project scripts/seo --frozen python <this file> visits|inspect`. Prints one JSON object on stdout.
 
-visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals (virev_seo.gsc) and 28-day sign-ups with
-their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
+visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc) and 28-day
+sign-ups with their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
 inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`, retries included.
 """
 
@@ -50,6 +50,13 @@ def gsc_read() -> dict[str, Any]:
     wins = {w.name: w for w in gsc.windows(datetime.fromisoformat(last_final).date())}
     for name in ("d7", "d7_prior"):
         out[name] = {"start": wins[name].start.isoformat(), "end": wins[name].end.isoformat(), **gsc._totals(sess, wins[name])}
+    # Impressions per page and day over the 17 final days that end on the last one (DROP_BASE_DAYS + DROP_RECENT_DAYS), for dropped_pages
+    # in seo-search-visits.ts, which splits them into its base and recent windows.
+    end = datetime.fromisoformat(last_final).date()
+    start = end - timedelta(days=16)
+    rows = gsc.query(sess, start, end, ["page", "date"])
+    out["pages"] = {"start": start.isoformat(), "end": end.isoformat(),
+                    "rows": [{"page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}
     return out
 
 

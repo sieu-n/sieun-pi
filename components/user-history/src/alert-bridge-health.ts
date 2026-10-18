@@ -117,8 +117,7 @@ export interface BridgeWatchDeps {
   health: PollHealth;
   statusFile: string;
   configFile: string;
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-  startRoot?: (root: string) => Promise<void>;
+  deliver: (session: string, text: string, root?: string) => Promise<void>;
   pollMs?: number;
   now?: () => number;
   wokeAt?: () => Promise<number | null>;
@@ -139,21 +138,12 @@ export class BridgeWatch {
     const step = watchStep(record, this.alerting, now, this.deps.configFile, wokeAt);
     if (step.send) {
       try {
-        await this.send(step.send);
+        await this.deps.deliver(OPS_ROUTE.session, step.send, OPS_ROUTE.session);
         this.alerting = step.alerting;
         this.deps.log(`alerts: watchdog told ops guy the bridge is ${step.alerting ? healthOf(record, now, wokeAt) : "polling again"}`);
       } catch (error) { this.deps.log(`alerts: watchdog: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
     }
     await this.write(statusOf(record, this.alerting, now, this.deps.pollMs ?? TICK_MS, wokeAt));
-  }
-
-  private async send(text: string): Promise<void> {
-    let result = await this.deps.deliver(OPS_ROUTE.session, text);
-    if (result === "gone" && this.deps.startRoot) {
-      await this.deps.startRoot(OPS_ROUTE.session);
-      result = await this.deps.deliver(OPS_ROUTE.session, text);
-    }
-    if (result === "gone") throw new Error("ops guy's session is gone");
   }
 
   private async restore(): Promise<Alerting | null> {

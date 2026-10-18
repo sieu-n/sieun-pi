@@ -46,7 +46,11 @@ export function verdictMetrics<M extends Pick<DutyMetric, "headline">>(metrics: 
  * to OUTPUT_FILE. A nonzero exit, a timeout or bad JSON is an error run.
  */
 export interface DutyPrecheck { command: string[]; cwd: string; timeoutMs: number }
-export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[] }
+/**
+ * `lastEventAt` names, per metric that counts events in a trailing window, the time of the newest event it counts. With it a miss streak tells a
+ * count that no new event raised from one whose old events have not left the window yet (`MetricStreak.quietSince`).
+ */
+export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number> }
 /** One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is about. */
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string }
 
@@ -82,7 +86,8 @@ export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutySta
 /** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/chat-duty-run.ts). */
 export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
-export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean }
+/** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`). */
+export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number }
 /** A duty job the server started: its session id and name. */
 export interface DutyJobRef { id: string; name: string }
 /**
@@ -112,7 +117,7 @@ export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metri
  */
 export interface DutyView {
   duty: DutyCard; builtin?: "checkin"; schedule: DutySchedule; paused: boolean; nextAt: number | null; running: boolean; runs: DutyRunRecord[];
-  /** The chat's pool class from its sidebar label (`chatPoolPriority`): it picks the duty's morning band. The duty job itself always runs low. */
+  /** The chat's pool class from its sidebar label (`chatPoolPriority`): it picks the duty's morning band. Its duty job runs low, and a check-in job normal. */
   priority: PoolPriority;
 }
 
@@ -241,7 +246,8 @@ export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   const headline = headlineMetric(measured);
   for (const metric of measured) {
     const value = output.metrics[metric.key]!;
-    results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value) };
+    const lastEventAt = output.lastEventAt?.[metric.key];
+    results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value), ...typeof lastEventAt === "number" && Number.isFinite(lastEventAt) ? { lastEventAt } : {} };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
@@ -356,5 +362,7 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0 },
     { key: "finished_open", label: "Done items still open", op: "<=", target: 0 },
     { key: "stalled_steps", label: "Steps waiting over 2 hours on the same thing", op: "<=", target: 0 },
+    { key: "no_done_line", label: "Open goals with no done line (no target and no \"Done when\" note)", op: "<=", target: 0 },
+    { key: "plan_risks", label: "Open plan steps that hold a standing risk, not finishable work", op: "<=", target: 0 },
   ],
 };

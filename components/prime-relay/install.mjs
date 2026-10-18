@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs, host-stats.ts, slim-snapshot.mjs and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs) to it,
+Copies relay.mjs, host-stats.ts, rig-cpu.ts, slim-snapshot.mjs, line-delta.ts and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs) to it,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -80,6 +80,11 @@ WantedBy=default.target
 `;
 }
 
+/**
+ * The launchd job runs as Interactive: with no ProcessType, launchd clamps a job's CPU, and on 10-18 at load 440 the relay ran at priority 20
+ * against 31 for an ssh shell. The footprint helper it starts then took 22.8 s and 39.5 s under `taskpolicy -c utility` against 2.9 s and 14.6 s
+ * unclamped, past the relay's 30 s kill in each of 4 watch reads from 11:14Z.
+ */
 function launchdPlist(node, script) {
   const log = join(share, "relay.log");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -91,6 +96,7 @@ function launchdPlist(node, script) {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>${log}</string>
   <key>StandardErrorPath</key><string>${log}</string>
 </dict>
@@ -104,7 +110,9 @@ function main() {
   const show = file => execFileSync("git", ["-C", repo, "show", `${sha}:components/prime-relay/${file}`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 });
   const script = join(share, "relay.mjs");
   writeAtomic(join(share, "host-stats.ts"), show("host-stats.ts"), 0o644);
+  writeAtomic(join(share, "rig-cpu.ts"), show("rig-cpu.ts"), 0o644);
   writeAtomic(join(share, "slim-snapshot.mjs"), show("slim-snapshot.mjs"), 0o644);
+  writeAtomic(join(share, "line-delta.ts"), show("line-delta.ts"), 0o644);
   // POST /v1/watch runs sieun-pi's worker footprint helper on this box for the chat service on another box.
   writeAtomic(join(share, "worker-footprint.py"), execFileSync("git", ["-C", repo, "show", `${sha}:components/user-history/src/worker-footprint.py`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 }), 0o644);
   writeAtomic(script, show("relay.mjs"), 0o644);

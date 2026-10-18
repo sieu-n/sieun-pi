@@ -11,6 +11,7 @@ test("emits asked for during a projection share one projection after it, and eac
   const ids = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog("unused", new ChatReadState("unused"), new ChatLabels("unused"), ids, new ThreadOrigins({ ids: async () => [] }));
   t.after(() => catalog.close());
+  catalog.emitGapMs = 0;
   let projections = 0;
   const gates: (() => void)[] = [];
   t.mock.method(catalog, "event", async (): Promise<SessionsEvent> => {
@@ -33,4 +34,27 @@ test("emits asked for during a projection share one projection after it, and eac
   gates.shift()?.();
   await Promise.all(later);
   assert.deepEqual(frames, ["projection 1", "projection 2"]);
+});
+
+test("projections for the frames start at most one per emitGapMs, and asks while one waits join it", async t => {
+  const ids = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
+  const catalog = new Catalog("unused", new ChatReadState("unused"), new ChatLabels("unused"), ids, new ThreadOrigins({ ids: async () => [] }));
+  t.after(() => catalog.close());
+  catalog.emitGapMs = 300;
+  const started: number[] = [];
+  t.mock.method(catalog, "event", async (): Promise<SessionsEvent> => { started.push(Date.now()); return { type: "sessions", sessions: [], tags: [], daemon: "down", error: "x" }; });
+  (catalog as unknown as { lastError: string }).lastError = "Connection to the Prime Agent daemon closed.";
+  const frames: string[] = [];
+  (catalog as unknown as { listeners: Set<(event: SessionsEvent) => void> }).listeners.add(event => frames.push(event.error ?? ""));
+  await catalog.notify();
+  const at = Date.now();
+  await Promise.all([catalog.notify(), catalog.notify(), catalog.notify()]);
+  assert.equal(started.length, 2, "three asks inside the gap share one projection");
+  assert.ok(started[1]! - started[0]! >= 290, `second projection ${started[1]! - started[0]!} ms after the first`);
+  assert.ok(Date.now() - at < 1000);
+  // A new subscriber gets the last frame at once.
+  const got: SessionsEvent[] = [];
+  const stop = catalog.subscribe(event => got.push(event));
+  assert.equal(got.length, 1);
+  stop();
 });

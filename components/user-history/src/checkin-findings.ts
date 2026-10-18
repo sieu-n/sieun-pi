@@ -16,6 +16,31 @@ import { localTime } from "./checkin-settings.ts";
  * The plan's shape (c44, reopened 10-12: p253 sat as a top-level item with no steps, status doing, after its work shipped, and the owner had to
  * ask the chat to tidy the plan). The plan is a few area goals with their open steps under them.
  */
+/**
+ * The open goals with no done line: no `target` and no "Done when" in the note. The owner on 10-18 (c110): a plan "define[s] a clear scope of
+ * completion", after ops guy's p45 and p221 sat at 64 of 71 and 60 of 69 steps with no end in sight (board skill, references/plan-and-duties.md).
+ */
+export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] =>
+  openGoals(board?.plan ?? []).filter(goal => !goal.target && !/\bdone when\b/i.test(goal.note ?? ""));
+/** The goal the alert bridge files firing alerts under (ALERT_GOAL in alert-bridge.ts). */
+export const ALERT_GOAL_TEXT = "Firing prod alerts";
+/**
+ * The open steps that hold a standing risk instead of finishable work: each open step under an open "Firing prod alerts" goal. The owner on
+ * 10-18 (c110): "stop being paranoid in plan under p45, p221. these should be modeled separately, like in a doc tracking all the known vps infra
+ * risks and a duty that checks these." ops guy's p221 held 9 such open steps, like p315 "us-metal01 filesystem fills within 30 days".
+ */
+export function planRiskSteps(board: ChatBoard | null): PlanItem[] {
+  const found: PlanItem[] = [];
+  for (const goal of openGoals(board?.plan ?? [])) if (goal.text.trim() === ALERT_GOAL_TEXT) walkItems(goal.children, item => { if (OPEN.has(item.status) && !item.children.length) found.push(item); });
+  return found;
+}
+export const noDoneLineLine = (goals: readonly PlanItem[]): string =>
+  `${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")} ${goals.length === 1 ? "has" : "have"} no done line: give each a note that starts with "Done when" ` +
+  "and the check the owner would make by hand, or a target (board skill, references/plan-and-duties.md)";
+export const riskStepsLine = (steps: readonly PlanItem[]): string =>
+  `${plural(steps.length, "open step")} under "${ALERT_GOAL_TEXT}" hold standing risks (${steps.slice(0, 5).map(step => step.id).join(", ")}${steps.length > 5 ? " and more" : ""}): ` +
+  "move each to the chat's wiki risk page with a duty metric that checks it, close the goal, and get the alert bridge to message the owner instead of filing steps (board skill, references/plan-and-duties.md)";
+
 /** The open goals with no step under them: a step filed as a goal. */
 export const looseGoals = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !goal.children.length);
 /** The open goals when there are more than BOARD_LIMITS.openGoals; a board from before the limit can still hold more. */

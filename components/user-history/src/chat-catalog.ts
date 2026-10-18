@@ -4,8 +4,8 @@ import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
-import { chatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
-import { cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
+import { keptChatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
@@ -152,6 +152,17 @@ export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMes
   return text || (row.cwd ? basename(row.cwd) : "") || "New chat";
 }
 
+/**
+ * A row as the last projection built it, with what it was built from: the daemon's summary object (the copy keeps an unchanged row's object
+ * across roster updates), the read marker, labels, schedule, subtree numbers, origin, box and the owner's archive. On 10-18 a scratch serve
+ * on this box's 562 rows and the Mac's 3,123 spent 33.8 s of a 131 s profile in project(), most of it building the same 3,700 rows again for
+ * each roster update that changed two of them.
+ */
+type KeptRow = { key: readonly unknown[]; row: SessionRow };
+const sameKey = (left: readonly unknown[], right: readonly unknown[]): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
+/** Each projected row's entry for `chatAgents`, so a kept row keeps its entry and its first task is not looked up again. */
+const agentRowOf = new WeakMap<SessionRow, AgentRow>();
+
 export function isTopLevel(row: SessionSummary): boolean {
   return row.runtimeKind !== "subagent" && typeof row.rlmChildId !== "string" && !(typeof row.rlmDepth === "number" && row.rlmDepth > 0);
 }
@@ -253,6 +264,8 @@ export interface Subtree { cost?: number; running: number; total: number }
  */
 export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, SessionSummary[]>): Subtree {
   let cost = row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
+  // Most of the 3,700 rows have no subagent, and the catalog asks for each of them on every projection.
+  if (!children.has(row.sessionId)) return { ...(cost !== undefined ? { cost } : {}), running: 0, total: 0 };
   let running = 0;
   let total = 0;
   const seen = new Set<string>([row.sessionId]);
@@ -465,8 +478,11 @@ export class Catalog {
    * agent on each projection took 12% of its time.
    */
   private childById = new Map<string, SessionSummary>();
-  /** Children's cut ends (`SessionCuts`), read after each list. */
-  readonly cuts = new SessionCuts();
+  private readonly cutListeners = new Set<(cut: Cut) => void>();
+  /** Children's cut ends (`SessionCuts`), read after each list; each cut that came or moved goes to `onCut`'s listeners. */
+  readonly cuts = new SessionCuts(cut => { for (const listener of this.cutListeners) listener(cut); });
+  /** Runs `listener` for each job cut a read of the children's transcripts finds new. */
+  onCut(listener: (cut: Cut) => void): void { this.cutListeners.add(listener); }
   private cutsReading = false;
   private schedules = new Map<string, ThreadSchedule>();
   private observedDaemonVersion: { version: string | undefined } | undefined;
@@ -486,6 +502,8 @@ export class Catalog {
   /** This box's sessions, kept the way every other box's are (`SessionPeer`): the roster stream keeps them current, and no page waits on a list. */
   private readonly peer: SessionPeer;
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
+  /** The rows the last projection built, by session id, that the next one may reuse (`KeptRow`). */
+  private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
@@ -598,6 +616,7 @@ export class Catalog {
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
   private index(rows: SessionSummary[]): void {
+    this.inputs++;
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
     this.own = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : [row.sessionId]));
@@ -651,30 +670,48 @@ export class Catalog {
     // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
     const listed = [...this.summaries.values()].filter(row => isListed(row, this.hostOf(row.sessionId) ? () => true : undefined));
     const selfName = this.hosts?.selfName ?? null;
+    const kept = new Map<string, KeptRow>();
     const rows = listed
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
+        const chat = chats?.has(row.sessionId) === true;
+        const working = isWorking(row, subtree);
+        const origin = originOf(row);
+        const host = this.hostOf(row.sessionId) ?? selfName;
+        const archived = archivedByOwner?.has(row.sessionId) === true;
+        const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
+          archived, this.heldLifecycle.get(row.sessionId)];
+        const before = this.keptRows.get(row.sessionId);
+        // A chat row gets its agents and counts written onto it below, and a working row's pulse follows its running subagents, so both are built again.
+        if (!chat && !working && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); return before.row; }
         const checkIn = checkIns?.get(row.sessionId);
         const brief = briefs?.get(row.sessionId);
-        const projected = this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
-          ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
-          ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
-        const host = this.hostOf(row.sessionId) ?? selfName;
-        const tagged = host ? { ...projected, host } : projected;
+        const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
+          ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
+          ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
+        if (host) projected.host = host;
         // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
-        return archivedByOwner?.has(row.sessionId) ? { ...tagged, archived: true } : tagged;
-      })
-      .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
+        if (archived) projected.archived = true;
+        if (!chat && !working) kept.set(row.sessionId, { key, row: projected });
+        return projected;
+      });
+    this.keptRows = kept;
+    const at = new Map(rows.map(row => [row, Date.parse(row.lastActivityAt ?? row.created ?? "")]));
+    rows.sort((left, right) => at.get(right)! - at.get(left)!);
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
-    const agentRows: AgentRow[] = rows.map(row => { const first = firstTask(this.summaries.get(row.id) ?? {}); return first ? { row, first } : { row }; });
+    const agentRows: AgentRow[] = rows.map(row => {
+      let entry = agentRowOf.get(row);
+      if (!entry) { const first = firstTask(this.summaries.get(row.id) ?? {}); entry = first ? { row, first } : { row }; agentRowOf.set(row, entry); }
+      return entry;
+    });
     const now = Date.now();
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
       const links = await this.chats.links(row.id).catch(() => null);
-      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
+      row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
       if (sessions.size) void this.linkSessions(row.id, sessions);
@@ -719,27 +756,64 @@ export class Catalog {
     this.ratesTimer.unref();
   }
 
-  async rows(): Promise<SessionRow[]> { return (await this.project()).rows; }
+  /**
+   * The rows now. A call while a projection runs on the same inputs takes that projection's rows instead of building its own: on 10-18 a scratch
+   * serve of this box's chats got 22 to 98 rows() calls per 30 s, from duty, check-in and archive code looking up one row each, and every call
+   * built all 3,700 rows and every chat's agents beside the frames' own projections. A change to the daemon rows or a notify() starts a new one.
+   */
+  async rows(): Promise<SessionRow[]> {
+    const running = this.running;
+    return (await (running && running.inputs === this.inputs ? running.result : this.tracked())).rows;
+  }
+  /** Bumped by each change the catalog hears of (new daemon rows, and every emit: notify, schedules, cut ends, rates), so rows() never takes a projection that began before one. */
+  private inputs = 0;
+  private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
+  private tracked(): ReturnType<Catalog["project"]> {
+    const run = { inputs: this.inputs, result: this.project() };
+    this.running = run;
+    void run.result.finally(() => { if (this.running === run) this.running = undefined; }).catch(() => {});
+    return run.result;
+  }
 
   async event(): Promise<SessionsEvent> {
-    const { rows, tags } = await this.project();
+    const { rows, tags } = await this.tracked();
     return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
-  private emitRun: Promise<void> | undefined;
+  private emitRun: { started: boolean; promise: Promise<void> } | undefined;
   private emitNext: Promise<void> | undefined;
+  private emittedAt = 0;
+  /** The last frame sent, which a new subscriber gets at once. */
+  private lastEvent: SessionsEvent | undefined;
   /**
-   * One projection at a time: an emit asked for while one runs waits for it, and every such ask shares one run after it, so each caller
-   * still gets a frame built after its change. On 10-18 the service's main thread was about 95% busy and project() took half of it, and
-   * frames went out in bursts of 4 identical lists within 140 ms from projections that overlapped.
+   * The least time between two frame projections, from a sweep on 10-18. Scratch serve on a copy of browser-chat, fake daemons at the live
+   * rate (13.3 roster updates a second), one held page, 120 s each: a window of 0, 100, 150, 250, 500 and 1000 ms made 4.9, 4.6, 4.9, 4.0,
+   * 2.05 and 1.08 frames a second, and the main thread was 29.1, 29.1, 28.4, 24.6, 16.5 and 13.5% busy. A projection took about 200 ms
+   * there, so a window under that changes nothing. 500 ms keeps most of the cut and halves the sidebar's lag against 1 s. The first change
+   * after a quiet window goes out at once.
+   */
+  emitGapMs = 500;
+  /**
+   * One projection at a time, at most one per `emitGapMs`: an emit asked for while one waits joins it, and one asked for while one runs waits
+   * for it, and every such ask shares one run after it, so each caller still gets a frame built after its change. On 10-18 the service's main
+   * thread was about 95% busy and project() took half of it, and frames went out in bursts of 4 identical lists within 140 ms from projections
+   * that overlapped.
    */
   private emit(): Promise<void> {
-    if (!this.emitRun) {
-      this.emitRun = this.emitOnce().finally(() => { this.emitRun = undefined; });
-      return this.emitRun;
+    this.inputs++;
+    const running = this.emitRun;
+    if (running && !running.started) return running.promise;
+    if (running) {
+      this.emitNext ??= running.promise.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
+      return this.emitNext;
     }
-    this.emitNext ??= this.emitRun.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
-    return this.emitNext;
+    const wait = this.emittedAt + this.emitGapMs - Date.now();
+    const run = { started: false, promise: Promise.resolve() };
+    const start = (): Promise<void> => { run.started = true; return this.emitOnce(); };
+    run.promise = (wait > 0 ? new Promise<void>(resolve => { setTimeout(resolve, wait).unref(); }).then(start) : start())
+      .finally(() => { if (this.emitRun === run) this.emitRun = undefined; });
+    this.emitRun = run;
+    return run.promise;
   }
 
   /**
@@ -748,14 +822,26 @@ export class Catalog {
    */
   private async emitOnce(): Promise<void> {
     if (this.listeners.size === 0 || (this.daemon === "up" && !this.peer.listed) || (this.daemon === "down" && !this.lastError)) return;
+    this.emittedAt = Date.now();
     const event = await this.event();
+    this.lastEvent = event;
     for (const listener of [...this.listeners]) listener(event);
   }
 
   notify(): Promise<void> { return this.emit(); }
 
+  /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
+  watch(listener: (event: SessionsEvent) => void): () => void {
+    this.listeners.add(listener);
+    if (this.lastEvent) listener(this.lastEvent);
+    else void this.event().then(listener, () => {});
+    return () => { this.listeners.delete(listener); };
+  }
+
   subscribe(listener: (event: SessionsEvent) => void): () => void {
     this.listeners.add(listener);
+    // A page load gets the list as it was at the last frame at once, and the fresh one when the refresh's projection lands.
+    if (this.lastEvent) listener(this.lastEvent);
     void this.refresh().catch(async () => { listener(await this.event()); });
     return () => { this.listeners.delete(listener); };
   }
@@ -912,7 +998,7 @@ export class Catalog {
    * The row shows this lifecycle until the daemon list agrees (archived: listed as archived with no active session). The daemon scan can lag
    * behind the session file, and the terminal agents view hides a deactivated row the same way until it does.
    */
-  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); }
+  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); this.inputs++; }
 
   private applyHeld(row: SessionSummary, projected: SessionRow): SessionRow {
     const held = this.heldLifecycle.get(row.sessionId);

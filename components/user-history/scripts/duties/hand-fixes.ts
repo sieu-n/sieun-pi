@@ -8,7 +8,7 @@ import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/
 import { type DsQuery, DAY, PG, REPO, SOURCE_DEADLINE_MS, grafanaClient, num, readGrafanaAuth, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
- * The Hand fix designs duty's precheck for launch main bro (`node --import tsx scripts/duties/hand-fixes.ts`). Code only, no model call, reads
+ * The Hand fixes designed duty's precheck for launch main bro (`node --import tsx scripts/duties/hand-fixes.ts`). Code only, no model call, reads
  * only. The owner (10-14 01:30Z) asked that every fault fixed by hand become a design that fixes itself, and rule c63 says each hand fix starts
  * a design job the same turn. This check finds the hand fixes made since its last run and matches each to a fault in hand-fixes.faults.json:
  * - config_audit on prod and staging Postgres through Grafana (estate_pg_prod, estate_pg_stg, user grafana_ro); /ops/controls writes land there;
@@ -184,7 +184,8 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   return { containers, execs };
 }
 
-export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service);
+/** Running containers with no compose service; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
+export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service && container.status === "running");
 /** A one-shot script piped in on stdin (`python -`, `bash -s`), the way session tools read or set controls; session_loops_writing counts those tools. */
 const STDIN_SCRIPT = /\s(?:-|-s)$/;
 /** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
@@ -195,8 +196,16 @@ export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[]
 export function scriptOf(command: string): string | null {
   return command.split(/\s+/).find(part => /\.(?:py|mjs|js|ts|sh)$/.test(part)) ?? null;
 }
-export const isSessionProcess = (command: string): boolean =>
-  /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/bin\/)?(?:ba|z)?sh -c\b|^tar\b/.test(command) && scriptOf(command) !== null;
+/**
+ * A CI gate or test script: in a gates, tests or ci folder, or named ci-*, test_* or *.test.*. It writes to a test database, not prod or
+ * staging: on 10-18 the CI reds job's copy of apps/infra/metal/gates/ci-multirev-forward-tests.sh counted as 3 session writers.
+ */
+export const isCiOrTest = (script: string): boolean =>
+  /\/(?:gates|tests?|__tests__|ci)\/[^/]+$|\/(?:ci|tests?)[-_][^/]*$|\.(?:test|spec)\.\w+$|_tests?\.\w+$/.test(script);
+export const isSessionProcess = (command: string): boolean => {
+  const script = scriptOf(command);
+  return /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/bin\/)?(?:ba|z)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
+};
 
 export interface HandData {
   now: number;
@@ -331,14 +340,15 @@ done
 
 function run(command: string, args: string[], signal: AbortSignal, input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], signal });
+    // A command with no input gets no stdin pipe: on 10-18 a ps, lsof or git that exited before the empty write crashed the run with EPIPE.
+    const child = spawn(command, args, { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], signal });
     let out = "";
     let err = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.stderr.on("data", chunk => { err += chunk; });
+    child.stdout!.on("data", chunk => { out += chunk; });
+    child.stderr!.on("data", chunk => { err += chunk; });
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`${command} exit ${code}: ${(err || out).trim().slice(-300)}`)));
-    child.stdin.end(input ?? "");
+    if (child.stdin) { child.stdin.on("error", reject); child.stdin.end(input); }
   });
 }
 

@@ -8,6 +8,7 @@
   import { brokenImage, proseClick } from "./prose.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { exchangesOf, messageText, ownRun, type Turn } from "../shared/turns.ts";
+  import { failureText, poolSlot } from "../shared/chat-feed.ts";
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
   import TurnView from "./Turn.svelte";
@@ -118,7 +119,7 @@
     <Lightbox images={[replyImage]} index={0} onclose={() => { replyImage = null; }} />
   {/if}
   {#if failed}
-    <div class="failed" role="status">{failed.stopReason === "aborted" ? "Response stopped" : "Error: " + (failed.errorMessage || "the model returned an error")}</div>
+    <div class="failed" class:waiting={failed.stopReason === "error" && poolSlot(failed.errorMessage ?? "") !== null} role="status">{failed.stopReason === "aborted" ? "Response stopped" : failureText(failed.errorMessage)}</div>
   {/if}
   {#if folded.length}
     <button type="button" class="fold" aria-expanded={showFolded} onclick={() => { showFolded = !showFolded; }}>
@@ -161,4 +162,5 @@
   .reply:hover .reply-actions, .reply-actions:focus-within { opacity: 1; }
   .more { color: var(--accent); font-size: 13px; margin-top: 4px; }
   .failed { display: inline-block; margin-top: 8px; padding: 6px 10px; border-radius: var(--radius-small); background: var(--danger-soft); color: var(--danger); font-size: 13px; }
+  .failed.waiting { background: var(--bg-sunken); color: var(--text-faint); }
 </style>

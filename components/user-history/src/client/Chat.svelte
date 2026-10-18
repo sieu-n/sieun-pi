@@ -106,7 +106,7 @@
   $effect(() => {
     if (!thread) return;
     const settled = settledPending(thread.messages, pendingSends);
-    if (settled.size) untrack(() => store.settleSends(id, settled));
+    if (settled.size) untrack(() => store.settleSends(settled));
   });
 
   /** Jobs: this chat's subagents (from the daemon) and the sessions it started with `rlm.create_session` (from its own tool results). */
@@ -350,6 +350,8 @@
   const closeMenu = () => { pressed = null; };
 
   const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
+  /** The feed item id of a page send is "p" + its outbox id (chat-feed.ts chatFeed). */
+  const sendId = (item: ChatItem) => item.id.slice(1);
 </script>
 
 {#snippet actions(at: number, text: string)}
@@ -381,7 +383,7 @@
           <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
         {:else if item.kind === "user"}
           <div class="line user" data-at={item.at} data-line={item.id}>
-            {#if !item.pending}{@render actions(item.at, item.text)}{/if}
+            {#if !item.pending && item.failed === undefined}{@render actions(item.at, item.text)}{/if}
             <div class="bubble mine" class:pending={item.pending} use:longpress={press(item.at, item.text)}>
               {#if item.images.length}
                 <div class="images">
@@ -394,6 +396,11 @@
               {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderSaid(item.text, mentions)}</div>{/if}
             </div>
           </div>
+          {#if item.failed !== undefined}
+            <div class="send-failed" role="status"><span>Not sent. {item.failed}</span>
+              <button type="button" class="more" onclick={() => void store.retrySend(sendId(item))}>Retry</button>
+              <button type="button" class="more" onclick={() => store.editFailed(sendId(item))}>Edit</button></div>
+          {/if}
           {#if item.replies?.length}
             <div class="see-reply"><button type="button" class="more" onclick={() => seeReply(item)}>{item.replies.length === 1 ? "See reply" : `See replies (${item.replies.length})`}</button></div>
           {/if}
@@ -599,6 +606,7 @@
   /* The owner's bubble is a light blue tint with normal text, calm next to the gray replies (owner, 10-08: "this blue is too blue"). */
   .bubble.mine { background: var(--mine-bubble); color: var(--text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }
+  .send-failed { display: flex; justify-content: flex-end; align-items: baseline; flex-wrap: wrap; gap: 0 10px; margin: -2px 6px 2px; font-size: 12.5px; color: var(--text-muted); }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* The quote a Reply put on top: small and muted, a bar on the left, the owner's text under it. */

@@ -32,7 +32,7 @@ function hub(messages: (id: string) => ThreadMessage[]) {
   const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }), hostOf: () => null, daemonPath: (row: { sessionFile?: string }) => row.sessionFile,
     subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
-  const connection = { subscribe: () => () => {}, dispose: async () => {}, setSteeringMode: async () => {} };
+  const connection = { subscribe: () => () => {}, flushBufferedSessionEvents: async () => {}, dispose: async () => {}, setSteeringMode: async () => {} };
   const internals = threads as unknown as { attach(id: string): Promise<unknown>; liveSnapshot(connection: unknown, summary: { sessionId: string }): Promise<unknown> };
   internals.attach = async () => connection;
   internals.liveSnapshot = async (_connection, summary) => ({ kind: "live", info: { isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0, sessionAction: null, queuedActions: 0 }, messages: messages(summary.sessionId), streaming: null,

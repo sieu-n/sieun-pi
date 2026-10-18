@@ -126,22 +126,41 @@ export function frontmatter(text: string): Record<string, string> {
   return fields;
 }
 
-/** Every repo skill id from the folders: `.agents/skills/<a>/<b>[/...]` with a SKILL.md (depth 2 or more), plus flat `.claude/skills-native/<name>`. */
-async function repoSkillIds(deps: Deps): Promise<string[]> {
-  const ids: string[] = [];
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await deps.list(join(deps.repo, ".agents/skills", rel));
-    if (rel.split("/").length >= 2 && entries.some(entry => entry.name === "SKILL.md" && entry.kind === "file")) { ids.push(rel); return; }
-    await Promise.all(entries.filter(entry => entry.kind === "dir" && !entry.name.startsWith(".")).map(entry => walk(rel ? `${rel}/${entry.name}` : entry.name)));
-  };
-  await walk("");
-  for (const entry of await deps.list(join(deps.repo, ".claude/skills-native")))
-    if (entry.kind === "dir" && await deps.exists(join(deps.repo, ".claude/skills-native", entry.name, "SKILL.md"))) ids.push(entry.name);
-  return ids.sort();
-}
+const SKILL_MAP = ".agents/skills/repo/skill-creation/references/skill-map.md";
+const mapIds = (map: string): string[] => [...map.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map(match => match[1]!);
 async function skillMapIds(deps: Deps): Promise<string[]> {
-  const map = await deps.readFile(join(deps.repo, ".agents/skills/repo/skill-creation/references/skill-map.md"));
-  return [...map.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map(match => match[1]!);
+  return mapIds(await deps.readFile(join(deps.repo, SKILL_MAP)));
+}
+/**
+ * Every repo skill id in `git ls-tree -r --name-only HEAD` output: `.agents/skills/<a>/<b>[/...]` with a SKILL.md (depth 2 or more, the
+ * outermost one only), plus flat `.claude/skills-native/<name>`. skill_map and skill_paths judge HEAD, because the shared checkout holds other
+ * jobs' uncommitted skill edits for hours: on 10-18 the vent job's new apps/vent-mock folder and a stale api-portal SKILL.md failed both
+ * checks on the box alone.
+ */
+export function headSkillIds(lsTree: string): string[] {
+  const skills = lsTree.split("\n").flatMap(line => /^\.agents\/skills\/(.+)\/SKILL\.md$/.exec(line)?.slice(1, 2) ?? [])
+    .filter(rel => rel.split("/").length >= 2 && !rel.split("/").some(part => part.startsWith(".")));
+  const outer = skills.filter(rel => !skills.some(other => rel.startsWith(`${other}/`)));
+  const native = lsTree.split("\n").flatMap(line => /^\.claude\/skills-native\/([^/]+)\/SKILL\.md$/.exec(line)?.slice(1, 2) ?? []);
+  return [...outer, ...native].sort();
+}
+/** check-skill-paths.mjs run over HEAD's skill roots: `git archive` copies them to scratch, and GIT_DIR keeps the script's HEAD file list and ignore rules on the repo. */
+async function skillPathsAtHead(deps: Deps): Promise<ExecResult> {
+  const dir = join(deps.scratchDir, `skill-paths-head-${process.pid}`);
+  const tar = `${dir}.tar`;
+  const gitDir = await deps.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: deps.repo, timeoutMs: 10_000 });
+  if (gitDir.code !== 0) return gitDir;
+  try {
+    for (const [file, args] of [["rm", ["-rf", dir, tar]], ["mkdir", ["-p", dir]],
+      ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ".agents/skills", ".claude/skills-native", ".claude/rules", "scripts/ci/check-skill-paths.mjs", ":(glob)**/.gitignore"]],
+      ["tar", ["-x", "-f", tar, "-C", dir]]] as const) {
+      const step = await deps.exec(file, args, { cwd: deps.repo, timeoutMs: 20_000 });
+      if (step.code !== 0) return step;
+    }
+    return await deps.exec("node", ["scripts/ci/check-skill-paths.mjs", "--json"], { cwd: dir, env: { GIT_DIR: gitDir.stdout.trim(), GIT_WORK_TREE: dir }, timeoutMs: 20_000 });
+  } finally {
+    await deps.exec("rm", ["-rf", dir, tar], { timeoutMs: 10_000 });
+  }
 }
 const setDiff = (a: Iterable<string>, b: Iterable<string>) => { const other = new Set(b); return [...new Set(a)].filter(item => !other.has(item)).sort(); };
 
@@ -289,7 +308,12 @@ export const CHECKS: readonly Check[] = [
   { id: "websearch_query", group: "web search", tool: "Virev search API", run: async deps => {
     const skill = paths(deps).websearch;
     const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
-    const result = await deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
+    const search = () => deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
+    // Google on the Virev crawler drops for a few minutes at a time: 4 of 9 rechecks in
+    // skills-and-tools.rechecks.jsonl (10-17 to 10-18) got the DuckDuckGo note or a 502, and each passed
+    // again minutes later. One more query before failing keeps such a drop from flagging the box alone.
+    const first = await search();
+    const result = /NOTE: google is unavailable|Virev search error \((502|504)\)/.test(both(first)) ? await search() : first;
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
@@ -492,16 +516,19 @@ export const CHECKS: readonly Check[] = [
     return missing.length || extra.length ? FAIL("agent", [missing.length && `links missing from HEAD: ${missing.join(", ")}`, extra.length && `links in HEAD with no skill: ${extra.join(", ")}`].filter(Boolean).join("; "),
       "commit the link changes with `node scripts/repo/agent/commit.mjs` (check `node scripts/repo/agent/whose.mjs` first)") : PASS(`${actual.length} committed links match`);
   } },
-  { id: "skill_map", group: "repo skills", tool: "skill-map.md", run: async deps => {
-    const folders = await repoSkillIds(deps);
-    const map = await skillMapIds(deps);
+  { id: "skill_map", group: "repo skills", tool: "skill-map.md at HEAD", run: async deps => {
+    const tree = await deps.exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/skills-native"], { cwd: deps.repo, timeoutMs: 10_000 });
+    const shown = await deps.exec("git", ["show", `HEAD:${SKILL_MAP}`], { cwd: deps.repo, timeoutMs: 10_000 });
+    if (tree.code !== 0 || shown.code !== 0) return FAIL("agent", `git: ${failText(tree.code ? tree : shown)}`, "run git ls-tree and git show HEAD in auto-sns-agent and read the error");
+    const folders = headSkillIds(tree.stdout);
+    const map = mapIds(shown.stdout);
     const missing = setDiff(folders, map);
     const extra = setDiff(map, folders);
     return missing.length || extra.length ? FAIL("agent", [missing.length && `map lacks ${missing.join(", ")}`, extra.length && `map lists removed ${extra.join(", ")}`].filter(Boolean).join("; "),
       "run `node scripts/skills/generate-skill-map.mjs` and commit the map") : PASS(`${map.length} skills mapped`);
   } },
-  { id: "skill_paths", group: "repo skills", tool: "check-skill-paths.mjs", run: async deps => {
-    const result = await deps.exec("node", ["scripts/ci/check-skill-paths.mjs", "--json"], { cwd: deps.repo, timeoutMs: 20_000 });
+  { id: "skill_paths", group: "repo skills", tool: "check-skill-paths.mjs at HEAD", run: async deps => {
+    const result = await skillPathsAtHead(deps);
     let dead: unknown;
     try { dead = parseJson(result.stdout); } catch { return FAIL("agent", `check-skill-paths: ${failText(result)}`, "run `node scripts/ci/check-skill-paths.mjs` and read the error"); }
     return Array.isArray(dead) && !dead.length ? PASS("no dead paths")

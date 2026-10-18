@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every 5 min, and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
+ * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and sieun/dev (what the next
+ * promote ships) and counts the key names staging has and prod lacks. Each deploy decrypts its tier's blob (scripts/repo/env/vercel-blobs.mjs),
+ * so a staging-only key is a value prod code runs without, as BATCH_WORKER_SECRET is on main on 10-18 (board p9). Key names only, never values.
  * The note's dm_senders_prod metric is left out: the owner chose reader accounts that send (board p12) over buying aiograpi senders (p6 dropped).
  * A source it cannot read gives 999999 for its counts and -1 for its share, a source_errors count and a flagged slice, never a good-looking value.
  */
@@ -19,6 +23,8 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 const GRAFANA = "https://obs.virev.ai/api/ds/query";
 const PROM_UID = "estate_prometheus";
 const PORTAL_OPENAPI = "https://api.virev.ai/openapi.json";
+/** The refs whose api-portal env files are compared: prod's branch and the branch the next promote takes. */
+export const ENV_REFS = ["main", "sieun/dev"] as const;
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/ci-guarantees.mjs prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 /** The "could not measure" value of a share: below any target, so an unread uptime never looks on target the way 999999% would. */
@@ -43,6 +49,7 @@ export type Answers = Record<QueryName, Series[] | { error: string }>;
  * - probes_down_now <= 0 and probe_uptime_24h_pct >= 100: the Grafana rule api-portal-probe-down (auto-sns-agent apps/infra/grafana/alerts.yaml)
  *   treats any api_probe_up below 1 as a failing target. No measurement or vendor limit allows a lower share; the portal's Terms give no uptime figure.
  * - probe_age_min <= 15: the rule api-portal-probe-stale fires when api_probe_age_seconds is over 900 s (the cron probes every 300 s).
+ * - env_keys_staging_only <= 0: a key the staging blob has and the prod blob lacks is a prod setting that is missing, so none is allowed.
  * source_errors goes to the run detail: a query with no answer already fails the metric that needed it.
  * The note's portal_openapi_p90_ms <= 2000 is printed for the job but not scored, because no measurement or incident backs 2000 ms
  * (measured p90 on 2026-10-12 was 360 ms). The note's dm_senders_prod is left out, see the header.
@@ -68,8 +75,15 @@ export function framesToSeries(frames: unknown): Series[] {
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
 
-/** The duty's metrics from the query answers and the direct GET, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number): PrecheckOutput {
+/** dotenv key names of one env file, without dotenvx's own DOTENV_* keys. */
+export const envKeys = (text: string): Set<string> =>
+  new Set([...text.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map(match => match[1]!).filter(name => !name.startsWith("DOTENV_")));
+
+/** The api-portal env files at one ref, or the error text when GitHub gave none. */
+export type EnvFiles = Record<string, { prod: string; staging: string } | { error: string }>;
+
+/** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one query, or undefined after flagging why there are none. */
@@ -109,6 +123,22 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
     flagged.push({ at, kind: "direct_down", excerpt: `GET ${PORTAL_OPENAPI} from this Mac gave ${direct.error ?? `HTTP ${direct.status}`} after ${direct.ms} ms` });
     if (up?.find(series => series.labels.target === "portal_openapi")?.value === 1) flagged.push({ at, kind: "disagree", excerpt: "the Convex probe says portal_openapi is up while the direct GET failed" });
   }
+  const stagingOnly = new Set<string>();
+  let envRead = true;
+  for (const ref of ENV_REFS) {
+    const files = env[ref];
+    if (!files || "error" in files) {
+      envRead = false;
+      sourceErrors++;
+      flagged.push({ at, kind: "source_error", excerpt: `GitHub gave no apps/api-portal/.env or .env.staging at ${ref}: ${files && "error" in files ? files.error : "not read"}`.slice(0, 300) });
+      continue;
+    }
+    const prod = envKeys(files.prod);
+    const missing = [...envKeys(files.staging)].filter(name => !prod.has(name));
+    for (const name of missing) stagingOnly.add(name);
+    if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${ref} has ${missing.join(", ")}, which apps/api-portal/.env at ${ref} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
+  }
+  metrics.env_keys_staging_only = envRead ? stagingOnly.size : UNMEASURED;
   metrics.source_errors = sourceErrors;
   return { metrics, flagged };
 }
@@ -144,6 +174,12 @@ async function instant(auth: string, expr: string, now: number): Promise<Series[
   return framesToSeries(result.frames);
 }
 
+/** One file of sieu-n/auto-sns-agent at a ref, through the gh login. */
+const githubRaw = (path: string, ref: string) => new Promise<string>((resolve, reject) => {
+  execFile("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/sieu-n/auto-sns-agent/contents/${path}?ref=${encodeURIComponent(ref)}`],
+    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: PROBE_TIMEOUT_MS }, (error, stdout, stderr) => error ? reject(new Error(`${path}@${ref}: ${String(stderr).trim().slice(-160) || error.message}`)) : resolve(stdout));
+});
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("portal-uptime: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -162,7 +198,13 @@ async function main(): Promise<void> {
   const direct = await fetch(PORTAL_OPENAPI, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
     .then(async response => { await response.arrayBuffer(); return { status: response.status, ms: Date.now() - start }; },
       (error: unknown) => ({ status: 0, ms: Date.now() - start, error: errorText(error) }));
-  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now), null, 2) + "\n");
+  const env: EnvFiles = Object.fromEntries(await Promise.all(ENV_REFS.map(async ref => {
+    try {
+      const [prod, staging] = await Promise.all([".env", ".env.staging"].map(file => githubRaw(`apps/api-portal/${file}`, ref)));
+      return [ref, { prod: prod!, staging: staging! }] as const;
+    } catch (error) { return [ref, { error: errorText(error) }] as const; }
+  })));
+  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

@@ -40,25 +40,3 @@ export function relayNote(child: Pick<StoppedSubagent, "id" | "name">, text: str
     `Send it the message below with agent_message.send(message, receiver_role="child", receiver_name=${JSON.stringify(child.name)}), ` +
     "which reopens it in your tree. Skip it only if you stopped that subagent on purpose.\n\n" + text;
 }
-
-export interface RelayDeps {
-  fileOf: (session: string) => Promise<string | null>;
-  /** One send; "gone" when the daemon knows no such session. */
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-}
-
-/**
- * `deliver`, and for a subagent the daemon no longer holds, the same text through its parent: the parent gets `relayNote`, and a parent
- * that is gone too gets it through its own parent, up to the root, whose send reopens it from its file.
- */
-export async function deliverThroughParent(session: string, text: string, deps: RelayDeps, log?: (line: string) => void): Promise<"sent" | "gone"> {
-  const result = await deps.deliver(session, text);
-  if (result === "sent") return result;
-  const file = await deps.fileOf(session).catch(() => null);
-  const child = file ? await stoppedSubagent(file) : null;
-  if (!child) return result;
-  const parent = child.parents[0]!;
-  const relayed = await deliverThroughParent(parent, relayNote(child, text), deps, log);
-  log?.(`relay: ${session.slice(0, 8)} (${child.name}) is stopped; ${relayed === "sent" ? "sent" : "could not send"} it through its parent ${parent.slice(0, 8)}`);
-  return relayed;
-}

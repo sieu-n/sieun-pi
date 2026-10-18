@@ -79,9 +79,11 @@ const prompt = (m) => args.long ? `${m}. Count from 1 to 300 in words, comma sep
 async function timedSend(s, id, first) {
   const m = marker();
   const t0 = now();
-  const userShown = waitFor((f) => isOn(s)(f) && ((evType(f) === "message_start" && f.data.event.message?.role === "user" && JSON.stringify(f.data.event.message.content).includes(m)) || snapHas(f, m, "user")), 120000);
-  const firstToken = waitFor((f) => isOn(s)(f) && ((evType(f) === "message_update" && f.data.event.message?.role === "assistant") || snapHas(f, m, "assistant")), 120000);
-  const done = waitFor((f) => isOn(s)(f) && (evType(f) === "agent_end" || snapHas(f, m, "assistant")), 120000);
+  // Reply frames count only after this send's user message, so a reply to an earlier queued turn is not timed as this one.
+  let seenUser = false;
+  const userShown = waitFor((f) => (seenUser ||= isOn(s)(f) && ((evType(f) === "message_start" && f.data.event.message?.role === "user" && JSON.stringify(f.data.event.message.content).includes(m)) || snapHas(f, m, "user"))), 120000);
+  const firstToken = waitFor((f) => seenUser && isOn(s)(f) && ((["message_update", "message_end"].includes(evType(f)) && f.data.event.message?.role === "assistant") || snapHas(f, m, "assistant")), 120000);
+  const done = waitFor((f) => seenUser && isOn(s)(f) && (evType(f) === "agent_end" || snapHas(f, m, "assistant")), 120000);
   let accepted, idOut = id;
   if (first) { const r = await post("api/threads", first(m)); idOut = r.id; accepted = now(); }
   else { await post(`api/threads/${encodeURIComponent(id)}/prompt`, { requestId: randomUUID().replaceAll("-", ""), message: prompt(m), mode: "followUp", images: nextImages() }); accepted = now(); }

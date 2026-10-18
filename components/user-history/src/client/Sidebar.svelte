@@ -59,10 +59,31 @@
   const tick = $derived(Math.floor(clock.now / 5000) * 5000);
 
   function warm(id: string): void {
+    store.prefetch([id], true);
     if (warmTimer) clearTimeout(warmTimer);
     warmTimer = setTimeout(() => store.warm(id), 150);
   }
   function cancelWarm(): void { if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; } }
+
+  /**
+   * The rows on screen get their first frames ahead of a click, a second after the list first shows and again once a scroll stops. A click from
+   * Korea waited one 185 ms round trip plus about 370 ms for the 37 KB first frame at 100 KB/s before it painted (scratch serve, 10-18).
+   */
+  let prefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  function prefetchSoon(delay: number): void {
+    if (prefetchTimer) clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(() => {
+      prefetchTimer = null;
+      if (!list) return;
+      const box = list.getBoundingClientRect();
+      const ids = [...list.querySelectorAll<HTMLElement>("a[data-row]")].filter(link => { const rect = link.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom; })
+        .flatMap(link => link.dataset.row ?? []);
+      store.prefetch(ids);
+    }, delay);
+  }
+  let prefetchedOnce = false;
+  $effect(() => { if (!prefetchedOnce && ui.sidebarOrder.length) { prefetchedOnce = true; prefetchSoon(1000); } });
+  $effect(() => () => { if (prefetchTimer) clearTimeout(prefetchTimer); });
 
   function startRename(row: SessionRow): void { renaming = { id: row.id, name: row.name }; }
   async function commitRename(): Promise<void> {
@@ -90,6 +111,8 @@
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
   /** A chat's agents under its row, as the server lists them (its subagents, the roots it started, step owners, threads it messaged). */
   const jobsOf = (row: SessionRow) => treeJobs(row);
+  /** A chat's agent count: its list while the page holds it, else the count the sessions feed sends in its place. */
+  const agentCount = (row: SessionRow): number => row.agents?.length ?? row.agentsTotal ?? 0;
   /** How long since the job last did anything, on the minute. */
   const jobAge = (at: number): string => at ? elapsed(Math.max(0, minute * 60_000 - at)) : "";
   const treeOpen = (row: SessionRow): boolean => ui.chatTreeOpen[row.id] === true;
@@ -174,7 +197,6 @@
         <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => { renaming = null; }} />
       {:else}
         {@const pulse = pulseOf(row, tick)}
-        {@const jobs = row.chat ? jobsOf(row) : []}
         <a class="link" class:tree={row.chat} data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
           <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
             <span class="title" class:strong={needsResponse(row) || (row.chat && row.unread)}>{row.name}</span>
@@ -191,7 +213,7 @@
           <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
           {:else}
           {#if row.chat}
-          {@const running = (row.agents ?? []).filter(agent => agent.state === "working").length}
+          {@const running = row.agents ? row.agents.filter(agent => agent.state === "working").length : row.agentsRunning ?? 0}
           <span class="line sub" title={[money(row.cost), row.model ? modelShort(row.model) : ""].filter(Boolean).join(", ")}>
             {#if row.host}<span class="meta host" use:tooltip={`Runs on ${row.host}`}>{row.host}</span>{/if}
             {#if row.forYou}<span class="meta foryou">{row.forYou} for you</span>{/if}
@@ -223,7 +245,7 @@
           {/if}
         </a>
         {#if row.chat}
-          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} agents of {row.name}" use:tooltip={jobs.length ? `${jobs.length} ${jobs.length === 1 ? "agent" : "agents"}` : "No agents yet"}
+          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} agents of {row.name}" use:tooltip={agentCount(row) ? `${agentCount(row)} ${agentCount(row) === 1 ? "agent" : "agents"}` : "No agents yet"}
             onclick={() => ui.setChatTreeOpen(row.id, !treeOpen(row))}><span class="chev" class:open={treeOpen(row)}><Icon name="chevronDown" size={11} /></span></button>
         {/if}
         <div class="actions">
@@ -250,7 +272,7 @@
             </button>
           </li>
         {/each}
-        {#if !jobsOf(row).length}<li class="tree-none">No agents yet</li>{/if}
+        {#if !row.agents && agentCount(row)}<li class="tree-none">Loading agents</li>{:else if !jobsOf(row).length}<li class="tree-none">No agents yet</li>{/if}
       </ul>
     {/if}
 {/snippet}
@@ -285,7 +307,7 @@
         {/each}
       </div>
     {/if}
-    <div class="list" bind:this={list}>
+    <div class="list" bind:this={list} onscroll={() => prefetchSoon(250)}>
       {#if chats.length}
         <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if forYouTotal}<span class="foryou-total" use:tooltip={"Open For you todos across all chats"}>{forYouTotal} for you</span>{/if}{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
         {#each chats as row (row.id)}{@render threadRow(row)}{/each}

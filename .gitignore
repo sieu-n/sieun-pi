@@ -3,6 +3,7 @@
 # No slash: a node_modules symlink is ignored too (624a458 committed one that pointed at itself).
 node_modules
 dist/
+.client-bundle/
 __pycache__/
 *.pyc
 .DS_Store

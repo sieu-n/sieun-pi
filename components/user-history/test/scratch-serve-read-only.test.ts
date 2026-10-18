@@ -24,7 +24,7 @@ const cli = fileURLToPath(new URL("../src/chat-service-cli.mjs", import.meta.url
 /** The daemon commands a serve may send while it only reads: the session list, its roster stream, the heartbeat list, and a live thread's view. */
 const READS = new Set(["list", "roster_subscribe", "cron_list", "attach", "detach", "get_queue", "get_connection_state", "get_messages", "get_session_context", "get_state"]);
 /** The pi-pool commands that only read the pool. */
-const POOL_READS = new Set(["queue", "ls", "who", "config", "resolve"]);
+const POOL_READS = new Set(["snapshot", "queue", "ls", "who", "config", "resolve"]);
 const CAPABILITIES = ["abort_and_send_queued", "acp_mcp_servers", "agent_roster", "authoritative_child_roster", "client_owned_sessions", "delete_rlm_subagent",
   "heartbeat_catalog", "heartbeat_management", "model_catalog", "owned_prompt_cancellation", "owned_session_recovery_context", "prompt_admission_cancellation",
   "queue_message_mutation", "rlm_quiescence_barrier", "session_input_admission", "session_input_pause"];
@@ -76,9 +76,11 @@ test("a serve outside the live data dir sends no wake, prompt, reopen or pool wr
   await new Promise<void>(resolve => daemon.listen(socketPath, resolve));
   t.after(() => { for (const socket of sockets) socket.destroy(); daemon.close(); });
 
-  const pool = join(dir, "pi-pool");
+  const pool = join(dir, "pi-pool"), snapshot = join(dir, "snapshot.json");
+  const queue = { enabled: true, working: [], queued: [{ session: `duty:${chat}:checkin`, tree: chat, class: "low", since: 1, position: 1, total: 1, wait_s: 0 }], working_max: 4, tree_working_max: 2 };
+  writeFileSync(snapshot, JSON.stringify({ queue: { code: 0, out: JSON.stringify(queue) + "\n", err: "" }, config: { code: 0, out: "{}\n", err: "" }, threads: [] }) + "\n");
   writeFileSync(pool, `#!/bin/sh\necho "$@" >> ${JSON.stringify(poolLog)}\n` +
-    `case "$1" in queue) echo '{"enabled":true,"working":[],"queued":[{"session":"duty:${chat}:checkin","tree":"${chat}","class":"low","since":1,"position":1,"total":1,"wait_s":0}],"working_max":4,"tree_working_max":2}';; *) echo '{}';; esac\n`, { mode: 0o755 });
+    `case "$1" in snapshot) cat ${JSON.stringify(snapshot)};; queue) echo '${JSON.stringify(queue)}';; *) echo '{}';; esac\n`, { mode: 0o755 });
 
   // A copy of the live data dir: a due wake, a queued duty archive, and a chat with a priority label.
   const port = await freePort();

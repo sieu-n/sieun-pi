@@ -1,0 +1,2422 @@
+[
+ {
+  "id": "skill-architect",
+  "tool": "skill architect",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/architect/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-arena",
+  "tool": "skill arena",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/arena/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-figure-it-out",
+  "tool": "skill figure-it-out",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/figure-it-out/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-how",
+  "tool": "skill how",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/how/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-no-comments",
+  "tool": "skill no-comments",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/no-comments/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-poteto-agent",
+  "tool": "skill poteto-agent",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/poteto-agent/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-poteto-mode",
+  "tool": "skill poteto-mode",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/poteto-mode/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-boundary-discipline",
+  "tool": "skill principle-boundary-discipline",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-boundary-discipline/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-build-the-lever",
+  "tool": "skill principle-build-the-lever",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-build-the-lever/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-encode-lessons-in-structure",
+  "tool": "skill principle-encode-lessons-in-structure",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-encode-lessons-in-structure/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-experience-first",
+  "tool": "skill principle-experience-first",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-experience-first/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-fix-root-causes",
+  "tool": "skill principle-fix-root-causes",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-fix-root-causes/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-guard-the-context-window",
+  "tool": "skill principle-guard-the-context-window",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-guard-the-context-window/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-laziness-protocol",
+  "tool": "skill principle-laziness-protocol",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-laziness-protocol/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-make-operations-idempotent",
+  "tool": "skill principle-make-operations-idempotent",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-make-operations-idempotent/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-migrate-callers-then-delete-legacy-apis",
+  "tool": "skill principle-migrate-callers-then-delete-legacy-apis",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-model-the-domain",
+  "tool": "skill principle-model-the-domain",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-model-the-domain/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-prove-it-works",
+  "tool": "skill principle-prove-it-works",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-prove-it-works/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-redesign-from-first-principles",
+  "tool": "skill principle-redesign-from-first-principles",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-redesign-from-first-principles/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-separate-before-serializing-shared-state",
+  "tool": "skill principle-separate-before-serializing-shared-state",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-separate-before-serializing-shared-state/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-sequence-verifiable-units",
+  "tool": "skill principle-sequence-verifiable-units",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-sequence-verifiable-units/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-principle-type-system-discipline",
+  "tool": "skill principle-type-system-discipline",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/principle-type-system-discipline/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-resume-paused-sessions",
+  "tool": "skill resume-paused-sessions",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/resume-paused-sessions/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-setup-pstack",
+  "tool": "skill setup-pstack",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/setup-pstack/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-show-me-your-work",
+  "tool": "skill show-me-your-work",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/show-me-your-work/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-skills",
+  "tool": "skill skills",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/skills/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-spec-report",
+  "tool": "skill spec-report",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/spec-report/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-swarm",
+  "tool": "skill swarm",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/swarm/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-typescript-best-practices",
+  "tool": "skill typescript-best-practices",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/typescript-best-practices/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-unslop",
+  "tool": "skill unslop",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/unslop/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-why",
+  "tool": "skill why",
+  "probes": [
+   {
+    "path": "~/.prime/agent/skills/why/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "skill-websearch-python",
+  "tool": "skill websearch (python)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import websearch"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "skill-board-python",
+  "tool": "skill board (python)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import board; assert len(board.corrections()) > 0"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "skill-aside-browser-python",
+  "tool": "skill aside-browser (python)",
+  "mac": [
+   {
+    "const": "ok"
+   },
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import aside_browser"
+    ]
+   },
+   {
+    "run": [
+     "aside",
+     "account",
+     "status"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-edit-edit",
+  "tool": "builtin skill edit (edit)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import edit"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-goal-goal",
+  "tool": "builtin skill goal (goal)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import goal"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-attach-image-attach-image",
+  "tool": "builtin skill attach-image (attach_image)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import attach_image"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-agent-observe-agent-observe",
+  "tool": "builtin skill agent-observe (agent_observe)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import agent_observe"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-agent-message-agent-message",
+  "tool": "builtin skill agent-message (agent_message)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import agent_message"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-compact-compact",
+  "tool": "builtin skill compact (compact)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import compact"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-rlm-heartbeat-rlm-heartbeat",
+  "tool": "builtin skill rlm-heartbeat (rlm_heartbeat)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import rlm_heartbeat"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-refine-refine",
+  "tool": "builtin skill refine (refine)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import refine"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-mcp-mcp",
+  "tool": "builtin skill mcp (mcp)",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "~/.prime/agent/kernel-venv/bin/python",
+     "-c",
+     "import mcp"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-skill-creator",
+  "tool": "builtin skill skill-creator",
+  "probes": [
+   {
+    "glob": "~/.local/share/prime-agent/releases/*/skills/skill-creator/SKILL.md"
+   }
+  ]
+ },
+ {
+  "id": "builtin-skill-prime-intellect-prime-cli",
+  "tool": "builtin skill prime-intellect + prime CLI",
+  "probes": [
+   {
+    "path": "~/.prime/config.json"
+   },
+   {
+    "version": [
+     "prime",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "settings-json-skills-list",
+  "tool": "settings.json skills list",
+  "probes": [
+   {
+    "ls": "~/.prime/agent/skills"
+   }
+  ]
+ },
+ {
+  "id": "claude-code-user-skills-claude-skills-agents-skills",
+  "tool": "Claude Code user skills (~/.claude/skills, ~/.agents/skills)",
+  "probes": [
+   {
+    "ls": "~/.claude/skills"
+   },
+   {
+    "ls": "~/.agents/skills"
+   }
+  ]
+ },
+ {
+  "id": "mcp-aside",
+  "tool": "MCP aside",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "mcp": "aside"
+   }
+  ]
+ },
+ {
+  "id": "mcp-cua-driver",
+  "tool": "MCP cua-driver",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "mcp": "cua-driver"
+   }
+  ]
+ },
+ {
+  "id": "mcp-paper",
+  "tool": "MCP paper",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "mcp": "paper"
+   }
+  ]
+ },
+ {
+  "id": "kernel-venv-packages",
+  "tool": "kernel venv packages",
+  "probes": [
+   {
+    "distinfo": "~/.prime/agent/kernel-venv/lib/python3*/site-packages"
+   }
+  ]
+ },
+ {
+  "id": "kernel-venv-skill-pins-pth",
+  "tool": "kernel venv skill pins (.pth)",
+  "probes": [
+   {
+    "ls": "~/.prime/agent/kernel-venv/lib/python3*/site-packages",
+    "pattern": "\\.pth$"
+   }
+  ]
+ },
+ {
+  "id": "cli-node",
+  "tool": "cli node",
+  "probes": [
+   {
+    "version": [
+     "node",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-npm",
+  "tool": "cli npm",
+  "probes": [
+   {
+    "version": [
+     "npm",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-bun",
+  "tool": "cli bun",
+  "probes": [
+   {
+    "version": [
+     "bun",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-uv",
+  "tool": "cli uv",
+  "probes": [
+   {
+    "version": [
+     "uv",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-python3",
+  "tool": "cli python3",
+  "probes": [
+   {
+    "version": [
+     "python3",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-docker",
+  "tool": "cli docker",
+  "probes": [
+   {
+    "version": [
+     "docker",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-gcloud",
+  "tool": "cli gcloud",
+  "probes": [
+   {
+    "version": [
+     "gcloud",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-stripe",
+  "tool": "cli stripe",
+  "probes": [
+   {
+    "version": [
+     "stripe",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-terraform",
+  "tool": "cli terraform",
+  "probes": [
+   {
+    "version": [
+     "terraform",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-tailscale",
+  "tool": "cli tailscale",
+  "probes": [
+   {
+    "version": [
+     "tailscale",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-cloudflared",
+  "tool": "cli cloudflared",
+  "probes": [
+   {
+    "version": [
+     "cloudflared",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-rg",
+  "tool": "cli rg",
+  "probes": [
+   {
+    "version": [
+     "rg",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-gitleaks",
+  "tool": "cli gitleaks",
+  "probes": [
+   {
+    "version": [
+     "gitleaks",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-dotenvx",
+  "tool": "cli dotenvx",
+  "probes": [
+   {
+    "version": [
+     "dotenvx",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-mise",
+  "tool": "cli mise",
+  "probes": [
+   {
+    "version": [
+     "mise",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-go",
+  "tool": "cli go",
+  "probes": [
+   {
+    "version": [
+     "go",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-cua-driver",
+  "tool": "cli cua-driver",
+  "probes": [
+   {
+    "version": [
+     "cua-driver",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-tmux",
+  "tool": "cli tmux",
+  "probes": [
+   {
+    "version": [
+     "tmux",
+     "-V"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-pnpm",
+  "tool": "cli pnpm",
+  "probes": [
+   {
+    "version": [
+     "pnpm",
+     "--version"
+    ],
+    "cwd": "~/Documents/Github/auto-sns-agent"
+   }
+  ]
+ },
+ {
+  "id": "cli-jq-ffmpeg-psql-redis-cli",
+  "tool": "cli jq / ffmpeg / psql / redis-cli",
+  "probes": [
+   {
+    "version": [
+     "jq",
+     "--version"
+    ]
+   },
+   {
+    "version": [
+     "ffmpeg",
+     "-version"
+    ]
+   },
+   {
+    "version": [
+     "psql",
+     "--version"
+    ]
+   },
+   {
+    "version": [
+     "redis-cli",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-gh-git-credential-helper",
+  "tool": "cli gh + git credential helper",
+  "mac": [
+   {
+    "version": [
+     "gh",
+     "--version"
+    ]
+   },
+   {
+    "path": "~/.config/gh/hosts.yml"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "gh",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "gh",
+     "auth",
+     "status"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-git-config",
+  "tool": "cli git config",
+  "mac": [
+   {
+    "version": [
+     "git",
+     "--version"
+    ]
+   },
+   {
+    "gitconfig": "user.email"
+   },
+   {
+    "gitconfig": "credential.helper"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "git",
+     "--version"
+    ]
+   },
+   {
+    "gitconfig": "user.email"
+   },
+   {
+    "gitconfig": "credential.helper"
+   }
+  ]
+ },
+ {
+  "id": "cli-aside",
+  "tool": "cli aside",
+  "mac": [
+   {
+    "version": [
+     "aside",
+     "--version"
+    ]
+   },
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "aside",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "aside",
+     "account",
+     "status"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-claude",
+  "tool": "cli claude",
+  "mac": [
+   {
+    "version": [
+     "claude",
+     "--version"
+    ]
+   },
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "claude",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "claude",
+     "auth",
+     "status"
+    ],
+    "expect": "\"loggedIn\": true"
+   }
+  ]
+ },
+ {
+  "id": "cli-codex",
+  "tool": "cli codex",
+  "mac": [
+   {
+    "version": [
+     "codex",
+     "--version"
+    ]
+   },
+   {
+    "path": "~/.codex/auth.json"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "codex",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "codex",
+     "login",
+     "status"
+    ],
+    "expect": "Logged in"
+   }
+  ]
+ },
+ {
+  "id": "cli-prime-agent",
+  "tool": "cli prime-agent",
+  "probes": [
+   {
+    "version": [
+     "prime-agent",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-vercel",
+  "tool": "cli vercel",
+  "mac": [
+   {
+    "version": [
+     "vercel",
+     "--version"
+    ]
+   },
+   {
+    "path": "~/Library/Application Support/com.vercel.cli/auth.json"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "vercel",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "vercel",
+     "whoami"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-railway",
+  "tool": "cli railway",
+  "mac": [
+   {
+    "version": [
+     "railway",
+     "--version"
+    ]
+   },
+   {
+    "path": "~/.railway/config.json"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "railway",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "railway",
+     "whoami"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-supabase",
+  "tool": "cli supabase",
+  "mac": [
+   {
+    "version": [
+     "supabase",
+     "--version"
+    ]
+   },
+   {
+    "path": "~/.supabase/access-token"
+   }
+  ],
+  "box": [
+   {
+    "version": [
+     "supabase",
+     "--version"
+    ]
+   },
+   {
+    "run": [
+     "supabase",
+     "projects",
+     "list",
+     "-o",
+     "json"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-aws",
+  "tool": "cli aws",
+  "probes": [
+   {
+    "version": [
+     "aws",
+     "--version"
+    ]
+   }
+  ],
+  "note": "Both machines had an invalid AWS key and the owner dropped AWS (fix-aws.md), so only the version is compared."
+ },
+ {
+  "id": "cli-gcloud-auth",
+  "tool": "cli gcloud auth",
+  "mac": [
+   {
+    "ini": "~/.config/gcloud/configurations/config_default",
+    "key": "account"
+   }
+  ],
+  "box": [
+   {
+    "out": [
+     "gcloud",
+     "auth",
+     "list",
+     "--filter=status:ACTIVE",
+     "--format=value(account)"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-convex-repo",
+  "tool": "cli convex (repo)",
+  "mac": [
+   {
+    "path": "~/.convex/config.json"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "node_modules/.bin/convex",
+     "login",
+     "status"
+    ],
+    "cwd": "~/Documents/Github/auto-sns-agent",
+    "expect": "token found"
+   }
+  ]
+ },
+ {
+  "id": "cli-docker-registry-login",
+  "tool": "cli docker registry login",
+  "mac": [
+   {
+    "path": "~/.docker/run/docker.sock"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "docker",
+     "version",
+     "--format",
+     "{{.Server.Version}}"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-ci-run-status",
+  "tool": "cli ci-run-status",
+  "probes": [
+   {
+    "which": "ci-run-status"
+   }
+  ]
+ },
+ {
+  "id": "cli-sieun-pi",
+  "tool": "cli sieun-pi",
+  "probes": [
+   {
+    "which": "sieun-pi"
+   }
+  ]
+ },
+ {
+  "id": "cli-devstack",
+  "tool": "cli devstack",
+  "mac": [
+   {
+    "which": "devstack"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "devstack",
+     "status"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-shellcheck",
+  "tool": "cli shellcheck",
+  "probes": [
+   {
+    "version": [
+     "shellcheck",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-betterleaks",
+  "tool": "cli betterleaks",
+  "probes": [
+   {
+    "version": [
+     "betterleaks",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-sqlite3",
+  "tool": "cli sqlite3",
+  "probes": [
+   {
+    "version": [
+     "sqlite3",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-socat",
+  "tool": "cli socat",
+  "probes": [
+   {
+    "version": [
+     "socat",
+     "-V"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-actionlint",
+  "tool": "cli actionlint",
+  "probes": [
+   {
+    "version": [
+     "actionlint",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-kubectl",
+  "tool": "cli kubectl",
+  "probes": [
+   {
+    "version": [
+     "kubectl",
+     "version",
+     "--client"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-pscale-planetscale",
+  "tool": "cli pscale (planetscale)",
+  "probes": [
+   {
+    "version": [
+     "pscale",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-magick-vips-pdftotext",
+  "tool": "cli magick/vips/pdftotext",
+  "probes": [
+   {
+    "version": [
+     "magick",
+     "--version"
+    ]
+   },
+   {
+    "version": [
+     "vips",
+     "--version"
+    ]
+   },
+   {
+    "version": [
+     "pdftotext",
+     "-v"
+    ],
+    "intended": "Poppler is 26.07.0 on the box and 26.08.0 on the Mac, because no Linux build of 26.08 exists (result-table.md, known difference 1)."
+   }
+  ]
+ },
+ {
+  "id": "cli-ruby",
+  "tool": "cli ruby",
+  "probes": [
+   {
+    "version": [
+     "ruby",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-ngrok",
+  "tool": "cli ngrok",
+  "probes": [
+   {
+    "version": [
+     "ngrok",
+     "version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-restate-restate-server",
+  "tool": "cli restate / restate-server",
+  "probes": [
+   {
+    "version": [
+     "restate",
+     "--version"
+    ]
+   },
+   {
+    "version": [
+     "restate-server",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "cli-hermes-harness-keeper",
+  "tool": "cli hermes / harness-keeper",
+  "probes": [
+   {
+    "which": "hermes"
+   },
+   {
+    "which": "harness-keeper"
+   }
+  ],
+  "byDesign": "A single standing agent on the Mac; harness entries reach the box through prime-sync, so box agents do not call it (gap-table.md)."
+ },
+ {
+  "id": "cli-humanlayer-symphony-anarlog-drifty-chctl-clickhousectl-c",
+  "tool": "cli humanlayer / symphony / anarlog / drifty / chctl / clickhousectl / claude-chrome / buzz / codexbar / cliclick",
+  "probes": [
+   {
+    "which": "humanlayer"
+   },
+   {
+    "which": "symphony"
+   },
+   {
+    "which": "anarlog"
+   },
+   {
+    "which": "drifty"
+   },
+   {
+    "which": "chctl"
+   },
+   {
+    "which": "clickhousectl"
+   },
+   {
+    "which": "claude-chrome"
+   },
+   {
+    "which": "buzz"
+   },
+   {
+    "which": "codexbar"
+   },
+   {
+    "which": "cliclick"
+   }
+  ],
+  "byDesign": "Owner desktop tools or Mac-only apps; no agent skill or repo script calls them except drifty upload scripts, which are Mac-only (gap-table.md)."
+ },
+ {
+  "id": "cli-lazygit-code-server-google-chrome",
+  "tool": "cli lazygit / code-server / google-chrome",
+  "probes": [
+   {
+    "which": "lazygit"
+   },
+   {
+    "which": "code-server"
+   },
+   {
+    "which": "google-chrome"
+   }
+  ]
+ },
+ {
+  "id": "prime-agent-auth-json",
+  "tool": "~/.prime/agent/auth.json",
+  "probes": [
+   {
+    "keys": "~/.prime/agent/auth.json"
+   }
+  ]
+ },
+ {
+  "id": "prime-agent-models-json",
+  "tool": "~/.prime/agent/models.json",
+  "probes": [
+   {
+    "keys": "~/.prime/agent/models.json",
+    "at": "providers"
+   }
+  ]
+ },
+ {
+  "id": "prime-agent-pstack-models-json",
+  "tool": "~/.prime/agent/pstack-models.json",
+  "probes": [
+   {
+    "sha": "~/.prime/agent/pstack-models.json"
+   }
+  ]
+ },
+ {
+  "id": "prime-agent-agents-md",
+  "tool": "~/.prime/agent/AGENTS.md",
+  "probes": [
+   {
+    "sha": "~/.prime/agent/AGENTS.md"
+   }
+  ]
+ },
+ {
+  "id": "config-sieun-pi-hosts-json-relay-tokens",
+  "tool": "~/.config/sieun-pi (hosts.json, relay-tokens)",
+  "probes": [
+   {
+    "ls": "~/.config/sieun-pi",
+    "pattern": "^(?!.*\\.bak)[^.]"
+   },
+   {
+    "ls": "~/.config/sieun-pi/relay-tokens"
+   }
+  ]
+ },
+ {
+  "id": "config-prime-relay",
+  "tool": "~/.config/prime-relay",
+  "probes": [
+   {
+    "ls": "~/.config/prime-relay"
+   }
+  ]
+ },
+ {
+  "id": "config-pi-pool",
+  "tool": "~/.config/pi-pool",
+  "mac": [
+   {
+    "path": "~/.config/pi-pool/remote.json"
+   }
+  ],
+  "box": [
+   {
+    "unit": "pi-pool-serve.service"
+   }
+  ]
+ },
+ {
+  "id": "config-virev",
+  "tool": "~/.config/virev",
+  "probes": [
+   {
+    "ls": "~/.config/virev"
+   }
+  ]
+ },
+ {
+  "id": "config-ci-metal02-iwf9931-ovpn",
+  "tool": "~/.config/ci-metal02 (iwf9931.ovpn)",
+  "probes": [
+   {
+    "path": "~/.config/ci-metal02/iwf9931.ovpn"
+   }
+  ],
+  "byDesign": "The IPMI VPN profile is used from us-metal01, not from agents on the box (gap-table.md)."
+ },
+ {
+  "id": "auto-sns-agent-env-files",
+  "tool": "auto-sns-agent .env files",
+  "mac": [
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/apps/*/.env*",
+    "names": true
+   },
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/packages/*/.env*",
+    "names": true
+   },
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/.env*",
+    "names": true
+   }
+  ],
+  "box": [
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/apps/*/.env*",
+    "names": true
+   },
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/packages/*/.env*",
+    "names": true
+   },
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/.env*",
+    "names": true
+   }
+  ]
+ },
+ {
+  "id": "ssh-keys-and-hosts",
+  "tool": "ssh keys and hosts",
+  "probes": [
+   {
+    "ls": "~/.ssh",
+    "pattern": "^(id_[a-z0-9_]+|virev-aws|.*\\.pem)$"
+   }
+  ]
+ },
+ {
+  "id": "claude-json-claude-settings-json",
+  "tool": "~/.claude.json / ~/.claude/settings.json",
+  "probes": [
+   {
+    "path": "~/.claude.json"
+   },
+   {
+    "path": "~/.claude/settings.json"
+   }
+  ]
+ },
+ {
+  "id": "global-harness-entries",
+  "tool": "global harness entries",
+  "probes": [
+   {
+    "keys": "~/.prime/agent/harness/harness_state.json",
+    "at": "entries",
+    "depth": 2
+   }
+  ]
+ },
+ {
+  "id": "prime-sync",
+  "tool": "prime-sync",
+  "mac": [
+   {
+    "launchd": "com.sieun.prime-sync"
+   }
+  ],
+  "box": [
+   {
+    "unit": "prime-sync.timer"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-cua-permissions",
+  "tool": "tools-panel check cua_permissions",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "cua_permissions"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-cua-mcp",
+  "tool": "tools-panel check cua_mcp",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "cua_mcp"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-websearch-kernel",
+  "tool": "tools-panel check websearch_kernel",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "websearch_kernel"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-websearch-query",
+  "tool": "tools-panel check websearch_query",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "websearch_query",
+    "shared": "Google is down on the Virev search backend"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-prime-daemon",
+  "tool": "tools-panel check prime_daemon",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "prime_daemon"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-edit-cli",
+  "tool": "tools-panel check edit_cli",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "edit_cli"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-attach-image",
+  "tool": "tools-panel check attach_image",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "attach_image"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-skill-files",
+  "tool": "tools-panel check skill_files",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "skill_files"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-pool-claude",
+  "tool": "tools-panel check pool_claude",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "pool_claude"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-pool-codex",
+  "tool": "tools-panel check pool_codex",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "pool_codex"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-claude-peer",
+  "tool": "tools-panel check claude_peer",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "claude_peer"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-gh-auth",
+  "tool": "tools-panel check gh_auth",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "gh_auth"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-railway-auth",
+  "tool": "tools-panel check railway_auth",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "railway_auth"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-convex-auth",
+  "tool": "tools-panel check convex_auth",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "convex_auth"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-ssh-metal",
+  "tool": "tools-panel check ssh_metal",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "ssh_metal"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-dotenvx-keys",
+  "tool": "tools-panel check dotenvx_keys",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "dotenvx_keys"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-skill-reader",
+  "tool": "tools-panel check skill_reader",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "skill_reader"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-skill-ids",
+  "tool": "tools-panel check skill_ids",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "skill_ids"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-claude-skill-links",
+  "tool": "tools-panel check claude_skill_links",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "claude_skill_links"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-claude-links-committed",
+  "tool": "tools-panel check claude_links_committed",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "claude_links_committed"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-skill-map",
+  "tool": "tools-panel check skill_map",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "skill_map"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-skill-paths",
+  "tool": "tools-panel check skill_paths",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "skill_paths"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-cua-version",
+  "tool": "tools-panel check cua_version",
+  "probes": [
+   {
+    "version": [
+     "cua-driver",
+     "--version"
+    ]
+   }
+  ]
+ },
+ {
+  "id": "auto-sns-agent-checkout-tip",
+  "tool": "auto-sns-agent checkout tip",
+  "probes": [
+   {
+    "tip": true
+   }
+  ],
+  "note": "The box holds the shared tip since 10-18 11:23Z; the row is off when one of the Mac's last 100 sieun/dev commits matches no box commit by hash, by patch-id or by the bytes it wrote."
+ },
+ {
+  "id": "auto-sns-agent-node-modules",
+  "tool": "auto-sns-agent node_modules",
+  "probes": [
+   {
+    "path": "~/Documents/Github/auto-sns-agent/node_modules/.modules.yaml"
+   }
+  ]
+ },
+ {
+  "id": "auto-sns-agent-agent-scripts-commit-mjs-whose-mjs-ship-mjs-l",
+  "tool": "auto-sns-agent agent scripts (commit.mjs, whose.mjs, ship.mjs, land-object.mjs)",
+  "probes": [
+   {
+    "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/commit.mjs"
+   },
+   {
+    "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/whose.mjs"
+   },
+   {
+    "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/ship.mjs"
+   },
+   {
+    "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/land-object.mjs"
+   }
+  ]
+ },
+ {
+  "id": "auto-sns-agent-repo-skills-agents-claude",
+  "tool": "auto-sns-agent repo skills (.agents/.claude)",
+  "probes": [
+   {
+    "ls": "~/Documents/Github/auto-sns-agent/.claude/skills"
+   },
+   {
+    "ls": "~/Documents/Github/auto-sns-agent/.agents/skills"
+   }
+  ]
+ },
+ {
+  "id": "playwright-browsers",
+  "tool": "Playwright browsers",
+  "mac": [
+   {
+    "ls": "~/Library/Caches/ms-playwright"
+   }
+  ],
+  "box": [
+   {
+    "ls": "~/.cache/ms-playwright"
+   }
+  ]
+ },
+ {
+  "id": "ci-cache-cache-virev-ci-cache-poller",
+  "tool": "CI cache ~/.cache/virev (ci-cache poller)",
+  "mac": [
+   {
+    "launchd": "ai.virev.ci-cache-mirror"
+   },
+   {
+    "path": "~/.cache/virev/ci-runs.json"
+   }
+  ],
+  "box": [
+   {
+    "unit": "ci-cache.service"
+   },
+   {
+    "path": "~/.cache/virev/ci-runs.json"
+   }
+  ]
+ },
+ {
+  "id": "dev-stores-postgres-redis-clickhouse-opensearch-garage-kafka",
+  "tool": "dev stores (postgres, redis, clickhouse, opensearch, garage, kafka, convex 3210, crawler-v3)",
+  "probes": [
+   {
+    "port": 5432
+   },
+   {
+    "port": 6379
+   },
+   {
+    "port": 8123
+   },
+   {
+    "port": 9200
+   },
+   {
+    "port": 3900
+   },
+   {
+    "port": 9092
+   },
+   {
+    "port": 3210
+   },
+   {
+    "port": 8787
+   }
+  ]
+ },
+ {
+  "id": "dev-service-convex-dashboard-6791",
+  "tool": "dev service convex-dashboard (6791)",
+  "probes": [
+   {
+    "port": 6791
+   }
+  ]
+ },
+ {
+  "id": "dev-service-research-8788",
+  "tool": "dev service research (8788)",
+  "probes": [
+   {
+    "port": 8788
+   }
+  ]
+ },
+ {
+  "id": "dev-service-idc-convex-3320-3321",
+  "tool": "dev service idc-convex (3320/3321)",
+  "probes": [
+   {
+    "port": 3320
+   },
+   {
+    "port": 3321
+   }
+  ]
+ },
+ {
+  "id": "dev-service-supabase-local-54321-54322-54324",
+  "tool": "dev service supabase local (54321/54322/54324)",
+  "mac": [
+   {
+    "port": 54321
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "supabase",
+     "--version"
+    ]
+   }
+  ],
+  "note": "Local supabase starts on demand on the box (fix-devstack-box.md); the box side checks the CLI that starts it."
+ },
+ {
+  "id": "dev-service-tiktok-signer",
+  "tool": "dev service tiktok-signer",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "out": [
+     "docker",
+     "inspect",
+     "-f",
+     "{{.State.Health.Status}}",
+     "auto-sns-agent-tiktok-signer-1"
+    ],
+    "expect": "^healthy"
+   }
+  ],
+  "note": "The Mac reaches the signer on its store box, so only the box container is checked."
+ },
+ {
+  "id": "vite-dev-servers",
+  "tool": "vite dev servers",
+  "mac": [
+   {
+    "port": 5174
+   },
+   {
+    "port": 5180
+   },
+   {
+    "port": 5189
+   }
+  ],
+  "box": [
+   {
+    "port": 5174
+   },
+   {
+    "port": 5180
+   },
+   {
+    "port": 5179
+   }
+  ],
+  "note": "search, virev-demo and blog; the blog serves on 5189 on the Mac and 5179 on the box."
+ },
+ {
+  "id": "dev-server-supervision",
+  "tool": "dev server supervision",
+  "mac": [
+   {
+    "launchd": "ai.virev.mac-devserver-heal"
+   },
+   {
+    "launchd": "ai.virev.mac-pm2-keep"
+   }
+  ],
+  "box": [
+   {
+    "unit": "box-devserver-heal.service"
+   },
+   {
+    "unit": "box-pm2-keep.timer"
+   }
+  ]
+ },
+ {
+  "id": "chat-service",
+  "tool": "chat service",
+  "probes": [
+   {
+    "port": 5182
+   }
+  ]
+ },
+ {
+  "id": "prime-relay",
+  "tool": "prime-relay",
+  "mac": [
+   {
+    "launchd": "com.sieun.prime-relay"
+   }
+  ],
+  "box": [
+   {
+    "unit": "prime-relay.service"
+   }
+  ]
+ },
+ {
+  "id": "prime-agent-watchdog",
+  "tool": "prime-agent watchdog",
+  "mac": [
+   {
+    "launchd": "com.sieun.prime-agent-watchdog"
+   }
+  ],
+  "box": [
+   {
+    "unit": "prime-agent-watchdog.timer"
+   }
+  ]
+ },
+ {
+  "id": "metrics-alloy-node-exporter",
+  "tool": "metrics (alloy/node_exporter)",
+  "mac": [
+   {
+    "launchd": "ai.virev.devbox-node-exporter"
+   },
+   {
+    "launchd": "ai.virev.devbox-alloy"
+   }
+  ],
+  "box": [
+   {
+    "out": [
+     "docker",
+     "inspect",
+     "-f",
+     "{{.State.Running}}",
+     "obs-node-exporter-1"
+    ],
+    "expect": "^true"
+   },
+   {
+    "out": [
+     "docker",
+     "inspect",
+     "-f",
+     "{{.State.Running}}",
+     "obs-alloy-1"
+    ],
+    "expect": "^true"
+   }
+  ]
+ },
+ {
+  "id": "dns-heal-secrets-watch-login-health-memory-guard-stay-awake-",
+  "tool": "dns-heal / secrets-watch / login-health / memory-guard / stay-awake / devbox-reboot",
+  "mac": [
+   {
+    "launchd": "ai.virev.dns-heal"
+   },
+   {
+    "launchd": "ai.virev.mac-login-health"
+   },
+   {
+    "launchd": "ai.virev.mac-memory-guard"
+   },
+   {
+    "launchd": "ai.virev.mac-stay-awake"
+   },
+   {
+    "launchd": "ai.virev.devbox-reboot"
+   }
+  ],
+  "box": [],
+  "byDesign": "Mac self-care duties; agents do not call them (gap-table.md)."
+ },
+ {
+  "id": "ci-monitor-code-health-tiktok-index-gaps-convex-usage-watch",
+  "tool": "ci-monitor / code-health / tiktok-index-gaps / convex-usage-watch",
+  "mac": [
+   {
+    "launchd": "ai.virev.ci-monitor"
+   },
+   {
+    "launchd": "ai.virev.code-health"
+   },
+   {
+    "launchd": "ai.virev.tiktok-index-gaps"
+   },
+   {
+    "launchd": "ai.virev.convex-usage-watch"
+   }
+  ],
+  "box": [
+   {
+    "unit": "ci-monitor.timer"
+   },
+   {
+    "unit": "code-health.timer"
+   },
+   {
+    "unit": "tiktok-index-gaps.timer"
+   },
+   {
+    "unit": "convex-usage-watch.timer"
+   }
+  ]
+ },
+ {
+  "id": "crontab",
+  "tool": "crontab",
+  "mac": [
+   {
+    "const": "absent"
+   }
+  ],
+  "box": [
+   {
+    "out": [
+     "crontab",
+     "-l"
+    ]
+   }
+  ],
+  "note": "The Mac had no crontab on 10-18 (gap-table.md); a box crontab is an extra."
+ },
+ {
+  "id": "tools-panel-check-aside-tabs",
+  "tool": "tools-panel check aside_tabs",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "aside_tabs"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-aside-account",
+  "tool": "tools-panel check aside_account",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "aside_account"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-paper-mcp",
+  "tool": "tools-panel check paper_mcp",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "paper_mcp"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-model-policy",
+  "tool": "tools-panel check model_policy",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "model_policy"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-codex-cli",
+  "tool": "tools-panel check codex_cli",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "codex_cli"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-vercel-auth",
+  "tool": "tools-panel check vercel_auth",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "panel": "vercel_auth"
+   }
+  ]
+ },
+ {
+  "id": "tools-panel-check-claude-cli",
+  "tool": "tools-panel check claude_cli",
+  "mac": [
+   {
+    "const": "ok"
+   }
+  ],
+  "box": [
+   {
+    "run": [
+     "claude",
+     "auth",
+     "status"
+    ],
+    "expect": "\"loggedIn\": true"
+   }
+  ]
+ }
+]

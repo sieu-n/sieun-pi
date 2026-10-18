@@ -46,7 +46,14 @@ test("a release whose units differ installs them and moves the port to the socke
     "--user daemon-reload", "--user stop sieun-pi-chat.service", "--user enable --now sieun-pi-chat.socket", "--user start sieun-pi-chat.service"]);
   for (const name of ["sieun-pi-chat.service", "sieun-pi-chat.socket"]) assert.equal(readFileSync(join(unitDir, name), "utf8"), readFileSync(join(units, name), "utf8"));
   rmSync(calls);
-  const release2 = spawnSync(process.execPath, [script, `release-${sha.slice(0, 7)}`, "--repo", git], { env, encoding: "utf8" });
+  // A second release of the same commit is a no-op since 2793dfa3d, so the next release is a new commit on top.
+  assert.equal(spawnSync("git", ["-C", git, "commit", "-q", "--allow-empty", "-m", "next"], { env: gitEnv }).status, 0);
+  const next = spawnSync("git", ["-C", git, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const nextRelease = join(home, `release-${next.slice(0, 7)}`);
+  mkdirSync(join(nextRelease, "deploy/linux"), { recursive: true });
+  for (const name of ["sieun-pi-chat.service", "sieun-pi-chat.socket"]) writeFileSync(join(nextRelease, "deploy/linux", name), readFileSync(join(units, name)));
+  writeFileSync(join(nextRelease, "release.json"), JSON.stringify({ sha: next }));
+  const release2 = spawnSync(process.execPath, [script, `release-${next.slice(0, 7)}`, "--rollback", "--repo", git], { env, encoding: "utf8" });
   assert.equal(release2.status, 0, release2.stderr);
   assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["--user restart sieun-pi-chat.service"]);
 });

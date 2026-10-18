@@ -1,33 +1,33 @@
 {
-  "name": "Search visits grow",
-  "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow",
-  "goal": "Blog and tool visits on virev.ai climb toward the owner's 10,000 a day, led by Google clicks, and sign-ups whose first page was blog or tools climb toward his 300 a day (t9). Every miss has a live fix job pushing changes. google_clicks_d7 goes to 500 on 11-01, as program/brief.md says.",
+  "name": "Search traffic",
+  "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow\n\n(10-18) things are meant to be first written in plan -> achieved ->  cleared & written on duty for maintanence only -> and valiantly persued whenever not met. JUST DO IT",
+  "goal": "Pages that already get Google impressions keep them, every blog change on the local sieun/dev tip reaches GitHub sieun/dev within a day, no article carries copy brief.md bans, and the PostHog, Search Console, Clerk and git reads keep working. The visits, clicks and sign-up numbers are detail lines that feed plan goals p56 and p71, and they never make this duty miss.",
   "metrics": [
     {
-      "key": "goal_visits_d7",
-      "label": "Search traffic, 7-day average of blog and tool visits, no bots or staff (PostHog)",
-      "op": ">=",
-      "target": 10000,
-      "unit": " visits/day",
+      "key": "dropped_pages",
+      "label": "Pages that had 5+ Google impressions a day in the 14 days before the last 3 final days and fell under 20% of that in those 3 days, counting a new page from its first day (Search Console)",
+      "op": "<=",
+      "target": 0,
+      "unit": " pages",
       "headline": true
     },
     {
-      "key": "google_clicks_d7",
-      "label": "Google clicks a day, 7-day average, all pages (Search Console)",
-      "op": ">=",
-      "target": 20,
-      "unit": " clicks/day"
+      "key": "unshipped_blog_changes",
+      "label": "apps/blog commits on the local sieun/dev tip that are not on GitHub sieun/dev 24 h after their commit",
+      "op": "<=",
+      "target": 0,
+      "unit": " commits"
     },
     {
-      "key": "signups_goal_d28",
-      "label": "Sign-ups a day whose first page was blog or tools, 28 days (Clerk, PostHog)",
-      "op": ">=",
-      "target": 300,
-      "unit": " signups/day"
+      "key": "banned_copy",
+      "label": "apps/blog/content pages on sieun/dev with copy brief.md bans: a creator count other than 180M+, \"no credit card\" or free search",
+      "op": "<=",
+      "target": 0,
+      "unit": " pages"
     },
     {
       "key": "source_errors",
-      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk)",
+      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk, git)",
       "op": "<=",
       "target": 0
     }
@@ -41,6 +41,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Run `uv run --project scripts/seo seo-goal` and `seo gsc pull` to save the day. Each missed metric gets one live fix job with a board step under p56: goal_visits_d7 and google_clicks_d7 go to \"google clicks lift\" (p58), and signups_goal_d28 to \"blog signups lift\" (p59). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. Its brief names the metric, value and target, and asks for shipped changes. source_errors: fix the read this run, or start \"seo sources fix\". Never end a run with a missed metric and no live fix job. apps/search stays parked (c40), nothing goes outside (c37), and prod promotes need no ask (c74). Tell the owner the four numbers and what shipped.",
+  "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Run `uv run --project scripts/seo seo-goal` and `seo gsc pull` to save the day. First write the detail numbers into the plan with plan_update: goal_visits_d7 into the current value of goal p56's target, signups_goal_d28 into p71's, and google_clicks_d7 into the target of the p56 step that tracks Google clicks when one does. Then each missed metric gets one fix step under p56 with duty \"d1/<metric key>\" and a live job. dropped_pages finds why each listed page lost its impressions (index status, a redirect, a canonical, a ranking loss) and ships the fix. unshipped_blog_changes gets the listed commits onto GitHub sieun/dev and fixes what held them back. banned_copy removes the copy from each listed page and lands it. source_errors fixes the read this run, or goes to a \"seo sources fix\" step. A step whose job is live (agent_observe.list_agents) gets the new numbers and flagged lines by message; a step with no live job gets one with await rlm.create_session(brief, name=...), and the step's job is set to it. Never start a second copy. Its brief names the metric, value and target and the pages, articles or commits in the detail, and asks for shipped changes. Never end a run with a missed metric and no live fix job. apps/search stays parked (c40), nothing goes outside (c37), and prod promotes need no ask (c74). Tell the owner the four duty numbers, the three plan numbers and what shipped.",
   "boardGoal": "p56"
 }

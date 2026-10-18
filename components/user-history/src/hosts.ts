@@ -3,6 +3,7 @@ import { Agent, request as httpRequest } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { DELTA_HEADER, decodeLineDeltas } from "../../prime-relay/line-delta.ts";
 
 /**
  * The hosts registry, ~/.config/sieun-pi/hosts.json: every box sieun-pi drives, its relay and the services it holds.
@@ -109,19 +110,33 @@ export async function hostToken(host: Host, configDir = CONFIG_DIR): Promise<str
   return (await readFile(isAbsolute(path) ? path : join(configDir, path), "utf8")).trim();
 }
 
+/** A relay's watch answer: the box's usability reading, and its workers' footprints or why they are missing. */
+export type RelayWatch = { usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string };
+
+async function relayJson(host: Host, path: string, init: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<unknown> {
+  const response = await fetch(`http://${host.address}:${host.relayPort}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${await hostToken(host)}` },
+    signal: AbortSignal.timeout(35_000) });
+  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to ${path}`);
+  return await response.json() as unknown;
+}
+
 /**
- * Another box's watch numbers through its relay (POST /v1/watch): its usability reading and the footprints of `pids`, its Prime workers. The
- * relay runs the same footprint helper the watch runs here, which took under a second at 1,000 processes (src/worker-footprint.py), so the
- * read waits up to the helper's own 30 s limit plus the relay read's 5 s.
+ * Another box's watch numbers through its relay: its usability reading (GET /v1/usable, a file read on macOS) and the footprints of `pids`, its
+ * Prime workers (POST /v1/watch, which runs src/worker-footprint.py with a 30 s kill). The two reads run side by side, so a slow or failed helper
+ * leaves the reading: at load 440 on the Mac on 10-18 the helper passed its 30 s kill in each of 4 reads from 11:14Z, and the watch answered in
+ * 34 to 37 s, while /v1/health answered in 2 to 9 s. A relay from before /v1/usable answers 404 there, and its reading then comes from the watch.
  */
-export async function relayWatch(host: Host, pids: readonly number[]): Promise<{ usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints }> {
-  const response = await fetch(`http://${host.address}:${host.relayPort}/v1/watch`, { method: "POST", body: pids.join("\n") + "\n",
-    headers: { authorization: `Bearer ${await hostToken(host)}`, "content-type": "text/plain" }, signal: AbortSignal.timeout(35_000) });
-  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to /v1/watch`);
-  const body = await response.json() as unknown;
-  if (typeof body !== "object" || body === null || typeof (body as { footprints?: unknown }).footprints !== "object" || (body as { footprints: unknown }).footprints === null ||
-    typeof ((body as { footprints: { workers?: unknown } }).footprints.workers) !== "object") throw new Error(`relay ${host.name} sent no footprints`);
-  return body as { usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints };
+export async function relayWatch(host: Host, pids: readonly number[]): Promise<RelayWatch> {
+  const [reading, watch] = await Promise.allSettled([relayJson(host, "/v1/usable"),
+    relayJson(host, "/v1/watch", { method: "POST", body: pids.join("\n") + "\n", headers: { "content-type": "text/plain" } })]);
+  const answer = watch.status === "fulfilled" && isRecord(watch.value) ? watch.value : null;
+  const usable = reading.status === "fulfilled" ? reading.value : answer?.usable;
+  if (usable === undefined) throw watch.status === "rejected" ? watch.reason : new Error(`relay ${host.name} sent no reading`);
+  const footprints = answer?.footprints;
+  if (isRecord(footprints) && isRecord(footprints.workers)) return { usable, footprints: footprints as unknown as import("./mac-usable-watch.ts").Footprints };
+  const error = watch.status === "rejected" ? (watch.reason instanceof Error ? watch.reason.message : String(watch.reason))
+    : typeof answer?.footprintsError === "string" ? `relay ${host.name} footprints: ${answer.footprintsError}` : `relay ${host.name} sent no footprints`;
+  return { usable, footprints: null, error };
 }
 
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };
@@ -197,12 +212,14 @@ export async function listHostDir(host: Host, path: string): Promise<HostDirEntr
 /**
  * A byte stream to the host's daemon socket through its relay. It asks for attach snapshots whose chunks but the last carry no image data
  * (`slimSnapshots`), since this box reads a session's older messages from its copy of the file: frontend bro's snapshot went from 8.7 MB to 1.9 MB.
+ * It also asks for each message update as a delta against the one before it (`encodeLineDeltas`), so a reader must pass the stream through
+ * `decodeLineDeltas`, as HostBridge does.
  */
 export async function openDaemonTunnel(host: Host, timeoutMs = 10_000): Promise<Socket> {
   const token = await hostToken(host);
   return await new Promise((resolve, reject) => {
     const request = httpRequest({ host: host.address, port: host.relayPort, path: "/v1/daemon", timeout: timeoutMs,
-      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}`, [SLIM_HEADER]: "images" } });
+      headers: { connection: "Upgrade", upgrade: UPGRADE, authorization: `Bearer ${token}`, [SLIM_HEADER]: "images", [DELTA_HEADER]: "1" } });
     request.on("upgrade", (response, socket, head) => {
       socket.setTimeout(0);
       if (head.length) socket.unshift(head);
@@ -244,10 +261,17 @@ export class HostBridge {
         client.once("close", () => this.sockets.delete(client));
         client.pause();
         openDaemonTunnel(host).then(remote => {
-          client.pipe(remote).pipe(client);
+          const decoder = decodeLineDeltas();
+          client.pipe(remote);
+          remote.pipe(decoder).pipe(client);
+          decoder.on("error", error => {
+            this.options.log?.(`hosts: ${host.name}: ${error.message}`);
+            client.destroy();
+          });
           remote.on("error", () => client.destroy());
           client.on("error", () => remote.destroy());
-          remote.on("close", () => client.destroy());
+          // The client ends once the decoder has passed on every byte the relay sent; destroying it at once dropped the tail of a stream.
+          remote.on("close", () => { if (!decoder.writableEnded) decoder.end(); });
           client.on("close", () => remote.destroy());
         }, error => {
           this.options.log?.(`hosts: ${host.name}: ${error instanceof Error ? error.message : String(error)}`);

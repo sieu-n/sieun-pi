@@ -140,12 +140,14 @@ class LimitedSurvivesARestart(PoolFixture):
             {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
              "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]})
         until = time.time() + 3600
+        start = time.time()
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
         reply = json.loads(out)
-        self.assertEqual((reply["next"], reply["retry_at"]), (None, math.ceil(until)))
+        self.assertIsNone(reply["next"])
+        self.assertTrue(start <= reply["retry_at"] <= time.time() + base.DEFAULTS["depleted_backoff_max_sec"] + 1, reply)
         wait = self.state()["sessions"][self.SESSION]["wait"]["openai-codex"]
-        self.assertEqual((wait["account"], round(wait["slot_at"])), (self.C, round(until)))
+        self.assertEqual((wait["account"], math.ceil(wait["slot_at"]), wait["backoff"]), (self.C, reply["retry_at"], True))
 
     def test_a_session_with_no_vend_is_refused(self):
         code, out = self.cli("limited", "--provider", "anthropic", "--session", self.SESSION, "--until", str(time.time() + 60))
@@ -281,6 +283,41 @@ def harvest(login, org, email, org_name=None, tier="max 20x"):
                        "oauthAccount": {"accountUuid": login, "emailAddress": email, "organizationUuid": org,
                                         "organizationName": org_name or f"{email}'s Organization"}},
             "secret": {"accessToken": "at-" + org, "refreshToken": "rt-" + org, "expiresAt": 9e12}}
+
+
+class TokenToAPipe(PoolFixture):
+    """`pi-pool token`: an outside reader gets a named account's access token from the
+    CLI instead of importing the pool's credential_for."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.accounts, "secrets"))
+        creds = {"claudeAiOauth": {"accessToken": "sk-ant-oat-fixture", "refreshToken": "r", "expiresAt": (time.time() + 7200) * 1000}}
+        with open(os.path.join(self.accounts, "secrets", "pi-pool.anthropic." + A), "w") as f:
+            json.dump(creds, f)
+
+    def test_a_pipe_gets_the_access_token_and_nothing_else(self):
+        done = subprocess.run([PI_POOL, "token", "a@x"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual((done.returncode, done.stdout), (0, "sk-ant-oat-fixture"), done.stderr)
+
+    def test_a_terminal_gets_no_token(self):
+        import pty
+        reader, writer = pty.openpty()
+        done = subprocess.run([PI_POOL, "token", "a@x"], env=self.env, stdout=writer, stderr=subprocess.PIPE, text=True, timeout=30)
+        os.close(writer)
+        shown = b""
+        try:
+            while chunk := os.read(reader, 4096):
+                shown += chunk
+        except OSError:
+            pass
+        os.close(reader)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn(b"sk-ant-oat", shown)
+        self.assertIn("never a terminal", done.stderr)
+
+    def test_the_holder_never_serves_it_to_another_machine(self):
+        self.assertFalse(remote.valid_argv(["--cli", "token", "a@x"]))
 
 
 class InProcessStore(PoolFixture):

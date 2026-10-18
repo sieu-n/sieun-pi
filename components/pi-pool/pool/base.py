@@ -52,6 +52,13 @@ DEFAULTS = {
     # enter at slot pace. 2026-10-12 15:30: 25 vends landed on claude7 in 4 s.
     "admit_slot_sec": 120,
     "admit_per_unit": 1,
+    # R5: a tree that finds no account under its admit cap waits a uniform random
+    # 0 to this many seconds, a fresh draw each time, before it asks again. The
+    # owner asked for it on 2026-10-18 ("prevent that with super long random
+    # backoff on depleted", then "make it random 0-120m"): when accounts revived
+    # a few minutes apart, every waiting tree met the first one at once
+    # (2026-10-10 20:59:59 claude9: 27 trees in 10 s, a 429 44 s later).
+    "depleted_backoff_max_sec": 7200,
     # what one plan is worth in tier units, by the account's tier name or its
     # first word; anything else is 1. Measured 2026-10-12: a max 20x account took
     # about $7.5 of API-equivalent spend per 5h point, a max 5x or team seat $1.9.

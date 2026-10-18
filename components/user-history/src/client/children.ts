@@ -3,6 +3,9 @@ import type { ChildAgent } from "../shared/types.ts";
 
 export const isActiveChild = (child: ChildAgent): boolean => child.status === "running" || child.status === "queued";
 export const childName = (child: ChildAgent): string => child.sessionName ?? child.label.split("\n", 1)[0]!.slice(0, 80);
+/** What the subagent search matches: name, model, the whole label (`full`, once fetched, for a label the feed cut) and recap. */
+export const childSearchText = (child: ChildAgent, full?: string): string =>
+  (childName(child) + " " + (child.model ?? "") + " " + (full ?? child.label) + " " + (child.recap ?? "")).toLowerCase();
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 export function childActivity(child: ChildAgent): string {

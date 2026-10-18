@@ -89,7 +89,7 @@
       "designs": [
         "p98"
       ],
-      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix",
+      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix; a hand-run scripts.engage_jar_check exec in prod crawler-api (account 16, 10-18) checks a parked jar before a hand activation, which the same design replaces",
       "match": {
         "engage_event": {
           "kind": "status",
@@ -101,7 +101,8 @@
         "config_key_prefixes": [
           "pause.engage",
           "proxy_endpoints.gateway"
-        ]
+        ],
+        "box_exec_regex": "engage_jar_check"
       }
     },
     {
@@ -255,6 +256,47 @@
       "owner": "hand run lanes autoscale (p145): the crawler-worker supervisor sets the process count of instagram-census-writer, tiktok-shop-crawler, tiktok-shop-writer and meta-ads-writer from each lane's Kafka lag, held only by the live PG box-stop line, memory, idle cores and box IO (dfeb8a5808, probe ci/lane-autoscale-1), so /tmp/cw_extra_writer.py, /tmp/mw_extra_writer.py and /tmp/tts_extra_crawler.py and their /root/*-ops watchers go; lane owners Crawler ops (census writer speed), Meta Ads (01a10db4), TikTok Shop (01a10db8)",
       "match": {
         "box_exec_regex": "extra_writer|extra_crawler"
+      }
+    },
+    {
+      "id": "F18",
+      "title": "The supply hold switched off by hand while its proxy_unreachable holds stop prod reads",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p700",
+        "commit:e0d09f5a42"
+      ],
+      "owner": "Crawler VP p700 (supply hold zero d2): e0d09f5a42 makes a gateway that answers no CONNECT hold no read and retries a fresh exit, so supply_hold.enabled (audit 14032) stays on with no hand switch once it is on prod",
+      "match": {
+        "config_key_prefixes": [
+          "supply_hold."
+        ]
+      }
+    },
+    {
+      "id": "F19",
+      "title": "Media worker video places sized by hand against the media.fetch backlog",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p685"
+      ],
+      "owner": "Crawler VP p685 (instagram ingest backlog): Instagram reads reach OpenSearch, ClickHouse and B2 with no growing backlog; media.video_concurrency was stepped 16 to 48 and back by hand (audits 14044, 14047)",
+      "match": {
+        "config_key_prefixes": [
+          "media.video_concurrency"
+        ]
+      }
+    },
+    {
+      "id": "F20",
+      "title": "Meta Ads sweeps fed by a hand-run feeder because the scheduler claims advertiser walks first",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "commit:5d75bc7d93"
+      ],
+      "owner": "Meta Ads (01a10db4): 5d75bc7d93 makes the Meta Ads scheduler claim sweeps before advertiser walks (CLAIM_ORDER, land 39), so /tmp/mw_sweep_feeder.py in prod crawler-worker goes",
+      "match": {
+        "box_exec_regex": "mw_sweep_feeder"
       }
     }
   ],

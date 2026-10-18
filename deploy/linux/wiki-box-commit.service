@@ -1,9 +1,9 @@
 [Unit]
-Description=wiki-box-commit: push the wiki pages written on this wiki host to a refs/wiki-box object
+Description=wiki-box-commit: commit the wiki pages written on this wiki host onto its sieun/dev
 After=network-online.target
 
 [Service]
 Type=oneshot
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/Documents/Github/auto-sns-agent
-ExecStart=%h/.local/node/bin/node %h/.local/share/wiki-box-commit/wiki-box-commit.mjs
+ExecStart=%h/.local/node/bin/node scripts/repo/agent/wiki-box-commit.mjs

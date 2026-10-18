@@ -30,13 +30,14 @@ In an ipython cell it also covers `requests`, `httpx` and `urllib` writes to tho
 Slack stays allowed everywhere except the desktop app: both Slack workspaces are the owner's own, and the slack-green lab posts in the test workspace every day.
 Reading, drafting, a Gmail draft create, and GET requests stay allowed.
 A call passes when it carries `OWNER_OK=<chat id>/<todo id>`, as an env prefix in bash or a `# OWNER_OK=...` line in a cell.
-`components/user-history/src/owner-ok.ts` checks that token against `<data dir>/boards/<chat>.json`: the todo is checked off and the owner answered it with its first choice or another go.
+`components/user-history/src/owner-ok.ts` checks that token against the chat's live board: the todo is checked off and the owner answered it with its first choice or another go. On a box where hosts.json puts the chat role on another box, it reads the board from that chat service (`api/agent/board`), as the board skill does. It reads `<data dir>/boards/<chat>.json` on the chat host, or when the chat host cannot be reached, and the refusal and its stderr line name the board it read.
 The aside-browser skill holds the runtime check for webmail, ticket, contact and social pages in the browser, because it can read the tab's URL.
 
 `kernel-guard.ts` adds the run-time half of the send guard to the Python kernel.
 It prepends one line to each ipython cell, and that line runs `kernel-guard.py` once per kernel.
 From then on the kernel checks each send as it happens, so a command, URL or MCP tool built at run time is judged like a literal one.
 It checks every subprocess (`bash()`, `subprocess`, `os.system`) whose text names a send tool, with shell variables from the process environment filled in, through `send-check.ts`, which runs the tool_call guard's own rules.
+Each Python process keeps one `node send-check.ts --serve` for its checks, started on first use. It exits after 2 minutes with no check, and the process starts a fresh one when it is gone, after a fork, or when its environment or a global-rules `.ts` or `.json` file changes. A git argv list with no shell syntax in any word skips the check, because no send rule judges git.
 It checks HTTP writes from `httpx` and `httpx2`, and every HTTP/1 request written to a socket, against `send-targets.json` in Python.
 The socket check covers `requests`, `urllib`, `http.client`, raw `socket` and `ssl` writes, and asyncio TLS such as `aiohttp`, whose request it reads at `ssl.SSLObject.write` before encryption.
 It also checks connects to SMTP ports 25, 465, 587 and 2525 on any non-local host, and every `rlm.mcp.call_tool` call that may send.
@@ -56,7 +57,7 @@ A backfill on 10-13 added the sends that older transcripts show as `ran` lines, 
 On 2026-10-14 at 14:40Z a Crawler ops job started in `/Users/sieunpark` ran `bash("git push origin 7ac6657831...:refs/heads/sieun/dev")` after `os.chdir` into the checkout. The repo guard then loaded only for sessions started in the checkout, so nothing judged the push.
 The tool_call half registers the repo's `prime.mjs`, whose rules follow `cd`, `git -C` and, for a push, the remote's URL. So a push of `sieun/dev` or `main` from a session started anywhere, from another clone, or to the repo's URL is refused unless the release owner (`01a10810`) makes it.
 A kernel's `os.chdir` is invisible to that text, so `kernel-guard.py` also sends each git write a kernel starts to `send-check.ts` with the kernel's real cwd, when the cwd or text names `auto-sns-agent` or the command pushes. `send-check.ts` runs the repo's `onToolCall` with the session id read from `RLM_SESSION_DIR`, which is the session id only for a root session, so a subagent is never the release owner. A refusal raises `SendRefused` with the repo guard's text, and each verdict is a line in the repo's `.cache/repo-guard/log.jsonl`.
-If the repo's rules fail to load, the failure goes to the log and nothing is refused in their place. With no checkout at `~/Documents/Github/auto-sns-agent` (`GLOBAL_RULES_AUTO_SNS_AGENT` moves it) the module does nothing.
+The guard that runs is the one the checkout's HEAD holds, never the working tree, so a session's unsaved edit changes nothing for other sessions. Each call reads HEAD's commit id from `.git`, and when a new commit changes the guard tree, `auto-sns-agent.ts` copies that tree's blobs to `.cache/repo-guard/<tree id>/guards/` and imports the copy, so a live session follows a landed guard change at its next tool call with no restart. A kernel check also loads the guard from HEAD, and so does each `node send-check.ts` run. If the repo's rules fail to load, the failure goes to the log and nothing is refused in their place. A landed version that fails to load keeps the last one that loaded. With no checkout at `~/Documents/Github/auto-sns-agent` (`GLOBAL_RULES_AUTO_SNS_AGENT` moves it) the module does nothing.
 
 `cua-guard.ts` covers desktop sends through the `cua-driver` MCP server.
 It runs as a stdio proxy in front of `cua-driver mcp`, so `~/.prime/agent/settings.json` starts the server as `node <repo>/components/global-rules/cua-guard.ts <cua-driver> mcp`.
@@ -115,6 +116,6 @@ node --test tests/global-rules-*.test.mjs
 uv run --locked --no-sync python -B -m unittest discover -s tests -p "test_kernel_*.py"
 ```
 
-`global-rules-auto-sns-agent.test.mjs` and `test_kernel_repo_guard.py` copy the live checkout's `scripts/repo/agent/guards` into a fixture checkout, so they test the rules agents get, and they skip on a machine without that checkout. The kernel test runs a fake `git`, so nothing reaches GitHub.
+`global-rules-auto-sns-agent.test.mjs`, `global-rules-kernel-push-target.test.mjs` and `test_kernel_repo_guard.py` copy the live checkout's `scripts/repo/agent/guards` into a fixture checkout and commit them there, so they test the rules agents get, and they skip on a machine without that checkout. The kernel test runs a fake `git`, so nothing reaches GitHub.
 
 The Node suites feed command strings to the handlers and run none of them. `test_kernel_send_guard.py` runs `kernel-guard.py` in fresh Python processes against a fake `curl`, a local HTTP server, `httpx.MockTransport` and a fake `rlm.mcp`, so nothing leaves the machine. `global-rules-native.test.mjs` loads the extension through Prime's own resource loader, reloads it after an edit, and checks that a broken guard leaves `rlm-delete.ts` in place. Every suite sets `GLOBAL_RULES_LOG` to a temporary file, so tests never write the live log.

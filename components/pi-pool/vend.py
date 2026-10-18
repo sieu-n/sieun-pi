@@ -75,6 +75,9 @@ USAGE = """usage: pi-pool [command]
   unlimited <email|id> [--provider <p>]
                                   drop a limited record that was not this account's (a real
                                   limit comes back on the next 429)
+  token <email|id> [--provider <p>]
+                                  print the account's access token to a pipe (never a terminal),
+                                  refreshed under the index lock as the hook does; holder only
   refused <error text> [--provider <p>] [--session <id>]
                                   a request failed with an account-level refusal (terms not
                                   accepted, OAuth off); cool this session's account down for
@@ -114,6 +117,10 @@ USAGE = """usage: pi-pool [command]
   prod [set <json> | clear]      the trees and sessions on prod work, whose turns run at once:
                                   set takes {"trees": {id: why}, "sessions": {id: why}, "until": epoch sec}
   queue [--json]                 working and queued turns
+  snapshot --json [--thread <session> <model>]...
+                                  queue --json, config, and per thread who --json and ls --json for
+                                  each provider, as one JSON object of {code, out, err} parts, each
+                                  what the separate command prints; "" for no session or model
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
@@ -122,6 +129,9 @@ USAGE = """usage: pi-pool [command]
   file-login                     file the sign-in harvest on stdin in this machine's store
   serve                          answer another machine's token requests and account commands
                                   on the tailnet address in serve.json (pool/remote.py)
+  hookd [--release <link>]       answer the token hook and pool commands on <pool dir>/hook.sock
+                                  from one resident Python (pool/hookd.py); exits when <link>
+                                  stops naming the release it loaded
 """
 
 
@@ -139,10 +149,11 @@ def cli(args):
         "on": lambda rest: pool.session_cmds.cmd_toggle(rest, False),
         "rm": pool.session_cmds.cmd_rm, "login": pool.signin.cmd_login, "model": pool.session_cmds.cmd_model,
         "limited": pool.session_cmds.cmd_limited, "refused": pool.session_cmds.cmd_refused,
-        "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
+        "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue, "prod": pool.turns.cmd_prod,
-        "serve": pool.remote.cmd_serve, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
+        "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
+        "snapshot": lambda rest: pool.snapshot.cmd_snapshot(rest, cli),
     }
     if cmd in handlers:
         return handlers[cmd](rest)

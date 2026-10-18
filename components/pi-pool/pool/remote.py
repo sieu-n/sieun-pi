@@ -17,9 +17,9 @@ OFF_ENV = "PI_POOL_REMOTE"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
 # A sign-in runs where its browser is and files the login with the holder (file-login).
 LOCAL_COMMANDS = {"admit", "release", "owner-turn", "prod", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
-                  "login"}
-# This holds a terminal open; run it on the machine that holds the accounts.
-HOLDER_ONLY = {"watch"}
+                  "login", "hookd", "snapshot"}
+# watch holds a terminal open and token hands out a credential; run them on the machine that holds the accounts.
+HOLDER_ONLY = {"watch", "token"}
 # Prime gives the token hook 10 s (vend.log_when_killed); answer before that so the hook can log why.
 TOKEN_WAIT_SEC = 9
 
@@ -81,10 +81,49 @@ def run_remote(cfg, argv):
     return 0
 
 
-def holder_command(root, argv):
+def holder_script(root, argv):
+    """The Python script that runs argv here and its arguments. install.py makes bin/pi-pool-token the C client
+    of hookd and moves the Python hook to bin/pi-pool-token.py."""
     if argv and argv[0] == "--cli":
-        return ["/usr/bin/python3", "-B", os.path.join(root, "bin", "pi-pool"), *argv[1:]]
-    return ["/usr/bin/python3", "-B", os.path.join(root, "bin", "pi-pool-token"), *argv]
+        return os.path.join(root, "bin", "pi-pool"), argv[1:]
+    hook = os.path.join(root, "bin", "pi-pool-token")
+    return (hook + ".py" if os.path.exists(hook + ".py") else hook), argv
+
+
+def holder_command(root, argv):
+    script, args = holder_script(root, argv)
+    return ["/usr/bin/python3", "-B", script, *args]
+
+
+def via_hookd(script, args, env):
+    """(code, out, err) of the script run by `pi-pool hookd` in pipe mode (pool/hookd.py), or None when hookd
+    is not there or answers F, so the caller runs the script itself. A request hookd took and then dropped
+    is a failed run: it may have vended, so it never runs twice."""
+    import socket
+    fields = ["pipe", os.getpid(), os.getcwd(), script, len(args), *args, len(env), *(f"{k}={v}" for k, v in env.items())]
+    body = b"PPH1\0" + b"".join(os.fsencode(str(f)) + b"\0" for f in fields)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        try:
+            s.connect(os.path.join(base.POOL, "hook.sock"))
+            s.sendall(body)
+        except OSError:
+            return None
+        answer = b""
+        while not answer.endswith(b"\n"):
+            try:
+                chunk = s.recv(1 << 20)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                break
+            answer += chunk
+    if answer == b"F\n":
+        return None
+    try:
+        done = json.loads(answer[2:]) if answer.startswith(b"J ") else None
+        return int(done["code"]), done["out"], done["err"]
+    except (ValueError, KeyError, TypeError):
+        return 1, "", "pi-pool serve: hookd dropped the request\n"
 
 
 def holder_env(session):
@@ -122,9 +161,12 @@ def make_handler(cfg, root):
             if not valid_argv(argv) or not (session is None or isinstance(session, dict)) \
                     or not (given_in is None or isinstance(given_in, str)):
                 return self.send_error(400)
-            done = subprocess.run(holder_command(root, argv), env=holder_env(session), input=given_in or "",
-                                  capture_output=True, text=True)
-            body = json.dumps({"code": done.returncode, "out": done.stdout, "err": done.stderr}).encode()
+            env = holder_env(session)
+            done = None if given_in else via_hookd(*holder_script(root, argv), env)
+            if done is None:
+                run = subprocess.run(holder_command(root, argv), env=env, input=given_in or "", capture_output=True, text=True)
+                done = run.returncode, run.stdout, run.stderr
+            body = json.dumps({"code": done[0], "out": done[1], "err": done[2]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

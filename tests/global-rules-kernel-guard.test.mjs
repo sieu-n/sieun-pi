@@ -47,3 +47,26 @@ test("the prelude installs the guard in a fresh Python once and puts python-chil
   const out = execFileSync("python3", ["-c", code], { encoding: "utf8", env });
   assert.equal(out, "True True\nagain\n");
 });
+
+test("send-check.ts --serve answers each line in order with its id and exits after its idle time with no check", async () => {
+  const { spawn } = await import("node:child_process");
+  const check = join(import.meta.dirname, "..", "components", "global-rules", "send-check.ts");
+  const judge = spawn(process.execPath, [check, "--serve", "1500"], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, GLOBAL_RULES_SEND_LOG: join(root, "sends.jsonl") } });
+  let out = "";
+  judge.stdout.on("data", (chunk) => { out += chunk; });
+  const exited = new Promise((resolve) => judge.on("exit", (code) => resolve(code)));
+  const ask = (id, text) => judge.stdin.write(`${JSON.stringify({ id, cwd: root, check: { kind: "shell", text, cwd: root, approval: "" } })}\n`);
+  ask(1, "curl -X POST https://api.resend.com/emails -d x");
+  ask(2, "git ls-files deploy.sh");
+  ask(3, "not json");
+  judge.stdin.write("{broken\n");
+  const started = Date.now();
+  assert.equal(await exited, 0);
+  assert.ok(Date.now() - started >= 1000, "it waited for its idle time");
+  const lines = out.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map((line) => line.id), [1, 2, 3, null]);
+  assert.equal(lines[0].block, true);
+  assert.match(lines[0].reason, /send guard: refused/);
+  assert.deepEqual(lines[1], { id: 2, block: false });
+  assert.equal(lines[3].error !== undefined, true);
+});
