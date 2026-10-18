@@ -48,12 +48,19 @@ class HookNoToken(unittest.TestCase):
         self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "account_index_unreadable")
 
     def test_a_kill_while_vend_loads_is_logged(self):
+        self.kill_while_loading("import sys, time\nprint('loading', file=sys.stderr, flush=True)\ntime.sleep(30)\n")
+
+    def test_a_kill_inside_a_stderr_write_is_logged(self):
+        # The SIGTERM lands inside sys.stderr's write, where the handler's own stderr line used to raise "reentrant call".
+        self.kill_while_loading("import sys\nwhile True:\n    print('loading', file=sys.stderr, flush=True)\n")
+
+    def kill_while_loading(self, code):
         root = tempfile.mkdtemp(prefix="pi-pool-slow-load-")
         self.addCleanup(shutil.rmtree, root, True)
         os.makedirs(os.path.join(root, "bin"))
         shutil.copy(HOOK, os.path.join(root, "bin", "pi-pool-token"))
         with open(os.path.join(root, "vend.py"), "w") as f:
-            f.write("import sys, time\nprint('loading', file=sys.stderr, flush=True)\ntime.sleep(30)\n")
+            f.write(code)
         pool = os.path.join(root, "state")
         os.makedirs(pool)
         env = dict(os.environ, PI_POOL_DIR=pool, PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-slow")

@@ -129,6 +129,20 @@ def run_vend(source, vend):
         sys.exit(vend.main() or 0)
 
 
+def say(text):
+    """One line to fd 2, past sys.stderr. A SIGTERM that lands while vend.py is inside a sys.stderr write runs
+    killed_while_loading in the middle of that write, and a second sys.stderr.write there raised "reentrant call"
+    before the log line: the hook exited 1 with no record, or the error was swallowed and the hook slept on."""
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        os.write(2, text.encode())
+    except OSError:
+        pass
+
+
 def run_token(source, argv, vend=None):
     provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
     if provider not in ("anthropic", "openai-codex"):
@@ -142,11 +156,11 @@ def run_token(source, argv, vend=None):
         if logged:
             return
         logged = True
-        sys.stderr.write(f"pi-pool-token: no token ({reason})\n")
         pool_log("hook_no_token", invocation=invocation, provider=provider, reason=reason,
                  session=os.environ.get(SESSION_ENV), pid=os.getpid(),
                  awake_sec=round(time.monotonic() - started, 3),
                  wall_sec=round(time.time() - wall, 3), **fields)
+        say(f"pi-pool-token: no token ({reason})\n")
 
     def killed_while_loading(signum, frame):
         no_token("interrupted", signal=signum, phase="load")
