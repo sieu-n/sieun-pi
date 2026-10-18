@@ -17,7 +17,7 @@ function macHosts(copySaved: boolean) {
   let read!: () => void;
   const loading = new Promise<void>(resolve => { read = () => { listed = copySaved; resolve(); }; });
   const mac = { request: async () => ({ success: true }) };
-  const hosts = { selfName: "us-metal02", onChange: () => {}, start: () => {}, close: () => {}, allListed: () => listed, loaded: () => loading,
+  const hosts = { selfName: "us-metal02", onChange: () => {}, start: () => {}, close: () => {}, allListed: () => listed, allSynced: () => false, loaded: () => loading,
     hostOf: (id: string) => listed && id === MAC_SESSION ? { name: "mac" } : null, isActive: () => false, rows: () => [], hostRows: () => [],
     client: (name: string) => name === "mac" ? mac : null, ready: async (name: string) => name === "mac" ? mac : null };
   return { hosts: hosts as unknown as HostCatalogs, mac, read };

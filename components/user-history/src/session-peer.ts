@@ -143,6 +143,8 @@ export class SessionPeer {
   private agents = new Map<string, string>();
   /** True once the copy holds rows from a full list, this run's or the disk copy's. */
   listed = false;
+  /** True once a full list or roster list of this run answered, so a session the copy lacks is known to be off the roster. */
+  synced = false;
   /** When the copy's last full list answered, in epoch ms. */
   fullAt = 0;
   state: PeerState = "connecting";
@@ -259,6 +261,7 @@ export class SessionPeer {
     const live = await this.request(false);
     this.rows = rosterMerge(this.rows, live);
     this.agents = liveAgents(this.rows);
+    this.synced = true;
     this.counts.roster++;
     this.changed();
   }
@@ -271,6 +274,7 @@ export class SessionPeer {
       this.rows = new Map(rows.map(row => [rowKey(row), row]));
       this.agents = liveAgents(this.rows);
       this.listed = true;
+      this.synced = true;
       this.fullAt = Date.now();
       this.counts.full++;
       this.options.log(`copy ${this.name}: full list answered in ${((Date.now() - started) / 1000).toFixed(1)} s, ${rows.length} rows`);
