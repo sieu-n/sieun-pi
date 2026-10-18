@@ -6,7 +6,14 @@ import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import { chromium } from "playwright-core";
 
-const browser = await chromium.launch({ headless: true });
+// Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
+// the CI VMs add and drop cig-N taps all day, and on 2026-10-18 a plain launch hit 158 such failures and 2 of 4 loads of
+// a Vite page rendered "500 Internal Error", while the wrapper that hides netlink from Chromium hit 0 and 4 of 4 loaded.
+const browser = await chromium.launch(process.platform === "linux" && process.arch === "x64"
+  ? { headless: true, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname,
+      env: { ...process.env, BOX_CHROMIUM: chromium.executablePath() } }
+  : { headless: true });
+browser.on("disconnected", () => process.exit(1));
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const ids = new WeakMap();
 let next = 1;
