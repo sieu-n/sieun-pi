@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { promisify } from "node:util";
-import type { MachineView, MemoryPressure } from "./shared/types.ts";
+import { FEED_FRESH_MS, PRESSURE_FEED } from "./mac-usable-watch.ts";
+import type { MachineView, MemoryGroup, MemoryGroupId, MemoryPressure } from "./shared/types.ts";
 
 const run = promisify(execFile);
 type CpuSample = { busy: number; total: number };
@@ -49,14 +51,53 @@ export function parseSysctl(text: string): { pressure: MemoryPressure | null; sw
   return { pressure, swapUsedBytes: megabytes("used"), swapTotalBytes: megabytes("total") };
 }
 
+const GB = 1024 ** 3;
+const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", dev: "Dev servers and app code", docker: "Docker", browsers: "Browsers",
+  coding: "Coding tools", system: "System", other: "Other" };
+/**
+ * The group of a pressure feed owner key (scripts/sieun/mac/pressure-feed.c in auto-sns-agent), first match. The feed already folds helpers
+ * into their app and a process tree into its chat or pm2 app, so the key alone decides. Root processes such as WindowServer and kernel_task
+ * have no owner rows, so System gets the feed's wired memory instead.
+ */
+const GROUP_RULES: [MemoryGroupId, RegExp][] = [
+  ["agents", /^chat:|^other:(prime-agent|chat-service|pi-pool|pool\.py|rlm)/i],
+  ["docker", /^docker-vm$|^other:(OrbStack|Docker|com\.docker|colima|lima|vfkit|qemu)/i],
+  ["dev", /^pm2:|^other:(pm2-daemon|next-server|vite|convex|turbo)/i],
+  ["browsers", /^browser:|^other:com\.apple\.WebKit/i],
+  ["coding", /^other:(Visual Studio Code|Code|Cursor|Claude|Zed|Xcode|Ghostty|iTerm2?|Terminal|Warp|claude|codex)/i],
+  ["system", /^other:(com\.apple\.|Dock$|Finder$|Siri|System Settings$|Spotlight|ControlCenter|NotificationCenter|SystemUIServer|WindowManager|loginwindow)/i],
+];
+const groupOf = (owner: string): MemoryGroupId => GROUP_RULES.find(([, rule]) => rule.test(owner))?.[0] ?? "other";
+
+/** The feed's owners summed into groups, largest first; Docker shows even at 0 GB, an empty group else drops. Null for a stale or unknown feed. */
+export function memoryGroups(feed: unknown, now: number): MemoryGroup[] | null {
+  if (typeof feed !== "object" || feed === null) return null;
+  const { v, ts, owners, mem_gb: mem } = feed as Record<string, unknown>;
+  if (v !== 1 || typeof ts !== "string" || !(now - Date.parse(ts) < FEED_FRESH_MS) || !Array.isArray(owners)) return null;
+  const groups = new Map<MemoryGroupId, { label: string; bytes: number }[]>(Object.keys(GROUP_LABELS).map(id => [id as MemoryGroupId, []]));
+  for (const item of owners as unknown[]) {
+    if (typeof item !== "object" || item === null) continue;
+    const { owner, label, mem_gb: gb } = item as Record<string, unknown>;
+    if (typeof owner !== "string" || typeof gb !== "number") continue;
+    groups.get(groupOf(owner))!.push({ label: typeof label === "string" ? label : owner, bytes: Math.round(gb * GB) });
+  }
+  const wired = typeof mem === "object" && mem !== null ? (mem as Record<string, unknown>).wired : undefined;
+  if (typeof wired === "number") groups.get("system")!.push({ label: "Wired memory (macOS kernel)", bytes: Math.round(wired * GB) });
+  return [...groups].map(([id, items]) => {
+    const top = items.sort((a, b) => b.bytes - a.bytes);
+    return { id, label: GROUP_LABELS[id], bytes: top.reduce((sum, item) => sum + item.bytes, 0), top: top.slice(0, 3) };
+  }).filter(group => group.bytes > 0 || group.id === "docker").sort((a, b) => b.bytes - a.bytes);
+}
+
 async function memory(): Promise<MachineView["memory"]> {
   const totalBytes = totalmem();
-  if (process.platform !== "darwin") return { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null, pressure: null };
-  const [vm, sysctl] = await Promise.all([
+  if (process.platform !== "darwin") return { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null, pressure: null, groups: null };
+  const [vm, sysctl, feed] = await Promise.all([
     run("vm_stat").then(out => parseVmStat(out.stdout), () => null),
     run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level", "vm.swapusage"]).then(out => parseSysctl(out.stdout), () => ({ pressure: null, swapUsedBytes: null, swapTotalBytes: null })),
+    readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null),
   ]);
-  return { usedBytes: vm ?? totalBytes - freemem(), totalBytes, ...sysctl };
+  return { usedBytes: vm ?? totalBytes - freemem(), totalBytes, ...sysctl, groups: memoryGroups(feed, Date.now()) };
 }
 
 export async function machineView(): Promise<MachineView> {

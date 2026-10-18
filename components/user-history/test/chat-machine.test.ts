@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { machineView, parseSysctl, parseVmStat } from "../src/chat-machine.ts";
+import { machineView, memoryGroups, parseSysctl, parseVmStat } from "../src/chat-machine.ts";
 
 const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                     4972.
@@ -26,4 +26,37 @@ test("machineView reads this machine", async () => {
   assert.ok(view.cpu.cores > 0);
   assert.ok(view.cpu.percent >= 0 && view.cpu.percent <= 100);
   assert.ok(view.memory.usedBytes > 0 && view.memory.usedBytes <= view.memory.totalBytes);
+});
+
+const GB = 1024 ** 3;
+/** Owners from ~/.cache/virev/mac-pressure.json at 00:29Z on 10-18, cut to one or two a group. */
+const FEED = { v: 1, ts: "2026-10-18T00:29:19.055Z", mem_gb: { total: 32, free: 0.07, compressed: 8.35, wired: 3.64 }, owners: [
+  { owner: "browser:helium", label: "Helium", mem_gb: 8.32 }, { owner: "browser:aside", label: "Aside", mem_gb: 3.68 },
+  { owner: "other:com.apple.WebKit.WebContent", label: "com.apple.WebKit.WebContent", mem_gb: 0.36 },
+  { owner: "other:rest", label: "other names under 0.1 GiB each", mem_gb: 3.43 },
+  { owner: "chat:01a14c09-1f34-7475-8f3e-a6a193df5fc9", label: "blog visits lift 10-18", mem_gb: 2.65 },
+  { owner: "other:prime-agent-daemon", label: "prime-agent daemon", mem_gb: 0.63 }, { owner: "other:chat-service-cli.mjs", label: "chat-service-cli.mjs", mem_gb: 1.3 },
+  { owner: "pm2:virev-demo", label: "virev-demo", mem_gb: 2.34 }, { owner: "other:Visual Studio Code", label: "Visual Studio Code", mem_gb: 2.03 },
+  { owner: "other:Claude", label: "Claude", mem_gb: 1.06 }, { owner: "other:Dock", label: "Dock", mem_gb: 0.13 }, { owner: "other:Sunsama", label: "Sunsama", mem_gb: 0.83 },
+] };
+const NOW = Date.parse(FEED.ts) + 5_000;
+
+test("memoryGroups sums the feed's owners into the big groups, largest first, with each group's top 3", () => {
+  const groups = memoryGroups(FEED, NOW)!;
+  const gb = (id: string) => Math.round(groups.find(group => group.id === id)!.bytes / GB * 100) / 100;
+  assert.deepEqual(groups.map(group => group.id), ["browsers", "agents", "other", "system", "coding", "dev", "docker"]);
+  assert.equal(gb("browsers"), 12.36);
+  assert.equal(gb("agents"), 4.58);
+  assert.equal(gb("system"), 3.77);
+  assert.equal(gb("docker"), 0);
+  assert.deepEqual(groups[0]!.top.map(item => item.label), ["Helium", "Aside", "com.apple.WebKit.WebContent"]);
+  assert.deepEqual(groups.find(group => group.id === "system")!.top.map(item => item.label), ["Wired memory (macOS kernel)", "Dock"]);
+});
+
+test("memoryGroups puts Docker and OrbStack VMs in Docker, and gives null for a stale or unknown feed", () => {
+  const docker = memoryGroups({ ...FEED, owners: [{ owner: "docker-vm", label: "Docker VM", mem_gb: 4 }, { owner: "other:OrbStack Helper", label: "OrbStack Helper", mem_gb: 1 }] }, NOW)!;
+  assert.equal(docker.find(group => group.id === "docker")!.bytes, 5 * GB);
+  assert.equal(memoryGroups(FEED, NOW + 60_000), null);
+  assert.equal(memoryGroups({ v: 2 }, NOW), null);
+  assert.equal(memoryGroups(null, NOW), null);
 });

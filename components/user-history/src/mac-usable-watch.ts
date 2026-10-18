@@ -56,7 +56,7 @@ export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100
 export const HARNESS_GB = 16;
 /** ops guy's machine-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale, the feed contract pi-pool's pool/pressure.py and the devbox textfile script keep. */
 export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
-const FEED_FRESH_MS = 30_000;
+export const FEED_FRESH_MS = 30_000;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
 export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number;
   /** The feed's FEED_OWNERS largest owners by footprint, so a minute names the processes behind it; absent when the feed has none. */

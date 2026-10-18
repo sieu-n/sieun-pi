@@ -25,6 +25,7 @@
 
   const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
   const memPercent = $derived(view ? (100 * view.memory.usedBytes) / view.memory.totalBytes : 0);
+  const groupTotal = $derived(view?.memory.groups?.reduce((sum, group) => sum + group.bytes, 0) ?? 0);
   const PRESSURE_TEXT: Record<MemoryPressure, string> = {
     normal: "Memory pressure is normal.",
     warn: "Memory pressure is high, so macOS is compressing and swapping.",
@@ -71,6 +72,26 @@
         <span style:width="{memPercent}%"></span>
       </div>
     </div>
+    {#if view.memory.groups}
+      <div class="groups" aria-label="Memory by group">
+        {#each view.memory.groups as group (group.id)}
+          <details class="group">
+            <summary>
+              <span class="group-name">{group.label}</span>
+              <span class="group-size">{gb(group.bytes)} GB</span>
+              <span class="share" role="meter" aria-label="{group.label} share" aria-valuemin="0" aria-valuemax="100" aria-valuenow={groupTotal ? Math.round((100 * group.bytes) / groupTotal) : 0}>
+                <span style:width="{groupTotal ? (100 * group.bytes) / groupTotal : 0}%"></span>
+              </span>
+            </summary>
+            <ul>
+              {#each group.top as item (item.label)}<li><span class="item-name" title={item.label}>{item.label}</span><span class="group-size">{gb(item.bytes)} GB</span></li>
+              {:else}<li class="none">Nothing running</li>{/each}
+            </ul>
+          </details>
+        {/each}
+        <p class="note">The groups add up to {gb(groupTotal)} GB of memory footprint. Footprint also counts compressed and swapped pages, so it can pass the {gb(view.memory.usedBytes)} GB in RAM.</p>
+      </div>
+    {/if}
     {#if error}<p class="note problem">The last reading failed. {error}</p>{/if}
   {/if}
   <AgentQueueSettings />
@@ -94,4 +115,18 @@
   .bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.4s ease; }
   .bar.warn span { background: var(--warning); }
   .bar.critical span { background: var(--danger); }
+  .groups { display: flex; flex-direction: column; margin: -8px 0 0 136px; }
+  .group summary { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); align-items: center; gap: 16px; padding: 4px 0; cursor: pointer; list-style: none; }
+  .group summary::-webkit-details-marker { display: none; }
+  .group summary::before { content: "▸"; position: absolute; margin-left: -14px; color: var(--text-faint); font-size: 10px; }
+  .group[open] summary::before { content: "▾"; }
+  .group-name { font-weight: 500; }
+  .group-size { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+  .share { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+  .share span { display: block; height: 100%; border-radius: inherit; background: var(--text-muted); }
+  .group ul { margin: 0 0 6px; padding: 0; list-style: none; font-size: 12px; }
+  .group li { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); gap: 16px; padding: 2px 0 2px 12px; color: var(--text-muted); }
+  .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group li.none { display: block; color: var(--text-faint); }
+  .groups .note { margin-top: 6px; font-size: 12px; }
 </style>

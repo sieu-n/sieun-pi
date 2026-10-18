@@ -488,8 +488,14 @@ export interface MachineView {
   /** Busy share of all cores since the previous reading, 0 to 100. */
   cpu: { percent: number; cores: number; load: [number, number, number] };
   /** usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does on macOS. Swap and pressure are null off macOS. */
-  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null };
+  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null;
+    /** The pressure feed's owners summed into MEMORY_GROUPS by physical footprint, largest first; null when the feed is stale or unreadable. */
+    groups: MemoryGroup[] | null };
 }
+export const MEMORY_GROUPS = ["agents", "dev", "docker", "browsers", "coding", "system", "other"] as const;
+export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
+/** One memory group: its footprint and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers). */
+export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; top: { label: string; bytes: number }[] }
 
 /** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
 export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }
