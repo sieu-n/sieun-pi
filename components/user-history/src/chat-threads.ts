@@ -9,6 +9,7 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { isReopenable } from "./reopen-send.ts";
+import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
 import { userMessageAt } from "./send-once.ts";
 import type { OutboxEntry } from "./shared/outbox.ts";
@@ -436,8 +437,12 @@ export class ThreadHub {
     return activeSessionId !== undefined && await this.daemonBusy(activeSessionId);
   }
 
+  private async stateOf(activeSessionId: string): Promise<StateAnswer> {
+    return (await this.daemon(activeSessionId)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
+  }
+
   private async daemonBusy(activeSessionId: string): Promise<boolean> {
-    const state = await (await this.daemon(activeSessionId)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
+    const state = await this.stateOf(activeSessionId);
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
     return now.isSessionActive !== false || now.isStreaming === true || now.isCompacting === true || now.isBashRunning === true;
@@ -820,9 +825,11 @@ export class ThreadHub {
     let at = performance.now();
     const mark = (label: string) => { marks.push(`${label} ${Math.round(performance.now() - at)}ms`); at = performance.now(); };
     const filled = this.fill(thread, summary).catch(error => { process.stderr.write(`history ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
-    const log = () => process.stderr.write(`open ${id.slice(0, 8)} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
+    const host = this.catalog.hostOf(id);
+    const log = () => process.stderr.write(`open ${id.slice(0, 8)}${host ? ` on ${host}` : ""} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
     try {
-      const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
+      // A worker that is stopping or starting is waited out outside the attach queue, then attached once (src/worker-move.ts).
+      const live = activeSessionId === undefined ? null : await afterMove(() => this.attaches.run(id, background, async () => {
         mark("queue");
         const connection = await this.attach(activeSessionId).catch(error => {
           if (!isReopenable(error)) throw error;
@@ -833,7 +840,7 @@ export class ThreadHub {
         mark("attach");
         try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
         catch (error) { await connection.dispose().catch(() => {}); throw error; }
-      }, this.catalog.hostOf(id) ?? "");
+      }, host ?? ""), () => this.stateOf(activeSessionId), doing => mark(`worker ${doing}, waited`));
       await filled;
       if (this.threads.get(id) !== thread) {
         await live?.connection.dispose().catch(() => {});
@@ -1024,11 +1031,11 @@ export class ThreadHub {
     const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;
     const summary = await this.summary(id);
-    const attachLive = (activeSessionId: string) => this.attaches.run(id, !ask.foreground, async () => {
+    const attachLive = (activeSessionId: string) => afterMove(() => this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
       try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
-    }, this.catalog.hostOf(id) ?? "");
+    }, this.catalog.hostOf(id) ?? ""), () => this.stateOf(activeSessionId));
     // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
     const listed = liveSessionId(summary);
     const live = (listed === undefined ? null : await attachLive(listed).catch(error => { if (!isReopenable(error)) throw error; return null; }))
