@@ -21,6 +21,8 @@ type Starter = { kind: "owner"; id: string } | { kind: "job" | "agent" | "server
 /** One tell_owner call and what the judge read in it. */
 export interface Told {
   at: number; line: number; turn: number; starter: Starter; text: string; replyTo: string | null;
+  /** The id of the owner's latest message before this call. */
+  lastOwner: string;
   sentences: number; paragraphs: number; bullets: number; bold: boolean; label: boolean; packs: boolean; question: boolean;
   /** Why its reply_to breaks the rule, or "" when it holds. */
   quoteFault: string;
@@ -51,6 +53,7 @@ export function shape(text: string): Pick<Told, "sentences" | "paragraphs" | "bu
 export function toldCalls(file: string): Told[] {
   const calls: Told[] = [];
   const owners = new Set<string>();
+  let lastOwner = "";
   let starters: Starter[] = [];
   let inTurn = false;
   let turn = 0;
@@ -84,7 +87,7 @@ export function toldCalls(file: string): Told[] {
       const note = serverNote(text) ?? (/^\[(?:check-in|job|brief|correction check|reply check|python-state|harness-digest)/.test(text) ? "server" : undefined);
       const stamp = typeof message.timestamp === "number" ? message.timestamp : at;
       if (note && !text.startsWith("[board] Owner")) arrive({ kind: "server", from: note });
-      else { const id = ownerMessageId(stamp); owners.add(id); arrive({ kind: "owner", id }); }
+      else { const id = ownerMessageId(stamp); owners.add(id); lastOwner = id; arrive({ kind: "owner", id }); }
       return;
     }
     if (message.role !== "assistant" || !Array.isArray(message.content)) return;
@@ -102,17 +105,25 @@ export function toldCalls(file: string): Told[] {
         turnQuoted.add(replyTo);
         if (!turnOwners.has(replyTo)) laterQuoted.add(replyTo);
       }
-      calls.push({ at, line, turn, starter, text, replyTo, quoteFault, ...shape(text) });
+      calls.push({ at, line, turn, starter, text, replyTo, lastOwner, quoteFault, ...shape(text) });
     }
   });
   return calls;
 }
 
-/** A wake-up turn's messages are routine when none asks a question and none brings a result by quoting an owner message for the first time there. */
+/**
+ * A wake-up turn's messages are routine unless one asks a question, one quotes an older owner message for the first time to bring its result,
+ * or the turn is the first wake-up to message him since his latest message, which needs no quote because nothing came after it.
+ */
 export function routineWakes(calls: readonly Told[]): Told[][] {
   const byTurn = new Map<number, Told[]>();
   for (const call of calls) if (call.starter.kind !== "owner") byTurn.set(call.turn, [...byTurn.get(call.turn) ?? [], call]);
-  return [...byTurn.values()].filter(group => !group.some(call => call.question || (call.replyTo && !call.quoteFault)));
+  return [...byTurn.values()].filter(group => {
+    if (group.some(call => call.question || (call.replyTo && !call.quoteFault))) return false;
+    if (group.some(call => call.replyTo)) return true;
+    const first = group[0]!;
+    return calls.some(call => call.starter.kind !== "owner" && call.lastOwner === first.lastOwner && call.turn < first.turn);
+  });
 }
 
 const median = (values: readonly number[]): number => {
@@ -173,7 +184,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("e", faults.length ? false : calls.length ? true : null, faults.length ? faults.map(call => `${iso(call.at)} ${call.quoteFault}`).join("; ")
     : `${calls.filter(call => call.replyTo).length} calls set reply_to, each on the owner message it answers`);
   add("f", routine.length ? false : finished ? true : null, routine.length ? routine.map(group => `${iso(group[0]!.at)} after ${who(group[0]!.starter)}: "${quote(group[0]!.text, 160)}"`).join("; ")
-    : `${reports.length} job messages, and no wake-up turn sent a routine message`);
+    : `${reports.length} job messages; ${new Set(calls.filter(call => call.starter.kind !== "owner").map(call => call.turn)).size} wake-up turns messaged the owner, each with a result or a question`);
   add("g", typed.length === 0 && outside.length === 0, typed.length || outside.length ? [...typed.map(text => `typed: "${quote(text, 120)}"`), ...outside.map(entry => `message: "${quote(blockText(entry.content), 120)}"`)].join("; ")
     : "only the owner-style message, server notes and the chat's own jobs reached the chat");
   const verdict: Verdict = checks.find(check => check.id === "g")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
