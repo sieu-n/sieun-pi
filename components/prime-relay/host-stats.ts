@@ -235,7 +235,8 @@ export async function hostStats(): Promise<HostStats> {
  * between this call and the one before. It is the growth of /proc/schedstat's per-CPU run time plus run-queue wait time over the window,
  * divided by the window and the CPU count. That makes it a sample-window estimate: the kernel adds a task's run time when it leaves a CPU
  * and its wait when it gets one, so time still open at the window's end shows up in the next window, and it is no instant queue length.
- * 1.0 means one runnable task for each of those CPUs.
+ * 1.0 means one runnable task for each of those CPUs. The set is read on every call, so when a pin on the user slice is lifted the next
+ * reading averages over the wider set, and a Virev VM's vCPU time on a CPU the harness shares counts as load there like any other task.
  */
 export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; runnablePerCore: number; allowedCpus: number;
   /** Each side's CPU time over the same window, in cores (`cpuSides`); absent on readings before 10-18 06:5xZ and where the cgroups cannot be read. */
@@ -248,13 +249,14 @@ export const CPU_SIDES: readonly CpuSide[] = ["harness", "apps", "owner", "ci", 
  * The cgroups each side's CPU time is read from, under /sys/fs/cgroup, with {app} for user@<uid>.service/app.slice in this process's
  * user-<uid>.slice. The harness is that whole user slice (the Prime daemon and its workers, the chat service, pi-pool, the relay, agents'
  * ssh sessions and their transient units) less the units named here for another side, so a unit that ends inside the window still counts.
- * The CI VMs in virev.slice are left out: on us-metal02 their AllowedCPUs (0-8, 40-48 and the even CPUs 10-38 and 50-78) share none of the
- * harness's 32, so they add no runnable task there.
+ * Virev's CI VMs and production servers in virev.slice count only for the part of their CPUs the harness may also run on (`cpuSides`):
+ * on us-metal02 until 10-18 the user slice was pinned to 32 CPUs that virev-ci.slice's 32 and virev-prod.slice's 16 never touched, and
+ * once metal-management lifted that pin the harness shares all of them.
  */
 export const SIDE_CGROUPS: Readonly<Record<Exclude<CpuSide, "harness">, readonly string[]>> = {
-  apps: ["dev.slice", "{app}/auto-sns-dev-pm2.service", "{app}/box-devserver-heal.service"],
+  apps: ["dev.slice", "{app}/auto-sns-dev-pm2.service", "{app}/box-devserver-heal.service", "virev.slice/virev-prod.slice"],
   owner: ["{app}/code-server.service"],
-  ci: ["{app}/ci-cache.service", "{app}/ci-monitor.service"],
+  ci: ["{app}/ci-cache.service", "{app}/ci-monitor.service", "virev.slice/virev-ci.slice"],
   system: ["system.slice"],
 };
 /** usage_usec of a cgroup's cpu.stat; null when the line is absent. */
@@ -267,18 +269,30 @@ export function userSlice(cgroup: string): { slice: string; app: string } | null
   const match = /^0::\/(user\.slice\/user-(\d+)\.slice)(?:\/|$)/m.exec(cgroup);
   return match ? { slice: match[1]!, app: `${match[1]}/user@${match[2]}.service/app.slice` } : null;
 }
+/** Where a cgroup's CPU time may fall: the CPUs the harness may run on, and each side cgroup's cpuset.cpus.effective by path. */
+export type CpuShare = { harness: readonly number[]; cgroups: ReadonlyMap<string, readonly number[]> };
 /**
  * Each side's cores between two cgroup readings `ms` apart. A counter that went back (a unit restarted) counts its new value, a cgroup missing
- * from the later reading counts 0, and the harness is its slice less the other sides' units under it. Null without both slice readings.
+ * from the later reading counts 0, and the harness is its slice less the other sides' units under it. With `share`, a side cgroup outside the
+ * user slice counts the fraction of its time that falls on the harness's CPUs, taken as its CPUs the harness shares over all its CPUs, so a
+ * VM slice pinned beside the harness counts 0 and one spread over the same CPUs counts in full; a cgroup with no CPU set read counts in full.
+ * Null without both slice readings.
  */
-export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>, slice: { slice: string; app: string }, ms: number): CpuSides | null {
+export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>, slice: { slice: string; app: string }, ms: number,
+  share?: CpuShare): CpuSides | null {
   const from = before.get(slice.slice), to = after.get(slice.slice);
   if (from === undefined || to === undefined || !(ms > 0)) return null;
+  const harnessCpus = new Set(share?.harness);
+  const fraction = (path: string): number => {
+    const cpus = share?.cgroups.get(path);
+    if (!cpus?.length || path.startsWith(`${slice.slice}/`)) return 1;
+    return cpus.filter(cpu => harnessCpus.has(cpu)).length / cpus.length;
+  };
   const used = (path: string): number => {
     const end = after.get(path);
     if (end === undefined) return 0;
     const start = before.get(path) ?? 0;
-    return end >= start ? end - start : end;
+    return (end >= start ? end - start : end) * fraction(path);
   };
   const cores = (usec: number): number => Math.round(100 * Math.max(0, usec) / (ms * 1000)) / 100;
   const sides = { harness: 0, apps: 0, owner: 0, ci: 0, system: 0 } satisfies CpuSides;
@@ -303,6 +317,11 @@ function readCgroups(slice: { slice: string; app: string } | null): Map<string, 
   const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
   return new Map(paths.flatMap(path => { const usec = parseUsageUsec(readText(join(CGROUP_ROOT, path, "cpu.stat"))); return usec === null ? [] : [[path, usec] as const]; }));
 }
+/** cpuset.cpus.effective of every SIDE_CGROUPS cgroup outside the user slice, by path; a cgroup whose set cannot be read is left out. */
+function readCpusets(slice: { slice: string; app: string }): Map<string, number[]> {
+  const outside = Object.values(SIDE_CGROUPS).flat().filter(template => !template.startsWith("{app}"));
+  return new Map(outside.flatMap(path => { const cpus = parseCpuList(readText(join(CGROUP_ROOT, path, "cpuset.cpus.effective")).trim()); return cpus ? [[path, cpus] as const] : []; }));
+}
 /** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
 export function psiAvg10(text: string, kind: "some" | "full"): number | null {
   const value = new RegExp(`^${kind} avg10=([\\d.]+)`, "m").exec(text)?.[1];
@@ -319,6 +338,10 @@ export function parsePswpout(text: string): number | null {
  */
 export function parseCpusAllowed(status: string): number[] | null {
   const list = /^Cpus_allowed_list:[ \t]*(\S*)[ \t]*$/m.exec(status)?.[1];
+  return list ? parseCpuList(list) : null;
+}
+/** The CPUs of a cpu list such as a cgroup's cpuset.cpus.effective ("0-2,5"), sorted and each once; null on any malformed part, as parseCpusAllowed. */
+export function parseCpuList(list: string): number[] | null {
   if (!list) return null;
   const cpus = new Set<number>();
   for (const part of list.split(",")) {
@@ -406,7 +429,7 @@ export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null>
   const cores = parseCpusAllowed(status!);
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
   if (memSome === null || memFull === null || runnable === null || !cores) return null;
-  const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at) : null;
+  const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at, { harness: cores, cgroups: readCpusets(ownSlice) }) : null;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
     swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
     ...sides ? { cpuCores: sides } : {} };
