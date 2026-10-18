@@ -121,16 +121,24 @@ export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger): Health
 
 /**
  * Ledger classes still open (open or reopened); the open ones the last run already had (first seen before `since`, or with no date), which
- * open_mistakes counts; and classes with a recurrence in the last 7 days. A class the last run found gets one daily run to land its fix,
- * because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z).
+ * open_mistakes counts; classes with a recurrence in the last 7 days (`recurred`); and of those, the ones whose recurrence came after the
+ * class's current fix (`back`, or any recurrence when the class has no fixedAt). A class the last run found gets one daily run to land its fix,
+ * because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). On 10-18
+ * slop_in_replies_and_pages recurred at 05:39Z and 06:55Z and got a new fix at 07:01Z, and owner_mac_and_machines recurred at 05:20Z and got
+ * a new fix at 06:39Z, so counting every recurrence kept mistakes_back at 2 for 7 days whatever the new fixes did.
  */
-export function classStates(ledger: Ledger, now: number, since = now): { open: [string, LedgerClass][]; due: [string, LedgerClass][]; back: [string, LedgerClass][] } {
+export function classStates(ledger: Ledger, now: number, since = now): {
+  open: [string, LedgerClass][]; due: [string, LedgerClass][]; recurred: [string, LedgerClass][]; back: [string, LedgerClass][];
+} {
   const classes = Object.entries(ledger.classes ?? {});
   const open = classes.filter(([, row]) => row.status === "open" || row.status === "reopened");
+  const recent = (row: LedgerClass): string[] => (row.recurred ?? []).filter(at => now - ms(at) <= CHURN_MS && ms(at) <= now);
+  const recurred = classes.filter(([, row]) => recent(row).length > 0);
   return {
     open,
     due: open.filter(([, row]) => !(ms(row.firstSeen) >= since)),
-    back: classes.filter(([, row]) => (row.recurred ?? []).some(at => now - ms(at) <= CHURN_MS && ms(at) <= now)),
+    recurred,
+    back: recurred.filter(([, row]) => recent(row).some(at => !(ms(at) <= ms(row.fixedAt)))),
   };
 }
 
@@ -339,12 +347,15 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     since, curated_pages: health?.curatedPages ?? UNMEASURED, lint_failing_pages: lintFailing ?? UNMEASURED, lint_glide_plan: glide(LINT_GLIDE, now),
     repo_fact_memories: harness?.repoFacts ?? UNMEASURED, memory_glide_plan: glide(MEMORY_GLIDE, now), new_corrections: corrections?.length ?? UNMEASURED,
     new_memories: harness?.fresh.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
-    open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
+    open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED,
+    recurred_7d: classes?.recurred.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
   };
 
   const slices: FlaggedSlice[] = [...errors];
-  for (const [slug, row] of classes?.back ?? []) {
-    slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]} after fix ${row.fixCommit ?? "?"}; skill ${row.skill ?? "?"}`) });
+  const back = new Set((classes?.back ?? []).map(([slug]) => slug));
+  for (const [slug, row] of classes?.recurred ?? []) {
+    const when = back.has(slug) ? "after its current fix" : `before its current fix (${row.fixedAt})`;
+    slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${row.fixCommit ?? "?"}; skill ${row.skill ?? "?"}`) });
   }
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
   for (const row of dream.retouched) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.commits} (wiki-dream) commits in 7 days` });
