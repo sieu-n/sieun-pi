@@ -998,7 +998,7 @@ export class ThreadHub {
     const summary = await this.catalog.summary(id);
     if (!summary || this.archiving.has(id) || (this.archivedAt.get(id) ?? -Infinity) >= since) return false;
     this.reactivate(id, summary);
-    await this.catalog.refresh();
+    void this.catalog.refresh().catch(() => {});
     return true;
   }
 
