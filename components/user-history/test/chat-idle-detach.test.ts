@@ -57,7 +57,7 @@ function hub(options: { children?: (id: string) => ChildAgent[]; messages?: (id:
     }
     return { success: true, data: {} };
   } };
-  const catalog = { summary: async (id: string) => summary(id), refresh: async () => {}, connect: async () => {}, hostOf: () => null, client, childActivity: (id: string) => options.childTimes?.[id] ?? [],
+  const catalog = { summary: async (id: string) => summary(id), refresh: async () => {}, connect: async () => {}, hostOf: () => null, daemonPath: (row: { sessionFile?: string }) => row.sessionFile, client, childActivity: (id: string) => options.childTimes?.[id] ?? [],
     subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }), undefined,
     { minutes: () => options.minutes ?? 90, now: () => now, ...(options.held ? { held: options.held } : {}), ...(options.file ? { file: options.file } : {}) });

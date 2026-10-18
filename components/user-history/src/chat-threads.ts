@@ -769,7 +769,7 @@ export class ThreadHub {
       // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
       // A folder that is gone resumes in the daemon's folder rather than not at all. Another box's folder is that box's to check.
       const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
-      const sessionPath = summary.sessionFile;
+      const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
       const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
       if (!response.success) throw new ThreadError(502, response.error);
       const data = response.data;
@@ -953,7 +953,8 @@ export class ThreadHub {
 
   /** Skips a file deleted since the listing: SessionManager.open would recreate a stub at the old path. */
   private setSessionState(summary: SessionSummary, status: "archived" | "active"): void {
-    if (!summary.sessionFile || !existsSync(summary.sessionFile)) return;
+    // Another box's file is that box's to write; the catalog names it by a local copy, which a write here would only fork.
+    if (!summary.sessionFile || this.catalog.hostOf(summary.sessionId) || !existsSync(summary.sessionFile)) return;
     const manager = SessionManager.open(summary.sessionFile);
     const current = manager.getSessionState()?.status;
     if (status === "archived" ? current !== "archived" : current === "archived") manager.appendSessionState({ status });
@@ -965,7 +966,7 @@ export class ThreadHub {
     if (!thread.sessionFile) throw new ThreadError(409, "This thread has no session file to rename.");
     const owner = [...this.threads.values()].find(candidate => candidate.live) ?? null;
     if (!owner?.live) throw new ThreadError(409, "Open a live thread first, then rename saved threads.");
-    await owner.live.connection.renameSavedSession(thread.sessionFile, name);
+    await owner.live.connection.renameSavedSession(this.catalog.daemonPath({ sessionId: id, sessionFile: thread.sessionFile }) ?? thread.sessionFile, name);
     thread.broadcast({ type: "info", info: { ...thread.state.info, name } });
     void this.catalog.refresh().catch(() => {});
   }

@@ -15,6 +15,15 @@ const CATCH_UP_MS = 1000;
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
   "workerState", "workerPid"] as const;
 
+/** Where this box keeps its copy of another box's file. */
+export const mirrorPath = (host: Pick<Host, "name">, path: string): string => join(MIRROR_DIR, host.name, path);
+
+/** The other box's path of a file named by its copy's path (`mirrorPath`); a path outside the copies comes back as it is. */
+export function remotePath(host: Pick<Host, "name">, path: string): string {
+  const prefix = join(MIRROR_DIR, host.name);
+  return path.startsWith(prefix + "/") ? path.slice(prefix.length) : path;
+}
+
 /** The key the daemon merges its own `list all` by, so a live roster row replaces the saved row of the same session. */
 const rowKey = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
 
@@ -225,9 +234,25 @@ export class HostCatalogs {
     return remote.listing;
   }
 
-  /** Every other host's rows. A host whose daemon is not reachable keeps its last rows as saved ones, since none of its sessions can be reached. */
+  /**
+   * Every other host's rows, each session file named by its local copy's path (`mirrorPath`), so no reader on this box opens the other box's
+   * path here: on the Mac a /home path makes automountd look it up (1.5 lookups a second from 03:13Z on 10-18), and on the box a /Users path
+   * resolves through the /Users/sieunpark link into the box's own sessions. A host whose daemon is not reachable keeps its last rows as saved.
+   */
   rows(): SessionSummary[] {
-    return [...this.remotes.values()].flatMap(remote => remote.subscribed ? [...remote.rows.values()] : [...remote.rows.values()].map(saved));
+    return [...this.remotes.values()].flatMap(remote => [...remote.rows.values()].map(row => {
+      const local = row.sessionFile ? { ...row, sessionFile: mirrorPath(remote.host, row.sessionFile) } : row;
+      return remote.subscribed ? local : saved(local);
+    }));
+  }
+
+  /** True when the host's daemon lists the session with a worker now. */
+  isActive(id: string): boolean {
+    for (const remote of this.remotes.values()) {
+      if (!remote.subscribed) continue;
+      for (const row of remote.rows.values()) if ((row.sessionId === id || row.activeSessionId === id) && row.activeSessionId !== undefined) return true;
+    }
+    return false;
   }
 
   /** Session ids and active session ids of the other boxes' rows to their host; rebuilt after a change, since a frame asks once per row. */
@@ -271,7 +296,7 @@ export class HostCatalogs {
     const key = `${host.name}:${path}`;
     const pending = this.mirrors.get(key);
     if (pending) return pending;
-    const local = join(MIRROR_DIR, host.name, path);
+    const local = mirrorPath(host, path);
     const job = (async () => {
       await mkdir(dirname(local), { recursive: true, mode: 0o700 });
       const have = await stat(local).then(info => info.size, () => 0);

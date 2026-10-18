@@ -12,7 +12,7 @@ import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
-import type { HostCatalogs } from "./host-catalogs.ts";
+import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -624,10 +624,17 @@ export class Catalog {
     this.scanned = rows;
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
+    this.own = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : [row.sessionId]));
+    this.ownActive = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : []));
     for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
-      if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
+      // A session on two boxes (a copy, or one moving between them) shows as the box whose daemon runs it, this box's row when both or neither do.
+      if (!existing || (row.activeSessionId !== undefined && existing.activeSessionId === undefined)) next.set(row.sessionId, row);
+      else if (row.activeSessionId !== undefined && !this.duplicates.has(row.sessionId)) {
+        this.duplicates.add(row.sessionId);
+        process.stderr.write(`catalog: session ${row.sessionId.slice(0, 8)} runs on this box and on ${this.hosts?.hostOf(row.sessionId)?.name ?? "another box"}; the list shows this box's\n`);
+      }
     }
     this.summaries = next;
     this.childSummaries = children;
@@ -670,7 +677,7 @@ export class Catalog {
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
     // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
-    const listed = [...this.summaries.values()].filter(row => isListed(row, this.hosts?.hostOf(row.sessionId) ? () => true : undefined));
+    const listed = [...this.summaries.values()].filter(row => isListed(row, this.hostOf(row.sessionId) ? () => true : undefined));
     const selfName = this.hosts?.selfName ?? null;
     const rows = listed
       .map(row => {
@@ -683,7 +690,7 @@ export class Catalog {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
           ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
-        const host = this.hosts?.hostOf(row.sessionId)?.name ?? selfName;
+        const host = this.hostOf(row.sessionId) ?? selfName;
         const tagged = host ? { ...projected, host } : projected;
         // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
         return archivedByOwner?.has(row.sessionId) ? { ...tagged, archived: true } : tagged;
@@ -818,13 +825,33 @@ export class Catalog {
 
   forget(sessionId: string): void { this.summaries.delete(sessionId); }
 
-  /** The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. */
-  hostOf(id: string): string | null { return this.hosts?.hostOf(id)?.name ?? null; }
+  /** This box's session ids and active session ids from its last list, and the ones of them with a worker now. */
+  private own = new Set<string>();
+  private ownActive = new Set<string>();
+  /** Sessions already logged as running on two boxes. */
+  private readonly duplicates = new Set<string>();
+
+  /**
+   * The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. A session
+   * this box lists too is this box's unless only the other box has a worker for it.
+   */
+  hostOf(id: string): string | null {
+    const host = this.hosts?.hostOf(id);
+    if (!host) return null;
+    if (!this.own.has(id)) return host.name;
+    return !this.ownActive.has(id) && this.hosts!.isActive(id) ? host.name : null;
+  }
+
+  /** The path the session's own daemon knows its file by: another box's path for a row whose file the catalog names by its local copy. */
+  daemonPath(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): string | undefined {
+    const host = this.hostOf(summary.sessionId);
+    return host && summary.sessionFile ? remotePath({ name: host }, summary.sessionFile) : summary.sessionFile;
+  }
 
   /** The client of the daemon that runs `id`: another box's through its bridge socket, else this box's. It may still be connecting. */
   clientFor(id: string): DaemonClient {
-    const host = this.hosts?.hostOf(id);
-    return (host && this.hosts?.client(host.name)) || this.client;
+    const host = this.hostOf(id);
+    return (host && this.hosts?.client(host)) || this.client;
   }
 
   /** True for a hosts.json box other than this one, whose folders and files are on its own disk. */
@@ -849,8 +876,9 @@ export class Catalog {
   /** A path on this disk that holds the session's file: the file itself, or for another box's session a copy kept current through its relay. */
   async localFile(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): Promise<string | undefined> {
     if (!summary.sessionFile) return undefined;
-    const host = this.hosts?.hostOf(summary.sessionId);
-    return host ? await this.hosts!.mirror(host, summary.sessionFile) : summary.sessionFile;
+    const name = this.hostOf(summary.sessionId);
+    const host = name ? this.hosts?.registry.hosts.find(candidate => candidate.name === name) : undefined;
+    return host ? await this.hosts!.mirror(host, remotePath(host, summary.sessionFile)) : summary.sessionFile;
   }
 
   /**

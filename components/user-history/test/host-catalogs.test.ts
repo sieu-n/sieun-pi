@@ -66,6 +66,21 @@ test("the catalog lists every box, tags each row with its host, and routes a com
   assert.equal(c.isOtherHost("box"), true);
   assert.equal(c.isOtherHost("mac"), false);
   assert.equal(await c.localFile(row("here", true, { sessionFile: "/x/here.jsonl" })), "/x/here.jsonl");
+  const there = (await c.summary("saved-there"))!;
+  assert.equal(there.sessionFile, join(MIRROR_DIR, "box", "/nowhere/saved-there.jsonl"), "this box reads another box's file only as its local copy");
+  assert.equal(c.daemonPath(there), "/nowhere/saved-there.jsonl", "the box's own daemon gets its own path");
+});
+
+test("a session listed on two boxes shows as the box whose daemon runs it, and as this box when both or neither do", async t => {
+  const { hosts } = stubHosts([row("copied", true), row("both", true), row("neither", false)]);
+  const c = catalog(t, hosts);
+  t.mock.method(c.client, "request", async (command: { type: string }) => command.type === "list"
+    ? { success: true, data: { sessions: [row("copied", false), row("both", true), row("neither", false)] } } : { success: true, data: { jobs: [] } });
+  await c.refresh();
+  const hostOf = new Map((await c.rows()).map(candidate => [candidate.id, candidate.host]));
+  assert.deepEqual([hostOf.get("copied"), hostOf.get("both")], ["box", "mac"]);
+  assert.equal(c.hostOf("neither"), null, "a session saved on both boxes is this box's");
+  assert.equal(c.clientFor("both"), c.client);
 });
 
 test("a box whose daemon stopped answering keeps its rows as saved ones until it answers again", async t => {

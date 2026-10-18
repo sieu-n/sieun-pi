@@ -28,7 +28,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 5));
 /** A hub whose attaches answer at once, with each thread's live snapshot built from `messages`. */
 function hub(messages: (id: string) => ThreadMessage[]) {
   let fire: (event: { daemon: string }) => void = () => {};
-  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }), hostOf: () => null,
+  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }), hostOf: () => null, daemonPath: (row: { sessionFile?: string }) => row.sessionFile,
     subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const connection = { subscribe: () => () => {}, dispose: async () => {}, setSteeringMode: async () => {} };

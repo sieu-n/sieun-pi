@@ -246,7 +246,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const agentMessage = {
     deliver: (session: string, text: string): Promise<"sent" | "gone"> => sendOnce.deliver(session, text),
     startRoot: async (root: string): Promise<void> => {
-      const sessionPath = (await catalog.summary(root))?.sessionFile;
+      const summary = await catalog.summary(root);
+      const sessionPath = summary && catalog.daemonPath(summary);
       if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);
       const response = await (await catalog.daemonFor(root)).request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
       if (!response.success) throw new Error(response.error);
