@@ -155,17 +155,21 @@ export class InterruptedRuns {
   /**
    * The server's own pass over the jobs of its chats (`Chats`, once per job sweep): each interrupted run `isJob` keeps gets "continue" itself
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
-   * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
+   * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. A hung job asleep in Prime's provider retry after an
+   * interruption error (`retry_error`) holds no queue place, so `unstick` aborts it and it gets its continue too: after the 10-18 account outage
+   * ssh tailnet only, admin access land and p3-jobs sat that way 113 to 144 min after a 429, with the accounts back. Null when no job of a chat
+   * is interrupted.
    */
   resumeJobs(isJob: (run: JobOf) => boolean, reopen: (sessionId: string) => Promise<void>,
     owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>,
-    cut: ReadonlySet<string> = new Set()): Promise<InterruptedReport | null> {
+    cut: ReadonlySet<string> = new Set(), unstick?: (sessionId: string) => Promise<void>): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
       const listed = new Set([...owners, ...cut]);
       const named = listed.size ? ["--owners", [...listed].join(",")] : [];
       const planned = await this.run(["--dry-run", "--direct", ...named]);
       const jobs = planned.paused
-        .filter(run => run.session_id !== undefined && run.reason !== "hung" && (isJob(run) || cut.has(run.session_id)));
+        .filter(run => run.session_id !== undefined && (run.reason !== "hung" || (unstick !== undefined && run.retry_error !== undefined)) &&
+          (isJob(run) || cut.has(run.session_id)));
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       const unresolved = (planned.unresolved ?? []).filter(isJob);
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...(unresolved.length ? { unresolved } : {}) };
@@ -177,17 +181,26 @@ export class InterruptedRuns {
         }
       };
       await reopenAll(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []));
+      const unstuck: string[] = [];
+      for (const run of jobs) {
+        if (run.reason !== "hung" || !unstick) continue;
+        try { await unstick(run.session_id!); unstuck.push(run.session_id!); }
+        catch (error) { process.stderr.write(`resume: could not abort ${run.id}: ${error instanceof Error ? error.message : String(error)}\n`); }
+      }
+      // The abort lands in the session file a moment after the call returns.
+      if (unstuck.length) await new Promise(resolve => setTimeout(resolve, 2000));
+      const stuck = unstuck.length ? ["--unstuck", unstuck.join(",")] : [];
       // The send pass skips the other boxes when every job is on this one: the Mac's lists took 30 to 60 s of a 50 to 110 s pass on 10-18,
       // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
       const box = jobs.some(run => run.host) ? [] : ["--this-box"];
-      const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box]);
+      const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box, ...stuck]);
       // A job the daemon archived when it went down answers "Unknown active session" to every send, its parent's agent_message included
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
       const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
       if (!lost.length) return { ...withIncomplete(sent, planned), ...(unresolved.length ? { unresolved } : {}) };
       await reopenAll(lost);
-      const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box]);
+      const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box, ...stuck]);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
       return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again),
         ...(unresolved.length ? { unresolved } : {}) };

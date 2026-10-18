@@ -17,6 +17,8 @@ export interface InterruptedRun {
   head_session_id?: string;
   /** The box the run is on, when it is not this one. */
   host?: string;
+  /** A hung run whose last entry is an assistant reply that failed on an interruption error: Prime sleeps in its provider retry. */
+  retry_error?: string;
   error: string;
   errored_at: string;
   head: string;

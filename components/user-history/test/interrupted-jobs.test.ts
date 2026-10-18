@@ -40,6 +40,21 @@ test("resumeJobs messages each interrupted job itself, reopens a dead worker's h
   assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", "j-alert,j-curl,j-dead", "--this-box"]]);
 });
 
+test("resumeJobs aborts a hung job asleep in its provider retry and continues it, and leaves other hung runs alone", async () => {
+  // 10-18: after the account outage, ssh tailnet only (01a14e17) showed working 146 min after its 08:20:32Z 429, with the accounts back.
+  const asleep = { ...job("j-429", "hung", "chat1"), retry_error: "429 This request would exceed your account's rate limit. Please try again later." };
+  const planned: InterruptedReport = { paused: [asleep, job("j-tool", "hung", "chat1"), job("j-cut", "cut_off", "chat1")], heads: [], checked_at: "now" };
+  const calls: string[][] = [];
+  const runs = new InterruptedRuns(async args => { calls.push([...args]); return planned; });
+  const aborted: string[] = [];
+  await runs.resumeJobs(() => true, async () => {}, new Set(), undefined, new Set(), async id => { aborted.push(id); });
+  assert.deepEqual(aborted, ["j-429"]);
+  assert.deepEqual(calls[1], ["--direct", "--only", "j-429,j-cut", "--this-box", "--unstuck", "j-429"]);
+  calls.length = 0;
+  await runs.resumeJobs(() => true, async () => {});
+  assert.deepEqual(calls[1], ["--direct", "--only", "j-cut", "--this-box"]);
+});
+
 test("the send pass reads the other boxes only when a job is on one of them", async () => {
   // 10-18: the 06:56Z send pass named 11 jobs on us-metal02, spent the Mac's 30 to 60 s lists on top, and died on the 90 s limit.
   const onMac = { ...job("j-mac", "cut_off", "chat1"), host: "mac" };

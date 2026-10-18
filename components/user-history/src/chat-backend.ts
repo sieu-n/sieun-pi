@@ -200,7 +200,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       wakeNote: (session, text) => addWakeNote(join(dataDir, "wakes"), session, text),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
-        await cutJobs(dataDir, [...await chats.ids()])),
+        await cutJobs(dataDir, [...await chats.ids()]), async id => {
+          await threads.abort(id);
+          // A native abort holds the session's input until the next human prompt; reopen it so the continue gets through (as Resume does).
+          await threads.resumeQueue(id).catch(() => {});
+        }),
       held: now => readHeldTurns(dataDir, now),
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
       settings, claude: claudeReader(), queue: queued,

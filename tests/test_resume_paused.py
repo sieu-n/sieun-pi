@@ -854,6 +854,14 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(sent, [(full, "continue")])
         self.assertIsInstance(resume_paused.BOX, resume_paused.LocalBox)
 
+    def test_retry_wait_names_the_error_a_hung_run_sleeps_on(self):
+        # ssh tailnet only, 10-18: its last entry is the 08:20:32Z 429, and it showed working for 146 min after it.
+        rate = {"type": "message", "timestamp": "2026-10-18T08:20:32Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
+                "errorMessage": "429 This request would exceed your account's rate limit. Please try again later."}}
+        call = {"type": "message", "timestamp": "2026-10-18T08:20:22Z", "message": {"role": "toolResult", "content": []}}
+        self.assertIn("rate limit", resume_paused.retry_wait([call, rate])["retry_error"])
+        self.assertEqual(resume_paused.retry_wait([rate, call]), {})
+
     def test_a_prime_update_notice_that_ends_the_file_counts_as_a_restart_archive(self):
         # run-6's job, 10-18: its last turn failed on the token hook at 06:45:54Z, Prime's update stopped it with this notice at 06:46:02Z,
         # and the daemon logged its restart window from 06:46:44Z, so the window alone did not cover the stop.

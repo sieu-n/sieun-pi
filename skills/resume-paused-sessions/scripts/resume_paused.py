@@ -897,6 +897,18 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
         isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or [])
 
 
+def retry_wait(entries):
+    """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
+    provider retry, not waiting for a pi-pool slot, so an abort loses no queue place. After the account outage of 10-18 ssh tailnet only,
+    admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
+    last = entries[-1] if entries else {}
+    msg = last.get("message") or {}
+    if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
+            and INTERRUPTION_ERROR.search(str(msg.get("errorMessage") or "")):
+        return {"retry_error": str(msg.get("errorMessage"))}
+    return {}
+
+
 def hung_since(session, now, entries=None):
     # `entries`: a call that gives the session's tail entries, when the caller holds them.
     """Minutes a session has shown as working with no activity and nothing legitimately long running, else None.
@@ -1181,7 +1193,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
-                           "head_session_id": head_session(head, s)})
+                           "head_session_id": head_session(head, s), **retry_wait(entries_of(sid))})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
