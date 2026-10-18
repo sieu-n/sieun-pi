@@ -276,7 +276,7 @@ export const isCiOrTest = (script: string): boolean =>
   /\/(?:gates|tests?|__tests__|ci)\/[^/]+$|\/(?:ci|tests?)[-_][^/]*$|\.(?:test|spec)\.\w+$|_tests?\.\w+$/.test(script);
 export const isSessionProcess = (command: string): boolean => {
   const script = scriptOf(command);
-  return /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/bin\/)?(?:ba|z)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
+  return /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/usr)?(?:\/bin\/)?(?:ba|z|da)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
 };
 
 export interface HandData {
