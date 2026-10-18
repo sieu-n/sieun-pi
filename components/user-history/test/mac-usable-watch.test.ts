@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { type Footprints, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, startMacUsableWatch, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { type Footprints, parseFeed, readFootprints, readPressureFeed, readWatch, sample, startMacUsableWatch, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { PRESSURE_FEED } from "../../prime-relay/host-stats.ts";
 import { harnessSide, memoryShares } from "../scripts/duties/whole-system.ts";
 
 // The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The watch records a line a minute with ops

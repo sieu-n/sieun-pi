@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { machineView, memoryGroups, parseSysctl, parseVmStat } from "../src/chat-machine.ts";
+import { cgroupGroups, cgroupLabel, machineView, memoryGroups, parseMeminfo, parsePsi, parseSysctl, parseVmStat } from "../../prime-relay/host-stats.ts";
 
 const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                     4972.
@@ -59,4 +59,40 @@ test("memoryGroups puts Docker and OrbStack VMs in Docker, and gives null for a 
   assert.equal(memoryGroups(FEED, NOW + 60_000), null);
   assert.equal(memoryGroups({ v: 2 }, NOW), null);
   assert.equal(memoryGroups(null, NOW), null);
+});
+
+test("meminfo gives used as MemTotal minus MemAvailable, and swap in use", () => {
+  const text = "MemTotal:       259246796 kB\nMemFree:        1000 kB\nMemAvailable:   228306324 kB\nSwapTotal:       16777212 kB\nSwapFree:        16777212 kB\n";
+  assert.deepEqual(parseMeminfo(text), { usedBytes: (259246796 - 228306324) * 1024, totalBytes: 259246796 * 1024, swapUsedBytes: 0, swapTotalBytes: 16777212 * 1024 });
+  assert.equal(parseMeminfo("nothing"), null);
+});
+
+test("memory PSI reads warn at some avg10 7 and critical at full avg10 70", () => {
+  assert.equal(parsePsi("some avg10=0.00 avg60=0.00 avg300=0.00 total=1272\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1208\n"), "normal");
+  assert.equal(parsePsi("some avg10=7.10 avg60=0 avg300=0 total=1\nfull avg10=2.00 avg60=0 avg300=0 total=1\n"), "warn");
+  assert.equal(parsePsi("some avg10=90.00 avg60=0 avg300=0 total=1\nfull avg10=71.00 avg60=0 avg300=0 total=1\n"), "critical");
+  assert.equal(parsePsi(""), null);
+});
+
+/** Leaf cgroups of us-metal02 at 02:22Z on 10-18, cut to a few a group. */
+const LEAVES = [
+  { path: "dev.slice/containerd.service", bytes: 17.4 * GB },
+  { path: "dev.slice/docker-327767630da3.scope", bytes: 0.66 * GB },
+  { path: "virev.slice/virev-ci.slice/machine-qemu\\x2d66\\x2dci\\x2dg5.scope/libvirt", bytes: 2.83 * GB },
+  { path: "system.slice/system-virev\\x2dci\\x2dvirt.slice/virev-ci-virt@1772-0.service", bytes: 0.01 * GB },
+  { path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", bytes: 2.4 * GB },
+  { path: "user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", bytes: 0.3 * GB },
+  { path: "user.slice/user-0.slice/session-241.scope", bytes: 11.9 * GB },
+  { path: "system.slice/snapd.service", bytes: 1.5 * GB },
+];
+
+test("cgroupGroups puts Docker, CI VMs, agent services and login sessions in their groups, with readable names", () => {
+  const groups = cgroupGroups(LEAVES)!;
+  const of = (id: string) => groups.find(group => group.id === id)!;
+  assert.deepEqual(groups.map(group => group.id), ["docker", "other", "ci", "agents", "system"]);
+  assert.deepEqual(of("ci").top.map(item => item.label), ["machine-qemu-66-ci-g5", "virev-ci-virt@1772-0"]);
+  assert.deepEqual(of("agents").top.map(item => item.label), ["prime-agent-daemon", "sieun-pi-chat"]);
+  assert.deepEqual(of("other").top.map(item => item.label), ["root login session 241"]);
+  assert.equal(cgroupLabel("user.slice/user-1001.slice/session-3.scope"), "uid 1001 login session 3");
+  assert.equal(cgroupGroups([]), null);
 });

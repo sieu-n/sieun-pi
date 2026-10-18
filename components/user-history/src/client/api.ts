@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, MachineView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { Bookmark, BookmarkAction } from "../shared/bookmarks.ts";
@@ -76,7 +76,7 @@ export const api = {
   checkSlack: () => post<SlackView>("api/slack/check", {}, 60000),
   slackChannels: () => get<{ channels: SlackChannelOption[] | null }>("api/slack/channels", 30000).then(body => body.channels),
   slackChat: (id: string, input: SlackChatInput) => post<SlackView>("api/threads/" + encodeURIComponent(id) + "/slack", input, 60000),
-  machine: () => get<MachineView>("api/machine"),
+  hosts: () => get<HostsView>("api/hosts"),
   agentQueue: () => get<AgentQueueView>("api/agent-queue"),
   setAgentQueue: (input: AgentQueueInput) => post<AgentQueueView>("api/agent-queue", input),
   tools: () => get<ToolsView>("api/tools", 120000),
@@ -125,7 +125,7 @@ export const api = {
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
   cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),
-  createThread: (input: { cwd: string; name?: string; kind?: "chat"; slack?: SlackChannelSetup; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
+  createThread: (input: { cwd: string; host?: string; name?: string; kind?: "chat"; slack?: SlackChannelSetup; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
     post<{ id: string; notice?: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>

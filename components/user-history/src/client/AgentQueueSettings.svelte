@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
-  import { clock } from "./clock.svelte.ts";
-  import { duration } from "./format.ts";
   import Checkbox from "./ui/Checkbox.svelte";
   import QueueHistory from "./QueueHistory.svelte";
-  import type { AgentQueueInput, AgentQueueRow, AgentQueueView } from "../shared/types.ts";
-  import { statusLine, whyLines } from "./agent-queue.ts";
+  import QueueRows from "./QueueRows.svelte";
+  import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
+  import { whyLines } from "./agent-queue.ts";
 
   const POLL_MS = 5000;
   type Field = "mac" | "tree" | "aging" | "lease" | "idle";
@@ -43,8 +42,6 @@
     const value = drafts[field];
     return value !== null && Number.isInteger(value) && value >= 1 && value !== saved[field];
   };
-  const working = $derived(pool?.rows.filter(row => row.state === "working") ?? []);
-  const waiting = $derived(pool?.rows.filter(row => row.state === "waiting") ?? []);
 
   function submit(event: SubmitEvent, field: Field): void {
     event.preventDefault();
@@ -68,34 +65,12 @@
   </form>
 {/snippet}
 
-{#snippet group(title: string, rows: AgentQueueRow[])}
-  <div class="group-head">{title} <span class="count">{rows.length}</span></div>
-  {#each rows as row (row.session)}
-    <div class="qrow" class:owner={row.owner}>
-      <span class="chat" title={row.chat}>{row.chat}</span>
-      <span class="job" class:none={!row.job} title={row.job ?? ""}>{row.job ?? "chat"}</span>
-      <span class="who">{row.owner ? "owner" : "background"}</span>
-      <span class="time">{duration(Math.max(0, clock.now - row.since))}</span>
-    </div>
-  {:else}
-    <div class="qrow empty">None</div>
-  {/each}
-{/snippet}
-
 <section class="queue" aria-label="Agent queue">
   <h3>Agent queue</h3>
   {#if !view}
     <p class="note">{error ? `The agent queue is unavailable. ${error}` : "Reading the agent queue"}</p>
   {:else}
-    <p class="live" class:problem={view.pool.state === "unread"} aria-live="polite">{statusLine(view.pool)}</p>
-    {#if view.pool.state === "unread"}<p class="note">{view.pool.error}</p>{/if}
-
-    {#if pool?.enabled}
-      <div class="list" aria-label="Working and waiting agents">
-        {@render group("Working", working)}
-        {@render group("Waiting", waiting)}
-      </div>
-    {/if}
+    <QueueRows pool={view.pool} />
 
     <QueueHistory hours={view.history} />
 
@@ -107,7 +82,7 @@
     </button>
 
     <div class="limits">
-      {@render limit("mac", "Agents working on this Mac", "", 999, pool !== null)}
+      {@render limit("mac", "Agents working on this box", "", 999, pool !== null)}
       {@render limit("tree", "Agents working per chat", "", 999, pool !== null)}
       {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null)}
       {@render limit("lease", "Free a silent slot after", "s", 86400, pool !== null)}
@@ -125,21 +100,8 @@
 <style>
   .queue { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
   h3 { margin: 0; font-size: 13px; font-weight: 600; }
-  .live { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; font-variant-numeric: tabular-nums; }
-  .live.problem, .note.problem { color: var(--danger); }
+  .note.problem { color: var(--danger); }
   .note { margin: 0; color: var(--text-muted); line-height: 1.45; }
-  .list { max-height: 248px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-small); font-size: 12px; }
-  .group-head { position: sticky; top: 0; padding: 4px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; }
-  .count { font-weight: 400; font-variant-numeric: tabular-nums; }
-  .qrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 76px 56px; gap: 10px; align-items: center; padding: 3px 10px; line-height: 18px; }
-  .qrow + .qrow { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-  .qrow.empty { display: block; color: var(--text-faint); }
-  .chat, .job { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat { font-weight: 500; }
-  .job.none { color: var(--text-faint); }
-  .who { color: var(--text-faint); }
-  .qrow.owner .who { color: var(--accent); font-weight: 500; }
-  .time { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
   .toggle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; padding: 8px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
   .toggle:hover:not(:disabled) { background: var(--bg-hover); }
   .toggle:disabled { cursor: default; opacity: 0.75; }

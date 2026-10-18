@@ -272,6 +272,8 @@ export interface SessionRow {
    * `session_state` in the session file). The sidebar hides agent-created rows by default. Absent reads as user.
    */
   origin?: "user" | "agent";
+  /** The hosts.json box whose daemon runs this session; absent reads as the box the chat service runs on. */
+  host?: string;
 }
 /**
  * A chat's check-in schedule in the sessions stream: its interval, the pause in force (`pausedUntil`, "forever" until resumed, null when none) and
@@ -483,20 +485,24 @@ export type SlackChatInput =
   | { action: "rename"; name: string }
   | { action: "stop" };
 
-/** Settings > This Mac: CPU and memory of the machine the chat service runs on, read on each request. */
-export type MemoryPressure = "normal" | "warn" | "critical";
-export interface MachineView {
-  /** Busy share of all cores since the previous reading, 0 to 100. */
-  cpu: { percent: number; cores: number; load: [number, number, number] };
-  /** usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does on macOS. Swap and pressure are null off macOS. */
-  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null;
-    /** The pressure feed's owners summed into MEMORY_GROUPS by physical footprint, largest first; null when the feed is stale or unreadable. */
-    groups: MemoryGroup[] | null };
-}
-export const MEMORY_GROUPS = ["agents", "dev", "docker", "browsers", "coding", "system", "other"] as const;
-export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
-/** One memory group: its footprint and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers). */
-export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; top: { label: string; bytes: number }[] }
+/** Settings > Hosts: one box's CPU and memory (components/prime-relay/host-stats.ts, which the relay serves and the chat service reads for its own box). */
+export type { MachineView, MemoryGroup, MemoryGroupId, MemoryPressure } from "../../../prime-relay/host-stats.ts";
+import type { MachineView } from "../../../prime-relay/host-stats.ts";
+/** The services a box holds in hosts.json (src/hosts.ts): one box each holds the pool, the wiki and the chat app. */
+export type HostRole = "pool" | "wiki" | "chat";
+interface HostCardBase { name: string; address: string; roles: HostRole[];
+  /** The box this chat service runs on, read in-process instead of through its relay. */
+  self: boolean }
+/** One box on Settings > Hosts: its relay answered with its machine and its own turn queue, or it did not answer (a Mac asleep, a box down). */
+export type HostCard = HostCardBase & (
+  | { state: "up"; daemon: "answering" | "down"; pingMs: number | null; machine: MachineView; queue: AgentQueuePool }
+  | { state: "unreachable"; pingMs: number; error: string });
+export interface HostsView { hosts: HostCard[];
+  /** The box the owner's last new chat or thread went to, the New chat host picker's default; null before the first pick. */
+  lastHost: string | null;
+  /** Why hosts.json did not read; null when it read or is absent (then the list is this box alone). */
+  registryError: string | null;
+  checkedAt: number }
 
 /** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
 export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }

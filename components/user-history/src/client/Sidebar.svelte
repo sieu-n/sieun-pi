@@ -188,6 +188,7 @@
           {#if row.chat}
           {@const running = (row.agents ?? []).filter(agent => agent.state === "working").length}
           <span class="line sub" title={[money(row.cost), row.model ? modelShort(row.model) : ""].filter(Boolean).join(", ")}>
+            {#if row.host}<span class="meta host" use:tooltip={`Runs on ${row.host}`}>{row.host}</span>{/if}
             {#if row.forYou}<span class="meta foryou">{row.forYou} for you</span>{/if}
             {#if row.plan}<span class="meta date">{row.plan.done} of {row.plan.total} done</span>{/if}
             {#if running}<span class="meta working">{running} {running === 1 ? "agent" : "agents"} running</span>
@@ -202,6 +203,7 @@
           </span>
           {:else}
           <span class="line sub">
+            {#if row.host}<span class="meta host" use:tooltip={`Runs on ${row.host}`}>{row.host}</span>{/if}
             {#if row.schedule && !row.chat}
               <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
             {:else if createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}
@@ -440,6 +442,7 @@
   .title.strong { font-weight: 600; }
   .sub { height: 16px; font-size: 11.5px; line-height: 16px; color: var(--text-faint); gap: 5px; }
   .meta { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .meta.host { color: var(--text-faint); }
   .date { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; }
   .working { color: var(--accent-bold); }
   .working.quiet { color: var(--text-faint); }

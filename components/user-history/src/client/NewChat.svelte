@@ -5,7 +5,8 @@
   import { ui } from "./ui.svelte.ts";
   import { labels, type TagSelection } from "./labels.ts";
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
-  import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import type { HostCard, ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import { defaultHost, hostGlance } from "./hosts.ts";
   import { relativeTime, shortPath } from "./format.ts";
   import { startMessage } from "../shared/start-skill.ts";
   import ModelPicker from "./ModelPicker.svelte";
@@ -34,6 +35,10 @@
   let model = $state<ModelInfo | null>(null);
   let effort = $state<ThinkingLevel | null>(null);
   let workspaceOpen = $state(false);
+  /** Every box a new chat can start on, and the one picked: the owner's last pick while it answers, else this box. Hidden with one box. */
+  let hosts = $state<HostCard[]>([]);
+  let host = $state<string | null>(null);
+  let hostOpen = $state(false);
   /** An explicit thread name; empty lets Prime Agent title the thread from its first message. */
   let threadName = $state("");
   /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
@@ -46,7 +51,7 @@
   let slack = $state<SlackChannelSetup | null>(null);
   let slackOpen = $state(false);
   const slackOffered = $derived(kind === "chat" && store.slack?.state === "on");
-  const closePopover = () => { workspaceOpen = false; };
+  const closePopover = () => { workspaceOpen = false; hostOpen = false; };
   let lightbox = $state<number | null>(null);
 
   /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
@@ -81,7 +86,15 @@
   $effect(() => { if (account && activeModel && activeModel.provider !== account.provider) account = null; });
   const acceptsImages = $derived((model ?? catalog?.current)?.input.includes("image") ?? true);
 
+  async function loadHosts(): Promise<void> {
+    try {
+      const view = await api.hosts();
+      hosts = view.hosts;
+      if (!host || !hosts.some(entry => entry.name === host)) host = defaultHost(hosts, view.lastHost);
+    } catch (error) { if (!hosts.length) store.toast(errorText(error)); }
+  }
   onMount(() => {
+    void loadHosts();
     api.workspaces().then(list => { workspaces = list; if (!cwd && list[0]) cwd = list[0].cwd; }, error => store.toast(error instanceof Error ? error.message : String(error)));
   });
   $effect(() => {
@@ -128,7 +141,7 @@
     const chosen = activeModel;
     const name = threadName.trim();
     const message = startMessage(text, useStartSkill ? startSkill : null);
-    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const id = await store.createChat({ cwd, ...(host && hosts.length > 1 ? { host } : {}), ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
@@ -167,7 +180,7 @@
             {#if store.pending.message}<div class="text">{store.pending.message}</div>{/if}
           </div>
           {#if store.pending.name}<div class="pending-name">{store.pending.name}</div>{/if}
-          <div class="starting"><span class="spinner"></span> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}</div>
+          <div class="starting"><span class="spinner"></span> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}{store.pending.host ? ` on ${store.pending.host}` : ""}</div>
         </div>
       {:else}
         <div class="greeting-row">
@@ -180,6 +193,22 @@
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder={kind === "chat" ? "Say what this chat is about" : "Ask Prime Agent anything"} />
         <div class="options-row">
           <div class="group" role="group" aria-label="Setup for the new thread">
+            {#if hosts.length > 1}
+              <Popover open={hostOpen} onclose={closePopover} width={380} label="Host">
+                {#snippet trigger()}
+                  <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={hostOpen} aria-label="Host: {host ?? 'none'}" use:tooltip={"The box this chat runs on"}
+                    onclick={() => { hostOpen = !hostOpen; if (hostOpen) void loadHosts(); }}>
+                    <Icon name="server" size={14} /><span class="label">{host ?? "Host"}</span><Icon name="chevronDown" size={12} />
+                  </button>
+                {/snippet}
+                {#each hosts as entry (entry.name)}
+                  <button type="button" class="menu-item" class:current={entry.name === host} disabled={entry.state !== "up"} onclick={() => { host = entry.name; closePopover(); }}>
+                    <span class="host-name">{entry.name}</span>
+                    <span class="hint">{hostGlance(entry)}</span>
+                  </button>
+                {/each}
+              </Popover>
+            {/if}
             <Popover open={workspaceOpen} onclose={closePopover} width={340} label="Workspace">
               {#snippet trigger()}
                 <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={workspaceOpen} aria-label="Workspace: {cwd || 'none'}" onclick={() => { workspaceOpen = !workspaceOpen; }}>
@@ -287,6 +316,7 @@
   .check { cursor: pointer; user-select: none; }
   .check input { margin: 0; accent-color: var(--accent, currentColor); cursor: pointer; }
   .options-row :global(.bar-button), .options-row :global(.account) { height: 26px; font-size: 12.5px; }
+  .host-name { white-space: nowrap; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
   .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }

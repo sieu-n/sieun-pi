@@ -40,6 +40,8 @@
     const last = Date.parse(job.row?.lastActivityAt ?? "");
     return Number.isFinite(started) && Number.isFinite(last) ? elapsed(Math.max(0, (job.row?.working ? now : last) - started)) : "";
   });
+  /** The box the job runs on: its own row's host, else its chat's, since a chat's jobs run on the chat's daemon. */
+  const host = $derived((job?.kind === "session" ? job.row?.host : undefined) ?? store.session(chatId)?.host ?? null);
   const model = $derived(job ? modelShort(job.kind === "child" ? job.child.model : job.row?.model) : "");
   const sessionId = $derived(job?.sessionId ?? null);
   const status = $derived(job ? job.kind === "child" ? job.child.status : job.row ? statusOf(job.row, now) : "saved" : "");
@@ -92,6 +94,7 @@
         {#if head.text}<span class="meta-text">{head.text}</span>{/if}
         {#if time}<span class="dot-sep"></span><span>{time}</span>{/if}
         {#if model}<span class="dot-sep"></span><span>{model}</span>{/if}
+        {#if host}<span class="dot-sep"></span><span use:tooltip={`Runs on ${host}`}>{host}</span>{/if}
       </div>
     </div>
     <div class="actions">

@@ -12,7 +12,7 @@ import type { SettingsSection } from "./settings-sections.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
-export interface PendingChat { cwd: string; name?: string; kind?: "chat"; slack?: SlackChannelSetup; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+export interface PendingChat { cwd: string; host?: string; name?: string; kind?: "chat"; slack?: SlackChannelSetup; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 /** How long `createChat` waits for the sessions stream to list a new chat before showing it, so the chat view opens instead of the thread view. */
 const NEW_ROW_WAIT_MS = 3000;
 

@@ -254,7 +254,10 @@ export async function readAgentQueue(): Promise<AgentQueueReading> {
 /** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */
 /** `queue_aging_s` and `lease_s` from `pi-pool config`, which `queue --json` does not carry. Throws when either is missing. */
 export async function readQueueTimers(): Promise<AgentQueueTimers> {
-  const config = parsePoolConfig(JSON.parse(await run(["config"])));
+  return parseQueueTimers(JSON.parse(await run(["config"])));
+}
+export function parseQueueTimers(value: unknown): AgentQueueTimers {
+  const config = parsePoolConfig(value);
   const queueAgingS = count(config?.queue_aging_s), leaseS = count(config?.lease_s);
   if (queueAgingS === null || leaseS === null) throw new Error("pi-pool config has no queue_aging_s or lease_s");
   return { queueAgingS, leaseS };

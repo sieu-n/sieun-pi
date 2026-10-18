@@ -9,7 +9,7 @@ import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
-import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
+import { readWikiPage, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError } from "./chat-labels.ts";
@@ -23,7 +23,7 @@ import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
-import { machineView } from "./chat-machine.ts";
+import { hostsView } from "./chat-hosts.ts";
 import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
@@ -43,7 +43,7 @@ class RequestError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
-export function renderShell(csrfToken: string, version: string, wiki: string | null): string {
+export function renderShell(csrfToken: string, version: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -59,7 +59,7 @@ export function renderShell(csrfToken: string, version: string, wiki: string | n
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
 <link rel="stylesheet" href="app.css">
 </head>
-<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}">
+<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}">
 <div id="app"></div>
 <script type="module" src="app.js"></script>
 </body>
@@ -366,6 +366,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
   const tools = toolChecks({ dutyStore: backend.duties?.store });
+  const hosts = hostsView({ title: id => backend.catalog.title(id), lastHost: () => backend.newChat.lastHost(),
+    selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   const streams = new Set<EventStream>();
   let host = "";
@@ -495,7 +497,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (method === "GET") {
         if (!route.startsWith("api/")) {
           const built = await bundle;
-          if (route === "") { const wiki = await wikiOrigin(); res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki)); return; }
+          if (route === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version)); return; }
           if (route === "app.js") { serveAsset(req, res, built.js); return; }
           if (route === "app.css") { serveAsset(req, res, built.css); return; }
           const appFile = built.app?.(route);
@@ -529,7 +531,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, { channels: await slack.channels().catch(() => null) }); return;
         }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
-        if (route === "api/machine") { json(res, 200, await machineView()); return; }
+        if (route === "api/hosts") { json(res, 200, await hosts()); return; }
         if (route === "api/agent-queue") {
           if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
           json(res, 200, await backend.agentQueue.view()); return;
@@ -660,7 +662,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const name = typeof body.name === "string" ? text(body.name, "name").trim() : "";
         const kind = parseKind(body.kind);
         const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
+        // The hosts.json box the New chat picker chose; absent means the box this service runs on.
+        const host = typeof body.host === "string" ? text(body.host, "host", 64) : undefined;
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
@@ -670,6 +674,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
             await backend.created.add(thread.id).catch(() => {});
+            if (host) await backend.newChat.setLastHost(host).catch(() => {});
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
               try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }

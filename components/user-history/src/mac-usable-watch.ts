@@ -1,8 +1,7 @@
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { groupOf } from "./memory-groups.ts";
+import { FEED_FRESH_MS, PRESSURE_FEED, groupOf } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -23,14 +22,11 @@ const MINUTE = 60_000;
  * line at one core; at 20:23Z on 10-14, with the Mac usable by the VP's read, it ran at 17.7%.
  */
 export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
-/** ops guy's machine-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale, the feed contract pi-pool's pool/pressure.py and the devbox textfile script keep. */
-export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
-export const FEED_FRESH_MS = 30_000;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
 export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number;
   /** The feed's FEED_OWNERS largest owners by footprint, so a minute names the processes behind it; absent when the feed has none. */
   owners?: FeedOwner[];
-  /** Every feed owner summed by Settings > This Mac's groups (src/memory-groups.ts), in GB; absent on lines written before 10-18 01:40Z. */
+  /** Every feed owner summed by Settings > Hosts' groups (components/prime-relay/host-stats.ts), in GB; absent on lines written before 10-18 01:40Z. */
   groups?: Partial<Record<MemoryGroupId, number>> }
 /** One feed owner: `chat:<root>`, `pm2:<app>`, `browser:<name>` or `other:<name>`, its label and its footprint. */
 export interface FeedOwner { owner: string; label: string; gb: number }

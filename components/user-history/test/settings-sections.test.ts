@@ -8,7 +8,7 @@ import { SETTINGS_SECTIONS } from "../src/client/settings-sections.ts";
 const CLIENT = join(import.meta.dirname, "../src/client");
 
 test("Settings tabs keep their order, with How it works last", () => {
-  assert.deepEqual(SETTINGS_SECTIONS.map(entry => entry.id), ["accounts", "usage", "new-chats", "appearance", "remote", "slack", "machine", "tools", "updates", "how"]);
+  assert.deepEqual(SETTINGS_SECTIONS.map(entry => entry.id), ["accounts", "usage", "new-chats", "appearance", "remote", "slack", "hosts", "tools", "updates", "how"]);
 });
 
 test("every Settings tab has a label, a description and a drawn icon", () => {
