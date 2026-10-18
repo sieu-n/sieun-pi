@@ -12,6 +12,7 @@ import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
+import { processEvidence } from "../../src/proc-evidence.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
@@ -265,16 +266,19 @@ const perSession = (line: WorkerLine): number => (line.gb - (line.workGb ?? 0)) 
  * The harness processes in the newest watch line over FAR_ABOVE times their kind's median in `day` on the same box: Prime workers by their
  * own footprint per hosted session (`perSession`), and the chat service.
  */
-export function oversized(latest: WatchLine | undefined, day: readonly WatchLine[]): string[] {
+/** A harness process far above its kind's normal size: the box it runs on, a Prime worker's pid (null for the chat service) and the finding. */
+export interface Oversized { host: string; pid: number | null; text: string }
+
+export function oversized(latest: WatchLine | undefined, day: readonly WatchLine[]): Oversized[] {
   if (!latest) return [];
-  const found: string[] = [];
+  const found: Oversized[] = [];
   const dayViews = day.flatMap(hostViews);
   for (const view of hostViews(latest)) {
     const own = dayViews.filter(candidate => candidate.name === view.name);
     const session = median(own.flatMap(candidate => candidate.top.filter(line => line.sessions > 0).map(perSession)));
-    if (session !== undefined) for (const line of view.top) if (perSession(line) > FAR_ABOVE * session) found.push(`${view.name}: Prime worker ${line.pid} (${line.tree || "no tree"}) holds ${line.gb} GB for ${line.sessions} sessions${line.workGb ? `, ${line.workGb} GB of it their work` : ""}, ${perSession(line).toFixed(2)} GB each of its own, over ${FAR_ABOVE}x the day's median there of ${session.toFixed(2)} GB per session`);
+    if (session !== undefined) for (const line of view.top) if (perSession(line) > FAR_ABOVE * session) found.push({ host: view.name, pid: line.pid, text: `${view.name}: Prime worker ${line.pid} (${line.tree || "no tree"}) holds ${line.gb} GB for ${line.sessions} sessions${line.workGb ? `, ${line.workGb} GB of it their work` : ""}, ${perSession(line).toFixed(2)} GB each of its own, over ${FAR_ABOVE}x the day's median there of ${session.toFixed(2)} GB per session` });
     const service = median(own.flatMap(candidate => candidate.serviceGb === undefined ? [] : [candidate.serviceGb]));
-    if (service !== undefined && view.serviceGb !== undefined && view.serviceGb > FAR_ABOVE * service) found.push(`${view.name}: the chat service holds ${view.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB`);
+    if (service !== undefined && view.serviceGb !== undefined && view.serviceGb > FAR_ABOVE * service) found.push({ host: view.name, pid: null, text: `${view.name}: the chat service holds ${view.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB` });
   }
   return found;
 }
@@ -474,7 +478,7 @@ export function measure(input: Inputs): PrecheckOutput {
     flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes. At ${clock(Date.parse(latest.at))}: ` +
       asleep.map(view => `${view.name} ${view.sleeping!.gb} GB in ${view.sleeping!.workers} whole workers and ${view.sleeping!.kernels} kernels (${view.sleeping!.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")})`).join("; ") + "." });
   }
-  for (const line of oversize) flagged.push({ kind: "oversized", excerpt: line });
+  for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
@@ -719,6 +723,17 @@ async function main(): Promise<void> {
     waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now, named),
     named,
   });
+  // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
+  const here = watch.at(-1)?.host;
+  for (const entry of oversized(watch.at(-1), day)) {
+    if (entry.pid === null || entry.host !== here) continue;
+    const text = await processEvidence(entry.pid);
+    if (!text) continue;
+    const file = `${output.replace(/\.json$/, "")}.worker-${entry.pid}.txt`;
+    await writeFile(file, text);
+    const slice = result.flagged?.find(item => item.kind === "oversized" && item.excerpt === entry.text);
+    if (slice) slice.excerpt += `; its memory map and threads: ${file}`;
+  }
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
