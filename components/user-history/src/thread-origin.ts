@@ -45,16 +45,21 @@ const TYPE = /^\{"type":"([a-z_]+)"/;
 function entryType(line: string): string | undefined { return TYPE.exec(line)?.[1]; }
 
 /**
- * The origin of every listed session, for one catalog projection. Rule, in order: a thread this server created (`threads.json`, both kinds, or
+ * The origin of every listed session, for one catalog projection. Rule, in order: a clean-room test chat (`clean-room-chats.json`) is an
+ * agent's, because a clean-room job opened it through the person's route; a thread this server created (`threads.json`, both kinds, or
  * `chats.json`) is the person's; else the session file decides; else the person's. File decisions are kept once final, so each file is read once.
+ * An agent-created row stays out of the owner's sidebar and its For you count until he turns on "Show agent-created": on 10-18 he saw the r3c
+ * chats "LinkedIn index gaps" and "Facebook index gaps" there, answered one's For you ask and typed into it, which voided the run.
  */
 export class ThreadOrigins {
   private readonly decided = new Map<string, ThreadOrigin>();
-  constructor(private readonly created: Pick<IdIndex, "ids">) {}
+  constructor(private readonly created: Pick<IdIndex, "ids">, private readonly cleanRoom?: Pick<IdIndex, "ids">) {}
 
   async resolver(chats: ReadonlySet<string>): Promise<(row: { sessionId: string; sessionFile?: string }) => ThreadOrigin> {
     const own = new Set(await this.created.ids().catch(() => []));
+    const tests = new Set(await this.cleanRoom?.ids().catch(() => []) ?? []);
     return row => {
+      if (tests.has(row.sessionId)) return "agent";
       if (own.has(row.sessionId) || chats.has(row.sessionId)) return "user";
       if (!row.sessionFile) return "user";
       const known = this.decided.get(row.sessionFile);

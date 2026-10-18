@@ -230,10 +230,13 @@ export const targetOp = (target: Pick<GoalTarget, "metric" | "direction"> & Part
 /**
  * The target to store when an op sets `next` over `kept`: the newer reading of the same metric wins. A check-in job writes the number its
  * precheck read, which can be older than a reading taken since (AI harness p453 10-17: a check-in wrote 29.7% back over the 31.5% that
- * duty-fleet.ts had measured at 22:27Z), and a target given with no measurement keeps the reading it had.
+ * duty-fleet.ts had measured at 22:27Z), and a target given with no measurement keeps the reading it had. A kept reading stamped after `now`,
+ * the time of this write, is no newer than anything: in r3c on 10-18 the chat stamped 2 of 10 at 00:45Z at 00:42Z, and the job's real 3 and 6
+ * of 10 a minute later read "no change".
  */
-export function newerReading(next: GoalTarget, kept: GoalTarget | undefined): GoalTarget {
+export function newerReading(next: GoalTarget, kept: GoalTarget | undefined, now?: string): GoalTarget {
   if (!kept?.measuredAt || kept.current === undefined || kept.metric !== next.metric) return next;
+  if (now !== undefined && Date.parse(kept.measuredAt) > Date.parse(now)) return next;
   if (next.measuredAt && Date.parse(next.measuredAt) >= Date.parse(kept.measuredAt)) return next;
   return { ...next, current: kept.current, measuredAt: kept.measuredAt, ...(kept.source !== undefined ? { source: kept.source } : {}) };
 }
@@ -500,7 +503,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const kept = itemId === input.id ? find(board.plan, itemId)?.item : undefined;
         const job = planJob(input.job);
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
-        const target = input.target ? newerReading(input.target, kept?.target) : kept?.target;
+        const target = input.target ? newerReading(input.target, kept?.target, now) : kept?.target;
         const duty = input.duty ?? kept?.duty;
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
@@ -562,9 +565,9 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.duty === null) { delete next.duty; if (item.duty) parts.push("unlinked its duty metric"); }
       else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
-      else if (op.target && JSON.stringify(newerReading(op.target, item.target)) !== JSON.stringify(item.target)) {
+      else if (op.target && JSON.stringify(newerReading(op.target, item.target, now)) !== JSON.stringify(item.target)) {
         measuredBy(op.target, now);
-        next.target = newerReading(op.target, item.target);
+        next.target = newerReading(op.target, item.target, now);
         parts.push(`set its target: ${targetText(next.target)}${next.target.current !== op.target.current ? ", keeping its newer reading" : ""}`);
       }
       if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);

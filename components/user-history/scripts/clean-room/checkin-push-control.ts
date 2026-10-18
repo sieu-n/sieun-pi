@@ -31,6 +31,7 @@ const walk = (items: readonly PlanItem[], visit: (item: PlanItem, goal: PlanItem
   for (const item of items) { visit(item, goal ?? item); walk(item.children, visit, goal ?? item); }
 };
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) as T;
+const readJsonIds = (path: string): string[] => { try { const ids = readJson<{ ids?: unknown }>(path).ids; return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []; } catch { return []; } };
 const listJson = <T>(dir: string): { at: number; value: T }[] => existsSync(dir)
   ? readdirSync(dir).sort().map(file => ({ at: Number(file.replace(".json", "")), value: readJson<T>(join(dir, file)) })) : [];
 
@@ -78,6 +79,14 @@ export const checkinPushControl: Scenario = {
 };
 
 interface Check { id: string; ok: boolean | null; detail: string }
+
+/** Whether a session's last board.wake before `at` is still owed: it set one, and no `[wake]` message reached it between that and `at`. */
+export function asleepAt(events: readonly SessionEvent[], at: number): boolean {
+  const before = events.filter(event => event.at <= at);
+  const set = before.findLast(event => event.kind === "call" && /\bboard\.wake\(/.test(event.input));
+  if (!set) return false;
+  return !before.some(event => event.at > set.at && event.kind === "text" && event.text.trimStart().startsWith("[wake]"));
+}
 const yes = (ok: boolean | null): string => ok === null ? "for the reader" : ok ? "met" : "not met";
 interface Agent { sessionId?: string; name: string; state: string; key: string }
 
@@ -160,6 +169,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       if (at > slot.at) continue;
       const own = read(job);
       const lastAt = Math.max(at, ...own.filter(event => event.at <= slot.at).map(event => event.at));
+      // A job asleep on a board.wake it set, with no [wake] delivered since, waits on purpose, and the chat's rule (board.wake over a held
+      // kernel) asks for that. In r3c both jobs slept on CI runs queued 1.5 h and were scored quiet and dead, and the idle unload archived one.
+      if (asleepAt(own, slot.at)) { coordLines.push(`slot ${iso(slot.at)}, job ${name}: asleep on its board.wake, left alone`); continue; }
       const failed = head.some(event => event.kind === "text" && event.at <= slot.at && event.at >= lastAt - 60_000 && new RegExp(`(child-failed|ended|stopped)[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(ended|stopped|failed)`, "i").test(event.text));
       const quietFor = slot.at - lastAt;
       if (!failed && quietFor < state.everyMs) continue;
@@ -196,9 +208,16 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const ledgerFile = join(process.env.AGENT_CHAT_DATA_DIR ?? join(process.env.HOME ?? "", ".prime/agent/browser-chat"), "corrections.json");
   const ledger = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8") : "";
-  const leaks = [[state.chat, boards] as const, ...(state.control ? [[state.control, controlBoards] as const] : [])].flatMap(([chat, all]) =>
-    [...(all.at(-1)?.board.todos ?? []).map(todo => `${chat.name} todo ${todo.id} "${clip(todo.text, 90)}"`), ...(ledger.includes(chat.id) ? [`corrections.json names ${chat.name}`] : [])]);
-  checks.push({ id: "j", ok: leaks.length === 0, detail: leaks.join("; ") || "no todo on either board, and corrections.json names neither chat" });
+  // A clean-room chat is agent-created (thread-origin.ts), so its todos and tell_owner lines stay on its own board and transcript, out of the
+  // owner's sidebar and For you count: that is their scratch place. One reaches him only when the chat is missing from clean-room-chats.json.
+  const hidden = new Set(readJsonIds(join(process.env.AGENT_CHAT_DATA_DIR ?? join(process.env.HOME ?? "", ".prime/agent/browser-chat"), "clean-room-chats.json")));
+  const asks = [[state.chat, boards] as const, ...(state.control ? [[state.control, controlBoards] as const] : [])].flatMap(([chat, all]) =>
+    (all.at(-1)?.board.todos ?? []).map(todo => ({ chat, line: `${chat.name} todo ${todo.id} "${clip(todo.text, 90)}"` })));
+  const leaks = [...asks.filter(ask => !hidden.has(ask.chat.id)).map(ask => ask.line),
+    ...[state.chat, ...(state.control ? [state.control] : [])].flatMap(chat => ledger.includes(chat.id) ? [`corrections.json names ${chat.name}`] : [])];
+  const scratch = asks.filter(ask => hidden.has(ask.chat.id)).map(ask => ask.line);
+  checks.push({ id: "j", ok: leaks.length === 0, detail: [leaks.length ? leaks.join("; ") : "no todo reached the owner, and corrections.json names neither chat",
+    ...(scratch.length ? [`kept on the hidden chats' boards for the reader: ${scratch.join("; ")}`] : [])].join("\n    ") });
 
   const mine = progress(boards.at(-1)?.board); const theirs = progress(controlBoards.at(-1)?.board);
   const series = slots.map(slot => `${iso(slot.at)} ${progress(boardAt(boards, slot.at)) ?? "-"} vs ${progress(boardAt(controlBoards, slot.at)) ?? "-"}`);

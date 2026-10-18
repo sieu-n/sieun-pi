@@ -131,7 +131,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
     control ? createThread(srv, "chat", control.name, sandbox, control.message(control.name)) : Promise.resolve(undefined)]);
   const adoptedAt = adopted ? Date.parse(/"timestamp":"([^"]+)"/.exec(readFileSync(join(homedir(), ".prime/agent/sessions", `${adopted}.jsonl`), "utf8"))?.[1] ?? "") : NaN;
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
-  log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger`);
+  log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger and it stays out of the owner's sidebar and For you`);
   if (control && controlId) {
     await setCheckIn(srv, controlId, { pause: "forever" });
     log(run, `created control chat ${controlId} "${control.name}", filed the same way, and paused its check-in`);

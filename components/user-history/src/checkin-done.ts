@@ -98,6 +98,9 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
   // A step the board refuses to close on its own note is not done (ops guy 10-16, p254: d1/servers_not_answering read 0 while the step waited
   // for eecd9d7d5b to land, which never reached sieun/dev, and 3 check-ins in a row said "close it").
   if (unlandedClose(item, { ...item, status: "done" })) return null;
+  // A step whose wait names a CI run waits for that run to land its fix, so a metric that met meanwhile proves nothing: AI harness p564 on
+  // 10-18 read finished when d7/queue_holds_30 met only because no rate-limit hold fell in the window, while its fix sat in probe run 39090428684.
+  if (/\b\d{9,}\b/.test((item.waitFor ?? "").split(/;|,? then |\. /i)[0]!)) return null;
   // A met metric closes its fix step only after it missed on an earlier run: a metric that never missed does not see the problem the step
   // fixes (frontend bro 10-16, p174: d1/walk_problems read 0 on every run while the server still called Stripe, flagged 4 check-ins in a row).
   if (item.duty) {
