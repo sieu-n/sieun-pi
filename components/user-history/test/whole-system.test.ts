@@ -44,14 +44,16 @@ test("a minute is clean only with the Mac usable, no hold over 10 minutes and no
   assert.equal(measure(inputs({ watch, limits: readLimits([JSON.stringify({ ts: "2026-10-16T06:00:00", event: "pressure_level", at: (NOW - 60 * 60_000) / 1000, limit_to: 7 })]) })).metrics.queued_free_slot_min_30, 0);
 });
 
-test("stuck steps add up each chat's newest measured check-in", () => {
-  const run = (duty: string, minutesAgo: number, verdict: "met" | "missed" | "skipped", stuck: number) => ({ duty, at: NOW - minutesAgo * 60_000, slot: 0, trigger: "schedule", ms: 1, verdict,
-    metrics: { stuck_steps: { value: stuck, target: 0, op: "<=", met: stuck === 0 } }, summary: "" }) as unknown as Inputs["chats"][number]["runs"][number];
+test("stuck steps add up each chat's newest measured check-in, a run skipped behind a working job included (frontend bro 10-18 23:13Z and 23:15Z)", () => {
+  const run = (duty: string, minutesAgo: number, verdict: "met" | "missed" | "skipped", stuck?: number) => ({ duty, at: NOW - minutesAgo * 60_000, slot: 0, trigger: "schedule", ms: 1, verdict,
+    metrics: stuck === undefined ? {} : { stuck_steps: { value: stuck, target: 0, op: "<=", met: stuck === 0 } }, summary: "" }) as unknown as Inputs["chats"][number]["runs"][number];
   const output = measure(inputs({ chats: [
-    { id: "a", name: "ops guy", duties: [{ id: "checkin", name: "Check-in" }], runs: [run("checkin", 5, "skipped", 0), run("checkin", 60, "missed", 3)] },
+    { id: "a", name: "ops guy", duties: [{ id: "checkin", name: "Check-in" }], runs: [run("checkin", 5, "skipped"), run("checkin", 60, "missed", 3)] },
     { id: "b", name: "Crawler VP", duties: [{ id: "checkin", name: "Check-in" }], runs: [run("checkin", 10, "met", 0), run("checkin", 70, "missed", 5)] },
+    // The 23:15:37Z run was skipped because the 23:13Z job still worked, and it measured 0 stuck steps two minutes after the 23:13Z run read 2.
+    { id: "c", name: "frontend bro", duties: [{ id: "checkin", name: "Check-in" }], runs: [run("checkin", 6, "skipped", 0), run("checkin", 8, "missed", 2)] },
   ] }));
-  assert.equal(output.metrics.stuck_steps_all, 3);
+  assert.equal(output.metrics.stuck_steps_all, 3, "ops guy's skip measured nothing, so its 3 stands; frontend bro's newer skip read 0");
 });
 
 test("stuck steps count each chat's check-in as its run measured it, and drop a count older than one check-in interval (VP of CI 10-17)", () => {

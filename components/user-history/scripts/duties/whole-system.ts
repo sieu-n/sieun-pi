@@ -236,7 +236,9 @@ export function measure(input: Inputs): PrecheckOutput {
   // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
   // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
   const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
-    const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "skipped" && entry.verdict !== "error");
+    // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
+    // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
+    const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
     const fresh = run !== undefined && (chat.everyMs === undefined || now - run.at <= chat.everyMs);
     return { chat, value: fresh ? run.metrics.stuck_steps?.value ?? 0 : 0, at: run?.at };
   }).filter(entry => entry.value > 0);
