@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ One release runs at a time: a second command waits for the first one's lock, the
 A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
+A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback.`;
 
 const LABEL = "com.sieun.agent-chat";
@@ -145,6 +146,37 @@ function flip(home, id) {
   renameSync(next, join(home, "current"));
 }
 
+/** The releases waiting for the lock: each writes its lock draft `release.lock.<pid>` while it waits. */
+function waiting(home) {
+  const found = [];
+  for (const name of readdirSync(home)) {
+    const pid = Number(/^release\.lock\.(\d+)$/.exec(name)?.[1]);
+    if (!pid || pid === process.pid || !alive(pid)) continue;
+    try { found.push({ pid, sha: String(JSON.parse(readFileSync(join(home, name), "utf8")).sha) }); } catch {}
+  }
+  return found;
+}
+
+const OWED = "restart.owed";
+
+/**
+ * Restarts the service for this release, or for an earlier one whose restart it owes (restart.owed), unless a release that descends from `sha`
+ * waits for the lock: that one then restarts once for all of them. On us-metal02 releases from several jobs restarted the chat 6 times between
+ * 04:39 and 04:52Z on 10-18, and each restart cut frontend bro's check-in job between its turn-queue admission and its creation.
+ */
+function restart(options, home, sha) {
+  const owed = join(home, OWED);
+  if (!options.kickstart && !existsSync(owed)) return;
+  const later = waiting(home).filter(entry => spawnSync("git", ["-C", options.repo, "merge-base", "--is-ancestor", sha, entry.sha], { env: gitEnv }).status === 0);
+  if (later.length) {
+    writeFileSync(owed, JSON.stringify({ sha, at: new Date().toISOString() }) + "\n");
+    log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which restarts once for both`);
+    return;
+  }
+  kickstart();
+  rmSync(owed, { force: true });
+}
+
 function kickstart() {
   if ((process.env.SIEUN_PI_CHAT_SERVICE_MANAGER || (process.platform === "linux" ? "systemd" : "launchd")) === "systemd") {
     run(process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl", ["--user", "restart", UNIT], process.cwd());
@@ -165,6 +197,7 @@ async function main() {
   const id = basename(dir);
   checkNewer(options.repo, home, sha, options.rollback);
   await takeLock(home, sha);
+  held = { options, home, sha };
   checkNewer(options.repo, home, sha, options.rollback);
   if (existsSync(dir)) log(`${id} is built already; reusing it`);
   else await build(options, home, sha, dir);
@@ -172,12 +205,18 @@ async function main() {
   const before = liveRelease(home);
   flip(home, id);
   log(`current: ${before ?? "(none)"} -> ${id}`);
-  if (options.kickstart) kickstart();
+  restart(options, home, sha);
   console.log(id);
 }
 
+/** Set once this process holds the lock: a release that fails after that still restarts for one whose restart it owes. */
+let held = null;
+
 main().catch(error => {
   log(error.message);
+  if (held && existsSync(join(held.home, OWED))) {
+    try { restart({ ...held.options, kickstart: false }, held.home, held.sha); } catch (restartError) { log(restartError.message); }
+  }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
   process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : 1);
 });

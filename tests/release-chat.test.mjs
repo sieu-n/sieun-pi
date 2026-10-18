@@ -154,3 +154,32 @@ test("a lock left by a dead process is taken over", (t) => {
   assert.match(result.stderr, /took over a stale lock/);
   assert.equal(f.current(), id(f.c1));
 });
+
+test("a release that ends while a newer one waits leaves the restart to it, so the two restart once", async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
+  const second = f.releaseAsync([f.c3]);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(b.status, 0, b.stderr);
+  assert.match(a.stderr, /restart left to the waiting release of/);
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+});
+
+test("a waiting release whose build fails still restarts for the one it was left", async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
+  const second = f.releaseAsync([f.c3], { TEST_FAIL: "1" });
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(b.status, 1, b.stderr);
+  assert.equal(f.current(), id(f.c2));
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+});
