@@ -38,4 +38,4 @@ cat ~/.local/share/prime-sync/status.json                                      #
 2. The timer runs the Python that ran the installer. On the Mac that must be `/opt/homebrew/bin/python3`, because macOS refuses a launchd job under `/usr/bin/python3` access to `~/Documents`, where the checkout lives.
 3. `~/.config/prime-sync/sync.json` names the checkout, the state repo and its clone, and the agent folder. The host name comes from `~/.config/sieun-pi/hosts.json` when this box is listed there.
 4. `sync.log` in the same folder gets one line for each run that changed something or hit an error.
-5. The state repo is cloned over HTTPS with the `gh` credential helper, so `gh auth login` must have run on the box.
+5. The installer copies `gh auth token` into `~/.config/prime-sync/github-token` (mode 0600), and every git call of a run reads GitHub credentials from that file. A launchd job on the Mac cannot open the login keyring that the gh helper uses, and on 10-18 at 03:10Z one run failed its fetch with "Device not configured". Run the installer again after `gh auth login` changes the token.

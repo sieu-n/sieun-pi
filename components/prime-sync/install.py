@@ -3,7 +3,8 @@
 
 usage: python3 -B components/prime-sync/install.py --ref <commit> [--host <name>] [--state-repo <url>]
 
-Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json, clones the state repo,
+Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json and the 0600 github-token
+file from `gh auth token` (so the timer never needs the gh keyring helper), clones the state repo,
 installs the timer (prime-sync.timer under systemd --user on Linux, com.sieun.prime-sync under launchd on macOS) and runs one sync.
 The timer runs the Python that ran this installer. On macOS that Python needs access to the checkout's folder: launchd jobs
 under /usr/bin/python3 get "Operation not permitted" in ~/Documents, while /opt/homebrew/bin/python3 reads it.
@@ -105,6 +106,9 @@ def main() -> int:
     if args.host:
         config["host"] = args.host
     write(CONFIG, json.dumps(config, indent=2) + "\n", 0o600)
+    token = subprocess.run(["gh", "auth", "token", "--hostname", "github.com"], capture_output=True, text=True)
+    if token.returncode == 0 and token.stdout.strip():
+        write(CONFIG.parent / "github-token", token.stdout.strip() + "\n", 0o600)
     state = Path(os.path.expanduser(config["stateDir"]))
     if not (state / ".git").exists():
         subprocess.run(["git", "clone", "--quiet", config["stateRepo"], str(state)], env=GIT_ENV, check=True)

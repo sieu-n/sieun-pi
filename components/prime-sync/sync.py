@@ -30,7 +30,21 @@ CONFIG = Path(os.environ.get("PRIME_SYNC_CONFIG", HOME / ".config/prime-sync/syn
 SHARE = Path(os.environ.get("PRIME_SYNC_HOME", HOME / ".local/share/prime-sync"))
 BASE_REF = "refs/prime-sync/base"
 SETTLE_SECONDS = float(os.environ.get("PRIME_SYNC_SETTLE", "2"))
-GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+TOKEN_FILE = HOME / ".config/prime-sync/github-token"
+
+
+def git_env() -> dict[str, str]:
+    """The process env without GIT_* keys. With a token file, git reads GitHub credentials from it instead of the gh helper,
+    because a launchd job on the Mac cannot open the login keyring ("could not read Username ... Device not configured", 10-18 03:10Z)."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    if TOKEN_FILE.exists():
+        helper = f"!f() {{ test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$(cat '{TOKEN_FILE}')\"; }}; f"
+        env.update({"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_0": "",
+                    "GIT_CONFIG_KEY_1": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_1": helper, "GIT_TERMINAL_PROMPT": "0"})
+    return env
+
+
+GIT_ENV = git_env()
 
 
 class Skip(Exception):
