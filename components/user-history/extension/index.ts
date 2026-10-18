@@ -17,7 +17,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, Co
 import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
-import { loadWaitNote } from "../src/load-wait.ts";
+import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent } from "../src/shared/types.ts";
 
@@ -265,6 +265,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const notes = [chatShellNote({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked }),
         marked || job || underChat ? loadWaitNote(event.toolName, event.input) : undefined].filter((note): note is string => note !== undefined);
       if (notes.length) callNotes.set(event.toolCallId, notes);
+      // The result reaches the agent only when the call ends, so a load-wait call's wait ends after its first check (load-wait.ts).
+      const ended = marked || job || underChat ? endLoadWait(event.toolName, event.input) : undefined;
+      if (ended) Object.assign(event.input, ended);
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
