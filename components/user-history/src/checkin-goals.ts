@@ -52,6 +52,12 @@ export interface GoalPush {
   owner?: JobFact;
   /** The goal's open push step, live or not: a start sets a job on it instead of adding a second one. */
   pushStep?: string;
+  /**
+   * The job a start steers first, with its step: the push step's own job, else the job of the goal's open fix step (a step with a duty link),
+   * else the job of any open step under the goal. chat-057a's check-ins on 10-18 added push steps p50, p58, p64 and p67 under p1 while its fix
+   * step p60 (linked to checkin/goal_gaps) had the job "metal agent runtime".
+   */
+  stepJob?: { step: string; job: string };
   /** The items that wait on the owner's answer in For you (`ownerHeld`): the goal or its push step, or every open step under it. */
   asks?: string[];
   /** What a goal that waits holds on (`goalWait`): "until 10-18 20:00Z", or the owner's pause of the thread that owns its push step. */
@@ -212,7 +218,10 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const owner = goalOwner(goal, views);
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
-    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}) };
+    const under = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
+    const holder = (pushView?.item.job ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
+    const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job } : undefined;
+    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     if (!number) return [{ ...base, stale: false, act: "no_number" }];
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
@@ -270,6 +279,7 @@ const ownerAsks = (push: GoalPush): string => {
 /** The ask for a goal's push, in one sentence. */
 function askText(push: GoalPush): string {
   const { goal, owner } = push;
+  if (push.act === "start" && push.stepJob) return `no live job owns it, and ${push.stepJob.job} holds ${push.stepJob.step}: steer that job with the gap first, and add a step only for work no open step owns`;
   if (push.act === "start") return push.pushStep ? `its push step ${push.pushStep} has no live job: set one job on it that names and attacks the biggest blocker`
     : `no live job owns it: add a push step under ${goal.id} for one job that names and attacks the biggest blocker`;
   if (push.act === "steer") return `${ownerLabel(owner!)} owns it and it is off pace: steer it to name and attack the biggest blocker now`;
@@ -345,7 +355,11 @@ export function goalDueLine(push: GoalPush): string | null {
   const title = quote(push.goal.text);
   if (push.act === "no_number") return `Give ${title} a target from the owner's words, with plan_update target.`;
   if (!pushNeeded(push)) return null;
-  const ask = push.act === "steer" ? `Steer ${ownerLabel(push.owner!)} on ${title} with this message`
+  // A start steers the job that already holds the goal's work before it adds anything: a new step only for an output no open step owns.
+  const ask = push.act === "steer" ? `Steer ${ownerLabel(push.owner!)} on ${title} with this message, and add no step`
+    : push.stepJob ? `Steer the job ${push.stepJob.job} on ${push.stepJob.step}${push.stepJob.step === push.pushStep ? `, the push step of ${title}` : ` of ${title}`} with this message, ` +
+      `restarting it if it ended${push.stepJob.step === push.pushStep ? "" : `, and set the duty of ${push.stepJob.step} to "${GOAL_PUSH_LINK}"`}. Add no new step: add one only when the ` +
+      "work needs an output that no open step owns"
     : push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title}, a live job of the goal or a new one, and send it this message`
     : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to a live job of the goal or a new one, and send it this message`;
   return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}`;
