@@ -229,6 +229,19 @@ function startTimeoutMs(): number {
   return Number.isSafeInteger(value) && value > 0 ? value : START_TIMEOUT_MS;
 }
 const adoptFlag = (options: Options): string[] => options.adopt === "own" ? ["--no-adopt"] : options.adopt === "live" ? ["--adopt-live"] : [];
+/** The host bridge for hosts.json; null without the file. A bad file or a socket that cannot open is logged and leaves the chat running. */
+async function startHostBridge(): Promise<{ close(): Promise<void> } | null> {
+  const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  const { HOSTS_FILE, HostBridge, loadHosts } = await import("./hosts.ts");
+  if (!(await access(HOSTS_FILE).then(() => true, () => false))) return null;
+  try {
+    const bridge = new HostBridge(await loadHosts(), { log });
+    await bridge.start();
+    log(`hosts: bridges open for ${HOSTS_FILE}`);
+    return bridge;
+  } catch (error) { log(`hosts: ${error instanceof Error ? error.message : String(error)}`); return null; }
+}
+
 const withPhone = (service: Service, record: Instance): Instance & { phoneUrl: string | null } => ({ ...record, phoneUrl: phoneUrl(service) });
 
 export async function ensureChatService(options: Options = {}): Promise<Instance & { phoneUrl: string | null }> {
@@ -318,6 +331,8 @@ async function serve(options: Options): Promise<void> {
   if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
     ownChatsOnly: adopt === "own" });
+  // One local socket per other host in ~/.config/sieun-pi/hosts.json, tunneled to that host's relay, so a DaemonClient reaches it unchanged (src/hosts.ts).
+  const hostBridge = service.primary ? await startHostBridge() : null;
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
@@ -345,7 +360,7 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await server.close(); }
+      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hostBridge?.close(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }

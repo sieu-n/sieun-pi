@@ -18,6 +18,8 @@ try {
   } else if (command === "chat" || command === "open") {
     // `sieun-pi open` is `sieun-pi chat open`: start the chat if needed, then open its app window or the URL.
     run(process.execPath, [resolve(root, "components/user-history/src/chat-service-cli.mjs"), ...(command === "open" ? ["open"] : []), ...args], process.cwd());
+  } else if (command === "hosts") {
+    run(process.execPath, [resolve(root, "components/user-history/src/hosts-cli.mjs"), ...args], process.cwd());
   } else if (command === "source") {
     process.stdout.write(`${root}\n`);
   } else if (command === "sync-prime-agent") {
@@ -32,7 +34,7 @@ try {
     run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/user-history"));
     run("git", ["config", "core.hooksPath", "scripts/git-hooks"]);
   } else {
-    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
+    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, hosts, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
     if (command && command !== "--help" && command !== "-h") process.exitCode = 1;
   }
 } catch (error) {
