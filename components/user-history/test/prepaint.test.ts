@@ -103,3 +103,16 @@ test("a feed window with earlier items sits at the bottom of the view, in the st
   assert.equal(whole?.earlier, false);
   assert.ok(prepaintHtml(whole!).includes(`<div class="column ${chat}">`));
 });
+
+// Guards the 10-18 22:08Z loads of chat 01a14d31 from the Mac: the still view scrolled its lines to the bottom while Inter was still loading, Inter then made the items above taller, and the newest line slid from y 629 to 652 before the app drew it back at 629.
+test("the still view keeps its lines at the bottom when they grow after the first scroll", () => {
+  const scroller = { scrollTop: 0, scrollHeight: 900, firstElementChild: {} };
+  const observed: Array<() => void> = [];
+  runInNewContext(prepaintScript, { innerWidth: 1440, Number, Math, JSON, Date, localStorage: { getItem: () => null },
+    ResizeObserver: class { constructor(callback: () => void) { observed.push(callback); } observe(node: unknown) { assert.equal(node, scroller.firstElementChild); } },
+    document: { documentElement: { dataset: {}, style: { setProperty: () => {} } }, getElementById: () => ({ querySelectorAll: () => [], querySelector: () => scroller }) } });
+  assert.equal(scroller.scrollTop, 900);
+  scroller.scrollHeight = 923;
+  observed[0]!();
+  assert.equal(scroller.scrollTop, 923);
+});

@@ -28,8 +28,9 @@ export interface PrepaintModule { prepaintLines(id: string, frames: string): { l
 /**
  * Runs before the first paint, after the stylesheet (an inline script waits for the stylesheets above it). It applies what the app reads from
  * localStorage that moves the frame: the theme and accent (client/appearance.ts), the sidebar width, and the board panel's state and width
- * (client/ui.svelte.ts). It writes each time stamp in the browser's own time zone, as ChatLines.svelte `stamp` does, and scrolls the lines to
- * the bottom. test/prepaint.test.ts holds it to those files.
+ * (client/ui.svelte.ts). It writes each time stamp in the browser's own time zone, as ChatLines.svelte `stamp` does, and keeps the lines
+ * scrolled to the bottom while they change height, as Chat.svelte's ResizeObserver does, since a web font that loads after the first paint
+ * makes them taller. test/prepaint.test.ts holds it to those files.
  */
 export const prepaintScript = `(function(){var r=document.documentElement,p=document.getElementById("prepaint");if(!p)return;try{
 var s=localStorage,a=null;try{a=JSON.parse(s.getItem("chat.appearance")||"null")}catch(e){}a=a||{};
@@ -41,7 +42,7 @@ r.style.setProperty("--prepaint-board",Math.round(Math.min(Math.max(280,Math.flo
 }catch(e){}
 var today=new Date().toDateString();p.querySelectorAll("[data-stamp]").forEach(function(n){var d=new Date(Number(n.getAttribute("data-stamp")));
 n.textContent=d.toDateString()===today?d.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"}):d.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})});
-var c=p.querySelector("[data-prepaint-scroller]");if(c)c.scrollTop=c.scrollHeight;
+var c=p.querySelector("[data-prepaint-scroller]");if(c){c.scrollTop=c.scrollHeight;if(typeof ResizeObserver!=="undefined")new ResizeObserver(function(){c.scrollTop=c.scrollHeight}).observe(c.firstElementChild)}
 })();`;
 
 /** The CSP source that lets exactly this inline script run. */
