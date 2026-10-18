@@ -66,11 +66,14 @@ export function jobPushMessage({ act, owes, why }: JobPush): string {
 export function jobPushLine(pushes: readonly JobPush[], failed: ReadonlySet<string> = new Set()): string | null {
   if (!pushes.length) return null;
   const done = pushes.filter(push => !failed.has(push.fact.key));
+  const lost = pushes.filter(push => failed.has(push.fact.key) && push.owes.length > 0);
   const names = (act: JobAct) => done.filter(push => push.act === act).map(push => ownerLabel(push.fact));
   const parts = [
     ...names("restart").length ? [`restarted ${names("restart").join(", ")}`] : [],
     ...names("nudge").length ? [`nudged ${names("nudge").join(", ")}`] : [],
-    ...failed.size ? [`could not reach ${pushes.filter(push => failed.has(push.fact.key)).map(push => ownerLabel(push.fact)).join(", ")}, so start a job in its place`] : [],
+    // Only a job that owns an open step needs a job in its place: Vent's 16:56Z check-in on 10-18 said "could not reach job search flows end
+    // to end, so start a job in its place" though p7 had moved to "search flows finish thread", which reported at 16:53Z.
+    ...lost.length ? [`could not reach ${lost.map(push => ownerLabel(push.fact)).join(", ")}, so start a job in its place`] : [],
   ];
-  return `Check-in: ${parts.join("; ")}, because nothing moved on their work.`;
+  return parts.length ? `Check-in: ${parts.join("; ")}, because nothing moved on their work.` : null;
 }
