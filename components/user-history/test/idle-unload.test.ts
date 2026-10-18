@@ -111,6 +111,25 @@ test("a subagent that replied to its parent stops after ENDED_MS of quiet, and a
   assert.deepEqual(unloadPlan([quietFor({ ...unjudged, runtimeKind: "top-level", rlmDepth: 0, repliedSinceTask: true }, 5 * MIN)], input), [], "an unjudged root keeps idleEvictionMinutes");
 });
 
+// The daemon row at 16:41Z on 10-18 of the alert job 'alert VP of CI 19:58', loaded as a draft (0 messages) since 10:58Z with its own worker.
+const draft = {
+  id: "3050f9ae4d5e", lifecycle: "draft", activity: "idle", isSessionActive: false, lastActivityAt: "2026-10-18T10:58:53.998Z", runtimeKind: "top-level",
+  rlmDepth: 0, activeSessionId: "3050f9ae4d5e", sessionId: "01a14ea9-f2bf-7170-aaea-2b0c0fe16637",
+  sessionFile: "/home/sieun/.prime/agent/sessions/01a14ea9-f2bf-7170-aaea-2b0c0fe16637.jsonl", sessionName: "alert VP of CI 19:58", cwd: "/home/sieun",
+  thinkingLevel: "high", isStreaming: false, isCompacting: false, isBashRunning: false, hasRunningRlmChildren: false, isRunningTools: false,
+  attachedClients: 0, messageCount: 0, unfinishedActionCount: 0, created: "2026-10-18T10:58:43.007Z", modified: "2026-10-18T10:58:53.998Z",
+  sessionActions: { queuedCount: 0, steering: [], followUps: [] }, rosterStatus: "idle", workerState: "ready", workerPid: 1712772,
+} as unknown as SessionSummary;
+
+test("a draft the daemon holds loaded with no message stops after idleEvictionMinutes, and its worker counts as quiet", () => {
+  const input = { attached: new Set<string>(), pool: new Set<string>(), idleMs: TEN_MIN };
+  const at = Date.parse("2026-10-18T16:41:00Z");
+  assert.deepEqual(unloadPlan([draft], { ...input, now: at }).map(row => row.sessionId), [draft.sessionId]);
+  assert.deepEqual(unloadPlan([draft], { ...input, now: Date.parse(draft.lastActivityAt!) + TEN_MIN - 1000 }), [], "not before idleEvictionMinutes");
+  assert.deepEqual(unloadPlan([{ ...draft, lifecycle: "archived" } as SessionSummary], { ...input, now: at }), [], "an archived row is not loaded");
+  assert.deepEqual(quietWorkers([draft], { chats: new Set(), pool: new Set(), now: at }).map(worker => worker.pid), [1712772]);
+});
+
 test("the 10-18 rows recycle no worker: the VP's worker is at work and every quiet worker holds under RECYCLE_OWN_BYTES of its own", () => {
   const quiet = quietWorkers(day18.rows, { chats: new Set(day18.chats), pool: new Set(day18.pool), now: at18 });
   assert.ok(quiet.length >= 5, `${quiet.length} quiet workers`);

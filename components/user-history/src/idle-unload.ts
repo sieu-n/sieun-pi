@@ -13,9 +13,17 @@ import type { DaemonClient, SessionSummary } from "prime-agent";
  * not free memory: at 23:45Z on 10-17, 18 of 23 workers held only sleeping sessions (5.3 GB, plus 1.2 GB in their kernels), among them six
  * paused chats idle 31 to 50 min (api portal vp, frontend bro, launch main bro, spec and monitoring, SEO guy, ops guy).
  */
+/**
+ * The daemon holds the session loaded: a live one, or a draft, which has no message yet. Prime discards an empty draft at detach only without
+ * workers, and a named one never. On 10-18 at 16:45Z the alert job 'alert VP of CI 19:58' (01a14ea9), whose brief never arrived, sat as a draft
+ * since 10:58Z with its kernel and its own 216 MB worker, because only live rows were stopped. A stopped named draft stays on disk and loads
+ * again on its first message.
+ */
+const loaded = (row: SessionSummary): boolean => (row.lifecycle === "live" || row.lifecycle === "draft") && row.activeSessionId !== undefined;
+
 /** Nothing runs, waits or is scheduled in the session, and no client but the service's own attach (judged by the caller) holds it. */
 function still(row: SessionSummary, pool: ReadonlySet<string>): boolean {
-  return row.lifecycle === "live" && row.activeSessionId !== undefined && row.workerState === "ready" &&
+  return loaded(row) && row.workerState === "ready" &&
     row.activity === "idle" && !row.isSessionActive && !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren &&
     !row.isRunningTools && !row.directAttachedClients && !row.unfinishedActionCount &&
     (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !pool.has(row.sessionId);
@@ -84,7 +92,7 @@ export function quietWorkers(rows: readonly SessionSummary[], input: { chats: Re
   const quietMs = input.quietMs ?? RECYCLE_QUIET_MS;
   const byWorker = new Map<number, SessionSummary[]>();
   for (const row of rows) {
-    if (row.lifecycle !== "live" || row.activeSessionId === undefined || row.workerPid === undefined) continue;
+    if (!loaded(row) || row.workerPid === undefined) continue;
     byWorker.set(row.workerPid, [...byWorker.get(row.workerPid) ?? [], row]);
   }
   const depth = (row: SessionSummary): number => row.rlmDepth ?? (row.runtimeKind === "subagent" ? 1 : 0);
