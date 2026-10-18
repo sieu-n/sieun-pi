@@ -97,19 +97,24 @@ export class Wakes {
   async tick(): Promise<number> {
     const names = await readdir(this.deps.dir).catch(() => [] as string[]);
     const now = this.now();
-    const states = new Map<number, RunState | null>();
-    const due = new Map<string, { file: string; wake: Wake; state: RunState | null }[]>();
+    const parsed: { file: string; wake: Wake }[] = [];
     for (const name of names.filter(name => name.endsWith(".json")).sort()) {
       const file = join(this.deps.dir, name);
       let wake: Wake | null;
       try { wake = parseWake(JSON.parse(await readFile(file, "utf8"))); } catch { wake = null; }
       if (!wake) { this.deps.log(`wakes: ${name} is not a wake; removed`); await rm(file, { force: true }); continue; }
+      parsed.push({ file, wake });
+    }
+    // Every run is read at once and every session is sent at once: after the chat moved to us-metal02 (10-18 04:19Z) 170 wakes waited, and one
+    // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The send-once record keeps each send single.
+    const runs = new Map<number, Extract<WakeOn, { kind: "run" }>>();
+    for (const { wake } of parsed) if (wake.on.kind === "run" && !runs.has(wake.on.run)) runs.set(wake.on.run, wake.on);
+    const states = new Map<number, RunState | null>(await Promise.all([...runs].map(async ([run, on]) => [run, await this.look(on, now)] as const)));
+    if (runs.size) await this.moved();
+    const due = new Map<string, { file: string; wake: Wake; state: RunState | null }[]>();
+    for (const { file, wake } of parsed) {
       let state: RunState | null = null;
       if (wake.on.kind === "run") {
-        if (!states.has(wake.on.run)) {
-          states.set(wake.on.run, await this.look(wake.on, now));
-          await this.moved();
-        }
         state = states.get(wake.on.run) ?? null;
         const failed = this.failing.get(wake.on.run);
         if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
@@ -117,8 +122,7 @@ export class Wakes {
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
     }
-    let sent = 0;
-    for (const [session, wakes] of due) {
+    const results = await Promise.all([...due].map(async ([session, wakes]) => {
       const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
       try {
         const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
@@ -129,16 +133,16 @@ export class Wakes {
           result = await this.deps.deliver(session, text);
         }
         for (const { file } of wakes) await rm(file, { force: true });
-        if (result === "sent") sent++;
-        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min`);
+        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, sent ${Math.round((this.now() - now) / 1000)} s after the tick began`);
+        return result === "sent";
       } catch (error) {
         this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
-      }
-      await this.moved();
-    }
+        return false;
+      } finally { await this.moved(); }
+    }));
     for (const run of this.looked.keys()) if (!states.has(run)) this.looked.delete(run);
     for (const run of this.failing.keys()) if (!states.has(run)) this.failing.delete(run);
-    return sent;
+    return results.filter(Boolean).length;
   }
 
   private async moved(): Promise<void> {
