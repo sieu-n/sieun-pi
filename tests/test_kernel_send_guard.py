@@ -9,6 +9,7 @@ Gap rows come from 2204-c37-send-guards/data/map/gap-table.md.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,8 @@ REPO = Path(__file__).resolve().parents[1]
 GUARD = REPO / "components" / "global-rules" / "kernel-guard.py"
 CHILD_DIR = REPO / "components" / "global-rules" / "python-child"
 CHAT = "01a00000-0000-7000-8000-0000000000c6"
+SESSION_A = "01a00000-0000-7000-8000-00000000000a"
+SESSION_B = "01a00000-0000-7000-8000-00000000000b"
 AT = "2026-10-10T00:00:00.000Z"
 
 RUNNER = r"""
@@ -185,6 +188,20 @@ class KernelGuardBase(unittest.TestCase):
         (self.tmp / "home").mkdir()
         self.runner = self.tmp / "runner.py"
         self.runner.write_text(RUNNER)
+        self.addCleanup(self.stop_judges)
+
+    def stop_judges(self):
+        """The judge outlives the runner by design; stop this test's judges, found by the HOME they were started with."""
+        if not os.path.isdir("/proc/self"):
+            return
+        home = f"HOME={self.tmp / 'home'}".encode()
+        for pid in [p for p in os.listdir("/proc") if p.isdigit()]:
+            try:
+                cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+                if b"--serve-socket" in cmd and home in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
+                    os.kill(int(pid), signal.SIGKILL)
+            except OSError:
+                continue
 
     def run_cells(self, *cells, env=None, python=(sys.executable,)):
         environ = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "OWNER_OK", "PYTHONSTARTUP", "NODE_COMPILE_CACHE"}}
@@ -539,8 +556,24 @@ class OneJudgePerProcess(KernelGuardBase):
         self.assert_refused(out, "curl call writes to")
         self.assertEqual(len(self.fake_runs()), 5)
         self.assertEqual(len(self.judges()), 1, self.judges())
-        self.assertTrue(self.judges()[0].endswith("send-check.ts --serve"), self.judges())
+        self.assertIn("send-check.ts --serve-socket ", self.judges()[0])
         self.assertEqual([(line["decision"], line["layer"]) for line in self.sends()], [("refused", "kernel")])
+
+    def test_two_kernels_share_one_judge_and_each_send_log_line_names_its_own_session(self):
+        # 10-18 16:48Z on us-metal02: 88 kernels each kept their own judge of about 55 MB.
+        first = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_A)})
+        second = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_B)})
+        self.assert_refused(first, "curl call writes to")
+        self.assert_refused(second, "curl call writes to")
+        self.assertEqual(len(self.judges()), 1, self.judges())
+        self.assertEqual([line.get("session") for line in self.sends()], [SESSION_A, SESSION_B])
+
+    def test_a_judge_that_cannot_start_leaves_the_check_to_a_one_shot_run(self):
+        (self.bin / "node").write_text(NODE_SHIM.format(real=shutil.which("node")).replace('exec ', 'case "$2" in --serve-socket) exit 1;; esac\nexec ', 1))
+        out = self.cells(CURL_GET + CURL_POST)
+        self.assert_refused(out, "curl call writes to")
+        self.assertEqual(len(self.fake_runs()), 1)
+        self.assertEqual(sum(1 for line in self.judges() if line.endswith("send-check.ts")), 2, self.judges())
 
     def test_a_changed_environment_starts_a_fresh_judge(self):
         out = self.cells(CURL_GET + "import os\nos.environ['SOME_FLAG'] = '1'\n" + CURL_GET + CURL_GET)

@@ -47,11 +47,39 @@ export async function judgeKernelCheck(check: Check): Promise<{ block: false } |
 
 /*
  * --serve judges one check per stdin line, {"id": n, "cwd": "...", "check": {...}}, and answers {"id": n, "block": ...} on one stdout line,
- * in order. It exits after IDLE_MS (or argv[3] ms) with no check. kernel-guard.py keeps one of these per process: a fresh
- * `node send-check.ts` per check started 8 to 12 times a second on us-metal02 on 10-18, at 0.11 CPU s each. The kernel restarts it when its environment or a global-rules source file changes, so each
- * verdict reads the same rules and environment a fresh run would. A check that throws answers {"id": n, "error": ...}, which the kernel
+ * in order. It stays for kernels that loaded kernel-guard.py before --serve-socket, which live for hours. It exits after IDLE_MS (or argv[3] ms) with no check. A check that throws answers {"id": n, "error": ...}, which the kernel
  * lets through, as it lets through a one-shot run that prints nothing.
+ * --serve-socket <path> answers the same lines on a unix socket for every process on the box whose rules and environment hash to that path
+ * (kernel-guard.py Judge). Each line also carries the asking process's "env", which becomes process.env before the check, so the verdict,
+ * the child processes a rule starts and the send-log line read that process's environment, as a fresh run in it would. On 10-18 each
+ * kernel kept its own --serve judge, 88 of them at about 55 MB each. Checks run one at a time, since process.env and the cwd are shared.
  */
+async function answer(line: string): Promise<string | null> {
+	if (!line.trim()) return null;
+	let id: unknown = null;
+	try {
+		const request = JSON.parse(line) as { id: unknown; cwd?: string; env?: Record<string, string>; check: Check };
+		id = request.id;
+		if (request.env) useEnv(request.env);
+		if (request.cwd) {
+			try {
+				process.chdir(request.cwd);
+			} catch {
+				// A cwd that is gone leaves the last one; every rule reads check.cwd, not process.cwd().
+			}
+		}
+		return `${JSON.stringify({ id, ...(await judgeKernelCheck(request.check)) })}\n`;
+	} catch (error) {
+		return `${JSON.stringify({ id, error: error instanceof Error ? error.message : String(error) })}\n`;
+	}
+}
+
+/** Makes process.env exactly `env`. */
+export function useEnv(env: Record<string, string>): void {
+	for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+	Object.assign(process.env, env);
+}
+
 export async function serve(input: NodeJS.ReadableStream = process.stdin, write = (line: string) => process.stdout.write(line), idleMs = IDLE_MS): Promise<void> {
 	const { createInterface } = await import("node:readline");
 	// A judge with no check for idleMs exits, so an idle kernel does not hold its 55 to 65 MB; the next check starts a fresh one.
@@ -59,30 +87,67 @@ export async function serve(input: NodeJS.ReadableStream = process.stdin, write 
 	for await (const line of createInterface({ input, crlfDelay: Infinity })) {
 		clearTimeout(idle);
 		idle = setTimeout(() => process.exit(0), idleMs);
-		if (!line.trim()) continue;
-		let id: unknown = null;
-		try {
-			const request = JSON.parse(line) as { id: unknown; cwd?: string; check: Check };
-			id = request.id;
-			if (request.cwd) {
-				try {
-					process.chdir(request.cwd);
-				} catch {
-					// A cwd that is gone leaves the last one; every rule reads check.cwd, not process.cwd().
-				}
-			}
-			write(`${JSON.stringify({ id, ...(await judgeKernelCheck(request.check)) })}\n`);
-		} catch (error) {
-			write(`${JSON.stringify({ id, error: error instanceof Error ? error.message : String(error) })}\n`);
-		}
+		const out = await answer(line);
+		if (out) write(out);
 	}
 	clearTimeout(idle);
+}
+
+/**
+ * Serves `path` until no check came for idleMs, then removes the socket if it is still its own and exits. Resolves once it listens, or
+ * false at once when another judge already answers on `path`.
+ */
+export async function serveSocket(path: string, idleMs = IDLE_MS, exit = () => process.exit(0)): Promise<boolean> {
+	const { createConnection, createServer } = await import("node:net");
+	const { createInterface } = await import("node:readline");
+	const { rmSync, statSync } = await import("node:fs");
+	const answers = await new Promise<boolean>((resolve) => {
+		const probe = createConnection(path, () => { probe.destroy(); resolve(true); });
+		probe.on("error", () => resolve(false));
+	});
+	if (answers) return false;
+	rmSync(path, { force: true });
+	let queue: Promise<unknown> = Promise.resolve();
+	let idle: NodeJS.Timeout | undefined;
+	let own = 0;
+	const arm = () => {
+		clearTimeout(idle);
+		idle = setTimeout(() => {
+			void queue.then(() => {
+				try {
+					if (statSync(path).ino === own) rmSync(path, { force: true });
+				} catch {
+					// Gone already.
+				}
+				server.close();
+				exit();
+			});
+		}, idleMs);
+	};
+	const server = createServer((socket) => {
+		socket.on("error", () => {});
+		createInterface({ input: socket, crlfDelay: Infinity }).on("line", (line) => {
+			arm();
+			queue = queue.then(() => answer(line)).then((out) => { if (out && !socket.destroyed) socket.write(out); }, () => {});
+		});
+	});
+	const listening = await new Promise<boolean>((resolve) => {
+		server.once("error", () => resolve(false));
+		server.listen(path, () => resolve(true));
+	});
+	if (!listening) return false;
+	own = statSync(path).ino;
+	arm();
+	return true;
 }
 
 const IDLE_MS = 120_000;
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-	if (process.argv[2] === "--serve") {
+	if (process.argv[2] === "--serve-socket" && process.argv[3]) {
+		console.log = console.info = console.warn = console.error;
+		if (!(await serveSocket(process.argv[3], Number(process.argv[4]) || IDLE_MS))) process.exit(0);
+	} else if (process.argv[2] === "--serve") {
 		// stdout carries only answers, so a stray console.log in a rule module cannot read as a verdict.
 		console.log = console.info = console.warn = console.error;
 		await serve(process.stdin, (line) => process.stdout.write(line), Number(process.argv[3]) || IDLE_MS);

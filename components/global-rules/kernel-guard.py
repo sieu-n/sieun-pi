@@ -105,21 +105,23 @@ def owned_by_skill() -> bool:
     return False
 
 
+VOLATILE_ENV = re.compile(r"^(?:RLM_|PRIME_AGENT_INTERNAL_|PRIME_AGENT_KERNEL_)")
+
+
 class Judge:
-    """One `node send-check.ts --serve` per process, started on first use. A fresh `node send-check.ts` per check started 8 to 12
-    times a second on us-metal02 on 10-18 (one sampler's git ls-files every 0.2 s alone made 4 a second), at 0.11 CPU s each.
-    It exits after 2 minutes with no check, and restarts when it is gone, when this process forks, and when the environment or a global-rules source file changes, so it
-    judges with the rules and environment a fresh run would read. A check another thread is judging meanwhile runs one-shot."""
+    """One `node send-check.ts --serve-socket <path>` per box for every kernel and child Python with the same rules and environment, started
+    by the first check that finds none. On 10-18 at 16:48Z each kernel kept its own `--serve` judge, 88 of them at about 55 MB each (4.8 GB).
+    The socket's name hashes the rule files (every .ts and .json next to send-check.ts) and the environment without the per-session
+    RLM_*, PRIME_AGENT_INTERNAL_* and PRIME_AGENT_KERNEL_* keys, so a changed rule or environment gets a fresh judge. Each check carries this
+    process's whole environment and cwd, which the judge takes on before it judges, so a verdict, its child processes and its send-log line
+    read what a fresh `node send-check.ts` here would. The judge exits after 2 minutes with no check from any process. When it cannot be
+    reached or started, the check runs one-shot."""
 
     TIMEOUT = 30
+    START_WAIT = 10
 
     def __init__(self):
-        self.lock = threading.Lock()
-        self.proc = None
-        self.key = None
-        self.pid = None
-        self.next_id = 0
-        self.buffer = b""
+        self.started = []
 
     @staticmethod
     def sources() -> tuple:
@@ -130,85 +132,93 @@ class Judge:
             if entry.name.endswith((".ts", ".json"))
         ))
 
-    def stop(self) -> None:
-        proc, self.proc, self.buffer = self.proc, None, b""
-        if proc is not None and self.pid == os.getpid():
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                pass
+    @staticmethod
+    def stable(env: dict) -> dict:
+        return {key: value for key, value in env.items() if not VOLATILE_ENV.match(key)}
+
+    def socket_path(self, env: dict) -> str:
+        import hashlib
+        import tempfile
+
+        digest = hashlib.sha256(json.dumps([CHECK, self.sources(), sorted(self.stable(env).items())]).encode()).hexdigest()[:20]
+        return os.path.join(tempfile.gettempdir(), f"global-rules-{os.getuid()}", f"judge-{digest}.sock")
 
     def forget_after_fork(self) -> None:
-        """A forked child drops its copy of the parent's pipes and starts its own judge when it needs one."""
-        proc, self.proc, self.buffer = self.proc, None, b""
-        self.lock = threading.Lock()
-        for stream in (getattr(proc, "stdin", None), getattr(proc, "stdout", None)):
-            try:
-                stream.close()
-            except (OSError, AttributeError):
-                pass
+        """A forked child does not reap the parent's judges; they are not its children."""
+        self.started = []
 
     def ask(self, check: dict) -> dict:
         """The verdict, or {} when the check could not run. Raises OSError, SubprocessError or ValueError like a one-shot run."""
-        if not self.lock.acquire(blocking=False):
-            return one_shot(check)
-        try:
-            key = (hash(frozenset(os.environ.items())), self.sources())
-            if self.proc is not None and (self.pid != os.getpid() or self.key != key or self.proc.poll() is not None):
-                self.stop()
-            try:
-                return self.send(check, key)
-            except OSError:
-                # A judge that died after the poll above: one fresh judge gets the check before it falls open.
-                return self.send(check, key)
-        finally:
-            self.lock.release()
-
-    def send(self, check: dict, key) -> dict:
-        if self.proc is None:
-            self.proc = subprocess.Popen(
-                ["node", CHECK, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                bufsize=0, start_new_session=True, env=check_env(),
-            )
-            self.key, self.pid = key, os.getpid()
-        self.next_id += 1
-        ask_id = self.next_id
+        self.started = [proc for proc in self.started if proc.poll() is None]
+        env = dict(os.environ)
         try:
             cwd = os.getcwd()
         except OSError:
             cwd = None
-        line = json.dumps({"id": ask_id, "cwd": cwd, "check": check}).encode() + b"\n"
+        path = self.socket_path(env)
+        line = json.dumps({"id": 1, "cwd": cwd, "env": env, "check": check}).encode() + b"\n"
         try:
-            self.proc.stdin.write(line)
-            return self.answer(ask_id)
-        except BaseException:
-            self.stop()
-            raise
+            return self.over(path, line)
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+        if self.start(path, env):
+            try:
+                return self.over(path, line)
+            except (FileNotFoundError, ConnectionRefusedError):
+                pass
+        return one_shot(check)
 
-    def answer(self, ask_id: int) -> dict:
-        import select
+    def start(self, path: str, env: dict) -> bool:
+        """Starts a judge on `path` and waits until it answers; false when it exits or does not answer within START_WAIT seconds."""
+        import socket
         import time
 
-        deadline = time.monotonic() + self.TIMEOUT
-        fd = self.proc.stdout.fileno()
-        while True:
-            while b"\n" in self.buffer:
-                line, self.buffer = self.buffer.split(b"\n", 1)
-                try:
-                    reply = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(reply, dict) and reply.get("id") == ask_id:
-                    return {} if "error" in reply else reply
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise subprocess.TimeoutExpired(CHECK, self.TIMEOUT)
-            if select.select([fd], [], [], left)[0]:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        proc = subprocess.Popen(
+            ["node", CHECK, "--serve-socket", path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=self.stable({**env, **check_env()}),
+        )
+        self.started.append(proc)
+        deadline = time.monotonic() + self.START_WAIT
+        while time.monotonic() < deadline:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(path)
+                return True
+            except OSError:
+                if proc.poll() is not None:
+                    # It also exits at once when another judge took the path first, and that one answers.
+                    return os.path.exists(path)
+            finally:
+                probe.close()
+            time.sleep(0.02)
+        return False
+
+    def over(self, path: str, line: bytes) -> dict:
+        import select
+        import socket
+        import time
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(path)
+            fd, sent = sock.fileno(), 0
+            # os.write, not sock.sendall, which this guard wraps to read HTTP writes.
+            while sent < len(line):
+                sent += os.write(fd, line[sent:])
+            deadline, buffer = time.monotonic() + self.TIMEOUT, b""
+            while b"\n" not in buffer:
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    raise subprocess.TimeoutExpired(CHECK, self.TIMEOUT)
                 chunk = os.read(fd, 65536)
                 if not chunk:
-                    raise OSError("send-check.ts --serve exited")
-                self.buffer += chunk
+                    raise OSError("send-check.ts --serve-socket closed the connection")
+                buffer += chunk
+            reply = json.loads(buffer.split(b"\n", 1)[0])
+            return {} if not isinstance(reply, dict) or "error" in reply else reply
+        finally:
+            sock.close()
 
 
 def check_env() -> dict:

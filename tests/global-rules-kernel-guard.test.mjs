@@ -70,3 +70,37 @@ test("send-check.ts --serve answers each line in order with its id and exits aft
   assert.deepEqual(lines[1], { id: 2, block: false });
   assert.equal(lines[3].error !== undefined, true);
 });
+
+test("send-check.ts --serve-socket judges for many processes in each one's environment, a second judge on the path exits, and it leaves after its idle time", async () => {
+  const { spawn } = await import("node:child_process");
+  const { createConnection } = await import("node:net");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const check = join(import.meta.dirname, "..", "components", "global-rules", "send-check.ts");
+  const path = join(root, "judge.sock");
+  const start = () => spawn(process.execPath, [check, "--serve-socket", path, "1500"], { stdio: "ignore", env: process.env });
+  const judge = start();
+  const exited = new Promise((resolve) => judge.on("exit", (code) => resolve(code)));
+  for (let i = 0; i < 200 && !existsSync(path); i++) await new Promise((resolve) => setTimeout(resolve, 25));
+  const second = start();
+  assert.equal(await new Promise((resolve) => second.on("exit", resolve)), 0, "a second judge on a path that answers exits at once");
+  const ask = (session, text) => new Promise((resolve, reject) => {
+    const env = { ...process.env, GLOBAL_RULES_SEND_LOG: join(root, `sends-${session}.jsonl`), RLM_SESSION_DIR: join(root, "artifacts", session) };
+    const socket = createConnection(path, () => socket.write(`${JSON.stringify({ id: 1, cwd: root, env, check: { kind: "shell", text, cwd: root, approval: "" } })}\n`));
+    let out = "";
+    socket.on("data", (chunk) => { out += chunk; if (out.includes("\n")) { socket.end(); resolve(JSON.parse(out)); } });
+    socket.on("error", reject);
+  });
+  const a = "01a10000-0000-7000-8000-00000000000a";
+  const b = "01a10000-0000-7000-8000-00000000000b";
+  const [refused, passed] = await Promise.all([ask(a, "curl -X POST https://api.resend.com/emails -d x"), ask(b, "git ls-files deploy.sh")]);
+  const oneShot = (text) => JSON.parse(execFileSync(process.execPath, [check], { input: JSON.stringify({ kind: "shell", text, cwd: root, approval: "" }),
+    env: { ...process.env, GLOBAL_RULES_SEND_LOG: join(root, "sends-one-shot.jsonl") } }).toString());
+  assert.deepEqual({ block: refused.block, reason: refused.reason }, oneShot("curl -X POST https://api.resend.com/emails -d x"));
+  assert.deepEqual({ block: passed.block }, oneShot("git ls-files deploy.sh"));
+  const logged = readFileSync(join(root, `sends-${a}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(logged.map((line) => [line.decision, line.layer]), [["refused", "kernel"]]);
+  assert.match(JSON.stringify(logged[0]), new RegExp(a));
+  assert.equal(existsSync(join(root, `sends-${b}.jsonl`)), false, "the other process's check wrote nothing to this log");
+  assert.equal(await exited, 0);
+  assert.equal(existsSync(path), false, "the judge removes its socket when it leaves");
+});
