@@ -1481,19 +1481,28 @@ class RecordedStops(unittest.TestCase):
         self.assertEqual(stopped["01a14ddc-06ee-724b-9147-6de2eff81ca8"],
                          "its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z)")
 
-    def test_a_ledger_delete_counts_only_for_the_turn_it_stopped(self):
+    def test_a_ledger_delete_holds_after_any_later_message_and_only_a_later_spawn_undoes_it(self):
         chat = "01a14dd5-e9d3-705d-bd63-245c21b2eee2"
         cut = "2026-10-18T10:50:00.000Z"
+        resume_continue = {"type": "message", "timestamp": "2026-10-18T10:45:00.000Z",
+                           "message": {"role": "user", "content": [{"type": "text", "text": "continue"}], "timestamp": 1792320300000}}
+        agent_message = {"type": "custom_message", "customType": "agent_message", "content": "[agent-message from parent]\n\ncarry on",
+                         "display": True, "timestamp": "2026-10-18T10:46:00.000Z"}
         path = self.job(chat, "sub-9e9f4273", "01a14ddc-06ee-724b-9147-6de2eff81ca8",
-                        [self.message("2026-10-18T10:40:00.000Z", "user"), self.archive("2026-10-18T10:40:44.800Z"),
-                         self.message("2026-10-18T10:45:00.000Z", "user"), self.message(self.later(cut, -1), "assistant", stopReason="toolUse"),
-                         self.message(cut, "toolResult")])
+                        [self.message("2026-10-18T10:40:00.000Z", "user"), self.archive("2026-10-18T10:40:44.800Z"), resume_continue, agent_message,
+                         self.message(self.later(cut, -1), "assistant", stopReason="toolUse"), self.message(cut, "toolResult")])
         parent = self.agent / "sessions" / f"{chat}.jsonl"
+        deleted = "its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z)"
         self.ledger(self.spawn(parent, path, "2026-10-18T07:13:48.723Z"), self.delete(path, "2026-10-18T10:40:44.763Z"))
-        self.assertIsNone(resume_paused.stop_record(str(path)), "a prompt after the delete started a turn the delete did not stop")
-        self.assertEqual([p["reason"] for p in self.run_owners([path.stem])["paused"]], ["cut_off"])
+        self.assertEqual(resume_paused.stop_record(str(path)), deleted,
+                         "a resume pass's continue is the same plain user message as an owner prompt, and an agent message proves no reopen")
+        self.assertEqual((self.run_owners([path.stem])["paused"], [entry["stopped_by"] for entry in resume_paused.STOPPED]), ([], [deleted]))
         self.ledger(self.delete(path, "2026-10-18T10:40:44.763Z"), self.spawn(parent, path, "2026-10-18T10:44:00.000Z"))
         self.assertIsNone(resume_paused.stop_record(str(path)), "a spawn after the delete revived the edge, as the runtime's replay does")
+        (path.parent / "rlm-subagent.json").write_text(json.dumps({"status": "deleted", "updatedAt": "2026-10-18T10:40:44.762Z"}))
+        self.assertEqual(resume_paused.stop_record(str(path)), "its parent deleted it (rlm-subagent.json status deleted, at 2026-10-18T10:40:44.762Z)",
+                         "the runtime never writes rlm-subagent.json back from deleted")
+
 
     def test_a_job_under_a_deleted_job_is_stopped_by_the_ancestors_ledger_delete(self):
         chat = "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb"
@@ -1551,25 +1560,41 @@ class RecordedStops(unittest.TestCase):
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"ee92e1d8c39e1961-{name}.json").write_text(json.dumps({"version": 1, "requestId": name, "phase": "complete", **fields}))
 
-    def test_an_update_discard_needs_its_matching_record_and_names_the_cause(self):
+    def test_an_update_discard_names_its_cause_only_when_one_record_alone_can_match(self):
         resident = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d1")
         draft = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d2")
         other_update = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d3")
         bare = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d4")
+        twice = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d5")
 
         def discard(path, cause, at="2026-10-18T10:20:29.990Z"):
             return {"activeSessionId": path.stem[-12:], "sessionId": path.stem, "sessionFile": str(path), "reason": "update_discarded", "cause": cause, "at": at}
 
-        self.update_record("now", discarded=[discard(resident, "resident_after_prepare"), discard(draft, "empty_draft")])
-        self.update_record("earlier", discarded=[discard(other_update, "resident_after_prepare", at="2026-10-18T06:46:02.000Z")])
-        report = self.run_owners([resident.stem, draft.stem, other_update.stem, bare.stem])
+        self.update_record("now", discarded=[discard(resident, "resident_after_prepare"), discard(draft, "empty_draft"), discard(twice, "empty_draft")])
+        self.update_record("earlier", discarded=[discard(other_update, "empty_draft", at="2026-10-18T10:19:59.000Z"),
+                                                 discard(twice, "empty_draft", at="2026-10-18T10:20:10.000Z")])
+        report = self.run_owners([resident.stem, draft.stem, other_update.stem, bare.stem, twice.stem])
         self.assertEqual(report["paused"], [])
         self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [draft.stem])
         said = {entry["session_id"]: entry["error"] for entry in resume_paused.UNRESOLVED}
-        self.assertEqual(set(said), {resident.stem, other_update.stem, bare.stem})
+        self.assertEqual(set(said), {resident.stem, other_update.stem, bare.stem, twice.stem})
         self.assertIn("resident_after_prepare", said[resident.stem])
-        self.assertIn("no matching discard record", said[other_update.stem])
-        self.assertIn("no matching discard record", said[bare.stem])
+        self.assertIn("no discard record matches it", said[other_update.stem], "a discard written before the turn's last line closed an older run")
+        self.assertIn("no discard record matches it", said[bare.stem])
+        self.assertIn("2 discard records could match it", said[twice.stem], "two updates that both fit leave the cause unknown")
+
+    def test_two_records_that_list_one_archive_under_stopped_before_restore_leave_it_unresolved(self):
+        stopped = self.reasoned(None)
+        held = {"sessionId": stopped.stem, "sessionFile": str(stopped), "reason": "owner_stop", "at": "2026-10-18T10:20:30.000Z"}
+        self.update_record("now", stoppedBeforeRestore=[held])
+        self.run_owners([stopped.stem])
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [stopped.stem])
+        resume_paused.STOPPED.clear()
+        resume_paused.read_update_records.cache_clear()
+        self.update_record("again", stoppedBeforeRestore=[{**held, "reason": "unknown"}])
+        self.assertEqual(self.run_owners([stopped.stem])["paused"], [])
+        self.assertEqual((resume_paused.STOPPED, [entry["error"] for entry in resume_paused.UNRESOLVED]),
+                         ([], ["2 update records list its archive at 2026-10-18T10:20:30.000Z under stoppedBeforeRestore, so it is not resumed."]))
 
     def test_a_session_the_update_did_not_restore_is_never_resumed_by_the_unload_rule(self):
         hook = self.reasoned(None, self.message("2026-10-18T10:20:00.000Z", "assistant", stopReason="error", provider="anthropic", errorMessage=self.HOOK_ERROR))

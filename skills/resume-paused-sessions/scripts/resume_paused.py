@@ -34,7 +34,7 @@ archive (owner_stop, owner_archive, subagent_deleted, completed, replaced and
 the like) keeps the run stopped and lists it under "stopped" with that record.
 Any other archive is listed under "unresolved" with its cause and gets nothing:
 a line with no reason, daemon_shutdown, an update discard (named by its discard
-record when one matches), one the update left out under stoppedBeforeRestore,
+record when exactly one matches), one the update left out under stoppedBeforeRestore,
 and a reason this script does not know. Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
@@ -88,8 +88,8 @@ before it sends, and keeps the token out of every output.
 
 A job deleted on purpose never counts: one the chat service deleted or parked
 (deleted-jobs.json), one under such a job, one the RLM runtime recorded as deleted
-(a delete op for its folder in the rlm ledger, or status "deleted" in its
-rlm-subagent.json) with no prompt after that delete, and one archived right before
+(a delete op for its folder in the rlm ledger that no later spawn of that folder
+undid, or status "deleted" in its rlm-subagent.json), and one archived right before
 its aborted reply outside a daemon restart. Each of these writes the same archive
 and abort a restart writes. The recheck right before each send reads these records
 again, and a stop reason written after the pass found the run also holds it.
@@ -671,15 +671,14 @@ def read_record(path, shape):
     return data
 
 
-def stop_record(path, entries=None):
-    """Why the session at `path` was stopped on purpose, by a record that says so, or None. `entries` is its transcript's tail, read here
-    when not given. Raises RecordError (see read_record and ledger_deletes), or JobRecordError for a record of this job alone.
+def stop_record(path):
+    """Why the session at `path` was stopped on purpose, by a record that says so, or None. Raises RecordError (see read_record and ledger_deletes), or JobRecordError for a record of this job alone.
 
     Only recorded stops count here. A Stop pressed in a Prime older than stop-provenance writes the same abort and archive lines as a daemon
     restart and leaves no record of who pressed it; archive_verdict reads the reason a newer Prime writes on the line."""
     if not path:
         return None
-    deleted = deleted_on_purpose(path, entries)
+    deleted = deleted_on_purpose(path)
     if deleted:
         return deleted
     if owner_archived(path):
@@ -687,9 +686,11 @@ def stop_record(path, entries=None):
     return None
 
 
-def deleted_on_purpose(path, entries=None):
+def deleted_on_purpose(path):
     """What says the job at `path` or a job above it was deleted on purpose, or None: the chat service deleted it (deleted-jobs.json, the
-    parker included), or the RLM runtime recorded its delete (recorded_deletes). Every such delete archives the job and aborts its turn
+    parker included), or the RLM runtime recorded its delete (recorded_deletes). A delete holds after any later message: Prime writes the
+    owner's prompt, a resume pass's "continue" and a wake as the same plain user message, so none of them proves the owner reopened the job.
+    Only a later ledger spawn of the same job folder revives it, and rlm-subagent.json keeps "deleted" for good. Every such delete archives the job and aborts its turn
     within milliseconds, the same lines a daemon restart writes: on 10-16 the Whole system duty counted ci train, new ci server,
     fair-self-heal, spec-junit and the two jobs under the parked checkin pushes goals as cut by a restart, and a continue would have revived
     all six."""
@@ -700,8 +701,7 @@ def deleted_on_purpose(path, entries=None):
         if folder.name in gone:
             return "deleted on purpose"
         folder = folder.parent
-    entries = tail_entries(path) if entries is None else entries
-    return next((why for at, why in recorded_deletes(path) if current_delete(at, entries)), None)
+    return next(iter(recorded_deletes(path)), None)
 
 
 def owner_archived(path):
@@ -727,7 +727,7 @@ def rlm_ledger_path():
 
 
 def ledger_deletes():
-    """{realpath of a child's job folder: (delete time as written, ledger reason)} for each child the RLM ledger leaves deleted, replayed
+    """{realpath of a child's job folder: (delete time, ledger reason)} for each child the RLM ledger leaves deleted, replayed
     the way the runtime replays it: the last spawn or delete of a child wins, so a spawn after a delete revives it, a torn final line is
     still being appended and is skipped, and an op the runtime may add later is ignored. Raises RecordError when the ledger cannot be read
     or holds a line that is not a v1 record."""
@@ -768,8 +768,8 @@ def replay_ledger(path, _size, _mtime_ns):
 
 
 def registry_delete(folder):
-    """(delete time or None, the record's name) when the RLM runtime marked the job folder `folder` deleted in its rlm-subagent.json, else
-    None. A record that does not exist means not deleted; a failed read or a record that is not a JSON object raises JobRecordError."""
+    """What the RLM runtime's rlm-subagent.json of the job folder `folder` says when it marked the job deleted, else None. A record that
+    does not exist means not deleted; a failed read or a record that is not a JSON object raises JobRecordError."""
     where = f"{folder.name}/rlm-subagent.json" + (f" on {BOX.name}" if BOX.remote else "")
     try:
         body = BOX.read(folder / "rlm-subagent.json")
@@ -785,13 +785,13 @@ def registry_delete(folder):
         raise JobRecordError(f"{where} does not have the expected shape")
     if record.get("status") != "deleted":
         return None
-    at = record.get("updatedAt") if isinstance(record.get("updatedAt"), str) else None
-    return parse_ts(at) if at else None, "rlm-subagent.json status deleted" + (f", at {at}" if at else "")
+    at = record.get("updatedAt")
+    return "rlm-subagent.json status deleted" + (f", at {at}" if isinstance(at, str) else "")
 
 
 def recorded_deletes(path):
-    """[(delete time or None, what to report)] for each delete the RLM runtime recorded for the job at `path` or a job above it, nearest
-    first: the ledger's delete for the job's full folder path, and the status "deleted" in its rlm-subagent.json."""
+    """What to report for each delete the RLM runtime recorded for the job at `path` or a job above it, nearest first: the ledger's delete
+    for the job's full folder path, and the status "deleted" in its rlm-subagent.json."""
     ledger = {} if BOX.remote else ledger_deletes()
     found = []
     folder = Path(path).parent
@@ -801,19 +801,12 @@ def recorded_deletes(path):
         delete = ledger.get(os.path.realpath(folder))
         if delete:
             at, reason = delete
-            found.append((parse_ts(at), f"{who if reason == 'user' or above else 'the RLM runtime deleted it ('}{above}rlm ledger delete, reason {reason}, at {at})"))
+            found.append(f"{who if reason == 'user' or above else 'the RLM runtime deleted it ('}{above}rlm ledger delete, reason {reason}, at {at})")
         registry = registry_delete(folder)
         if registry:
-            found.append((registry[0], f"{who}{above}{registry[1]})"))
+            found.append(f"{who}{above}{registry})")
         folder = folder.parent
     return found
-
-
-def current_delete(at, entries):
-    """A delete at `at` stopped the session's current turn unless a user message came after it: that prompt started a turn the delete did not
-    stop. A delete with no time counts."""
-    return at is None or not any(entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "user"
-                                 and (parse_ts(entry.get("timestamp")) or at) > at for entry in entries)
 
 
 # (verdict, what to report) for each of Prime's archive reasons, SESSION_ARCHIVE_REASONS in prime-agent's core/session-manager.ts from
@@ -826,9 +819,6 @@ ARCHIVE_REASONS = {"owner_stop": ("stopped", "the owner stopped it"), "owner_arc
                    "daemon_shutdown": ("unresolved", "Its archive came from prime-agent shutdown, and no record says it should continue")}
 # The update coordinator's status records, one per update: <agent dir>/update-restarts/<socket key>-<request id>.json.
 UPDATE_RESTARTS_DIR = Path.home() / ".prime" / "agent" / "update-restarts"
-# The update commit appends a discard entry and then closes that session, whose archive line comes first in the close (daemon-mode.ts at
-# 500050f), so the line follows its entry by milliseconds.
-DISCARD_ARCHIVE_S = 5.0
 
 
 def update_records():
@@ -853,47 +843,50 @@ def read_update_records(folder):
     return records
 
 
-def update_entry(key, session_id, path, matches):
-    """(record, entry) for the first entry of list `key` in an update record that names the session `session_id` at `path` and passes
-    `matches`, or None."""
-    for record in update_records():
-        for entry in record.get(key) or []:
-            if isinstance(entry, dict) and entry.get("sessionId") == session_id and matches(entry) \
-                    and os.path.realpath(entry.get("sessionFile") or path) == os.path.realpath(path):
-                return record, entry
-    return None
+def update_entries(key, session_id, path, matches):
+    """[(record, entry)] for each entry of list `key` in the update records that names the session `session_id` at `path` and passes
+    `matches`."""
+    return [(record, entry) for record in update_records() for entry in record.get(key) or []
+            if isinstance(entry, dict) and entry.get("sessionId") == session_id and matches(entry)
+            and os.path.realpath(entry.get("sessionFile") or path) == os.path.realpath(path)]
 
 
-def update_discard(archive, session_id, path):
-    """archive_verdict for an archive whose reason is update_discarded: the update's discard record that names the session within
-    DISCARD_ARCHIVE_S before the archive gives the cause."""
+def update_discard(archive, session_id, path, entries):
+    """archive_verdict for an archive whose reason is update_discarded. The discard entry and the archive line share no key, so an entry
+    matches only when its time falls after the transcript's last line before the archive and at or before the archive, and only a single
+    such entry names the cause."""
     at, stamp = archive.get("timestamp"), parse_ts(archive.get("timestamp"))
+    index = next((i for i, entry in enumerate(entries) if entry is archive), len(entries))
+    before = next((parse_ts(entry.get("timestamp")) for entry in reversed(entries[:index]) if parse_ts(entry.get("timestamp"))), None)
 
     def this_close(entry):
         closed = parse_ts(entry.get("at"))
-        return entry.get("reason") == "update_discarded" and bool(closed and stamp) and 0 <= (stamp - closed).total_seconds() <= DISCARD_ARCHIVE_S
+        return entry.get("reason") == "update_discarded" and bool(closed and stamp and before) and before < closed <= stamp
 
-    found = update_entry("discarded", session_id, path, this_close)
-    if not found:
+    found = update_entries("discarded", session_id, path, this_close)
+    if len(found) != 1:
         where = f", and the update records on {BOX.name} are not read from here" if BOX.remote else ""
-        return ("unresolved", f"Its archive at {at} says an update discarded it, but no matching discard record names it{where}, so it is not resumed.")
-    record, entry = found
+        said = f"{len(found)} discard records could match it" if found else "no discard record matches it"
+        return ("unresolved", f"Its archive at {at} says an update discarded it, but {said}{where}, so it is not resumed.")
+    record, entry = found[0]
     if entry.get("cause") in ("empty_draft", "no_session_file"):
         return ("stopped", f"the update {record.get('requestId')} discarded it as {entry['cause']} (archive reason update_discarded, at {at})")
     return ("unresolved", f"The update {record.get('requestId')} closed it at {at} without a restart entry ({entry.get('cause')}), and no record "
                           "says it should continue, so it is not resumed.")
 
 
-def archive_verdict(archive, session_id, path, unloaded_at):
+def archive_verdict(archive, session_id, path, unloaded_at, entries):
     """("stopped" | "unload" | "unresolved", text) for the archive line `archive` that stopped a run's turn, by the reason Prime wrote on it.
-    A line with no reason is the update's stoppedBeforeRestore when that record names it at this time, the idle unload's when the unload's
+    A line with no reason is the update's stoppedBeforeRestore when that record copies its timestamp, the idle unload's when the unload's
     record follows it, and otherwise has no recorded cause. A reason this pass does not know is never read as a known one."""
     at = archive.get("timestamp")
     reason = (archive.get("state") or {}).get("reason")
     if reason is None:
-        held = update_entry("stoppedBeforeRestore", session_id, path, lambda entry: entry.get("at") == at)
+        held = update_entries("stoppedBeforeRestore", session_id, path, lambda entry: entry.get("at") == at)
+        if len(held) > 1:
+            return ("unresolved", f"{len(held)} update records list its archive at {at} under stoppedBeforeRestore, so it is not resumed.")
         if held:
-            record, entry = held
+            record, entry = held[0]
             kind, said = ARCHIVE_REASONS.get(entry.get("reason"), (None, None))
             if kind == "stopped":
                 return ("stopped", f"{said} after the update {record.get('requestId')} began (stoppedBeforeRestore, at {at})")
@@ -904,7 +897,7 @@ def archive_verdict(archive, session_id, path, unloaded_at):
         return ("unresolved", "An archive with no recorded cause stopped its turn, so it is not resumed.")
     kind, said = ARCHIVE_REASONS.get(reason, (None, None))
     if kind == "discarded":
-        return update_discard(archive, session_id, path)
+        return update_discard(archive, session_id, path, entries)
     if kind == "unresolved":
         return ("unresolved", f"{said} (archive reason {reason}, at {at}), so it is not resumed.")
     if kind:
@@ -1414,7 +1407,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if not mark:
             return {}
         try:
-            if stop_record(s.get("sessionFile"), entries_of(sid)):
+            if stop_record(s.get("sessionFile")):
                 return {"retry_blocked": "a stop record names it"}
         except RecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
@@ -1509,8 +1502,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             stopper = stop_archive(entries_of(sid), last)
             if stopper and not unstuck and not named:
                 try:
-                    recorded = stop_record(s.get("sessionFile"), entries_of(sid))
-                    kind, why = ("stopped", recorded) if recorded else archive_verdict(stopper, full, s.get("sessionFile"), unloaded_at)
+                    recorded = stop_record(s.get("sessionFile"))
+                    kind, why = ("stopped", recorded) if recorded else archive_verdict(stopper, full, s.get("sessionFile"), unloaded_at, entries_of(sid))
                 except JobRecordError as error:
                     INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
                     continue
@@ -1526,7 +1519,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                     stopped(s, sid, f"{why} after a turn that did not fail on the token hook", stopper.get("timestamp"))
                     continue
         try:
-            recorded = stop_record(s.get("sessionFile"), entries_of(sid))
+            recorded = stop_record(s.get("sessionFile"))
         except JobRecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             continue
@@ -1663,7 +1656,7 @@ def send_guard(p, found_at):
             entries = parse_lines(BOX.tail(path, 256_000)) if path else []
         except OSError as error:
             raise JobRecordError(f"the transcript of {p['id']} could not be read ({error})") from None
-        why = stop_record(path, entries) or stopped_since(entries, found_at)
+        why = stop_record(path) or stopped_since(entries, found_at)
     except RecordError as error:
         INCOMPLETE.append({"host": BOX.name, "error": f"not sent to {p['id']}: {error}"})
         return {"error": f"not sent: {error}"}
