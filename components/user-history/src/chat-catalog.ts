@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
-import { chatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { keptChatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
@@ -711,7 +711,7 @@ export class Catalog {
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
       const links = await this.chats.links(row.id).catch(() => null);
-      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
+      row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
       if (sessions.size) void this.linkSessions(row.id, sessions);
