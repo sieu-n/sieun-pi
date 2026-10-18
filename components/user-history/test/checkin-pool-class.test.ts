@@ -21,7 +21,7 @@ test("a check-in job runs normal under its chat and every other duty job stays l
   assert.equal(classes.get("ck-fe"), "normal", "a check-in job of a high chat is normal, so the chat goes first");
   assert.equal(classes.get("ck-ops"), "low", "a check-in job of a chat labelled Low stays low");
   assert.equal(classes.get("d7-fe"), "low");
-  assert.equal(classes.get("ck-gone"), "low", "a check-in job no loaded chat lists stays low");
+  assert.equal(classes.get("ck-gone"), "normal", "a check-in job the chat's roster does not list yet is still normal, so a sync cannot drop it to low");
   assert.equal(classes.get("chat-fe"), "high");
 });
 

@@ -11,7 +11,7 @@ export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PR
  * The pool class of every live root thread, first match wins (pi-pool scheduler design, "Priority"):
  * 1. its own sidebar priority label, when set (LABEL_POOL_PRIORITY);
  * 2. a duty job (`duties`, the session ids the duty runner registered) is low, except a check-in job (`isCheckInJob`), which is normal
- *    (`checkInClass`) under a chat that lists it as a root and low under none;
+ *    (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low;
  * 3. a chat is high;
  * 4. a job a chat started (an Agents entry linked as root) or gave a step to (linked as step) takes the highest class among those chats;
  * 5. a thread the owner started is high, and any other thread is normal.
@@ -30,7 +30,7 @@ export function poolPriorities(rows: readonly SessionRow[], duties: ReadonlySet<
       if (!before || RANK[own] > RANK[before]) owned.set(agent.sessionId, own);
     }
   }
-  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? (isCheckInJob(row.name) ? checkInClass(owned.get(row.id) ?? "low") : "low")
+  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? (isCheckInJob(row.name) ? checkInClass(owned.get(row.id) ?? "normal") : "low")
     : row.chat ? "high" : owned.get(row.id) ?? (row.origin === "user" ? "high" : "normal"))]));
 }
 
