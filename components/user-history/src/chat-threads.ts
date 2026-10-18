@@ -1138,6 +1138,21 @@ export class ThreadHub {
     await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
   }
 
+  /**
+   * Resolves once the thread's turn reads ended (no stream, retry, bash or compaction), polling its state every 250 ms; throws when it still
+   * runs after `timeoutMs`, the daemon's own 30 s request timeout, so a caller never sends a continue into a run its abort did not stop.
+   */
+  async settled(id: string, timeoutMs = 30_000): Promise<void> {
+    const until = Date.now() + timeoutMs;
+    for (;;) {
+      const { live } = await this.requireLive(id, "settled");
+      const state = await live.connection.getState();
+      if (!state.isStreaming && !state.retryAttempt && !state.isBashRunning && !state.isCompacting) return;
+      if (Date.now() >= until) throw new ThreadError(504, `the turn of ${id.slice(0, 8)} still runs ${Math.round(timeoutMs / 1000)} s after its abort`);
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+
   async abort(id: string, trigger = "abort"): Promise<void> {
     const { live } = await this.requireLive(id, trigger);
     const state = await live.connection.getState();

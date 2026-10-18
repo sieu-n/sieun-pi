@@ -162,6 +162,8 @@ UNLOADED = {}
 # The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
 UNLOAD_MATCH_S = 60.0
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
+# pi-pool's queue hold as its hook or the extension words it: "this session waits for its slot at <time>".
+POOL_HOLD = re.compile(r"waits for its slot", re.IGNORECASE)
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
@@ -836,6 +838,11 @@ def account_blocker(root_session_id, provider, cache):
         return None
     if rows is None or resolved is None:
         return None
+    # A tree that pi-pool holds in a wait, its slot or R5's 0 to 120 min backoff draw (30f44c22b), gets no turn before slot_at: a continue
+    # would only meet the same hold, and an abort of a run in its retry would end it early.
+    wait = resolved.get("wait") or {}
+    if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
+        return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}"
     account = resolved.get("account")
     if not account:
         return f"no {provider} account can serve"
@@ -903,9 +910,12 @@ def retry_wait(entries):
     admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
     last = entries[-1] if entries else {}
     msg = last.get("message") or {}
+    error = str(msg.get("errorMessage") or "")
+    # A token hook answer is pi-pool's own hold (a slot wait, the 0 to 120 min depleted backoff) or a hook failure, never a stuck provider
+    # retry: the hold ends at its slot, and a hook failure has its own path once the hook gives the tree a token.
     if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
-            and INTERRUPTION_ERROR.search(str(msg.get("errorMessage") or "")):
-        return {"retry_error": str(msg.get("errorMessage"))}
+            and INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error) and not POOL_HOLD.search(error):
+        return {"retry_error": error}
     return {}
 
 
@@ -1135,6 +1145,23 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             tails[sid] = tail_entries(by_id[sid].get("sessionFile", ""))
         return tails[sid]
 
+    def asleep_in_retry(s, sid, head):
+        """retry_wait's mark, which lets the job sweep abort the run and continue it, only when the continue would go through right now: no
+        stop record names the run, and pi-pool has an account that can serve its tree and holds the tree in no wait or backoff. Otherwise
+        nothing, and the run stays with the Resume button."""
+        mark = retry_wait(entries_of(sid))
+        if not mark:
+            return {}
+        try:
+            if stop_record(s.get("sessionFile")):
+                return {}
+        except RecordError:
+            return {}
+        root = by_id.get(head, s)
+        if account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts):
+            return {}
+        return mark
+
     if BOX.remote:
         # Each relay read takes 0.4 to 1.6 s from us-metal02 to the Mac (10-18), so the tails this pass may read are fetched at once.
         def wanted(s):
@@ -1193,7 +1220,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
-                           "head_session_id": head_session(head, s), **retry_wait(entries_of(sid))})
+                           "head_session_id": head_session(head, s), **asleep_in_retry(s, sid, head)})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:

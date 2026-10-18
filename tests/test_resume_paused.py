@@ -854,6 +854,41 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(sent, [(full, "continue")])
         self.assertIsInstance(resume_paused.BOX, resume_paused.LocalBox)
 
+    def test_a_hung_run_asleep_in_its_retry_is_marked_only_when_its_continue_can_go_through(self):
+        # ssh tailnet only, 10-18: hung 146 min on its 08:20:32Z 429. The job sweep aborts a marked run, so the mark needs no stop record,
+        # an account pi-pool can serve the tree from, and no pi-pool wait or 0 to 120 min backoff (30f44c22b) on the tree.
+        self.session("asleepasleep", [assistant(81, "toolUse"), role(80, "toolResult"),
+                                      assistant(80, "error", "429 This request would exceed your account's rate limit. Please try again later.")],
+                     activity="working", isStreaming=True, lastActivityAt=at(80))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
+
+        def marked(blocker=None, record=None):
+            with patch.object(resume_paused, "account_blocker", return_value=blocker), patch.object(resume_paused, "stop_record", return_value=record):
+                report = self.run_resume(dry_run=True)
+            self.assertEqual([p["reason"] for p in report["paused"]], ["hung"])
+            return "retry_error" in report["paused"][0]
+
+        self.assertTrue(marked())
+        self.assertFalse(marked(blocker="pi-pool holds the tree until 2026-10-18T12:40:00+00:00"))
+        self.assertFalse(marked(record="deleted on purpose"))
+
+    def test_a_tree_pi_pool_holds_in_a_wait_or_backoff_has_a_blocker(self):
+        later = NOW.timestamp() + 3600
+
+        def who(wait, account="acct1"):
+            def run(cmd, **kwargs):
+                body = {"rows": [{"id": "acct1", "usable": True}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": account, "wait": wait}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
+                return resume_paused.account_blocker("root", "anthropic", {})
+
+        self.assertIsNone(who(None))
+        self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later}))
+        self.assertIsNone(who({"account": "acct1", "slot_at": NOW.timestamp() - 60}))
+        self.assertIn("no anthropic account", who({"account": "acct1", "slot_at": NOW.timestamp() - 60}, account=None))
+
     def test_retry_wait_names_the_error_a_hung_run_sleeps_on(self):
         # ssh tailnet only, 10-18: its last entry is the 08:20:32Z 429, and it showed working for 146 min after it.
         rate = {"type": "message", "timestamp": "2026-10-18T08:20:32Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
@@ -861,6 +896,13 @@ class ResumePausedTests(unittest.TestCase):
         call = {"type": "message", "timestamp": "2026-10-18T08:20:22Z", "message": {"role": "toolResult", "content": []}}
         self.assertIn("rate limit", resume_paused.retry_wait([call, rate])["retry_error"])
         self.assertEqual(resume_paused.retry_wait([rate, call]), {})
+        # pi-pool's hold is no stuck retry: run-8's root failed on it from 08:23 to 10:39Z on 10-18 while the pool pushed its slot back.
+        hold = {"type": "message", "timestamp": "2026-10-18T10:24:40Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
+                "errorMessage": 'Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token '
+                                "pi-pool: this session waits for its slot at 2026-10-18T10:45:00.000Z. Try again in 15 minutes."}}
+        self.assertEqual(resume_paused.retry_wait([call, hold]), {})
+        held = {**hold, "message": {**hold["message"], "errorMessage": "429 rate limit: this session waits for its slot at 2026-10-18T10:45:00Z"}}
+        self.assertEqual(resume_paused.retry_wait([call, held]), {})
 
     def test_a_prime_update_notice_that_ends_the_file_counts_as_a_restart_archive(self):
         # run-6's job, 10-18: its last turn failed on the token hook at 06:45:54Z, Prime's update stopped it with this notice at 06:46:02Z,

@@ -210,6 +210,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {
           await threads.abort(id);
+          await threads.settled(id);
           // A native abort holds the session's input until the next human prompt; reopen it so the continue gets through (as Resume does).
           await threads.resumeQueue(id).catch(() => {});
         }),

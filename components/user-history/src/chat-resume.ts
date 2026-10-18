@@ -157,8 +157,8 @@ export class InterruptedRuns {
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. A hung job asleep in Prime's provider retry after an
    * interruption error (`retry_error`) holds no queue place, so `unstick` aborts it and it gets its continue too: after the 10-18 account outage
-   * ssh tailnet only, admin access land and p3-jobs sat that way 113 to 144 min after a 429, with the accounts back. Null when no job of a chat
-   * is interrupted.
+   * ssh tailnet only, admin access land and p3-jobs sat that way 113 to 144 min after a 429, with the accounts back. `unstick` resolves once the
+   * aborted run reads idle (chat-backend.ts). Null when no job of a chat is interrupted.
    */
   resumeJobs(isJob: (run: JobOf) => boolean, reopen: (sessionId: string) => Promise<void>,
     owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>,
@@ -182,14 +182,19 @@ export class InterruptedRuns {
       };
       await reopenAll(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []));
       const unstuck: string[] = [];
+      const skipped = new Set<string>();
       for (const run of jobs) {
         if (run.reason !== "hung" || !unstick) continue;
+        // Right before the abort, the script reads the run again: a stop record written since discovery (a delete, the owner's archive) or a
+        // pi-pool wait or backoff on its tree drops its retry_error mark, and the run is left alone.
+        const now = await this.run(["--dry-run", "--direct", "--only", run.session_id!, ...named, ...(run.host ? [] : ["--this-box"])]).catch(() => null);
+        if (!now?.paused.some(again => again.session_id === run.session_id && again.reason === "hung" && again.retry_error !== undefined)) { skipped.add(run.session_id!); continue; }
         try { await unstick(run.session_id!); unstuck.push(run.session_id!); }
-        catch (error) { process.stderr.write(`resume: could not abort ${run.id}: ${error instanceof Error ? error.message : String(error)}\n`); }
+        catch (error) { skipped.add(run.session_id!); process.stderr.write(`resume: could not abort ${run.id}: ${error instanceof Error ? error.message : String(error)}\n`); }
       }
-      // The abort lands in the session file a moment after the call returns.
-      if (unstuck.length) await new Promise(resolve => setTimeout(resolve, 2000));
       const stuck = unstuck.length ? ["--unstuck", unstuck.join(",")] : [];
+      jobs.splice(0, jobs.length, ...jobs.filter(run => !skipped.has(run.session_id!)));
+      if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
       // The send pass skips the other boxes when every job is on this one: the Mac's lists took 30 to 60 s of a 50 to 110 s pass on 10-18,
       // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
       const box = jobs.some(run => run.host) ? [] : ["--this-box"];
