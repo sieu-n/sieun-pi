@@ -9,19 +9,21 @@ import { readSession, type RunState, type Scenario, type Verdict } from "./sessi
  * chat gets one ordinary task written in Korean. Its jobs' briefs, reasoning and reports must be English apart from the owner's quoted words,
  * and the chat's reply to the owner must be Korean. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "sieun-pi 저장소에서 지난 3일 동안 들어간 커밋 중에 테스트 파일을 하나도 안 건드린 커밋이 몇 개인지 세어 보고, 그중 변경 줄 수가 " +
-  "제일 큰 3개가 뭘 바꿨는지 정리해 줘";
+export const TASK = "auto-sns-agent에서 지난 일주일 동안 CI가 실패한 run들을 원인별로 묶어서 세어 보고, 제일 많이 깨진 원인 5개를 위키 " +
+  "페이지로 정리해 줘. 원인마다 대표 run 하나씩 링크해 줘";
 const ARTIFACTS = join(homedir(), ".prime/agent/session-artifacts");
 const HANGUL_WORD = /[\uac00-\ud7a3\u3131-\u318e]+/g;
 const LATIN = /[A-Za-z]/g;
-const OWNER_WORDS = new Set(TASK.match(HANGUL_WORD) ?? []);
+/** The owner's own words, and 메르, the name of the wiki page style that the repo skills use. */
+const OWNER_WORDS = new Set([...TASK.match(HANGUL_WORD) ?? [], "메르"]);
+const QUOTED = /"[^"\n]*"|“[^”]*”|`[^`\n]*`/g;
 
 const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 300): string => (text.length > length ? text.slice(0, length - 1) + "…" : text).replace(/\s+/g, " ");
 interface Check { id: string; ok: boolean | null; detail: string }
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
-/** The Korean words of a text that are not the owner's own words, so a quote of his message never counts. */
-const ownKorean = (text: string): string[] => (text.match(HANGUL_WORD) ?? []).filter(word => !OWNER_WORDS.has(word));
+/** The Korean words of a text outside quotes that are not the owner's own, so a quote of his message or of a Korean page for him never counts. */
+const ownKorean = (text: string): string[] => (text.replace(QUOTED, " ").match(HANGUL_WORD) ?? []).filter(word => !OWNER_WORDS.has(word));
 const korean = (text: string): boolean => {
   const hangul = (text.match(HANGUL_WORD) ?? []).join("").length;
   return hangul > 0 && hangul >= (text.match(LATIN) ?? []).length / 4;
@@ -101,10 +103,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     : "the chat has not replied yet" });
 
   const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") && !state.seeds.some(seed => event.text.includes(seed)));
-  const outside = events.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child");
+  const outside = events.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child" && !/^check-in /.test(event.from ?? ""));
   checks.push({ id: "e", ok: typed.length === 0 && outside.length === 0, detail: typed.length || outside.length
     ? [...typed.map(event => `typed at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 120)}"`), ...outside.map(event => `message from ${event.kind === "text" ? event.from : ""}`)].join("; ")
-    : "only the owner-style message, server notes and the chat's own jobs reached the chat" });
+    : "only the owner-style message, server notes, the chat's check-ins and its own jobs reached the chat" });
 
   const verdict: Verdict = checks.find(check => check.id === "e")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail" : checks.some(check => check.ok === null) ? "open" : "pass";
   const text = [
