@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from unittest import mock
@@ -78,6 +80,20 @@ FAKE = textwrap.dedent(
     if behavior == "wait":
         time.sleep(60)
     time.sleep(float(os.environ.get("FAKE_LISTEN_DELAY", "0")))
+    if os.environ.get("FAKE_LOCK") == "mem3":
+        lock = sock + ".lock"
+        try:
+            os.mkdir(lock)
+        except FileExistsError:
+            if time.time() - os.stat(lock).st_mtime < 5:
+                print(f"ELOCKED: Lock file is already being held {sock}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                os.rmdir(lock)
+                os.mkdir(lock)
+            except OSError as error:
+                print(f"{error.strerror}: rmdir '{lock}'", file=sys.stderr)
+                sys.exit(1)
     server = socket.socket(socket.AF_UNIX)
     server.bind(sock)
     server.listen(8)
@@ -407,6 +423,246 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(self.calls(), [])
 
+
+def proc_start_id(pid):
+    return "proc:" + Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def load_ctl():
+    loader = importlib.machinery.SourceFileLoader("prime_agent_daemon_ctl", str(CTL))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "the ctl reads /proc and runs only on the Linux box")
+class SocketLockCleanupTest(unittest.TestCase):
+    """A lock directory that a newer Prime left with owner.json in it, after a rollback to a binary that only rmdirs.
+
+    Each test runs the ctl with env -i and an allowlist, in its own HOME, TMPDIR, socket and PI_POOL_DIR, and the fake
+    daemon models mem.3's lock: it fails with ENOTEMPTY on a lock directory that is not empty.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="pad-lock-", dir="/tmp")
+        self.dir = Path(self.tmp.name)
+        self.sockdir = self.dir / f"prime-agent-{os.getuid()}"
+        self.sockdir.mkdir()
+        (self.dir / "home").mkdir()
+        (self.dir / "pool").mkdir()
+        self.sock = str(self.sockdir / "daemon.sock")
+        self.lock = Path(self.sock + ".lock")
+        self.pidfile = str(self.dir / "daemon.pid")
+        self.fake = self.dir / "prime-agent"
+        self.fake.write_text(FAKE)
+        self.fake.chmod(0o755)
+        self.env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(self.dir / "home"),
+            "TMPDIR": str(self.dir),
+            "PI_POOL_DIR": str(self.dir / "pool"),
+            "FAKE_LOG": str(self.dir / "calls.jsonl"),
+            "FAKE_PIDS": str(self.dir / "pids"),
+            "FAKE_ENV_LOG": str(self.dir / "env.json"),
+            "FAKE_LOCK": "mem3",
+        }
+        self.procs = []
+
+    def tearDown(self):
+        pids = Path(self.env["FAKE_PIDS"])
+        for pid in pids.read_text().split() if pids.exists() else []:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(pid), signal.SIGKILL)
+        for proc in self.procs:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(proc.pid, signal.SIGCONT)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+        self.tmp.cleanup()
+
+    def hello_pid(self):
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(2)
+            conn.connect(self.sock)
+            hello = json.loads(conn.makefile().readline())
+        self.assertEqual(hello["supervisorSocketPath"], self.sock)
+        return hello["supervisorPid"]
+
+    def popen(self, *argv):
+        proc = subprocess.Popen(list(argv), env=self.env, stdout=subprocess.DEVNULL)
+        self.procs.append(proc)
+        return proc
+
+    def owner_lock(self, pid, start_id, token="gen-1", extra=()):
+        self.lock.mkdir(mode=0o700)
+        owner = {"version": 1, "token": token, "pid": pid, "acquiredAt": "2026-10-18T11:00:00.000Z"}
+        if start_id is not None:
+            owner["processStartId"] = start_id
+        (self.lock / "owner.json").write_text(json.dumps(owner) + "\n")
+        for name in extra:
+            (self.lock / name).write_text("")
+        old = time.time() - 600
+        os.utime(self.lock, (old, old))
+        return os.stat(self.lock).st_ino
+
+    def crashed_owner(self, **kwargs):
+        owner = self.popen("sleep", "600")
+        start_id = proc_start_id(owner.pid)
+        ino = self.owner_lock(owner.pid, start_id, **kwargs)
+        owner.kill()
+        owner.wait()
+        return owner.pid, ino
+
+    def ctl(self, timeout=30):
+        out = self.dir / "ctl.out"
+        with open(out, "w") as sink:
+            code = subprocess.call(["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in self.env.items()], sys.executable, "-B", str(CTL), "start", str(self.fake), self.sock, self.pidfile], stdout=sink, stderr=subprocess.STDOUT, timeout=timeout)
+        return code, out.read_text()
+
+    def assert_lock_kept(self, ino, token="gen-1"):
+        self.assertEqual(os.stat(self.lock).st_ino, ino)
+        self.assertEqual(json.loads((self.lock / "owner.json").read_text())["token"], token)
+        self.assertEqual(sorted(p.name for p in self.sockdir.iterdir() if p.name.startswith("daemon.sock.lock.")), [])
+
+    def test_a_rolled_back_binary_starts_after_the_owner_of_a_new_format_lock_crashed(self):
+        dead, _ = self.crashed_owner()
+        code, out = self.ctl()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(int(Path(self.pidfile).read_text()), self.hello_pid())
+        self.assertIn(f"removed the stale socket lock {self.lock} of generation gen-1: pid {dead} has exited", out)
+        self.assertEqual(list(self.lock.iterdir()), [])
+
+    def test_a_pid_that_now_runs_another_process_loses_the_lock(self):
+        reused = self.popen("sleep", "600")
+        self.owner_lock(reused.pid, "proc:1")
+        code, out = self.ctl()
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"pid {reused.pid} now runs another process (start id {proc_start_id(reused.pid)}, owner.json records proc:1)", out)
+        self.assertIsNone(reused.poll())
+        self.assertEqual(int(Path(self.pidfile).read_text()), self.hello_pid())
+
+    def test_a_live_owner_keeps_its_lock_however_old(self):
+        owner = self.popen("sleep", "600")
+        ino = self.owner_lock(owner.pid, proc_start_id(owner.pid))
+        code, out = self.ctl()
+        self.assertNotEqual(code, 0, out)
+        self.assert_lock_kept(ino)
+        self.assertIn(f"pid {owner.pid} is alive with the recorded start id", out)
+
+    def test_a_halted_owner_keeps_its_lock(self):
+        owner = self.popen("sleep", "600")
+        os.kill(owner.pid, signal.SIGSTOP)
+        ino = self.owner_lock(owner.pid, proc_start_id(owner.pid))
+        code, out = self.ctl()
+        self.assertNotEqual(code, 0, out)
+        self.assert_lock_kept(ino)
+        self.assertIsNone(owner.poll())
+
+    def test_a_live_owner_with_no_start_id_keeps_its_lock(self):
+        owner = self.popen("sleep", "600")
+        ino = self.owner_lock(owner.pid, None)
+        code, out = self.ctl()
+        self.assertNotEqual(code, 0, out)
+        self.assert_lock_kept(ino)
+        self.assertIn("records no start id, so pid reuse cannot be told apart from the owner", out)
+
+    def test_a_lock_without_owner_json_or_with_unknown_entries_stays(self):
+        for extra, reason in (((), None), (("socket.json",), "it holds entries Prime does not write there: socket.json")):
+            with self.subTest(extra=extra):
+                dead, ino = self.crashed_owner(extra=extra)
+                if not extra:
+                    (self.lock / "owner.json").unlink()
+                    reason = "it has no owner.json, so no generation names its owner"
+                code, out = self.ctl()
+                self.assertNotEqual(code, 0, out)
+                self.assertEqual(os.stat(self.lock).st_ino, ino)
+                self.assertIn(f"left the socket lock {self.lock} in place: {reason}", out)
+                for entry in self.lock.iterdir():
+                    entry.unlink()
+                self.lock.rmdir()
+
+    def test_two_starters_racing_clean_once_and_adopt_one_supervisor(self):
+        self.crashed_owner()
+        with open(self.sock + ".ctl-cleanup.flock", "a") as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
+            sinks = [open(self.dir / f"ctl-{n}.out", "w") for n in (1, 2)]
+            ctls = [subprocess.Popen(["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in self.env.items()], sys.executable, "-B", str(CTL), "start", str(self.fake), self.sock, str(self.dir / f"daemon-{n}.pid")], stdout=sink, stderr=subprocess.STDOUT) for n, sink in zip((1, 2), sinks)]
+            self.procs.extend(ctls)
+            time.sleep(0.5)
+        codes = [c.wait(timeout=30) for c in ctls]
+        for sink in sinks:
+            sink.close()
+        outs = [(self.dir / f"ctl-{n}.out").read_text() for n in (1, 2)]
+        self.assertEqual(codes, [0, 0], outs)
+        winner = self.hello_pid()
+        self.assertEqual([int((self.dir / f"daemon-{n}.pid").read_text()) for n in (1, 2)], [winner, winner])
+        self.assertEqual(sum(o.count("removed the stale socket lock") for o in outs), 1, outs)
+        self.assertEqual(sorted(p.name for p in self.sockdir.iterdir() if p.name.startswith("daemon.sock.lock.")), [])
+
+    def test_a_generation_that_replaces_the_lock_while_it_is_judged_is_never_removed(self):
+        ctl = load_ctl()
+        self.crashed_owner()
+        judge = ctl.owner_gone
+
+        def replaced_while_judged(owner):
+            os.rename(self.lock, self.dir / "reclaimed")
+            self.owner_lock(os.getpid(), proc_start_id(os.getpid()), token="gen-2")
+            return judge(owner)
+
+        with mock.patch.object(ctl, "owner_gone", replaced_while_judged), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertFalse(ctl.clear_dead_lock(self.sock))
+        self.assertEqual(json.loads((self.lock / "owner.json").read_text())["token"], "gen-2")
+        self.assertIn("another generation replaced it", err.getvalue())
+
+    def test_the_new_owner_is_put_back_when_it_takes_the_path_during_the_rename(self):
+        ctl = load_ctl()
+        self.crashed_owner()
+        rename = ctl.rename_noreplace
+
+        def swapped(old, new):
+            if old == str(self.lock):
+                os.rename(self.lock, self.dir / "reclaimed")
+                self.owner_lock(os.getpid(), proc_start_id(os.getpid()), token="gen-2")
+            return rename(old, new)
+
+        with mock.patch.object(ctl, "rename_noreplace", swapped), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertFalse(ctl.clear_dead_lock(self.sock))
+        self.assertEqual(json.loads((self.lock / "owner.json").read_text())["token"], "gen-2")
+        self.assertIn("another generation replaced it during the rename, so it was put back", err.getvalue())
+
+
+
+    def test_a_daemon_still_starting_on_the_socket_keeps_the_lock(self):
+        ctl = load_ctl()
+        _, ino = self.crashed_owner()
+        starting = subprocess.Popen([str(self.fake), "--mode", "daemon", "--daemon-socket", self.sock], env=dict(self.env, FAKE_BEHAVIOR="wait"))
+        self.procs.append(starting)
+        deadline = time.time() + 10
+        while not Path(self.env["FAKE_LOG"]).exists() and time.time() < deadline:
+            time.sleep(0.02)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertFalse(ctl.clear_dead_lock(self.sock))
+        self.assert_lock_kept(ino)
+        self.assertIn(f"prime-agent daemon {starting.pid} still runs on {self.sock}", err.getvalue())
+
+    def test_the_cleanup_waits_for_a_competing_starter_that_holds_the_cleanup_flock(self):
+        ctl = load_ctl()
+        _, ino = self.crashed_owner()
+        result = []
+        with open(self.sock + ".ctl-cleanup.flock", "a") as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
+            worker = threading.Thread(target=lambda: result.append(ctl.clear_dead_lock(self.sock)))
+            with contextlib.redirect_stderr(io.StringIO()):
+                worker.start()
+                time.sleep(0.5)
+                self.assertEqual(result, [])
+                self.assert_lock_kept(ino)
+                fcntl.flock(guard, fcntl.LOCK_UN)
+                worker.join(timeout=10)
+        self.assertEqual(result, [True])
+        self.assertFalse(self.lock.exists())
 
 class DaemonUnitTest(unittest.TestCase):
     def test_unit_tracks_the_supervisor_through_the_pidfile(self):

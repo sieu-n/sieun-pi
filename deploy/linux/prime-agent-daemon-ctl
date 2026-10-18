@@ -42,6 +42,11 @@ coordinator started still holds the socket lock, start waits for that supervisor
 hard timeout: TimeoutStartSec=infinity also covers ExecReload, and the wait logs one line past
 SUCCESSOR_START_SECONDS. If the lock holder exits without a hello, start launches a daemon again.
 
+Before start launches a daemon, and once more if that daemon exits before it answers, it removes a socket lock
+directory that a newer Prime build left behind with owner.json in it, when its owner is proved gone (see
+clear_dead_lock). mem.3 and older only rmdir a stale lock, so after such an owner crashes a rolled-back binary would
+fail with ENOTEMPTY on every start.
+
 update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
 has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
 
@@ -51,6 +56,8 @@ worker is failed, disconnected or not ready.
 
 usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile> [<update env file>]
 """
+import ctypes
+import fcntl
 import json
 import os
 import shlex
@@ -92,6 +99,10 @@ COORDINATOR_PER_SESSION_SECONDS = 360
 # The part of those deadlines that covers one successor from launch to hello: startup fence 60 s, daemon launch
 # 2 x 30 s, successor hello 60 s. start() logs once when a supervisor that holds the socket lock runs past it.
 SUCCESSOR_START_SECONDS = 180
+OWNER_FILE = "owner.json"
+LIBC = ctypes.CDLL(None, use_errno=True)
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
 
 
 def alive(pid):
@@ -198,11 +209,137 @@ def socket_daemons(sock, exclude):
     return pids
 
 
+def start_id(pid):
+    """The start id Prime records for pid, `proc:<starttime>` from /proc/<pid>/stat, or None."""
+    try:
+        start = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+    return f"proc:{start}"
+
+
+def lock_owner(dirfd):
+    """owner.json in an open socket lock directory as a dict with an int pid and a str token, or a reason it is not one."""
+    try:
+        fd = os.open(OWNER_FILE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dirfd)
+    except FileNotFoundError:
+        return "it has no owner.json, so no generation names its owner"
+    except OSError as error:
+        return f"its owner.json is unreadable ({error.strerror})"
+    with os.fdopen(fd) as f:
+        try:
+            owner = json.loads(f.read())
+        except ValueError:
+            return "its owner.json is not JSON"
+    if not isinstance(owner, dict) or owner.get("version") != 1 or not isinstance(owner.get("token"), str) or not owner["token"] or type(owner.get("pid")) is not int or owner["pid"] <= 0:
+        return "its owner.json has no version 1 token and pid"
+    if "processStartId" in owner and not isinstance(owner["processStartId"], str):
+        return "its owner.json has a processStartId that is not a string"
+    return owner
+
+
+def owner_gone(owner):
+    """Why the process that owner.json names can no longer hold the lock, or None when that is not proved."""
+    pid, recorded = owner["pid"], owner.get("processStartId")
+    if not alive(pid):
+        return f"pid {pid} has exited", None
+    if not recorded:
+        return None, f"pid {pid} is alive and owner.json records no start id, so pid reuse cannot be told apart from the owner"
+    if not recorded.startswith("proc:"):
+        return None, f"pid {pid} is alive and owner.json records start id {recorded}, which /proc cannot check"
+    observed = start_id(pid)
+    if observed is None or observed == recorded:
+        return None, f"pid {pid} is alive with the recorded start id {recorded} (running or halted)"
+    return f"pid {pid} now runs another process (start id {observed}, owner.json records {recorded})", None
+
+
+def rename_noreplace(old, new):
+    if LIBC.renameat2(AT_FDCWD, os.fsencode(old), AT_FDCWD, os.fsencode(new), RENAME_NOREPLACE) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), new)
+
+
+def clear_dead_lock(sock):
+    """Remove <sock>.lock when its owner.json names an owner that is proved gone, and return whether it did.
+
+    A Prime build newer than 0.9.8-daemon-fix.1-mem.3 keeps owner.json {version, token, pid, processStartId,
+    acquiredAt} inside the lock directory. mem.3 and older only rmdir a stale lock, which fails with ENOTEMPTY,
+    so after that owner crashes a rolled-back binary never starts. The token names the lock's generation.
+    The cleanup runs under a flock on <sock>.ctl-cleanup.flock, judges the directory through an open descriptor,
+    and removes it only when the directory it renamed aside is that descriptor's directory with the same token.
+    It never removes by age, never while a daemon process still runs on the socket, and never while the owner pid
+    is alive with its recorded start id.
+    """
+    lock = f"{sock}.lock"
+    with open(f"{sock}.ctl-cleanup.flock", "a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        try:
+            dirfd = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            print(f"left the socket lock {lock} in place: it cannot be opened as a directory ({error.strerror})", file=sys.stderr)
+            return False
+        try:
+            return clear_judged_lock(sock, lock, dirfd)
+        except OSError as error:
+            print(f"left the socket lock {lock} as the cleanup found it: {error}", file=sys.stderr)
+            return False
+        finally:
+            os.close(dirfd)
+
+
+def clear_judged_lock(sock, lock, dirfd):
+    def leave(reason):
+        print(f"left the socket lock {lock} in place: {reason}", file=sys.stderr)
+        return False
+
+    owner = lock_owner(dirfd)
+    if isinstance(owner, str):
+        return leave(owner)
+    entries = os.listdir(dirfd)
+    extra = [e for e in entries if e != OWNER_FILE and not e.startswith(f".{OWNER_FILE}.")]
+    if extra:
+        return leave(f"it holds entries Prime does not write there: {' '.join(sorted(extra))}")
+    holders = socket_daemons(sock, set())
+    if holders:
+        return leave(f"prime-agent daemon {' '.join(map(str, holders))} still runs on {sock}")
+    gone, kept = owner_gone(owner)
+    if kept:
+        return leave(kept)
+    judged = os.fstat(dirfd)
+    try:
+        now = os.stat(lock, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if (now.st_dev, now.st_ino) != (judged.st_dev, judged.st_ino):
+        return leave("another generation replaced it while it was judged")
+    aside = f"{lock}.ctl-reaped-{os.getpid()}-{owner['token']}"
+    try:
+        rename_noreplace(lock, aside)
+    except FileNotFoundError:
+        return False
+    moved = os.stat(aside, follow_symlinks=False)
+    moved_owner = lock_owner(dirfd)
+    if (moved.st_dev, moved.st_ino) != (judged.st_dev, judged.st_ino) or not isinstance(moved_owner, dict) or moved_owner["token"] != owner["token"]:
+        try:
+            rename_noreplace(aside, lock)
+        except OSError as error:
+            return leave(f"another generation replaced it during the rename and it could not go back ({error.strerror}); it stays at {aside}")
+        return leave("another generation replaced it during the rename, so it was put back")
+    for entry in os.listdir(dirfd):
+        os.unlink(entry, dir_fd=dirfd)
+    os.rmdir(aside)
+    print(f"removed the stale socket lock {lock} of generation {owner['token']}: {gone}", file=sys.stderr)
+    return True
+
+
 def start(prime_agent, sock, pidfile):
     child = None
     reported = False
     holder_since = None
     holder_reported = False
+    cleared = False
     while True:
         pid = supervisor_pid(sock)
         if pid:
@@ -220,6 +357,7 @@ def start(prime_agent, sock, pidfile):
             print(f"update restart coordinator {coordinator.get('pid')} has run {int(coordinator_age(coordinator))} s, past the {coordinator_budget(coordinator)} s sum of Prime's step deadlines; still waiting for it", file=sys.stderr)
         if child is None:
             if not coordinator:
+                clear_dead_lock(sock)
                 child = subprocess.Popen([prime_agent, "--mode", "daemon", "--daemon-socket", sock], stdin=subprocess.DEVNULL, start_new_session=True, env=target_env(sock))
         elif child.poll() is not None and not coordinator:
             holders = socket_daemons(sock, {child.pid})
@@ -232,6 +370,10 @@ def start(prime_agent, sock, pidfile):
             elif not holders and holder_since is not None:
                 print(f"the supervisor that held the {sock} lock exited without a hello; starting a new one", file=sys.stderr)
                 child, holder_since, holder_reported = None, None, False
+                continue
+            elif not holders and not cleared and clear_dead_lock(sock):
+                cleared = True
+                child = None
                 continue
             elif not holders:
                 print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}", file=sys.stderr)
