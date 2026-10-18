@@ -754,8 +754,24 @@ export class Catalog {
     return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
+  private emitRun: Promise<void> | undefined;
+  private emitNext: Promise<void> | undefined;
+  /**
+   * One projection at a time: an emit asked for while one runs waits for it, and every such ask shares one run after it, so each caller
+   * still gets a frame built after its change. On 10-18 the service's main thread was about 95% busy and project() took half of it, and
+   * frames went out in bursts of 4 identical lists within 140 ms from projections that overlapped.
+   */
+  private emit(): Promise<void> {
+    if (!this.emitRun) {
+      this.emitRun = this.emitOnce().finally(() => { this.emitRun = undefined; });
+      return this.emitRun;
+    }
+    this.emitNext ??= this.emitRun.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
+    return this.emitNext;
+  }
+
   /** Frames wait for the first session list of a connection: a schedule reply or a notify that lands before it would report "up" with no rows. */
-  private async emit(): Promise<void> {
+  private async emitOnce(): Promise<void> {
     if (this.listeners.size === 0 || (this.daemon === "up" && !this.listed)) return;
     const event = await this.event();
     for (const listener of [...this.listeners]) listener(event);
