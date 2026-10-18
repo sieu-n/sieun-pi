@@ -12,7 +12,7 @@ import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, rende
 import { readWikiPage, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
-import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
+import { isPriority, isProgress, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { BOOKMARK_TEXT_MAX, type BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -33,7 +33,6 @@ import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
-const maxMessageLength = 32000;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -93,8 +92,12 @@ function record(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new RequestError(400, "Expected a JSON object.");
   return value;
 }
-function text(value: unknown, field: string, max = maxMessageLength): string {
-  if (typeof value !== "string" || value.length > max) throw new RequestError(400, `Expected ${field} as text up to ${max} characters.`);
+/**
+ * A text field. `max` bounds only an id-like field (a provider, model id, account or path), never what a person writes: a message, a name or a
+ * tag has no length cap (owner 10-18: every arbitrary limit is a soft cap). The request body cap bounds those.
+ */
+function text(value: unknown, field: string, max?: number): string {
+  if (typeof value !== "string" || (max !== undefined && value.length > max)) throw new RequestError(400, max === undefined ? `Expected ${field} as text.` : `Expected ${field} as text up to ${max} characters.`);
   return value;
 }
 function requestId(value: unknown): string {
@@ -202,7 +205,7 @@ function parseDefaults(body: Record<string, unknown>, catalog: ModelCatalog): Ch
 }
 
 function threadIds(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > 1000 || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected up to 1000 thread IDs.");
+  if (!Array.isArray(value) || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected thread IDs.");
   return [...new Set(value.map(id => threadId(id)))];
 }
 function parseBookmarkAction(body: Record<string, unknown>): BookmarkAction {
@@ -215,7 +218,7 @@ function parseBookmarkAction(body: Record<string, unknown>): BookmarkAction {
 }
 function parseLabelAction(body: Record<string, unknown>): LabelAction {
   const tagId = () => text(body.tagId, "tagId", 64);
-  const name = () => text(body.name, "name", TAG_NAME_MAX * 2);
+  const name = () => text(body.name, "name");
   switch (body.op) {
     case "create": return { op: "create", name: name(), ids: body.ids === undefined ? [] : threadIds(body.ids) };
     case "rename": return { op: "rename", tagId: tagId(), name: name() };
@@ -655,7 +658,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const modelId = typeof body.modelId === "string" ? text(body.modelId, "modelId", 256) : undefined;
         const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
         const account = parseNewChatAccount(body.account);
-        const name = typeof body.name === "string" ? text(body.name, "name", 200).trim() : "";
+        const name = typeof body.name === "string" ? text(body.name, "name").trim() : "";
         const kind = parseKind(body.kind);
         const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
         const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
@@ -888,8 +891,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, view); return;
         }
         case "rename": {
-          const name = text(body.name, "name", 200).trim();
-          if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");
+          const name = text(body.name, "name").trim();
+          if (!name) throw new RequestError(400, "Give the thread a name.");
           await backend.threads.rename(id, name); break;
         }
         case "model":

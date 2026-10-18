@@ -19,8 +19,8 @@ export function steerWait(text: string): GoWait | null {
   return null;
 }
 
-/** The refusal for an agent message that holds a job (`steerWait`), null when it holds none. */
-export function steerWaitRefusal(text: string): string | null {
+/** The note for a sent agent message that holds a job (`steerWait`), null when it holds none. The message goes out either way. */
+export function steerWaitNote(text: string): string | null {
   const wait = steerWait(text);
-  return wait ? `Refused, not sent: this message tells your job to wait. It ${goWaitText(wait)}. ${GO_WAIT_FIX} Tell the job to take that action now.` : null;
+  return wait ? `Sent, with a note (c47): this message tells your job to wait. It ${goWaitText(wait)}. ${GO_WAIT_FIX} Send the job a follow-up that tells it to take that action now.` : null;
 }

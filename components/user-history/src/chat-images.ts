@@ -4,8 +4,8 @@ type NativeImage = NonNullable<NonNullable<Parameters<DaemonAgentConnection["pro
 type ImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 export type ChatImage = NativeImage & { mimeType: ImageMimeType };
 
-import { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "./shared/limits.ts";
-export { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES };
+import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "./shared/limits.ts";
+export { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES };
 const MAX_ENCODED_IMAGE_BYTES = Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,7 +52,6 @@ function parseImage(value: unknown, remainingBytes: number): { image: ChatImage;
 export function parseChatImages(value: unknown): ChatImage[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Images must be an array");
-  if (value.length > MAX_CHAT_IMAGES) throw new Error("Attach up to 4 images per message");
   const images: ChatImage[] = [];
   let totalBytes = 0;
   for (const candidate of value) {
@@ -69,7 +68,6 @@ export function sanitizeNativeImages(message: unknown): ChatImage[] {
   let totalBytes = 0;
   for (const candidate of message.content) {
     if (!isRecord(candidate) || candidate.type !== "image") continue;
-    if (images.length >= MAX_CHAT_IMAGES) break;
     try {
       const { image, byteLength } = parseImage(candidate, MAX_CHAT_TOTAL_IMAGE_BYTES - totalBytes);
       images.push(image);

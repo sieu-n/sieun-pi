@@ -6,7 +6,7 @@ import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_TOOL } from "../src/chats.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
@@ -18,7 +18,7 @@ import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
-import { LOAD_WAIT_NOTE, loadWaitNote } from "../src/load-wait.ts";
+import { loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
@@ -260,19 +260,19 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
     return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
-  /** Tool calls that hold a load-wait loop: each one runs, and its result gets LOAD_WAIT_NOTE. */
-  const loadWaitCalls = new Set<string>();
+  /** The soft-cap notes of each tool call: the call runs, and its result gets them (a chat's shell past look-ups, a load-wait loop). */
+  const callNotes = new Map<string, string[]>();
   pi.on("tool_call", async (event, ctx) => {
     try {
-      const blocked = chatGuard({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked });
-      if (blocked) return blocked;
-      if ((marked || job || underChat) && loadWaitNote(event.toolName, event.input)) loadWaitCalls.add(event.toolCallId);
+      const notes = [chatShellNote({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked }),
+        marked || job || underChat ? loadWaitNote(event.toolName, event.input) : undefined].filter((note): note is string => note !== undefined);
+      if (notes.length) callNotes.set(event.toolCallId, notes);
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
         if (names.length) await jobs().add(names, rootChat, await rootChatId(ctx));
       }
-      // A limit a chat or a job of a chat sends another session gets the reply rule's evidence check before it leaves the kernel (c43).
+      // A message a chat or a job of a chat sends its job gets the c47 hold note on its receipt (message-limit-check.py).
       // Every other session's kernel gets the send checks too: the 5180 SSR hang fix job, no job of a chat, read each daemon timeout as a
       // failure and sent one report 4 times on 10-16 between 05:03 and 05:44Z.
       if (event.toolName === "ipython" && typeof event.input.code === "string") {
@@ -286,13 +286,14 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // (AI harness 10-14: the 15:01 check-in started skill rules land, stale tree guard land and skill rewrite land this way, so the 17:01
   // check-in read their steps as held by other threads and closed them before their runs went green).
   pi.on("tool_result", async (event, ctx) => {
-    const loadWait = loadWaitCalls.delete(event.toolCallId);
+    const notes = callNotes.get(event.toolCallId);
+    callNotes.delete(event.toolCallId);
     try {
       const rootChat = event.toolName === "ipython" &&
         createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat) await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat, await rootChatId(ctx));
     } catch { /* the literal names tool_call registered */ }
-    return loadWait ? { content: [...event.content, { type: "text", text: `\n${LOAD_WAIT_NOTE}` }] } : undefined;
+    return notes ? { content: [...event.content, ...notes.map(note => ({ type: "text" as const, text: `\n${note}` }))] } : undefined;
   });
   pi.registerFlag("agent-chat-socket", {
     description: "Native daemon socket for browser chat",

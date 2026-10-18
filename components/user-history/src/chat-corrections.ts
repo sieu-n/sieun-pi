@@ -11,8 +11,6 @@ export const ENFORCEMENTS = ["brief", "code", "test"] as const;
 export const CORRECTION_STATUSES = ["active", "reopened", "retired"] as const;
 export type Enforcement = typeof ENFORCEMENTS[number];
 export type CorrectionStatus = typeof CORRECTION_STATUSES[number];
-/** At most this many rules reach a chat's context; the rest stay in the file and board.corrections() reads them. */
-export const LEDGER_PROMPT_LINES = 40;
 
 export interface ChatRef { id: string; name: string }
 export interface CorrectionRepeat { at: string; chat: ChatRef; words: string }
@@ -321,12 +319,12 @@ const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !
 export const READ_RULE = "Read one in full with board.corrections(\"c12\") in Python, or all with board.corrections().";
 
 /**
- * A chat's rules: of the newest LEDGER_PROMPT_LINES, reopened first, each one that neither its brief names nor landed code or a test holds, one
- * short line each (`shortLine`). A reopened rule always shows.
+ * A chat's rules, reopened first then newest: each one that neither its brief names nor landed code or a test holds, one short line each
+ * (`shortLine`), with no count cut (owner 10-18: every arbitrary limit is a soft cap). A reopened rule always shows.
  * Null with none.
  */
 export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string | null {
-  const shown = liveRules(ledger).slice(0, LEDGER_PROMPT_LINES).filter(entry => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)));
+  const shown = liveRules(ledger).filter(entry => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)));
   if (!shown.length) return null;
   return [`[corrections] The owner's corrections in force, live from the ledger. ${READ_RULE}`, ...shown.map(shortLine)].join("\n");
 }

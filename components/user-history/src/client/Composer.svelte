@@ -37,7 +37,7 @@
   import { store } from "./store.svelte.ts";
   import { bytes } from "./format.ts";
   import { insertSlashCommand, matchCommands, slashTokenAt } from "./command-match.ts";
-  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, MAX_MESSAGE_LENGTH } from "../shared/limits.ts";
+  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "../shared/limits.ts";
   import type { ImageInput } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
@@ -90,7 +90,7 @@
   let menu: HTMLElement | undefined = $state();
   $effect(() => { menu?.children[menuIndex]?.scrollIntoView({ block: "nearest" }); });
 
-  const canSend = $derived((text.trim().length > 0 || images.length > 0) && !sending && text.length <= MAX_MESSAGE_LENGTH);
+  const canSend = $derived((text.trim().length > 0 || images.length > 0) && !sending);
   const totalBytes = $derived(images.reduce((sum, image) => sum + image.size, 0));
 
   function insertCommand(command: Command): void {
@@ -140,7 +140,6 @@
   async function addFiles(files: Iterable<File>): Promise<void> {
     for (const file of files) {
       if (!(IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) { store.toast(`${file.name || "This file"} is not a PNG, JPEG, GIF or WebP image.`); continue; }
-      if (images.length >= MAX_CHAT_IMAGES) { store.toast(`Up to ${MAX_CHAT_IMAGES} images per message.`); break; }
       if (file.size > MAX_CHAT_IMAGE_BYTES) { store.toast(`${file.name || "This image"} is ${bytes(file.size)}. The limit is ${bytes(MAX_CHAT_IMAGE_BYTES)} per image.`); continue; }
       if (totalBytes + file.size > MAX_CHAT_TOTAL_IMAGE_BYTES) { store.toast(`Images add up to more than ${bytes(MAX_CHAT_TOTAL_IMAGE_BYTES)}.`); continue; }
       try {
@@ -240,9 +239,6 @@
   {#if lightbox !== null}
     <Lightbox images={images.map(image => ({ src: image.url, alt: image.name }))} index={lightbox} onclose={() => { lightbox = null; }} />
   {/if}
-  {#if text.length > MAX_MESSAGE_LENGTH}
-    <div class="hint-line danger">Message is {text.length.toLocaleString()} characters. The limit is {MAX_MESSAGE_LENGTH.toLocaleString()}.</div>
-  {/if}
 </div>
 
 <style>
@@ -281,6 +277,4 @@
   .slash-menu { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); z-index: 20; padding: 4px; max-height: 320px; overflow: auto; }
   .command-name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
   .command-description { color: var(--text-muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .hint-line { padding: 0 14px 8px; font-size: 12px; color: var(--text-faint); }
-  .hint-line.danger { color: var(--danger); }
 </style>

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DaemonAgentConnection } from "prime-agent";
 import {
-  chatImageDataUrl, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES, MAX_CHAT_TOTAL_IMAGE_BYTES,
+  chatImageDataUrl, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES,
   parseChatImages, sanitizeNativeImages, type ChatImage,
 } from "../src/chat-images.ts";
 
@@ -35,7 +35,7 @@ test("image parser returns native prompt images without a second representation"
   assert.notEqual(images[0], png);
   assert.deepEqual(parseChatImages(undefined), []);
   assert.deepEqual(parseChatImages([]), []);
-  assert.equal(parseChatImages(Array.from({ length: MAX_CHAT_IMAGES }, () => png)).length, MAX_CHAT_IMAGES);
+  assert.equal(parseChatImages(Array.from({ length: 12 }, () => png)).length, 12, "no count cap: 12 small images go through");
 });
 
 test("image parser recognizes JPEG, GIF87a, and both extended WebP signatures", () => {
@@ -87,8 +87,7 @@ test("image parser verifies bytes rather than trusting the MIME label", () => {
   }
 });
 
-test("image parser enforces count, decoded per-image bytes, and total bytes at exact boundaries", () => {
-  assert.throws(() => parseChatImages(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => png)), /up to 4/);
+test("image parser enforces decoded per-image bytes and total bytes at exact boundaries", () => {
   const largest = sizedPng(MAX_CHAT_IMAGE_BYTES);
   assert.deepEqual(parseChatImages([largest]), [largest]);
   assert.throws(() => parseChatImages([sizedPng(MAX_CHAT_IMAGE_BYTES + 1)]), /3 MiB/);
@@ -115,7 +114,7 @@ test("native image projection keeps only safe user images and does not mutate me
 });
 
 test("native image projection skips invalid and over-limit blocks without hiding later small images", () => {
-  assert.equal(sanitizeNativeImages(nativeUser(Array.from({ length: MAX_CHAT_IMAGES + 2 }, () => png))).length, MAX_CHAT_IMAGES);
+  assert.equal(sanitizeNativeImages(nativeUser(Array.from({ length: 12 }, () => png))).length, 12, "no count cap");
   assert.deepEqual(sanitizeNativeImages(nativeUser([sizedPng(MAX_CHAT_IMAGE_BYTES + 1), png])), [png]);
   const largest = sizedPng(MAX_CHAT_IMAGE_BYTES);
   assert.deepEqual(sanitizeNativeImages(nativeUser([largest, largest, largest, png])), [largest, largest, png]);

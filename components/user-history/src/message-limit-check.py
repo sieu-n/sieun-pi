@@ -3,9 +3,9 @@
 agent_message.send reaches the host through rlm.host_request. This wraps host_request in rlm and in the agent_message module, which imported
 its own reference. It does three things.
 
-1. The c47 hold check. Before an "agent_message.send" request goes out, message-limit-check.ts checks a message to a job (receiver_role
-   "child"): one that holds the job for another thread's go or word raises LimitRefused, and nothing is sent (steer-wait.ts). A failure to
-   run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
+1. The c47 hold note. Before an "agent_message.send" request goes out, message-limit-check.ts checks a message to a job (receiver_role
+   "child"): one that holds the job for another thread's go or word still goes out, and the receipt carries the note and prints it
+   (steer-wait.ts), since the owner made every such limit a soft cap on 10-18. A failure to run the check sends the message with no note.
 2. A daemon timeout on a send is no failure (p334). The supervisor gives the target's worker 30 s to confirm (WORKER_REQUEST_TIMEOUT_MS in
    prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
    out at 17:08Z reached Crawler VP at 17:16:20Z and frontend bro at 17:10:13Z, when their running ipython calls (758 s and 459 s) ended. The
@@ -31,7 +31,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 13
+VERSION = 14
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -56,16 +56,20 @@ def data_dir():
     return getattr(sys, "user_history_data_dir", globals().get("DATA_DIR"))
 
 
-class LimitRefused(Exception):
-    """An agent message that holds a job for another thread's go (c47)."""
-
-
-def refusal(text: str, role=None):
+def hold_note(text: str, role=None):
     try:
         proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": data_dir(), "role": role}), capture_output=True, text=True)
-        return json.loads(proc.stdout.strip().splitlines()[-1]).get("refusal")
+        return json.loads(proc.stdout.strip().splitlines()[-1]).get("note")
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError):
         return None
+
+
+def with_note(reply, note):
+    """The receipt with the c47 hold note added, printed so the cell's output shows it too."""
+    if not note:
+        return reply
+    print(note)
+    return {**reply, "note": f"{reply['note']} {note}" if reply.get("note") else note} if isinstance(reply, dict) else reply
 
 
 def unconfirmed(payload: dict, error: Exception) -> dict:
@@ -190,12 +194,11 @@ async def request(request_type, payload=None, *args, **kwargs):
     # request goes out through Prime's own host_request as it came.
     real = plain_request()
     send = request_type == "agent_message.send" and isinstance(payload, dict)
+    note = None
     try:
         if send:
             text = payload.get("message")
-            reason = refusal(text, payload.get("receiver_role")) if isinstance(text, str) else None
-            if reason:
-                raise LimitRefused(reason)
+            note = hold_note(text, payload.get("receiver_role")) if isinstance(text, str) else None
         direct = send and payload.get("target") != "all"
         key = send_key(payload) if direct else None
         earlier = UNCONFIRMED.get(key) if direct else None
@@ -204,12 +207,10 @@ async def request(request_type, payload=None, *args, **kwargs):
             if state == "landed":
                 UNCONFIRMED.pop(key, None)
             if state != "absent":
-                return held(payload, earlier, state, at)
-    except LimitRefused:
-        raise
+                return with_note(held(payload, earlier, state, at), note)
     except Exception as error:
         print(f"user-history: the message check failed ({error}); sent as it came", file=sys.stderr)
-        return await real(request_type, payload, *args, **kwargs)
+        return with_note(await real(request_type, payload, *args, **kwargs), note)
     started = earlier["since"] if earlier else time.time()
     try:
         reply = await real(request_type, payload, *args, **kwargs)
@@ -220,12 +221,12 @@ async def request(request_type, payload=None, *args, **kwargs):
                 record_brief(request_type, payload, reply)
             except Exception as error:
                 print(f"user-history: the brief of this start was not recorded: {error}", file=sys.stderr)
-        return reply
+        return with_note(reply, note)
     except Exception as error:
         if direct and (SEND_TIMEOUT in str(error) or CLIENT_CLOSED in str(error)):
             texts = (earlier or {}).get("texts", [])
             UNCONFIRMED[key] = {"since": started, "texts": list(dict.fromkeys(texts + [str(payload.get("message") or "").strip()]))}
-            return unconfirmed(payload, error)
+            return with_note(unconfirmed(payload, error), note)
         raise
 
 

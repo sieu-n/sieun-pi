@@ -16,7 +16,7 @@
   import { tick, untrack } from "svelte";
   import { store } from "./store.svelte.ts";
   import { bytes } from "./format.ts";
-  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, MAX_MESSAGE_LENGTH } from "../shared/limits.ts";
+  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "../shared/limits.ts";
   import type { ImageInput } from "../shared/types.ts";
   import { replyText } from "./reply.ts";
   import Icon from "./Icon.svelte";
@@ -54,7 +54,7 @@
   });
   $effect(() => { if (focusOnMount) textarea?.focus(); });
 
-  const canSend = $derived((text.trim().length > 0 || images.length > 0) && text.length <= MAX_MESSAGE_LENGTH);
+  const canSend = $derived((text.trim().length > 0 || images.length > 0));
   const totalBytes = $derived(images.reduce((sum, image) => sum + image.size, 0));
 
   function onKeydown(event: KeyboardEvent): void {
@@ -84,7 +84,6 @@
   async function addFiles(files: Iterable<File>): Promise<void> {
     for (const file of files) {
       if (!(IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) { store.toast(`${file.name || "This file"} is not a PNG, JPEG, GIF or WebP image.`); continue; }
-      if (images.length >= MAX_CHAT_IMAGES) { store.toast(`Up to ${MAX_CHAT_IMAGES} images per message.`); break; }
       if (file.size > MAX_CHAT_IMAGE_BYTES) { store.toast(`${file.name || "This image"} is ${bytes(file.size)}. The limit is ${bytes(MAX_CHAT_IMAGE_BYTES)} per image.`); continue; }
       if (totalBytes + file.size > MAX_CHAT_TOTAL_IMAGE_BYTES) { store.toast(`Images add up to more than ${bytes(MAX_CHAT_TOTAL_IMAGE_BYTES)}.`); continue; }
       try {
@@ -136,9 +135,6 @@
       onkeydown={onKeydown} onpaste={onPaste}></textarea>
     <button type="button" class="send" class:ready={canSend} aria-label="Send" disabled={!canSend} onclick={submit}><Icon name="send" size={16} /></button>
   </div>
-  {#if text.length > MAX_MESSAGE_LENGTH}
-    <div class="hint-line danger">Message is {text.length.toLocaleString()} characters. The limit is {MAX_MESSAGE_LENGTH.toLocaleString()}.</div>
-  {/if}
   {#if lightbox !== null}
     <Lightbox images={images.map(image => ({ src: image.url, alt: image.name }))} index={lightbox} onclose={() => { lightbox = null; }} />
   {/if}
@@ -166,6 +162,4 @@
   .view { display: block; width: 100%; height: 100%; cursor: zoom-in; }
   .view img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .remove { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
-  .hint-line { padding: 0 16px 8px; font-size: 12px; color: var(--text-faint); }
-  .hint-line.danger { color: var(--danger); }
 </style>

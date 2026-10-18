@@ -1,14 +1,14 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { steerWaitRefusal } from "./shared/steer-wait.ts";
+import { steerWaitNote } from "./shared/steer-wait.ts";
 
 /*
  * The check for agent messages a chat or a job of a chat sends. agent_message.send runs in the session's Python kernel and reaches the host
  * through rlm.host_request, which no extension event sees, so the session's ipython cells get one prelude line that runs
  * message-limit-check.py once per kernel and file version. That file wraps host_request: a message to a job that holds it for another
- * thread's go (c47) raises LimitRefused and nothing is sent, and a send the daemon timed out on returns an "unconfirmed" receipt (p334). It
- * runs this file with {message, dataDir, role} on stdin, which prints {"refusal": string | null}.
+ * thread's go (c47) goes out and the cell prints the c47 note, and a send the daemon timed out on returns an "unconfirmed" receipt (p334). It
+ * runs this file with {message, dataDir, role} on stdin, which prints {"note": string | null}.
  */
 const FILE = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "message-limit-check.py");
 /** The file's VERSION: a kernel that installed an older one runs the new file at its next cell. */
@@ -38,13 +38,13 @@ export function withMessageCheck(code: string, dataDir: string | null): string |
   return code.includes(prelude) ? undefined : prelude + code;
 }
 
-/** The refusal for a message to a job (`role` "child") that holds the job for another thread's go or the owner's ok on a push (`steerWaitRefusal`, c47). */
+/** The note for a message to a job (`role` "child") that holds the job for another thread's go or the owner's ok on a push (`steerWaitNote`, c47). */
 export function checkMessage(message: string, role?: string): string | null {
-  return role === "child" ? steerWaitRefusal(message) : null;
+  return role === "child" ? steerWaitNote(message) : null;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { message, role } = JSON.parse(readFileSync(0, "utf8")) as { message?: unknown; role?: unknown };
-  const refusal = typeof message === "string" ? checkMessage(message, typeof role === "string" ? role : undefined) : null;
-  process.stdout.write(`${JSON.stringify({ refusal })}\n`);
+  const note = typeof message === "string" ? checkMessage(message, typeof role === "string" ? role : undefined) : null;
+  process.stdout.write(`${JSON.stringify({ note })}\n`);
 }

@@ -139,12 +139,13 @@ function shellReason(command: string | null, how: string): string | null {
     const allowed = ALLOWED_SHELL.some(prefix => trimmed === prefix || trimmed.startsWith(prefix + " "));
     if (allowed && !/[;&|<>`\n]|\$\(/.test(unquotedShell(trimmed))) return null;
   }
-  return `A chat runs only quick look-ups in the shell (${SHELL_LIST}; no pipes, redirects or chaining) (${how}). Give the work to a job with rlm.spawn.`;
+  return `[soft cap] This ran, but the chat brief keeps a chat's own shell to quick look-ups (${SHELL_LIST}; no pipes, redirects or chaining) ` +
+    `(${how}). Give the next real task to a job with rlm.spawn.`;
 }
 /**
- * The reason an ipython cell is refused in a chat, or null. Calls are found on the code with its string literals and comments blanked, so a job
- * brief that mentions bash( does not trip the guard. A computed shell command counts as refused. subprocess and os.system are not inspected;
- * the brief forbids them.
+ * The note for an ipython cell that goes past a chat's look-up shell, or null. The cell runs either way (owner 10-18: every arbitrary limit is
+ * a soft cap). Calls are found on the code with its string literals and comments blanked, so a job brief that mentions bash( does not trip it.
+ * A computed shell command counts as past it. subprocess and os.system are not inspected; the brief asks a chat not to use them.
  */
 export function judgeChatCode(code: string): string | null {
   const lines = code.split("\n");
@@ -171,13 +172,12 @@ export function judgeChatCode(code: string): string | null {
 
 export interface GuardInput { toolName: string; input: Record<string, unknown>; depth: number; marked: boolean }
 
-/** The tool_call decision for a chat: active only in a marked root session (depth 0). */
-export function chatGuard({ toolName, input, depth, marked }: GuardInput): { block: true; reason: string } | undefined {
+/** The note a chat's tool call gets appended to its result: only in a marked root session (depth 0); the call always runs. */
+export function chatShellNote({ toolName, input, depth, marked }: GuardInput): string | undefined {
   if (depth !== 0 || !marked) return undefined;
-  let reason: string | null = null;
-  if (toolName === "ipython" && typeof input.code === "string") reason = judgeChatCode(input.code);
-  else if (toolName === "bash" && typeof input.command === "string") reason = shellReason(input.command, "the bash tool");
-  return reason ? { block: true, reason } : undefined;
+  if (toolName === "ipython" && typeof input.code === "string") return judgeChatCode(input.code) ?? undefined;
+  if (toolName === "bash" && typeof input.command === "string") return shellReason(input.command, "the bash tool") ?? undefined;
+  return undefined;
 }
 
 /**

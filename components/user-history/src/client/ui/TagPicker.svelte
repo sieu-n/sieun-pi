@@ -90,7 +90,7 @@
         <TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span>
       </button>
     {/each}
-    <input bind:this={input} class="draft" data-autofocus={autofocus ? true : undefined} bind:value={draft} maxlength="40" placeholder={assigned.length ? "Add tag" : store.tags.length ? "Find or create a tag" : "Name a new tag"}
+    <input bind:this={input} class="draft" data-autofocus={autofocus ? true : undefined} bind:value={draft} placeholder={assigned.length ? "Add tag" : store.tags.length ? "Find or create a tag" : "Name a new tag"}
       role="combobox" aria-expanded="true" aria-controls="{id}-list" aria-autocomplete="list" aria-label={selection.label}
       aria-activedescendant={entries[active] ? `${id}-${active}` : undefined} onkeydown={onKey} />
   </div>
@@ -108,7 +108,7 @@
         {@const tag = entry.tag}
         <div class="tag-row" data-active={index === active}>
           {#if editing?.id === tag.id}
-            <input class="field edit" bind:value={editing.name} aria-label="Tag name" maxlength="40" use:focusAndSelect onkeydown={onEditKey} onblur={() => void commitEdit()} />
+            <input class="field edit" bind:value={editing.name} aria-label="Tag name" use:focusAndSelect onkeydown={onEditKey} onblur={() => void commitEdit()} />
           {:else}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <div id="{id}-{index}" class="menu-item option" role="option" tabindex="-1" aria-selected={entry.state === "all"} data-active={index === active}

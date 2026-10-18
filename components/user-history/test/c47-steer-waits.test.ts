@@ -30,13 +30,13 @@ test("c47: a message that holds a job for another thread's go is a wait; a repor
   for (const text of FREE) assert.equal(steerWait(text), null, text);
 });
 
-test("c47: checkMessage refuses the hold only on a message to a job; a sibling thread may hear what we wait for", async () => {
-  assert.match(await checkMessage(HOLD_1359, "child") ?? "", /^Refused, not sent: this message tells your job to wait\. It waits for another thread's go, word or slot \("Fable's 'ON STAGING' word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
+test("c47: checkMessage notes the hold only on a message to a job; a sibling thread may hear what we wait for", async () => {
+  assert.match(await checkMessage(HOLD_1359, "child") ?? "", /^Sent, with a note \(c47\): this message tells your job to wait\. It waits for another thread's go, word or slot \("Fable's 'ON STAGING' word"\)\. Staging, sieun\/dev, ci\/ and other GitHub pushes/);
   assert.equal(await checkMessage(HOLD_1359, "sibling"), null);
   assert.equal(await checkMessage(FREE[3]!, "child"), null);
 });
 
-test("c47: in the kernel, agent_message.send of the 13:59Z hold to a job raises LimitRefused and the host gets nothing; the same text to a sibling goes", async () => {
+test("c47: in the kernel, agent_message.send of the 13:59Z hold to a job goes out with the note on its receipt; the same text to a sibling has none", async () => {
   const dir = await mkdtemp(join(tmpdir(), "c47-steer-"));
   try {
     await writeFile(join(dir, "rlm.py"), "sent = []\nasync def host_request(request_type, payload=None):\n    sent.append(payload)\n    return {'deliveryStatus': 'delivered'}\n");
@@ -48,8 +48,8 @@ test("c47: in the kernel, agent_message.send of the 13:59Z hold to a job raises 
       "    out = []",
       "    for text, role in sends:",
       "        try:",
-      "            await agent_message.send(text, receiver_role=role, receiver_name='land run reuse')",
-      "            out.append('sent')",
+      "            receipt = await agent_message.send(text, receiver_role=role, receiver_name='land run reuse')",
+      "            out.append('noted' if 'note' in receipt else 'sent')",
       "        except Exception as error:",
       "            out.append(type(error).__name__)",
       "    print(json.dumps({'out': out, 'sent': [p['receiver_role'] for p in rlm.sent]}))",
@@ -58,7 +58,7 @@ test("c47: in the kernel, agent_message.send of the 13:59Z hold to a job raises 
     const run = spawnSync("python3", ["-c", script], { cwd: dir, env: { ...process.env, PYTHONPATH: dir }, encoding: "utf8",
       input: JSON.stringify([[HOLD_1359, "child"], [HOLD_1359, "sibling"], [FREE[3], "child"]]) });
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1)!), { out: ["LimitRefused", "sent", "sent"], sent: ["sibling", "child"] });
+    assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1)!), { out: ["noted", "sent", "sent"], sent: ["child", "sibling", "child"] });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -250,7 +250,7 @@
   {#if labelPicker.field === "name"}
     <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Name for the new thread" onclose={() => { labelPicker = null; }}>
       <div class="menu-heading">Thread name</div>
-      <input class="field name-field" type="text" maxlength="200" placeholder="Leave empty to name it from the first message" aria-label="Thread name" autocomplete="off" spellcheck="false"
+      <input class="field name-field" type="text" placeholder="Leave empty to name it from the first message" aria-label="Thread name" autocomplete="off" spellcheck="false"
         data-autofocus bind:value={threadName}
         onkeydown={event => { if (event.key === "Enter") { event.preventDefault(); labelPicker = null; requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus()); } }} />
     </Floating>

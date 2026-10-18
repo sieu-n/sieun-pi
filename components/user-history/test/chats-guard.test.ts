@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import historyExtension from "../extension/index.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { chatGuard, chatModeAt, hasChatMarker, judgeChatCode, REPLY_CAP_NOTE, tellOwner, withChatTool, withReplyCap } from "../src/chat-guard.ts";
+import { chatModeAt, chatShellNote, hasChatMarker, judgeChatCode, REPLY_CAP_NOTE, tellOwner, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { lintOwnerReply } from "../src/shared/reply-lint.ts";
 import { reply } from "./chats-helpers.ts";
 
@@ -37,7 +40,7 @@ const ALLOWED = [
   "open('/tmp/out.txt', 'w').write('x')",
   "await rlm.spawn(brief, name='readme-check')",
 ];
-const BLOCKED: [string, RegExp][] = [
+const NOTED: [string, RegExp][] = [
   ["await bash('git commit -m x')", /quick look-ups/],
   ["await bash('git push')", /quick look-ups/],
   ["await bash('npm test')", /quick look-ups/],
@@ -53,17 +56,17 @@ const BLOCKED: [string, RegExp][] = [
   ["!npm install", /a ! line/],
 ];
 
-test("chat guard: the decision table, only in a marked root", () => {
+test("chat shell note: the decision table, only in a marked root; the call runs either way and the note goes on its result", () => {
   for (const code of ALLOWED) assert.equal(judgeChatCode(code), null, code);
-  for (const [code, reason] of BLOCKED) assert.match(judgeChatCode(code) ?? "", reason, code);
-  const at = (depth: number, marked: boolean, toolName: string, input: Record<string, unknown>) => chatGuard({ toolName, input, depth, marked });
-  assert.equal(at(0, true, "ipython", { code: "await bash('git push')" })?.block, true);
+  for (const [code, reason] of NOTED) assert.match(judgeChatCode(code) ?? "", reason, code);
+  const at = (depth: number, marked: boolean, toolName: string, input: Record<string, unknown>) => chatShellNote({ toolName, input, depth, marked });
+  assert.match(at(0, true, "ipython", { code: "await bash('git push')" }) ?? "", /^\[soft cap\] This ran/);
   assert.equal(at(1, true, "ipython", { code: "await bash('git push')" }), undefined, "a job under the chat is not guarded");
   assert.equal(at(0, false, "ipython", { code: "await bash('git push')" }), undefined, "an unmarked root is not guarded");
   assert.equal(at(0, true, "ipython", { code: "await bash('prime-agent send a b')" }), undefined);
   assert.equal(at(0, true, "bash", { command: "prime-agent stop a" }), undefined);
   assert.equal(at(0, true, "bash", { command: "git status" }), undefined);
-  assert.match(at(0, true, "bash", { command: "git checkout main" })?.reason ?? "", /the bash tool/);
+  assert.match(at(0, true, "bash", { command: "git checkout main" }) ?? "", /the bash tool/);
   assert.equal(at(0, true, "edit", { path: "a" }), undefined);
   assert.equal(at(0, true, "read", { path: "a" }), undefined);
   assert.equal(at(0, true, "ipython", { code: 42 }), undefined, "a non-string cell is left to the tool");
@@ -133,4 +136,33 @@ test("brief: a reply to the owner always goes through tell_owner, and every exam
   assert.ok(examples.length >= 1, "the plural example is found");
   for (const example of examples) assert.deepEqual(lintOwnerReply(example), [], `the example "${example}" passes the lint a chat's reply must pass`);
   assert.ok(examples.includes("jobs now report to the chat when they finish"));
+});
+
+test("extension: a chat's git push runs (no block) and its result gets the soft-cap note; a look-up gets none", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "chat-shell-note-"));
+  try {
+    const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
+    const pi = { registerFlag() {}, registerCommand() {}, registerTool() {}, getActiveTools: () => [], setActiveTools() {}, appendEntry() {},
+      on(name: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+      getFlag: (name: string) => name === "agent-chat-data-dir" ? dataDir : undefined };
+    historyExtension(pi as never);
+    const ctx = (depth: number) => ({ sessionManager: { getHeader: () => ({ type: "session", rlmDepth: depth }), getEntries: () => [{ type: "custom", customType: "chat_mode" }],
+      getBranch: () => [], getSessionId: () => "chat-1", getSessionName: () => "dev VP", getSessionFile: () => undefined } });
+    const run = async (name: string, event: unknown, depth = 0) => {
+      let last: unknown; for (const handler of handlers.get(name) ?? []) last = await handler(event, ctx(depth)) ?? last; return last;
+    };
+    await run("session_start", {});
+    const call = async (id: string, command: string) => {
+      const blocked = await run("tool_call", { type: "tool_call", toolCallId: id, toolName: "bash", input: { command } });
+      const result = await run("tool_result", { type: "tool_result", toolCallId: id, toolName: "bash", input: { command }, content: [{ type: "text", text: "ok" }], isError: false });
+      return { blocked, result: result as { content: { text: string }[] } | undefined };
+    };
+    const push = await call("t1", "git push");
+    assert.equal(push.blocked, undefined, "the push is not blocked");
+    assert.equal(push.result?.content[0]?.text, "ok");
+    assert.match(push.result?.content[1]?.text ?? "", /\[soft cap\] This ran, but the chat brief keeps a chat's own shell to quick look-ups/);
+    const look = await call("t2", "git status");
+    assert.equal(look.blocked, undefined);
+    assert.equal(look.result, undefined, "a look-up gets no note");
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
 });

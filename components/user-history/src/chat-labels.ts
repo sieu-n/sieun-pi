@@ -3,7 +3,6 @@ import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json
 import { PROGRESS_STEPS, type LabelAction, type Priority, type Progress, type Tag, type ThreadLabels } from "./shared/types.ts";
 
 export interface LabelsState { tags: Tag[]; threads: Record<string, ThreadLabels> }
-export const TAG_NAME_MAX = 40;
 const HUES = [262, 200, 150, 90, 40, 12, 330, 290] as const;
 
 export class LabelError extends Error {
@@ -31,7 +30,7 @@ function parse(value: unknown): LabelsState {
 
 export function tagName(value: string): string {
   const name = value.trim().replace(/\s+/g, " ");
-  if (!name || name.length > TAG_NAME_MAX) throw new LabelError(400, `Use a tag name of 1 to ${TAG_NAME_MAX} characters.`);
+  if (!name) throw new LabelError(400, "Give the tag a name.");
   return name;
 }
 
