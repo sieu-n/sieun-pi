@@ -22,14 +22,18 @@ export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: numb
     if (!target || goal.status === "done" || goal.status === "dropped") continue;
     const measured = Date.parse(target.measuredAt ?? "");
     if (Number.isFinite(measured) && measured >= at) continue;
-    let reading: { key: string; value: number } | undefined;
+    // Two metrics that share the goal's target and direction cannot both be its number, so neither is written: VP of CI's p1 "m1-air job
+    // start wait p90" (at most 10 min) has d1/push_to_verdict_p90_min and d1/run_time_p90_min under it, and on 10-18 read push to verdict's 221.5.
+    const readings = new Map<string, number>();
     walk([goal], item => {
-      if (reading || !item.duty?.startsWith(`${dutyId}/`)) return;
+      if (!item.duty?.startsWith(`${dutyId}/`)) return;
       const key = item.duty.slice(dutyId.length + 1);
       const result = metrics[key];
-      if (result && result.value >= 0 && result.target === target.target && result.op === targetOp(target)) reading = { key, value: result.value };
+      if (result && result.value >= 0 && result.target === target.target && result.op === targetOp(target)) readings.set(key, result.value);
     });
-    if (!reading) continue;
+    if (readings.size !== 1) continue;
+    const [key, value] = [...readings][0]!;
+    const reading = { key, value };
     ops.push({ op: "plan_update", id: goal.id, target: { ...target, current: reading.value, measuredAt: new Date(at).toISOString(),
       source: `duty ${dutyId} metric ${reading.key}, its run at ${new Date(at).toISOString().slice(0, 16)}Z` } });
   }

@@ -76,15 +76,19 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
     // A duty metric that the goal or a step under it fixes, with the goal's target and direction, read after the target's own reading, is the
     // newer measure of the same number: on 10-18 the AI harness chat's check-in read p453 "duties green" at 25.7% from 10-16 06:27Z while the
     // newest measure said 29.7%.
+    // Only one such metric can be that number: VP of CI p1 "m1-air job start wait p90" (at most 10 min) has p258 on d1/push_to_verdict_p90_min
+    // and p275 on d1/run_time_p90_min under it, both at most 10 min, and the 17:11Z check-in on 10-18 read p1 at push to verdict's 221.5.
+    const same = new Set<string>();
     let newer: { key: string; fact: MetricFact & { value: number } } | undefined;
     walk([goal], item => {
       if (!item.duty || item.duty === GOAL_PUSH_LINK) return;
       const fact = metrics.get(item.duty);
       if (fact?.value === undefined || fact.target !== target.target || (fact.op ?? ">=") !== op) return;
+      same.add(item.duty);
       if ((Number.isFinite(at) && fact.at <= at) || (newer && newer.fact.at >= fact.at)) return;
       newer = { key: item.duty, fact: fact as MetricFact & { value: number } };
     });
-    if (newer) return { metric: target.metric, target: target.target, unit: target.unit, op, value: newer.fact.value, measuredAt: newer.fact.at,
+    if (newer && same.size === 1) return { metric: target.metric, target: target.target, unit: target.unit, op, value: newer.fact.value, measuredAt: newer.fact.at,
       source: `the last run of duty metric ${newer.key}`, staleMs: targetStaleMs(target, everyMs) };
     return { metric: target.metric, target: target.target, unit: target.unit, op, ...(target.current !== undefined ? { value: target.current } : {}),
       ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs) };
