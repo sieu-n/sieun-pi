@@ -22,7 +22,7 @@ import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
-import { SessionsDiff } from "./shared/sessions-delta.ts";
+import { SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -421,7 +421,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       sendBuild(version => send("build", { version }));
       if (!feed.delta) return backend.catalog.subscribe(event => send("sessions", event));
       const diff = new SessionsDiff();
-      return backend.catalog.subscribe(event => { const frame = diff.frame(event); if (frame) send("sessions", frame); });
+      return backend.catalog.subscribe(event => { const frame = diff.frame(feed.archived ? event : withoutArchived(event)); if (frame) send("sessions", frame); });
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
     if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));

@@ -343,9 +343,10 @@ export interface ChatAgent {
 }
 /** A session's place in the Mac-wide turn queue: its position, how many wait, and when it began to wait (epoch ms). */
 export interface QueuePlace { position: number; total: number; since: number }
-export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
+/** `archived` counts the archived rows a feed left out because the page did not ask for them (src/shared/sessions-delta.ts `withoutArchived`). */
+export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string; archived?: number }
 /** A sessions frame for a page that subscribed with `delta: true` (src/shared/sessions-delta.ts); `order` comes only when sorting by activity would not rebuild it. */
-export interface SessionsDelta { type: "sessions-delta"; add: SessionRow[]; patch: SessionRowPatch[]; remove: string[]; order?: string[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
+export interface SessionsDelta { type: "sessions-delta"; add: SessionRow[]; patch: SessionRowPatch[]; remove: string[]; order?: string[]; tags: Tag[]; daemon: "up" | "down"; error?: string; archived?: number }
 /** A listed row's changed fields; a changed `agents` list comes as its changed agents by `key`, with their order only when it moved. */
 export interface SessionRowPatch { id: string; set?: Partial<SessionRow>; unset?: string[]; agents?: { upsert: ChatAgent[]; remove: string[]; order?: string[] } }
 

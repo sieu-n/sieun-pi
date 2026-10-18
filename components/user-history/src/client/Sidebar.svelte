@@ -33,7 +33,7 @@
 
   const tagMap = $derived(new Map(store.tags.map(tag => [tag.id, tag])));
   const visible = $derived(store.sessions.filter(row => inSidebar(row, { archived: showArchived, agentCreated: ui.agentCreatedShown })));
-  const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
+  const archivedCount = $derived(store.archivedCount);
   /** Agent-created rows the archive toggle would let through; the count the toggle under the list names. */
   const agentCreatedCount = $derived(store.sessions.filter(row => originOf(row) === "agent" && (showArchived || !row.archived)).length);
   /** The machine has its own row of buttons, so the Filter button counts only what its panel sets. */
@@ -313,7 +313,7 @@
         </div>
       {/if}
       {#if archivedCount}
-        <button type="button" class="archived-toggle" onclick={() => { showArchived = !showArchived; }}>{showArchived ? "Hide archived" : `Show ${archivedCount} archived`}</button>
+        <button type="button" class="archived-toggle" onclick={() => { showArchived = !showArchived; if (showArchived) store.wantArchived(); }}>{showArchived ? "Hide archived" : `Show ${archivedCount} archived`}</button>
       {/if}
       {#if agentCreatedCount && ui.sidebarView !== "chats"}
         <button type="button" class="archived-toggle" aria-pressed={ui.agentCreatedShown} onclick={() => ui.setAgentCreatedShown(!ui.agentCreatedShown)}>{ui.agentCreatedShown ? "Hide agent-created" : `Show agent-created (${agentCreatedCount})`}</button>

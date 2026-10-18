@@ -95,13 +95,29 @@ function jsonOf(event: SessionsEvent): Map<string, string> {
   return rows;
 }
 
+/**
+ * The list without its archived rows, for a page that did not ask for them (`archived: true` on the feed), with `archived` counting the rows
+ * left out. On 10-18 2,531 of 2,754 rows were archived: 1.0 MB of the 1.5 MB first frame, which each page load and each reconnect from Korea
+ * pulled beside app.js on the same 185 ms link. One view per catalog event, shared by every socket, and its rows are the event's own objects.
+ */
+const unarchived = new WeakMap<SessionsEvent, SessionsEvent>();
+export function withoutArchived(event: SessionsEvent): SessionsEvent {
+  let view = unarchived.get(event);
+  if (!view) {
+    const sessions = event.sessions.filter(row => !row.archived);
+    view = { ...event, sessions, archived: event.sessions.length - sessions.length };
+    unarchived.set(event, view);
+  }
+  return view;
+}
+
 /** One subscriber's view: the first event goes out whole, each later one as a delta against what this subscriber holds, or not at all when nothing changed. */
 export class SessionsDiff {
   private sent: { rows: readonly SessionRow[]; json: Map<string, string>; rest: string } | null = null;
 
   frame(event: SessionsEvent): SessionsEvent | SessionsDelta | null {
     const rows = jsonOf(event);
-    const rest = JSON.stringify([event.tags, event.daemon, event.error ?? null]);
+    const rest = JSON.stringify([event.tags, event.daemon, event.error ?? null, event.archived ?? null]);
     const previous = this.sent;
     this.sent = { rows: event.sessions, json: rows, rest };
     if (!previous) return event;
@@ -114,7 +130,7 @@ export class SessionsDiff {
       else if (previous.json.get(row.id) !== rows.get(row.id)) patch.push(diffRow(old, row));
     }
     const remove = [...previous.json.keys()].filter(id => !rows.has(id));
-    const delta: SessionsDelta = { type: "sessions-delta", add, patch, remove, tags: event.tags, daemon: event.daemon, ...(event.error !== undefined ? { error: event.error } : {}) };
+    const delta: SessionsDelta = { type: "sessions-delta", add, patch, remove, tags: event.tags, daemon: event.daemon, ...(event.error !== undefined ? { error: event.error } : {}), ...(event.archived !== undefined ? { archived: event.archived } : {}) };
     // The common frame changes fields of rows that keep their places, which needs no rebuild; on 10-18 the rebuild per socket and frame
     // was 4.4% of the box chat's main thread with three pages open.
     if (!keepsOrder(previous.rows, event.sessions)) {

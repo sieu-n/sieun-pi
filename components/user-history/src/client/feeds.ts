@@ -4,14 +4,14 @@
  * The socket opens on the first subscription, reconnects with backoff while any feed is subscribed, and subscribes again
  * after each reconnect. The server answers a new subscription with a fresh snapshot, so nothing is lost across a reconnect.
  */
-export type Feed = { feed: "sessions"; delta?: true } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string };
 type Listener = { feed: Feed; onEvent: (event: string, data: unknown) => void; onError: () => void };
 /** The socket the shell's inline script opened before this bundle ran (src/boot-feed.ts), with the feeds its URL named and the frames so far. */
 type BootFeed = { socket: WebSocket; subs: Array<{ sub: number } & Feed>; frames: unknown[] };
 declare global { interface Window { __bootFeed?: BootFeed } }
 
 /** One string per feed, so a subscribe finds the boot socket's subscription to the same feed. */
-const feedKey = (feed: Feed): string => feed.feed === "thread" ? "thread:" + feed.id : feed.feed === "sessions" && feed.delta ? "sessions:delta" : feed.feed;
+const feedKey = (feed: Feed): string => feed.feed === "thread" ? "thread:" + feed.id : feed.feed === "sessions" && feed.delta ? "sessions:delta" + (feed.archived ? ":archived" : "") : feed.feed;
 
 const token = document.body.dataset.chatToken ?? "";
 /** The server pings every 25 s; a socket silent this long is dead even if the browser has not noticed. */

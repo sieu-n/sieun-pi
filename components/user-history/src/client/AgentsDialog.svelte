@@ -69,7 +69,9 @@
     if (row.schedule) return { text: (row.schedule.label ?? row.schedule.kind) + (row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, now) : ""), tone: "" };
     return null;
   }
-  const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
+  const archivedCount = $derived(store.archivedCount);
+  const listedArchived = $derived(store.sessions.filter(row => row.archived).length);
+  $effect(() => { if (filter.archived) store.wantArchived(); });
   const bulkPriority = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.priority === rows.find(entry => selected.has(entry.id))!.priority)
     ? rows.find(row => selected.has(row.id))!.priority : null);
   const editRow = $derived(editing ? store.session(editing.id) : undefined);
@@ -150,7 +152,7 @@
       </button>
       {#if filtered}<button type="button" class="clear" onclick={() => { filter = { ...emptyFilter(), query: filter.query, archived: filter.archived }; search?.focus(); }}>Clear filters</button>{/if}
     </div>
-    <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - archivedCount}</span>
+    <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - listedArchived}</span>
     <button type="button" class="button small" aria-haspopup="menu" aria-expanded={columnsAnchor !== null}
       onclick={event => { columnsAnchor = columnsAnchor ? null : event.currentTarget as HTMLElement; }}><Icon name="columns" size={13} />Columns</button>
   {/snippet}

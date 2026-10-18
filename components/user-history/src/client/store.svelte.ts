@@ -45,6 +45,11 @@ class Store {
    * one frame a second, which held the idle renderer near 10% CPU on its own (10-18).
    */
   sessions = $state.raw<SessionRow[]>([]);
+  /** The archived rows the server has, listed in `sessions` only once something asked for them (`wantArchived`). */
+  archivedCount = $state(0);
+  private archivedWanted = false;
+  /** Threads this page created: the list lacks one until the catalog lists it, which says nothing about archived rows. */
+  private created = new Set<string>();
   tags = $state<Tag[]>([]);
   daemon = $state<"up" | "down" | "unknown">("unknown");
   daemonError = $state<string | null>(null);
@@ -84,12 +89,32 @@ class Store {
     this.readHash();
     window.addEventListener("hashchange", () => this.readHash());
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (this.selectedId) this.seenAt.set(this.selectedId, this.hides); this.trimHidden(); } });
-    this.sessionsStop = api.sessionsStream(event => {
+    this.subscribeSessions();
+  }
+
+  private subscribeSessions(): void {
+    this.sessionsStop = api.sessionsStream(this.archivedWanted, event => {
       this.sessions = event.sessions;
+      this.archivedCount = event.archived;
       this.tags = event.tags;
       this.daemon = event.daemon;
       this.daemonError = event.error ?? null;
+      this.checkArchived();
     }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, version => this.onBuild(version));
+  }
+
+  /** The sidebar's or the agents list's archived toggle, or an open thread the list lacks: the feed starts again with the archived rows. */
+  wantArchived(): void {
+    if (this.archivedWanted) return;
+    this.archivedWanted = true;
+    this.sessionsStop?.();
+    this.subscribeSessions();
+  }
+
+  /** The open thread is not in a list that holds back archived rows, so it may be one of them. */
+  private checkArchived(): void {
+    const id = this.selectedId;
+    if (!this.archivedWanted && id && !this.created.has(id) && this.archivedCount > 0 && this.daemon !== "unknown" && !this.sessions.some(row => row.id === id)) this.wantArchived();
   }
 
   private updateOffered = false;
@@ -131,6 +156,7 @@ class Store {
     if (id && id !== this.selectedId) { performance.clearMarks("thread-switch:" + id); performance.mark("thread-switch:" + id); }
     if (id) this.open(id);
     this.selectedId = id;
+    this.checkArchived();
   }
 
   /** Opens a thread, and with `at` lands on the message with that `timestamp` once the thread shows. */
@@ -401,6 +427,7 @@ class Store {
     if (!result) { this.pending = null; return null; }
     if (result.notice) this.toast(result.notice);
     if (input.slack) void this.loadSlack();
+    this.created.add(result.id);
     this.open(result.id);
     if (input.kind === "chat") await this.awaitRow(result.id);
     this.select(result.id);
