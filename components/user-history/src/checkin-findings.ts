@@ -276,6 +276,12 @@ export function dutyFor(goal: Pick<PlanItem, "id" | "text">, duties: readonly Du
  * moves steps into does not fold, and a duty's goal is never a home. Board order.
  */
 export interface FoldMove { item: PlanItem; home: PlanItem; why: string }
+/**
+ * A goal that carries the owner's number or words, a `target` or requirement lines, is his to close, never a fold: on 10-18 the AI harness
+ * check-in folded p524 "Your Prime chat runs on the new iWebFusion server" at 12:57 KST, and Crawler VP's flagged p680 (Meta Ads, 161,000 of
+ * 3,000,000 advertisers) and p681 (TikTok Shop, 1,118 of 2,000 products a minute) only because their steps rode crawler ops train.
+ */
+export const ownersGoal = (goal: Pick<PlanItem, "target" | "requirements">): boolean => goal.target !== undefined || (goal.requirements?.length ?? 0) > 0;
 export interface FoldGoal { goal: PlanItem; duty?: DutyRef; moves: FoldMove[]; left: PlanItem[] }
 export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], self: ReadonlySet<string>, duties: readonly DutyRef[]): FoldGoal[] {
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
@@ -293,7 +299,7 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
   // mac stays usable 23:35) worked on them.
   const fixing = (goal: PlanItem): boolean => goal.duty !== undefined && ownerOf(goal, facts)?.state === "working";
   for (const goal of goals) {
-    if (fixing(goal)) continue;
+    if (fixing(goal) || ownersGoal(goal)) continue;
     const duty = byDuty.get(goal.id);
     if (!duty && homeGoals.has(goal.id)) continue;
     // A home is an open goal, never a step: on ops guy's board (10-16 01:08) p259 and p260 were to fold under p138 "Fix: the M1 Air's Docker
@@ -375,7 +381,7 @@ export function foldOps({ goal, duty, moves }: FoldGoal): BoardOp[] {
   const where = duty ? `the duty ${duty.id} "${duty.name}" runs this goal's work` : "its open steps ride other goals' jobs";
   const moved = moves.length ? `; ${moves.map(move => `${move.item.id} moved under ${move.home.id}`).join(", ")}` : "";
   return [...moves.map(move => ({ op: "plan_update" as const, id: move.item.id, parent: move.home.id })),
-    { op: "plan_update", id: goal.id, status: "done", note: `Folded (c46): ${where}${moved}.` }];
+    { op: "plan_update", id: goal.id, status: "dropped", note: `Folded (c46), not done: ${where}${moved}.` }];
 }
 export const foldLine = (fold: FoldGoal): string => {
   const { goal, duty, moves, left } = fold;
