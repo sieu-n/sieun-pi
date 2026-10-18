@@ -135,8 +135,8 @@ async function build(options, home, sha, dir) {
     symlinkSync(join(options.repo, "node_modules"), join(scratch, "node_modules"));
     symlinkSync(join(options.repo, "components/user-history/node_modules"), join(scratch, "components/user-history/node_modules"));
     const app = join(scratch, "components/user-history");
-    run("nice", ["-n", "10", "npm", "run", "--silent", "typecheck"], app);
-    run("nice", ["-n", "10", "npm", "run", "--silent", "test"], app);
+    run("npm", ["run", "--silent", "typecheck"], app);
+    run("npm", ["run", "--silent", "test"], app);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
     renameSync(scratch, dir);
   } catch (error) {

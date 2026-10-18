@@ -49,7 +49,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-Nice=10
 ExecStart={PYTHON} -B {script}
 StandardOutput=null
 StandardError=append:{SHARE / 'sync.err'}
@@ -79,8 +78,6 @@ def launchd_plist(script: Path) -> str:
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
-  <key>Nice</key><integer>10</integer>
-  <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>{SHARE / 'sync.err'}</string>
 </dict>

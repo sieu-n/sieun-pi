@@ -50,8 +50,6 @@ def plist(script: Path) -> str:
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
-  <key>Nice</key><integer>10</integer>
-  <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>{SHARE / 'last-run.txt'}</string>
   <key>StandardErrorPath</key><string>{SHARE / 'reaper.err'}</string>
 </dict>

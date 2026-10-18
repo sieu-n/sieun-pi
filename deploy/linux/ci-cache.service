@@ -12,7 +12,6 @@ WorkingDirectory=%h/.cache/virev/head-export
 ExecStart=%h/.local/node/bin/node %h/.cache/virev/head-export/current/scripts/dev/run-from-head.mjs --follow-head %h/Documents/Github/auto-sns-agent scripts/dev/ci-cache.mjs poll
 Restart=always
 RestartSec=30
-Nice=10
 StandardOutput=append:%h/.cache/virev/ci-cache.log
 StandardError=append:%h/.cache/virev/ci-cache.log
 

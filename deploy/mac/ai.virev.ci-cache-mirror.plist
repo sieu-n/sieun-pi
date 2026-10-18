@@ -7,7 +7,6 @@
 <key>KeepAlive</key><true/>
 <key>RunAtLoad</key><true/>
 <key>ThrottleInterval</key><integer>30</integer>
-<key>ProcessType</key><string>Background</string>
 <key>StandardOutPath</key><string>/Users/sieunpark/.cache/virev/ci-cache-mirror.log</string>
 <key>StandardErrorPath</key><string>/Users/sieunpark/.cache/virev/ci-cache-mirror.log</string>
 </dict></plist>
