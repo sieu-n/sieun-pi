@@ -66,13 +66,19 @@ function liveRelease(home) {
   try { return readlinkSync(join(home, "current")); } catch { return null; }
 }
 
-/** Throws Refused unless `sha` is the live release's commit or a descendant of it, or `rollback` is set. */
+/**
+ * Throws Refused unless `sha` holds every change of the live release, or `rollback` is set. A descendant holds them, and so does a commit whose
+ * history has an equal patch for each live commit it lacks (git cherry shows no `+`): on 10-18 release-4f1c45a was built from a commit that was
+ * then rebased onto main as 3c414f2fd, and every later main commit read as older and was refused.
+ */
 function checkNewer(repo, home, sha, rollback) {
   const live = liveRelease(home);
   if (!live || rollback) return;
   const liveSha = releaseCommit(repo, resolve(home, live));
   if (!liveSha) throw new Refused(`current points at ${live}, whose commit is not in ${repo}; pass --rollback to replace it anyway`);
-  if (spawnSync("git", ["-C", repo, "merge-base", "--is-ancestor", liveSha, sha], { env: gitEnv }).status !== 0)
+  if (spawnSync("git", ["-C", repo, "merge-base", "--is-ancestor", liveSha, sha], { env: gitEnv }).status === 0) return;
+  const cherry = spawnSync("git", ["-C", repo, "cherry", sha, liveSha], { env: gitEnv, encoding: "utf8" });
+  if (cherry.status !== 0 || /^\+/m.test(cherry.stdout))
     throw new Refused(`${sha.slice(0, 7)} does not descend from the live ${live} (${liveSha.slice(0, 7)}); a newer release is live. Pass --rollback to go back on purpose`);
 }
 
