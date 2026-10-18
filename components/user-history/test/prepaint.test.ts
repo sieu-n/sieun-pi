@@ -85,3 +85,21 @@ test("the still view's script reads the same saved keys and limits as the app", 
   assert.notEqual(stamp.textContent, "");
   assert.equal(scroller.scrollTop, 900);
 });
+
+// Guards the 10-18 21:2xZ loads of chat 01a14d31 from the Mac: the first page held 8 feed items, which drew at the top of the view in the still view and the app, and the full page 0.3 to 0.5 s later scrolled 27 items to the bottom, so the newest line jumped from y 522 to 674 (layout shift 0.29 to 0.31 on each load).
+test("a feed window with earlier items sits at the bottom of the view, in the still view and in the app", async () => {
+  const [server, client] = await Promise.all([compileServer(), compileClient()]);
+  const prepaint = await loadPrepaint(server);
+  const short = { ...snapshot, messages: messages.slice(-6), older: "m1.0" } as unknown as ThreadSnapshot;
+  const page = prepaint!.prepaintLines("c1", JSON.stringify([{ type: "snapshot", snapshot: short }]));
+  assert.equal(page?.earlier, true);
+  const chat = scopeClass("src/client/Chat.svelte");
+  const html = prepaintHtml(page!);
+  assert.ok(html.includes(`<div class="column ${chat} fill"><div class="older ${chat}"></div>`), html.slice(0, 1200));
+  const css = Buffer.from(client.css).toString();
+  assert.match(css, new RegExp(`\\.column\\.fill\\.${chat}\\{min-height:100%;justify-content:flex-end\\}`));
+  assert.ok(readFileSync(new URL("../src/client/Chat.svelte", import.meta.url), "utf8").includes('<div class="column" class:fill={hasEarlier} bind:this={column}>'));
+  const whole = prepaint!.prepaintLines("c1", JSON.stringify([{ type: "snapshot", snapshot: { ...snapshot, messages: messages.slice(-6) } }]));
+  assert.equal(whole?.earlier, false);
+  assert.ok(prepaintHtml(whole!).includes(`<div class="column ${chat}">`));
+});

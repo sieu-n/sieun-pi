@@ -345,7 +345,7 @@
 
 {#snippet feedView()}
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
-    <div class="column" bind:this={column}>
+    <div class="column" class:fill={hasEarlier} bind:this={column}>
       {#if hasEarlier}<div class="older muted" aria-live="polite">{entry?.olderLoading ? "Loading earlier messages" : ""}</div>{/if}
       <ChatLines {id} {feed} {start} {minute} {cwd} {mentions} {typing} {reply} {copyLink} {goToLine} {viewImage} {seeReply} {press} {onProseClick} {readUpdates} />
       {#if !feed.length && !typing}<div class="empty muted">Say what this chat is about. Jobs run in the background while you keep typing.</div>{/if}
@@ -492,6 +492,8 @@
   .dot.corner { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; }
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+  /* A window of a longer feed sits at the bottom of the view, next to the box, so the earlier items that load above it never move the newest ones. */
+  .column.fill { min-height: 100%; justify-content: flex-end; }
   .empty { padding: 48px 0; text-align: center; }
   .older { align-self: center; min-height: 24px; padding: 4px 12px; font-size: 12.5px; }
   .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }

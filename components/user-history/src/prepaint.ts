@@ -23,7 +23,7 @@ export function scopeClass(filename: string): string {
 }
 
 /** What the server half of the client bundle exports (client/prepaint-lines.ts). */
-export interface PrepaintModule { prepaintLines(id: string, frames: string): { lines: string; title: string } | null }
+export interface PrepaintModule { prepaintLines(id: string, frames: string): { lines: string; title: string; earlier: boolean } | null }
 
 /**
  * Runs before the first paint, after the stylesheet (an inline script waits for the stylesheets above it). It applies what the app reads from
@@ -54,14 +54,14 @@ const escapeText = (text: string): string => text.replaceAll("&", "&amp;").repla
  * app.js), and Chat.svelte's header, feed, composer and board panel. It is a copy of their markup, so a change there that moves the feed
  * shows as a jump when the app takes over; the classes it names are checked against app.css in test/prepaint.test.ts.
  */
-export function prepaintHtml(page: { lines: string; title: string }): string {
+export function prepaintHtml(page: { lines: string; title: string; earlier: boolean }): string {
   const [app, sidebar, chat, title, composer] = ["App.svelte", "Sidebar.svelte", "Chat.svelte", "ThreadTitle.svelte", "ChatComposer.svelte"].map(file => scopeClass(resolve(CLIENT_DIR, file)));
   return `<div id="prepaint" inert><div class="app ${app}"><div class="body ${app}">` +
     `<aside class="sidebar ${sidebar} open"><div class="inner ${sidebar}"></div></aside>` +
     `<main class="main ${app}"><div class="chat ${chat}">` +
     `<header class="head ${chat}"><div class="title-wrap ${title}"><span class="title ${title}">${escapeText(page.title)}</span></div></header>` +
     `<div class="body ${chat}"><div class="main ${chat}">` +
-    `<div class="scroller ${chat}" data-prepaint-scroller><div class="column ${chat}">${page.lines}</div></div>` +
+    `<div class="scroller ${chat}" data-prepaint-scroller><div class="column ${chat}${page.earlier ? " fill" : ""}">${page.earlier ? `<div class="older ${chat}"></div>` : ""}${page.lines}</div></div>` +
     `<div class="foot ${chat}"><div class="column ${chat}"><div class="chat-composer ${composer}"><div class="row ${composer}">` +
     `<textarea class="${composer}" placeholder="Message" rows="1" tabindex="-1" disabled></textarea><span class="send ${composer}"></span></div></div></div></div>` +
     `</div><aside class="side ${chat}"></aside></div></div></main></div></div></div>\n<script>${prepaintScript}</script>\n`;
