@@ -223,20 +223,37 @@ export class ThreadHub {
     for (const id of this.pinned) {
       const thread = this.threads.get(id);
       if (!thread?.live || !this.resting(thread) || !await this.dormant.due(id, thread.activeAt)) continue;
-      const row = this.catalogRows.get(id);
-      if (row && this.dormant.atWork(row)) continue;
-      for (const line of this.dormant.silentLines(thread.state.children, thread.state.messages)) {
-        await this.notice(id, line).catch(error => { process.stderr.write(`rest ${id.slice(0, 8)}: silent child notice: ${error instanceof Error ? error.message : String(error)}\n`); });
-      }
-      const live = thread.live;
-      if (!live || !this.resting(thread) || this.threads.get(id) !== thread) continue;
-      this.dormant.sleep(id, this.dormant.now() - thread.activeAt, "detached");
-      thread.flush();
-      thread.live = null;
-      live.unsubscribe();
-      await live.connection.dispose().catch(() => {});
+      await this.detach(id, thread, "detached");
     }
     await this.dormant.save([...this.pinned].flatMap(id => { const thread = this.threads.get(id); return thread?.live ? [[id, thread.activeAt] as const] : []; }));
+  }
+
+  /** `rest`'s detach of one resting chat, after the notices for its silent children; false when the chat is at work by its catalog row or stirred meanwhile. */
+  private async detach(id: string, thread: Thread, how: "detached" | "detached to recycle its worker"): Promise<boolean> {
+    const row = this.catalogRows.get(id);
+    if (row && this.dormant.atWork(row)) return false;
+    for (const line of this.dormant.silentLines(thread.state.children, thread.state.messages)) {
+      await this.notice(id, line).catch(error => { process.stderr.write(`rest ${id.slice(0, 8)}: silent child notice: ${error instanceof Error ? error.message : String(error)}\n`); });
+    }
+    const live = thread.live;
+    if (!live || !this.resting(thread) || this.threads.get(id) !== thread) return false;
+    this.dormant.sleep(id, this.dormant.now() - thread.activeAt, how);
+    thread.flush();
+    thread.live = null;
+    live.unsubscribe();
+    await live.connection.dispose().catch(() => {});
+    return true;
+  }
+
+  /**
+   * Detaches a pinned chat whose whole tree has rested for `quietMs`, without waiting out idleEvictionMinutes, so the idle unload can stop
+   * every session on its worker and the worker exits (src/idle-unload.ts `recyclePlan`). A duty that holds the chat keeps it attached. True
+   * when the chat is detached now.
+   */
+  async restNow(id: string, quietMs: number): Promise<boolean> {
+    const thread = this.threads.get(id);
+    if (!this.pinned.has(id) || !thread?.live || !this.resting(thread) || this.dormant.now() - thread.activeAt < quietMs || await this.dormant.held(id)) return false;
+    return await this.detach(id, thread, "detached to recycle its worker");
   }
 
   /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */

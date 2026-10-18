@@ -1,7 +1,7 @@
 """Footprint of Prime worker process trees, for the chat service's Mac usable watch (src/mac-usable-watch.ts).
 
 Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's tree (the worker and every descendant, from
-proc_listchildpids) with its pid count and summed phys_footprint in bytes (the memory macOS counts, compressed and swapped pages
+proc_listchildpids) with its pid count, summed phys_footprint in bytes and the worker process's own phys_footprint (`own`) (the memory macOS counts, compressed and swapped pages
 included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
 on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. It starts no other process, so one call costs well under a second of CPU at 1,000 processes.
 Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes, CPU
@@ -200,7 +200,7 @@ def kernel_of(pid, args):
 
 
 def tree(root, waiters, now, handles, kernels, seen):
-    pids, stack = [], [(root, None)]
+    pids, stack, own = [], [(root, None)], 0
     while stack:
         pid, kernel = stack.pop()
         if pid in seen:
@@ -211,6 +211,8 @@ def tree(root, waiters, now, handles, kernels, seen):
             continue
         bytes_, cpu_ms = found
         pids.append(bytes_)
+        if pid == root:
+            own = bytes_
         if kernel is None and pid != root:
             owner = kernel_of(pid, procargs(pid))
             if owner is not None:
@@ -235,7 +237,7 @@ def tree(root, waiters, now, handles, kernels, seen):
             kernel["cpu_ms"] = round(kernel["cpu_ms"] + cpu_ms, 1)
             kernel["members"].append(pid)
         stack.extend((child, kernel) for child in children(pid))
-    return {"pids": len(pids), "bytes": sum(pids)}
+    return {"pids": len(pids), "bytes": sum(pids), "own": own}
 
 
 def scan():

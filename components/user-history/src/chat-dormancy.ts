@@ -153,7 +153,7 @@ export class Dormancy {
     return minutes !== "off" && this.now() - activeAt >= minutes * 60_000 && !await this.held(id);
   }
 
-  sleep(id: string, idleMs: number, how: "detached" | "left detached"): void {
+  sleep(id: string, idleMs: number, how: "detached" | "left detached" | "detached to recycle its worker"): void {
     this.since.set(id, this.now());
     this.before.delete(id);
     process.stderr.write(`dormant ${id.slice(0, 8)}: idle ${Math.floor(idleMs / 60_000)} min, ${how}\n`);

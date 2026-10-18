@@ -157,7 +157,7 @@ function parseRow(value: unknown): Row | null {
 }
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
-export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; handles?: RawWaiter[]; kernels?: RawKernel[]; orphans?: RawOrphan[];
+export interface Footprints { workers: Record<string, { pids: number; bytes: number; own?: number }>; waiters?: RawWaiter[]; handles?: RawWaiter[]; kernels?: RawKernel[]; orphans?: RawOrphan[];
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }

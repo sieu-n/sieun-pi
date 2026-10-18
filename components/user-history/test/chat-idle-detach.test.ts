@@ -529,3 +529,23 @@ test("thread hub: at a service start a rested chat whose thread an open tab alre
   assert.equal(fake.requests.includes("create"), false, "no resume");
   await fake.threads.close();
 });
+
+// The idle unload recycles a worker that grew past RECYCLE_OWN_BYTES once every session on it is quiet (src/idle-unload.ts): the AI harness VP's
+// worker held 1.24 to 1.50 GB of its own at 00:47Z to 00:54Z on 10-18, and the chat never rested the 10 idle minutes a plain detach waits for.
+test("thread hub: restNow detaches a resting pinned chat after the given quiet time with no idleEvictionMinutes wait, and a duty hold keeps it", async () => {
+  const fake = await attached(hub());
+  fake.at(T0 + 2 * MIN);
+  assert.equal(await fake.threads.restNow("c1", 3 * MIN), false, "not before the quiet time");
+  assert.equal(fake.threads.isLive("c1"), true);
+  fake.at(T0 + 3 * MIN);
+  assert.equal(await fake.threads.restNow("c1", 3 * MIN), true);
+  assert.equal(fake.threads.isDormant("c1"), true);
+  assert.equal(fake.connections[0]!.disposed, true, "the service's attach is gone, so the unload can stop the session");
+  assert.equal(await fake.threads.restNow("c1", 3 * MIN), false, "a detached chat is not detached twice");
+  await fake.threads.close();
+  const held = await attached(hub({ held: async () => true }));
+  held.at(T0 + 30 * MIN);
+  assert.equal(await held.threads.restNow("c1", 3 * MIN), false, "a duty that holds the chat keeps it attached");
+  assert.equal(held.threads.isLive("c1"), true);
+  await held.threads.close();
+});
