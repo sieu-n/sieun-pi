@@ -14,6 +14,7 @@
   import { bubbleBlocks, renderMarkdown } from "./markdown.ts";
   import { ownerExcerpt, renderSaid, replyExcerpt } from "./reply.ts";
   import { diagrams } from "./diagrams.ts";
+  import WikiEmbeds from "./WikiEmbeds.svelte";
   import { brokenImage, proseClick } from "./prose.ts";
   import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
@@ -366,6 +367,7 @@
                   <div class="card prose plain {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={press(item.at, item.text)}>{@html html}</div>
                 {/if}
               {/each}
+              {#if !item.streaming}<WikiEmbeds text={item.text} chat={id} />{/if}
               {#if !blocks.length && item.streaming}<div class="bubble theirs"><span class="caret"></span></div>{/if}
             </div>
             {#if !item.streaming}{@render actions(item.at, item.text)}{/if}

@@ -1,4 +1,5 @@
 import { parseArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
+import type { WikiPage } from "./api.ts";
 
 /**
  * What the reader modal shows. Every artifact link opens here, except a web URL (a new tab) and a bare `thread:<id>` (the thread itself).
@@ -49,10 +50,27 @@ export const diffLines = (text: string): { kind: DiffLineKind; text: string }[] 
  * from the repo root). Null when the report names none.
  */
 const WIKI_LINK = /(?:https?:\/\/[^\s\/`"'<>()]+:5176\/page\/|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?apps\/llm-wiki\/content\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:]|$)/gi;
-export function reportWikiPage(text: string): string | null {
+export const reportWikiPage = (text: string): string | null => wikiPages(text)[0] ?? null;
+
+/** Every wiki page the text links, in the same forms as `reportWikiPage`, each once. */
+export function wikiPages(text: string): string[] {
+  const paths = new Set<string>();
   for (const match of text.matchAll(WIKI_LINK)) {
     const target = parseArtifactTarget("wiki:" + match[1]!);
-    if (target?.kind === "wiki") return target.path;
+    if (target?.kind === "wiki") paths.add(target.path);
   }
-  return null;
+  return [...paths];
+}
+
+/** A page's one-line summary for its card: its `<wiki-tldr>`, its description, or its first paragraph; empty when it has none. */
+export function pageSummary(page: WikiPage): string {
+  let text = "";
+  if (page.kind === "html") {
+    const doc = new DOMParser().parseFromString(page.html, "text/html");
+    text = doc.querySelector("wiki-tldr")?.textContent ?? doc.querySelector('meta[name="description"]')?.getAttribute("content") ?? doc.querySelector("main p, article p, p")?.textContent ?? "";
+  } else {
+    text = page.text.replace(/^---\n[\s\S]*?\n---\n/, "").split(/\n\s*\n/).map(block => block.trim()).find(block => block && !/^(#|```|<|\||-{3,}|!\[)/.test(block)) ?? "";
+    text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`>]/g, "");
+  }
+  return text.replace(/\s+/g, " ").trim();
 }
