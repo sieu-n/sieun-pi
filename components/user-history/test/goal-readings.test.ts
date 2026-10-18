@@ -31,3 +31,18 @@ test("the duty metric a goal's fix step names writes the goal's number", () => {
 test("a run that measures nothing the goal names leaves it untouched", () => {
   assert.deepEqual(goalReadingOps(p75(), "d3", at, { apps_without_lane: { value: 2, target: 0, op: "<=", met: false } }), []);
 });
+
+// Crawler VP's p146 at 17:17Z on 10-18: its target reads d3's new unbacked limits, and the done fix step p538 carries checkin/stuck_steps,
+// whose target and direction match. The check-in wrote its stuck_steps 2 into the goal.
+test("a check-in run's board counts never become a goal's number through a fix step's checkin link", () => {
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-18T17:00:00.000Z", plan: [{
+    id: "p146", text: "Crawler ops", status: "doing",
+    target: { metric: "new unbacked limits", target: 0, unit: "limits", current: 0, measuredAt: "2026-10-18T15:59:48.000Z", source: "d3 scanner" },
+    children: [step("p538", "checkin/stuck_steps", "done"), step("p748", "d3/new_unbacked_limits", "doing")],
+  }] };
+  const run = Date.parse("2026-10-18T17:17:56.231Z");
+  assert.deepEqual(goalReadingOps(board, "checkin", run, { stuck_steps: { value: 2, target: 0, op: "<=", met: false } }), []);
+  const ops = goalReadingOps(board, "d3", run, { new_unbacked_limits: { value: 0, target: 0, op: "<=", met: true } });
+  assert.equal(ops.length, 1);
+  assert.match(ops[0]!.op === "plan_update" ? ops[0]!.target?.source ?? "" : "", /^duty d3 metric new_unbacked_limits/);
+});
