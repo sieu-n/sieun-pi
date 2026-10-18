@@ -98,10 +98,11 @@ test("rules that fail to load refuse nothing, and the failure is logged", { skip
   assert.match(readFileSync(log, "utf8"), /\[load\] auto-sns-agent\.ts failed: fixture: prime\.mjs is broken/);
 });
 
-// The guard as c84c6c646e found it on 10-18: it refused every local pytest, ruff and ty run. A worker that imported it
-// kept it after 08:46:35Z, so sessions were refused with these texts until about 11:00Z.
+// The guard before b9a88ff4d7 (08:21Z on 10-18) and c84c6c646e (08:46Z): it refused every local pytest, ruff and ty run, and a push to
+// main from an ipython cell. A worker that imported it kept it, so sessions loaded before 83b915939 were refused with these texts
+// until they reloaded, such as Vent's 'vent duty' pushing sieun-pi main at 11:19Z and 'vent local mock mode' at 11:20Z.
 const STALE = /Python rung is the same|runs in GitHub Actions, not on this machine/;
-const OLD_GUARDS = "c84c6c646e^";
+const OLD_GUARDS = "b9a88ff4d7^";
 const skipOld = skip || !(() => {
   try { execFileSync("/usr/bin/git", ["-C", join(SOURCE, "../../../.."), "cat-file", "-e", `${OLD_GUARDS}:scripts/repo/agent/guards/commands.mjs`]); return true; } catch { return false; }
 })() && "no commit c84c6c646e in the auto-sns-agent checkout";
@@ -112,6 +113,7 @@ function appWithTests(dir) {
   writeFileSync(join(app, "tests/unit/test_census.py"), "def test_a(): pass\n");
   return app;
 }
+const CELL_PUSH = 'r = await bash("git push -q origin HEAD:main")';
 const NAMED_PYTEST = ".venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_census.py";
 
 test("a fresh box session runs pytest, ruff and ty on a named file", { skip }, async () => {
@@ -139,11 +141,17 @@ test("a live session follows a guard edit at its next tool call, with no worker 
       for (const [n, h] of handlers) if (n === "tool_call") { const r = await h({ toolName: "bash", input: { command: text } }, ctx); if (r?.block) return r.reason; }
       return null;
     };
+    const cell = async (code) => {
+      for (const [n, h] of handlers) if (n === "tool_call") { const r = await h({ toolName: "ipython", input: { code } }, ctx); if (r?.block) return r.reason; }
+      return null;
+    };
     const before = await call(${JSON.stringify(NAMED_PYTEST)});
+    const pushBefore = await cell(${JSON.stringify(CELL_PUSH)});
     process.stdin.once("data", async () => {
       const after = await call(${JSON.stringify(NAMED_PYTEST)});
       const dir = await call("uv run pytest tests");
-      console.log(JSON.stringify({ before, after, dir }));
+      const pushAfter = await cell(${JSON.stringify(CELL_PUSH)});
+      console.log(JSON.stringify({ before, after, dir, pushBefore, pushAfter }));
       process.exit(0);
     });
     console.log("ready");`;
@@ -167,6 +175,27 @@ test("a live session follows a guard edit at its next tool call, with no worker 
   if (process.platform !== "darwin") assert.equal(result.after, null);
   assert.doesNotMatch(result.after ?? "", STALE);
   assert.match(result.dir ?? "", /names the directory tests/);
+  assert.match(result.pushBefore ?? "", /git-push-main/);
+  assert.equal(result.pushAfter, null);
+});
+
+test("a scratch copy of the repo, with its own old guard files, is judged by the checkout's current guard", { skip: skipOld }, async () => {
+  // On 10-18 Vent's job ran its checks from a copy under apps/llm-wiki/content/sessions/<folder>/data/vent-src.
+  const copy = join(checkout, "apps/llm-wiki/content/sessions/2026/10/18/1612-vent-mock-mode/data/vent-src");
+  const old = execFileSync("/usr/bin/git", ["-C", join(SOURCE, "../../../.."), "archive", OLD_GUARDS, "scripts/repo/agent/guards"]);
+  mkdirSync(copy, { recursive: true });
+  execFileSync("tar", ["-x", "-C", copy], { input: old });
+  const app = join(copy, "apps/vent");
+  mkdirSync(join(app, "tests/unit"), { recursive: true });
+  writeFileSync(join(app, "tests/unit/test_mock_engine.py"), "def test_a(): pass\n");
+  const text = `cd ${app} && nice -n 10 uv run pytest -q tests/unit/test_mock_engine.py`;
+  for (const cwd of [checkout, app, HOME_CWD]) {
+    const reason = await call("bash", text, ctx(cwd, "x"));
+    assert.doesNotMatch(reason ?? "", STALE, cwd);
+    if (process.platform !== "darwin") assert.equal(reason, null, cwd);
+  }
+  assert.equal(await call("ipython", `r = await bash(${JSON.stringify(text)})`, ctx(checkout, "x")), null);
+  assert.match(await call("bash", `cd ${app} && uv run pytest tests`, ctx(checkout, "x")) ?? "", /names the directory tests/);
 });
 
 test("a guard edit that fails to load keeps the last guard that loaded", { skip }, async () => {

@@ -1,0 +1,104 @@
+// Guards the VP's 10-18 rule for d7: a minute where opening a chat, a status read or a send to a session fails or takes over 30 s, on either box,
+// is not clean. The fixtures are service.log lines cut from that day: requests routed to Mac worker 35553 hung from about 08:03Z, and the owner's
+// open of AI harness developer environment VP timed out its 30 s attach on us-metal02 at 08:16Z, while every watch line read both boxes usable.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { measure } from "../scripts/duties/whole-system.ts";
+import { listedSessions, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
+import type { WatchLine } from "../src/mac-usable-watch.ts";
+
+const MAC_HANG = [
+  "2026-10-18T08:03:33.781Z idle unload: 01a14d93: Error: Timed out after 30000ms waiting for the Prime Agent daemon response to \"get_state\". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  "2026-10-18T08:03:33.781Z idle unload: 01a14df3: Error: Timed out after 30000ms waiting for the Prime Agent daemon response to \"get_state\". Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.",
+  "2026-10-18T08:03:33.782Z idle unload: 01a14df8: Error: Timed out after 30000ms waiting for the Prime Agent daemon response to \"get_state\". Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.",
+  "open 01a11ba8 saved 705 messages: catalog 497ms, first page 258ms, queue 0ms, failed: Timed out after 30000ms waiting for the Prime Agent daemon response to \"attach\". Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log., total 31754ms",
+  "2026-10-18T08:03:34.008Z idle unload: 01a14dde: Error: Timed out after 30000ms waiting for the Prime Agent daemon response to \"kill\". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  "2026-10-18T08:03:47.002Z wakes: wake 01a14d7c for run 39101049264: Timed out after 30000ms waiting for the Prime Agent daemon response to \"send_message\". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.; tried again next tick",
+  "open 01a14dea saved 133 messages: catalog 734ms, first page 17ms, queue 0ms, attach 1426ms, failed: Timed out after 30000ms waiting for the Prime Agent daemon response to \"get_queue\". Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log., total 32368ms",
+];
+const OWNER_ATTACH = [
+  "2026-10-18T08:16:25.138Z reopen: 01a1164b answered \"Session worker is failed\"; opened it again and sent again: sent",
+  "2026-10-18T08:16:32.154Z wakes: woke 01a14dd3 for its time, waited 30 min, sent 19 s after the tick began",
+  "open 01a1164b saved 1000 messages: catalog 0ms, first page 9ms, queue 0ms, failed: Timed out after 30000ms waiting for the Prime Agent daemon response to \"attach\". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log., total 30041ms",
+];
+const FRONTEND = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
+const VP = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+const chats = [{ id: FRONTEND, name: "frontend bro", duties: [], runs: [] }, { id: VP, name: "AI harness developer environment VP", duties: [], runs: [] }];
+
+// The row of the Mac's catalog copy (~/.cache/sieun-pi/hosts/mac.sessions.json) for the job whose status read hung, cut to the fields read.
+const MAC_COPY = JSON.stringify({ version: 1, rows: [{ id: "01a14df3-2e22-705c-b0a8-56ef01bcc980", lifecycle: "live", runtimeKind: "subagent", rlmDepth: 2,
+  sessionId: "01a14df3-2e22-705c-b0a8-56ef01bcc980",
+  sessionFile: "/Users/sieunpark/.prime/agent/session-artifacts/01a11ba8-9d2c-727c-8ded-38f819ca9f29/sub-1d1e32d8/sub-75c41934/01a14df3-2e22-705c-b0a8-56ef01bcc980.jsonl",
+  sessionName: "checklist-research" }] });
+
+const RUN = Date.parse("2026-10-18T08:20:10Z");
+const clean = (minute: number): WatchLine => ({ at: new Date(RUN - 10_000 - (30 - minute) * 60_000 + 30_000).toISOString(), host: "us-metal02",
+  usable: { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 10 }, workers: 0, workerGb: 0, top: [], live: 0, working: 0, queue: null,
+  mac: { swapGb: null, pressureLevel: 1 }, cpuMs: 0 });
+const watch = Array.from({ length: 30 }, (_, minute) => clean(minute));
+
+test("the 08:03Z Mac hang and the owner's 08:16Z attach timeout make their minutes dirty, naming the chat", () => {
+  const daemonFaults = readServiceFaults([...MAC_HANG, ...OWNER_ATTACH], "us-metal02");
+  const listed = listedSessions([MAC_COPY], daemonFaults.flatMap(fault => fault.session ? [fault.session] : []));
+  const { metrics, flagged } = measure({ now: RUN, watch, log: { holds: [] }, chats, daemonFaults, listed });
+  assert.equal(metrics.daemon_fail_min_30, 2);
+  assert.equal(metrics.clean_min_30, 28);
+  const dirty = flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "";
+  assert.match(dirty, /^08:03Z daemon calls failed or ran over 30 s for frontend bro, job checklist-research on mac \(an idle check failed, get_state timed out after 30 s\), frontend bro on mac \(opening it failed, attach timed out after 30 s\), session 01a14d93 on us-metal02 .* and 3 more; /);
+  assert.match(dirty, /08:16Z daemon calls failed or ran over 30 s for AI harness developer environment VP on us-metal02 \(a send failed, its session worker was failed; opening it failed, attach timed out after 30 s\)$/);
+});
+
+test("a status read on the Mac bridge and a wake's send count, and a kill that timed out does not", () => {
+  const faults = readServiceFaults(MAC_HANG, "us-metal02");
+  assert.deepEqual(faults.map(fault => `${fault.session} ${fault.host} ${fault.what}`), [
+    "01a14d93 us-metal02 an idle check failed, get_state timed out after 30 s",
+    "01a14df3 mac an idle check failed, get_state timed out after 30 s",
+    "01a14df8 mac an idle check failed, get_state timed out after 30 s",
+    "01a11ba8 mac opening it failed, attach timed out after 30 s",
+    "01a14d7c us-metal02 a wake's send failed, send_message timed out after 30 s",
+    "01a14dea mac opening it failed, get_queue timed out after 30 s",
+  ]);
+  assert.equal(faults[3]!.at, Date.parse("2026-10-18T08:03:33.782Z"));
+});
+
+test("an open counts when it reached the daemon and ran over 30 s, and not when its tab closed it or it only read the file", () => {
+  const faults = readServiceFaults([
+    "2026-10-18T08:22:45.000Z feeds: closed a socket that missed a pong for 25000 ms",
+    "open 01a14d7c live 181 messages: catalog 0ms, first page 5ms, queue 0ms, attach 47592ms, snapshot+project 2114ms, total 49712ms",
+    "open 01a14dea saved 170 messages: catalog 15014ms, first page 13269ms, total 28295ms",
+    "open 01a14b76 saved 337 messages: catalog 30586ms, first page 23ms, total 30707ms",
+    "open 01a14e05 saved 35 messages: catalog 1ms, first page 426ms, queue 11008ms, listed active but the daemon has no live 89e3d43034ec: read saved, failed: This thread was closed while it was opening., total 16458ms",
+    "open 01a14d56 live 89 messages: catalog 0ms, first page 285ms, queue 8100ms, attach 10347ms, snapshot+project 3058ms, total 21791ms",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => `${fault.session} ${fault.what}`), ["01a14d7c opening it took 50 s"]);
+});
+
+test("a worker start refused or over 30 s counts at its end, and an answer in 5.7 s does not", () => {
+  const faults = readServiceFaults([
+    "2026-10-18T10:47:02.083Z daemon create /Users/sieunpark: refused in 215.1 s",
+    "2026-10-18T08:02:25.603Z daemon create check-in YouTube crawler failures 17:02: answered in 5.7 s",
+    "2026-10-18T08:21:08.992Z daemon resume 01a14ded: answered in 37.2 s",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => [new Date(fault.at).toISOString(), fault.title ?? fault.session, fault.what]), [
+    ["2026-10-18T10:50:37.183Z", "/Users/sieunpark", "its create was refused in 215.1 s"],
+    ["2026-10-18T08:21:46.192Z", "01a14ded", "its resume was answered in 37.2 s"],
+  ]);
+});
+
+test("a job's wake that failed reading its file through the Mac's relay is no daemon call, and a wake whose send timed out is one", () => {
+  const faults = readServiceFaults([
+    "2026-10-18T11:15:20.468Z catalog: copy of 01a11d25 from mac: read ECONNRESET",
+    "job 01a14dea: wake: The session file on mac did not read: read ECONNRESET",
+    "job 01a14e0f: wake: Timed out after 30000ms waiting for the Prime Agent daemon response to \"attach\". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => `${fault.session} ${fault.what}`), ["01a14e0f a job's wake failed, attach timed out after 30 s"]);
+});
+
+test("the supervisor's failed send counts, and a send to a stale session id does not", () => {
+  const faults = readSupervisorFaults([
+  "[2026-10-18T08:16:14.983Z] supervisor: Supervisor command send_message failed: Error: read ECONNRESET",
+  "    at close (node:net:676:40)",
+  "[2026-10-18T02:45:16.064Z] supervisor: Supervisor command send_message failed: Error: Unknown active session: 01a14ccf-848b-7217-bc9c-a6cdc9873319",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => fault.what), ["the supervisor's send_message failed, its worker reset the connection"]);
+});

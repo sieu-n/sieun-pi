@@ -1,6 +1,7 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { readdirSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
@@ -13,6 +14,7 @@ import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type Sle
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
+import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
@@ -103,7 +105,8 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable, no start, wake or parked
- * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`). Supporting: queue holds and open steps nobody
+ * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
+ * failed or ran over 30 s on any box (src/daemon-faults.ts). Supporting: queue holds and open steps nobody
  * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
@@ -308,6 +311,10 @@ export interface Inputs {
   waking?: ReadonlySet<string>;
   /** Per chat, each job name with the sessions of its jobs that are not deleted (`jobSessions`), for a step whose session id is an old copy's. */
   named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
+  /** Opens, status reads, sends and worker starts that failed or ran over SLOW_MS, from service.log and the supervisor's log (src/daemon-faults.ts). */
+  daemonFaults?: readonly DaemonFault[];
+  /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
+  listed?: ReadonlyMap<string, ListedSession>;
 }
 
 /**
@@ -379,7 +386,8 @@ export function measure(input: Inputs): PrecheckOutput {
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0, unattributed = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0, unattributed = 0, daemonFail = 0;
+  const faultName = chatNamer(input.chats, input.named, input.listed);
   const side = sideOf(input.watch);
   const dirty: string[] = [];
   const unknownLines: string[] = [];
@@ -411,6 +419,8 @@ export function measure(input: Inputs): PrecheckOutput {
       freeSlot++;
       why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
     }
+    const faults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
+    if (faults.length) { daemonFail++; why.push(`daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`); }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
@@ -463,6 +473,7 @@ export function measure(input: Inputs): PrecheckOutput {
     unattributed_unusable_min_30: unattributed,
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
+    daemon_fail_min_30: daemonFail,
     unwatched_min_30: unwatched,
     unknown_min_30: unknownMin,
     stuck_duties: redDuties.length,
@@ -477,7 +488,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
-    `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}.` });
+    `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}; ` +
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   const asleep = latest ? hostViews(latest).filter(view => view.sleeping && view.sleeping.gb > 0) : [];
@@ -623,10 +635,15 @@ export function cutJobsHoldingWork(cut: readonly CutJob[], boards: ReadonlyMap<s
   });
 }
 
-/** The daemon's stops from every daemon.sock.*.log and its rotated copies under `logs`. */
-async function daemonStops(logs: string): Promise<DaemonStops> {
+/** The lines of every daemon.sock.*.log and its rotated copies under `logs`. */
+async function daemonLogs(logs: string): Promise<string[][]> {
   const names = (await readdir(logs).catch(() => [] as string[])).filter(name => name.startsWith("daemon.sock.") && name.includes(".log")).sort();
-  const all = await Promise.all(names.map(async name => readDaemonStops((await readFile(join(logs, name), "utf8").catch(() => "")).split("\n"))));
+  return Promise.all(names.map(async name => (await readFile(join(logs, name), "utf8").catch(() => "")).split("\n")));
+}
+
+/** The daemon's stops in each daemon log's lines. */
+function daemonStops(logs: readonly (readonly string[])[]): DaemonStops {
+  const all = logs.map(readDaemonStops);
   return { restarts: all.flatMap(stops => stops.restarts), sigterms: all.flatMap(stops => stops.sigterms) };
 }
 
@@ -691,6 +708,13 @@ async function jobSessions(artifacts: string, chats: readonly string[]): Promise
   return out;
 }
 
+/** This box's catalog copy (`session-copy.json`) and each other box's (`MIRROR_DIR/<host>.sessions.json` in src/host-catalogs.ts). */
+async function catalogCopies(dataDir: string): Promise<string[]> {
+  const mirror = join(homedir(), ".cache/sieun-pi/hosts");
+  const files = [join(dataDir, "session-copy.json"), ...(await readdir(mirror).catch(() => [] as string[])).filter(name => name.endsWith(".sessions.json")).map(name => join(mirror, name))];
+  return Promise.all(files.map(file => readFile(file, "utf8").catch(() => "")));
+}
+
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
 async function main(): Promise<void> {
@@ -716,14 +740,21 @@ async function main(): Promise<void> {
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
   const live = ids;
+  const supervisorLogs = await daemonLogs(join(dataDir, "..", "logs"));
   const cut = await findCutJobs(join(dataDir, "..", "session-artifacts"), live,
-    (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, await daemonStops(join(dataDir, "..", "logs")));
+    (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, daemonStops(supervisorLogs));
   const boardStore = new BoardStore(dataDir);
   const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
   const named = await jobSessions(join(dataDir, "..", "session-artifacts"), live);
+  const serviceLines = await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES);
+  const box = watch.at(-1)?.host ?? hostname();
+  const daemonFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box))]
+    .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE);
   const result = measure({
     now, watch, day,
-    log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
+    log: readServiceLog(serviceLines),
+    daemonFaults,
+    listed: listedSessions(await catalogCopies(dataDir), daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : [])),
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
     boards,
