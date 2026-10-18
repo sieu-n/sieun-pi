@@ -40,7 +40,7 @@
     </span>
     <span class="meters"><UsageMeters windows={row.windows} {model} /></span>
     <span class="badge-slot">
-      {#if state && state !== "seat"}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>
+      {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>
       {:else if row.id === next}<span class="badge accent">Next</span>{/if}
     </span>
   </button>

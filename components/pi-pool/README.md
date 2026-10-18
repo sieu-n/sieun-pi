@@ -525,10 +525,13 @@ One run of one session holds one working slot from its first model call to its a
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
 - `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue.
 - `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
+- `pi-pool prod set '{"trees": {...}, "sessions": {...}, "until": <epoch sec>}'` names the trees and sessions on prod work, whose runs start at once as kind `prod`, and `pi-pool prod clear` drops the record.
 
 An owner run never waits and still counts toward the limit, so background work waits behind it.
 The limit is `mac_working_max`, the number the owner set, and memory never lowers it or holds a turn or a spawn (owner, c88 on 10-16).
-Queued runs take free slots by class, high before normal before low, and the longest wait goes first inside a class.
+Queued runs take free slots by class, top before high before normal before low, and the longest wait goes first inside a class.
+The caller picks `--class top`, which aging never reaches (the chat service asks for it for each chat's check-in key), and `queue --json` shows it as high.
+The pool does not decide what prod work is: the caller that knows sends `prod set` again while the work lasts, and the record lapses at its `until`, so a caller that stops never leaves a tree marked.
 A queued run moves up one class for every `queue_aging_s` it waits.
 A session that asks again within 30 s of its run's release (`REQUEUE_GRACE_S`) keeps that run's place in line, so a job's chained runs go ahead of turns that never ran.
 A slot is free while the Mac has fewer than `mac_working_max` slots in use and the run's tree has fewer than `tree_working_max`, and every working run but a borrow counts toward both.
@@ -537,7 +540,7 @@ A borrow rides on its lender's slot and takes none: at 11:02 KST on 10-14, 7 of 
 An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`) runs out.
 `pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.
 Every `pi-pool set` records who ran it and when under `set_by` in config.json and as a `set` line in pi-pool.log with the old value.
-The writer is `--by <who>` (the chat service's Settings pane passes "the Settings pane"), else the agent's Prime session folder, else the parent pid.
+The writer is `--by <who>` (the chat service's Settings pane passes "the Settings pane"), else the Prime session that runs it, else the parent pid.
 `queue --json` carries `mac_working_max_set` ({by, at}), which is null while the default 16 holds and has by null and config.json's file time for a value written before `set` recorded writers.
 
 The extension's `context` handler, which Prime awaits before every model call from every turn source, runs `admit --wait` at a run's first model call.
@@ -560,10 +563,10 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
-`mac_working_max`, `tree_working_max`, `queue_aging_s` and `lease_s`. `pi-pool set` takes a JSON object for
+`mac_working_max`, `tree_working_max`, `queue_aging_s`, `lease_s` and `prod_turns_on`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
-`min_runway_hours`), `allow_active_account`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+`min_runway_hours`), `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file` and `alert_bridge_file`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties

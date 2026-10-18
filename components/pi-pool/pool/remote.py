@@ -16,7 +16,7 @@ KEY_ENV = "PI_POOL_SESSION_KEY"
 OFF_ENV = "PI_POOL_REMOTE"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
 # A sign-in runs where its browser is and files the login with the holder (file-login).
-LOCAL_COMMANDS = {"admit", "release", "owner-turn", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
+LOCAL_COMMANDS = {"admit", "release", "owner-turn", "prod", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
                   "login"}
 # This holds a terminal open; run it on the machine that holds the accounts.
 HOLDER_ONLY = {"watch"}

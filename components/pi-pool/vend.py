@@ -102,7 +102,7 @@ USAGE = """usage: pi-pool [command]
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into
                                   fallback.json (the /account extension runs this per session)
-  admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait | --renew]
+  admit <session> [--tree <root>] [--parent <session>] [--class top|high|normal|low] [--pid <n>] [--wait | --renew]
                                   ask for a working slot for one session run; prints
                                   {"state","kind","position","total"}. --wait blocks until admitted;
                                   --renew renews a running session's lease and never queues it.
@@ -111,6 +111,8 @@ USAGE = """usage: pi-pool [command]
                                   priority for a root, --pid to the caller, whose exit ends the run
   release <session>              free the turn's slot or drop its queue entry
   owner-turn <session>           the session's next admit is the owner's and runs at once
+  prod [set <json> | clear]      the trees and sessions on prod work, whose turns run at once:
+                                  set takes {"trees": {id: why}, "sessions": {id: why}, "until": epoch sec}
   queue [--json]                 working and queued turns
   config                         print the merged config
   set <key> <value>              persist a config override
@@ -139,7 +141,7 @@ def cli(args):
         "limited": pool.session_cmds.cmd_limited, "refused": pool.session_cmds.cmd_refused,
         "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
-        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
+        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue, "prod": pool.turns.cmd_prod,
         "serve": pool.remote.cmd_serve, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
     }
     if cmd in handlers:

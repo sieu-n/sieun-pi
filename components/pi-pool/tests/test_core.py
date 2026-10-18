@@ -645,7 +645,7 @@ class LsRowBuilding(unittest.TestCase):
         self.assertIsNone(by_id["a"]["reason"])
         self.assertEqual(by_id["a"]["score"], round(sched.score(A, CFG, NOW, "normal", {"a": 2}), 2))
         self.assertEqual(by_id["a"]["sessions"], 2)
-        self.assertEqual(by_id["b"]["seat"], False)
+        self.assertNotIn("seat", by_id["b"])
         self.assertEqual(by_id["b"]["current"], True)
         self.assertEqual(by_id["c"]["pinned"], True)
         self.assertEqual((by_id["d"]["usable"], by_id["d"]["serves"]), (False, True))

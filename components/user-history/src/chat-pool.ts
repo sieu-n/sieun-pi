@@ -55,11 +55,11 @@ export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
   return value.rows.map((row: unknown): PoolAccount => {
     if (!isRecord(row) || typeof row.id !== "string" || !row.id || typeof row.email !== "string" || typeof row.usage !== "string" ||
       !(row.reason === null || typeof row.reason === "string") || typeof row.usable !== "boolean" || typeof row.current !== "boolean" ||
-      typeof row.pinned !== "boolean" || typeof row.seat !== "boolean") {
+      typeof row.pinned !== "boolean") {
       throw new Error("pi-pool returned an invalid account");
     }
     return { id: row.id, email: row.email, label: text(row.label) ?? row.email, usage: row.usage, reason: row.reason, usable: row.usable, current: row.current, pinned: row.pinned,
-      seat: row.seat, session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
+      session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
       tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
       cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true,
@@ -74,10 +74,10 @@ export function parsePoolConfig(value: unknown): PoolConfig | null {
 }
 
 /**
- * The class a turn asks the queue for: a pool priority, or `checkin`, which pi-pool takes only for a chat's check-in key (`duty:<chat>:checkin`)
- * and queues above every class, aging included, with no pressure hold (components/pi-pool/pool/turns.py, CHECKIN).
+ * The class a turn asks the queue for: a pool priority, or `top`, which queues above every class, aging included
+ * (components/pi-pool/pool/turns.py, TOP). The chat service asks for it for each chat's check-in key.
  */
-export type TurnClass = PoolPriority | "checkin";
+export type TurnClass = PoolPriority | "top";
 /** A tree's pool class from `pi-pool who --json` or `ls --json`; null when absent or unknown. */
 export const parsePoolPriority = (value: unknown): PoolPriority | null => (POOL_PRIORITIES as readonly unknown[]).includes(value) ? value as PoolPriority : null;
 
@@ -196,7 +196,15 @@ export const poolCommand = {
   admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
+  prod: (record: ProdRecord | null) => record ? ["prod", "set", JSON.stringify(record)] : ["prod", "clear"],
 };
+
+/** The trees and sessions on prod work, whose turns the pool runs at once until `until` (epoch seconds), for `pi-pool prod set`. */
+export interface ProdRecord { trees: Record<string, string>; sessions: Record<string, string>; until: number }
+/** Sends the prod record to the pool, or clears it with null (src/prod-turns.ts). */
+export async function setProdTurns(record: ProdRecord | null): Promise<void> {
+  await run(poolCommand.prod(record));
+}
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
 const count = (value: unknown): number | null => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;

@@ -137,5 +137,5 @@ test("a duty job stays low when its chat is labelled High and links it as root, 
     release: async () => {}, read: async () => ({ working: [], queued: [] }) as never } });
   await admitter.admit("vp", "d1");
   await admitter.admit("vp", "checkin");
-  assert.deepEqual(asked, ["duty:vp:d1 low", "duty:vp:checkin checkin"]);
+  assert.deepEqual(asked, ["duty:vp:d1 low", "duty:vp:checkin top"]);
 });

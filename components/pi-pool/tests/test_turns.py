@@ -275,35 +275,34 @@ class Class(unittest.TestCase):
         self.assertEqual(self.cls({"T": {"priority_label": "high"}}, parent="chat", klass="low"), "low")
 
 
-class CheckIn(unittest.TestCase):
-    """A chat's check-in key queues above every class. 10-15: with 60 to 77 turns queued, every entry aged to high within 36 s and
-    check-in keys waited up to 381 s behind them."""
+class Top(unittest.TestCase):
+    """The top class queues above every class. 10-15: with 60 to 77 turns queued, every entry aged to high within 36 s and
+    the chat service's check-in keys waited up to 381 s behind them."""
     KEY = "duty:01a11bd7-072f-7591-ad1d-f123c276cde5:checkin"
 
-    def test_a_check_in_key_goes_first_and_aging_never_reaches_it(self):
-        q = {"old": entry(klass="normal", since=0, tree="a"), self.KEY: entry(klass=turns.CHECKIN, since=900, tree=self.KEY)}
+    def test_a_top_turn_goes_first_and_aging_never_reaches_it(self):
+        q = {"old": entry(klass="normal", since=0, tree="a"), self.KEY: entry(klass=turns.TOP, since=900, tree=self.KEY)}
         self.assertEqual(turns.order(q, 1000, 18), [self.KEY, "old"], "a normal turn aged to high for 1,000 s still queues behind it")
         self.assertGreater(turns.rank(q[self.KEY], 1000, 18), turns.rank(q["old"], 10 ** 6, 18))
 
-    def test_only_a_check_in_key_may_ask_for_the_class(self):
-        self.assertEqual(turns.parse([self.KEY, "--tree", self.KEY, "--class", "checkin", "--wait"])["class"], turns.CHECKIN)
-        for session in ("01a13f01-43ec-7528-bb71-4382a7c6d730", "duty:01a11bd7:d1", "duty:a:checkin:x"):
-            with self.assertRaises(SystemExit):
-                turns.parse([session, "--class", "checkin"])
+    def test_the_caller_names_the_top_class_for_any_key(self):
+        for session in (self.KEY, "01a13f01-43ec-7528-bb71-4382a7c6d730"):
+            self.assertEqual(turns.parse([session, "--class", "top", "--wait"])["class"], turns.TOP)
+        with self.assertRaises(SystemExit):
+            turns.parse([self.KEY, "--class", "checkin"])
 
-    def test_queue_json_shows_a_check_in_key_as_high_with_a_flag(self):
+    def test_queue_json_shows_a_top_turn_as_high(self):
         t = turns.empty()
-        t["queued"][self.KEY] = entry(klass=turns.CHECKIN, since=0, tree=self.KEY)
+        t["queued"][self.KEY] = entry(klass=turns.TOP, since=0, tree=self.KEY)
         shown = turns.view(t, 5, dict(base.DEFAULTS))["queued"][0]
-        self.assertEqual((shown["class"], shown["base_class"], shown.get("checkin")), ("high", "high", True))
-
+        self.assertEqual((shown["class"], shown["base_class"]), ("high", "high"))
 
 
 class Cli(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-turns-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
-        for k in (base.SESSION_ENV, base.JOURNAL_ENV, "RLM_SESSION_DIR"):
+        for k in (base.SESSION_ENV, base.JOURNAL_ENV):
             self.env.pop(k, None)
         self.set("mac_working_max", "2")
 
@@ -349,9 +348,9 @@ class Cli(unittest.TestCase):
             logged = [json.loads(line) for line in f if '"event": "set"' in line][-1]
         self.assertEqual({k: logged[k] for k in ("key", "value", "was", "by")},
                          {"key": "mac_working_max", "value": 30, "was": 2, "by": "the Settings pane"})
-        self.env["RLM_SESSION_DIR"] = os.path.expanduser("~/.prime/agent/session-artifacts/01a-root/sub-x")
+        self.env[base.SESSION_ENV] = "01a-root"
         self.set("mac_working_max", "16")
-        self.assertEqual(self.queue()["mac_working_max_set"]["by"], "agent 01a-root/sub-x")
+        self.assertEqual(self.queue()["mac_working_max_set"]["by"], "Prime session 01a-root")
 
     def test_a_value_with_no_set_record_shows_the_file_time_and_the_default_shows_none(self):
         path = os.path.join(self.dir, "config.json")
@@ -542,7 +541,7 @@ class Limit(unittest.TestCase):
         cfg = dict(base.DEFAULTS, mac_working_max=30, tree_working_max=30)
         for i in range(40):
             t["queued"][f"q{i}"] = entry(tree=f"t{i}", since=float(i), klass="low")
-        changed, _, admitted, _ = turns.step(t, 100, cfg, prods=lambda cfg, now: {"at": now, "trees": {}, "sessions": {}})
+        changed, _, admitted, _ = turns.step(t, 100, cfg)
         self.assertTrue(changed)
         self.assertEqual((len(admitted), len(t["working"]), len(t["queued"])), (30, 30, 10))
         view = turns.view(t, 100, cfg)

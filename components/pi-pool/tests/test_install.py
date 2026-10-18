@@ -87,6 +87,31 @@ class Install(unittest.TestCase):
         self.assertEqual({p: (h["ok"], h["skipped"]) for p, h in out["hooks"].items()},
                          {"anthropic": (True, "no pooled account yet"), "openai-codex": (True, "no pooled account yet")})
 
+    def borrow(self, holder, secret):
+        done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "components/pi-pool/install.py"), "--borrow", holder,
+                               "--home", str(self.home)], input=secret, capture_output=True, text=True)
+        return done.returncode, json.loads(done.stdout) if done.returncode == 0 else done.stderr
+
+    def test_borrow_writes_remote_json_and_checks_both_hooks_through_the_holder(self):
+        shutil.rmtree(self.accounts)
+        code, out = self.borrow("http://100.83.139.73:7781/", "s3cret\n")
+        self.assertEqual(code, 0, out)
+        remote = self.home / ".config/pi-pool/remote.json"
+        self.assertEqual(json.loads(remote.read_text()), {"url": "http://100.83.139.73:7781", "secret": "s3cret"})
+        self.assertEqual(remote.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(({p: h["ok"] for p, h in out["hooks"].items()}, out["borrow"]["remote_changed"]),
+                         ({"anthropic": True, "openai-codex": True}, True), "with remote.json no hook is skipped")
+        self.assertEqual(set(out["borrow"]["enable"]), {"anthropic", "openai-codex"})
+        code, again = self.borrow("http://100.83.139.73:7781", "s3cret")
+        self.assertEqual((code, again["borrow"]["remote_changed"]), (0, False))
+
+    def test_borrow_refuses_a_machine_that_holds_accounts_and_leaves_nothing_installed(self):
+        code, err = self.borrow("http://100.83.139.73:7781", "s3cret")
+        self.assertEqual(code, 1)
+        self.assertIn("holds pooled accounts", err)
+        self.assertFalse((self.home / ".config/pi-pool/remote.json").exists())
+        self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
+
     def test_only_committed_source_ships(self):
         (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")
         code, out = self.run_installer()

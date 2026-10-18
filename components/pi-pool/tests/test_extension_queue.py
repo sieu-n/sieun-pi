@@ -21,7 +21,7 @@ class Wiring(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-ext-queue-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
-        for key in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", "RLM_SESSION_DIR"):
+        for key in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"):
             self.env.pop(key, None)
         with open(os.path.join(self.dir, "config.json"), "w") as f:
             json.dump({"memory_governor_on": 0}, f)

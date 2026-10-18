@@ -5,7 +5,7 @@ import type { PoolAccount, PoolProvider } from "../src/shared/types.ts";
 
 const NOW = 1_791_300_000_000;
 const account = (id: string, five: number | null, week: number, extra: Partial<PoolAccount> = {}): PoolAccount => ({
-  id, email: id, label: id, usage: "", session_pct: five, weekly_pct: week, usable: true, reason: null, current: false, pinned: false, seat: false,
+  id, email: id, label: id, usage: "", session_pct: five, weekly_pct: week, usable: true, reason: null, current: false, pinned: false,
   score: null, tier: null, usageAt: NOW, cooldownUntil: null, cooldownReason: null, limitedUntil: null, disabled: false, sessions: 0,
   windows: [...(five === null ? [] : [{ kind: "session" as const, label: "5h", pct: five, resetsAt: NOW + 3_600_000 }]),
     { kind: "weekly" as const, label: "week", pct: week, resetsAt: NOW + 7 * 3_600_000 }], ...extra });

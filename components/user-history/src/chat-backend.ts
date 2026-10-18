@@ -39,6 +39,8 @@ import { startUsagePublisher } from "./usage/publish.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
+import { trainFile } from "./checkin-load.ts";
+import { startProdTurns } from "./prod-turns.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
@@ -260,6 +262,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     alerts: () => pollHealth.poll(() => withHookAlert(readGrafanaAlerts(grafanaConfig), hookWatch)),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     boards, log: dutyLog, ...agentMessage });
+  const stopProdTurns = options.ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a session that ended its task after ENDED_MS, since Prime's own
@@ -334,6 +337,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopWakes();
       stopBriefs();
       stopAlerts();
+      stopProdTurns();
       stopBridgeWatch();
       unwatchBoards();
       stopPublish();

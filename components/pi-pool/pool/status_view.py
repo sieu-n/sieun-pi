@@ -76,8 +76,7 @@ def build_rows(accounts, tree, book, cooldowns, cfg, now, cooldown_reasons=None)
             "session_pct": a.session_pct, "weekly_pct": a.weekly_pct, "gated_pct": a.gated_pct,
             "usable": reason is None, "serves": sched.serve_reason(a, cooldowns, now) is None, "reason": reason,
             "current": a.id == tree.current, "pinned": a.id in (tree.pin, tree.pool_pin),
-            # user-history's parsePoolRows requires a boolean `seat`; false until it drops the field.
-            "seat": False, "disabled": a.disabled,
+            "disabled": a.disabled,
             "score": round(sched.score(a, cfg, now, p, book.load), 2) if reason is None else None,
             "slot_cap": sched.slot_cap(a, cfg),
         }

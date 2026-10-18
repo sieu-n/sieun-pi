@@ -7,7 +7,7 @@ import { join } from "node:path";
 // chat-pool.ts reads PI_POOL_BIN at import, so the fake pool is in place first.
 const root = mkdtempSync(join(tmpdir(), "chat-pool-wait-"));
 const who = { session: "s1", priority: "low", providers: { anthropic: { account: "c7", email: "c7@x", label: "c7@x", reason: "stay", pinned: false, wait: { account: "c7", slot_at: 1791790000 } } } };
-const row = { id: "c7", email: "c7@x", label: "c7@x", usage: "100%/40%", session_pct: 100, weekly_pct: 40, usable: false, reason: "depleted", current: true, pinned: false, seat: false, windows: [] };
+const row = { id: "c7", email: "c7@x", label: "c7@x", usage: "100%/40%", session_pct: 100, weekly_pct: 40, usable: false, reason: "depleted", current: true, pinned: false, windows: [] };
 const ls = (provider: string) => JSON.stringify({ provider, session: "s1", pin: null, priority: "low", wait: provider === "anthropic" ? { account: "c7", slot_at: 1791790000 } : null, rows: provider === "anthropic" ? [row] : [] });
 writeFileSync(join(root, "pi-pool"), [
   "#!/bin/sh",

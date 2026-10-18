@@ -1,4 +1,4 @@
-"""The Mac-wide turn queue: `admit`, `release`, `owner-turn` and `queue`.
+"""The machine-wide turn queue: `admit`, `release`, `owner-turn`, `prod` and `queue`.
 
 One run of one session holds one working slot, from the run's first model call to its
 agent_end. state.json keeps the queue under the pool flock in state["turns"]:
@@ -7,12 +7,11 @@ agent_end. state.json keeps the queue under the pool flock in state["turns"]:
     queued   {session: {tree, parent, class, since, pid, waiter, line?}}
     recent   {session: {at, line}}: when a run ended, and the line time its next ask within REQUEUE_GRACE_S keeps
     owner    {session: epoch sec of the owner-turn mark}
-    prod     {at, trees, sessions}: the trees and sessions on prod work now (pool/prod.py)
+    prod     {at, until, trees, sessions}: the trees and sessions a caller marked as on prod work (pool/prod.py)
 
-Order: an owner turn runs at once and never waits, and so does a prod turn: one of a tree that
-owns a running prod deploy, or of a chat session the alert bridge woke for a firing prod alert
-(pool/prod.py). Then queued turns take free slots
-by class, a chat's check-in key (CHECKIN) first, then high before normal before low, longest wait first inside a class, while the
+Order: an owner turn runs at once and never waits, and so does a prod turn: one of a tree or
+session the caller's `prod set` record names (pool/prod.py). Then queued turns take free slots
+by class, the top class (TOP) first, then high before normal before low, longest wait first inside a class, while the
 Mac has under mac_working_max slots in use and the tree under tree_working_max. A
 queued entry moves up one class for every queue_aging_s it has waited. A child whose
 parent's turn is in flight and that finds no slot borrows the parent's slot: a parent
@@ -20,7 +19,7 @@ lends at most one slot at a time, and a borrow rides on its lender's slot, so it
 toward neither limit and the working total runs over the limit by at most one per
 parent in flight.
 
-Only the chat service's `owner-turn` marks an owner turn, right before it sends the
+Only the caller's `owner-turn` marks an owner turn, right before it sends the
 owner's prompt. That prompt starts the session's next run (107 of 107 owner prompts on
 10-14 08:06-11:02 KST started a run of their own and none joined a live one), so the
 mark waits for that run's admit. A session queued when the mark lands has an agent run
@@ -35,20 +34,17 @@ worker that asked) is gone, is dropped, and so is a queue entry whose `admit --w
 process (`waiter`) is gone, so an abort with no agent_end, a hung tool or a crash
 cannot hold a slot.
 """
-import json, os, re, sys, time
+import json, os, sys, time
 
 from . import base, prod, registry
 
 CLASSES = ("low", "normal", "high")
-# A chat's check-in run waits in the queue under the key `duty:<chat id>:checkin` before its job's
-# session exists, so one chat has at most one such entry. It queues above every class, aging included:
-# on 10-15, with 60 to 77 turns queued at the critical limit of 12 and
-# every entry aged to high within 36 s, check-in keys waited 49 s at p50, 179 s at p90 and 381 s at
-# most (chat service log, 23 waits that day), so the check-in that keeps every chat's plan moving ran
-# last. The check-in job's own first run waited 0 s at p90 over 282 jobs that day (pi-pool.log), so
-# only the key needs it. Shown as high in `queue --json`, which older readers parse.
-CHECKIN = "checkin"
-CHECKIN_KEY = re.compile(r"^duty:[\w-]+:checkin$")
+# The top class queues above every class, aging included, and the caller decides which turns take it.
+# On 10-15, with 60 to 77 turns queued at the critical limit of 12 and every entry aged to high within
+# 36 s, the chat service's check-in keys waited 49 s at p50, 179 s at p90 and 381 s at most (23 waits
+# that day), so the check-in that keeps every chat's plan moving ran last; the chat service asks for
+# top for that key. Shown as high in `queue --json`, which older readers parse.
+TOP = "top"
 # An owner-turn mark that no admit consumed (a failed send) is dropped after this long.
 # A mark waits for the session's next turn, which starts after the turn in flight ends:
 # the 99th percentile turn was 2,956 s over the 22,675 turns of 10-11 to 10-14
@@ -58,8 +54,6 @@ OWNER_MARK_TTL_SEC = 3600
 WAIT_POLL_SEC = 1.0
 # The flock wait for an admit or release. A token hook waits base.STATE_LOCK_TIMEOUT.
 LOCK_TIMEOUT = 6.0
-# The prod record (pool/prod.py) is read again at most this often.
-PROD_TTL_SEC = 30
 # A session that asks again this soon after its run ended keeps its place in line (`line`), so a job's
 # next run goes ahead of turns that never ran. At 22:40 KST on 10-15, 106 turns were queued and 42 of the
 # 50 queued roots had run and asked again. Of the 1,150 asks that followed a release from 18:00 to 23:06 KST that day, 51% came
@@ -104,15 +98,15 @@ def line(entry):
 
 def rank(entry, now, aging):
     """The class an entry queues in now: its own, one step up per aging period since it got in line."""
-    if entry["class"] == CHECKIN:
+    if entry["class"] == TOP:
         return len(CLASSES)
     steps = int(max(0.0, now - line(entry)) // aging)
     return min(len(CLASSES) - 1, CLASSES.index(entry["class"]) + steps)
 
 
 def shown(klass):
-    """A class as `queue --json` names it: a check-in key reads as high."""
-    return "high" if klass == CHECKIN else klass
+    """A class as `queue --json` names it: top reads as high."""
+    return "high" if klass == TOP else klass
 
 
 def order(queued, now, aging):
@@ -156,7 +150,7 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None):
     Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
     admitted = []
-    rush = {s: prod.why(turns.get("prod"), s, turns["queued"][s]) for s in order(turns["queued"], now, aging)}
+    rush = {s: prod.why(turns.get("prod"), s, turns["queued"][s], now) for s in order(turns["queued"], now, aging)}
     queue = [s for s in rush if not rush[s]]
     trees = {}
     held = in_slots(turns["working"])
@@ -191,25 +185,14 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None):
     return admitted
 
 
-def prod_watch(turns, now, cfg, read=prod.read):
-    """Refresh turns["prod"] once it is PROD_TTL_SEC old, and drop it while prod_turns_on is 0.
-    Returns (refreshed, events); a change in the prod trees or sessions logs prod_turns."""
+def prod_watch(turns, now, cfg):
+    """Drop the prod record once it lapses, or at once while prod_turns_on is 0.
+    Returns (changed, events); a dropped record logs prod_turns."""
     last = turns.get("prod")
-    if not int(cfg["prod_turns_on"]):
-        turns.pop("prod", None)
-        return last is not None, []
-    if last and 0 <= now - last.get("at", -1e18) < PROD_TTL_SEC:
+    if last is None or (int(cfg["prod_turns_on"]) and prod.live(last, now)):
         return False, []
-    rec = read(cfg, now)
-    turns["prod"] = rec
-    was = (last or {}).get("trees", {}), (last or {}).get("sessions", {})
-    return True, [] if (rec["trees"], rec["sessions"]) == was else [("prod_turns", {"trees": rec["trees"], "sessions": rec["sessions"]})]
-
-
-def held_prod(snapshot):
-    """A waiter's prod reader: the record state.json holds. A lock holder (admit, release, settle) reads
-    the files every PROD_TTL_SEC, so 60 waiters never each read the 72 MB runs cache (80 ms a read)."""
-    return lambda cfg, now: snapshot.get("prod") or {"at": now, "trees": {}, "sessions": {}}
+    turns.pop("prod")
+    return True, [("prod_turns", {"trees": {}, "sessions": {}})]
 
 
 def reply(turns, session, now, aging, enabled=True):
@@ -233,14 +216,13 @@ def view(turns, now, cfg):
                 "since": e["since"]} for s, e in sorted(turns["working"].items(), key=lambda kv: kv[1]["since"])]
     queued = [{"session": s, "tree": turns["queued"][s]["tree"], "parent": turns["queued"][s].get("parent"),
                "class": shown(CLASSES[min(rank(turns["queued"][s], now, aging), len(CLASSES) - 1)]), "base_class": shown(turns["queued"][s]["class"]),
-               **({"checkin": True} if turns["queued"][s]["class"] == CHECKIN else {}),
                "position": i + 1, "total": len(queue), "since": turns["queued"][s]["since"],
                "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
             "mac_working_max_set": last_set("mac_working_max"),
             "tree_working_max": int(cfg["tree_working_max"]), "slots_used": len(in_slots(turns["working"])),
             "working": working, "queued": queued,
-            "prod": {k: (turns.get("prod") or {}).get(k, {}) for k in ("trees", "sessions")}}
+            "prod": {k: (prod.live(turns.get("prod"), now) or {}).get(k, {}) for k in ("trees", "sessions")}}
 
 
 def last_set(key):
@@ -255,7 +237,7 @@ def last_set(key):
 # --------------------------------------------------------------------- the CLI
 def parse(rest):
     usage = ("usage: pi-pool admit <session> [--tree <root session>] [--parent <session>] "
-             "[--class high|normal|low|checkin] [--pid <n>] [--wait | --renew]; --class checkin takes only a duty:<chat>:checkin key")
+             "[--class top|high|normal|low] [--pid <n>] [--wait | --renew]")
     out = {"session": None, "tree": None, "parent": None, "class": None, "pid": None, "wait": False, "renew": False}
     i = 0
     while i < len(rest):
@@ -272,8 +254,7 @@ def parse(rest):
         else:
             raise SystemExit(usage)
         i += 1
-    checkin = out["class"] == CHECKIN and CHECKIN_KEY.match(out["session"] or "") is not None
-    if (not out["session"] or (out["class"] is not None and out["class"] not in CLASSES and not checkin)
+    if (not out["session"] or (out["class"] is not None and out["class"] not in (*CLASSES, TOP))
             or (out["wait"] and out["renew"])):
         raise SystemExit(usage)
     out["pid"] = int(out["pid"]) if out["pid"] is not None else os.getppid()
@@ -291,7 +272,7 @@ def class_for(a, sessions):
     return rec.get("priority") or "normal"
 
 
-def ask(turns, sessions, a, now, cfg, waiter=None, prods=prod.read):
+def ask(turns, sessions, a, now, cfg, waiter=None):
     """One admit, under the flock. Returns (changed, answer, events to log).
 
     A session already working renews its lease. --renew comes from a run in flight:
@@ -303,7 +284,7 @@ def ask(turns, sessions, a, now, cfg, waiter=None, prods=prod.read):
         dropped = turns["queued"].pop(session, None) is not None
         return dropped, reply(turns, session, now, aging, enabled=False), []
     gone = sweep(turns, now)
-    _, events = prod_watch(turns, now, cfg, prods)
+    _, events = prod_watch(turns, now, cfg)
     admitted = admit_pass(turns, now, mac, tree_max, aging, lease)
     events += [("turn_swept", dict(session=g["session"], part=g["part"], why=g["why"])) for g in gone]
     changed = True
@@ -362,13 +343,13 @@ def log_changes(gone, admitted, turns, now, events=()):
         base.log("turn_admitted", session=session, tree=e["tree"], kind=kind, waited_s=round(now - e["queued_since"], 1))
 
 
-def step(turns, now, cfg, prods=prod.read):
+def step(turns, now, cfg):
     """Sweep, then admit what fits. Returns (changed, gone, admitted, events)."""
     gone = sweep(turns, now)
     mac, tree_max, aging = limits(cfg)
     if mac is None:
         return bool(gone), gone, [], []
-    refreshed, events = prod_watch(turns, now, cfg, prods)
+    refreshed, events = prod_watch(turns, now, cfg)
     admitted = admit_pass(turns, now, mac, tree_max, aging, int(cfg["lease_s"]))
     return bool(gone or admitted or refreshed), gone, admitted, events
 
@@ -397,8 +378,7 @@ def wait(session, pid, last):
     """Block until `session` is admitted. Prints one JSON line each time its place
     changes, and the admitted (or off) line last. Takes the flock only when an
     unlocked read shows that a sweep and an admit pass would admit this session, so
-    a hundred waiters do not queue on the lock the token hook shares. A waiter reads the
-    prod record from the snapshot (held_prod)."""
+    a hundred waiters do not queue on the lock the token hook shares."""
     seen = None
     while True:
         time.sleep(WAIT_POLL_SEC)
@@ -422,7 +402,7 @@ def wait(session, pid, last):
             snapshot = of(whole)
         trial = json.loads(json.dumps(snapshot))
         sweep(trial, now)
-        prod_watch(trial, now, cfg, held_prod(snapshot))
+        prod_watch(trial, now, cfg)
         admit_pass(trial, now, mac, tree_max, aging, int(cfg["lease_s"]))
         answer = reply(trial, session, now, aging)
         if answer["state"] != "queued" and session not in snapshot["working"]:
@@ -443,7 +423,7 @@ def wait(session, pid, last):
             last = answer
 
 
-def leave(turns, session, now, cfg, reason=None, prods=prod.read):
+def leave(turns, session, now, cfg, reason=None):
     """Free `session`'s slot or drop its queue entry, then admit what fits. A freed run of its own leaves a
     `recent` record, so an ask within REQUEUE_GRACE_S keeps the run's place in line.
     Returns (changed, gone, admitted, events, answer)."""
@@ -451,7 +431,7 @@ def leave(turns, session, now, cfg, reason=None, prods=prod.read):
     queued = turns["queued"].pop(session, None)
     if working and working.get("kind") != "borrow":
         turns.setdefault("recent", {})[session] = {"at": now, "line": working.get("line", working.get("queued_since", working["since"]))}
-    changed, gone, admitted, events = step(turns, now, cfg, prods)
+    changed, gone, admitted, events = step(turns, now, cfg)
     if working:
         events = [("turn_released", dict(session=session, kind=working["kind"], held_s=round(now - working["since"], 1)))] + events
     elif queued:
@@ -500,6 +480,34 @@ def cmd_owner_turn(rest):
             base.log(event, **fields)
         return True, answer
     emit(locked(mark))
+    return 0
+
+
+def cmd_prod(rest):
+    """`prod set <json>` replaces the prod record and admits what it names, `prod clear` drops it,
+    and `prod` prints the record that holds now."""
+    if rest == []:
+        state = base.load_json(base.STATE, {}) or {}
+        emit(prod.live(of(state).get("prod"), time.time()))
+        return 0
+    if rest not in (["clear"],) and not (len(rest) == 2 and rest[0] == "set"):
+        raise SystemExit(prod.USAGE)
+
+    def put(state, turns, now):
+        last = prod.live(turns.get("prod"), now) or {}
+        rec = prod.parse(rest[1], now) if rest[0] == "set" else None
+        if rec:
+            turns["prod"] = rec
+        else:
+            turns.pop("prod", None)
+        changed, gone, admitted, events = step(turns, now, base.config())
+        events = [e for e in events if e[0] != "prod_turns"]
+        now_on = prod.live(turns.get("prod"), now) or {}
+        if (now_on.get("trees", {}), now_on.get("sessions", {})) != (last.get("trees", {}), last.get("sessions", {})):
+            events = [("prod_turns", {"trees": now_on.get("trees", {}), "sessions": now_on.get("sessions", {})})] + events
+        log_changes(gone, admitted, turns, now, events)
+        return True, {"prod": prod.live(turns.get("prod"), now), "admitted": [s for s, kind in admitted if kind == "prod"]}
+    emit(locked(put))
     return 0
 
 

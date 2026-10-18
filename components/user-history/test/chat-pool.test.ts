@@ -7,7 +7,7 @@ import { parsePoolRows, parseRefreshEvent, parseResets, poolExecutable, resetsNo
 import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
-  current: false, pinned: false, seat: true, score: null };
+  current: false, pinned: false, score: null };
 
 test("pool rows carry every window with its reset in epoch ms", () => {
   const [row] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, tier: "max 20x", usage_at: 1790120343, cooldown_until: null, cooldown_reason: null, windows: [

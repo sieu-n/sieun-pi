@@ -110,16 +110,8 @@ DEFAULTS = {
     # one turn over the 3 days to 10-14 08 KST: p99 157 s, p99.9 1,508 s, and 110 over
     # 1,800 s (0735-agent-queue-design/data/measure_gaps.py).
     "lease_s": 1800,
-    # Prod turns (pool/prod.py): 0 queues a session on prod work like any other.
+    # Prod turns (pool/prod.py): 0 queues a session a caller marked as on prod work like any other.
     "prod_turns_on": 1,
-    # Each prod deploy workflow and the trees that own its runs: the release owner dispatches
-    # promote.yml, and metal deploys what promote ships and runs metal-deploy.yml. On 10-15 promote
-    # 10 try 3 ran 08:52Z to 10:37Z while the release owner sat 58th of 60 and metal 63rd of 69.
-    "prod_deploy_owners": {"promote.yml": ["01a10810-34b5-710f-88fe-3d369f89a8c9", "01a11d24-ac9b-757d-ac51-9b2b7598782f"],
-                           "metal-deploy.yml": ["01a11d24-ac9b-757d-ac51-9b2b7598782f"]},
-    # The GitHub runs cache that ci-cache refreshes every 30 s, and the alert bridge's state.
-    "prod_runs_file": "~/.cache/virev/ci-runs.json",
-    "alert_bridge_file": "~/.prime/agent/browser-chat/alert-bridge.json",
 }
 
 

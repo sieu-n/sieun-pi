@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -B
 """Install pi-pool from a commit into its own folder, so Prime never runs checkout files.
 
-    /usr/bin/python3 -B components/pi-pool/install.py [install] [--ref <commit>]
+    /usr/bin/python3 -B components/pi-pool/install.py [install] [--ref <commit>] [--borrow <holder>]
     /usr/bin/python3 -B components/pi-pool/install.py rollback
     /usr/bin/python3 -B components/pi-pool/install.py status
 
@@ -11,6 +11,12 @@ points every runtime link at <root>/current, flips `current` in one rename, and
 runs both token hooks through the runtime links. A hook that fails puts the
 previous release back. rollback swaps `current` and `previous` and runs the same
 check; after the first install it puts back the links that install replaced. State (state.json, pi-pool.log, config.json, accounts) never moves.
+
+--borrow sets the machine up to borrow tokens from the one machine that holds the accounts. <holder>
+is the holder's ssh target (user@host), whose ~/.config/pi-pool/serve.json gives the address and the
+secret, or its pool URL (http://<tailnet ip>:7781) with the secret on stdin. It writes remote.json,
+points Prime's models.json at the token hook for both providers, and checks both hooks through the
+holder. Turn slots stay on this machine (pool/remote.py).
 """
 import argparse, json, os, shutil, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path
@@ -77,6 +83,59 @@ def export(ref, into):
         with tarfile.open(tar) as t:
             t.extractall(unpack)
         shutil.move(str(Path(unpack, COMPONENT)), str(into))
+
+
+def holder_remote(holder, stdin=sys.stdin):
+    """remote.json's {url, secret} for `holder`: an ssh target whose serve.json names both, or a URL and the secret on stdin."""
+    if holder.startswith(("http://", "https://")):
+        secret = stdin.read().strip()
+        if not secret:
+            raise InstallError(f"--borrow {holder} reads the holder's secret on stdin, and stdin was empty")
+        return {"url": holder.rstrip("/"), "secret": secret}
+    done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", holder, "cat", ".config/pi-pool/serve.json"],
+                          capture_output=True, text=True)
+    try:
+        serve = json.loads(done.stdout) if done.returncode == 0 else None
+    except ValueError:
+        serve = None
+    if not (isinstance(serve, dict) and serve.get("host") and serve.get("port") and serve.get("secret")):
+        raise InstallError(f"could not read host, port and secret from {holder}:.config/pi-pool/serve.json: {done.stderr.strip() or done.stdout[:200]}")
+    return {"url": f"http://{serve['host']}:{int(serve['port'])}", "secret": serve["secret"]}
+
+
+def write_remote(home, remote):
+    """remote.json, 0600, in one rename. Returns True when it changed."""
+    path = home / ".config/pi-pool/remote.json"
+    try:
+        if json.loads(path.read_text()) == remote:
+            return False
+    except (OSError, ValueError):
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(".remote.json.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(remote) + "\n")
+    os.replace(tmp, path)
+    return True
+
+
+def borrow(home, holder):
+    """Point this machine's pool at `holder`. Hard refusal (data integrity): a machine that holds accounts of its own
+    is a second holder, and refresh tokens rotate, so two holders of one account log each other out."""
+    held = {p[1]: pooled_accounts(home, p[1]) for p in PROVIDERS}
+    if any(held.values()):
+        raise InstallError(f"this machine holds pooled accounts {held}; a borrower holds none, so move them to the holder first")
+    changed = write_remote(home, holder_remote(holder))
+    pool = str(home / ".local/bin/pi-pool")
+    enabled = {}
+    for args in PROVIDERS:
+        done = subprocess.run([pool, "enable", args[1]], capture_output=True, text=True,
+                              env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool"), PI_POOL_REMOTE="off"))
+        if done.returncode:
+            raise InstallError(f"pi-pool enable {args[1]} failed: {done.stderr.strip() or done.stdout.strip()}")
+        enabled[args[1]] = done.stdout.strip()
+    return {"remote_changed": changed, "enable": enabled}
 
 
 def run_tests(release):
@@ -191,7 +250,7 @@ def checked_switch(home, release_id, before, links_before):
     raise InstallError(f"hook check failed on {release_id}; links and current are back as they were: {json.dumps(hooks)}")
 
 
-def install(home, ref):
+def install(home, ref, holder=None):
     root = root_of(home)
     commit = git("rev-parse", "--verify", f"{ref}^{{commit}}")
     release_id = git("rev-parse", f"{commit}:{COMPONENT}")[:12]
@@ -219,9 +278,19 @@ def install(home, ref):
     # `current` first, so no link ever names a path that does not exist yet.
     before = flip(root, release_id)
     linked = link_runtime(home)
+    try:
+        borrowed = borrow(home, holder) if holder else None
+    except InstallError:
+        if before:
+            flip(root, before)
+        elif (root / "current").is_symlink():
+            (root / "current").unlink()
+        restore_links(home, links_before)
+        raise
     hooks = checked_switch(home, release_id, before, links_before)
     prune(root)
-    return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "relinked": linked, "hooks": hooks}
+    return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "relinked": linked, "hooks": hooks,
+            **({"borrow": borrowed} if holder else {})}
 
 
 def rollback(home):
@@ -252,11 +321,14 @@ def main():
     parser.add_argument("command", nargs="?", default="install", choices=["install", "rollback", "status"])
     parser.add_argument("--ref", default="HEAD")
     parser.add_argument("--home", default=str(Path.home()))
+    parser.add_argument("--borrow", metavar="HOLDER", help="borrow tokens from the holder: its ssh target, or its URL with the secret on stdin")
     args = parser.parse_args()
+    if args.borrow and args.command != "install":
+        parser.error("--borrow goes with install")
     home = Path(args.home)
     try:
         if args.command == "install":
-            out = install(home, args.ref)
+            out = install(home, args.ref, args.borrow)
         elif args.command == "rollback":
             out = rollback(home)
         else:
