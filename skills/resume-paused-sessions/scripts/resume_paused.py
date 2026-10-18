@@ -54,8 +54,9 @@ workers SIGTERMed at 17:43:22Z left stuck steps root cause unloaded and out of
 the default list, and the owner's stop archived three step owners at 18:25Z;
 nothing resumed any of them.
 
-A session the chat service's idle unload stopped (browser-chat/unloaded.json) counts like one a restart archived: the unload stops a
-session about 2 min after its turn ends, a failed turn included, and its archive hid the failure. The idle unload stopped 16 root jobs
+A session the chat service's idle unload stopped (browser-chat/unloaded.json) after its last turn failed on the token hook counts like one
+a restart archived: the unload stops a session soon after its turn ends, a failed turn included, and its archive hid the failure. Any
+other session the unload stopped, one that finished or was cut another way, stays stopped. The idle unload stopped 16 root jobs
 and 27 check-ins between 0.2 and 1.5 min after a token hook failure in the 10-16 to 10-17 hook outage (ci train at 10:27:34Z on 10-16),
 and none got a continue after the hook worked again at 19:50Z on 10-17. Such a session is read from its file even when the daemon no
 longer lists it.
@@ -701,6 +702,10 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 continue
             verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner, restarts)
             if not verdict:
+                continue
+            # The unload's stop counts only for a turn that failed on the token hook; any other run it stopped stays stopped.
+            hidden = archived_by_unload(entries_of(sid), unloaded_at) and (s.get("lifecycle") != "live" or stopped_on_purpose(entries_of(sid), last, restarts))
+            if hidden and not unstuck and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
                 continue
         if s.get("sessionFile") and deleted_on_purpose(s["sessionFile"]):
             continue

@@ -11,6 +11,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
+ *   node --import tsx scripts/clean-room/clean-room.ts kill-hooks --run <dir> --until <ISO time> --window-min <n>   (token-hook-resume: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
@@ -41,12 +42,13 @@ import { ordinaryHour } from "./ordinary-hour.ts";
 import { ownerAsks } from "./owner-asks.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 import { softCaps } from "./soft-caps.ts";
+import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
 import { wakeLive } from "./wake-live.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "wake-live": wakeLive };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -400,6 +402,12 @@ async function main(): Promise<void> {
     const run = need(flags, "run");
     const kill = await killWorker(run, Date.parse(need(flags, "until")), flags.name);
     log(run, kill ? `killed worker ${kill.workerId} (pid ${kill.pid}) of the chat after job ${kill.record.name} was spawned` : "kill-worker: no spawn of the chat before --until");
+    return;
+  }
+  if (command === "kill-hooks") {
+    const run = need(flags, "run");
+    const kills = await killHooks(run, Date.parse(need(flags, "until")), Number(need(flags, "window-min")) * 60_000);
+    log(run, `kill-hooks: killed ${kills.length} token hook runs of ${new Set(kills.map(kill => kill.session)).size} jobs of the chat`);
     return;
   }
   if (command === "reseed") return reseed(flags);

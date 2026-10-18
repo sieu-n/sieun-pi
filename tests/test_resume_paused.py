@@ -533,6 +533,23 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
                          [("error", self.CI_TRAIN, "2026-10-16T10:25:52.307Z")])
 
+    def test_the_unload_stop_counts_only_after_a_token_hook_failure(self):
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        archived = {"type": "session_state", "timestamp": "2026-10-16T10:27:23.453Z", "state": {"status": "archived"}}
+        ends = {"01a14068-0000-7000-8000-00000000done": {"type": "message", "timestamp": "2026-10-16T10:25:52.307Z", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "done"}]}},
+                "01a14068-0000-7000-8000-0000000cut0": {"type": "message", "timestamp": "2026-10-16T10:25:52.307Z", "message": {"role": "toolResult", "content": "x"}},
+                "01a14068-0000-7000-8000-000000net00": {"type": "message", "timestamp": "2026-10-16T10:25:52.307Z", "message": {"role": "assistant", "stopReason": "error", "content": [], "errorMessage": "Connection error."}}}
+        for sid, end in ends.items():
+            (sessions / f"{sid}.jsonl").write_text(json.dumps(end) + "\n" + json.dumps(archived) + "\n")
+        now = dt.datetime(2026, 10, 17, 19, 55, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        stop = resume_paused.parse_ts("2026-10-16T10:27:34.023Z")
+        with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.dict(resume_paused.UNLOADED, {sid: stop for sid in ends}, clear=True):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows(set(ends)), set(ends))
+            self.assertEqual(resume_paused.resume(rows, args, now)["paused"], [])
+
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
         seen = self.root / "hook-session"
