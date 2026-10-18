@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { IdIndex } from "./id-index.ts";
@@ -6,6 +7,7 @@ import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
+import { alertSteps } from "./checkin-findings.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, walk } from "./checkin-steps.ts";
@@ -1238,8 +1240,10 @@ export class Chats {
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
+    const alerts = alertSteps(await readFile(join(process.env.AGENT_CHAT_DATA_DIR || join(this.source.home ?? homedir(), ".prime", "agent", "browser-chat"), "alert-bridge.json"), "utf8")
+      .then(text => JSON.parse(text) as unknown).catch(() => null), id);
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, alerts, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };

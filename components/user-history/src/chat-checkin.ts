@@ -15,7 +15,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet, goalsWithoutDoneLine, planRiskSteps,
-  noDoneLineLine, riskStepsLine } from "./checkin-findings.ts";
+  noDoneLineLine, riskStepsLine, type AlertSteps } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
@@ -50,7 +50,9 @@ export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
  * What the precheck needs besides the jobs and the board: the chat's own id and name (a step it owns is `mine`), a board read error, the
  * catalog rows (the threads a step's `waitFor` can name), and the ledger's handoffs (`handoffRules`: an open step on another thread's topics).
  */
-export interface CheckInContext { self?: readonly string[]; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[];
+export interface CheckInContext { self?: readonly string[];
+  /** The steps the alert bridge filed on this chat's board and those still firing (`alertSteps`), for `planRiskSteps`; not given: none. */
+  alerts?: AlertSteps; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[];
   handoffs?: readonly HandoffRule[];
   /** The ids of the owner corrections in force, for parked steps (`parkedBy`); every cited id counts when not given. */
   corrections?: readonly string[];
@@ -178,7 +180,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       context.rows ?? [], context.train),
     fold, load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
-    noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
+    noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board, context.alerts),
     end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
 }
 
