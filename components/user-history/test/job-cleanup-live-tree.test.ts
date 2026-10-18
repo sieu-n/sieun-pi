@@ -59,3 +59,50 @@ test("job cleanup: a reported job whose subagents still work keeps its open step
   assert.deepEqual(await sweep(), ["delete c1 sub-fbdd234a"], "once nothing under it works and no open step names it, the job is deleted");
   chats.close();
 });
+
+test("job cleanup: a hand back whose steer fails ('Daemon is preparing an update restart') leaves the step on the job; the next one steers before it moves the step", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "job-cleanup-handback-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const order: string[] = [];
+  const threads = fakeThreads(calls);
+  let restarting = true;
+  threads.prompt = async (id: string, input: { message: string; mode: string }) => {
+    if (restarting) throw new Error("Daemon is preparing an update restart");
+    order.push(`${input.mode} ${id}`);
+  };
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = Date.parse("2026-10-18T06:46:19Z");
+  let board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
+    { id: "p11", text: "Move the census and TikTok Shop crawler lanes to us-metal02", status: "doing", job: "crawler lanes to box", note: "WireGuard is up.", children: [] }] };
+  const base = source(dir, {}, () => now);
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), {
+    ...base, board: async () => board, waking: async () => false, wakes: async () => [],
+    resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, ops: readonly BoardOp[]) => {
+      order.push("board");
+      board = { ...board, plan: board.plan.map(item => { const op = ops.find(each => each.op === "plan_update" && each.id === item.id); return op && op.op === "plan_update" ? { ...item, ...(op.job ? { job: op.job } : {}), ...(typeof op.note === "string" ? { note: op.note } : {}) } : item; }) };
+    } },
+  }, line => lines.push(line));
+  await chats.adopt();
+  const job: ChildAgent = { id: "sub-fbdd234a", label: "crawler lanes to box", sessionName: "crawler lanes to box", sessionId: "s-lanes", status: "done",
+    repliedSinceTask: true, lastActivityAt: now - 30_000 };
+  threads.transcripts.set("c1", [{ role: "custom", customType: "agent_message", display: true, timestamp: now - 30_000,
+    content: "[agent-message from child:crawler lanes to box]\nStep landed: wg-prod moved to 10.250.12.0/30." } as ThreadMessage]);
+  await chats.roster(new Map([["c1", [job]]]));
+  threads.fire().live("c1", [job]);
+  await chats.settled();
+  const sweep = async () => { calls.length = 0; now += 11 * 60_000; await chats.tick(); await chats.settled(); return calls.filter(call => call.startsWith("delete")); };
+
+  assert.deepEqual(await sweep(), [], "the job is not deleted while p11 names it");
+  assert.deepEqual(order, [], "the steer failed, so the board was not written");
+  assert.equal(board.plan[0]!.job, "crawler lanes to box", "p11 stays on the job");
+  assert.ok(lines.includes("chat c1: hand back the steps of crawler lanes to box: Daemon is preparing an update restart"));
+
+  restarting = false;
+  await sweep();
+  assert.deepEqual(order, ["steer c1", "board"], "the chat is told before the step moves");
+  assert.equal(board.plan[0]!.job, "c1");
+  assert.match(board.plan[0]!.note ?? "", /^Handed back: job crawler lanes to box reported at /);
+  chats.close();
+});

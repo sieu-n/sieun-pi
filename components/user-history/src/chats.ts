@@ -648,8 +648,10 @@ export class Chats {
   }
 
   /**
-   * Hands the open steps a reported job still owns (`handBackSteps`) to the chat: each step's job becomes the chat and its note names the job,
-   * then the chat gets one turn to close or continue them (`handBackText`). The note keeps the job named, so it is kept and later saved on the
+   * Hands the open steps a reported job still owns (`handBackSteps`) to the chat: the chat gets one turn to close or continue them
+   * (`handBackText`), then each step's job becomes the chat and its note names the job. The steer goes first, so a steer that fails leaves the
+   * steps on the job for the next sweep: metal-management 10-18 06:46Z, the steer for p11 failed with "Daemon is preparing an update restart"
+   * after the board write, and p11 became the chat's without the chat being told. The note keeps the job named, so it is kept and later saved on the
    * step (`parkJob`) unless the chat steers it. A job still at work (`jobBusy`), or one whose wakes cannot be read yet, keeps its steps.
    */
   private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
@@ -659,9 +661,9 @@ export class Chats {
       if (this.source.waking && sessionId === undefined) return false;
       if (await this.jobBusy(id, child, sessionId) !== undefined) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + handBackText(child, steps), images: [], mode: "steer" });
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
         note: [line, step.note].filter(Boolean).join("\n") })));
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + handBackText(child, steps), images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: handed ${steps.map(step => step.id).join(", ")} back to the chat: job ${name} reported with them open`);
       return true;
     } catch (error) {
