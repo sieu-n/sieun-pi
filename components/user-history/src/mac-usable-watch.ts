@@ -108,8 +108,11 @@ export function parseUsableRaw(value: unknown, now: number): HostUsable | null {
   return value.platform === "linux" ? parseLinuxReading(value.reading) : null;
 }
 
-/** One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. */
-export interface WorkerLine { pid: number; gb: number; sessions: number; root: string; tree: string }
+/**
+ * One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. `workGb` is the
+ * part its sessions' work holds (`workBytes`); absent on lines written before 10-18 07:5xZ.
+ */
+export interface WorkerLine { pid: number; gb: number; sessions: number; root: string; tree: string; workGb?: number }
 /** A chat tree and how many of its sessions a count holds. */
 export interface TreeCount { root: string; tree: string; count: number }
 export interface QueueLine {
@@ -185,8 +188,11 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
-/** A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, and its largest descendant that is no Prime process. */
-export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; biggest: RawProcess | null }
+/**
+ * A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, the kernel process alone (`own`, absent
+ * from a relay installed before 10-18 07:5xZ), and its largest descendant that is no Prime process.
+ */
+export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; own?: number; biggest: RawProcess | null }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
 /** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
@@ -233,7 +239,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     .sort((a, b) => b.bytes - a.bytes).slice(0, 5).map(({ pid, bytes }): WorkerLine => {
       const on = live.filter(row => row.worker === pid);
       const lead = topTrees(on, tree, 1)[0];
-      return { pid, gb: round(bytes / GB), sessions: on.length, root: lead?.root ?? "", tree: lead?.tree ?? "" };
+      return { pid, gb: round(bytes / GB), sessions: on.length, root: lead?.root ?? "", tree: lead?.tree ?? "", workGb: round(workBytes(input.footprints, byId, pid) / GB) };
     });
   const queue = input.queue && queueLine(input.queue, input.now, id => {
     const row = byId.get(id);
@@ -310,6 +316,22 @@ function sleepingLine(rows: readonly Row[], live: readonly Row[], byId: Readonly
   const sorted = [...trees.values()].sort((a, b) => b.bytes - a.bytes);
   return { gb: round(sorted.reduce((sum, entry) => sum + entry.bytes, 0) / GB), workers, kernels,
     trees: sorted.slice(0, 3).map(({ root, tree: name, bytes }) => ({ root, tree: name, gb: round(bytes / GB) })) };
+}
+
+/**
+ * What the work of worker `pid`'s sessions holds in its tree: every command their kernels run (a kernel's subtree past the kernel process), and
+ * the whole kernel of a session with a turn at work. The rest is Prime's own: the worker and the kernels of quiet sessions. At 07:30Z on 10-18
+ * d7 flagged worker 852974 at 1.7 GB for one session, 1.19 GB of it the svelte-check of a release its quiet job had started with nohup, and
+ * Mac worker 4111 at 3.91 GB for two, 3.6 GB of it the 'meta ads' job's kernel at work on a ClickHouse sample it held in seven copies.
+ */
+function workBytes(footprints: Footprints, rows: ReadonlyMap<string, Row>, pid: number): number {
+  let bytes = 0;
+  for (const kernel of footprints.kernels ?? []) {
+    const row = rows.get(kernel.session);
+    if (row?.worker !== pid) continue;
+    bytes += row.working || row.active ? kernel.bytes : kernel.bytes - (kernel.own ?? kernel.bytes);
+  }
+  return bytes;
 }
 
 /** Each chat tree's footprint from the helper's kernels and orphans, largest first; `owner` maps a session and the root its env names to the chat tree. */

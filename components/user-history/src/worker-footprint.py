@@ -4,8 +4,8 @@ Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's
 proc_listchildpids) with its pid count, summed phys_footprint in bytes and the worker process's own phys_footprint (`own`) (the memory macOS counts, compressed and swapped pages
 included), the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
 on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. It starts no other process, so one call costs well under a second of CPU at 1,000 processes.
-Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes
-and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
+Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes,
+the kernel process's own bytes (`own`) and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
@@ -197,7 +197,7 @@ def tree(root, kernels, seen):
         if kernel is None and pid != root:
             owner = kernel_of(pid, procargs(pid))
             if owner is not None:
-                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None}
+                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "own": bytes_, "biggest": None}
                 kernels.append(kernel)
         elif kernel:
             args = procargs(pid)

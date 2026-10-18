@@ -249,16 +249,18 @@ const median = (values: readonly number[]): number | undefined => {
 };
 
 /**
- * A worker's footprint for each session it hosts. Prime runs a chat and every job it spawns in one worker, so a whole worker grows with the
- * chat's fan-out. At 06:21Z on 10-18 worker 1811158 held 7.79 GB for VP of CI's 28 sessions, 20 of them jobs at work whose kernels held
- * 7.2 GB of CI history and pandas frames, and the day's whole-worker median flagged every busy chat (Crawler VP in 74 of 112 lines). Per
- * session it read 0.28 GB against a median of 0.19 GB.
+ * A worker's own footprint for each session it hosts: the worker tree less what its sessions' work holds (`workGb`, src/mac-usable-watch.ts
+ * `workBytes`), so a waste check reads Prime's memory and not a job's. Prime runs a chat and every job it spawns in one worker, so a whole
+ * worker grows with the chat's fan-out. At 06:21Z on 10-18 worker 1811158 held 7.79 GB for VP of CI's 28 sessions, 20 of them jobs at work
+ * whose kernels held 7.2 GB of CI history and pandas frames, and the day's whole-worker median flagged every busy chat (Crawler VP in 74 of
+ * 112 lines). At 07:30Z both flagged workers held work: 1.19 GB of 852974's 1.7 GB was a release's svelte-check, and 3.6 GB of Mac worker
+ * 4111's 3.91 GB was a job's kernel at work. A line written before `workGb` counts the whole tree.
  */
-const perSession = (line: WorkerLine): number => line.gb / Math.max(line.sessions, 1);
+const perSession = (line: WorkerLine): number => (line.gb - (line.workGb ?? 0)) / Math.max(line.sessions, 1);
 
 /**
  * The harness processes in the newest watch line over FAR_ABOVE times their kind's median in `day` on the same box: Prime workers by their
- * footprint per hosted session (`perSession`), and the chat service.
+ * own footprint per hosted session (`perSession`), and the chat service.
  */
 export function oversized(latest: WatchLine | undefined, day: readonly WatchLine[]): string[] {
   if (!latest) return [];
@@ -267,7 +269,7 @@ export function oversized(latest: WatchLine | undefined, day: readonly WatchLine
   for (const view of hostViews(latest)) {
     const own = dayViews.filter(candidate => candidate.name === view.name);
     const session = median(own.flatMap(candidate => candidate.top.filter(line => line.sessions > 0).map(perSession)));
-    if (session !== undefined) for (const line of view.top) if (perSession(line) > FAR_ABOVE * session) found.push(`${view.name}: Prime worker ${line.pid} (${line.tree || "no tree"}) holds ${line.gb} GB for ${line.sessions} sessions, ${perSession(line).toFixed(2)} GB each, over ${FAR_ABOVE}x the day's median there of ${session.toFixed(2)} GB per session`);
+    if (session !== undefined) for (const line of view.top) if (perSession(line) > FAR_ABOVE * session) found.push(`${view.name}: Prime worker ${line.pid} (${line.tree || "no tree"}) holds ${line.gb} GB for ${line.sessions} sessions${line.workGb ? `, ${line.workGb} GB of it their work` : ""}, ${perSession(line).toFixed(2)} GB each of its own, over ${FAR_ABOVE}x the day's median there of ${session.toFixed(2)} GB per session`);
     const service = median(own.flatMap(candidate => candidate.serviceGb === undefined ? [] : [candidate.serviceGb]));
     if (service !== undefined && view.serviceGb !== undefined && view.serviceGb > FAR_ABOVE * service) found.push(`${view.name}: the chat service holds ${view.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB`);
   }
