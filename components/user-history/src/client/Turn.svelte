@@ -56,7 +56,7 @@
   async function loadFullReply(): Promise<void> {
     if (!reply) return;
     const parts = await Promise.all(reply.message.content.flatMap((part, index) =>
-      part.type === "text" ? [part.truncated ? api.part(threadId, reply.index, index).then(result => result.text) : Promise.resolve(part.text)] : []));
+      part.type === "text" ? [part.truncated ? store.part(threadId, reply.index, index).then(result => result.text) : Promise.resolve(part.text)] : []));
     fullReply = parts.join("\n\n");
   }
 

@@ -61,7 +61,7 @@
     if (!id || !report?.clipped || report.id in full) return;
     const clipped = report.clipped;
     let cancelled = false;
-    api.part(id, clipped.message, clipped.part).then(result => { if (!cancelled) full = { ...full, [report.id]: triggerBody(result.text) }; }, () => {});
+    store.part(id, clipped.message, clipped.part).then(result => { if (!cancelled) full = { ...full, [report.id]: triggerBody(result.text) }; }, () => {});
     return () => { cancelled = true; };
   });
   const excerpt = $derived(latest ? reportExcerpt(full[latest.id] ?? latest.body, BLOCKS) : null);

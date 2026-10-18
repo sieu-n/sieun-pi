@@ -109,7 +109,7 @@
     const key = partKey(item);
     shownThinking.add(key);
     if (!item.part.truncated || fullParts.has(key)) return;
-    const result = await store.run(api.part(threadId, item.messageIndex, item.partIndex));
+    const result = await store.run(store.part(threadId, item.messageIndex, item.partIndex));
     if (result) fullParts.set(key, result.text);
   }
 

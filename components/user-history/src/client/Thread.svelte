@@ -139,7 +139,7 @@
   let loadingOlder = $state(false);
   async function showOlder(): Promise<void> {
     loadingOlder = true;
-    try { await store.run(api.older(id)); } finally { loadingOlder = false; }
+    try { await store.loadOlder(id); } finally { loadingOlder = false; }
   }
 </script>
 

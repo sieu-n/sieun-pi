@@ -2,6 +2,8 @@ import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
 import { buildReload, onLeave } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
+import { messageKey } from "../shared/message-key.ts";
+import { prependOlder } from "./thread-pages.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
@@ -161,6 +163,32 @@ class Store {
     if (!entry?.close) return;
     entry.close();
     this.patch(id, { close: null });
+  }
+
+  /** Part `part` of the message at `index` in the thread's loaded messages, whole: the snapshot clips long parts. */
+  part(id: string, index: number, part: number): Promise<{ text: string }> {
+    const messages = this.threads[id]?.state?.messages;
+    if (!messages?.[index]) return Promise.reject(new Error("That message is not loaded any more."));
+    return api.part(id, messageKey(messages, index), part);
+  }
+
+  private olderLoading = new Set<string>();
+  /** The page before the oldest loaded message, put in front of it; true when it was. A session file that changed under the cursor (409) opens the thread again. */
+  async loadOlder(id: string): Promise<boolean> {
+    const cursor = this.threads[id]?.state?.older;
+    if (cursor === undefined || this.olderLoading.has(id)) return false;
+    this.olderLoading.add(id);
+    try {
+      const page = await api.olderPage(id, cursor);
+      const current = this.threads[id];
+      if (!current?.state || current.state.older !== cursor) return false;
+      this.patch(id, { state: prependOlder(current.state, page) });
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) { this.threads[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
+      else this.toast(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally { this.olderLoading.delete(id); }
   }
 
   warm(id: string): void {

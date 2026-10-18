@@ -76,7 +76,7 @@
       const clipped = report.clipped;
       if (!clipped || report.id in full || fetching.has(report.id)) continue;
       fetching.add(report.id);
-      api.part(id, clipped.message, clipped.part).then(result => { full = { ...full, [report.id]: triggerBody(result.text) }; }, () => {}).finally(() => fetching.delete(report.id));
+      store.part(id, clipped.message, clipped.part).then(result => { full = { ...full, [report.id]: triggerBody(result.text) }; }, () => {}).finally(() => fetching.delete(report.id));
     }
   });
   /** The job behind what is shown (the job itself, or a job's message), so the header can open its thread. */

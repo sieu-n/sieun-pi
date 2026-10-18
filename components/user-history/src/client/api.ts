@@ -1,8 +1,9 @@
-import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
+import type { MessageKey } from "../shared/message-key.ts";
 import { applySessionsDelta } from "../shared/sessions-delta.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
@@ -99,7 +100,8 @@ export const api = {
   nextDutyBrief: (chat: string, duty: string) => get<PromptView>("api/threads/" + encodeURIComponent(chat) + "/duty-brief?duty=" + encodeURIComponent(duty), 60000),
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
-  part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),
+  /** Part `part` of the message `key` names (`messageKey` of an index into the loaded messages), whole: the snapshot clips long parts. */
+  part: (id: string, key: MessageKey, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?at=${key.at}&n=${key.n}&part=${part}`),
   accounts: (id: string | null, model: string | null = null) => {
     const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
     return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);
@@ -135,7 +137,7 @@ export const api = {
     post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
   abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
   /** Reads the thread's whole session file; the thread's stream then sends a snapshot with every message. */
-  older: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/older", {}, 60000),
+  olderPage: (id: string, cursor: string) => get<OlderPage>("api/threads/" + encodeURIComponent(id) + "/older?cursor=" + encodeURIComponent(cursor), 60000),
   unarchive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/unarchive", {}, 60000),
   archive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/archive", {}, 60000),
   rename: (id: string, name: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/rename", { name }),
