@@ -14,13 +14,14 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, c
 import type { Duplex } from "node:stream";
 import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
-import type { ClientBundle, Asset } from "./chat-assets.ts";
+import { assetName, type ClientBundle, type Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
 import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
-import { FeedSockets } from "./chat-socket.ts";
+import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
+import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
 import { SessionsDiff } from "./shared/sessions-delta.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
@@ -45,7 +46,7 @@ import { parseStartSkill } from "./shared/start-skill.ts";
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -60,7 +61,13 @@ function remoteWorkspace(input: string, host: string): string {
   return typed;
 }
 
-export function renderShell(csrfToken: string, version: string, wiki: string | null): string {
+/**
+ * The page shell. The script and style go by their hashed names (`assetName`), so a later load reads them from the browser's cache, and the
+ * inline boot script opens the feeds socket while app.js is still on its way (boot-feed.ts). The stylesheet comes after that script, because
+ * an inline script waits for every stylesheet above it to load. `data-chats` names the chats, so a thread URL paints its chat view from the
+ * snapshot instead of waiting for the sessions list to say it is a chat (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
+ */
+export function renderShell(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -68,17 +75,18 @@ export function renderShell(csrfToken: string, version: string, wiki: string | n
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Prime Agent chat</title>
+<script type="module" src="${escapeAttribute(assets.js)}"></script>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f9fb">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
-<link rel="stylesheet" href="app.css">
 </head>
-<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}">
+<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}" data-chats="${escapeAttribute([...chats].join(","))}">
+<script>${bootFeedScript}</script>
+<link rel="stylesheet" href="${escapeAttribute(assets.css)}">
 <div id="app"></div>
-<script type="module" src="app.js"></script>
 </body>
 </html>
 `;
@@ -438,17 +446,21 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     res.end(body);
   }
   const packedAssets = new WeakMap<Asset, Buffer>();
-  function serveAsset(req: IncomingMessage, res: ServerResponse, asset: Asset) {
-    if (req.headers["if-none-match"] === asset.etag) { res.writeHead(304, { ETag: asset.etag, "Cache-Control": "no-cache", Vary: "Accept-Encoding" }); res.end(); return; }
-    if (asset.body.length > 1024 && gzips(req)) {
-      let packed = packedAssets.get(asset);
-      if (!packed) { packed = gzipSync(asset.body, { level: 9 }); packedAssets.set(asset, packed); }
-      res.writeHead(200, { "Content-Type": asset.contentType, "Content-Encoding": "gzip", Vary: "Accept-Encoding", ETag: asset.etag, "Cache-Control": "no-cache", "Content-Length": packed.length });
-      res.end(packed);
-      return;
+  /** `immutable` for a hashed name (`assetName`): its body never changes, so the browser asks again only after a release renames it. */
+  function serveAsset(req: IncomingMessage, res: ServerResponse, asset: Asset, immutable = false) {
+    const caching = immutable ? "public, max-age=31536000, immutable" : "no-cache";
+    if (req.headers["if-none-match"] === asset.etag) { res.writeHead(304, { ETag: asset.etag, "Cache-Control": caching, Vary: "Accept-Encoding" }); res.end(); return; }
+    const accepts = String(req.headers["accept-encoding"] ?? "");
+    let packed: { body: Buffer; encoding: string } | null = null;
+    if (asset.br && /\bbr\b/.test(accepts)) packed = { body: asset.br, encoding: "br" };
+    else if (asset.body.length > 1024 && gzips(req)) {
+      let gzip = asset.gzip ?? packedAssets.get(asset);
+      if (!gzip) { gzip = gzipSync(asset.body, { level: 9 }); packedAssets.set(asset, gzip); }
+      packed = { body: gzip, encoding: "gzip" };
     }
-    res.writeHead(200, { "Content-Type": asset.contentType, ETag: asset.etag, "Cache-Control": "no-cache", Vary: "Accept-Encoding", "Content-Length": asset.body.length });
-    res.end(asset.body);
+    const body = packed?.body ?? asset.body;
+    res.writeHead(200, { "Content-Type": asset.contentType, ...(packed ? { "Content-Encoding": packed.encoding } : {}), Vary: "Accept-Encoding", ETag: asset.etag, "Cache-Control": caching, "Content-Length": body.length });
+    res.end(body);
   }
   function close(): Promise<void> {
     if (closing) return closing;
@@ -485,7 +497,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     if (url.origin !== origin || url.pathname !== base + "api/ws") { refuse(404, "Not Found"); return; }
     if (closing) { refuse(410, "Gone"); return; }
     if (req.headers.origin !== origin || url.searchParams.get("token") !== csrfToken) { refuse(403, "Forbidden"); return; }
-    feeds.accept(req, socket, head);
+    feeds.accept(req, socket, head, parseUrlSubscriptions(url.searchParams.get("subs")));
   }
   async function handle(req: IncomingMessage, res: ServerResponse) {
     res.setHeader("Cache-Control", "no-store");
@@ -541,9 +553,16 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       if (method === "GET") {
         if (!route.startsWith("api/")) {
           const built = await bundle;
-          if (route === "") { const wiki = await wikiOrigin(); res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki)); return; }
-          if (route === "app.js") { serveAsset(req, res, built.js); return; }
-          if (route === "app.css") { serveAsset(req, res, built.css); return; }
+          const js = assetName("app", "js", built.js), css = assetName("app", "css", built.css);
+          if (route === "") {
+            const [wiki, chats] = await Promise.all([wikiOrigin(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki, { js, css }, chats)); return;
+          }
+          if (route === js) { serveAsset(req, res, built.js, true); return; }
+          if (route === css) { serveAsset(req, res, built.css, true); return; }
+          // A page from before a restart, or a tool that reads the plain names, gets the current build uncached.
+          if (route === "app.js" || /^app\.[0-9a-f]+\.js$/.test(route)) { serveAsset(req, res, built.js); return; }
+          if (route === "app.css" || /^app\.[0-9a-f]+\.css$/.test(route)) { serveAsset(req, res, built.css); return; }
           const appFile = built.app?.(route);
           if (appFile) { serveAsset(req, res, appFile); return; }
         }

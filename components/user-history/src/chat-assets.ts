@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
@@ -7,7 +8,8 @@ import { iconPng } from "./chat-icon.ts";
 
 const sveltePlugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
 
-export interface Asset { body: Buffer; etag: string; contentType: string }
+/** `br` and `gzip` are the body compressed at the best level ahead of time (`packAsset`); an asset without them is gzipped on its first request. */
+export interface Asset { body: Buffer; etag: string; contentType: string; br?: Buffer; gzip?: Buffer }
 /**
  * `version` names this build; the page carries it and the sessions stream reports it, so an open tab sees a restart onto new code.
  * `app` returns the installable-app file for a route under the capability path (manifest and icons), or undefined.
@@ -17,6 +19,20 @@ export interface ClientBundle { js: Asset; css: Asset; version: string; app?: (r
 export function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
   return { body: buffer, etag: '"' + createHash("sha256").update(buffer).digest("hex").slice(0, 32) + '"', contentType };
+}
+
+/**
+ * The name the page asks for an asset by: its content hash is in the name, so the browser keeps it with `immutable` and a later load reads
+ * it from disk with no request. On 10-18 app.js and app.css went out as `no-cache`, and every load from Korea paid a round trip to revalidate
+ * them before the script could start.
+ */
+export function assetName(stem: string, extension: string, asset: Asset): string {
+  return `${stem}.${asset.etag.replace(/"/g, "").slice(0, 16)}.${extension}`;
+}
+
+/** Brotli at quality 11 and gzip at level 9, once per build: app.js was 658 KB raw and 227 KB gzipped at level 9 on 10-18. */
+export function packAsset(asset: Asset): Asset {
+  return { ...asset, br: brotliCompressSync(asset.body, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: asset.body.length } }), gzip: gzipSync(asset.body, { level: 9 }) };
 }
 
 /** The esbuild and Svelte compile of the client: app.js and app.css. It holds its thread for seconds, so `buildClientBundle` runs it in a worker. */
@@ -33,7 +49,16 @@ export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array
   return { js: js.contents, css: css?.contents ?? new Uint8Array() };
 }
 
-type Compiled = { ok: true; js: Uint8Array; css: Uint8Array } | { ok: false; error: string };
+type Compiled = { ok: true; js: Asset; css: Asset } | { ok: false; error: string };
+
+/** The worker's half: compile, then compress both assets there too, since brotli at quality 11 takes about a second for app.js. */
+export async function compileAndPack(): Promise<{ js: Asset; css: Asset }> {
+  const { js, css } = await compileClient();
+  return { js: packAsset(asset(js, "text/javascript; charset=utf-8")), css: packAsset(asset(css, "text/css; charset=utf-8")) };
+}
+
+/** A worker message carries Uint8Arrays where the asset had Buffers. */
+const revive = (sent: Asset): Asset => ({ ...sent, body: Buffer.from(sent.body), ...(sent.br ? { br: Buffer.from(sent.br) } : {}), ...(sent.gzip ? { gzip: Buffer.from(sent.gzip) } : {}) });
 
 /** The client bundle, compiled in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering while it builds. */
 export function buildClientBundle(): Promise<ClientBundle> {
@@ -42,8 +67,8 @@ export function buildClientBundle(): Promise<ClientBundle> {
     worker.once("message", (compiled: Compiled) => {
       void worker.terminate();
       if (!compiled.ok) { reject(new Error(compiled.error)); return; }
-      const script = asset(compiled.js, "text/javascript; charset=utf-8");
-      const style = asset(compiled.css, "text/css; charset=utf-8");
+      const script = revive(compiled.js);
+      const style = revive(compiled.css);
       resolve({ js: script, css: style, version: createHash("sha256").update(script.etag + style.etag).digest("hex").slice(0, 16), app: appAsset });
     });
     worker.once("error", reject);

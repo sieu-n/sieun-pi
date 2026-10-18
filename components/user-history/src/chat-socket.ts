@@ -6,6 +6,7 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
  * One WebSocket per browser tab carries every live feed the page watches. A tab used to hold an EventSource per feed, and
  * Chromium allows only six HTTP/1.1 connections per host, so three tabs used them all and every later request queued.
  *
+ * The upgrade URL may name the first subscriptions (`parseUrlSubscriptions`), so a fresh page's first frames need no subscribe round trip.
  * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" | "refresh" | "usage" }` (sessions with `delta: true` for changed rows only), `{ type: "subscribe", sub, feed: "thread", id }`
  * and `{ type: "unsubscribe", sub }`. `sub` is a number the page picks. Server to client: `{ sub, event, data }` for a feed
  * event, and `{ event: "ping" }` every `pingMs` so proxies keep the socket open and the page can tell a dead socket.
@@ -25,6 +26,10 @@ const maxBufferedBytes = 32 * 1024 * 1024;
 function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Feed } | { type: "unsubscribe"; sub: number } | { type: "reject"; sub: number; message: string } | null {
   let value: unknown;
   try { value = JSON.parse(raw.toString()); } catch { return null; }
+  return parseValue(value);
+}
+
+function parseValue(value: unknown): { type: "subscribe"; sub: number; feed: Feed } | { type: "unsubscribe"; sub: number } | { type: "reject"; sub: number; message: string } | null {
   if (typeof value !== "object" || value === null) return null;
   const message = value as Record<string, unknown>;
   const sub = message.sub;
@@ -35,6 +40,18 @@ function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Fee
   if (message.feed === "sessions" || message.feed === "login" || message.feed === "refresh" || message.feed === "usage") return { type: "subscribe", sub, feed: { feed: message.feed } };
   if (message.feed === "thread" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "thread", id: message.id } };
   return { type: "reject", sub, message: `Unknown feed: ${String(message.feed).slice(0, 40)}.` };
+}
+
+/**
+ * The subscriptions a page names in the socket URL (`?subs=[{sub, feed, ...}]`, client/boot-feed.ts), started on the upgrade as if each
+ * came as a subscribe frame. Anything else in the list is dropped, and the page subscribes to it again once it runs.
+ */
+export function parseUrlSubscriptions(text: string | null): unknown[] {
+  if (!text) return [];
+  try {
+    const value: unknown = JSON.parse(text);
+    return Array.isArray(value) ? value.filter(item => typeof item === "object" && item !== null).map(item => ({ ...item, type: "subscribe" })) : [];
+  } catch { return []; }
 }
 
 export class FeedSockets {
@@ -49,9 +66,9 @@ export class FeedSockets {
 
   get size(): number { return this.sockets.size; }
 
-  /** The caller checks host, path, Origin and token before handing the upgrade over. */
-  accept(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    this.server.handleUpgrade(req, socket, head, ws => this.attach(ws));
+  /** The caller checks host, path, Origin and token before handing the upgrade over. `initial` are subscribe messages from the URL. */
+  accept(req: IncomingMessage, socket: Duplex, head: Buffer, initial: unknown[] = []): void {
+    this.server.handleUpgrade(req, socket, head, ws => this.attach(ws, initial));
   }
 
   close(): void {
@@ -77,7 +94,7 @@ export class FeedSockets {
     ws.send(text);
   }
 
-  private attach(ws: WebSocket): void {
+  private attach(ws: WebSocket, initial: unknown[]): void {
     this.sockets.add(ws);
     const state = ws as WebSocket & { alive?: boolean };
     state.alive = true;
@@ -89,10 +106,9 @@ export class FeedSockets {
       unsubscribe?.();
     };
     ws.on("pong", () => { state.alive = true; });
-    ws.on("message", raw => {
-      state.alive = true;
-      const message = parseMessage(raw);
-      if (!message) { log("closed a socket that sent a malformed frame"); ws.close(1008, "Unexpected message."); return; }
+    /** Resolves once the first frame of the URL's thread feed went out, or it failed. */
+    let threadFirst: Promise<void> = Promise.resolve();
+    const handle = (message: NonNullable<ReturnType<typeof parseMessage>>, after: Promise<void> = Promise.resolve(), first?: () => void) => {
       if (message.type === "unsubscribe") { stop(message.sub); return; }
       const reject = message.type === "reject" ? message.message
         : subscriptions.has(message.sub) ? `Feed ${message.sub} is already subscribed.`
@@ -104,14 +120,31 @@ export class FeedSockets {
       }
       const { sub } = message;
       subscriptions.set(sub, null);
-      const send: FeedSend = (event, data) => { if (subscriptions.has(sub)) this.write(ws, JSON.stringify({ sub, event, data })); };
-      void Promise.resolve().then(() => this.subscribe(message.feed, send)).then(unsubscribe => {
+      const send: FeedSend = (event, data) => { if (subscriptions.has(sub)) { this.write(ws, JSON.stringify({ sub, event, data })); if (event === "thread") first?.(); } };
+      void after.then(() => subscriptions.has(sub) ? this.subscribe(message.feed, send) : () => {}).then(unsubscribe => {
         if (subscriptions.has(sub) && subscriptions.get(sub) === null) subscriptions.set(sub, unsubscribe);
         else unsubscribe();
       }, (error: unknown) => {
         send("error", { message: error instanceof Error ? error.message : String(error) });
         subscriptions.delete(sub);
-      });
+      }).finally(() => first?.());
+    };
+    // The URL's thread feed goes first: on 10-18 the sessions list was 268 KB on the wire and the thread snapshot 217 KB, and at 370 KB/s
+    // a list sent first held the snapshot back by about 0.7 s. Every later URL feed starts once the thread's first `thread` frame is out.
+    for (const value of initial) {
+      const message = parseValue(value);
+      if (!message) continue;
+      if (message.type === "subscribe" && message.feed.feed === "thread") {
+        let done!: () => void;
+        threadFirst = new Promise<void>(resolve => { done = resolve; });
+        handle(message, Promise.resolve(), done);
+      } else handle(message, threadFirst);
+    }
+    ws.on("message", raw => {
+      state.alive = true;
+      const message = parseMessage(raw);
+      if (!message) { log("closed a socket that sent a malformed frame"); ws.close(1008, "Unexpected message."); return; }
+      handle(message);
     });
     ws.on("close", () => {
       this.sockets.delete(ws);

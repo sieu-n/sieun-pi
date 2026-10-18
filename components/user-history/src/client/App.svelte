@@ -34,9 +34,13 @@
     return () => { observer.disconnect(); unsync(); };
   });
 
-  /** The selected row, once the sessions stream has listed it: a chat renders Chat.svelte, anything else Thread.svelte. */
+  /**
+   * The selected row, once the sessions stream has listed it: a chat renders Chat.svelte, anything else Thread.svelte. Before the list lands,
+   * the chat ids in the page shell decide (chat-server.ts renderShell), so the thread paints as soon as its snapshot arrives.
+   */
   const selectedRow = $derived(store.session(store.selectedId));
-  const isChat = $derived(selectedRow?.chat === true);
+  const shellChats = new Set((document.body.dataset.chats ?? "").split(",").filter(Boolean));
+  const isChat = $derived(selectedRow ? selectedRow.chat === true : store.selectedId !== null && shellChats.has(store.selectedId));
 
   /** The tab names the open thread's tags, then the thread, so several chat tabs stay apart in the tab strip. */
   $effect(() => {
@@ -109,10 +113,8 @@
         {#key store.selectedId}
           {#if isChat}
             <Chat id={store.selectedId} {narrow} />
-          {:else if selectedRow || store.daemon !== "unknown"}
-            <Thread id={store.selectedId} {narrow} />
           {:else}
-            <div class="center muted"><span class="spinner"></span></div>
+            <Thread id={store.selectedId} {narrow} />
           {/if}
         {/key}
       {:else}

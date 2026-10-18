@@ -22,12 +22,18 @@ const NEW_ROW_WAIT_MS = 3000;
 /** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
 type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
 
+function bootJump(): { id: string; at: number } | null {
+  const target = parseHash(location.hash);
+  return target && target.at !== null ? { id: target.id, at: target.at } : null;
+}
+
 class Store {
   sessions = $state<SessionRow[]>([]);
   tags = $state<Tag[]>([]);
   daemon = $state<"up" | "down" | "unknown">("unknown");
   daemonError = $state<string | null>(null);
-  selectedId = $state<string | null>(null);
+  /** Read from the hash at once, so the first render on a thread URL never mounts the new-chat screen and its five requests. */
+  selectedId = $state<string | null>(parseHash(location.hash)?.id ?? null);
   threads = $state.raw<Record<string, ThreadEntry>>({});
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
@@ -41,7 +47,7 @@ class Store {
   /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
-  jump = $state.raw<{ id: string; at: number } | null>(null);
+  jump = $state.raw<{ id: string; at: number } | null>(bootJump());
   /** A Reply the owner started (`replyExcerpt` of the message): the chat's composer takes it as its quote and clears this. */
   replyQuote = $state.raw<{ chat: string; text: string } | null>(null);
   /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
