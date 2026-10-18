@@ -26,7 +26,7 @@ const reads = (days: string[], count: number, pages: number, firstId = 1): DayPa
 
 function data(fields: Partial<EngageData> = {}): EngageData {
   return { now: NOW, errors: [], stagingLastReadAt: NOW - 5 * MIN, stagingDue: { due: 0, waitMin: 0 }, accounts: Array.from({ length: 100 }, (_, index) => account(index + 1)), deaths: [],
-    days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, lapsed: { waiting: 0, blocked: 0, oldestAt: null }, deepWalks: { reached: 995, errors: { invalid_request: 5 } },
+    days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, lapsed: { waiting: 0, blocked: 0, oldestAt: null }, deepWalks: { reached: 995, errors: { invalid_request: 5 }, reading: {} },
     config: { "engage.rate_test_arms": "2000:1,2,3,4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
 }
 
@@ -110,9 +110,9 @@ test("engage reads: kills split by cause and by canary, a move between dead stat
 });
 
 test("engage reads: deep walks count error stops against walks that reached their end", async () => {
-  assert.deepEqual(deepWalksOf("reached\t\t847\nerror\tinvalid_request\t13\nerror\tcursor_stalled\t1\n"), { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1 } });
+  assert.deepEqual(deepWalksOf("reached\t\t847\nerror\tinvalid_request\t13\nerror\tcursor_stalled\t1\n"), { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1 }, reading: {} });
   assert.throws(() => deepWalksOf("what\t\t1\n"), /unexpected/);
-  const output = report(data({ deepWalks: { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1, repeated_content: 3 } } }), await dutyMetrics());
+  const output = report(data({ deepWalks: { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1, repeated_content: 3 }, reading: {} } }), await dutyMetrics());
   assert.equal(output.metrics.deep_walk_ok_pct, 98);
   assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /847 reached their end, 17 stopped on an error/);
 });
@@ -123,6 +123,19 @@ test("engage reads: a walk on a deleted profile or one with no free reader is le
   const output = report(data({ deepWalks }), await dutyMetrics());
   assert.equal(output.metrics.deep_walk_ok_pct, 96.5, "139 of 144, not 139 of 147");
   assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /139 reached their end, 5 stopped on an error \(permanent_error 3, scrape_blocked 2\); .*left out \(profile_not_found 1, fleet_exhausted 2\)/);
+});
+
+test("engage reads: an open walk that still reads is left out of deep_walk_ok_pct and shown as its own count with its codes", async () => {
+  // Prod 10-17 22:5xZ: 18 open walks held a walk_cursor and a running claim, and their last claim had ended permanent_error.
+  const deepWalks = deepWalksOf("reached\t\t14\nerror\tunknown_upstream\t64\nreading\tpermanent_error\t18\n");
+  assert.deepEqual(deepWalks, { reached: 14, errors: { unknown_upstream: 64 }, reading: { permanent_error: 18 } });
+  const output = report(data({ deepWalks }), await dutyMetrics());
+  assert.equal(output.metrics.deep_walk_ok_pct, 17.9, "14 of 78, not 14 of 96");
+  const excerpt = output.flagged!.find(item => item.kind === "deep_walks")!.excerpt;
+  assert.match(excerpt, /14 reached their end, 64 stopped on an error \(unknown_upstream 64\)/);
+  assert.match(excerpt, /; 18 open walks still reading whose last claim errored: permanent_error 18$/);
+  const none = report(data({ deepWalks: deepWalksOf("reached\t\t5\n") }), await dutyMetrics());
+  assert.doesNotMatch(none.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /still reading/);
 });
 
 test("engage reads: a due staging read waiting past the target names each staging pause row on and its last writer, and marks a deploy's leftover", async () => {
