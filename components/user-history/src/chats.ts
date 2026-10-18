@@ -6,7 +6,7 @@ import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, with
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
@@ -1243,10 +1243,10 @@ export class Chats {
     // A chat not attached on this serve has no hub children; its row lists the daemon's sessions under it. A step's owner may be a subagent of
     // one of its duty jobs (10-13 02:39: busy chat inbox ran under the 01:54 check-in job, and p334 read "(busy chat inbox not found)").
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
-    const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
     // A job that ended its turn on a board.wake the service still owes is at work until the wake is due (`withWakes`).
     const wakes = await this.source.wakes?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in wakes: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     const children = withLiveRoster(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), this.subagents.get(id) ?? [], wakes, this.below);
+    const nested = nestedJobs(dutyJobs, children, this.subagents);
     const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);

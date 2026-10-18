@@ -274,6 +274,29 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
 }
 
 /**
+ * The subagents a check-in may find a step's owner among besides the chat's direct children: every subagent at any depth below the chat's duty
+ * jobs (`dutyJobs`, session ids) and below its direct children, from the daemon's subagents by parent session id. A chat's job often splits its
+ * step into its own subagents and names one of them on the board: on 10-18 at 10:33Z chat-057a's p37, p43, p44, p45 and p46 were owned by
+ * p8-test-isolation and four more working subagents of its job metal agent runtime, and the check-in read all five "job_ended".
+ */
+export function nestedJobs(dutyJobs: readonly string[], children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>): ChildAgent[] {
+  const direct = new Set(children.map(child => child.id));
+  const seen = new Set<string>();
+  const nested: ChildAgent[] = [];
+  const descend = (session: string | undefined, parentId: string) => {
+    if (session === undefined || seen.has(session)) return;
+    seen.add(session);
+    for (const child of subagents.get(session) ?? []) {
+      if (!direct.has(child.id)) nested.push({ ...child, parentId });
+      descend(child.sessionId, child.id);
+    }
+  };
+  for (const job of dutyJobs) descend(job, job);
+  for (const child of children) descend(child.sessionId, child.id);
+  return nested;
+}
+
+/**
  * The subagents that work although their own turn ended: one with a running subagent at any depth below it, or one whose session changed
  * within `windowMs` (the check-in interval). `subagents` holds the daemon's subagents by parent session id (`rosterChildren`), which gives a
  * hub child its session id and last activity too. frontend bro 10-13: its 5 jobs end each turn while their browser checkers and fix jobs run,
