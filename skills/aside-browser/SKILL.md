@@ -109,7 +109,7 @@ Every REPL call, `run()` and the private `_repl()` alike, passes a send check th
 | --- | --- |
 | Webmail page such as Gmail | Send, or a send shortcut such as `Meta+Enter` |
 | Support ticket page or contact form | submit, reply or Enter |
-| X, LinkedIn, Discord, Facebook, Instagram, Reddit, WhatsApp web, Telegram web, a GitHub page outside `sieu-n` and `virev-ai` | post, send or Enter |
+| X, LinkedIn, Discord, Facebook, Instagram, Reddit, WhatsApp web, Telegram web, a GitHub page outside `sieu-n`, `virev-ai` and the owner's own `/settings` | post, send or Enter |
 | Site skill send calls | `linkedin.sendMessage`, `imessage.send` and the like |
 | Support chat widget such as Intercom | any click or typing |
 | `agent()` | a task that asks the Aside agent to send or reply to an email, a ticket, or a message on those sites |

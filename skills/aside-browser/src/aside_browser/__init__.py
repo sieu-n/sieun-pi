@@ -377,7 +377,8 @@ _SOCIAL_HOSTS = re.compile(
     r"|web\.whatsapp\.com|web\.telegram\.org)$",
     re.I,
 )
-_OWN_GITHUB_PATH = re.compile(r"^/(?:sieu-n|virev-ai)(?:/|$)", re.I)
+# /settings is the signed-in owner's own account settings (tokens, keys, sudo prompts), which post to no one.
+_OWN_GITHUB_PATH = re.compile(r"^/(?:sieu-n|virev-ai|settings)(?:/|$)", re.I)
 # GitHub sign-in pages (web login, OAuth authorize, the gh device flow, 2FA): agents finish these themselves (c4, owner 10-14), so they are no social page.
 _GITHUB_SIGN_IN_PATH = re.compile(r"^/(?:login|session|sessions)(?:/|$)", re.I)
 _URL = re.compile(r"https?://[^\s'\"`)<>]+", re.I)

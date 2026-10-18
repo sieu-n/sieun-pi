@@ -648,9 +648,11 @@ class OutsideSendGapTests(BoardBase):
             ("https://github.com/login/device/confirmation", "await page.keyboard.press('Enter')"),
             ("https://github.com/login/oauth/authorize?client_id=x", "await page.click('button[type=submit]')"),
             ("https://github.com/sessions/two-factor/app", "await page.fill('#app_totp','123456'); await page.keyboard.press('Enter')"),
+            ("https://github.com/settings/tokens/new?scopes=read:packages", "await page.getByRole('button',{name:'Send a code via email'}).click()"),
         ):
             self.assertIsNone(ab.outside_send(code, url), url)
         self.assertIsNotNone(ab.outside_send("await page.keyboard.press('Enter')", "https://github.com/other/repo/issues/1"))
+        self.assertIsNotNone(ab.outside_send("await page.getByRole('button',{name:'Send'}).click()", "https://github.com/settingsx/repo/issues/1"))
 
 
 CLICK_PAGE = """
