@@ -22,9 +22,7 @@ MUTATIONS = {
     "R5 wait, not a hop onto a depleted account": (
         "    candidates = [a for a in ranked if allowed(a)]",
         "    candidates = [a for a in ranked if allowed(a)] + sorted([a for a in accounts if allowed(a) and a not in ranked and serve_reason(a, cooldowns, now) is None], key=lambda a: a.session_pct)"),
-    "R6 move budget": ("    stuck = own_ok and moved >= budget and (p != \"high\" or optional)", "    stuck = False"),
-    "R6 wait cap": ("    if stuck and admissible_at(cur, cooldowns, cfg, now, p) - now > cfg[\"budget_wait_max_sec\"]:",
-                    "    if False:"),
+    "R6 overrun flag": ("    if own_ok and moved >= budget and (p != \"high\" or optional):", "    if False:"),
     "R7 low cap": ("    return cfg[\"low_admit_5h_max_pct\"] if priority == \"low\" else cfg[\"admit_5h_max_pct\"]",
                    "    return cfg[\"admit_5h_max_pct\"]"),
     "R7 high goes first": ("    return (PRIORITY_RANK.get(tree.priority, 1), tree.wait[2] if tree.wait else now, tree.key or \"\")",

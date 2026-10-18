@@ -21,8 +21,8 @@ from . import base, registry
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
 #   R5 wait: nothing passes R2-R4, so the tree gets its own slot_at on the account
 #      that frees first, ordered by priority, then by wait start.
-#   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
-#      waits for its own account; a high tree is refused only optional moves.
+#   R6 move budget, a soft cap: a tree that moved max_moves_per_day[priority] times
+#      in 24 h still moves, and the move logs why: budget_overrun.
 #   R7 priority share: low trees enter only under low_admit_5h_max_pct; when one
 #      account is left, the last cell of each slot window is for high trees.
 PRIORITIES = ("high", "normal", "low")
@@ -399,19 +399,17 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     moved = sum(1 for t in tree.moves if now - t < MOVE_WINDOW_SEC)
     budget = cfg["max_moves_per_day"].get(p, cfg["max_moves_per_day"].get("normal", 3))
     own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
-    stuck = own_ok and moved >= budget and (p != "high" or optional)
-    # R6 holds only while the tree's own account frees within budget_wait_max_sec.
-    # Past that the tree moves anyway: a stalled tree costs the owner the work, a
-    # move costs one cache rewrite (about 0.5M tokens).
-    if stuck and admissible_at(cur, cooldowns, cfg, now, p) - now > cfg["budget_wait_max_sec"]:
-        stuck = False
+    # R6 is a soft cap (owner 10-18: "all these should be modeled as a soft cap"): a
+    # tree past its budget moves like any other, and the move logs budget_overrun. A
+    # move costs one cache rewrite (about 0.5M tokens); a held tree costs the work.
+    if own_ok and moved >= budget and (p != "high" or optional):
         left = (tree.current, "budget_overrun")
 
     def leaving(a):
         return tree.leave is not None and a.id == tree.leave == tree.current
 
     def allowed(a):
-        return not leaving(a) and (not stuck or a.id == tree.current)
+        return not leaving(a)
 
     candidates = [a for a in ranked if allowed(a)]
     pin = next((a for a in candidates if a.id == tree.pin), None)

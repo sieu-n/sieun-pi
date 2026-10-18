@@ -309,9 +309,7 @@ flowchart TD
   P -- yes --> A[admit to the pin]
   P -- no --> S{own account still serves?}
   S -- yes --> STAY[stay]
-  S -- no --> B{move budget left, or a high tree that must move?}
-  B -- yes --> C{an account under the admit cap with a free slot?}
-  B -- no --> W
+  S -- no --> C{an account under the admit cap with a free slot?}
   C -- yes --> A2[admit to the best score]
   C -- no --> W[wait for the first slot]
 ```
@@ -323,7 +321,7 @@ flowchart TD
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
 | R5 wait | nothing passes R2 to R4 for this tree | the tree gets its own `slot_at` on the account that frees first (429 end, 5h reset or its next free slot), ordered by priority, then by wait start |
-| R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account when that account frees within `budget_wait_max_sec` (3600); otherwise it moves anyway and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
+| R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | a soft cap (owner 10-18): the tree still moves, and the switch line in pi-pool.log logs `why: budget_overrun` for a normal or low tree, or for a high tree's optional move (`pi-pool switch`) |
 | R7 priority | low trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
 A tree that waits gets its own account from the hook while the provider refuses that

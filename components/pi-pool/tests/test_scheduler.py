@@ -274,31 +274,30 @@ class R5Wait(unittest.TestCase):
 class R6MoveBudget(unittest.TestCase):
     ACCOUNTS = [acct("x", five=100, five_reset_in=1800), acct("y", five=5)]
 
-    def test_a_normal_tree_out_of_moves_waits_for_its_own_account(self):
+    def test_a_normal_tree_out_of_moves_still_moves_and_logs_budget_overrun(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
         d = decide(state, KEY, self.ACCOUNTS)
-        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 1800))
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
+        self.assertEqual(vending.switch_why(d, d.account), "budget_overrun")
 
-    def test_a_tree_out_of_moves_whose_account_is_out_past_the_wait_cap_moves_anyway(self):
+    def test_a_tree_out_of_moves_whose_account_is_out_for_days_moves_too(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (20, 5, 1)])
         out = acct("x", five=10, week=100, week_reset_in=5 * 86400)
         d = decide(state, KEY, [out, acct("y", five=5)])
         self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
-        self.assertEqual(vending.switch_why(d, d.account), "budget_overrun")
-        soon = acct("x", five=100, five_reset_in=CFG["budget_wait_max_sec"] - 60)
-        self.assertEqual(type(decide(state, KEY, [soon, acct("y", five=5)])), sched.Wait)
 
     def test_moves_older_than_a_day_do_not_count(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 25 * 3600] * 3)
         self.assertEqual(decide(state, KEY, self.ACCOUNTS).account.id, "y")
 
-    def test_a_low_tree_has_one_move(self):
+    def test_a_low_tree_past_its_one_move_still_moves(self):
         state = empty_state()
         put(state, KEY, on="x", priority="low", moves=[NOW - 60])
-        self.assertIsInstance(decide(state, KEY, self.ACCOUNTS), sched.Wait)
+        d = decide(state, KEY, self.ACCOUNTS)
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
 
     def test_a_high_tree_is_never_refused_a_move_it_needs(self):
         state = empty_state()
@@ -306,12 +305,12 @@ class R6MoveBudget(unittest.TestCase):
         d = decide(state, KEY, self.ACCOUNTS)
         self.assertEqual((type(d), d.account.id), (sched.Admit, "y"))
 
-    def test_a_high_tree_out_of_moves_is_refused_an_optional_move(self):
+    def test_a_high_tree_out_of_moves_still_takes_an_optional_move(self):
         state = empty_state()
         put(state, KEY, on="x", priority="high", moves=[NOW - 60 * i for i in range(1, 7)])
         state["sessions"][KEY.key]["leave"] = {P: {"account_id": "x", "at": NOW}}
         d = decide(state, KEY, [acct("x", five=30), acct("y", five=5)])
-        self.assertEqual((type(d), d.account.id), (sched.Stay, "x"))
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
 
     def test_a_move_is_counted(self):
         state = empty_state()
