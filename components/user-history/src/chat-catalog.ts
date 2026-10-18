@@ -446,6 +446,20 @@ function unreadOf(messages: readonly ThreadMessage[], since: number): number {
   return count;
 }
 
+/** How often the service logs its catalog projections' wall times (`projectionLine`). */
+export const PROJECTION_LOG_MS = 60_000;
+const rank = (sorted: readonly number[], share: number): number => sorted[Math.max(0, Math.ceil(share * sorted.length) - 1)]!;
+/**
+ * One service.log line on the projections of the last PROJECTION_LOG_MS: their count and median, 90th percentile and longest wall time, so
+ * the live number reads from the log without a profiler, which owner rule c106 keeps off the live service. Null when none ran.
+ */
+export function projectionLine(ms: readonly number[], windowMs = PROJECTION_LOG_MS): string | null {
+  if (!ms.length) return null;
+  const sorted = [...ms].sort((left, right) => left - right);
+  const round = (value: number) => Math.round(value);
+  return `catalog: ${sorted.length} projections in ${round(windowMs / 1000)} s, median ${round(rank(sorted, 0.5))} ms, p90 ${round(rank(sorted, 0.9))} ms, max ${round(sorted.at(-1)!)} ms`;
+}
+
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
@@ -506,6 +520,13 @@ export class Catalog {
   private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Wall ms of each projection since the last `projectionLine`. */
+  private projectionMs: number[] = [];
+  private readonly projectionTimer = setInterval(() => {
+    const line = projectionLine(this.projectionMs);
+    this.projectionMs = [];
+    if (line) process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  }, PROJECTION_LOG_MS).unref();
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
@@ -769,7 +790,9 @@ export class Catalog {
   private inputs = 0;
   private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
   private tracked(): ReturnType<Catalog["project"]> {
+    const started = performance.now();
     const run = { inputs: this.inputs, result: this.project() };
+    void run.result.then(() => { this.projectionMs.push(performance.now() - started); }, () => {});
     this.running = run;
     void run.result.finally(() => { if (this.running === run) this.running = undefined; }).catch(() => {});
     return run.result;
@@ -1033,6 +1056,7 @@ export class Catalog {
 
   async close(): Promise<void> {
     this.closed = true;
+    clearInterval(this.projectionTimer);
     this.peer.close();
     clearTimeout(this.schedulesTimer);
     clearTimeout(this.ratesTimer);
