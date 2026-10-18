@@ -8,6 +8,11 @@ import type { FiringAlert } from "./alert-bridge.ts";
  * 35 hours. The hook leaves no trace when Prime kills it before it runs, so this reads Prime's own session files: in the last HOOK_WINDOW_MS,
  * HOOK_MIN_FAILURES or more pooled turns in two or more root sessions failed on the hook and no pooled turn got an answer. The bridge puts the
  * alert on its chat's board as one step and notes it resolved once a pooled turn gets an answer again.
+ *
+ * A slot wait is not a hook failure: the hook ran and the pool chose to hold the turn ("pi-pool: this session waits for its slot at ..."). From
+ * 10-18 14:00Z to 20:40Z, 481 of the 499 hook errors on us-metal02 were slot waits while 8 Claude accounts sat at their limits, so this alert
+ * fired 6 times and woke two jobs that could fix nothing, and with slot waits left out it fires 0 times. A depleted pool is the skills-and-tools
+ * duty's, so this counts only the other errors.
  */
 export const HOOK_WINDOW_MS = 10 * 60_000;
 export const HOOK_MIN_FAILURES = 3;
@@ -16,6 +21,7 @@ export const HOOK_ALERT_NAME = "Every Prime turn fails because the pi-pool token
 const TAIL_BYTES = 256 * 1024;
 const POOLED = new Set(["anthropic", "openai-codex"]);
 const HOOK_FAILED = /^Failed to resolve API key for provider "[^"]+" from shell command: .*pi-pool-token/;
+const SLOT_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a) slot\b/;
 
 export interface HookTally { failures: number; sessions: number; answers: number; first: number | null }
 
@@ -34,7 +40,7 @@ export function tallyTail(text: string, since: number): { failures: number[]; an
     const at = typeof line.timestamp === "string" ? Date.parse(line.timestamp) : NaN;
     if (!Number.isFinite(at) || at < since) continue;
     if (message.stopReason === "error") {
-      if (typeof message.errorMessage === "string" && HOOK_FAILED.test(message.errorMessage)) failures.push(at);
+      if (typeof message.errorMessage === "string" && HOOK_FAILED.test(message.errorMessage) && !SLOT_WAIT.test(message.errorMessage)) failures.push(at);
     } else if (message.stopReason !== "aborted") answers++;
   }
   return { failures, answers };
