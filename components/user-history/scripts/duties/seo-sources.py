@@ -4,13 +4,14 @@ to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project
 
 visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals (virev_seo.gsc) and 28-day sign-ups with
 their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
-inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`.
+inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`, retries included.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -83,6 +84,14 @@ def visits() -> dict[str, Any]:
     return out
 
 
+# A row that came back 5xx or with no answer (a connection error, http 0) is asked again after each wait here. Google's API error guide
+# says to retry 500, 502, 503 and 504 with exponential backoff (developers.google.com/workspace/drive/api/guides/handle-errors), and on
+# 10-18 05:21 one 500 "Internal error encountered" for /ko/blog/kol-key-opinion-leader read PASS when inspected again minutes later.
+# Two waits, 1 s then 2 s, keep a URL that fails every time at about 3 x 7.4 s + 3 s = 25 s, inside the 120 s precheck timeout
+# (src/shared/chat-duties.ts PRECHECK_TIMEOUT_MS). Each retry spends one more inspection of the 2,000 a day, added to the quota file.
+INSPECT_RETRY_WAITS_S = (1, 2)
+
+
 def inspect(urls: list[str]) -> dict[str, Any]:
     from virev_seo import gsc
     from virev_seo.config import GSC_SITE, INSPECT_DAILY_QUOTA
@@ -92,22 +101,40 @@ def inspect(urls: list[str]) -> dict[str, Any]:
     asked = urls[: max(0, left)]
     sess = gsc.session(write=True)
 
-    def one(url: str) -> dict[str, Any]:
+    def attempt(url: str) -> dict[str, Any]:
         try:
             resp = sess.post(gsc.INSPECT_URL, json={"inspectionUrl": url, "siteUrl": GSC_SITE})
         except Exception as exc:
             return {"url": url, "http": 0, **_error(exc)}
-        payload = resp.json() if resp.content else {}
+        try:
+            payload = resp.json() if resp.content else {}
+        except ValueError:
+            payload = {}
         st = payload.get("inspectionResult", {}).get("indexStatusResult", {})
         return {"url": url, "http": resp.status_code, "verdict": st.get("verdict"), "coverage_state": st.get("coverageState"),
                 "error": (payload.get("error") or {}).get("message")}
 
+    def one(url: str) -> tuple[dict[str, Any], int]:
+        row = attempt(url)
+        tries = 1
+        for wait in INSPECT_RETRY_WAITS_S:
+            if row["http"] != 0 and row["http"] < 500:
+                break
+            time.sleep(wait)
+            row = attempt(url)
+            tries += 1
+        if tries > 1:
+            row["tries"] = tries
+        return row, tries
+
     # Measured 10-12: one inspection takes about 7.4 s, and 32 parallel calls inspected 32 URLs in 8.5 s, all HTTP 200. That is about
     # 230 a minute, under Google's 600 a minute per property (virev_seo.config INSPECT_PER_MINUTE). The 2,000 a day quota is checked above.
     with ThreadPoolExecutor(32) as pool:
-        rows = list(pool.map(one, asked))
-    if asked:
-        gsc._quota_add(pt_day, len(asked))
+        done = list(pool.map(one, asked))
+    rows = [row for row, _ in done]
+    spent = sum(tries for _, tries in done)
+    if spent:
+        gsc._quota_add(pt_day, spent)
     return {"pt_day": pt_day, "quota_left_before": left, "rows": rows, "not_asked": urls[len(asked):]}
 
 
