@@ -26,7 +26,7 @@ Answer "did an agent send X anything" from `board.sends(...)`, never from the wi
 
 ## Wait without a kernel
 
-A job that waits for a CI run or a time sets a wake and ends its turn with nothing running. The chat service checks each wake every 30 s and sends the session an agent message that starts with `[wake]` when the run finishes or the time comes. That message reopens the session even after Prime unloaded it.
+A job that waits for a CI run or a time sets a wake and ends its turn with nothing running. The chat service checks each wake every 30 s and sends the session an agent message that starts with `[wake]` when the run finishes or the time comes. That message reopens the session even after Prime unloaded it. On a box without the chat role in `~/.config/sieun-pi/hosts.json`, such as the Mac, the wake and every read go to the chat host's API, and the chat host delivers the wake through this box's relay.
 
 ```python
 board.wake(run=38556270524, note="land r11 on green")   # read from the local CI cache, so no GitHub call

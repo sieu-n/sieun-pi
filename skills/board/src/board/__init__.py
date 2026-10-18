@@ -3,6 +3,8 @@
 The chat server keeps each chat's board in <agent dir>/browser-chat/boards/<chat session id>.json. The chat_board tool shows only the open
 checklist; these calls read the rest. A chat's kernel and every job under it find the chat from RLM_SESSION_DIR. corrections() reads the
 owner's corrections ledger, <agent dir>/browser-chat/corrections.json, whose [corrections] block shows some rules by id and theme only.
+
+On a box where hosts.json puts the chat role on another box, every call reads and writes through that chat service's API instead.
 """
 
 from __future__ import annotations
@@ -10,7 +12,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +39,41 @@ def _agent_dir() -> Path:
     return Path(raw).expanduser()
 
 
+def _chat_host() -> tuple[str, dict] | None:
+    """The chat host's base URL and access, when hosts.json puts the chat role on another box; None on the chat host or without hosts.json.
+
+    A box without the chat role reads and writes the chat's files through the chat service's API, so a job there sees the one live board,
+    ledger, send log and wake folder. The capability and token come from ~/.config/sieun-pi/chat-access.json (0600).
+    """
+    config = Path(os.environ.get("SIEUN_PI_CONFIG_DIR", str(Path.home() / ".config" / "sieun-pi")))
+    try:
+        hosts = json.loads(Path(os.environ.get("SIEUN_PI_HOSTS", str(config / "hosts.json"))).read_text())["hosts"]
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+    me = socket.gethostname().split(".")[0].lower()
+    holder = next((host for host in hosts if "chat" in host.get("roles", {})), None)
+    if holder is None or holder.get("hostname", "").split(".")[0].lower() == me:
+        return None
+    role = holder["roles"]["chat"]
+    url = (role.get("url") or f"http://{holder['address']}:{role['port']}").rstrip("/")
+    access = json.loads((config / "chat-access.json").read_text())
+    return f"{url}/{access['capability']}/", {"token": access["csrfToken"], "origin": url}
+
+
+def _call(path: str, body: dict | None = None) -> bytes | None:
+    """GET (or POST with body) a chat service route on the chat host; None for a 404."""
+    base, access = _chat_host()  # type: ignore[misc]
+    headers = {"Content-Type": "application/json", "X-Chat-Token": access["token"], "Origin": access["origin"]} if body is not None else {}
+    request = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise RuntimeError(f"Chat service at {base.split('/', 3)[2]} answered {error.code}: {error.read().decode(errors='replace')[:300]}") from None
+
+
 def _chat_id(chat: str | None) -> str:
     if chat:
         return chat.removeprefix("thread:")
@@ -46,6 +87,11 @@ def _load(chat: str | None) -> tuple[str, dict]:
     chat_id = _chat_id(chat)
     if not _ID.match(chat_id):
         raise ValueError(f"Not a session id: {chat_id!r}")
+    if _chat_host():
+        raw = _call(f"api/agent/board?chat={urllib.parse.quote(chat_id)}")
+        if raw is None:
+            raise LookupError(f"No board for {chat_id} on the chat host. A root job started with create_session has its own id; pass chat=<chat session id>.")
+        return chat_id, json.loads(raw)
     path = _agent_dir() / "browser-chat" / "boards" / f"{chat_id}.json"
     try:
         return chat_id, json.loads(path.read_text())
@@ -242,7 +288,14 @@ def sends(match: str | None = None, since: str | None = None, chat: str | None =
     """
     path = _send_log()
     try:
-        raw = path.read_text().splitlines()
+        if _chat_host():
+            text = _call("api/agent/sends")
+            if text is None:
+                raise FileNotFoundError
+            raw = text.decode().splitlines()
+            path = Path("chat host:sends.jsonl")
+        else:
+            raw = path.read_text().splitlines()
     except FileNotFoundError:
         return _Text(f"No send log at {path}, so no guard has judged a send there yet.")
     entries = []
@@ -272,7 +325,14 @@ def corrections(id: str | None = None) -> str:  # noqa: A002
     """The owner's corrections in force, one full rule per line; with id ("c12"), that entry in full with the owner's words and what enforces it."""
     path = _agent_dir() / "browser-chat" / "corrections.json"
     try:
-        entries = json.loads(path.read_text()).get("corrections", [])
+        if _chat_host():
+            text = _call("api/agent/corrections")
+            path = Path("chat host:corrections.json")
+            if text is None:
+                raise FileNotFoundError
+            entries = json.loads(text).get("corrections", [])
+        else:
+            entries = json.loads(path.read_text()).get("corrections", [])
     except FileNotFoundError:
         return _Text(f"No corrections ledger at {path}.")
     if id is None:
@@ -328,6 +388,14 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
         on = {"kind": "time", "at": int(when * 1000)}
         key, what = f"time-{int(when)}", f"it is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     session = _own_session()
+    parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
+    root = parts[parts.index("session-artifacts") + 1] if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts) else session
+    record = {"session": session, **({"root": root} if root != session and _UUID.match(root) else {}), "on": on, "note": note, "since": int(time.time() * 1000)}
+    if _chat_host():
+        # The chat service on the chat host keeps the wake and delivers it through this box's relay.
+        where = json.loads(_call("api/agent/wakes", record) or b"{}").get("path", "the chat host")
+        return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
+                     f"so Prime can unload the session while it waits. (chat host:{where})")
     data_dir = Path(os.environ["AGENT_CHAT_DATA_DIR"]) if os.environ.get("AGENT_CHAT_DATA_DIR") else _agent_dir() / "browser-chat"
     folder = data_dir / "wakes"
     try:
@@ -339,9 +407,7 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
                            "Wait inside this turn with await bash(...) instead.")
     path = folder / f"{session}-{key}.json"
     tmp = path.with_suffix(".tmp")
-    parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
-    root = parts[parts.index("session-artifacts") + 1] if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts) else session
-    tmp.write_text(json.dumps({"session": session, **({"root": root} if root != session and _UUID.match(root) else {}), "on": on, "note": note, "since": int(time.time() * 1000)}))
+    tmp.write_text(json.dumps(record))
     os.replace(tmp, path)
     return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                  f"so Prime can unload the session while it waits. ({path})")
