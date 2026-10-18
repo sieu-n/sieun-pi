@@ -171,8 +171,16 @@ function run(command: string, args: string[]): Promise<string> {
 
 /** The repo the local CI cache polls (ci-cache.mjs SLUG). */
 export const CI_CACHE_REPO = "sieu-n/auto-sns-agent";
+/**
+ * The other repos whose runs jobs wake on with no repo given, tried in order when the cache's repo has no such run. On 10-18 at 11:32Z two
+ * slack-green jobs set board.wake on runs 39123561025 and 39123644786 with no repo, every read answered 404 in the cache's repo, and the
+ * finished runs held their wakes 12 and 13 min (d7 queue_holds_30 2 at 11:46Z).
+ */
+export const OTHER_RUN_REPOS: readonly string[] = ["sieu-n/slack-green", "sieu-n/sieun-pi"];
 /** ci-run-status's answer for a run the poller has not listed yet. */
 const NOT_CACHED = / is not in the cache /;
+/** gh's answer for a run id its repo does not have. */
+const NO_SUCH_RUN = /HTTP 404/;
 
 /**
  * A run's state from the local CI cache (`ci-run-status <id>`, no GitHub call) or, for a run in another repo, from `gh run view`. A run the
@@ -182,9 +190,19 @@ const NOT_CACHED = / is not in the cache /;
  */
 export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run): Promise<RunState> {
   const gh = (repo: string) => exec("gh", ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
+  const anyRepo = async (): Promise<string> => {
+    let missing: unknown;
+    for (const repo of [CI_CACHE_REPO, ...OTHER_RUN_REPOS]) {
+      try { return await gh(repo); } catch (error) {
+        if (!(error instanceof Error && NO_SUCH_RUN.test(error.message))) throw error;
+        missing = error;
+      }
+    }
+    throw missing;
+  };
   const raw = JSON.parse(on.repo ? await gh(on.repo)
     : await exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
-      if (error instanceof Error && NOT_CACHED.test(error.message)) return gh(CI_CACHE_REPO);
+      if (error instanceof Error && NOT_CACHED.test(error.message)) return anyRepo();
       throw error;
     })) as Record<string, unknown>;
   if (raw.status !== "completed") return { done: false };
