@@ -21,8 +21,12 @@ or when its commit was rebased off main. --rollback onto a commit not built yet 
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
-A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), and that release makes it as soon as it takes
-the lock, before its own build, so a build that hangs or fails never holds the chat on older code.
+Releases that queue up are folded: the release that takes the lock reads the requests waiting for it, picks the queued commit on origin main
+that holds its own commit and the most queued ones, builds that one, flips current, restarts and names each request it covered. The covered
+waiters then exit 0 with nothing built. A request that arrives during the build waits for the next batch. When the picked build fails, the
+release builds the next candidate down to its own commit, so a newer request that fails never takes the older ones with it. --rollback is
+never folded. The batch restarts unless every covered request passed --no-kickstart, and it never leaves its restart to a later release.
+A release that takes the lock with restart.owed, which helpers before the fold left to a waiting release, makes that restart before its build.
 A restart counts as applied only while the service manager reports the service running (systemctl is-active, launchctl print).
 After the flip it deletes each release folder except current, the one current named before, the one the chat was last started on, a waiting
 release's and any folder a running process names, so a rollback further back than the release before current builds that commit again.
@@ -96,20 +100,29 @@ function checkNewer(repo, home, sha, rollback) {
 }
 
 /**
- * Throws Unpublished unless `sha` is on origin's main as fetched now. On 10-18 releases built from commits no one had pushed went live
- * (release-322de20 had to be merged into main afterwards so later releases descended from it), and each such release let the chat drift from main.
- * The fetch goes to a ref of this process's own, since releases and jobs fetch in the same repo at once and a shared ref's lock would fail one of them.
+ * Fetches origin's main into a ref of this process's own and calls `use` with that ref, or with null and git's last error line when the fetch
+ * fails. Releases and jobs fetch in the same repo at once, and a shared ref's lock would fail one of them.
  */
-function checkPublished(repo, sha) {
+function withOriginMain(repo, use) {
   const ref = `refs/release-chat/origin-main-${process.pid}`;
   const fetched = spawnSync("git", ["-C", repo, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", `+refs/heads/main:${ref}`], { encoding: "utf8", env: gitEnv });
   try {
-    if (fetched.status !== 0)
-      throw new Unpublished(`could not fetch origin main to check that ${sha.slice(0, 7)} is published (${fetched.stderr.trim().split("\n").pop()}); retry when origin answers, or pass --rollback <release-id> to go to a release already built`);
-    if (!contains(repo, ref, sha)) throw new Unpublished(`${sha.slice(0, 7)} is not on origin/main; push it to main first, then release it`);
+    return use(fetched.status === 0 ? ref : null, fetched.stderr.trim().split("\n").pop());
   } finally {
     spawnSync("git", ["-C", repo, "update-ref", "-d", ref], { env: gitEnv });
   }
+}
+
+/**
+ * Throws Unpublished unless `sha` is on origin's main as fetched now. On 10-18 releases built from commits no one had pushed went live
+ * (release-322de20 had to be merged into main afterwards so later releases descended from it), and each such release let the chat drift from main.
+ */
+function checkPublished(repo, sha) {
+  withOriginMain(repo, (ref, error) => {
+    if (!ref)
+      throw new Unpublished(`could not fetch origin main to check that ${sha.slice(0, 7)} is published (${error}); retry when origin answers, or pass --rollback <release-id> to go to a release already built`);
+    if (!contains(repo, ref, sha)) throw new Unpublished(`${sha.slice(0, 7)} is not on origin/main; push it to main first, then release it`);
+  });
 }
 
 /**
@@ -133,11 +146,12 @@ function alive(pid) {
 
 /**
  * Takes <home>/release.lock, waiting while a live process holds it; a lock whose pid is gone is taken over. Returns the release function.
+ * The lock and the draft `release.lock.<pid>` written while it waits hold the request: pid, sha, startedAt, kickstart and rollback.
  * A release waits even when the holder's commit holds its own: that build can still fail, and then this one is the release that ships the commit.
  */
-async function takeLock(home, sha) {
+async function takeLock(home, request) {
   const lock = join(home, "release.lock");
-  const body = JSON.stringify({ pid: process.pid, sha, startedAt: new Date().toISOString() }) + "\n";
+  const body = JSON.stringify(request) + "\n";
   const draft = `${lock}.${process.pid}`;
   writeFileSync(draft, body);
   let told = false;
@@ -223,35 +237,69 @@ function flip(home, id) {
   renameSync(next, join(home, "current"));
 }
 
-/** The releases waiting for the lock: each writes its lock draft `release.lock.<pid>` while it waits. */
+/** Whether `pid` is a running release-chat process. A draft outlives a release that was killed, and its pid can come back as another program. */
+function releaseProcess(pid) {
+  if (!alive(pid)) return false;
+  const command = existsSync("/proc/self/cmdline")
+    ? readText(`/proc/${pid}/cmdline`)
+    : spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+  return /release-chat/.test(command ?? "");
+}
+
+/**
+ * The requests waiting for the lock: each release writes its lock draft `release.lock.<pid>` while it waits. A draft from a helper before the
+ * fold names no kickstart or rollback, and counts as a release that restarts and is no rollback. On us-metal02 at 21:20Z on 10-18 the folder
+ * held 15 drafts whose release processes were gone.
+ */
 function waiting(home) {
   const found = [];
   for (const name of readdirSync(home)) {
     const pid = Number(/^release\.lock\.(\d+)$/.exec(name)?.[1]);
-    if (!pid || pid === process.pid || !alive(pid)) continue;
-    try { found.push({ pid, sha: String(JSON.parse(readFileSync(join(home, name), "utf8")).sha) }); } catch {}
+    if (!pid || pid === process.pid || !releaseProcess(pid)) continue;
+    try {
+      const draft = JSON.parse(readFileSync(join(home, name), "utf8"));
+      found.push({ pid, sha: String(draft.sha), kickstart: draft.kickstart !== false, rollback: draft.rollback === true });
+    } catch {}
   }
   return found;
 }
 
 const OWED = "restart.owed";
+const shortSha = sha => sha.slice(0, 7);
+const describe = requests => requests.map(request => `${shortSha(request.sha)} (pid ${request.pid}${request.pid === process.pid ? ", this release" : ""})`).join(", ");
 
 /**
- * Restarts the service for this release unless the chat already runs current, or leaves it in restart.owed when a release that descends from
- * `sha` waits for the lock. That waiter pays it as soon as it takes the lock (payOwed), before its own build, so a waiter whose build hangs or
- * fails never holds the chat on older code: on 10-18 a steady queue of releases passed one restart on 12 times and the chat ran code 51 min
- * older than current.
+ * The builds this release may make for `own` and the requests that wait for the lock, best first. Each is a queued commit that holds `own`,
+ * is on origin main as fetched now and holds the live release, with the requests it holds (covered) and whether any of them restarts.
+ * The last one is `own` alone, so a failed build of a newer queued commit falls back to the next and never loses the older requests.
+ * When origin does not answer, only `own` is built, since its own check passed at the start. On us-metal02 the journal shows 11 chat
+ * restarts from 16:04Z to 17:59Z on 10-18, one for each release that built.
  */
-function restart(options, home, sha) {
+function batches(repo, home, own) {
+  const queued = waiting(home).filter(request => !request.rollback);
+  const published = withOriginMain(repo, ref => (ref ? queued.filter(request => contains(repo, ref, request.sha)) : []));
+  const requests = [own, ...queued];
+  const shas = [...new Set([own.sha, ...published.map(request => request.sha)])].filter(sha => {
+    if (!contains(repo, sha, own.sha)) return false;
+    try { checkNewer(repo, home, sha, false); return true; } catch (error) { if (error instanceof Refused) return false; throw error; }
+  });
+  const candidates = shas.map(sha => {
+    const covered = requests.filter(request => contains(repo, sha, request.sha));
+    return { sha, covered, kickstart: covered.some(request => request.kickstart) };
+  });
+  const order = (a, b) => (a.sha === own.sha) - (b.sha === own.sha) || b.covered.length - a.covered.length;
+  return { plans: candidates.sort(order), left: queued.filter(request => !candidates[0].covered.includes(request)) };
+}
+
+/**
+ * Restarts the service unless the chat already runs current. A batch whose covered requests all passed --no-kickstart only flips, unless a
+ * helper before the fold left restart.owed. A batch always makes its own restart, even when more releases wait: a waiting release could fail
+ * or hang, and on 10-18 a steady queue that passed one restart on 12 times left the chat 51 min behind current.
+ */
+function restart(home, wanted) {
   const owed = join(home, OWED);
   if (applied(home)) { rmSync(owed, { force: true }); return; }
-  if (!options.kickstart && !existsSync(owed)) return;
-  const later = waiting(home).filter(entry => spawnSync("git", ["-C", options.repo, "merge-base", "--is-ancestor", sha, entry.sha], { env: gitEnv }).status === 0);
-  if (later.length) {
-    writeFileSync(owed, JSON.stringify({ sha, at: new Date().toISOString() }) + "\n");
-    log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which makes it when it takes the lock`);
-    return;
-  }
+  if (!wanted && !existsSync(owed)) return;
   kickstart(home);
   rmSync(owed, { force: true });
 }
@@ -391,25 +439,41 @@ async function main() {
     if (!options.kickstart) throw new Covered(`${short} already in current ${live}; --no-kickstart, so nothing to do`);
   }
   if (!live) checkNewer(options.repo, home, sha, options.rollback);
-  await takeLock(home, sha);
+  const own = { pid: process.pid, sha, startedAt: new Date().toISOString(), kickstart: options.kickstart, rollback: options.rollback };
+  await takeLock(home, own);
   payOwed(home);
   const kept = holding();
   if (kept) {
     log(applied(home) ? `${short} already live in ${kept}; nothing to do` : `${short} is already in ${kept}, which the chat does not run yet with its units`);
-    restart(options, home, releaseCommit(options.repo, resolve(home, kept)) ?? sha);
+    restart(home, options.kickstart);
     console.log(kept);
     return;
   }
   checkNewer(options.repo, home, sha, options.rollback);
-  if (existsSync(dir)) log(`${id} is built already; reusing it`);
-  else await build(options, home, sha, dir);
-  checkNewer(options.repo, home, sha, options.rollback);
-  const before = liveRelease(home);
-  flip(home, id);
-  log(`current: ${before ?? "(none)"} -> ${id}`);
-  restart(options, home, sha);
-  prune(home, [id, before]);
-  console.log(id);
+  const { plans, left } = options.rollback ? { plans: [{ sha, covered: [own], kickstart: options.kickstart }], left: [] } : batches(options.repo, home, own);
+  if (plans[0].covered.length > 1) log(`folding the queued requests ${describe(plans[0].covered)} into one build of ${shortSha(plans[0].sha)}`);
+  if (left.length) log(`leaving ${describe(left)} to a release of their own, since ${shortSha(plans[0].sha)} does not hold them`);
+  for (const plan of plans) {
+    const planDir = plan.sha === sha ? dir : join(home, `release-${shortSha(plan.sha)}`);
+    const planId = basename(planDir);
+    try {
+      if (existsSync(planDir)) log(`${planId} is built already; reusing it`);
+      else await build(options, home, plan.sha, planDir);
+    } catch (error) {
+      if (plan.sha === sha) throw error;
+      log(`the build of ${shortSha(plan.sha)} failed (${error.message}); its request stays queued, and this release builds the next candidate`);
+      continue;
+    }
+    checkNewer(options.repo, home, plan.sha, options.rollback);
+    const before = liveRelease(home);
+    flip(home, planId);
+    log(`current: ${before ?? "(none)"} -> ${planId}`);
+    restart(home, plan.kickstart);
+    log(`${planId} covers the requests of ${describe(plan.covered)}`);
+    prune(home, [planId, before]);
+    console.log(planId);
+    return;
+  }
 }
 
 main().catch(error => {

@@ -111,13 +111,13 @@ function fixture(t) {
     return { ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd", ...rest };
   };
   const release = (args, extra) => spawnSync(process.execPath, [script, ...args, "--repo", repo], { encoding: "utf8", env: env(args, extra) });
-  const spawnRelease = (args, extra) => {
-    const child = spawn(process.execPath, [script, ...args, "--repo", repo], { env: env(args, extra), detached: true });
+  const spawnRelease = (args, extra, helper = script) => {
+    const child = spawn(process.execPath, [helper, ...args, "--repo", repo], { env: env(args, extra), detached: true });
     groups.push(child.pid);
     return child;
   };
-  const releaseAsync = (args, extra) => new Promise((done) => {
-    const child = spawnRelease(args, extra);
+  const releaseAsync = (args, extra, helper) => new Promise((done) => {
+    const child = spawnRelease(args, extra, helper);
     let stdout = "", stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -135,6 +135,32 @@ const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 
 
 // A wait that fails its test instead of spinning forever when the script under test never reaches the state, as old code does. The slowest
 // test here took 6.3 s end to end on us-metal02 on 10-18, so 60 s only ends a wait that will never finish.
+const drafts = (home) => (existsSync(home) ? readdirSync(home).filter((name) => /^release\.lock\.\d+$/.test(name)).length : 0);
+
+// Starts every request while a lock this test holds keeps them queued, then lets go once each has written its draft, so the release that takes
+// the lock finds all of them waiting. A request is [args, extra, helper].
+async function queued(f, requests) {
+  mkdirSync(f.home, { recursive: true });
+  const lock = path.join(f.home, "release.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: "held-by-test", startedAt: new Date().toISOString() }));
+  const results = requests.map(([args, extra, helper]) => f.releaseAsync(args, extra, helper));
+  await waitWhile(() => drafts(f.home) < requests.length);
+  rmSync(lock);
+  return Promise.all(results);
+}
+
+// The helper every box ran before the fold, read from this repository's history.
+const BEFORE_FOLD = "4510f7ba62f0d366a03e0c5d34472c8da6c57a36";
+function helperBeforeFold(dir) {
+  const shown = spawnSync("git", ["-C", path.dirname(script), "show", `${BEFORE_FOLD}:scripts/release-chat.mjs`], { encoding: "utf8", env: cleanEnv });
+  assert.equal(shown.status, 0, shown.stderr);
+  const file = path.join(dir, "release-chat-before-fold.mjs");
+  writeFileSync(file, shown.stdout);
+  return file;
+}
+
+const built = (f) => readdirSync(path.join(f.dir, "seen")).filter((name) => name.endsWith("-typecheck.json")).map((name) => name.replace(/-typecheck\.json$/, "")).sort();
+
 async function waitWhile(pending) {
   const deadline = Date.now() + 60_000;
   while (pending()) {
@@ -340,7 +366,7 @@ test("a lock left by a dead process is taken over", (t) => {
   assert.equal(f.current(), id(f.c1));
 });
 
-test("a release that ends while a newer one waits leaves the restart to it, and the waiter makes it before its own build", async (t) => {
+test("a release that ends while a newer one waits makes its own restart, and the waiter restarts once more after its build", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
@@ -349,8 +375,7 @@ test("a release that ends while a newer one waits leaves the restart to it, and 
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a.status, 0, a.stderr);
   assert.equal(b.status, 0, b.stderr);
-  assert.match(a.stderr, /restart left to the waiting release of/);
-  assert.match(b.stderr, new RegExp(`restarting onto ${id(f.c2)} for the restart this release was left`));
+  for (const result of [a, b]) assert.doesNotMatch(result.stderr, /restart left to|restart this release was left/);
   assert.equal(f.kicksAt(f.c3, "typecheck").length, 1);
   assert.equal(f.current(), id(f.c3));
   assert.equal(f.kicked().length, 2);
@@ -358,7 +383,7 @@ test("a release that ends while a newer one waits leaves the restart to it, and 
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
-test("a waiting release whose build fails made the restart it was left before that build started", async (t) => {
+test("a waiting release whose build fails leaves the chat on the release before it, which made its own restart", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
@@ -369,11 +394,12 @@ test("a waiting release whose build fails made the restart it was left before th
   assert.equal(b.status, 1, b.stderr);
   assert.deepEqual(f.kicksAt(f.c3, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.equal(f.current(), id(f.c2));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c2));
   assert.equal(f.kicked().length, 1);
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
-test("a waiting release whose tests hang has already made the restart it was left, onto the current it did not flip", { timeout: 120000 }, async (t) => {
+test("a waiting release whose tests hang finds the chat already restarted onto the release before it", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
@@ -384,7 +410,7 @@ test("a waiting release whose tests hang has already made the restart it was lef
   const ended = new Promise((done) => second.on("close", done));
   const a = await first;
   assert.equal(a.status, 0, a.stderr);
-  assert.match(a.stderr, /restart left to the waiting release of/);
+  assert.doesNotMatch(a.stderr, /restart left to/);
   const pid = path.join(f.dir, "seen", `${id(f.c3)}-test.pid`);
   await waitWhile(() => !existsSync(pid));
   assert.deepEqual(f.kicksAt(f.c3, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
@@ -401,7 +427,7 @@ test("a waiting release whose tests hang has already made the restart it was lef
   assert.equal(existsSync(path.join(f.home, "release.lock")), false);
 });
 
-test("in a steady queue each waiter makes the restart it was left before its build, so restart.owed never passes on", { timeout: 120000 }, async (t) => {
+test("in a steady queue each release restarts at its own end, so no restart passes on to the next", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const lockHolder = () => { try { return JSON.parse(readFileSync(path.join(f.home, "release.lock"), "utf8")).sha; } catch { return null; } };
@@ -412,11 +438,10 @@ test("in a steady queue each waiter makes the restart it was left before its bui
   await waitWhile(() => lockHolder() !== f.c3);
   const third = f.releaseAsync([f.c4]);
   const [a, b, c] = await Promise.all([first, second, third]);
-  for (const result of [a, b, c]) assert.equal(result.status, 0, result.stderr);
-  assert.match(a.stderr, /restart left to the waiting release of/);
-  assert.match(b.stderr, new RegExp(`restarting onto ${id(f.c2)} for the restart this release was left`));
-  assert.match(b.stderr, /restart left to the waiting release of/);
-  assert.match(c.stderr, new RegExp(`restarting onto ${id(f.c3)} for the restart this release was left`));
+  for (const result of [a, b, c]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /restart left to|restart this release was left/);
+  }
   assert.equal(f.kicksAt(f.c3, "typecheck").length, 1);
   assert.equal(f.kicksAt(f.c4, "typecheck").length, 2);
   assert.equal(f.current(), id(f.c4));
@@ -523,4 +548,174 @@ test("a release deletes the folders nothing runs and keeps current, the one befo
   f.publish();
   assert.equal(f.release([next, "--no-kickstart"]).status, 0);
   assert.deepEqual(readdirSync(f.home).filter(name => name.startsWith("release-")).sort(), [id(f.c1), id(f.c4), id(next), "release-4f1c45a-d1canary.log"].sort());
+});
+
+test("six queued linear requests fold into one build and one restart, and each caller names the release that covers it", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const shas = [f.c2, f.c3, f.c4, f.commit("five"), f.commit("six"), f.commit("seven")];
+  f.publish();
+  const before = built(f);
+  const results = await queued(f, shas.map((sha) => [[sha]]));
+  const newest = id(shas.at(-1));
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), newest, `request ${index}`);
+  }
+  const leaders = results.filter((result) => /folding the queued requests/.test(result.stderr));
+  assert.equal(leaders.length, 1);
+  assert.match(leaders[0].stderr, new RegExp(`${newest} covers the requests of ${shas.map(() => "[0-9a-f]{7} \\(pid \\d+(, this release)?\\)").join(", ")}$`, "m"));
+  for (const sha of shas) assert.match(leaders[0].stderr, new RegExp(`${sha.slice(0, 7)} \\(pid`));
+  for (const result of results.filter((result) => result !== leaders[0])) assert.match(result.stderr, new RegExp(`already live in ${newest}; nothing to do`));
+  assert.deepEqual(built(f).filter((name) => !before.includes(name)), [newest]);
+  assert.equal(f.kicked().length, 1);
+  assert.equal(f.current(), newest);
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, newest);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+  assert.equal(drafts(f.home), 0);
+});
+
+test("requests that arrive during a batch's build wait for the next batch, and the first batch still goes live with its restart", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const c5 = f.commit("five");
+  const c6 = f.commit("six");
+  f.publish();
+  const firstBatch = queued(f, [[[f.c2]], [[f.c3], { TYPECHECK_MS: "1500" }]]);
+  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(f.c3)}-typecheck.json`)));
+  const late = [f.releaseAsync([f.c4]), f.releaseAsync([c5]), f.releaseAsync([c6])];
+  await waitWhile(() => drafts(f.home) < 4);
+  const [a, b] = await firstBatch;
+  for (const result of [a, b]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok([id(f.c3), id(c6)].includes(result.stdout.trim()), result.stderr);
+  }
+  const first = [a, b].find((result) => /folding the queued requests/.test(result.stderr));
+  assert.match(first.stderr, new RegExp(`current: ${id(f.c1)} -> ${id(f.c3)}`));
+  assert.match(first.stderr, new RegExp(`${id(f.c3)} covers the requests of `));
+  assert.doesNotMatch(first.stderr, new RegExp(`${f.c4.slice(0, 7)}|${c5.slice(0, 7)}|${c6.slice(0, 7)}`));
+  const rest = await Promise.all(late);
+  for (const result of rest) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), id(c6));
+  }
+  assert.deepEqual(f.kicksAt(c6, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
+  assert.deepEqual(built(f), [id(f.c1), id(f.c3), id(c6)].sort());
+  assert.equal(f.kicked().length, 2);
+  assert.equal(f.current(), id(c6));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c6));
+});
+
+test("a failed build of the newest queued commit fails only its own request, and the older ones go live in one build", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const [r2, r3, r4] = await queued(f, [[[f.c2]], [[f.c3]], [[f.c4], { TEST_FAIL: "1" }]]);
+  assert.equal(r4.status, 1, r4.stderr);
+  assert.match(r4.stderr, /npm run --silent test failed/);
+  for (const result of [r2, r3]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), id(f.c3));
+  }
+  assert.match(r2.stderr + r3.stderr, new RegExp(`${id(f.c3)} covers the requests of `));
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(existsSync(path.join(f.home, id(f.c4))), false);
+  assert.deepEqual(built(f), [id(f.c1), id(f.c3), id(f.c4)].sort());
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "release.lock")), false);
+});
+
+test("a batch restarts when any covered request asks for it, and only flips when every one passed --no-kickstart", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  const quiet = await queued(f, [[[f.c2, "--no-kickstart"]], [[f.c3, "--no-kickstart"]]]);
+  for (const result of quiet) assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(f.kicked().length, 1);
+  const c5 = f.commit("five");
+  f.publish();
+  const mixed = await queued(f, [[[f.c4]], [[c5, "--no-kickstart"]]]);
+  for (const result of mixed) assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.current(), id(c5));
+  assert.equal(f.kicked().length, 2);
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c5));
+});
+
+test("a queued commit that neither holds nor is held by the leader's is not acknowledged by its batch", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  f.git("merge", "-q", "-s", "ours", "--no-edit", "side");
+  f.publish();
+  const results = await queued(f, [[[f.c2]], [[f.side]]]);
+  assert.deepEqual(results.map((result) => result.status).sort(), [0, 3], results.map((result) => result.stderr).join("\n"));
+  const won = results.find((result) => result.status === 0);
+  const refused = results.find((result) => result.status === 3);
+  assert.match(won.stderr, /leaving [0-9a-f]{7} \(pid \d+\) to a release of their own/);
+  assert.doesNotMatch(won.stderr, /folding the queued requests/);
+  assert.match(refused.stderr, /does not descend from the live/);
+  assert.equal(f.current(), won.stdout.trim());
+  assert.equal(f.kicked().length, 1);
+});
+
+test("a draft whose pid now belongs to another program is not a waiting request", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const other = spawn("sleep", ["60"]);
+  t.after(() => other.kill());
+  writeFileSync(path.join(f.home, `release.lock.${other.pid}`), JSON.stringify({ pid: other.pid, sha: f.c4, startedAt: new Date().toISOString() }));
+  const result = f.release([f.c2]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), id(f.c2));
+  assert.doesNotMatch(result.stderr, /folding/);
+  assert.equal(existsSync(path.join(f.home, id(f.c4))), false);
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+});
+
+test("helpers from before the fold finish next to it: their waiters exit 0 on its batch, and its waiters pay the restart they leave", { timeout: 180000 }, async (t) => {
+  const f = fixture(t);
+  const old = helperBeforeFold(f.dir);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const c5 = f.commit("five");
+  const c6 = f.commit("six");
+  const c7 = f.commit("seven");
+  f.publish();
+
+  // Whichever takes the lock, the old helper's commit is the one built: the new helper folds its draft, or it builds it and restarts.
+  const folded = await queued(f, [[[f.c2]], [[f.c3], {}, old]]);
+  for (const result of folded) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), id(f.c3));
+  }
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
+
+  const leader = f.releaseAsync([c5], { TYPECHECK_MS: "1500" });
+  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c5)}-typecheck.json`)));
+  const oldWaiters = [f.releaseAsync([f.c4], {}, old), f.releaseAsync([c5], {}, old)];
+  await waitWhile(() => drafts(f.home) < 2);
+  const [led, ...waited] = await Promise.all([leader, ...oldWaiters]);
+  assert.equal(led.status, 0, led.stderr);
+  for (const result of waited) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, new RegExp(`already live in ${id(c5)}; nothing to do`));
+  }
+  assert.equal(f.kicked().length, 2);
+
+  const oldLeader = f.releaseAsync([c6], { TYPECHECK_MS: "1500" }, old);
+  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c6)}-typecheck.json`)));
+  const newWaiters = [f.releaseAsync([c7]), f.releaseAsync([c7])];
+  await waitWhile(() => drafts(f.home) < 2);
+  const [oldLed, ...newWaited] = await Promise.all([oldLeader, ...newWaiters]);
+  assert.equal(oldLed.status, 0, oldLed.stderr);
+  assert.match(oldLed.stderr, /restart left to the waiting release of/);
+  for (const result of newWaited) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), id(c7));
+  }
+  assert.match(newWaited.map((result) => result.stderr).join(""), new RegExp(`restarting onto ${id(c6)} for the restart this release was left`));
+  assert.equal(f.kicksAt(c7, "typecheck").length, 3);
+  assert.equal(f.kicked().length, 4);
+  assert.equal(f.current(), id(c7));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c7));
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
