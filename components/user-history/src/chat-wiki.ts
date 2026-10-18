@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { WIKI_CONTENT_HOME, WIKI_ORIGIN } from "./shared/artifact-link.ts";
+import { WIKI_CONTENT_HOME } from "./shared/artifact-link.ts";
 import { LocalFileError, readLocalText } from "./chat-render.ts";
+import { loadHosts, roleUrl } from "./hosts.ts";
 
 /**
  * What the reader shows for a wiki page: the page's own HTML (a `.html` page, drawn in the sandboxed render frame) or its markdown
@@ -36,15 +37,23 @@ export function wikiTitle(content: string, path: string): string {
   return heading?.trim() || path.split("/").at(-1) || path;
 }
 
+/** The wiki's origin, http://<address>:<port> of the host that holds the wiki role in hosts.json; null when this box has no hosts.json or no host holds the role. */
+export async function wikiOrigin(): Promise<string | null> {
+  try { return roleUrl(await loadHosts(), "wiki"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+}
+
 /**
- * Reads a page through the dev server's own API (`api/agent/page`), so a phone on the tailnet, which cannot reach localhost:5176, still
- * gets the page. A refusal by the wiki (404, the read cap) is passed on with its text. No answer in 5 s, or a refused connection, falls
- * back to the page's file under the content folder; a page neither has is 502 with the wiki's silence named.
+ * Reads a page through the wiki server's own API (`api/agent/page`), so a phone gets the page through the service. A refusal by the wiki
+ * (404, the read cap) is passed on with its text. No answer in 5 s, a refused connection or no wiki host falls back to the page's file
+ * under the content folder; a page neither has is 502 with the wiki's silence named.
  */
-export async function readWikiPage(path: string, fetchImpl: typeof fetch = fetch, origin = WIKI_ORIGIN, contentDir = WIKI_CONTENT_DIR): Promise<WikiPageView> {
+export async function readWikiPage(path: string, fetchImpl: typeof fetch = fetch, wiki?: string | null, contentDir = WIKI_CONTENT_DIR): Promise<WikiPageView> {
   const clean = wikiPagePath(path);
-  const url = origin + "/page/" + clean;
+  const origin = wiki === undefined ? await wikiOrigin() : wiki;
   const dir = dirname(join(contentDir, clean));
+  if (origin === null) return readWikiFile(clean, "/page/" + clean, dir, contentDir, "No host holds the wiki role in hosts.json.");
+  const url = origin + "/page/" + clean;
   let response: Response;
   try { response = await fetchImpl(origin + "/api/agent/page?path=" + encodeURIComponent(clean), { signal: AbortSignal.timeout(WIKI_TIMEOUT_MS) }); }
   catch { return readWikiFile(clean, url, dir, contentDir, "The wiki at " + origin + " did not answer."); }

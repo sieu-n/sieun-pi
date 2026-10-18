@@ -1,4 +1,4 @@
-import { parseArtifactTarget, WIKI_ORIGIN, type ArtifactTarget } from "../shared/artifact-link.ts";
+import { parseArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 
 /**
  * What the reader modal shows. Every artifact link opens here, except a web URL (a new tab) and a bare `thread:<id>` (the thread itself).
@@ -25,7 +25,9 @@ export function readerAction(target: ArtifactTarget, thread: string): ReaderActi
   }
 }
 
-export const wikiUrl = (path: string): string => WIKI_ORIGIN + "/page/" + path;
+/** The wiki's origin, http://<address>:<port> of the wiki host in hosts.json, which the service writes on the page body as data-wiki. */
+const wikiOrigin = (): string => (typeof document === "undefined" ? "" : document.body.dataset.wiki ?? "");
+export const wikiUrl = (path: string): string => wikiOrigin() + "/page/" + path;
 
 /** One line of a unified diff: the file headers, a hunk header, an added or removed line, git's metadata, or context. */
 export type DiffLineKind = "file" | "hunk" | "add" | "del" | "meta" | "context";
@@ -43,10 +45,10 @@ export const diffLines = (text: string): { kind: DiffLineKind; text: string }[] 
 
 /**
  * The wiki page a job's report links, as the report's reader shows it under the text: the first `.html` or `.md` page named as a wiki
- * URL (`http://localhost:5176/page/<path>`), a `wiki:<path>` target, or a path through `apps/llm-wiki/content/<path>` (absolute or
+ * URL (`http://<host>:5176/page/<path>`), a `wiki:<path>` target, or a path through `apps/llm-wiki/content/<path>` (absolute or
  * from the repo root). Null when the report names none.
  */
-const WIKI_LINK = /(?:https?:\/\/(?:localhost|127\.0\.0\.1):5176\/page\/|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?apps\/llm-wiki\/content\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:]|$)/gi;
+const WIKI_LINK = /(?:https?:\/\/[^\s\/`"'<>()]+:5176\/page\/|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?apps\/llm-wiki\/content\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:]|$)/gi;
 export function reportWikiPage(text: string): string | null {
   for (const match of text.matchAll(WIKI_LINK)) {
     const target = parseArtifactTarget("wiki:" + match[1]!);

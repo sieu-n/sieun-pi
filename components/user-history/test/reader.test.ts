@@ -7,6 +7,9 @@ import type { ChatBoard } from "../src/shared/types.ts";
 import { diffLineKind, diffLines, readerAction, reportWikiPage } from "../src/client/reader.ts";
 import { parseArtifactTarget } from "../src/shared/artifact-link.ts";
 
+// The service writes the wiki host's origin from hosts.json on the page body; wikiUrl reads it at each call.
+(globalThis as { document?: unknown }).document = { body: { dataset: { wiki: "http://100.83.139.73:5176" } } };
+
 test("readerAction: a web URL opens a tab, a bare thread opens the thread, everything else opens the reader", () => {
   const action = (target: string) => readerAction(parseArtifactTarget(target)!, "chat1");
   assert.deepEqual(action("https://example.com/x"), { open: "tab", url: "https://example.com/x" });
@@ -30,6 +33,7 @@ test("reportWikiPage: the first .html or .md wiki page a report names, in any of
   assert.equal(reportWikiPage(report), "sessions/2026/10/08/1534-metal-ci-capacity-study-v2/report.html");
   assert.equal(reportWikiPage("see wiki:sessions/a/b.md."), "sessions/a/b.md");
   assert.equal(reportWikiPage("[page](http://localhost:5176/page/sessions/a/report.html)"), "sessions/a/report.html");
+  assert.equal(reportWikiPage("[page](http://100.83.139.73:5176/page/sessions/a/report.html)"), "sessions/a/report.html");
   assert.equal(reportWikiPage("at /Users/me/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/a/index.html, then"), "sessions/a/index.html");
   assert.equal(reportWikiPage("`apps/llm-wiki/content/sessions/a/notes.md`"), "sessions/a/notes.md");
   assert.equal(reportWikiPage("data at http://localhost:5176/page/sessions/a/data.json and apps/llm-wiki/content/sessions/x.png"), null);
@@ -68,7 +72,7 @@ test("bubbleBlocks: lone images and diagram fences become cards, inline ones sta
 });
 
 test("bare link targets in prose open like a markdown link: wiki:, file:, job:, thread:, absolute and wiki content paths, URLs and board ids", () => {
-  const button = (target: string, text: string) => `<a class="artifact-link" role="link" tabindex="0" data-target="${target}" title="${target}" href="http://localhost:5176/page/${target.slice(5)}" target="_blank" rel="noopener noreferrer">${inlineIcon(targetIcon(target))}${text}</a>`;
+  const button = (target: string, text: string) => `<a class="artifact-link" role="link" tabindex="0" data-target="${target}" title="${target}" href="http://100.83.139.73:5176/page/${target.slice(5)}" target="_blank" rel="noopener noreferrer">${inlineIcon(targetIcon(target))}${text}</a>`;
   const owner = "Sorry. Here it is: wiki:sessions/2026/10/08/2321-github-pro-explained/article.html. Short version: $4 a month.";
   assert.equal(renderMarkdown(owner), `<p>Sorry. Here it is: ${button("wiki:sessions/2026/10/08/2321-github-pro-explained/article.html", "wiki:sessions/2026/10/08/2321-github-pro-explained/article.html")}. Short version: $4 a month.</p>\n`);
   assert.match(renderMarkdown("log at file:/Users/me/a_b/run.log, done"), /data-target="file:\/Users\/me\/a_b\/run.log"[^>]*><svg [^>]+><path d="[^"]+"\/><\/svg>file:\/Users\/me\/a_b\/run.log<\/a>, done/);
@@ -100,12 +104,14 @@ test("markdown links: artifact targets and chat permalinks become reader buttons
 
 test("a wiki page URL in a message opens inside the chat on a plain click and keeps its href for a new-tab click (owner, 10-17)", () => {
   const page = "http://localhost:5176/page/sessions/2026/10/18/0658-shared-prime-setup-design/design.html";
-  const inApp = /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" title="[^"]*" href="http:\/\/localhost:5176\/page\/sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" target="_blank" rel="noopener noreferrer">/;
+  const served = "http://100.83.139.73:5176/page/sessions/2026/10/18/0658-shared-prime-setup-design/design.html";
+  const inApp = /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" title="[^"]*" href="http:\/\/100.83.139.73:5176\/page\/sessions\/2026\/10\/18\/0658-shared-prime-setup-design\/design.html" target="_blank" rel="noopener noreferrer">/;
   assert.match(renderMarkdown("Design page: " + page), inApp, "a bare URL in a reply");
   assert.match(renderMarkdown(`[design page](${page})`), inApp, "a markdown link in a reply");
   assert.match(renderInline("can you look at " + page), inApp, "a URL in the owner's own bubble");
-  assert.match(renderMarkdown("[p](http://127.0.0.1:5176/page/sessions/a/notes.md)"), /data-target="wiki:sessions\/a\/notes.md"[^>]*href="http:\/\/localhost:5176\/page\/sessions\/a\/notes.md"/);
-  assert.match(renderMarkdown("wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"[^>]*href="http:\/\/localhost:5176\/page\/sessions\/a\/b.html"/, "a wiki: target gets the same new-tab href");
+  assert.match(renderMarkdown("Design page: " + served), inApp, "a URL on the wiki host in hosts.json");
+  assert.match(renderMarkdown("[p](http://127.0.0.1:5176/page/sessions/a/notes.md)"), /data-target="wiki:sessions\/a\/notes.md"[^>]*href="http:\/\/100.83.139.73:5176\/page\/sessions\/a\/notes.md"/);
+  assert.match(renderMarkdown("wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"[^>]*href="http:\/\/100.83.139.73:5176\/page\/sessions\/a\/b.html"/, "a wiki: target gets the same new-tab href");
   for (const web of ["http://localhost:5176/page/sessions/a/findings", "http://localhost:5176/page/sessions/a/data.json", "http://localhost:5176/search?q=a.html"]) {
     assert.doesNotMatch(renderMarkdown(`[x](${web})`), /artifact-link/, web + " is a page the reader cannot show, so it stays a web link");
   }

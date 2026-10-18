@@ -27,6 +27,7 @@ test("artifact link: normalize keeps targets, turns pasted chat, wiki and path t
   assert.equal(normalizeArtifactTarget("https://github.com/x/y#readme"), "https://github.com/x/y#readme", "an ordinary anchor stays a URL");
   assert.equal(normalizeArtifactTarget("http://localhost:5176/page/a%20b.md"), "http://localhost:5176/page/a%20b.md", "a wiki path with a space stays a URL");
   assert.equal(normalizeArtifactTarget("http://localhost:5176/page/sessions/2026/a.md"), "wiki:sessions/2026/a.md");
+  assert.equal(normalizeArtifactTarget("http://100.83.139.73:5176/page/sessions/2026/a.md"), "wiki:sessions/2026/a.md", "a page on the wiki host in hosts.json");
   assert.equal(normalizeArtifactTarget("http://localhost:5176/search?q=x"), "http://localhost:5176/search?q=x", "other wiki routes stay URLs");
   assert.equal(normalizeArtifactTarget("/Users/me/w8-report.md"), "file:/Users/me/w8-report.md");
   assert.equal(normalizeArtifactTarget("http://127.0.0.1:5182/cap/#%E0%A4%A"), "http://127.0.0.1:5182/cap/#%E0%A4%A", "a bad escape is not a crash");

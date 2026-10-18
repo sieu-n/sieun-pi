@@ -3,7 +3,7 @@
  *
  *   job:<name>                     a job's drawer in this chat
  *   thread:<sessionId>[@<ms>]      a thread, or one message in it (the message's `timestamp`)
- *   wiki:<path>                    an llm-wiki page, http://localhost:5176/page/<path>
+ *   wiki:<path>                    an llm-wiki page, <wiki>/page/<path> on the host that holds the wiki role in hosts.json
  *   file:<absolute path>           a text file on this Mac, read through `GET api/local-file`
  *   http(s)://...                  a web page
  */
@@ -14,7 +14,6 @@ export type ArtifactTarget =
   | { kind: "file"; path: string }
   | { kind: "url"; url: string };
 
-export const WIKI_ORIGIN = "http://localhost:5176";
 /** The llm-wiki content folder under the home folder: the server reads pages from it, and the page loads a wiki image from it through api/local-image. */
 export const WIKI_CONTENT_HOME = "~/Documents/Github/auto-sns-agent/apps/llm-wiki/content";
 const THREAD = /^([a-zA-Z0-9_-]{1,128})(?:@(\d{1,16}))?$/;
@@ -24,6 +23,8 @@ const JOB = /^(?=.{1,128}$)[^\s/](?:[^/\n\r\t]*[^\s/])?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isSessionId = (text: string): boolean => UUID.test(text);
 const CHAT_PORT = "5182";
+/** The wiki's port on every host that ever ran it (the Mac's localhost, the wiki host in hosts.json), so a pasted page URL from any of them is a wiki page. */
+const WIKI_PORT = "5176";
 const MAX_TARGET = 2048;
 
 function thread(text: string): ArtifactTarget | null {
@@ -54,7 +55,7 @@ export function parseArtifactTarget(target: string): ArtifactTarget | null {
 
 /**
  * The stored form of what the owner or the agent typed: a target as above, a pasted chat URL (`.../#<sessionId>@<ms>`), a pasted wiki URL
- * (`http://localhost:5176/page/<path>`), or a bare absolute path. Null when it is none of these.
+ * (`http://<host>:5176/page/<path>`), or a bare absolute path. Null when it is none of these.
  */
 export function normalizeArtifactTarget(input: string): string | null {
   if (typeof input !== "string") return null;
@@ -64,7 +65,7 @@ export function normalizeArtifactTarget(input: string): string | null {
   if (url) {
     const hash = thread(decode(url.hash.slice(1)));
     if (hash?.kind === "thread" && (UUID.test(hash.sessionId) || url.port === CHAT_PORT)) return "thread:" + hash.sessionId + (hash.at !== undefined ? "@" + hash.at : "");
-    if (url.origin === WIKI_ORIGIN || url.origin === "http://127.0.0.1:5176") {
+    if (url.port === WIKI_PORT) {
       const page = /^\/page\/(.+)$/.exec(url.pathname);
       const path = page ? wikiPath(decode(page[1]!)) : null;
       if (path) return "wiki:" + path;

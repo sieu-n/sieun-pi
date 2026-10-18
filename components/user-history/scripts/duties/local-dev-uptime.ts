@@ -4,11 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { loadHosts, roleUrl } from "../../src/hosts.ts";
 
 /**
- * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 local dev services gave no
- * 200 within 5 s, the wiki's pm2 tree memory against its cap, and pm2 restarts of the wiki and search since the last run. Each service's
- * answer and time goes into the flagged items as run detail. No model call.
+ * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 dev services gave no
+ * 200 within 5 s, and pm2 restarts of search since the last run. Each service's answer and time goes into the flagged items as run detail.
+ * No model call. The wiki is the one server at the wiki host of hosts.json (llm-wiki.service under systemd, not pm2).
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  */
@@ -16,22 +17,20 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 /** The owner's 200 check: an answer slower than 5 s counts as no answer. */
 export const ANSWER_TIMEOUT_MS = 5000;
-export const CAP_MB = 4096;
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
 export type Service = { key: string; url: string } | { key: string; envKey: string; path: string };
 export const SERVICES: readonly Service[] = [
-  { key: "wiki", url: "http://localhost:5176/" },
   { key: "search", url: "http://localhost:5174/" },
   { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
   { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
 ];
-/** pm2 processes whose restarts the duty counts. Only the wiki has a memory cap. */
-export const PM2_NAMES = ["llm-wiki", "search"] as const;
+/** pm2 processes whose restarts the duty counts. */
+export const PM2_NAMES = ["search"] as const;
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
-export interface UptimeDeps { fetch: typeof fetch; exec: Exec; now: () => number; pm2: { bin: string; home: string }; env: Record<string, string> }
+export interface UptimeDeps { fetch: typeof fetch; exec: Exec; now: () => number; pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
 /** pm2's restart count per process name, kept between runs. */
 export interface UptimeState { restarts: Record<string, { restartTime: number; at: number }> }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { restart_time?: number; status?: string } }
@@ -46,33 +45,6 @@ export async function probe(deps: Pick<UptimeDeps, "fetch" | "now">, url: string
   } catch (error) {
     return { status: 0, ms: deps.now() - start, error: error instanceof Error ? error.message : String(error) };
   }
-}
-
-/** Every live pid under `root`, `root` included, from `ps -axo pid=,ppid=`. */
-export function treePids(ps: string, root: number): number[] {
-  const kids = new Map<number, number[]>();
-  const alive = new Set<number>();
-  for (const line of ps.split("\n")) {
-    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-    if (!pid) continue;
-    alive.add(pid);
-    kids.set(ppid!, [...(kids.get(ppid!) ?? []), pid]);
-  }
-  const tree: number[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const pid = stack.pop()!;
-    if (!alive.has(pid) || tree.includes(pid)) continue;
-    tree.push(pid);
-    stack.push(...(kids.get(pid) ?? []));
-  }
-  return tree;
-}
-
-/** The sum of `phys_footprint` in `footprint -f bytes` output, in MB: the memory macOS counts, compressed and swapped pages included. */
-export function footprintMb(output: string): number {
-  const bytes = [...output.matchAll(/phys_footprint: (\d+) B/g)].reduce((sum, match) => sum + Number(match[1]), 0);
-  return Math.round(bytes / 1024 / 1024);
 }
 
 /** Restarts since the last run. A pm2 count lower than the saved one means pm2 itself started over, so all of today's count is new. */
@@ -104,9 +76,9 @@ export function target(service: Service, env: Record<string, string>): { url: st
 
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
-  const metrics = { servers_not_answering: 0, wiki_footprint_mb: 0, restarts: 0 };
+  const metrics = { servers_not_answering: 0, restarts: 0 };
   const at = deps.now();
-  const answers = await Promise.all(SERVICES.map(async (service): Promise<FlaggedSlice> => {
+  const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
     if ("off" in where) return { at, kind: "by_design", excerpt: `${service.key}: ${where.off}` };
     if ("error" in where) return { at, kind: "down", excerpt: `${service.key}: ${where.error}` };
@@ -140,10 +112,6 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     state.restarts[name] = { restartTime, at };
     if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: pm2 restart count ${restartTime} of ${name} saved as the baseline` });
     else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `pm2 restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
-    if (name !== "llm-wiki") continue;
-    const pids = treePids(await deps.exec("ps", ["-axo", "pid=,ppid="]), proc.pid);
-    metrics.wiki_footprint_mb = footprintMb(await deps.exec("footprint", ["--noCategories", "-f", "bytes", ...pids.flatMap(pid => ["-p", String(pid)])]));
-    if (metrics.wiki_footprint_mb > CAP_MB) flagged.push({ at, kind: "memory", excerpt: `${name} process tree (pids ${pids.join(", ")}) holds ${metrics.wiki_footprint_mb} MB, over the ${CAP_MB} MB cap` });
   }
   return { output: { metrics, flagged }, state };
 }
@@ -159,7 +127,9 @@ async function main(): Promise<void> {
   const stateFile = process.env.STATE_FILE;
   const previous = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as UptimeState, () => undefined) : undefined;
   const env = await readFile(join(REPO, "apps/search/.env.local"), "utf8").then(parseEnv, () => ({}));
-  const result = await measureUptime({ fetch, exec, now: Date.now, env, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
+  const wiki = roleUrl(await loadHosts(), "wiki");
+  if (!wiki) { process.stderr.write("local-dev-uptime: no host holds the wiki role in hosts.json\n"); process.exit(2); }
+  const result = await measureUptime({ fetch, exec, now: Date.now, env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
     previous?.restarts ? previous : undefined);
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && result.state) await writeFile(stateFile, JSON.stringify(result.state) + "\n");

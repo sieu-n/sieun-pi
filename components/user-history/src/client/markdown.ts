@@ -90,7 +90,7 @@ export function imageSource(href: string, cwd: string): string | null {
 
 /**
  * A web or mail link opens in a new tab. A link whose target is an artifact (`job:`, `thread:`, `wiki:`, `file:`, a bare absolute path,
- * a chat permalink URL, or a wiki page URL `http://localhost:5176/page/<path>.html|.md`) becomes a button carrying the stored target form;
+ * a chat permalink URL, or a wiki page URL `http://<host>:5176/page/<path>.html|.md`) becomes a button carrying the stored target form;
  * the view's click handler opens it in the reader or the thread (owner, 10-17: wiki links open inside the chat by default). A wiki URL
  * the reader cannot show (another wiki route, a page without .html or .md) stays a web link. Relative links and other schemes stay as
  * marked text with the target on hover.

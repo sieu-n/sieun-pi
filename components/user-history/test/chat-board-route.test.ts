@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { BoardStore } from "../src/chat-board-store.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { LocalFileError, readLocalText, textKind } from "../src/chat-render.ts";
-import { readWikiPage, wikiTitle } from "../src/chat-wiki.ts";
+import { readWikiPage, wikiOrigin, wikiTitle } from "../src/chat-wiki.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -95,6 +95,23 @@ test("readLocalText: any UTF-8 text file under a root, with its kind; no hidden 
   assert.deepEqual(textKind("/x/notes.patch"), { kind: "diff" });
   assert.deepEqual(textKind("/x/README.MD"), { kind: "markdown" });
   assert.deepEqual(textKind("/x/app.svelte"), { kind: "code", language: "svelte" });
+});
+
+test("wikiOrigin: the host that holds the wiki role in hosts.json, or null when the box has no hosts.json", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wiki-hosts-"));
+  const host = (name: string, address: string, roles: object) => ({ name, hostname: name, address, relayPort: 7790, token: "file:relay-tokens/" + name, daemonSocket: "/tmp/daemon.sock", ssh: null, roles });
+  await writeFile(join(dir, "hosts.json"), JSON.stringify({ version: 1, hosts: [host("mac", "100.66.173.18", {}), host("us-metal02", "100.83.139.73", { wiki: { port: 5176 } })] }));
+  const before = process.env.SIEUN_PI_HOSTS;
+  try {
+    process.env.SIEUN_PI_HOSTS = join(dir, "hosts.json");
+    assert.equal(await wikiOrigin(), "http://100.83.139.73:5176");
+    process.env.SIEUN_PI_HOSTS = join(dir, "missing.json");
+    assert.equal(await wikiOrigin(), null);
+    const page = await readWikiPage("sessions/a/none.html", fetch, undefined, dir).then(() => "read", (error: unknown) => error instanceof LocalFileError ? error.message : "500");
+    assert.equal(page, "No host holds the wiki role in hosts.json. Its file is not in the wiki folder either.");
+  } finally {
+    if (before === undefined) delete process.env.SIEUN_PI_HOSTS; else process.env.SIEUN_PI_HOSTS = before;
+  }
 });
 
 test("readWikiPage: an html page and a markdown page through the dev server API; the wiki's refusal is a reader error; its silence falls back to the file", async () => {
