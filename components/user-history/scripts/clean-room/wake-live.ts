@@ -63,7 +63,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const waits = jobsOf(chat).flatMap(job => {
     const call = job.events.find(event => event.kind === "call" && WAKE_CALL.test(event.input));
     if (!call) return [];
-    const fired = job.events.find(event => event.kind === "text" && event.at > call.at && event.text.trimStart().startsWith("[wake]"));
+    const fired = job.events.find(event => event.kind === "text" && event.at > call.at && /(?:^|\n)\[wake\] /.test(event.text));
     const between = job.events.filter(event => event.at > call.at + 60_000 && (!fired || event.at < fired.at) && (event.kind === "assistant" || event.kind === "call"));
     const report = fired ? events.find(event => event.kind === "text" && event.customType === "agent_message" && event.fromId === job.id && event.at > fired.at) : undefined;
     return [{ job, set: call.at, fired: fired?.at, ended: between.length === 0, report }];
@@ -88,7 +88,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   checks.push({ id: "e", ok: !rows.length ? null : rows.some(row => row.wait),
     detail: `${rows.length} saved job rows while it waited; ${rows.filter(row => row.wait).length} showed the wait${rows.find(row => row.wait) ? `, such as "${rows.find(row => row.wait)!.wait}"` : ""}` });
 
-  const tree = new Set([chat, ...jobsOf(chat).map(job => job.id)]);
+  // The chat's check-in duty jobs run on the server's clock and are part of the system, not someone stepping in.
+  const runsFile = join(run, "runs.jsonl");
+  const duty = (existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").filter(line => line.trim()) : [])
+    .flatMap(line => { const job = (JSON.parse(line) as { job?: { id?: string } }).job; return job?.id ? [job.id] : []; });
+  const tree = new Set([chat, ...jobsOf(chat).map(job => job.id), ...duty]);
   const seeds = new Set(state.seeds);
   const owner = events.filter(event => event.kind === "text" && event.role === "user" && !seeds.has(event.text.trim()) && !event.text.startsWith("[")).map(event => event.kind === "text" ? event.text : "");
   const outside = events.filter(event => event.kind === "text" && event.customType === "agent_message" && event.fromId !== undefined && !tree.has(event.fromId));

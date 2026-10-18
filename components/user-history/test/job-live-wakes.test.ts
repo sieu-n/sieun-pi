@@ -51,7 +51,7 @@ async function wakeDir() {
   return { dir, set };
 }
 
-async function server(chat: string, board: ChatBoard | null, dir: string) {
+async function server(chat: string, board: ChatBoard | null, dir: string, home?: string) {
   const root = await mkdtemp(join(tmpdir(), "job-live-chat-"));
   const index = new IdIndex(join(root, "chats.json"), "Chat index");
   await index.add(chat);
@@ -64,7 +64,7 @@ async function server(chat: string, board: ChatBoard | null, dir: string) {
   } as unknown as ChatThreads;
   const source: CheckInSource = {
     board: async () => board, rows: async () => [], memory: checkInRecord(join(root, "check-ins.json")), settings: checkInSettings(join(root, "check-in-settings.json")),
-    tickMs: 0, now: () => NOW, noReportGraceMs: 0, waking: session => waking(dir, session), wakes: at => pendingWakes(dir, at),
+    tickMs: 0, now: () => NOW, noReportGraceMs: 0, waking: session => waking(dir, session), wakes: at => pendingWakes(dir, at), ...(home ? { home } : {}),
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(root, "extension-loads.json")), source);
   const roster = (byChat: ReadonlyMap<string, readonly ChildAgent[]>) =>
@@ -170,4 +170,23 @@ test("pendingWakes: a .ticked stamp past WAKE_LATE_MS keeps run wakes and time w
   assert.equal((await pendingWakes(dir, AT)).length, 4, "with a fresh tick the due time wake is owed too");
   await rm(join(dir, TICKED));
   assert.equal((await pendingWakes(dir, AT)).length, 3, "with no stamp at all the files still name live waits");
+});
+
+test("open-steps notice: a new job the hub lists with no session id, whose session folder names the session asleep on a time wake, is live (clean room 10-18 01:46Z, disk space check)", async () => {
+  const CHAT = "01a14cac-537d-71f5-8b1c-94a88572a6e2";
+  const JOB = { id: "sub-47bdf705", name: "disk space check", session: "01a14cae-aaa4-768e-b9f8-6c6c50f1e10f" };
+  const home = await mkdtemp(join(tmpdir(), "job-live-home-"));
+  const folder = join(home, ".prime", "agent", "session-artifacts", CHAT, JOB.id);
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(folder, `${JOB.session}.jsonl`), "");
+  const wakes = await wakeDir();
+  await wakes.set(JOB.session, { kind: "time", at: Date.parse("2026-10-18T02:09:56.000Z") + 24 * 60 * 60_000 });
+  const board = { plan: [step("p1", "Measure how free disk space changes over 25 minutes", JOB.name, { status: "doing" })], todos: [] } as unknown as ChatBoard;
+  const { chats, prompts, roster, flush } = await server(CHAT, board, wakes.dir, home);
+  const hub = (status: ChildAgent["status"]): ChildAgent => ({ id: JOB.id, label: JOB.name, sessionName: JOB.name, status, repliedSinceTask: true, lastActivityAt: NOW - 60_000 });
+  await roster(new Map([[CHAT, [hub("running")]]]));
+  await roster(new Map([[CHAT, [hub("done")]]]));
+  await flush();
+  assert.deepEqual(prompts.filter(line => line.includes("open step")), []);
+  chats.close();
 });

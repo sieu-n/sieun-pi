@@ -32,7 +32,7 @@ import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, C
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
-import { ARTIFACTS, type Leftovers } from "./job-leftovers.ts";
+import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 
 export { TELL_OWNER_TOOL };
 
@@ -1216,9 +1216,13 @@ export class Chats {
    */
   private async jobLive(id: string, child: ChildAgent): Promise<boolean> {
     const session = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
-    if (session !== undefined && await this.source.waking?.(session).catch(() => false)) return true;
+    // The job's session folder names its own session and every one below it, before the daemon's list or the hub gives them (clean room
+    // 10-18 01:46Z: "disk space check" set a time wake at 01:44:56Z and was told "ended its turn" 2 min later, with no session id known yet).
+    const folder = this.source.home ? join(this.source.home, ".prime", "agent", "session-artifacts", id, child.id) : join(ARTIFACTS, id, child.id);
+    const tree = (await sessionTree(folder).catch(() => ({ sessions: [] as string[] }))).sessions;
+    for (const each of new Set([...session !== undefined ? [session] : [], ...tree])) if (await this.source.waking?.(each).catch(() => false)) return true;
     const wakes = await this.source.wakes?.(this.now()).catch(() => []) ?? [];
-    return liveJobs([child], this.subagents, this.now(), 0, new Set(wakes.map(wake => wake.session))).size > 0;
+    return liveJobs([session !== undefined ? { ...child, sessionId: session } : child], this.subagents, this.now(), 0, new Set(wakes.map(wake => wake.session))).size > 0;
   }
 
   private async noReport(id: string, childId: string, tries: number): Promise<void> {
