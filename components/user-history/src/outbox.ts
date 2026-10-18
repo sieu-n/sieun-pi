@@ -67,6 +67,8 @@ export interface OutboxDeps {
 }
 
 export class OutboxConflict extends Error {}
+/** A delivery that reached `sending()` after the outbox closed; it stays queued for the next start. */
+class Closed extends Error {}
 
 const KEEP_MS = 7 * 24 * 60 * 60_000;
 /** The longest wait between two tries of one entry. */
@@ -83,6 +85,8 @@ export class Outbox {
   private readonly entries = new Map<string, Stored>();
   private readonly writes = new Map<string, Promise<void>>();
   private readonly lanes = new Map<string, Promise<void>>();
+  /** Lanes whose delivery passed `sending()`: a request that may land is out, and a draining close waits for its answer. */
+  private readonly out = new Set<string>();
   private readonly ready: Promise<void>;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -149,12 +153,14 @@ export class Outbox {
   /**
    * Stops the loops and waits for the writes out now; the rest goes on at the next start. `drain` also waits for the deliveries out now, so a
    * refusal that comes during a service stop is recorded as one: 10-18 06:33Z a release closed the daemon link under a wake's relay, the daemon
-   * refused it, and a record that read it as maybe held kept the wake behind "the target is busy" until 06:43Z.
+   * refused it, and a record that read it as maybe held kept the wake behind "the target is busy" until 06:43Z. A lane still before its send
+   * (its room, obsolete and tree checks are daemon reads) is not waited for: its `sending()` refuses, so nothing goes out, and the entry waits
+   * on disk for the next start. On 10-18 a stop at 21:42:19Z waited 49 s and one at 21:51:01Z 22 s, while the daemon took 30 s per read.
    */
   async close(drain = false): Promise<void> {
     this.closed = true;
     for (const stop of [...this.timers]) stop();
-    if (drain) await Promise.allSettled([...this.lanes.values()]);
+    if (drain) await Promise.allSettled([...this.lanes].filter(([threadId]) => this.out.has(threadId)).map(([, lane]) => lane));
     await Promise.allSettled([...this.writes.values()]);
   }
 
@@ -192,7 +198,12 @@ export class Outbox {
     }
     const { sentAt: _sentAt, ...unsent } = entry;
     let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 });
-    const sending = async () => { current = this.update(current, { sentAt: this.now() }); await this.writes.get(current.id); };
+    const sending = async () => {
+      if (this.closed) throw new Closed();
+      this.out.add(current.threadId);
+      current = this.update(current, { sentAt: this.now() });
+      await this.writes.get(current.id);
+    };
     try {
       const result = await this.deps.deliver(current, sending);
       if (result) {
@@ -201,13 +212,14 @@ export class Outbox {
       }
       return this.finish(current, "delivered");
     } catch (error) {
+      if (error instanceof Closed) { current = this.update(current, { state: "queued" }); return; }
       const final = this.deps.final(error);
       if (final !== null) return this.finish(current, "failed", final);
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
       if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
       current = this.update(current, { state: "queued" });
       if (!this.closed) await this.sleep(backoff(current.attempts));
-    }
+    } finally { this.out.delete(current.threadId); }
   }
 
   private finish(entry: Stored, state: "delivered" | "failed" | "obsolete", error?: string): Promise<void> {

@@ -1,4 +1,5 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { connect, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -82,4 +83,59 @@ export async function startEarlyShell(options: { listenFd: number | null; port: 
       for (const run of queued) run();
     },
   };
+}
+
+const hopHeaders = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"]);
+
+/** A request the early shell held, sent on to the real server on the same port; the answer closes the connection, so the next one goes there itself. */
+function forwardRequest(port: number): Handler {
+  return (req, res) => {
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => !hopHeaders.has(name)));
+    const out = request({ host: "127.0.0.1", port, method: req.method, path: req.url, headers }, answer => {
+      const kept = Object.fromEntries(Object.entries(answer.headers).filter(([name]) => !hopHeaders.has(name)));
+      res.writeHead(answer.statusCode ?? 502, { ...kept, Connection: "close" });
+      answer.pipe(res);
+    });
+    out.on("error", () => { if (res.headersSent) res.destroy(); else { res.writeHead(502, { Connection: "close" }); res.end(); } });
+    req.pipe(out);
+  };
+}
+
+/** A socket upgrade the early shell held, piped byte for byte to the real server on the same port. */
+function forwardUpgrade(port: number): Upgrade {
+  return (req, socket, head) => {
+    const out = connect(port, "127.0.0.1");
+    const lines = [`${req.method} ${req.url} HTTP/1.1`];
+    for (let at = 0; at < req.rawHeaders.length; at += 2) lines.push(`${req.rawHeaders[at]}: ${req.rawHeaders[at + 1]}`);
+    out.write(lines.join("\r\n") + "\r\n\r\n");
+    if (head.length) out.write(head);
+    socket.pipe(out); out.pipe(socket);
+    const end = () => { socket.destroy(); out.destroy(); };
+    out.on("error", end); socket.on("error", end); out.on("close", end); socket.on("close", end);
+  };
+}
+
+/**
+ * The early shell in a process of its own (src/early-shell-child.mjs), on its copy of systemd's socket at fd 3, so the service's own import
+ * cannot hold it: on 10-18 a scratch start answered the shells systemd had queued in 0.29 s, and every shell that came 0.5 to 2.8 s after
+ * exec then waited until about 2.7 s while chat-service.ts loaded on the thread. When the parent says "ready" (it listens on the same socket
+ * by then) this process stops accepting, sends what it held on to the port, and exits once those connections end.
+ */
+export async function serveEarlyChild(options: { dataDir: string }): Promise<void> {
+  const config = JSON.parse(await readFile(join(options.dataDir, "configuration.json"), "utf8")) as { capability?: unknown; csrfToken?: unknown };
+  if (typeof config.capability !== "string" || typeof config.csrfToken !== "string") return;
+  const early = await startEarlyShell({ listenFd: 3, port: 0, capability: config.capability, csrfToken: config.csrfToken, dataDir: options.dataDir });
+  const { port } = early.server.address() as AddressInfo;
+  let handedOver = false;
+  const handOver = () => {
+    if (handedOver) return;
+    handedOver = true;
+    early.server.close();
+    early.take(forwardRequest(port), forwardUpgrade(port));
+    early.server.closeIdleConnections();
+    if (process.connected) process.disconnect?.();
+  };
+  process.on("message", message => { if (message === "ready") handOver(); });
+  process.once("disconnect", handOver);
+  process.send?.("listening");
 }

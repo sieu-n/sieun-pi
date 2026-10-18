@@ -1,32 +1,11 @@
-import { register } from "tsx/esm/api";
+import { startEarlyChild } from "./early-shell-start.mjs";
 
+// The early shell starts before tsx and the service load (src/early-shell-start.mjs).
+globalThis.__chatEarlyShell = startEarlyChild(process.argv.slice(2));
+const { register } = await import("tsx/esm/api");
 register();
 
-/**
- * A serve on systemd's socket answers page shells from disk before it loads the rest of the service (src/early-shell.ts), so a release restart
- * leaves the shell waiting only while node starts: at 12:42Z on 10-18 the import of chat-service.ts, the backend and the bundle compile held
- * the shell's first byte for 12.1 s while systemd queued the requests on the port's socket.
- */
-async function earlyShell(argv) {
-  if (argv[0] !== "serve") return null;
-  const flag = name => { const at = argv.indexOf(name); return at >= 0 ? argv[at + 1] : undefined; };
-  const { homedir } = await import("node:os");
-  const { join, resolve } = await import("node:path");
-  const { readFile } = await import("node:fs/promises");
-  const dataDir = resolve(flag("--data-dir") ?? join(homedir(), ".prime", "agent", "browser-chat"));
-  let config;
-  try { config = JSON.parse(await readFile(join(dataDir, "configuration.json"), "utf8")); } catch { return null; }
-  // Only on the socket systemd holds (deploy/linux/sieun-pi-chat.socket): a serve that binds its own port checks first that no other chat runs there.
-  if (!(Number(process.env.LISTEN_FDS) >= 1 && Number(process.env.LISTEN_PID) === process.pid)) return null;
-  if (typeof config.capability !== "string" || typeof config.csrfToken !== "string") return null;
-  const { startEarlyShell } = await import("./early-shell.ts");
-  return startEarlyShell({ listenFd: 3, port: 0, capability: config.capability, csrfToken: config.csrfToken, dataDir })
-    .catch(error => { process.stderr.write(`${new Date().toISOString()} early shell: ${error instanceof Error ? error.message : String(error)}\n`); return null; });
-}
-
 try {
-  globalThis.__chatEarlyShell = await earlyShell(process.argv.slice(2));
-  await globalThis.__chatEarlyShell?.settled();
   const { runChatCommand } = await import("./chat-service.ts");
   await runChatCommand(process.argv.slice(2));
 } catch (error) {

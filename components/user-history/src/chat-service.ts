@@ -417,8 +417,16 @@ async function serve(options: Options): Promise<void> {
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
       finally {
         // Sends still out get their answers before the links close, so a refusal is recorded as one (Outbox.close with drain).
-        await backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`));
-        stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close(); await readOnly?.close();
+        // Each part's time goes in the log, so a slow stop names what it waited on: 5 of 97 stops from 10-15 to 10-18 reached systemd's 90 s.
+        const began = Date.now();
+        const parts: string[] = [];
+        const timed = async (name: string, part: () => Promise<unknown> | unknown) => { const at = Date.now(); await part(); parts.push(`${name} ${Date.now() - at} ms`); };
+        await timed("sends", () => backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`)));
+        stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close();
+        await timed("bridges", () => hosts?.bridge?.close());
+        await timed("server", () => server.close());
+        await timed("read-only", () => readOnly?.close());
+        process.stderr.write(`${new Date().toISOString()} stop: ${Date.now() - began} ms: ${parts.join(", ")}\n`);
       }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
