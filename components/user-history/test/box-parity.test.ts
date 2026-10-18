@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
+import { compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
   from "../scripts/duties/box-parity.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, checkout: {}, versions: {}, ms: 1 });
@@ -18,6 +18,19 @@ test("shortfall takes the Mac as the standard and lets a box set hold more", () 
   assert.equal(shortfall('set:["a","b"]', 'set:["a","b","c"]'), null);
   assert.equal(shortfall('set:["a","b"]', 'set:["a"]'), "box lacks 1 of the Mac's 2: b");
   assert.equal(shortfall("ok", undefined), "the box gave no value");
+});
+
+test("shortfall lets a box CLI version be newer than the Mac's and keeps an older one off", () => {
+  assert.equal(shortfall("v:1.7.1", "v:1.8.1"), null);
+  assert.equal(shortfall("v:18.3", "v:18.6"), null);
+  assert.equal(shortfall("v:8.1", "v:8.1.1"), null);
+  assert.equal(shortfall("v:8.6.2", "v:8.0.5"), "Mac v:8.6.2, box v:8.0.5");
+  assert.equal(shortfall("v:3.6a", "v:3.6"), "Mac v:3.6a, box v:3.6");
+  assert.equal(shortfall("v:2.54.0", "v:2.53.0"), "Mac v:2.54.0, box v:2.53.0");
+  assert.equal(shortfall("v:8.1.1", "fail: no version in x"), "Mac v:8.1.1, box fail: no version in x");
+  assert.equal(compareVersions("3.6a", "3.6b"), -1);
+  assert.equal(compareVersions("10.33.0", "10.4.9"), 1);
+  assert.equal(compareVersions("26.07.0", "26.7"), 0);
 });
 
 test("judgeRows counts misses, folds in panel outcomes and keeps intended and by-design rows out of the count", () => {

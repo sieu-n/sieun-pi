@@ -12,7 +12,7 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `tool_rows_off`: rows of box-parity.rows.json (the 167 rows of the 10-18 audit, /home/sieun/box-tools-parity/gap-table.md) where the box lacks
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
- *   failing asks nothing of the box, and a set on the box may hold more than the Mac's. A probe with `intended` (Poppler) and a row with `byDesign`
+ *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler) and a row with `byDesign`
  *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes.
  * - `mac_behind_box`: commits on the box's auto-sns-agent sieun/dev, the shared tip since 10-18 11:23Z, that the Mac's sieun/dev lacks.
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
@@ -43,7 +43,10 @@ export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intende
 const setOf = (value: string): string[] | undefined => value.startsWith("set:") ? JSON.parse(value.slice(4)) as string[] : undefined;
 const failing = (value: string | undefined): boolean => value === undefined || value === "absent" || value.startsWith("fail");
 
-/** Why the box value falls short of the Mac value, or null when it matches. The Mac is the standard; a box set may hold extra entries. */
+/**
+ * Why the box value falls short of the Mac value, or null when it matches. The Mac is the standard; a box set may hold extra entries, and a box CLI
+ * version at or above the Mac's matches, because a newer jq or psql on the box gives agents every feature the Mac's has (owner 10-18 goal p1).
+ */
 export function shortfall(mac: string | undefined, box: string | undefined): string | null {
   if (failing(mac)) return null;
   if (box === undefined) return "the box gave no value";
@@ -54,7 +57,20 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
     const missing = macSet.filter(entry => !boxSet.includes(entry));
     return missing.length ? `box lacks ${missing.length} of the Mac's ${macSet.length}: ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", ..." : ""}` : null;
   }
+  if (mac!.startsWith("v:") && box.startsWith("v:") && compareVersions(box.slice(2), mac!.slice(2)) >= 0) return null;
   return mac === box ? null : `Mac ${mac!.slice(0, 80)}, box ${box.slice(0, 160)}`;
+}
+
+/** Orders two probe versions such as "8.1.1" or "3.6a": number by number, then the letter suffix, so "3.6" < "3.6a" < "3.7". */
+export function compareVersions(a: string, b: string): number {
+  const parts = (text: string) => ({ numbers: text.split(/[^\d]+/).filter(Boolean).map(Number), letter: /[a-z]$/.exec(text)?.[0] ?? "" });
+  const left = parts(a);
+  const right = parts(b);
+  for (let index = 0; index < Math.max(left.numbers.length, right.numbers.length); index++) {
+    const diff = (left.numbers[index] ?? 0) - (right.numbers[index] ?? 0);
+    if (diff) return Math.sign(diff);
+  }
+  return left.letter === right.letter ? 0 : left.letter < right.letter ? -1 : 1;
 }
 
 /** The box value of a Skills and tools check: a pass, or an off that is off on purpose, is "ok". */
