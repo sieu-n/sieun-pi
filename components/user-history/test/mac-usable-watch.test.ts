@@ -8,7 +8,7 @@ import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
 import { advanceMotion, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, startMacUsableWatch, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { HARNESS_GB, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
+import { harnessSide, longestOffStreak, measure, memoryShares, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
 // The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The watch records a line a minute with ops
 // guy's pressure feed and the harness numbers, and the hourly Mac stays usable duty judges each minute on USABLE; the worker footprint is a detail.
@@ -306,21 +306,29 @@ test("quiet sessions: each line names every session quiet past TARGET.idleMinute
   assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /3 quiet over 30 min \(wp-engage-crawl \(01a0f7cb, .*\) quiet 58 min, open ipython call since 01:58Z; /);
 });
 
-test("measure: an unusable minute with over 16 GB in Prime workers is the harness's whatever the turn count, and one under it names the feed's largest owners", () => {
-  assert.equal(HARNESS_GB, 16);
-  const owners = [{ owner: "browser:chrome", label: "Google Chrome", gb: 6.5 }, { owner: "chat:01a1164b", label: "AI harness", gb: 2.2 }, { owner: "pm2:virev-demo", label: "virev-demo", gb: 2.1 }];
+test("measure: an unusable minute is the harness's when agent sessions hold the largest share of memory or of its growth, by Settings > This Mac's groups", () => {
   const queue = (working: number) => ({ working, queued: 30, oldestWaitS: 60, oldestTree: null });
-  const lines = [watch(40, { usable: { ...thrash, owners }, queue: queue(22) }), watch(41, { usable: { ...thrash, owners }, queue: queue(15) }),
-    watch(42, { usable: { ...thrash, owners }, queue: queue(14) }), watch(43, { queue: queue(20) }), watch(44, { usable: thrash, queue: queue(3), workerGb: 25.9 })];
+  const owners = [{ owner: "browser:chrome", label: "Google Chrome", gb: 6.5 }, { owner: "chat:01a1164b", label: "AI harness", gb: 2.2 }, { owner: "pm2:virev-demo", label: "virev-demo", gb: 2.1 }];
+  // 01:06Z, 01:10Z and 01:24Z on 10-18 in short: browsers held the most memory each minute, while agent sessions grew by 2.2 GB into 01:10Z.
+  const lines = [watch(40, { usable: { ...thrash, groups: { browsers: 19.1, agents: 13.5, dev: 2.3 } }, workerGb: 12.9, queue: queue(12) }),
+    watch(41, { usable: { ...thrash, groups: { browsers: 19.2, agents: 15.7, dev: 2.1 } }, workerGb: 15.3, queue: queue(26) }),
+    watch(42, { usable: { ...thrash, groups: { browsers: 20.5, agents: 15.8, dev: 2.1 } }, workerGb: 15.3, queue: queue(26) }),
+    watch(43, { queue: queue(20) }),
+    watch(44, { usable: { ...thrash, groups: { browsers: 6.5 } }, queue: queue(3), workerGb: 25.9 }),
+    watch(45, { usable: { ...thrash, owners }, queue: queue(22) })];
+  const side = harnessSide(lines);
+  assert.deepEqual(lines.map(line => side(line)), [false, true, false, false, true, false],
+    "41: agents grew most; 42: browsers grew most; 44: the workers' own 25.9 GB leads at 3 turns; 45: an older line's 8 owners, 22 turns, browsers lead and agents shrank");
+  assert.equal(memoryShares(lines[5]!).get("agents"), 4, "the workers' measured 4 GB, over the 2.2 GB chat owner among the 8 largest");
   const { metrics, flagged } = measure(lines, NOW);
-  assert.equal(metrics.harness_unusable_min_1h, 1, "25.9 GB of workers at 3 turns; 22 and 15 turns at 4 GB are no harness minute, and 20 turns on a usable minute counts nowhere");
-  assert.equal(metrics.other_unusable_min_1h, 3);
-  assert.equal(metrics.usable_pct_1h, 20);
-  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^1 unusable minutes had more than 16 GB in Prime workers \(\d\d:\d\d 3 turns, 2 workers 25\.9 GB/);
-  assert.equal(flagged!.find(item => item.kind === "other_side")!.excerpt,
-    "3 unusable minutes had 16 GB or less in Prime workers; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
-  const feed = parseFeed({ ...FEED, owners: Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })) }, NOW)!;
+  assert.deepEqual([metrics.harness_unusable_min_1h, metrics.other_unusable_min_1h], [2, 3]);
+  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt,
+    /^2 unusable minutes had agent sessions holding the largest share of memory or of its growth \(\d\d:\d\d browsers 19\.2 GB, agent sessions 15\.7 GB, dev servers 2\.1 GB, 26 turns, 2 workers; /);
+  assert.match(flagged!.find(item => item.kind === "other_side")!.excerpt, /^3 unusable minutes had another group holding the largest share of memory and of its growth \(\d\d:\d\d browsers 19\.1 GB, agent sessions 13\.5 GB, .*\); the feed's largest owners then: Google Chrome/);
+  const feed = parseFeed({ ...FEED, mem_gb: { wired: 3.2 }, owners: [...Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })),
+    { owner: "chat:01a1164b", label: "AI harness", mem_gb: 0.5 }, { owner: "other:prime-agent-daemon", label: "prime-agent daemon", mem_gb: 2.5 }] }, NOW)!;
   assert.deepEqual(feed.owners!.map(owner => owner.gb), [11, 10, 9, 8, 7, 6, 5, 4], "the feed's 8 largest owners, largest first");
+  assert.deepEqual(feed.groups, { other: 66, agents: 3, system: 3.2 }, "every owner summed by the This Mac rule table, wired memory under system");
 });
 
 

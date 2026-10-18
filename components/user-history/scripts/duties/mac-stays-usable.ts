@@ -1,7 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { HARNESS_GB, isHarnessOwner, isHung, misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { isHarnessOwner, isHung, misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { groupOf } from "../../src/memory-groups.ts";
+import type { MemoryGroupId } from "../../src/shared/types.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -9,23 +11,56 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * (src/mac-usable-watch.ts, one line a minute) and reports the share of minutes the Mac was usable (`USABLE`, from ops guy's pressure feed) over
  * the last hour and the last 24 h, the minutes each harness part missed, the top miss with the chat trees behind it, and the longest run of
  * unusable minutes in the last hour, the quiet sessions behind an idle miss, and each tool call a quiet session sat in. A run of OFF_STREAK_ALERT or more is flagged as an alert for the duty job to tell the chat. The Prime
- * worker footprint is a detail line with no target. Each unusable minute goes to the harness side when the Prime workers held more than
- * HARNESS_GB, and to the apps' or owner's side otherwise, with the feed's largest owners named for those minutes. No model call.
+ * worker footprint is a detail line with no target. Each unusable minute goes to the harness side when agent sessions hold the largest
+ * share of memory or of its growth (`isHarnessMinute`), and to the apps' or owner's side otherwise, with the feed's largest owners named for those minutes. No model call.
  */
 
 const MINUTE = 60_000;
+const GROUP_WORDS: Record<MemoryGroupId, string> = { agents: "agent sessions", dev: "dev servers", docker: "Docker", browsers: "browsers", coding: "coding tools",
+  system: "system", other: "other" };
 const HOUR = 60 * MINUTE;
 /** Unusable minutes in a row that make an alert: the 10 the harness team set for this duty on 10-14. */
 export const OFF_STREAK_ALERT = 10;
 /**
- * An unusable minute is the harness's when the Prime workers held more than HARNESS_GB, a measured footprint. Whether a minute is unusable at
- * all comes only from ops guy's feed (`USABLE`: pressure, swapouts, kernel_task). Until 10-18 a minute with more than 14 agent turns working
- * also went to the harness side; the owner never set that number (his queue holds 30 slots, c88), and c67 asks a metric to measure what his
- * words ask, so the turn count is gone. Over today's 120 unusable minutes to 01:24Z the change moved 4 to the app or owner side: 00:39Z,
- * 00:49Z, 01:10Z and 01:24Z, with the workers at 14.46 to 15.56 GB.
+ * An unusable minute is the harness's when agent sessions hold the largest share of the Mac's memory that minute, or of its growth since the
+ * line before, by the groups Settings > This Mac shows (src/memory-groups.ts, the same rule table). The groups come from every owner in ops guy's
+ * feed (`groups`); a line written before 10-18 01:40Z kept only the 8 largest owners, so its groups are summed from those. Agent sessions take
+ * at least the Prime workers' footprint the watch measures itself plus the chat service, since each chat tree is its own feed owner and most
+ * fall below the 8 largest. Whether a minute is unusable at all comes only from the feed (`USABLE`). A fixed 16 GB line, and before it a
+ * 14-turn line, sent minutes with 22 to 26 job turns at work to the apps' side (01:10Z and 01:24Z on 10-18).
  */
-export { HARNESS_GB };
-export const isHarnessMinute = (line: WatchLine): boolean => line.workerGb > HARNESS_GB;
+export function memoryShares(line: WatchLine): Map<MemoryGroupId, number> {
+  const shares = new Map<MemoryGroupId, number>();
+  if (line.usable?.groups) for (const [id, gb] of Object.entries(line.usable.groups)) shares.set(id as MemoryGroupId, gb);
+  else for (const owner of line.usable?.owners ?? []) shares.set(groupOf(owner.owner), (shares.get(groupOf(owner.owner)) ?? 0) + owner.gb);
+  shares.set("agents", Math.max(shares.get("agents") ?? 0, line.workerGb + (line.serviceGb ?? 0)));
+  return shares;
+}
+
+const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
+  const agents = shares.get("agents") ?? 0;
+  return agents > 0 && [...shares].every(([id, gb]) => id === "agents" || gb < agents);
+};
+
+/**
+ * Whether agent sessions hold the largest footprint of `line`, or the largest growth since `previous` when it is at most 2 minutes older. A line
+ * whose feed named no owners has no shares to compare and goes to the apps' or owner's side, as before.
+ */
+export function isHarnessMinute(line: WatchLine, previous?: WatchLine): boolean {
+  if (!line.usable?.groups && !line.usable?.owners?.length) return false;
+  const now = memoryShares(line);
+  if (leads(now)) return true;
+  if (!previous || (!previous.usable?.groups && !previous.usable?.owners?.length) || Date.parse(line.at) - Date.parse(previous.at) > 2 * MINUTE) return false;
+  const before = memoryShares(previous);
+  const growth = new Map([...now].map(([id, gb]) => [id, gb - (before.get(id) ?? 0)] as const));
+  return (growth.get("agents") ?? 0) > 0 && leads(growth);
+}
+
+/** `isHarnessMinute` for lines of `lines`, each judged against the line before it there. */
+export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine) => boolean {
+  const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
+  return line => isHarnessMinute(line, previous.get(line));
+}
 
 const PARTS: readonly TargetPart[] = ["usable", "idle", "queue"];
 const PART_WORDS: Record<TargetPart, string> = {
@@ -88,13 +123,14 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   const hour = lines.filter(line => Date.parse(line.at) > now - HOUR);
   const fed = (span: readonly WatchLine[]) => span.filter(line => line.usable);
   const missMinutes = Object.fromEntries(PARTS.map(part => [part, hour.filter(line => misses(line).includes(part))])) as Record<TargetPart, WatchLine[]>;
+  const harness = harnessSide(lines);
   const streak = longestOffStreak(hour);
   const latest = hour.at(-1);
   const metrics: Record<string, number> = {
     ...(fed(hour).length ? { usable_pct_1h: pct(fed(hour).length - missMinutes.usable.length, fed(hour).length) } : {}),
     ...(fed(lines).length ? { usable_pct_24h: pct(fed(lines).filter(line => !isUnusable(line)).length, fed(lines).length) } : {}),
-    harness_unusable_min_1h: missMinutes.usable.filter(isHarnessMinute).length,
-    other_unusable_min_1h: missMinutes.usable.filter(line => !isHarnessMinute(line)).length,
+    harness_unusable_min_1h: missMinutes.usable.filter(harness).length,
+    other_unusable_min_1h: missMinutes.usable.filter(line => !harness(line)).length,
     unusable_streak_max_1h: streak.minutes,
     idle_miss_min_1h: missMinutes.idle.length,
     queue_miss_min_1h: missMinutes.queue.length,
@@ -119,12 +155,13 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
     const why = (["pressure", "swapouts", "kernel_task"] as const).map(miss => [miss, missMinutes.usable.filter(line => unusable(line.usable!).includes(miss)).length] as const);
     flagged.push({ kind: "usable", excerpt: `The Mac was usable in ${fed(hour).length - missMinutes.usable.length} of the ${fed(hour).length} minutes with a feed reading in the last hour ` +
       `(${hour.length} watched)${missMinutes.usable.length ? `; unusable minutes by cause: ${why.filter(([, count]) => count).map(([miss, count]) => `${USABLE_WORDS[miss]} ${count}`).join(", ")}` : ""}.` });
-    const harness = missMinutes.usable.filter(isHarnessMinute), other = missMinutes.usable.filter(line => !isHarnessMinute(line));
-    if (harness.length) flagged.push({ kind: "harness_side", excerpt: `${harness.length} unusable minutes had more than ` +
-      `${HARNESS_GB} GB in Prime workers (${harness.map(line => `${clock(line.at)} ${line.queue?.working ?? "?"} turns, ` +
-      `${line.workers} workers ${line.workerGb} GB, ${line.live} live sessions`).join("; ")}): the harness side. Workers behind them: ${treesBehind("usable", harness) || "none named"}.` });
-    if (other.length) flagged.push({ kind: "other_side", excerpt: `${other.length} unusable minutes had ${HARNESS_GB} GB or less in Prime workers; the feed's largest owners then: ` +
-      `${ownersBehind(other) || "the feed named no owners"}.` });
+    const harnessMin = missMinutes.usable.filter(harness), other = missMinutes.usable.filter(line => !harness(line));
+    const shares = (line: WatchLine): string => [...memoryShares(line)].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id, gb]) => `${GROUP_WORDS[id]} ${Math.round(gb * 10) / 10} GB`).join(", ");
+    if (harnessMin.length) flagged.push({ kind: "harness_side", excerpt: `${harnessMin.length} unusable minutes had agent sessions holding the largest share of memory or of its growth ` +
+      `(${harnessMin.map(line => `${clock(line.at)} ${shares(line)}, ${line.queue?.working ?? "?"} turns, ${line.workers} workers`).join("; ")}): the harness side. ` +
+      `Workers behind them: ${treesBehind("usable", harnessMin) || "none named"}.` });
+    if (other.length) flagged.push({ kind: "other_side", excerpt: `${other.length} unusable minutes had another group holding the largest share of memory and of its growth ` +
+      `(${other.map(line => `${clock(line.at)} ${shares(line)}`).join("; ")}); the feed's largest owners then: ${ownersBehind(other) || "the feed named no owners"}.` });
   }
   const named = missMinutes.idle.findLast(line => line.quiet?.length);
   const top = PARTS.reduce<TargetPart | null>((best, part) => missMinutes[part].length > (best ? missMinutes[best].length : 0) ? part : best, null);

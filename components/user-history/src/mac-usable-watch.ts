@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AgentQueueReading, IdleEvictionMinutes } from "./shared/types.ts";
+import { groupOf } from "./memory-groups.ts";
+import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
 /**
  * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
@@ -49,18 +50,15 @@ export const HUNG_MINUTES = TARGET.idleMinutes;
  * line at one core; at 20:23Z on 10-14, with the Mac usable by the VP's read, it ran at 17.7%.
  */
 export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
-/**
- * The Prime workers' footprint over which an unusable minute is the harness's: over the 721 watch minutes with a feed reading from 10-14 20:31Z
- * to 10-15 08:51Z, none of the 364 with the workers at 16 GB or less was unusable.
- */
-export const HARNESS_GB = 16;
 /** ops guy's machine-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale, the feed contract pi-pool's pool/pressure.py and the devbox textfile script keep. */
 export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
 export const FEED_FRESH_MS = 30_000;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
 export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number;
   /** The feed's FEED_OWNERS largest owners by footprint, so a minute names the processes behind it; absent when the feed has none. */
-  owners?: FeedOwner[] }
+  owners?: FeedOwner[];
+  /** Every feed owner summed by Settings > This Mac's groups (src/memory-groups.ts), in GB; absent on lines written before 10-18 01:40Z. */
+  groups?: Partial<Record<MemoryGroupId, number>> }
 /** One feed owner: `chat:<root>`, `pm2:<app>`, `browser:<name>` or `other:<name>`, its label and its footprint. */
 export interface FeedOwner { owner: string; label: string; gb: number }
 /** Owners kept a minute: the feed lists about 50, and the largest 8 held 41 of its 57 GB at 08:52Z on 10-15. */
@@ -74,9 +72,15 @@ export function parseFeed(value: unknown, now: number): UsableReading | null {
   if (!isRecord(value) || value.v !== 1 || typeof value.ts !== "string" || !(now - Date.parse(value.ts) < FEED_FRESH_MS)) return null;
   const { pressure_level: pressureLevel, swapouts_per_s: swapoutsPerS, kernel_task_cpu_pct: kernelTaskPct } = value;
   if (typeof pressureLevel !== "number" || typeof swapoutsPerS !== "number" || typeof kernelTaskPct !== "number") return null;
-  const owners = Array.isArray(value.owners) ? value.owners.flatMap(item => isRecord(item) && typeof item.owner === "string" && typeof item.mem_gb === "number"
-    ? [{ owner: item.owner, label: typeof item.label === "string" ? item.label : item.owner, gb: item.mem_gb }] : []).sort((a, b) => b.gb - a.gb).slice(0, FEED_OWNERS) : [];
-  return { pressureLevel, swapoutsPerS, kernelTaskPct, ...owners.length ? { owners } : {} };
+  const all = Array.isArray(value.owners) ? value.owners.flatMap(item => isRecord(item) && typeof item.owner === "string" && typeof item.mem_gb === "number"
+    ? [{ owner: item.owner, label: typeof item.label === "string" ? item.label : item.owner, gb: item.mem_gb }] : []).sort((a, b) => b.gb - a.gb) : [];
+  const owners = all.slice(0, FEED_OWNERS);
+  const groups: Partial<Record<MemoryGroupId, number>> = {};
+  for (const owner of all) groups[groupOf(owner.owner)] = (groups[groupOf(owner.owner)] ?? 0) + owner.gb;
+  const wired = isRecord(value.mem_gb) ? value.mem_gb.wired : undefined;
+  if (typeof wired === "number") groups.system = (groups.system ?? 0) + wired;
+  for (const id of Object.keys(groups) as MemoryGroupId[]) groups[id] = round(groups[id]!);
+  return { pressureLevel, swapoutsPerS, kernelTaskPct, ...owners.length ? { owners } : {}, ...all.length ? { groups } : {} };
 }
 export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promise<UsableReading | null> =>
   parseFeed(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), now);

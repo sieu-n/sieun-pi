@@ -12,7 +12,7 @@ import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
-import { isHarnessMinute } from "./mac-stays-usable.ts";
+import { harnessSide } from "./mac-stays-usable.ts";
 
 /**
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
@@ -214,6 +214,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const cutHeld = (input.cut ?? []).filter(job => now - job.at > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   let clean = 0, usable = 0, fed = 0, unwatched = 0, held = 0, freeSlot = 0, harness = 0, other = 0;
+  const isHarness = harnessSide(input.watch);
   const dirty: string[] = [];
   for (let minute = 0; minute < 30; minute++) {
     const to = start + (minute + 1) * MINUTE;
@@ -223,7 +224,7 @@ export function measure(input: Inputs): PrecheckOutput {
     else if (!line.usable) why.push("no pressure reading");
     else {
       fed++;
-      if (unusable(line.usable).length) { why.push(`Mac unusable (${unusable(line.usable).join(", ")})`); if (isHarnessMinute(line)) harness++; else other++; }
+      if (unusable(line.usable).length) { why.push(`Mac unusable (${unusable(line.usable).join(", ")})`); if (isHarness(line)) harness++; else other++; }
       else usable++;
     }
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }

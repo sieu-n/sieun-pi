@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { promisify } from "node:util";
 import { FEED_FRESH_MS, PRESSURE_FEED } from "./mac-usable-watch.ts";
+import { groupOf } from "./memory-groups.ts";
 import type { MachineView, MemoryGroup, MemoryGroupId, MemoryPressure } from "./shared/types.ts";
 
 const run = promisify(execFile);
@@ -54,20 +55,6 @@ export function parseSysctl(text: string): { pressure: MemoryPressure | null; sw
 const GB = 1024 ** 3;
 const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", dev: "Dev servers and app code", docker: "Docker", browsers: "Browsers",
   coding: "Coding tools", system: "System", other: "Other" };
-/**
- * The group of a pressure feed owner key (scripts/sieun/mac/pressure-feed.c in auto-sns-agent), first match. The feed already folds helpers
- * into their app and a process tree into its chat or pm2 app, so the key alone decides. Root processes such as WindowServer and kernel_task
- * have no owner rows, so System gets the feed's wired memory instead.
- */
-const GROUP_RULES: [MemoryGroupId, RegExp][] = [
-  ["agents", /^chat:|^other:(prime-agent|chat-service|pi-pool|pool\.py|rlm)/i],
-  ["docker", /^docker-vm$|^other:(OrbStack|Docker|com\.docker|colima|lima|vfkit|qemu)/i],
-  ["dev", /^pm2:|^other:(pm2-daemon|next-server|vite|convex|turbo)/i],
-  ["browsers", /^browser:|^other:com\.apple\.WebKit/i],
-  ["coding", /^other:(Visual Studio Code|Code|Cursor|Claude|Zed|Xcode|Ghostty|iTerm2?|Terminal|Warp|claude|codex)/i],
-  ["system", /^other:(com\.apple\.|Dock$|Finder$|Siri|System Settings$|Spotlight|ControlCenter|NotificationCenter|SystemUIServer|WindowManager|loginwindow)/i],
-];
-const groupOf = (owner: string): MemoryGroupId => GROUP_RULES.find(([, rule]) => rule.test(owner))?.[0] ?? "other";
 
 /** The feed's owners summed into groups, largest first; Docker shows even at 0 GB, an empty group else drops. Null for a stale or unknown feed. */
 export function memoryGroups(feed: unknown, now: number): MemoryGroup[] | null {
