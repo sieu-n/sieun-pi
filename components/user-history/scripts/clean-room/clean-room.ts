@@ -28,6 +28,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { chatService, throughRestart } from "../../src/chat-host.ts";
 import { jobRegistry } from "../../src/chat-sources.ts";
 import { wikiOrigin } from "../../src/chat-wiki.ts";
+import { DutyStore } from "../../src/chat-duty-store.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
@@ -578,7 +579,7 @@ function archivedOnDisk(chats: readonly string[], id: string): boolean {
 }
 
 /**
- * Ends a run whatever its verdict: stops its processes, archives the chat and every job it had through the archive route, marks the wiki
+ * Ends a run whatever its verdict: stops its processes, pauses the chat's check-in for good and deletes its duties, archives the chat and every job it had through the archive route, marks the wiki
  * pages the chat made as test output (wiki-pages.ts), removes its todos, corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
  * command can run again; a run already torn down is left as it is.
  */
@@ -622,6 +623,13 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     if (!existsSync(boardFile)) continue;
     await transactJsonFile({ path: boardFile, label: "Chat board", parse: parseBoard, initial: () => { throw new Error("no board"); } }, board => { board.todos = []; });
     log(run, `removed the todos of ${id}, so the owner's For you does not count them`);
+  }
+  // An archived chat came back on 10-18: plan-and-duties run-1's chat was re-adopted 1.5 min after teardown, and its 30 min check-in and two
+  // daily duties went on starting jobs that pushed to sieun-pi and auto-sns-agent. So the check-in stops for good and the duties go first.
+  const duties = new DutyStore(DATA);
+  for (const id of chats) {
+    await setCheckIn(srv, id, { pause: "forever" }).then(() => log(run, `paused the check-in of ${id} for good`), (error: unknown) => log(run, `check-in of ${id}: ${error instanceof Error ? error.message : String(error)}`));
+    for (const duty of await duties.list(id)) if (await duties.remove(id, duty.id)) log(run, `removed duty ${duty.id} "${duty.name}" of ${id}`);
   }
   for (const id of chats) await archive(id, "chat");
   await transactJsonFile({ path: join(DATA, CLEAN_ROOM_CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) },

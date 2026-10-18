@@ -44,7 +44,7 @@ test("a failed clean-room run is torn down when it is evaluated", async () => {
       { env: { ...process.env, HOME: root, AGENT_CHAT_DATA_DIR: data, CLEAN_ROOM_SESSION: "", SIEUN_PI_HOSTS: join(root, "no-hosts.json") }, timeout: 60_000 });
 
     assert.match(readFileSync(`${run}.fail.md`, "utf8"), /: fail/);
-    assert.deepEqual(posts.sort(), ["/cap/api/threads/chat-1/archive", "/cap/api/threads/job-1/archive"]);
+    assert.deepEqual(posts.sort(), ["/cap/api/threads/chat-1/archive", "/cap/api/threads/chat-1/check-in", "/cap/api/threads/job-1/archive"]);
     assert.deepEqual((JSON.parse(readFileSync(join(data, "boards", "chat-1.json"), "utf8")) as { todos: unknown[] }).todos, []);
     assert.ok(!existsSync(join(data, "wakes", "chat-1-1791000000000.json")));
     assert.ok(!existsSync(join(data, "wakes", "job-1-1791000000000.json")));
