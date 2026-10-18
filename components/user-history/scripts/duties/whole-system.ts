@@ -292,6 +292,8 @@ export interface Inputs {
   ownerActivity?: ReadonlyMap<string, number>;
   /** Sessions that own an open step and sleep on a board.wake, they or a subagent below them (`treeWakes`): a live owner, as for check-ins (80cbdd1). */
   waking?: ReadonlySet<string>;
+  /** Per chat, each job name with the sessions of its jobs that are not deleted (`jobSessions`), for a step whose session id is an old copy's. */
+  named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
 }
 
 /**
@@ -320,20 +322,30 @@ export function liveStuck(value: number, at: number, flagged: readonly FlaggedSl
  * (`<dutyId>/<metric>`), whose owner sleeps on a board.wake or wrote its transcript after that run was measured, as `liveStuck` reads a step owner.
  * A run's `fixes[].live` is frozen when it ran: at 07:25Z on 10-18 d7 flagged launch main bro's d1 and d3 from 05:21Z runs while deep walks 99
  * (p125), hand run lanes autoscale (p145) and undesigned hand writes cause (p146) slept on CI run wakes, and Crawler VP's d1 from its 07:13Z
- * run while census canary run (p364) slept on one. With no board read, the run's own record is all there is.
+ * run while census canary run (p364) slept on one. A step's owner is its session and every live job of the chat that carries its job's name
+ * (`stepSessions`). With no board read, the run's own record is all there is.
  */
 export function liveFix(run: DutyRunRecord, dutyId: string, board: ChatBoard | null | undefined, activity: ReadonlyMap<string, number>,
-  waking: ReadonlySet<string>): boolean {
+  waking: ReadonlySet<string>, named: ReadonlyMap<string, readonly string[]> = new Map()): boolean {
   if (!board) return Object.values(run.fixes ?? {}).some(fix => fix.live);
   const missed = new Set(missedKeys(effectiveRun(run)));
   const measuredAt = run.after?.at ?? run.at;
   let live = false;
   walk(board.plan, item => {
     const link = item.duty ? parseDutyLink(item.duty) : null;
-    if (live || !link || link.duty !== dutyId || (missed.size > 0 && !missed.has(link.metric)) || !OPEN.has(item.status) || !item.sessionId) return;
-    live = waking.has(item.sessionId) || (activity.get(item.sessionId) ?? 0) > measuredAt;
+    if (live || !link || link.duty !== dutyId || (missed.size > 0 && !missed.has(link.metric)) || !OPEN.has(item.status)) return;
+    live = stepSessions(item, named).some(session => waking.has(session) || (activity.get(session) ?? 0) > measuredAt);
   });
   return live;
+}
+
+/**
+ * The sessions that own a step: its session id, and each session of a job of the chat, not deleted, that carries the step's job name (`named`).
+ * At 07:40Z on 10-18 Crawler VP's p510 and p700 kept the session of the stopped "crawler ops train before move" while "crawler ops train",
+ * its continuation after the host move, slept on 9 CI run wakes.
+ */
+export function stepSessions(item: { sessionId?: string; job?: string }, named: ReadonlyMap<string, readonly string[]>): string[] {
+  return [...new Set([...item.sessionId ? [item.sessionId] : [], ...item.job ? named.get(item.job) ?? [] : []])];
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
@@ -414,7 +426,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const own = chat.runs.filter(run => run.duty === duty.id);
     const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
     if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
-    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking ?? new Set())) return [];
+    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking ?? new Set(), input.named?.get(chat.id))) return [];
     return [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, and no fix step on its board has a live owner now`];
   }));
   // Every box's sleeping sessions count: each line's total over its boxes, averaged over the lines that measured any.
@@ -599,12 +611,12 @@ async function daemonStops(logs: string): Promise<DaemonStops> {
 }
 
 /** When each session that owns an open step last wrote its transcript: a root's under sessions, a job's under its chat's session-artifacts. */
-async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>): Promise<Map<string, number>> {
+async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>, named: Inputs["named"] = new Map()): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const mtime = async (file: string) => (await stat(file).catch(() => null))?.mtimeMs;
   for (const [chat, board] of boards) {
     const owners = new Set<string>();
-    walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && item.sessionId) owners.add(item.sessionId); });
+    walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) for (const session of stepSessions(item, named.get(chat) ?? new Map())) owners.add(session); });
     if (owners.size === 0) continue;
     const subs = (await readdir(join(agentDir, "session-artifacts", chat)).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
     for (const session of owners) {
@@ -620,7 +632,7 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
  * The step owners that sleep on an owed board.wake, they or a subagent below them: launch main bro's deep walks 99 (p137) and hand run lanes
  * autoscale (p145) slept on CI run wakes on 10-18 and wrote nothing while they waited.
  */
-async function wakingOwners(agentDir: string, wakesDir: string, boards: ReadonlyMap<string, ChatBoard | null>, now: number): Promise<Set<string>> {
+async function wakingOwners(agentDir: string, wakesDir: string, boards: ReadonlyMap<string, ChatBoard | null>, now: number, named: Inputs["named"] = new Map()): Promise<Set<string>> {
   const wakes = await pendingWakes(wakesDir, now);
   const out = new Set<string>();
   if (!wakes.length) return out;
@@ -632,10 +644,29 @@ async function wakingOwners(agentDir: string, wakesDir: string, boards: Readonly
       });
     } catch { return []; }
   };
-  for (const board of boards.values()) {
+  for (const [chat, board] of boards) {
     walk(board?.plan ?? [], item => {
-      if (OPEN.has(item.status) && item.sessionId && !out.has(item.sessionId) && treeWakes(item.sessionId, below, wakes).length) out.add(item.sessionId);
+      if (!OPEN.has(item.status)) return;
+      for (const session of stepSessions(item, named.get(chat) ?? new Map())) if (!out.has(session) && treeWakes(session, below, wakes).length) out.add(session);
     });
+  }
+  return out;
+}
+
+/** Per chat, each job name with the sessions of its jobs (the `sub-*` folders right under the chat) that the runtime has not marked deleted. */
+async function jobSessions(artifacts: string, chats: readonly string[]): Promise<Map<string, Map<string, string[]>>> {
+  const out = new Map<string, Map<string, string[]>>();
+  for (const chat of chats) {
+    const names = new Map<string, string[]>();
+    const subs = (await readdir(join(artifacts, chat)).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
+    const read = await Promise.all(subs.map(async sub => {
+      const folder = join(artifacts, chat, sub);
+      const meta = await readJson(join(folder, "rlm-subagent.json")) as { sessionName?: unknown; status?: unknown } | null;
+      const file = (await readdir(folder).catch(() => [] as string[])).find(name => name.endsWith(".jsonl") && SESSION_ID.test(name.slice(0, -".jsonl".length)));
+      return typeof meta?.sessionName === "string" && meta.status !== "deleted" && file ? { name: meta.sessionName, session: file.slice(0, -".jsonl".length) } : null;
+    }));
+    for (const job of read) if (job) names.set(job.name, [...names.get(job.name) ?? [], job.session]);
+    out.set(chat, names);
   }
   return out;
 }
@@ -669,14 +700,16 @@ async function main(): Promise<void> {
     (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, await daemonStops(join(dataDir, "..", "logs")));
   const boardStore = new BoardStore(dataDir);
   const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
+  const named = await jobSessions(join(dataDir, "..", "session-artifacts"), live);
   const result = measure({
     now, watch, day,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
     boards,
-    ownerActivity: await ownerActivity(join(dataDir, ".."), boards),
-    waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now),
+    ownerActivity: await ownerActivity(join(dataDir, ".."), boards, named),
+    waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now, named),
+    named,
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }

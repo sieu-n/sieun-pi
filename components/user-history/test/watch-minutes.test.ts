@@ -276,3 +276,19 @@ test("d7 reads a red duty's fix steps and their owners on the live board now, no
   const none = measure({ now: Date.parse("2026-10-18T07:25:00Z"), watch: [], log: { holds: [] }, chats }).metrics.stuck_duties;
   assert.equal(none, 3, "with no board read, the runs' own records stand");
 });
+
+// Crawler VP 10-18 07:40Z: d2's fix steps p510 and p700 kept the session of the stopped "crawler ops train before move", while "crawler ops
+// train", its continuation after the host move, slept on 9 CI run wakes. A step's owner includes every live job carrying its job name.
+test("d7 reads a fix step's owner by its job name when its session id is an old copy's", () => {
+  const crawler = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  const runs: DutyRunRecord[] = [0, 1, 2].map(back => ({ duty: "d2", at: Date.parse("2026-10-18T07:40:05Z") - back * 86_400_000, trigger: "schedule" as const, ms: 1,
+    verdict: "missed" as const, summary: "", metrics: { supply_hold_minutes: { value: 56, target: 0, op: "<=" as const, met: false } },
+    ...back === 0 ? { fixes: { supply_hold_minutes: { step: "p700", job: "crawler ops train", live: false } } } : {} }));
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-18T07:44:00Z",
+    plan: [{ id: "p700", text: "p700", status: "doing", children: [], duty: "d2/supply_hold_minutes", job: "crawler ops train", sessionId: "01a13a74-4d1b-71b8-b9b4-3dc22a80a2e8" }] };
+  const read = (named: Map<string, string[]>) => measure({ now: Date.parse("2026-10-18T07:44:48Z"), watch: [], log: { holds: [] },
+    chats: [{ id: crawler, name: "Crawler VP", duties: [{ id: "d2", name: "GeoNode proxy use" }], runs }], boards: new Map([[crawler, board]]),
+    ownerActivity: new Map(), waking: new Set(["01a14d5d-b525-750e-b602-375518a76287"]), named: new Map([[crawler, named]]) }).metrics.stuck_duties;
+  assert.equal(read(new Map([["crawler ops train", ["01a14d5d-b525-750e-b602-375518a76287"]]])), 0);
+  assert.equal(read(new Map()), 1, "with no live job of that name, the stopped copy is the only owner");
+});
