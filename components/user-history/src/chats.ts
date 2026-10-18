@@ -15,7 +15,7 @@ import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.t
 import { resumeChatJobs } from "./chat-resume.ts";
 import { withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
-import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
+import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { tailMessages } from "./checkin-ops.ts";
@@ -581,7 +581,7 @@ export class Chats {
       if (this.source.waking && (sessionId === undefined || await this.source.waking(sessionId))) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
-        note: [line, step.note].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note) })));
+        note: [line, step.note].filter(Boolean).join("\n") })));
       await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + handBackText(child, steps), images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: handed ${steps.map(step => step.id).join(", ")} back to the chat: job ${name} reported with them open`);
       return true;
@@ -607,7 +607,7 @@ export class Chats {
       const path = await resumes.store.save({ chat: id, childId: child.id, job: name, steps: steps.map(step => step.id), event, brief, report, endedAt: now });
       if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
       const line = savedStateNote(name, now, path);
-      await resumes.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, note: [line, step.note].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note) })));
+      await resumes.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, note: [line, step.note].filter(Boolean).join("\n") })));
       this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}`);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
   }

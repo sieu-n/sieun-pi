@@ -273,7 +273,7 @@ const resolvedLine = (at: number): string => `${RESOLVED} ${new Date(at).toISOSt
 
 /**
  * `note` with the bridge's label block rewritten in place, or added at the end when the chat removed it, and the resolve line at the end while
- * the rule is resolved. Lines the chat wrote stay. When the note runs over BOARD_LIMITS.note the block lists fewer sets.
+ * the rule is resolved. Lines the chat wrote stay.
  */
 export function ruleNote(note: string, rule: Pick<Tracked, "instances" | "resolvedAt">): string {
   const lines = note ? note.split("\n").filter(line => !line.startsWith(RESOLVED)) : [];
@@ -283,12 +283,7 @@ export function ruleNote(note: string, rule: Pick<Tracked, "instances" | "resolv
   while (end < lines.length && (lines[end]!.startsWith(SHARED) || lines[end]!.startsWith(SETS) || lines[end]!.startsWith("- "))) end++;
   const block = labelBlock(rule);
   const tail = rule.resolvedAt === undefined ? [] : [resolvedLine(rule.resolvedAt)];
-  const render = (sets: string[]) => [...lines.slice(0, at), ...sets, ...lines.slice(end), ...tail].join("\n");
-  for (let keep = block.length - 2; keep > 0; keep--) {
-    const shown = keep === block.length - 2 ? block : [...block.slice(0, 2 + keep), `- and ${block.length - 2 - keep} more label sets.`];
-    if (render(shown).length <= BOARD_LIMITS.note) return render(shown);
-  }
-  return render(block.slice(0, 3)).slice(0, BOARD_LIMITS.note);
+  return [...lines.slice(0, at), ...block, ...lines.slice(end), ...tail].join("\n");
 }
 
 /** The note of a new step for `rule`, whose first firing is `alert`. */
@@ -352,7 +347,7 @@ export function changeOps(board: ChatBoard, change: ChatChange): { ops: BoardOp[
     if (step === null || !findItem(board.plan, step)) continue;
     const line = `The alert bridge moved this rule's label sets to ${into}, which now lists every set.`;
     const note = noteOf(step);
-    if (!note.includes(line)) notes.set(step, note ? `${note.slice(0, BOARD_LIMITS.note - line.length - 1)}\n${line}` : line);
+    if (!note.includes(line)) notes.set(step, note ? `${note}\n${line}` : line);
   }
   for (const [id, note] of notes) if (note !== (findItem(board.plan, id)?.item.note ?? "")) ops.push({ op: "plan_update", id, note });
   return { ops, steps };
@@ -363,7 +358,7 @@ export function resolveOps(board: ChatBoard, resolve: Resolve): BoardOp[] {
   const item = findItem(board.plan, resolve.step)?.item;
   if (!item || item.note?.includes(RESOLVED)) return [];
   const line = `${RESOLVED} ${resolve.at}, when the alert bridge saw it leave Grafana's firing list.`;
-  const note = item.note ? `${item.note.slice(0, BOARD_LIMITS.note - line.length - 1)}\n${line}` : line;
+  const note = item.note ? `${item.note}\n${line}` : line;
   return [{ op: "plan_update", id: resolve.step, note }];
 }
 

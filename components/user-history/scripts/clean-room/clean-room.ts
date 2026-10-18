@@ -39,11 +39,12 @@ import { killWorker, lostBrief } from "./lost-brief.ts";
 import { ordinaryHour } from "./ordinary-hour.ts";
 import { ownerAsks } from "./owner-asks.ts";
 import type { RunState, Scenario } from "./session-read.ts";
+import { softCaps } from "./soft-caps.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "english-jobs": englishJobs,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
