@@ -13,7 +13,7 @@ import { cutEnd } from "../src/cut-end.ts";
 const NOW = Date.parse("2026-10-15T21:40:00.000Z");
 const at = (minutesAgo: number): string => new Date(NOW - minutesAgo * 60_000).toISOString();
 const line = (minutesAgo: number, fields: Partial<WatchLine> = {}): WatchLine => ({ at: at(minutesAgo), usable: { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 20 },
-  workers: 10, workerGb: 8, top: [], live: 20, working: 8, idle15: 0, idleOver: 0, idleTrees: [], finished: 0, finishedTrees: [],
+  workers: 10, workerGb: 8, top: [], live: 20, working: 8,
   queue: { working: 8, queued: 0, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 4, pressureLevel: 1 }, cpuMs: 50, ...fields }) as WatchLine;
 const inputs = (fields: Partial<Inputs>): Inputs => ({ now: NOW, watch: [], log: { holds: [] }, limits: [], okLimit: 15, chats: [], ...fields });
 

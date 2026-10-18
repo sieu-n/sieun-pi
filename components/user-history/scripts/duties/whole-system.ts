@@ -8,12 +8,51 @@ import { type Cut, cutWords, readCut, tailLines, type CutCause } from "../../src
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
-import type { ChatBoard } from "../../src/shared/types.ts";
+import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
-import { harnessSide } from "./mac-stays-usable.ts";
+
+/**
+ * An unusable minute is the harness's when agent sessions hold the largest share of the Mac's memory that minute, or of its growth since the
+ * line before, by the groups the pressure feed sums every owner into (`groups`); a line with no groups, written before 10-18 01:40Z, is never
+ * the harness's, since this duty reads only the last 30 minutes. Agent sessions take
+ * at least the Prime workers' footprint the watch measures itself plus the chat service, since each chat tree is its own feed owner and most
+ * fall below the 8 largest. Whether a minute is unusable at all comes only from the feed (`USABLE`). A fixed 16 GB line, and before it a
+ * 14-turn line, sent minutes with 22 to 26 job turns at work to the apps' side (01:10Z and 01:24Z on 10-18).
+ */
+export function memoryShares(line: WatchLine): Map<MemoryGroupId, number> {
+  const shares = new Map<MemoryGroupId, number>();
+  if (line.usable?.groups) for (const [id, gb] of Object.entries(line.usable.groups)) shares.set(id as MemoryGroupId, gb);
+  shares.set("agents", Math.max(shares.get("agents") ?? 0, line.workerGb + (line.serviceGb ?? 0)));
+  return shares;
+}
+
+const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
+  const agents = shares.get("agents") ?? 0;
+  return agents > 0 && [...shares].every(([id, gb]) => id === "agents" || gb < agents);
+};
+
+/**
+ * Whether agent sessions hold the largest footprint of `line`, or the largest growth since `previous` when it is at most 2 minutes older. A line
+ * whose feed gave no groups has no shares to compare and goes to the apps' or owner's side.
+ */
+export function isHarnessMinute(line: WatchLine, previous?: WatchLine): boolean {
+  if (!line.usable?.groups) return false;
+  const now = memoryShares(line);
+  if (leads(now)) return true;
+  if (!previous?.usable?.groups || Date.parse(line.at) - Date.parse(previous.at) > 2 * MINUTE) return false;
+  const before = memoryShares(previous);
+  const growth = new Map([...now].map(([id, gb]) => [id, gb - (before.get(id) ?? 0)] as const));
+  return (growth.get("agents") ?? 0) > 0 && leads(growth);
+}
+
+/** `isHarnessMinute` for lines of `lines`, each judged against the line before it there. */
+export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine) => boolean {
+  const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
+  return line => isHarnessMinute(line, previous.get(line));
+}
 
 /**
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask

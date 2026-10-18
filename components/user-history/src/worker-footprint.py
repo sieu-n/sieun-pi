@@ -2,10 +2,10 @@
 
 Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's tree (the worker and every descendant, from
 proc_listchildpids) with its pid count, summed phys_footprint in bytes and the worker process's own phys_footprint (`own`) (the memory macOS counts, compressed and swapped pages
-included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
+included), the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
 on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. It starts no other process, so one call costs well under a second of CPU at 1,000 processes.
-Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes, CPU
-milliseconds since each process started and pids (`members`), and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
+Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes
+and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
@@ -17,12 +17,9 @@ import os
 import re
 import resource
 import sys
-import time
 
 # The wrapper Prime's bash() runs each handle in: `/bin/bash -c "...{\n<command>\n} 8>&- 9>&-...prime-agent-complete..."`.
 HANDLE = re.compile(r"\{\n(.*?)\n\} 8>&- 9>&-\n.*prime-agent-complete", re.S)
-# A command that only waits on CI or a clock while it holds its job's kernel and worker; board.wake does the same with no kernel.
-WAITER = re.compile(r"(^|/)gh run watch\b|(^|/)gh pr checks\b.*--watch|ci-run-status(\.sh)? \S+ .*--wait|ci-run-status(\.sh)? --wait|(^|/)sleep (\d{3,}|[6-9]\d)(\.\d+)?$")
 # Prime's own processes, which the guard never names or stops: a kernel, a prime-agent binary (the daemon and its workers), pi-pool's token helper.
 PRIME = re.compile(r"rlm\.repl|(^|/)prime-agent( |$)|pi-pool-token")
 # Services a session once started that every tree shares, so they count toward no tree and are never stopped, with every process under them. On
@@ -42,19 +39,11 @@ if sys.platform == "darwin":
     class SwapUsage(ctypes.Structure):
         _fields_ = [("total", ctypes.c_uint64), ("avail", ctypes.c_uint64), ("used", ctypes.c_uint64), ("pagesize", ctypes.c_uint32), ("encrypted", ctypes.c_uint32)]
 
-    class Timebase(ctypes.Structure):
-        _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
-
-    TIMEBASE = Timebase()
-    libc.mach_timebase_info(ctypes.byref(TIMEBASE))
-    # rusage_info's user_time and system_time are mach ticks on Apple silicon (125/3 ns a tick), not nanoseconds.
-    TICK_MS = TIMEBASE.numer / TIMEBASE.denom / 1e6 if TIMEBASE.denom else 1e-6
-
-    def usage(pid, info=RusageInfo()):
-        """(phys_footprint in bytes, CPU in ms) of a process, or None when it is gone."""
+    def footprint(pid, info=RusageInfo()):
+        """phys_footprint in bytes of a process, or None when it is gone."""
         if lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info)) != 0:
             return None
-        return info.phys_footprint, (info.user_time + info.system_time) * TICK_MS
+        return info.phys_footprint
 
     def children(pid, buffer=(ctypes.c_int * 4096)()):
         count = lib.proc_listchildpids(pid, buffer, ctypes.sizeof(buffer))
@@ -112,15 +101,13 @@ else:
         except (OSError, IndexError):
             return None
 
-    def usage(pid):
-        """(resident plus swapped bytes, the nearest Linux count to phys_footprint, and CPU in ms) of a process, or None when it is gone."""
-        fields = stat(pid)
+    def footprint(pid):
+        """Resident plus swapped bytes, the nearest Linux count to phys_footprint, of a process, or None when it is gone."""
         try:
             with open(f"{PROC}/{pid}/status") as file:
-                kb = sum(int(line.split()[1]) for line in file if line.startswith(("VmRSS:", "VmSwap:")))
+                return sum(int(line.split()[1]) for line in file if line.startswith(("VmRSS:", "VmSwap:"))) * 1024
         except OSError:
             return None
-        return None if fields is None else (kb * 1024, (int(fields[11]) + int(fields[12])) * 1000 / TICKS)
 
     def children(pid):
         found = []
@@ -166,11 +153,6 @@ else:
         return None
 
 
-def footprint(pid):
-    found = usage(pid)
-    return None if found is None else found[0]
-
-
 def started(pid):
     """The process's start time in epoch seconds (`bsdinfo`), or None."""
     info = bsdinfo(pid)
@@ -199,24 +181,23 @@ def kernel_of(pid, args):
     return harness(args[1]) or ("", "")
 
 
-def tree(root, waiters, now, handles, kernels, seen):
+def tree(root, kernels, seen):
     pids, stack, own = [], [(root, None)], 0
     while stack:
         pid, kernel = stack.pop()
         if pid in seen:
             continue
         seen.add(pid)
-        found = usage(pid)
-        if found is None:
+        bytes_ = footprint(pid)
+        if bytes_ is None:
             continue
-        bytes_, cpu_ms = found
         pids.append(bytes_)
         if pid == root:
             own = bytes_
         if kernel is None and pid != root:
             owner = kernel_of(pid, procargs(pid))
             if owner is not None:
-                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None, "cpu_ms": 0.0, "members": []}
+                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None}
                 kernels.append(kernel)
         elif kernel:
             args = procargs(pid)
@@ -224,18 +205,11 @@ def tree(root, waiters, now, handles, kernels, seen):
             if SHARED.search(text):
                 stack.extend((child, False) for child in children(pid))
                 continue
-            handle = HANDLE.search(text)
-            if handle or WAITER.search(text):
-                at = started(pid)
-                (handles if handle else waiters).append({"pid": pid, "kernel": kernel["pid"], "session": kernel["session"],
-                                                         "command": (handle.group(1) if handle else text)[:200], "age_s": None if at is None else max(0, now - at)})
             if not PRIME.search(text) and (kernel["biggest"] is None or bytes_ > kernel["biggest"]["bytes"]):
                 kernel["biggest"] = {"pid": pid, "bytes": bytes_, "started": started(pid), "command": command(args)}
         if kernel:
             kernel["pids"] += 1
             kernel["bytes"] += bytes_
-            kernel["cpu_ms"] = round(kernel["cpu_ms"] + cpu_ms, 1)
-            kernel["members"].append(pid)
         stack.extend((child, kernel) for child in children(pid))
     return {"pids": len(pids), "bytes": sum(pids), "own": own}
 
@@ -317,7 +291,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"strays": strays(scan(), set(sys.argv[2].split(","))), "cpu_s": cpu()}))
         sys.exit(0)
-    waiters, handles, kernels, seen = [], [], [], set()
-    workers = {line.strip(): tree(int(line), waiters, int(time.time()), handles, kernels, seen) for line in sys.stdin if line.strip().isdigit()}
-    print(json.dumps({"workers": workers, "waiters": waiters, "handles": handles, "kernels": kernels, "orphans": orphans(scan(), seen),
+    kernels, seen = [], set()
+    workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
+    print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(scan(), seen),
                       "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
