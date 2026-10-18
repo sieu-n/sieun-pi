@@ -87,7 +87,9 @@ test("a bridge socket carries bytes both ways to the remote daemon socket, and t
     const expected = "{\"type\":\"daemon_hello\"}\n{\"type\":\"list\"}\n";
     for (let wait = 0; Buffer.concat(received).toString() !== expected && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(Buffer.concat(received).toString(), expected);
-    socket.destroy();
+    const closed = bridge.close();
+    await closed;
+    assert.equal(socket.destroyed || await new Promise(resolve => socket.once("close", () => resolve(true))), true, "close ends an open tunnel instead of waiting for it");
   } finally { await bridge.close(); }
   await assert.rejects(readFile(join(dir, "bridge", "box.sock")), /ENOENT/);
 });

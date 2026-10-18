@@ -183,6 +183,8 @@ export async function openDaemonTunnel(host: Host, timeoutMs = 10_000): Promise<
  */
 export class HostBridge {
   private readonly servers = new Map<string, Server>();
+  /** Open tunnels; close ends them, since a server's close waits for every connection and an attached thread's never ends on its own. */
+  private readonly sockets = new Set<Socket>();
   constructor(private readonly registry: HostsRegistry, private readonly options: { dir?: string; self?: Host | null; log?: (line: string) => void } = {}) {}
 
   private get dir(): string { return this.options.dir ?? BRIDGE_DIR; }
@@ -200,6 +202,8 @@ export class HostBridge {
       const path = join(this.dir, `${host.name}.sock`);
       await rm(path, { force: true });
       const server = createServer(client => {
+        this.sockets.add(client);
+        client.once("close", () => this.sockets.delete(client));
         client.pause();
         openDaemonTunnel(host).then(remote => {
           client.pipe(remote).pipe(client);
@@ -219,6 +223,8 @@ export class HostBridge {
   }
 
   async close(): Promise<void> {
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
     await Promise.all([...this.servers.entries()].map(([name, server]) => new Promise<void>(resolve => server.close(() => resolve())).then(() => rm(join(this.dir, `${name}.sock`), { force: true }))));
     this.servers.clear();
   }
