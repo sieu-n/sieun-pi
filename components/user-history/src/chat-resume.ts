@@ -53,7 +53,9 @@ function parseReport(stdout: string): { report: InterruptedReport } | { malforme
     ?? badField("children", value.children, { id: isText, name: isText, head: isText, result: isResult }, true)
     ?? badField("incomplete", value.incomplete, { host: (host: unknown) => host === null || isText(host), error: isText }, true)
     ?? badField("unresolved", value.unresolved, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText,
-      archived_at: isOptionalText, error: isText, host: isOptionalText }, true);
+      archived_at: isOptionalText, error: isText, host: isOptionalText }, true)
+    ?? badField("stopped", value.stopped, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText,
+      stopped_at: (at: unknown) => at === null || isOptionalText(at), stopped_by: isText, host: isOptionalText }, true);
   return bad ? { malformed: `printed a report whose ${bad} is missing or has the wrong type` } : { report: value as unknown as InterruptedReport };
 }
 
@@ -177,7 +179,9 @@ export class InterruptedRuns {
       }
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       const unresolved = (planned.unresolved ?? []).filter(isJob);
-      const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...(unresolved.length ? { unresolved } : {}) };
+      const stopped = (planned.stopped ?? []).filter(isJob);
+      const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}) };
+      const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
       if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
       const reopenAll = async (ids: Iterable<string>): Promise<void> => {
         for (const id of new Set(ids)) {
@@ -208,12 +212,11 @@ export class InterruptedRuns {
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
       const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
-      if (!lost.length) return { ...withIncomplete(sent, planned), ...(unresolved.length ? { unresolved } : {}) };
+      if (!lost.length) return { ...withIncomplete(sent, planned), ...held };
       await reopenAll(lost);
       const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box, ...stuck]);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
-      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again),
-        ...(unresolved.length ? { unresolved } : {}) };
+      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again), ...held };
     });
     this.forget();
     return report;
@@ -257,7 +260,10 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
     }
     for (const entry of report?.incomplete ?? []) log(`chats: interrupted jobs: not finished on ${entry.host ?? "this box"}: ${entry.error}`);
     for (const entry of report?.unresolved ?? []) {
-      log(`job ${entry.name}: not resumed: an archive at ${entry.archived_at ?? "?"} with no recorded cause stopped its turn (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
+      log(`job ${entry.name}: not resumed: ${entry.error} (archive at ${entry.archived_at ?? "?"}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
+    }
+    for (const entry of report?.stopped ?? []) {
+      log(`job ${entry.name}: not resumed, stopped on purpose: ${entry.stopped_by} (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
   } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }
 }

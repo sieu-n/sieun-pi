@@ -28,9 +28,14 @@ written when the daemon shut the run's worker down (a "received SIGTERM" line
 in the daemon log at that moment) counts as "worker_stopped", and an abort
 with no archive written while the daemon supervisor restarted (from its last log
 line to the new supervisor's "listening" line) counts as "daemon_restart". An
-archive that stopped the turn counts only when the idle unload's record names
-it; a stop record keeps the run stopped, and with neither the run is listed
-under "unresolved" and gets nothing, since the archive line has no cause. Rate limits (429), overloaded (529),
+archive that stopped the turn counts only when it is the idle unload's, by its
+idle_unload reason or the unload's record. A stop record or a stop reason on the
+archive (owner_stop, owner_archive, subagent_deleted, completed, replaced and
+the like) keeps the run stopped and lists it under "stopped" with that record.
+Any other archive is listed under "unresolved" with its cause and gets nothing:
+a line with no reason, daemon_shutdown, an update discard (named by its discard
+record when one matches), one the update left out under stoppedBeforeRestore,
+and a reason this script does not know. Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
@@ -82,9 +87,12 @@ A run stopped on a token hook failure is resumed only once the hook gives its tr
 before it sends, and keeps the token out of every output.
 
 A job deleted on purpose never counts: one the chat service deleted or parked
-(deleted-jobs.json), one under such a job, one whose parent's rlm.delete_subagent
-returned it, and one archived right before its aborted reply outside a daemon
-restart. Each of these writes the same archive and abort a restart writes.
+(deleted-jobs.json), one under such a job, one the RLM runtime recorded as deleted
+(a delete op for its folder in the rlm ledger, or status "deleted" in its
+rlm-subagent.json) with no prompt after that delete, and one archived right before
+its aborted reply outside a daemon restart. Each of these writes the same archive
+and abort a restart writes. The recheck right before each send reads these records
+again, and a stop reason written after the pass found the run also holds it.
 
 Usage:
   python3 resume_paused.py                  # find and resume heads
@@ -99,10 +107,10 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime as dt
+import functools
 import hashlib
 import http.client
 import json
-import mmap
 import os
 import re
 import shutil
@@ -200,8 +208,8 @@ DOING = [""]
 FILES = {}
 # Boxes or runs the pass could not finish, beyond a box that failed whole: a stop record that went unreadable during the sends.
 INCOMPLETE = []
-# Cut runs whose turn an archive with no recorded cause stopped. They are reported and never resumed.
 UNRESOLVED = []
+STOPPED = []
 SENDING = []
 STOP = []
 STARTED = time.monotonic()
@@ -663,33 +671,37 @@ def read_record(path, shape):
     return data
 
 
-def stop_record(path):
-    """Why the session at `path` was stopped on purpose, by a record that says so, or None. Raises RecordError (see read_record).
+def stop_record(path, entries=None):
+    """Why the session at `path` was stopped on purpose, by a record that says so, or None. `entries` is its transcript's tail, read here
+    when not given. Raises RecordError (see read_record and ledger_deletes), or JobRecordError for a record of this job alone.
 
-    Only recorded stops count here. A Stop pressed in Prime itself writes the same abort and archive lines as a daemon restart and leaves
-    no record of who pressed it, so a Stop inside a restart window that no record names cannot be told apart from the restart."""
+    Only recorded stops count here. A Stop pressed in a Prime older than stop-provenance writes the same abort and archive lines as a daemon
+    restart and leaves no record of who pressed it; archive_verdict reads the reason a newer Prime writes on the line."""
     if not path:
         return None
-    if deleted_on_purpose(path):
-        return "deleted on purpose"
+    deleted = deleted_on_purpose(path, entries)
+    if deleted:
+        return deleted
     if owner_archived(path):
         return "archived by the owner"
     return None
 
 
-def deleted_on_purpose(path):
-    """The job at `path` or a job above it was deleted on purpose: the chat service deleted it (deleted-jobs.json, the parker included), or
-    its parent called rlm.delete_subagent and got it back. Every such delete archives the job and aborts its turn within milliseconds, the
-    same lines a daemon restart writes: on 10-16 the Whole system duty counted ci train, new ci server, fair-self-heal, spec-junit and the two
-    jobs under the parked checkin pushes goals as cut by a restart, and a continue would have revived all six."""
+def deleted_on_purpose(path, entries=None):
+    """What says the job at `path` or a job above it was deleted on purpose, or None: the chat service deleted it (deleted-jobs.json, the
+    parker included), or the RLM runtime recorded its delete (recorded_deletes). Every such delete archives the job and aborts its turn
+    within milliseconds, the same lines a daemon restart writes: on 10-16 the Whole system duty counted ci train, new ci server,
+    fair-self-heal, spec-junit and the two jobs under the parked checkin pushes goals as cut by a restart, and a continue would have revived
+    all six."""
     folder = Path(path).parent
     deleted = read_record(DELETED_JOBS, lambda data: isinstance(data, dict) and all(isinstance(chat, dict) for chat in data.values())) or {}
     gone = {child for chat in deleted.values() for child in chat}
     while folder.name.startswith("sub-"):
-        if folder.name in gone or (remote_deleted(folder) if BOX.remote else parent_deleted(folder)):
-            return True
+        if folder.name in gone:
+            return "deleted on purpose"
         folder = folder.parent
-    return False
+    entries = tail_entries(path) if entries is None else entries
+    return next((why for at, why in recorded_deletes(path) if current_delete(at, entries)), None)
 
 
 def owner_archived(path):
@@ -707,18 +719,62 @@ def owner_archived(path):
     return Path(path).stem in archived or (len(parts) > 1 and parts[0] in archived)
 
 
-def remote_deleted(folder):
-    """Another box's job folder whose rlm-subagent.json the RLM runtime marked deleted. A record the relay says does not exist means not
-    deleted; a failed read or a record that is not a JSON object raises JobRecordError, so the job gets nothing this pass.
+def rlm_ledger_path():
+    """The RLM runtime's ledger for SESSIONS_DIR, <agent dir>/rlm-ledger/<first 16 hex of sha256(realpath of the sessions dir)>.jsonl, as
+    rlmLedgerPath in prime-agent's modes/daemon/rlm-ledger.ts names it."""
+    key = hashlib.sha256(os.path.realpath(SESSIONS_DIR).encode()).hexdigest()[:16]
+    return SESSIONS_DIR.parent / "rlm-ledger" / f"{key}.jsonl"
 
-    Its parent's transcript is not read: a chat's reached 152 MB on 10-16, too much to pull through the relay on every pass. So on another
-    box a delete counts only when the runtime wrote status "deleted" into the record, and a delete_subagent call the record does not show
-    cannot be established from here."""
-    where = f"{folder.name}/rlm-subagent.json on {BOX.name}"
+
+def ledger_deletes():
+    """{realpath of a child's job folder: (delete time as written, ledger reason)} for each child the RLM ledger leaves deleted, replayed
+    the way the runtime replays it: the last spawn or delete of a child wins, so a spawn after a delete revives it, a torn final line is
+    still being appended and is skipped, and an op the runtime may add later is ignored. Raises RecordError when the ledger cannot be read
+    or holds a line that is not a v1 record."""
+    path = rlm_ledger_path()
+    try:
+        state = path.stat()
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise RecordError(f"the rlm ledger {path.name} is unreadable ({error.strerror or type(error).__name__})") from None
+    return replay_ledger(str(path), state.st_size, state.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=1)
+def replay_ledger(path, _size, _mtime_ns):
+    try:
+        text = Path(path).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RecordError(f"the rlm ledger {Path(path).name} is unreadable ({getattr(error, 'strerror', None) or type(error).__name__})") from None
+    last = {}
+    rows = text.split("\n")
+    for index, line in enumerate(rows[:-1]):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            raise RecordError(f"rlm ledger line {index + 1} is not valid JSON") from None
+        version = record.get("v") if isinstance(record, dict) else None
+        if version != 1 or not isinstance(record.get("at"), str):
+            raise RecordError(f"rlm ledger line {index + 1} has version {version} or no time, not a v1 record")
+        if record.get("op") not in ("spawn", "delete"):
+            continue
+        if not isinstance(record.get("child"), str) or not isinstance(record.get("childId"), str):
+            raise RecordError(f"rlm ledger line {index + 1} is a {record['op']} with no child")
+        last[os.path.realpath(os.path.dirname(record["child"]))] = (record["at"], record.get("reason")) if record["op"] == "delete" else None
+    return {folder: delete for folder, delete in last.items() if delete}
+
+
+def registry_delete(folder):
+    """(delete time or None, the record's name) when the RLM runtime marked the job folder `folder` deleted in its rlm-subagent.json, else
+    None. A record that does not exist means not deleted; a failed read or a record that is not a JSON object raises JobRecordError."""
+    where = f"{folder.name}/rlm-subagent.json" + (f" on {BOX.name}" if BOX.remote else "")
     try:
         body = BOX.read(folder / "rlm-subagent.json")
     except FileNotFoundError:
-        return False
+        return None
     except OSError as error:
         raise JobRecordError(f"{where} could not be read ({error})") from None
     try:
@@ -727,36 +783,144 @@ def remote_deleted(folder):
         raise JobRecordError(f"{where} is not valid JSON ({len(body)} bytes)") from None
     if not isinstance(record, dict):
         raise JobRecordError(f"{where} does not have the expected shape")
-    return record.get("status") == "deleted"
+    if record.get("status") != "deleted":
+        return None
+    at = record.get("updatedAt") if isinstance(record.get("updatedAt"), str) else None
+    return parse_ts(at) if at else None, "rlm-subagent.json status deleted" + (f", at {at}" if at else "")
 
 
-def parent_deleted(folder):
-    """The transcript above the job folder `folder` holds an rlm.delete_subagent call whose result names it. A chat's transcript reached
-    152 MB on 10-16, so the file is searched for the job's id before any line is read."""
-    above = folder.parent
-    parent = next((p for p in above.glob("*.jsonl") if len(p.name) == 42), None) if above.name.startswith("sub-") else SESSIONS_DIR / f"{above.name}.jsonl"
-    named = f"rlm_child_id='{folder.name}'".encode()
-    if parent is None:
-        return False
-    try:
-        if parent.stat().st_size == 0:
-            return False
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise JobRecordError(f"{parent.name}, the transcript above {folder.name}, could not be read ({error.strerror or type(error).__name__})") from None
-    try:
-        with open(parent, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as text:
-            at = text.find(named)
-            while at >= 0:
-                start = text.rfind(b"\n", 0, at) + 1
-                call = text.rfind(b'"toolCall"', 0, start)
-                if text.find(b'"toolResult"', start, at) >= 0 and call >= 0 and text.find(b"delete_subagent", text.rfind(b"\n", 0, call) + 1, start) >= 0:
-                    return True
-                at = text.find(named, at + len(named))
-    except OSError as error:
-        raise JobRecordError(f"{parent.name}, the transcript above {folder.name}, could not be read ({error.strerror or type(error).__name__})") from None
-    return False
+def recorded_deletes(path):
+    """[(delete time or None, what to report)] for each delete the RLM runtime recorded for the job at `path` or a job above it, nearest
+    first: the ledger's delete for the job's full folder path, and the status "deleted" in its rlm-subagent.json."""
+    ledger = {} if BOX.remote else ledger_deletes()
+    found = []
+    folder = Path(path).parent
+    while folder.name.startswith("sub-"):
+        above = "" if folder == Path(path).parent else f"{folder.name}, "
+        who = "its parent deleted it (" if not above else "a job above it was deleted ("
+        delete = ledger.get(os.path.realpath(folder))
+        if delete:
+            at, reason = delete
+            found.append((parse_ts(at), f"{who if reason == 'user' or above else 'the RLM runtime deleted it ('}{above}rlm ledger delete, reason {reason}, at {at})"))
+        registry = registry_delete(folder)
+        if registry:
+            found.append((registry[0], f"{who}{above}{registry[1]})"))
+        folder = folder.parent
+    return found
+
+
+def current_delete(at, entries):
+    """A delete at `at` stopped the session's current turn unless a user message came after it: that prompt started a turn the delete did not
+    stop. A delete with no time counts."""
+    return at is None or not any(entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "user"
+                                 and (parse_ts(entry.get("timestamp")) or at) > at for entry in entries)
+
+
+# (verdict, what to report) for each of Prime's archive reasons, SESSION_ARCHIVE_REASONS in prime-agent's core/session-manager.ts from
+# stop-provenance 500050f. Any other value is unresolved.
+ARCHIVE_REASONS = {"owner_stop": ("stopped", "the owner stopped it"), "owner_archive": ("stopped", "the owner archived it"),
+                   "subagent_deleted": ("stopped", "its parent deleted it"), "subagent_cancelled": ("stopped", "its parent cancelled it"),
+                   "completed": ("stopped", "it finished"), "replaced": ("stopped", "a new session replaced it"),
+                   "spawn_failed": ("stopped", "its spawn failed"), "draft_discarded": ("stopped", "Prime discarded it as an empty draft"),
+                   "idle_unload": ("unload", "the idle unload stopped it"), "update_discarded": ("discarded", "an update discarded it"),
+                   "daemon_shutdown": ("unresolved", "Its archive came from prime-agent shutdown, and no record says it should continue")}
+# The update coordinator's status records, one per update: <agent dir>/update-restarts/<socket key>-<request id>.json.
+UPDATE_RESTARTS_DIR = Path.home() / ".prime" / "agent" / "update-restarts"
+# The update commit appends a discard entry and then closes that session, whose archive line comes first in the close (daemon-mode.ts at
+# 500050f), so the line follows its entry by milliseconds.
+DISCARD_ARCHIVE_S = 5.0
+
+
+def update_records():
+    """The update coordinator's status records on this box, or none on another box, whose records this pass does not read. Raises
+    JobRecordError for one that does not read or parse."""
+    return [] if BOX.remote else read_update_records(UPDATE_RESTARTS_DIR)
+
+
+@functools.cache
+def read_update_records(folder):
+    records = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            record = json.loads(path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as error:
+            raise JobRecordError(f"the update record {path.name} did not read ({error})") from None
+        if not isinstance(record, dict) or not all(isinstance(record.get(key, []), list) for key in ("discarded", "stoppedBeforeRestore")):
+            raise JobRecordError(f"the update record {path.name} does not have the expected shape")
+        records.append(record)
+    return records
+
+
+def update_entry(key, session_id, path, matches):
+    """(record, entry) for the first entry of list `key` in an update record that names the session `session_id` at `path` and passes
+    `matches`, or None."""
+    for record in update_records():
+        for entry in record.get(key) or []:
+            if isinstance(entry, dict) and entry.get("sessionId") == session_id and matches(entry) \
+                    and os.path.realpath(entry.get("sessionFile") or path) == os.path.realpath(path):
+                return record, entry
+    return None
+
+
+def update_discard(archive, session_id, path):
+    """archive_verdict for an archive whose reason is update_discarded: the update's discard record that names the session within
+    DISCARD_ARCHIVE_S before the archive gives the cause."""
+    at, stamp = archive.get("timestamp"), parse_ts(archive.get("timestamp"))
+
+    def this_close(entry):
+        closed = parse_ts(entry.get("at"))
+        return entry.get("reason") == "update_discarded" and bool(closed and stamp) and 0 <= (stamp - closed).total_seconds() <= DISCARD_ARCHIVE_S
+
+    found = update_entry("discarded", session_id, path, this_close)
+    if not found:
+        where = f", and the update records on {BOX.name} are not read from here" if BOX.remote else ""
+        return ("unresolved", f"Its archive at {at} says an update discarded it, but no matching discard record names it{where}, so it is not resumed.")
+    record, entry = found
+    if entry.get("cause") in ("empty_draft", "no_session_file"):
+        return ("stopped", f"the update {record.get('requestId')} discarded it as {entry['cause']} (archive reason update_discarded, at {at})")
+    return ("unresolved", f"The update {record.get('requestId')} closed it at {at} without a restart entry ({entry.get('cause')}), and no record "
+                          "says it should continue, so it is not resumed.")
+
+
+def archive_verdict(archive, session_id, path, unloaded_at):
+    """("stopped" | "unload" | "unresolved", text) for the archive line `archive` that stopped a run's turn, by the reason Prime wrote on it.
+    A line with no reason is the update's stoppedBeforeRestore when that record names it at this time, the idle unload's when the unload's
+    record follows it, and otherwise has no recorded cause. A reason this pass does not know is never read as a known one."""
+    at = archive.get("timestamp")
+    reason = (archive.get("state") or {}).get("reason")
+    if reason is None:
+        held = update_entry("stoppedBeforeRestore", session_id, path, lambda entry: entry.get("at") == at)
+        if held:
+            record, entry = held
+            kind, said = ARCHIVE_REASONS.get(entry.get("reason"), (None, None))
+            if kind == "stopped":
+                return ("stopped", f"{said} after the update {record.get('requestId')} began (stoppedBeforeRestore, at {at})")
+            return ("unresolved", f"The update {record.get('requestId')} did not restore it, since it was stopped at {at} after the update began "
+                                  f"(stoppedBeforeRestore, cause {entry.get('reason')}), so it is not resumed.")
+        if unload_archive(archive, unloaded_at):
+            return ("unload", f"the idle unload stopped it (unloaded.json, archive at {at})")
+        return ("unresolved", "An archive with no recorded cause stopped its turn, so it is not resumed.")
+    kind, said = ARCHIVE_REASONS.get(reason, (None, None))
+    if kind == "discarded":
+        return update_discard(archive, session_id, path)
+    if kind == "unresolved":
+        return ("unresolved", f"{said} (archive reason {reason}, at {at}), so it is not resumed.")
+    if kind:
+        return (kind, f"{said} (archive reason {reason}, at {at})")
+    return ("unresolved", f"Its archive at {at} names a cause this pass does not know ({reason!r}), so it is not resumed.")
+
+
+def stopped_since(entries, found_at):
+    """What stopped the run after the pass found it at `found_at`: an archive line written later whose reason means the stop, or None."""
+    for entry in reversed(entries):
+        reason = (entry.get("state") or {}).get("reason")
+        kind, said = ARCHIVE_REASONS.get(reason, (None, None))
+        stamp = parse_ts(entry.get("timestamp"))
+        if is_archive(entry) and kind == "stopped" and found_at and stamp and stamp > found_at:
+            return f"{said} (archive reason {reason}, at {entry.get('timestamp')})"
+    return None
 
 
 def with_saved_owners(sessions, saved_rows, owners):
@@ -785,13 +949,17 @@ def prune_tails(name):
 
 
 def tail_entries(path, nbytes=256_000):
-    """Parsed entries from the tail of a session jsonl."""
+    """Parsed entries from the tail of a session jsonl, or none when it does not read."""
     try:
-        chunk = BOX.tail(path, nbytes).decode("utf-8", "ignore")
+        return parse_lines(BOX.tail(path, nbytes))
     except OSError:
         return []
+
+
+def parse_lines(chunk):
+    """The JSON entries of the bytes `chunk` of a session jsonl, skipping a line cut at either end."""
     entries = []
-    for line in chunk.split("\n"):
+    for line in chunk.decode("utf-8", "ignore").split("\n"):
         if not line.strip():
             continue
         try:
@@ -835,7 +1003,11 @@ def is_archive(entry):
 
 
 def unload_archive(archive, unloaded_at):
-    """The archive `archive` came from the idle unload's stop at `unloaded_at`."""
+    """The archive `archive` came from the idle unload: its reason says idle_unload, or it has no reason and the unload's record at
+    `unloaded_at` follows it. A line with any other reason was written by another stop, whatever the unload's record says."""
+    reason = (archive.get("state") or {}).get("reason")
+    if reason is not None:
+        return reason == "idle_unload"
     stamp = parse_ts(archive.get("timestamp"))
     return bool(unloaded_at and stamp) and 0 <= (unloaded_at - stamp).total_seconds() <= UNLOAD_MATCH_S
 
@@ -844,6 +1016,11 @@ def archived_by_unload(entries, unloaded_at):
     """The session's last archive came from the idle unload's stop at `unloaded_at`."""
     archives = [e for e in entries if is_archive(e)]
     return bool(archives) and unload_archive(archives[-1], unloaded_at)
+
+
+def unload_stop_holds(session, verdict):
+    """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook."""
+    return session.get("lifecycle") != "live" and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]))
 
 
 def stop_archive(entries, last):
@@ -1237,7 +1414,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if not mark:
             return {}
         try:
-            if stop_record(s.get("sessionFile")):
+            if stop_record(s.get("sessionFile"), entries_of(sid)):
                 return {"retry_blocked": "a stop record names it"}
         except RecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
@@ -1263,6 +1440,11 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             tails.update(zip(ids, pool.map(lambda sid: tail_entries(by_id[sid]["sessionFile"]), ids)))
         finally:
             pool.shutdown(wait=not STOP, cancel_futures=True)
+
+    def stopped(s, sid, why, at=None):
+        head = head_of(sid, by_id)
+        STOPPED.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)", "head": head,
+                        "head_session_id": head_session(head, s), "stopped_at": at, "stopped_by": why, **({"host": BOX.name} if BOX.remote else {})})
 
     paused = []
     for s in sessions:
@@ -1325,27 +1507,31 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if not verdict:
                 continue
             stopper = stop_archive(entries_of(sid), last)
-            if stopper and not unload_archive(stopper, unloaded_at) and not unstuck and not named:
+            if stopper and not unstuck and not named:
                 try:
-                    recorded = stop_record(s.get("sessionFile"))
+                    recorded = stop_record(s.get("sessionFile"), entries_of(sid))
+                    kind, why = ("stopped", recorded) if recorded else archive_verdict(stopper, full, s.get("sessionFile"), unloaded_at)
                 except JobRecordError as error:
                     INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
                     continue
-                if not recorded:
+                if kind == "stopped":
+                    stopped(s, sid, why, stopper.get("timestamp"))
+                    continue
+                if kind == "unresolved":
                     UNRESOLVED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
                                        "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": stopper.get("timestamp"),
-                                       "error": "An archive with no recorded cause stopped its turn, so it is not resumed.",
-                                       **({"host": BOX.name} if BOX.remote else {})})
-                continue
-            # The unload's stop counts only for a turn that failed on the token hook; any other run it stopped stays stopped.
-            hidden = bool(stopper) and unload_archive(stopper, unloaded_at) and s.get("lifecycle") != "live"
-            if hidden and not unstuck and not named and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
-                continue
+                                       "error": why, **({"host": BOX.name} if BOX.remote else {})})
+                    continue
+                if unload_stop_holds(s, verdict):
+                    stopped(s, sid, f"{why} after a turn that did not fail on the token hook", stopper.get("timestamp"))
+                    continue
         try:
-            if stop_record(s.get("sessionFile")):
-                continue
+            recorded = stop_record(s.get("sessionFile"), entries_of(sid))
         except JobRecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
+            continue
+        if recorded:
+            stopped(s, sid, recorded)
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None
@@ -1467,11 +1653,17 @@ def relay(session_id, text, describe=True):
     return {**result, "relayed_through": parent}
 
 
-def send_guard(p):
-    """None when the run `p` may get its message now, else what to report instead. The stop records are read again right before each send:
-    a chat or a parent may delete or archive a run after the pass found it and before its turn in the send loop."""
+def send_guard(p, found_at):
+    """None when the run `p`, which the pass found at `found_at`, may get its message now, else what to report instead. The stop records are read again right before each send:
+    a chat or a parent may delete or archive a run after the pass found it and before its turn in the send loop, and the owner may stop it.
+    A transcript that does not read sends nothing."""
+    path = FILES.get(p["session_id"])
     try:
-        why = stop_record(FILES.get(p["session_id"]))
+        try:
+            entries = parse_lines(BOX.tail(path, 256_000)) if path else []
+        except OSError as error:
+            raise JobRecordError(f"the transcript of {p['id']} could not be read ({error})") from None
+        why = stop_record(path, entries) or stopped_since(entries, found_at)
     except RecordError as error:
         INCOMPLETE.append({"host": BOX.name, "error": f"not sent to {p['id']}: {error}"})
         return {"error": f"not sent: {error}"}
@@ -1494,7 +1686,7 @@ def direct_resume(paused, args, state, now):
                 res = f"skipped: {p['reason']}"
             elif args.dry_run:
                 res = "dry-run"
-            elif (blocked := send_guard(p)) is not None:
+            elif (blocked := send_guard(p, now)) is not None:
                 res = blocked
             else:
                 text = NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message
@@ -1505,7 +1697,7 @@ def direct_resume(paused, args, state, now):
                     gone = unlisted and UNKNOWN_SESSION in str(error)
                     live = live_id(p["session_id"]) if gone else None
                     try:
-                        res = send_guard(p) or (send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]})
+                        res = send_guard(p, now) or (send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]})
                     except CommandError as again:
                         res = {"error": str(again)[:300]}
                 if sent_ok(res):
@@ -1553,7 +1745,7 @@ def resume(sessions, args, now):
             elif args.dry_run:
                 row["result"] = "dry-run"
             else:
-                guards = [(p, send_guard(p)) for p in runs]
+                guards = [(p, send_guard(p, now)) for p in runs]
                 runs = [p for p, blocked in guards if blocked is None]
                 failed = next((blocked for _, blocked in guards if isinstance(blocked, dict)), None)
                 row["paused_in_tree"] = [p["id"] for p in runs]
@@ -1583,7 +1775,7 @@ def resume(sessions, args, now):
                     res = "dry-run"
                 elif p["reason"] == "worker_failed":
                     res = "skipped: its worker failed, its head is reopened instead"
-                elif (blocked := send_guard(p)) is not None:
+                elif (blocked := send_guard(p, now)) is not None:
                     res = blocked
                 else:
                     try:
@@ -1673,6 +1865,8 @@ def main():
         report["incomplete"] = incomplete
     if UNRESOLVED:
         report["unresolved"] = UNRESOLVED
+    if STOPPED:
+        report["stopped"] = STOPPED
     if args.json:
         print(json.dumps(report, indent=1))
         return finish()
@@ -1680,7 +1874,9 @@ def main():
     for entry in incomplete:
         print(f"not finished on {entry['host'] or 'this box'}: {entry['error']}")
     for entry in UNRESOLVED:
-        print(f"not resumed, cause unknown: {entry['id']}  {entry['name'][:40]}  archived {entry['archived_at']}")
+        print(f"not resumed: {entry['id']}  {entry['name'][:40]}  archived {entry['archived_at']}: {entry['error']}")
+    for entry in STOPPED:
+        print(f"stopped on purpose: {entry['id']}  {entry['name'][:40]}: {entry['stopped_by']}")
     paused, actions, child_actions = report["paused"], report["heads"], report["children"]
     if not paused:
         print(f"no interrupted live run in the last {args.since_minutes:g} min")
