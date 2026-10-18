@@ -328,12 +328,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     restNow: (id, quietMs) => threads.restNow(id, quietMs),
     title: id => catalog.title(id),
-    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type),
+    // Only a file on this box can be rewritten as active after a bare kill, so another box's session is never killed by a daemon without
+    // kill_origin (src/idle-unload.ts NO_BARE_KILL).
+    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type, !catalog.hostOf(row.sessionId)),
     stopped: async (row, isChat, since) => {
       await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
-      // The daemon's kill writes the archived state, which would hide a chat until the next service start unarchived it (Chats.adopt) and the
-      // owner's plain thread (threads.json) for good. A chat he archived stays archived, and so does a thread an archive reached since `since`.
-      const listed = isChat || ((await created.ids()).includes(row.sessionId) && !(await chats.archivedIds()).has(row.sessionId));
+      // The daemon's kill writes the archived state, which would hide the session from agent_message and the list. Every session it stopped
+      // is rewritten as active, not only chats and threads.json threads: on 10-18 the jobs 'parity prod promote 12' and 'meta ads advertisers
+      // push' stayed archived after the 12:53:07Z sweep. A chat he archived stays archived, and so does a thread an archive reached since `since`.
+      const listed = isChat || !(await chats.archivedIds()).has(row.sessionId);
       if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
     },
     log: dutyLog,
