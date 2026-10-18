@@ -43,7 +43,7 @@ The owner, 2026-10-18, after he found the ops guy's p45 and p221 at 64 of 71 and
 1. List the chat's duties in `~/.prime/agent/browser-chat/duties/<chat session id>.json`.
 2. Each duty keeps one thing easy to break working for the long term, named after that system in the owner's terms, such as "Crawler working" or "CI working" ([check-ins](check-ins.md) 7 and 8).
 3. Each metric reads what the owner would check by hand, such as the dashboard he opens or the page he loads, never a count of runs or files.
-4. Every upkeep item and every risk page from the plan has a metric that checks it. Add the missing ones with `scripts/duties/add.ts` ([check-ins](check-ins.md) 6).
+4. Every upkeep item and every risk page from the plan has a metric that checks it. Add the missing ones with `components/user-history/scripts/duties/add.ts` ([check-ins](check-ins.md) 6).
 5. When a goal reaches its done line, check the real state, close the goal, and add a duty metric that keeps it met. When that metric misses later, its fix step goes back on the plan with a job ([check-ins](check-ins.md) 12).
 
 ## Pursue completion
