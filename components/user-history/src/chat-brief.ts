@@ -100,7 +100,9 @@ export interface ChatJobOf { chat: string; root: boolean }
 export function jobReplyGuideline(job: ChatJobOf): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report first with \`${send}\`, ` +
-    `and lead it with the answer. ${MERGE_RULE_SHORT} No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
+    `and lead it with the answer. ${MERGE_RULE_SHORT} Put a scratch repo tree (a \`git archive\` export, or a worktree where the repo allows ` +
+    "one) under ~/scratch/<job>/, never in a wiki session folder, and commit through a private index, which needs no tree copy. " +
+    `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
     "Work, reason and write in English, including reports, logs, files and commits; quote the owner's words as-is; only replies and pages made " +
     "for the owner use his language (c2).";
 }

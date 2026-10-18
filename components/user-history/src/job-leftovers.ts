@@ -1,7 +1,9 @@
-import { execFile } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 
 /**
@@ -20,7 +22,7 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number }
+export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[] }
 export interface LeftoverSource {
   /** The detached processes of these sessions (worker-footprint.py `--session`). */
   strays: (sessions: readonly string[]) => Promise<readonly RawProcess[]>;
@@ -30,17 +32,23 @@ export interface LeftoverSource {
   /** Closes the Aside tabs among these target ids that are still open; returns how many it closed. */
   closeTabs: (ids: readonly string[]) => Promise<number>;
   later: (ms: number, run: () => void) => void;
+  /** Deletes the repo copies left in the wiki session folders these transcripts opened (`removeRepoCopies`); returns the folders it deleted. */
+  removeCopies: (transcripts: readonly string[]) => Promise<readonly string[]>;
 }
 
-/** The session ids, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
-export async function sessionTree(dir: string): Promise<{ sessions: string[]; tabs: string[]; tabFiles: string[] }> {
+/** The session ids, transcripts, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
+export async function sessionTree(dir: string): Promise<{ sessions: string[]; transcripts: string[]; tabs: string[]; tabFiles: string[] }> {
   const sessions: string[] = [];
+  const transcripts: string[] = [];
   const tabs: string[] = [];
   const tabFiles: string[] = [];
   const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    if (SESSION_FILE.test(entry.name)) sessions.push(entry.name.slice(0, -".jsonl".length));
+    if (SESSION_FILE.test(entry.name)) {
+      sessions.push(entry.name.slice(0, -".jsonl".length));
+      transcripts.push(join(entry.parentPath, entry.name));
+    }
     else if (entry.name === TABS_FILE) {
       const file = join(entry.parentPath, entry.name);
       const record = await readFile(file, "utf8").then(text => JSON.parse(text) as { tabs?: unknown }, () => null);
@@ -48,7 +56,71 @@ export async function sessionTree(dir: string): Promise<{ sessions: string[]; ta
       if (ids.length) { tabs.push(...ids); tabFiles.push(file); }
     }
   }
-  return { sessions, tabs, tabFiles };
+  return { sessions, transcripts, tabs, tabFiles };
+}
+
+/**
+ * The wiki session folders a transcript opened, from the answer of `POST /api/agent/sessions`, `{"id":"sessions/<day>/<hhmm-slug>","path":
+ * "<id>/index.html",...}`, printed raw, as a Python dict or escaped inside a tool result.
+ */
+const OPENED_SESSION = /id[\\"']*\s*:\s*[\\"']*(sessions\/\d{4}\/\d{2}\/\d{2}\/\d{4}-[a-z0-9-]+)[\\"']*\s*,\s*[\\"']*path[\\"']*\s*:\s*[\\"']*\1\/index\.html/g;
+
+export async function openedWikiSessions(transcripts: readonly string[]): Promise<string[]> {
+  const found = new Set<string>();
+  for (const file of transcripts) {
+    const text = await readFile(file, "utf8").catch(() => "");
+    for (const match of text.matchAll(OPENED_SESSION)) found.add(match[1]!);
+  }
+  return [...found];
+}
+
+/**
+ * The repo copies under a wiki session folder: each folder below it that holds `.git`, `pnpm-workspace.yaml` or `scripts/repo` (a clone or a
+ * `git archive` export), and each `node_modules`. On 10-18 the session folders held 502 such copies with 1.3M of their 1.7M files, and the wiki
+ * index, `git status` and every walker paid for them.
+ */
+export async function repoCopies(folder: string): Promise<string[]> {
+  const copies: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const path = join(dir, entry.name);
+      if (entry.name === "node_modules") { copies.push(path); continue; }
+      const inside = await readdir(path, { withFileTypes: true }).catch(() => []);
+      const copy = inside.some(item => item.name === ".git" || item.name === "pnpm-workspace.yaml" ||
+        (item.name === "scripts" && item.isDirectory() && existsSync(join(path, "scripts", "repo"))));
+      if (copy) copies.push(path);
+      else await walk(path);
+    }
+  };
+  await walk(folder);
+  return copies;
+}
+
+/** Whether git tracks a file under this path of the wiki content (an export a job meant to keep, such as 1458-land37-staging-converge-fix/drafts/u2). A failing git counts as tracked. */
+function tracked(contentDir: string, path: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const git = spawn("git", ["-C", contentDir, "ls-files", "-z", "--", path], { stdio: ["ignore", "pipe", "ignore"] });
+    let any = false;
+    git.stdout.once("data", () => { any = true; git.kill(); });
+    git.once("error", () => resolve(true));
+    git.once("close", code => resolve(any || code !== 0 && code !== null));
+  });
+}
+
+/** Deletes the untracked repo copies (`repoCopies`) in the wiki session folders the transcripts opened, and returns the folders it deleted. */
+export async function removeRepoCopies(transcripts: readonly string[], contentDir = WIKI_CONTENT_DIR,
+  isTracked: (contentDir: string, path: string) => Promise<boolean> = tracked): Promise<string[]> {
+  const removed: string[] = [];
+  for (const session of await openedWikiSessions(transcripts)) {
+    for (const copy of await repoCopies(join(contentDir, session))) {
+      if (await isTracked(contentDir, copy)) continue;
+      await rm(copy, { recursive: true, force: true });
+      removed.push(copy);
+    }
+  }
+  return removed;
 }
 
 /**
@@ -85,7 +157,7 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 
 /**
  * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
- * open Aside for them again. With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
+ * open Aside for them again, and deletes the repo copies they left in the wiki session folders they opened. With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
  * delete leaves its children detached only once it exits.
  */
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
@@ -99,7 +171,8 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
     const record = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => null);
     if (record) await writeFile(file, JSON.stringify({ ...record, tabs: {} })).catch(() => {});
   }
-  return { stopped, tabs: Math.max(tabs, 0) };
+  const copies = await source.removeCopies(trees.flatMap(tree => tree.transcripts)).catch(() => []);
+  return { stopped, tabs: Math.max(tabs, 0), copies };
 }
 
 function helper(args: readonly string[]): Promise<unknown> {
@@ -130,7 +203,10 @@ console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(i
   });
 }
 
-/** The real source: the footprint helper, process.kill, `aside repl` and timers that do not hold the service open. */
+/** Transcripts whose wiki session folders were already cleared, so the sweep of deleted jobs reads each transcript once. */
+const copiesCleared = new Set<string>();
+
+/** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, and `removeRepoCopies`. */
 export const leftoverSource: LeftoverSource = {
   strays: async sessions => {
     const answer = await helper(["--session", sessions.join(",")]) as { strays?: RawProcess[] };
@@ -140,4 +216,9 @@ export const leftoverSource: LeftoverSource = {
   kill: (pid, signal) => { process.kill(pid, signal); },
   closeTabs: ids => closeAsideTabs(ids),
   later: (ms, run) => { setTimeout(run, ms).unref(); },
+  removeCopies: transcripts => {
+    const fresh = transcripts.filter(file => !copiesCleared.has(file));
+    for (const file of fresh) copiesCleared.add(file);
+    return removeRepoCopies(fresh);
+  },
 };
