@@ -267,15 +267,44 @@ class R5Wait(unittest.TestCase):
         self.assertEqual((type(d), d.account.id, d.reason), (sched.Admit, "y", "switch"))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
 
-    def test_a_tree_that_waits_for_its_own_account_comes_back_at_its_slot(self):
+    def test_a_tree_that_backs_off_for_its_own_account_comes_back_once_it_serves_again(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
         with draws(0.5):
             d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
         self.assertEqual((d.slot_account.id, d.slot_at), ("x", NOW + CFG["depleted_backoff_max_sec"] / 2))
-        self.assertIsInstance(request(state, KEY, [fresh("x", 0, FIVE, NOW + 600)], NOW + 600), sched.Wait)
-        back = request(state, KEY, [fresh("x", 0, FIVE, d.slot_at)], d.slot_at)
+        still = request(state, KEY, [acct("x", five=100, five_reset_in=300)], NOW + 300)
+        self.assertEqual((type(still), still.slot_at, still.backoff), (sched.Wait, d.slot_at, True))
+        back = request(state, KEY, [fresh("x", 0, FIVE, NOW + 600)], NOW + 600)
         self.assertEqual((type(back), back.account.id, back.reason), (sched.Admit, "x", "back"))
+        self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
+
+    def test_a_backoff_drawn_on_a_depleted_pool_ends_when_another_account_takes_trees_1018(self):
+        """10-18: 01a14eaf, a high tree, backed off at 15:10:36Z to 16:45:25Z with its
+        draw named on the Virev seat. claude12, its own account, was limited until
+        15:50Z, and from then claude12, krenerd77 and claude3 took new trees, while
+        every check-in restart until 16:04Z met "waits for its slot at 16:45:26"."""
+        state = empty_state()
+        put(state, KEY, on="c12", at=NOW - 60, priority="high")
+        out = [acct("c12", five=100, five_reset_in=2400, limited_until=NOW + 2400),
+               acct("kr", five=100, five_reset_in=3000), acct("virev", five=100, five_reset_in=5000, tier="team")]
+        with draws(5689 / CFG["depleted_backoff_max_sec"]):
+            d = limited(state, KEY, out, NOW, NOW + 2400)
+        self.assertEqual((type(d), d.backoff, d.slot_at), (sched.Wait, True, NOW + 5689))
+        later = NOW + 2400 + 840
+        revived = [fresh("c12", 3, FIVE, later - 300), fresh("kr", 12, FIVE, later - 300),
+                   dataclasses.replace(acct("virev", five=100, five_reset_in=5000 - 3240, tier="team"))]
+        back = request(state, KEY, revived, later)
+        self.assertEqual((type(back), back.account.id in ("c12", "kr")), (sched.Admit, True))
+        self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
+
+    def test_a_backoff_held_on_a_pool_that_still_waits_for_rotation_keeps_its_draw(self):
+        state = empty_state()
+        put(state, KEY, on="x", at=NOW - 60, priority="high")
+        with draws(0.75):
+            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=90)], NOW, NOW + 600)
+        again = request(state, KEY, [acct("x", five=80, five_reset_in=600), acct("y", five=90)], NOW + 900)
+        self.assertEqual((type(again), again.slot_at, again.backoff), (sched.Wait, d.slot_at, True))
 
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
         state = empty_state()
@@ -621,6 +650,17 @@ class Cli(unittest.TestCase):
         rc, out, _ = self.run_cli(state, accounts, ["ls"])
         self.assertEqual(rc, 0)
         self.assertIn("priority low  waits for y", out)
+
+    def test_ls_counts_a_tree_that_backs_off_on_an_account_as_waiting_for_it(self):
+        """10-18 16:04Z: 01a14eaf backed off to 16:45Z on the Virev seat while every
+        row of `pi-pool ls --json` read waiting 0."""
+        state = empty_state()
+        put(state, KEY, on="x")
+        cell, backoff = put(state, tree_key("cell"), on="x"), put(state, tree_key("backoff"), on="x")
+        state["sessions"][cell.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 120, "since": NOW}}
+        state["sessions"][backoff.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 2400, "since": NOW, "backoff": True}}
+        _, out, _ = self.run_cli(state, [acct("x"), acct("y", five=100)], ["ls", "--json"])
+        self.assertEqual({row["id"]: row["waiting"] for row in json.loads(out)["rows"]}, {"x": 0, "y": 2})
 
     def test_switch_writes_a_leave_for_this_session_only(self):
         state = empty_state()

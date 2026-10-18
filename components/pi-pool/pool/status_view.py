@@ -91,7 +91,7 @@ def build_rows(accounts, tree, book, cooldowns, cfg, now, cooldown_reasons=None)
             "usage_age_sec": max(0, round(now - a.usage_at)) if a.usage_at else None,
             "sessions": book.load.get(a.id, 0),
             "admitted_recently": sum(1 for at, _ in book.admitted.get(a.id, ()) if now - at <= cfg["admit_slot_sec"]),
-            "waiting": len(book.waiting.get(a.id, ())),
+            "waiting": book.parked.get(a.id, 0),
             "cooldown_until": round(cooldowns[a.id]) if cooling else None,
             "cooldown_reason": cooldown_reasons.get(a.id) if cooling else None,
             "limited_until": round(a.limited_until) if limited else None,
@@ -312,7 +312,7 @@ def status_lines(providers, p, term_width, now=None):
         ctx = {"now": now, "in_use": book.load, "pool_pin": prov.get("pin"),
                "scores": {a.id: sched.score(a, cfg, now, "normal", book.load) for a in accounts if reasons[a.id] is None},
                "serves": {a.id: sched.serve_reason(a, cooldowns, now) is None for a in accounts},
-               "waiting": {a: len(w) for a, w in book.waiting.items()},
+               "waiting": dict(book.parked),
                "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {}}
         head = [f"{title}  ({len(accounts)} accounts)"]
         if prov.get("pin"):

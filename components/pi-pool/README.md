@@ -276,7 +276,8 @@ labels to choose from.
 `ls --json` names the pool `pin`, the tree's `priority` and its `wait` (`{account, slot_at}`
 or null; `who --json` carries the same `wait` per provider and `priority` at the top). Its
 rows carry `usable` (the account takes this tree now), `serves` (a tree already on it stays),
-`score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting`, and
+`score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting` (the other trees whose wait
+names the account, a backoff included), and
 what `status` draws: `tier` (`max 20x`, `pro`), `windows`
 (one entry per usage window in display order, each with `kind` session, weekly or model,
 `label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
@@ -360,7 +361,7 @@ flowchart TD
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
 | R5 wait | an account passes R2 for this tree but R4 has no cell for it now | the tree gets its own `slot_at` on that account's next free cell, ordered by priority, then by wait start |
-| R5 backoff | no account passes R2 for this tree (the pool waits for rotation) | the tree waits a uniform random 0 to `depleted_backoff_max_sec` (7200 s), a fresh draw each time, and nothing admits it before the draw passes, owner turns included. The draw takes no cell. The `wait` record carries `backoff: true` and names the account that frees first |
+| R5 backoff | no account passes R2 for this tree (the pool waits for rotation) | the tree waits a uniform random 0 to `depleted_backoff_max_sec` (7200 s), a fresh draw each time, and nothing admits it before the draw passes while no account passes R2 for it, owner turns included. Once an account passes R2 or is unsampled again, its next request is decided by R1 to R5 at once. The draw takes no cell. The `wait` record carries `backoff: true` and names the account that frees first |
 | R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account when that account frees within `budget_wait_max_sec` (3600); otherwise it moves anyway and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
 | R7 priority | low trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
@@ -384,7 +385,11 @@ asked for it on 2026-10-18: "prevent that with super long random backoff on depl
 waiting for rotation", then "make it random 0-120m", and "no don't" to letting his own turns
 skip it. Each tree comes back at its own random time, so accounts that revive minutes apart
 meet a trickle of trees, and R2 and R4 admit that trickle at a pace each account takes. A
-tree whose draw passes while every account is still out draws again. Before this, waiters
+tree whose draw passes while every account is still out draws again. A tree that asks before its
+draw, such as a check-in restart, after an account takes its class again gets that account
+or a cell at once: on 2026-10-18 01a14eaf held a draw for 16:45Z from 15:10Z while its own
+account claude12 served again from 15:50Z, and a replay of the 16:10Z state gave 62 of 163
+tree decisions a token or a cell where they had met the refusal, and the other 101 the same answer. Before this, waiters
 were booked into 30-second cells on the one account left, and a tree that a higher one
 displaced woke every 30 s: on 2026-10-18 08:11-08:35Z 33 trees waited so, one tree took
 about 20 429s in 3 minutes, and the pool flock gave 1,875 `vend_lock_busy` lines.

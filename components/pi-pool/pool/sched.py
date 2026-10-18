@@ -70,12 +70,15 @@ class Book:
     `load`: {account id: trees vended within active_session_sec}.
     `spending`: {account id: other trees that sent a request there within
     spending_tree_sec}.
-    `rates`: {account id: its own 5h % per spending tree-minute, observed_rate}."""
+    `rates`: {account id: its own 5h % per spending tree-minute, observed_rate}.
+    `parked`: {account id: other trees whose wait names it, a backoff included}, for
+    the status counts: a backoff holds no cell, but its tree waits all the same."""
     admitted: dict = dataclasses.field(default_factory=dict)
     waiting: dict = dataclasses.field(default_factory=dict)
     load: dict = dataclasses.field(default_factory=dict)
     spending: dict = dataclasses.field(default_factory=dict)
     rates: dict = dataclasses.field(default_factory=dict)
+    parked: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -321,6 +324,12 @@ def first_open(a, t0, tree, rank, book, cfg, sole):
     return float("inf")
 
 
+def waits_for_rotation(accounts, cooldowns, cfg, now, priority):
+    """R5 backoff: no account takes this class of tree on its last read, so the pool
+    waits for rotation. A projection hold or an unsampled account clears at the next read."""
+    return not any(admit_reason(a, cooldowns, cfg, now, priority) in (None, "unsampled") for a in accounts)
+
+
 PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
 
 
@@ -375,10 +384,14 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
     vend = cur if own_ok and cur_why is not None else None
 
-    # R5: a backoff holds until its draw passes, for every tree and every account,
-    # so a revived account is not met by every waiter at once.
+    # R5: a backoff holds until its draw passes while the pool still waits for
+    # rotation, for every tree and every account, so a revived account is not met
+    # by every waiter at once. Once an account takes this class again the tree is
+    # decided like any other: on 10-18 01a14eaf held a draw for 16:45Z from 15:10Z
+    # while claude12, its own account, served again from 15:50Z and krenerd77 and
+    # claude3 took new trees, and every check-in restart met the same refusal.
     held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None
-    if held is not None:
+    if held is not None and waits_for_rotation(accounts, cooldowns, cfg, now, p):
         return Wait(tree.wait[1], held, vend, None, left, backoff=True)
 
     pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at
@@ -445,7 +458,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
     for a, t0 in frees:
-        if tree.wait and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
+        if tree.wait and not tree.backoff and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
                 a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg):
             t = max(tree.wait[1], now)
         else:
@@ -461,7 +474,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     # next read, and a tree out of moves (R6) waits for its own account, so those
     # keep their short wait. On 10-18 at 11:10Z two low trees backed off 40 and 100
     # min on projections while claude4 and claude12 read 3% and 4%.
-    if not any(admit_reason(a, cooldowns, cfg, now, p) in (None, "unsampled") for a in accounts):
+    if waits_for_rotation(accounts, cooldowns, cfg, now, p):
         u = random.random() if draw is None else draw
         return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
     return Wait(slot_at, slot_account, vend, shadowed, left)
@@ -503,11 +516,14 @@ def book_for(state, provider, key, cfg, now):
     prov = state["providers"].get(provider) or registry.empty_provider_state()
     admitted = {a: tuple((at, t) for at, t in entries if now - at <= ADMISSION_KEEP_SEC)
                 for a, entries in (prov.get("admissions") or {}).items()}
-    waiting = {}
+    waiting, parked = {}, {}
     for k, rec in state["sessions"].items():
         wait = (rec.get("wait") or {}).get(provider)
+        if not wait or (key and k == key.key):
+            continue
+        parked[wait["account"]] = parked.get(wait["account"], 0) + 1
         # A backoff draw holds no cell.
-        if not wait or wait.get("backoff") or (key and k == key.key):
+        if wait.get("backoff"):
             continue
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
@@ -516,4 +532,4 @@ def book_for(state, provider, key, cfg, now):
     rates = {a: observed_rate(rec) for a, rec in (prov.get("read_history") or {}).items()}
     return Book(admitted, {a: tuple(v) for a, v in waiting.items()},
                 in_use_counts(state, provider, now, cfg["active_session_sec"]), spending,
-                {a: r for a, r in rates.items() if r is not None})
+                {a: r for a, r in rates.items() if r is not None}, parked)
