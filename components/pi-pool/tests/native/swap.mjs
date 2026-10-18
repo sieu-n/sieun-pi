@@ -59,12 +59,11 @@ function sse(response, text, n) {
 }
 
 const pool = join(run, 'pool');
-const tm = join(run, 'tm');
-for (const path of [pool, tm]) mkdirSync(path, { recursive: true });
-writeFileSync(join(tm, 'codex-accounts.json'), JSON.stringify({ version: 2, accounts: [C, D].map((id, i) => ({ id, email: `${'cd'[i]}@x`, label: `${'cd'[i]}@x`, tier: 'plus', windows: [] })) }));
+const store = join(pool, 'accounts');
+for (const path of [pool, join(store, 'openai-codex')]) mkdirSync(path, { recursive: true });
+writeFileSync(join(store, 'openai-codex.json'), JSON.stringify({ version: 1, accounts: [C, D].map((id, i) => ({ id, email: `${'cd'[i]}@x`, label: `${'cd'[i]}@x`, tier: 'plus', windows: [] })) }));
 for (const [id, label] of [[C, 'c'], [D, 'd']]) {
-  mkdirSync(join(tm, 'codex-stores', id.slice(0, 8)), { recursive: true });
-  writeFileSync(join(tm, 'codex-stores', id.slice(0, 8), 'auth.json'), JSON.stringify({ tokens: { access_token: jwt(id, label), refresh_token: 'synthetic' } }));
+  writeFileSync(join(store, 'openai-codex', `${id}.json`), JSON.stringify({ tokens: { access_token: jwt(id, label), refresh_token: 'synthetic' } }));
 }
 const emptyProvider = { pin: null, cooldowns: {}, disabled: {} };
 writeFileSync(join(pool, 'state.json'), JSON.stringify({ version: 2, providers: { anthropic: emptyProvider, 'openai-codex': { ...emptyProvider, pin: C } }, sessions: {} }));
@@ -112,7 +111,7 @@ async function prime(name, withExtension) {
     ...isolationEnv,
     HOME: join(dir, 'home'), TMPDIR: join(dir, 'tmp'), XDG_CONFIG_HOME: join(dir, 'home', '.config'),
     XDG_CACHE_HOME: join(dir, 'home', '.cache'), PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
-    PI_POOL_DIR: pool, TOKENMAXXING_HOME: tm, PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: SESSION,
+    PI_POOL_DIR: pool, PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: SESSION,
     PRIME_AGENT_CODING_AGENT_DIR: agentHome, PRIME_AGENT_SESSION_DIR: join(agentHome, 'sessions'),
     PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND: '1', PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1',
     NODE_COMPILE_CACHE: join(dir, 'node-cache'), NO_PROXY: '*', TERM: 'dumb',

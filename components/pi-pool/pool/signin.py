@@ -1,283 +1,338 @@
-"""`pi-pool login`: tokenmaxxing add or auth driven as JSON lines, and filing a Claude
-login by organization."""
-import datetime, fcntl, json, os, re, shutil, sys, time, uuid
+"""`pi-pool login`: an OAuth sign-in driven as JSON lines, and `pi-pool file-login`, which
+files the login in the account store of the machine that holds the accounts.
 
-from . import base, registry, status_view, commands
+A sign-in runs where its browser is. Claude uses PKCE with a localhost callback (or a
+pasted code); Codex uses the device-code flow. The login is then filed by the holder:
+in this process when this machine holds the accounts, else through `pi-pool serve`."""
+import base64, datetime, hashlib, http.server, json, os, queue, secrets, select, signal, sys, threading, time, uuid
+import urllib.error, urllib.parse, urllib.request
 
+from . import base, registry, remote, status_view
 
-TM_FLAGS = {"anthropic": [], "openai-codex": ["--codex"]}
-ANSI_ANY_RE = re.compile(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78]")
 LOGIN_TIMEOUT_SEC = 15 * 60
-LOGIN_SETTLE_SEC = 0.8
-LOGIN_BROWSER = os.path.join(base.CODE_ROOT, "app", "login-browser")
-# Screens the isolated `claude` shows before and after /login, and the key that
-# moves past each one. Matched with all whitespace removed: the TUI draws
-# spaces as cursor moves, so the plain text has none.
-CLAUDE_SCREENS = (("choosethetextstyle", "theme"), ("selectloginmethod", "method"),
-                  ("oautherror", "error"), ("loginsuccessful", "success"))
-CODEX_CODE_RE = re.compile(r"one-time code.*?\n\s*([A-Z0-9]{4,}-[A-Z0-9]{4,})", re.S)
-CODEX_URL_RE = re.compile(r"(https://auth\.openai\.com/\S+)")
-
-
-def squash(text):
-    return re.sub(r"\s+", "", text).lower()
-
-
-OSC8_OAUTH_RE = re.compile(r"\x1b\]8;[^;\x07\x1b]*;(https://[^\x07\x1b]*oauth/authorize\?[^\x07\x1b]*)(?:\x07|\x1b\\)")
-
-
-def manual_oauth_url(raw, text):
-    """The sign-in URL claude prints for a pasted code: the newest terminal
-    hyperlink to it, else the printed text, which wraps across lines and ends
-    at the paste prompt."""
-    links = [url for url in OSC8_OAUTH_RE.findall(raw) if "state=" in url and "code_challenge=" in url]
-    if links:
-        return links[-1]
-    start = text.rfind("https://")
-    while start != -1 and "oauth/authorize" not in squash(text[start:start + 200]):
-        start = text.rfind("https://", 0, start)
-    if start == -1:
-        return None
-    end = text.find("Paste", start)
-    if end == -1:
-        return None
-    url = re.sub(r"\s+", "", text[start:end])
-    return url if "state=" in url and "code_challenge=" in url else None
-
-
-class LoginDriver:
-    """Runs `tokenmaxxing add|auth` on a pseudo-terminal and reports each step
-    as one JSON line. The only input is a pasted sign-in code."""
-
-    def __init__(self, provider, argv, url_file, emit):
-        self.provider, self.argv, self.url_file, self.emit = provider, argv, url_file, emit
-        self.raw, self.mark, self.sent, self.retries = "", 0, set(), 0
-        self.announced = self.stale = None
-        self.quiet_since = time.time()
-
-    def feed(self, chunk, write):
-        if chunk:
-            self.raw += chunk
-            self.quiet_since = time.time()
-        if self.provider == "anthropic":
-            self.claude_step(write)
-        else:
-            self.codex_step()
-
-    @property
-    def text(self):
-        return ANSI_ANY_RE.sub("", self.raw)
-
-    def claude_step(self, write):
-        # The TUI drops keys it gets while still drawing a screen.
-        if time.time() - self.quiet_since < LOGIN_SETTLE_SEC:
-            return
-        text = self.text
-        tail = squash(text[self.mark:])
-        for marker, step in CLAUDE_SCREENS:
-            if marker in tail and (step == "error" or step not in self.sent):
-                self.sent.add(step)
-                self.mark = len(text)
-                if step == "error":
-                    self.retries += 1
-                    if self.retries > 3:
-                        raise LoginFailed("claude refused the sign-in code three times")
-                    self.stale = self.announced
-                    self.announced = None
-                    self.sent -= {"method", "success"}
-                    self.emit({"event": "retry", "message": "That code was not accepted. Open the new link and try again."})
-                write(b"\r")
-                return
-        manual = manual_oauth_url(self.raw, text)
-        callback = None
-        try:
-            with open(self.url_file) as f:
-                urls = [line.strip() for line in f if line.strip()]
-            callback = urls[-1] if urls else None
-        except FileNotFoundError:
-            pass
-        if self.stale and (manual == self.stale[0] or callback == self.stale[1]):
-            return
-        if manual and (manual, callback) != self.announced:
-            self.announced = (manual, callback)
-            self.emit({"event": "url", "url": callback or manual, "manual_url": manual, "code": None, "paste": True})
-
-    def codex_step(self):
-        text = self.text
-        url, code = CODEX_URL_RE.search(text), CODEX_CODE_RE.search(text)
-        if url and code and self.announced != (url.group(1), code.group(1)):
-            self.announced = (url.group(1), code.group(1))
-            self.emit({"event": "url", "url": url.group(1), "manual_url": None, "code": code.group(1), "paste": False})
-
-    def outcome(self, status):
-        lines = [line.strip(" \u2713\r") for line in self.text.splitlines() if line.strip()]
-        if status == 0:
-            said = next((line for line in reversed(lines) if line.startswith(("added ", "reauthed "))), None)
-            return {"event": "done", "ok": True, "message": said or "signed in"}
-        return {"event": "done", "ok": False, "message": (lines[-1] if lines else f"tokenmaxxing exited {status}")[:300]}
+# Claude Code's own OAuth client (claude 2.1.301), the client every pooled grant was issued to.
+CLAUDE_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
+CLAUDE_MANUAL_REDIRECT = "https://platform.claude.com/oauth/code/callback"
+CLAUDE_SUCCESS_URL = "https://platform.claude.com/oauth/code/success?app=claude-code"
+CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
+CLAUDE_SCOPES = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code",
+                 "user:mcp_servers", "user:file_upload", "user:plugins"]
+CLAUDE_PLANS = {"claude_max": "max", "claude_pro": "pro", "claude_enterprise": "enterprise", "claude_team": "team"}
+# The Codex CLI's device-code sign-in.
+CODEX_ISSUER = "https://auth.openai.com"
+CODEX_DEVICE_PAGE = CODEX_ISSUER + "/codex/device"
+HTTP_TIMEOUT = 30
+MAX_RETRIES = 3
 
 
 class LoginFailed(Exception):
     pass
 
 
-def stop_login(pid, fd):
-    """Ctrl-C twice, the way a person leaves claude, so tokenmaxxing runs its
-    own cleanup of the isolated login. After 5s the whole terminal's process
-    group gets a hangup, then a kill. Never waits without a deadline."""
-    import select, signal
-    for key in (b"\x03", b"\x03"):
-        try:
-            os.write(fd, key)
-        except OSError:
-            break
-        time.sleep(0.5)
-    for sig, grace in ((None, 5), (signal.SIGHUP, 2), (signal.SIGKILL, 2)):
-        if sig is not None:
-            try:
-                os.killpg(pid, sig)
-            except ProcessLookupError:
-                pass
-        deadline = time.time() + grace
-        while time.time() < deadline:
-            done, raw = os.waitpid(pid, os.WNOHANG)
-            if done:
-                return os.waitstatus_to_exitcode(raw)
-            if select.select([fd], [], [], 0.1)[0]:
-                try:
-                    os.read(fd, 65536)
-                except OSError:
-                    pass
-    return None
-
-
-# ------------------------------------------------- claude sign-in, by organization
-# One Claude login can belong to several organizations (a personal plan and a
-# team seat, say). tokenmaxxing keys an account by the login's account uuid
-# alone, so `tokenmaxxing add` for a second organization overwrites the first.
-# pi-pool therefore runs `tokenmaxxing add` against a scratch home and files the
-# result itself, keyed by (account uuid, organization uuid). The first
-# organization of a login keeps the account uuid as its id, as tokenmaxxing
-# would give it; another organization gets ORG_ID_NAMESPACE's uuid5 of the pair.
-ORG_ID_NAMESPACE = uuid.UUID("5a0f4b8e-6c1d-4f7a-9b2e-3d8c1e7f6a90")
-
-
 class LoginRefused(Exception):
     pass
 
 
+def b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def post(url, body, form=False):
+    """POST and parse the JSON answer; (status, body or None)."""
+    data = urllib.parse.urlencode(body).encode() if form else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/x-www-form-urlencoded" if form else "application/json",
+        "Accept": "application/json", "User-Agent": base.USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read())
+        except ValueError:
+            return e.code, None
+
+
+def claude_profile(access_token):
+    req = urllib.request.Request(CLAUDE_PROFILE_URL, headers={
+        "Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "User-Agent": base.USER_AGENT})
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read())
+
+
+class Callback(http.server.BaseHTTPRequestHandler):
+    """The localhost redirect target: hands the code to the waiting login and sends
+    the browser on to Claude's success page."""
+    codes = None
+    state = None
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        got = urllib.parse.parse_qs(url.query)
+        if url.path != "/callback" or got.get("state", [None])[0] != self.state or not got.get("code"):
+            self.send_error(400)
+            return
+        self.codes.put(("callback", got["code"][0]))
+        self.send_response(302)
+        self.send_header("Location", CLAUDE_SUCCESS_URL)
+        self.end_headers()
+
+
+class Input:
+    """stdin as lines without blocking; closing stdin cancels the sign-in."""
+
+    def __init__(self):
+        self.fd, self.buf, self.closed = sys.stdin.fileno(), b"", False
+
+    def lines(self, wait):
+        if self.closed:
+            raise LoginFailed("cancelled")
+        if select.select([self.fd], [], [], wait)[0]:
+            # os.read, never readline: a pasted code without its newline must not block.
+            chunk = os.read(self.fd, 4096)
+            if not chunk:
+                self.closed = True
+                raise LoginFailed("cancelled")
+            self.buf += chunk
+        out = []
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            if line.strip():
+                out.append(line.strip().decode(errors="replace"))
+        return out
+
+
+def claude_login(emit, stdin, deadline):
+    """Sign in to Claude and return the harvest: {"record", "secret"}."""
+    verifier = b64url(secrets.token_bytes(32))
+    challenge = b64url(hashlib.sha256(verifier.encode()).digest())
+    state = b64url(secrets.token_bytes(32))
+    codes = queue.Queue()
+    handler = type("Handler", (Callback,), {"codes": codes, "state": state})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    local = f"http://localhost:{server.server_address[1]}/callback"
+
+    def authorize(redirect):
+        return CLAUDE_AUTHORIZE_URL + "?" + urllib.parse.urlencode({
+            "code": "true", "client_id": base.CLIENT_ID, "response_type": "code", "redirect_uri": redirect,
+            "scope": " ".join(CLAUDE_SCOPES), "code_challenge": challenge, "code_challenge_method": "S256", "state": state})
+    try:
+        emit({"event": "url", "url": authorize(local), "manual_url": authorize(CLAUDE_MANUAL_REDIRECT), "code": None, "paste": True})
+        retries = 0
+        while True:
+            if time.time() > deadline:
+                raise LoginFailed("the sign-in did not finish in time")
+            found = []
+            try:
+                found.append(codes.get_nowait())
+            except queue.Empty:
+                pass
+            for line in stdin.lines(0.3):
+                code, _, given = line.partition("#")
+                if given and given != state:
+                    emit({"event": "retry", "message": "That code belongs to another sign-in. Open the link above and try again."})
+                    continue
+                found.append(("paste", code))
+            for how, code in found:
+                status, body = post(base.TOKEN_URL, {
+                    "grant_type": "authorization_code", "code": code, "client_id": base.CLIENT_ID, "code_verifier": verifier,
+                    "state": state, "redirect_uri": local if how == "callback" else CLAUDE_MANUAL_REDIRECT})
+                if status == 200 and isinstance(body, dict) and body.get("access_token") and body.get("refresh_token"):
+                    return claude_harvest(body)
+                retries += 1
+                base.log("login_code_refused", provider="anthropic", status=status, how=how)
+                if retries >= MAX_RETRIES:
+                    raise LoginFailed("Claude refused the sign-in code three times")
+                emit({"event": "retry", "message": "That code was not accepted. Open the link and try again."})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def claude_harvest(tokens):
+    """The record and credential of a fresh Claude grant, with its plan from the profile."""
+    profile = claude_profile(tokens["access_token"])
+    account, org = profile.get("account") or {}, profile.get("organization") or {}
+    login_id = account.get("uuid") or (tokens.get("account") or {}).get("uuid")
+    if not login_id:
+        raise LoginFailed("Claude's profile names no account")
+    email = account.get("email") or account.get("email_address") or (tokens.get("account") or {}).get("email_address")
+    secret = {"accessToken": tokens["access_token"], "refreshToken": tokens["refresh_token"],
+              "expiresAt": int(time.time() * 1000) + int(tokens.get("expires_in") or 8 * 3600) * 1000,
+              "scopes": [s for s in (tokens.get("scope") or " ".join(CLAUDE_SCOPES)).split(" ") if s],
+              "subscriptionType": CLAUDE_PLANS.get(org.get("organization_type")),
+              "rateLimitTier": org.get("rate_limit_tier")}
+    from .usage import tier_label
+    record = {"id": login_id, "email": email, "tier": tier_label(secret),
+              "oauthAccount": {"accountUuid": login_id, "emailAddress": email,
+                               "organizationUuid": org.get("uuid") or (tokens.get("organization") or {}).get("uuid"),
+                               "organizationName": org.get("name") or (tokens.get("organization") or {}).get("name")}}
+    return {"record": record, "secret": secret}
+
+
+def codex_login(emit, stdin, deadline):
+    """Sign in to ChatGPT with a device code and return the harvest."""
+    status, start = post(CODEX_ISSUER + "/api/accounts/deviceauth/usercode", {"client_id": base.CODEX_CLIENT_ID})
+    if status != 200 or not isinstance(start, dict) or not start.get("device_auth_id"):
+        raise LoginFailed(f"ChatGPT did not start a device sign-in (HTTP {status})")
+    code = start.get("user_code") or start.get("usercode")
+    interval = max(1.0, float(start.get("interval") or 5))
+    emit({"event": "url", "url": CODEX_DEVICE_PAGE, "manual_url": None, "code": code, "paste": False})
+    while True:
+        if time.time() > deadline:
+            raise LoginFailed("the sign-in did not finish in time")
+        stdin.lines(interval)
+        status, grant = post(CODEX_ISSUER + "/api/accounts/deviceauth/token",
+                             {"device_auth_id": start["device_auth_id"], "user_code": code})
+        if status in (403, 404):
+            continue
+        if status != 200 or not isinstance(grant, dict) or not grant.get("authorization_code"):
+            raise LoginFailed(f"ChatGPT refused the device sign-in (HTTP {status})")
+        break
+    status, tokens = post(base.CODEX_TOKEN_URL, {
+        "grant_type": "authorization_code", "code": grant["authorization_code"], "client_id": base.CODEX_CLIENT_ID,
+        "redirect_uri": CODEX_ISSUER + "/deviceauth/callback", "code_verifier": grant.get("code_verifier")}, form=True)
+    if status != 200 or not isinstance(tokens, dict) or not tokens.get("refresh_token"):
+        raise LoginFailed(f"ChatGPT did not issue tokens (HTTP {status})")
+    claims = base.jwt_claims(tokens["id_token"])
+    auth = claims.get("https://api.openai.com/auth") or {}
+    account_id = auth.get("chatgpt_account_id")
+    if not account_id:
+        raise LoginFailed("the ChatGPT sign-in names no account")
+    secret = {"OPENAI_API_KEY": None, "tokens": {"id_token": tokens["id_token"], "access_token": tokens["access_token"],
+                                                 "refresh_token": tokens["refresh_token"], "account_id": account_id},
+              "last_refresh": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+    return {"record": {"id": account_id, "email": claims.get("email"), "tier": auth.get("chatgpt_plan_type")}, "secret": secret}
+
+
+# ------------------------------------------------- filing a login, by organization
+# One Claude login can belong to several organizations (a personal plan and a team
+# seat, say), so a Claude account is keyed by (account uuid, organization uuid). The
+# first organization of a login keeps the account uuid as its id; another
+# organization gets ORG_ID_NAMESPACE's uuid5 of the pair.
+ORG_ID_NAMESPACE = uuid.UUID("5a0f4b8e-6c1d-4f7a-9b2e-3d8c1e7f6a90")
+
+
 def login_pair(record):
-    """(account uuid, organization uuid or None) of a tokenmaxxing record."""
+    """(account uuid, organization uuid or None) of a Claude record."""
     org = record.get("oauthAccount") or {}
     return org.get("accountUuid") or record["id"], org.get("organizationUuid")
 
 
 def place_login(records, harvest):
-    """(id, record or None): where a harvested login belongs. A record of the
-    same login and organization is signed in again; a record with no
-    organization on file matches by login alone."""
+    """(id, record or None): where a harvested Claude login belongs. A record of the
+    same login and organization is signed in again; a record with no organization
+    on file matches by login alone."""
     login, org = login_pair(harvest)
     for r in records:
         r_login, r_org = login_pair(r)
         if r_login == login and r_org in (org, None):
             return r["id"], r
     taken = {r["id"] for r in records}
-    new_id = login if login not in taken else str(uuid.uuid5(ORG_ID_NAMESPACE, f"{login}:{org}"))
-    if any(i[:8] == new_id[:8] for i in taken):
-        raise LoginRefused(f"the store for {new_id} would share stores/{new_id[:8]} with another account")
-    return new_id, None
+    return (login if login not in taken else str(uuid.uuid5(ORG_ID_NAMESPACE, f"{login}:{org}"))), None
 
 
-def file_claude_login(scratch, target_id=None):
-    """Move the login `tokenmaxxing add` harvested into `scratch` into the real
-    pool: its credential into the store of the account it belongs to, its
-    record into accounts.json under tokenmaxxing's lock. With `target_id`, a
-    login of any other account is refused and nothing is written. Returns the
-    sentence to show."""
-    harvested = (base.load_json(os.path.join(scratch, "accounts.json")) or {}).get("accounts") or []
-    if len(harvested) != 1:
-        raise LoginRefused("no sign-in was recorded")
-    h = harvested[0]
-    blob = base.kc_read(base.store_service(os.path.join(scratch, "stores", h["id"][:8])))
-    if not blob:
-        raise LoginRefused("the sign-in left no credential")
-    with base.Flock(base.TM_LOCK, timeout=base.TM_LOCK_TIMEOUT):
-        idx = registry._read_index(base.TM_ACCOUNTS)
+def write_secret(provider, account_id, secret):
+    if provider == "anthropic":
+        base.kc_write(base.claude_service(account_id), json.dumps({"claudeAiOauth": secret}))
+    else:
+        base.CodexFileAdapter(base.codex_secret(account_id)).write(secret)
+
+
+def file_login(provider, harvest, target=None):
+    """File a harvested login in this machine's store: its credential under the
+    account it belongs to, its record in the index. With `target` (an id, label or
+    email), a login of any other account is refused and nothing is written.
+    Returns (sentence, account id)."""
+    h = harvest["record"]
+    with base.index_lock(provider):
+        idx = base.read_index(provider)
         records = idx["accounts"]
-        account_id, existing = place_login(records, h)
-        if target_id is not None and account_id != target_id:
-            want = next((r for r in records if r["id"] == target_id), {})
-            raise LoginRefused(f"that sign-in is {h.get('email')} ({registry.org_suffix(h)}), not "
-                               f"{want.get('email')} ({registry.org_suffix(want)}); nothing changed")
-        store = base.store_dir(account_id)
-        os.makedirs(store, mode=0o700, exist_ok=True)
-        with base.ClaudeRefreshLock(store):
-            base.kc_write(base.store_service(store), blob)
-        fresh = {k: h[k] for k in ("email", "tier", "oauthAccount") if k in h}
+        want = None
+        if target is not None:
+            want = registry.find_account(registry.load_index(provider), target)
+            if want is None:
+                raise LoginRefused(f"{target} is not in the {provider} pool")
+        if provider == "anthropic":
+            account_id, existing = place_login(records, h)
+        else:
+            account_id = h["id"]
+            existing = next((r for r in records if r["id"] == account_id), None)
+        if want is not None and account_id != want.id:
+            org = f" ({registry.org_suffix(h)})" if provider == "anthropic" else ""
+            raise LoginRefused(f"that sign-in is {h.get('email')}{org}, not {want.label}; nothing changed")
+        write_secret(provider, account_id, harvest["secret"])
+        fresh = {k: h[k] for k in ("email", "tier", "oauthAccount") if h.get(k) is not None}
         fresh["needsReauth"] = False
-        if h.get("lastUsageAt"):
-            fresh.update(windows=h.get("windows") or [], lastUsageAt=h["lastUsageAt"])
         if existing is not None:
-            if h.get("lastUsageAt"):
-                existing.pop("usageRetryAt", None)
             existing.update(fresh)
         else:
-            shared = any(r.get("email") == h.get("email") for r in records)
-            records.append({"id": account_id, "label": f"{h.get('email')} ({registry.org_suffix(h)})" if shared else h.get("label") or h.get("email"),
-                            "addedAt": h.get("addedAt") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                            "windows": [], **{k: h[k] for k in ("usageRetryAt",) if k in h}, **fresh})
-        tmp = f"{base.TM_ACCOUNTS}.tmp.{os.getpid()}"
-        with open(tmp, "w") as f:
-            f.write(json.dumps(idx, indent=2) + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, base.TM_ACCOUNTS)
-        label = registry.record_labels(records)[account_id]
+            shared = provider == "anthropic" and any(r.get("email") == h.get("email") for r in records)
+            label = f"{h.get('email')} ({registry.org_suffix(h)})" if shared else h.get("email") or account_id
+            records.append({"id": account_id, "label": label, "windows": [],
+                            "addedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), **fresh})
+        base.write_index(provider, idx)
+        label = registry.record_labels(records)[account_id] if provider == "anthropic" else \
+            next(r for r in records if r["id"] == account_id)["label"]
         size = len(records)
-    base.log("login_filed", account=label, id=account_id, new=existing is None)
+    base.log("login_filed", provider=provider, account=label, id=account_id, new=existing is None)
+    account = next(a for a in registry.load_index(provider) if a.id == account_id)
+    drop_login_blocks(provider, account)
+    try:
+        from . import usage
+        usage.read_account(provider, account, base.config())
+    except Exception as e:
+        base.log("login_read_failed", provider=provider, account=label, error=str(e)[:200])
     tier = f" ({h['tier']})" if h.get("tier") else ""
     said = f"added {label}{tier} \u2192 pool now has {size} accounts" if existing is None else f"reauthed {label}{tier}"
     return said, account_id
 
 
-def scratch_login_home():
-    """A private tokenmaxxing home for one sign-in, with the real config (so
-    the same claude binary runs) and nothing else."""
-    home = os.path.join(base.POOL, "logins", str(os.getpid()))
-    shutil.rmtree(home, ignore_errors=True)
-    os.makedirs(home, mode=0o700)
-    if os.path.exists(os.path.join(base.TM, "config.json")):
-        shutil.copy(os.path.join(base.TM, "config.json"), os.path.join(home, "config.json"))
-    return home
+def cmd_file_login(rest):
+    """`pi-pool file-login`: file the harvest on stdin ({"provider", "record", "secret",
+    "target"}) in this machine's store. Prints {"message", "id"}; the caller is
+    `pi-pool login`, here or on another machine through `pi-pool serve`."""
+    try:
+        harvest = json.loads(sys.stdin.read())
+        provider = harvest["provider"]
+    except (ValueError, KeyError, TypeError):
+        raise SystemExit("file-login reads one JSON harvest on stdin")
+    if provider not in base.PROVIDERS:
+        raise SystemExit(f"unknown provider {provider}")
+    try:
+        said, account_id = file_login(provider, harvest, harvest.get("target"))
+    except (LoginRefused, RuntimeError, TimeoutError) as e:
+        raise SystemExit(str(e)[:300])
+    print(json.dumps({"message": said, "id": account_id}))
+    return 0
 
 
-def drop_scratch_login(home):
-    """Delete every credential a scratch sign-in can leave: the harvested
-    store's Keychain item, claude's onboarding item, and the folder."""
-    services = [base.store_service(os.path.join(home, "onboard"))]
-    for r in (base.load_json(os.path.join(home, "accounts.json")) or {}).get("accounts") or []:
-        services.append(base.store_service(os.path.join(home, "stores", r["id"][:8])))
-    stores = os.path.join(home, "stores")
-    if os.path.isdir(stores):
-        services += [base.store_service(os.path.join(stores, name)) for name in os.listdir(stores)]
-    for service in dict.fromkeys(services):
-        try:
-            base.kc_delete(service)
-        except RuntimeError as e:
-            base.log("login_cleanup_failed", error=str(e))
-    shutil.rmtree(home, ignore_errors=True)
+def file_anywhere(provider, harvest, target):
+    """File the login with the machine that holds the accounts. Returns the sentence."""
+    cfg = remote.client()
+    if cfg is None:
+        return file_login(provider, harvest, target)[0]
+    try:
+        code, out, err = remote.ask(cfg, ["--cli", "file-login"], stdin=json.dumps({**harvest, "provider": provider, "target": target}))
+    except remote.Unreachable as e:
+        raise LoginRefused(str(e))
+    if code:
+        raise LoginRefused((err.strip() or out.strip() or f"file-login exited {code}")[:300])
+    return json.loads(out)["message"]
 
 
 def cmd_login(rest):
-    """`pi-pool login [<email|id>] [--provider p]`: add an account, or sign one
-    in again, through tokenmaxxing's own isolated login, driven for a browser.
-    Claude runs `tokenmaxxing add` in a scratch home and file_claude_login
-    files the result by organization; codex runs `tokenmaxxing add|auth`.
+    """`pi-pool login [<email|id>] [--provider p] [--timeout sec]`: add an account,
+    or sign one in again.
 
-    stdout is JSON lines: {"event":"url"} with the sign-in link (and the codex
-    device code), {"event":"retry"}, then one {"event":"done","ok":...}.
-    stdin takes a pasted claude sign-in code per line; closing stdin cancels.
-    claude's own browser opener is replaced by app/login-browser, which
-    records the localhost-callback link instead of opening a tab."""
+    stdout is JSON lines: {"event":"url"} with the sign-in link (Claude: a localhost
+    callback link, plus the paste link; Codex: the device page and code),
+    {"event":"retry"}, then one {"event":"done","ok":...}. stdin takes a pasted
+    Claude sign-in code per line; closing stdin cancels."""
     rest, timeout = list(rest), LOGIN_TIMEOUT_SEC
     if "--timeout" in rest:
         at = rest.index("--timeout")
@@ -291,128 +346,19 @@ def cmd_login(rest):
     if provider not in base.PROVIDERS or len(positional) > 1 or timeout <= 0:
         raise SystemExit("usage: pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]")
     emit = lambda event: (sys.stdout.write(json.dumps(event) + "\n"), sys.stdout.flush())
-    exe = commands.tokenmaxxing_exe()
-    if not exe:
-        emit({"event": "done", "ok": False, "message": "tokenmaxxing is not installed"})
-        return 1
-    account = None
-    if positional:
-        account = registry.find_account(registry.load_index(provider), positional[0])
-        if account is None:
-            emit({"event": "done", "ok": False, "message": f"{positional[0]} is not in the {provider} pool"})
-            return 1
-    # Claude always signs in through `add` in a scratch home; file_claude_login
-    # then files it by organization (see ORG_ID_NAMESPACE).
-    if positional and provider != "anthropic":
-        argv = [exe, "auth", *TM_FLAGS[provider], account.id]
-    else:
-        argv = [exe, "add", *TM_FLAGS[provider]]
-    os.makedirs(base.POOL, exist_ok=True)
-    home = scratch_login_home() if provider == "anthropic" else None
-    try:
-        return run_login(provider, argv, home, account, timeout, emit)
-    finally:
-        if home:
-            drop_scratch_login(home)
-
-
-def run_login(provider, argv, home, account, timeout, emit):
-    import pty, select, signal, struct, termios
-    url_file = os.path.join(base.POOL, f"login-{os.getpid()}.urls")
-    env = dict(os.environ, TOKENMAXXING_HOME=home or base.TM, BROWSER=LOGIN_BROWSER, PI_POOL_LOGIN_URLS=url_file,
-               TERM="xterm-256color")
-    for name in (base.SESSION_ENV, base.JOURNAL_ENV):
-        env.pop(name, None)
-    pid, fd = pty.fork()
-    if pid == 0:
-        try:
-            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 400, 0, 0))
-            os.execve(argv[0], argv, env)
-        finally:
-            os._exit(127)
-    driver = LoginDriver(provider, argv, url_file, emit)
-    write = lambda data: os.write(fd, data)
+    target = positional[0] if positional else None
 
     def stopped(signum, frame):
         raise LoginFailed("the sign-in was stopped")
     signal.signal(signal.SIGTERM, stopped)
-    base.log("login_start", provider=provider, mode=argv[1])
-    deadline, status, cancelled, failure = time.time() + timeout, None, False, None
-    stdin, pasted = sys.stdin.fileno(), b""
-    inputs = [fd, stdin]
+    base.log("login_start", provider=provider, target=target)
     try:
-        while status is None:
-            if time.time() > deadline:
-                failure = f"the sign-in did not finish in {max(1, round(timeout / 60))} min"
-                break
-            ready, _, _ = select.select(inputs, [], [], 0.3)
-            if fd in ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError:
-                    chunk = b""
-                if chunk:
-                    driver.feed(chunk.decode("utf-8", "replace"), write)
-                else:
-                    inputs.remove(fd)
-            elif driver.provider == "anthropic":
-                driver.feed("", write)
-            if stdin in ready:
-                # os.read, never readline: a pasted code without its newline
-                # must not block the terminal loop.
-                chunk = os.read(stdin, 4096)
-                if not chunk:
-                    cancelled = True
-                    break
-                pasted += chunk
-                while b"\n" in pasted:
-                    line, pasted = pasted.split(b"\n", 1)
-                    if line.strip():
-                        write(line.strip() + b"\r")
-            done, raw = os.waitpid(pid, os.WNOHANG)
-            if done:
-                status = os.waitstatus_to_exitcode(raw)
-    except LoginFailed as e:
-        failure = str(e)
-    finally:
-        if status is None:
-            status = stop_login(pid, fd)
-        drain_until = time.time() + 1
-        while time.time() < drain_until and select.select([fd], [], [], 0.1)[0]:
-            try:
-                chunk = os.read(fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            driver.raw += chunk.decode("utf-8", "replace")
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        os.close(fd)
-        try:
-            os.unlink(url_file)
-        except FileNotFoundError:
-            pass
-    if cancelled or failure:
-        result = {"event": "done", "ok": False, "message": failure or "cancelled"}
-    else:
-        result = driver.outcome(status)
-    signed_in = None
-    if result["ok"] and home:
-        try:
-            result["message"], signed_id = file_claude_login(home, account.id if account else None)
-            signed_in = next((a for a in registry.load_index(provider) if a.id == signed_id), None)
-        except (LoginRefused, RuntimeError, TimeoutError) as e:
-            result = {"event": "done", "ok": False, "message": str(e)[:300]}
-    elif result["ok"]:
-        said = result["message"].split()
-        signed_in = account or (
-            registry.find_account(registry.load_index(provider), said[1]) if len(said) > 1 and said[0] in ("added", "reauthed") else None)
-    base.log("login_end", provider=provider, mode=argv[1], ok=result["ok"], message=result["message"])
-    if signed_in is not None:
-        drop_login_blocks(provider, signed_in)
+        sign_in = claude_login if provider == "anthropic" else codex_login
+        harvest = sign_in(emit, Input(), time.time() + timeout)
+        result = {"event": "done", "ok": True, "message": file_anywhere(provider, harvest, target)}
+    except (LoginFailed, LoginRefused, RuntimeError, OSError) as e:
+        result = {"event": "done", "ok": False, "message": str(e)[:300]}
+    base.log("login_end", provider=provider, ok=result["ok"], message=result["message"])
     emit(result)
     return 0 if result["ok"] else 1
 

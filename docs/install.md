@@ -118,22 +118,18 @@ Run it from the clone. It reads the commit with `git`, so it fails from the npm 
 
 ### 7. Add accounts and point Prime at the pool
 
-The pool reads the accounts that [tokenmaxxing](https://github.com/anaclumos/tokenmaxxing) keeps. tokenmaxxing needs Bun.
+The pool keeps its own accounts in `~/.config/pi-pool/accounts`. Sign each one in.
 
 ```sh
-curl -fsSL https://bun.sh/install | bash
-export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
-bun add -g tokenmaxxing
-tokenmaxxing init            # first Claude account; needs Claude Code installed
-tokenmaxxing init --codex    # first ChatGPT account
-pi-pool login                # each further account, either provider
+export PATH="$HOME/.local/bin:$PATH"
+pi-pool login                            # each Claude account
+pi-pool login --provider openai-codex    # each ChatGPT account
 pi-pool enable anthropic
 pi-pool enable openai-codex
 pi-pool                      # one card per account with usage bars
 ```
 
-Each sign-in opens or prints a link. Finish it in the browser. Claude credentials go to the macOS Keychain.
-Run only `tokenmaxxing init --codex` if you pool only ChatGPT accounts.
+Each sign-in prints a link as JSON lines. Open it in a browser on the same machine and finish there, or paste the code the page shows. Codex prints a device code to enter on its page. Claude credentials go to the macOS Keychain, or to 0600 files on Linux.
 You can also add accounts later in the chat under Settings > Accounts.
 
 The two `enable` lines point the provider entries in `~/.prime/agent/models.json` at the pool's token hook.

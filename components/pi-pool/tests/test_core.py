@@ -27,16 +27,16 @@ CFG = dict(base.DEFAULTS)
 NOW = 1000000.0
 
 
-def account(id, email, session_pct=0, weekly_pct=0, gated_pct=0, needs_reauth=False, is_live=False):
+def account(id, email, session_pct=0, weekly_pct=0, gated_pct=0, needs_reauth=False):
     return registry.Account(provider="anthropic", id=id, email=email, needs_reauth=needs_reauth,
                             session_pct=session_pct, weekly_pct=weekly_pct, gated_pct=gated_pct,
-                            is_live=is_live, cred=registry.Keychain("Claude Code-credentials-" + id, "/dev/null"))
+                            cred=registry.Keychain("pi-pool.anthropic." + id))
 
 
 def codex_account(id, email, plan, session_pct=0, weekly_pct=0):
     return registry.Account(provider="openai-codex", id=id, email=email, needs_reauth=False,
                             session_pct=session_pct, weekly_pct=weekly_pct, gated_pct=0,
-                            is_live=False, cred=registry.CredFile("/dev/null"), plan=plan)
+                            cred=registry.CredFile("/dev/null"), plan=plan)
 
 
 A = account("a", "a@x", session_pct=10)
@@ -471,8 +471,8 @@ class BusyPoolLock(unittest.TestCase):
         self.assertEqual(saved, [])
 
 
-class IndexV2Windows(unittest.TestCase):
-    """tokenmaxxing index v2 windows, classified by windowSeconds and name
+class IndexWindows(unittest.TestCase):
+    """Index windows, classified by windowSeconds and name
     rather than array position, for both providers."""
 
     @staticmethod
@@ -548,38 +548,40 @@ class ModelGatedCap(unittest.TestCase):
 
 
 class StoreLayout(unittest.TestCase):
-    """The store path and keychain service must match tokenmaxxing's
-    storeDirFor and namespacedCredService byte for byte."""
+    """The account store: one index per provider in the pool folder."""
 
-    def test_service_is_sha256_of_the_store_path(self):
-        store = "/Users/someone/.config/tokenmaxxing/stores/382bc870"
-        import hashlib
-        expected = "Claude Code-credentials-" + hashlib.sha256(store.encode()).hexdigest()[:8]
-        self.assertEqual(base.store_service(store), expected)
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        index = os.path.join(self.tmp.name, "anthropic.json")
+        for patch in (unittest.mock.patch.dict(base.INDEX, {"anthropic": index}),
+                      unittest.mock.patch.object(base, "ACCOUNTS", self.tmp.name)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.index = index
 
-    def test_store_dir_uses_the_first_eight_chars(self):
-        self.assertEqual(os.path.basename(base.store_dir("382bc870-8dc4-484d")), "382bc870")
+    def test_each_account_has_its_own_keychain_service(self):
+        self.assertEqual(base.claude_service("382bc870-8dc4-484d"), "pi-pool.anthropic.382bc870-8dc4-484d")
 
-    def test_a_v1_index_is_refused_with_the_version(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "accounts.json")
-            with open(path, "w") as f:
-                json.dump({"version": 1, "accounts": []}, f)
-            with self.assertRaisesRegex(RuntimeError, "schema v1"):
-                registry._read_index(path)
+    def test_a_missing_index_is_an_empty_pool(self):
+        self.assertEqual(base.read_index("anthropic")["accounts"], [])
+
+    def test_a_foreign_index_is_refused(self):
+        with open(self.index, "w") as f:
+            json.dump({"version": 2, "accounts": []}, f)
+        with self.assertRaisesRegex(RuntimeError, "anthropic.json unreadable"):
+            base.read_index("anthropic")
 
     def test_mark_needs_reauth_flags_one_account_and_keeps_the_rest(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "accounts.json")
-            idx = {"version": 2, "accounts": [{"id": "a", "email": "a@x", "windows": [], "extra": 1},
-                                              {"id": "b", "email": "b@x", "windows": []}]}
-            with open(path, "w") as f:
-                json.dump(idx, f)
-            base.mark_needs_reauth(path, "a")
-            out = json.load(open(path))
-            self.assertEqual(out["accounts"][0]["needsReauth"], True)
-            self.assertEqual(out["accounts"][0]["extra"], 1)
-            self.assertNotIn("needsReauth", out["accounts"][1])
+        base.write_index("anthropic", {"version": 1, "accounts": [{"id": "a", "email": "a@x", "windows": [], "extra": 1},
+                                                                  {"id": "b", "email": "b@x", "windows": []}]})
+        base.mark_needs_reauth("anthropic", "a")
+        with open(self.index) as f:
+            out = json.load(f)
+        self.assertEqual(out["accounts"][0]["needsReauth"], True)
+        self.assertEqual(out["accounts"][0]["extra"], 1)
+        self.assertNotIn("needsReauth", out["accounts"][1])
+        self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
 
 
 class AnthropicRefusal(unittest.TestCase):
@@ -626,41 +628,8 @@ class AnthropicRefusal(unittest.TestCase):
 TERMS_BODY = '{"type":"error","error":{"type":"invalid_request_error","message":"We\'ve updated our Consumer Terms and Privacy Policy. You\'ll need to accept them in claude.ai with the email in /status to continue."},"request_id":"req_011Cfpei9Q2FndKLU23sLdgU"}'
 
 
-class MarkRefused(unittest.TestCase):
-    def test_sets_enforced_until_and_never_shortens_it(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "accounts.json")
-            base.save_json(path, {"version": 2, "accounts": [{"id": "a", "windows": [], "enforcedUntil": 5000}]})
-            with unittest.mock.patch.object(base, "TM_ACCOUNTS", path), \
-                 unittest.mock.patch.object(base, "TM_LOCK", os.path.join(d, "lock")):
-                base.mark_refused("a", 10)
-                self.assertEqual(base.load_json(path)["accounts"][0]["enforcedUntil"], 10000)
-                base.mark_refused("a", 3)
-                self.assertEqual(base.load_json(path)["accounts"][0]["enforcedUntil"], 10000)
-
-
-class ClaudeRefreshLockDirs(unittest.TestCase):
-    def test_takes_and_releases_both_lock_dirs(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = os.path.join(d, "stores", "abcd1234")
-            with base.ClaudeRefreshLock(store):
-                self.assertTrue(os.path.isdir(os.path.join(store, ".oauth_refresh.lock")))
-                self.assertTrue(os.path.isdir(os.path.realpath(store) + ".lock"))
-            self.assertFalse(os.path.exists(os.path.join(store, ".oauth_refresh.lock")))
-            self.assertFalse(os.path.exists(os.path.realpath(store) + ".lock"))
-
-    def test_a_held_lock_is_contested(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = os.path.join(d, "s")
-            with base.ClaudeRefreshLock(store):
-                with self.assertRaises(TimeoutError):
-                    with base.ClaudeRefreshLock(store, attempts=2, retry_sec=0.01):
-                        pass
-
-
 class JWTClaimDecode(unittest.TestCase):
-    """jwt_claims reads the payload segment only; no signature is checked,
-    matching tokenmaxxing's own isCodexAccessExpiring."""
+    """jwt_claims reads the payload segment only; no signature is checked."""
 
     @staticmethod
     def token_for(payload):
@@ -738,7 +707,7 @@ class LsUsageWindows(unittest.TestCase):
         return dataclasses.replace(account("w", "w@x", **kw), tier="max 20x", windows=tuple(windows), usage_at=usage_at)
 
     def test_windows_come_in_display_order_with_live_reset_times(self):
-        win = IndexV2Windows.win
+        win = IndexWindows.win
         a = self.windowed([win(100, 604800, 3600, name="Fable"), win(61, 604800, 7200), win(7, 18000, 600)])
         row = status_view.build_rows([a], sched.Tree(), sched.Book(), {}, CFG, NOW)[0]
         self.assertEqual([(w["kind"], w["label"], w["pct"], w["resets_at"]) for w in row["windows"]],
@@ -746,11 +715,11 @@ class LsUsageWindows(unittest.TestCase):
         self.assertEqual((row["tier"], row["usage_at"], row["usage_age_sec"]), ("max 20x", NOW - 90, 90))
 
     def test_a_passed_reset_reads_zero_with_no_reset_time(self):
-        a = self.windowed([IndexV2Windows.win(87, 18000, -60)])
+        a = self.windowed([IndexWindows.win(87, 18000, -60)])
         self.assertEqual(status_view.build_rows([a], sched.Tree(), sched.Book(), {}, CFG, NOW)[0]["windows"][0]["resets_at"], None)
 
     def test_a_thirty_day_codex_window_is_labelled_by_days(self):
-        a = dataclasses.replace(codex_account("c", "c@x", "free"), windows=(IndexV2Windows.win(100, 2592000, 86400),))
+        a = dataclasses.replace(codex_account("c", "c@x", "free"), windows=(IndexWindows.win(100, 2592000, 86400),))
         row = status_view.build_rows([a], sched.Tree(), sched.Book(), {}, CFG, NOW)[0]
         self.assertEqual([w["label"] for w in row["windows"]], ["30d"])
         self.assertEqual(row["plan"], "free")

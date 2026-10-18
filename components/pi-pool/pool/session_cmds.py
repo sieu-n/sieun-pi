@@ -1,8 +1,8 @@
 """ls, model, limited, refused and who for one session tree, and the account admin commands
 enable, off, on, unlimited and rm."""
-import json, math, os, shlex, subprocess, time
+import json, math, os, shlex, time
 
-from . import base, registry, sched, vending, status_view, commands, limit_resets, signin
+from . import base, registry, sched, vending, status_view, limit_resets
 
 
 def tree_view(state, key, provider, accounts, f, cfg, now):
@@ -300,7 +300,7 @@ def cmd_enable(rest):
 
 
 def cmd_toggle(rest, off):
-    """`pi-pool off` / `pi-pool on`: keep an account in tokenmaxxing's pool but
+    """`pi-pool off` / `pi-pool on`: keep an account in the pool but
     never pick it while off. Every pin on it yields."""
     verb = "off" if off else "on"
     f = status_view.parse_flags(rest)
@@ -350,9 +350,8 @@ def cmd_unlimited(rest):
 
 
 def cmd_rm(rest):
-    """Remove an account the way tokenmaxxing does (`tokenmaxxing rm`, which
-    deletes its credential store), then drop every pin and flag that
-    names it here."""
+    """Remove an account: its credential, its index record, and every pin and
+    flag that names it here."""
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
     if len(positional) != 1:
@@ -361,17 +360,17 @@ def cmd_rm(rest):
     account = registry.find_account(accounts, positional[0])
     if account is None:
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
-    exe = commands.tokenmaxxing_exe()
-    if not exe:
-        raise SystemExit("tokenmaxxing is not installed")
-    try:
-        done = subprocess.run([exe, "rm", *signin.TM_FLAGS[provider], account.id], capture_output=True, text=True,
-                              timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=base.TM))
-    except subprocess.TimeoutExpired:
-        raise SystemExit("tokenmaxxing rm did not finish in 60s")
-    if done.returncode != 0:
-        said = signin.ANSI_ANY_RE.sub("", done.stderr or done.stdout).strip().splitlines()
-        raise SystemExit(said[-1] if said else f"tokenmaxxing rm exited {done.returncode}")
+    with base.index_lock(provider):
+        idx = base.read_index(provider)
+        idx["accounts"] = [r for r in idx["accounts"] if r["id"] != account.id]
+        base.write_index(provider, idx)
+        if provider == "anthropic":
+            base.kc_delete(base.claude_service(account.id))
+        else:
+            try:
+                os.unlink(base.codex_secret(account.id))
+            except FileNotFoundError:
+                pass
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         vending.IntentWriter(state).forget_account(provider, account.id)

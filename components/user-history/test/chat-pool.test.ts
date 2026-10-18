@@ -7,7 +7,7 @@ import { parsePoolRows, parseRefreshEvent, parseResets, poolExecutable, resetsNo
 import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
-  current: false, pinned: false, live: false, seat: true, score: null };
+  current: false, pinned: false, seat: true, score: null };
 
 test("pool rows carry every window with its reset in epoch ms", () => {
   const [row] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, tier: "max 20x", usage_at: 1790120343, cooldown_until: null, cooldown_reason: null, windows: [
@@ -106,11 +106,11 @@ test("one account is refreshed by id, and a read the run never finished is a fai
 test("a refresh that cannot start fails with pi-pool's own message", async () => {
   const root = mkdtempSync(join(tmpdir(), "chat-refresh-"));
   try {
-    const refreshes = new UsageRefreshes({ executable: fakePool(root, ['{"event":"error","message":"tokenmaxxing is not installed"}'], 1) });
+    const refreshes = new UsageRefreshes({ executable: fakePool(root, ['{"event":"error","message":"anthropic.json unreadable"}'], 1) });
     refreshes.start("anthropic", null);
     const run = await settle(refreshes, "anthropic");
     assert.equal(run.status, "failed");
-    assert.equal(run.message, "tokenmaxxing is not installed");
+    assert.equal(run.message, "anthropic.json unreadable");
     assert.throws(() => refreshes.start("grok", null), /pooled provider/);
     assert.throws(() => refreshes.start("anthropic", "--all"), /Choose an account/);
   } finally { rmSync(root, { recursive: true, force: true }); }

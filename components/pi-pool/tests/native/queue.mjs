@@ -42,13 +42,13 @@ function sse(response, text, n) {
 }
 
 const pool = join(run, 'pool');
-const tm = join(run, 'tm');
-for (const path of [pool, tm, join(tm, 'codex-stores', C.slice(0, 8))]) mkdirSync(path, { recursive: true });
-writeFileSync(join(tm, 'codex-accounts.json'), JSON.stringify({ version: 2, accounts: [{ id: C, email: 'c@x', label: 'c@x', tier: 'plus', windows: [] }] }));
-writeFileSync(join(tm, 'codex-stores', C.slice(0, 8), 'auth.json'), JSON.stringify({ tokens: { access_token: jwt(C), refresh_token: 'synthetic' } }));
+const store = join(pool, 'accounts');
+for (const path of [pool, join(store, 'openai-codex')]) mkdirSync(path, { recursive: true });
+writeFileSync(join(store, 'openai-codex.json'), JSON.stringify({ version: 1, accounts: [{ id: C, email: 'c@x', label: 'c@x', tier: 'plus', windows: [] }] }));
+writeFileSync(join(store, 'openai-codex', `${C}.json`), JSON.stringify({ tokens: { access_token: jwt(C), refresh_token: 'synthetic' } }));
 const emptyProvider = { pin: null, cooldowns: {}, disabled: {} };
 writeFileSync(join(pool, 'state.json'), JSON.stringify({ version: 2, providers: { anthropic: emptyProvider, 'openai-codex': { ...emptyProvider, pin: C } }, sessions: {} }));
-const cliEnv = { ...process.env, ...isolationEnv, PI_POOL_DIR: pool, TOKENMAXXING_HOME: tm };
+const cliEnv = { ...process.env, ...isolationEnv, PI_POOL_DIR: pool };
 delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID;
 delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL;
 const cli = (...args) => execFileSync('/usr/bin/python3', ['-B', join(poolSource, 'bin', 'pi-pool'), ...args], { env: cliEnv, encoding: 'utf8' });
@@ -84,7 +84,7 @@ const env = {
   ...isolationEnv,
   HOME: join(dir, 'home'), TMPDIR: join(dir, 'tmp'), XDG_CONFIG_HOME: join(dir, 'home', '.config'),
   XDG_CACHE_HOME: join(dir, 'home', '.cache'), PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
-  PI_POOL_DIR: pool, TOKENMAXXING_HOME: tm, PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: SESSION_ENV,
+  PI_POOL_DIR: pool, PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: SESSION_ENV,
   PRIME_AGENT_CODING_AGENT_DIR: agentHome, PRIME_AGENT_SESSION_DIR: join(agentHome, 'sessions'),
   PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND: '1', PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1',
   NODE_COMPILE_CACHE: join(dir, 'node-cache'), NO_PROXY: '*', TERM: 'dumb',

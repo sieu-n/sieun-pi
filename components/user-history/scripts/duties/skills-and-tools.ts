@@ -532,12 +532,11 @@ export function toOutput(results: readonly CheckResult[], at: number): PrecheckO
 
 /**
  * PATH for every program the checks start: the :5182 server's own PATH is unknown, so it is set here. Kernel CLIs are called by absolute path.
- * tokenmaxxing comes first because ~/.local/bin/claude is the bare binary with no login; agents' shells reach claude through the tokenmaxxing wrapper.
  */
 export function searchPath(home: string): string {
   const nvm = join(home, ".nvm/versions/node");
   const nodes = existsSync(nvm) ? readdirSync(nvm).map(version => join(nvm, version, "bin")) : [];
-  return [join(home, ".config/tokenmaxxing/bin"), join(home, ".local/bin"), "/opt/homebrew/bin", ...nodes, dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
+  return [join(home, ".local/bin"), "/opt/homebrew/bin", ...nodes, dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
 }
 
 /** Kills the program's whole process group, so a wrapper's children die with it. */

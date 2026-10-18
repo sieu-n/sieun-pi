@@ -24,13 +24,11 @@ class HookNoToken(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="pi-pool-empty-home-")
         self.addCleanup(shutil.rmtree, home, True)
         pool = os.path.join(home, ".config", "pi-pool")
-        tm = os.path.join(home, ".config", "tokenmaxxing")
-        os.makedirs(pool)
-        os.makedirs(os.path.join(tm, "stores"))
+        os.makedirs(os.path.join(pool, "accounts"))
         if accounts is not None:
-            with open(os.path.join(tm, "accounts.json"), "w") as f:
+            with open(os.path.join(pool, "accounts", "anthropic.json"), "w") as f:
                 json.dump(accounts, f)
-        env = dict(os.environ, HOME=home, PI_POOL_DIR=pool, TOKENMAXXING_HOME=tm, PI_POOL_SECRETS="file",
+        env = dict(os.environ, HOME=home, PI_POOL_DIR=pool, PI_POOL_SECRETS="file",
                    PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-empty")
         run = subprocess.run([sys.executable, "-B", HOOK], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertNotEqual(run.returncode, 0, run.stderr)
@@ -41,10 +39,13 @@ class HookNoToken(unittest.TestCase):
         return no_token[0]["reason"]
 
     def test_an_empty_store_in_a_temp_home_logs_why_no_token_came(self):
-        self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "no_account")
+        self.assertEqual(self.run_hook({"version": 1, "accounts": []}), "no_account")
 
-    def test_a_missing_store_index_logs_why_no_token_came(self):
-        self.assertEqual(self.run_hook(None), "account_index_unreadable")
+    def test_no_store_yet_is_an_empty_pool(self):
+        self.assertEqual(self.run_hook(None), "no_account")
+
+    def test_an_unreadable_store_index_logs_why_no_token_came(self):
+        self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "account_index_unreadable")
 
     def test_a_kill_while_vend_loads_is_logged(self):
         root = tempfile.mkdtemp(prefix="pi-pool-slow-load-")
@@ -152,12 +153,11 @@ class HookNoToken(unittest.TestCase):
         import fcntl
         root = tempfile.mkdtemp(prefix="pi-pool-contended-")
         self.addCleanup(shutil.rmtree, root, True)
-        pool, tm = os.path.join(root, "pool"), os.path.join(root, "tm")
-        os.makedirs(pool)
-        os.makedirs(tm)
-        with open(os.path.join(tm, "codex-accounts.json"), "w") as f:
-            json.dump({"version": 2, "accounts": []}, f)
-        env = dict(os.environ, HOME=root, PI_POOL_DIR=pool, TOKENMAXXING_HOME=tm, PI_POOL_SECRETS="file",
+        pool = os.path.join(root, "pool")
+        os.makedirs(os.path.join(pool, "accounts"))
+        with open(os.path.join(pool, "accounts", "openai-codex.json"), "w") as f:
+            json.dump({"version": 1, "accounts": []}, f)
+        env = dict(os.environ, HOME=root, PI_POOL_DIR=pool, PI_POOL_SECRETS="file",
                    PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-lock")
         with open(os.path.join(pool, "lock"), "w") as held:
             fcntl.flock(held.fileno(), fcntl.LOCK_EX)

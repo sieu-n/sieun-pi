@@ -89,16 +89,12 @@ def run_tests(release):
     return " ".join(line for line in tail if line.strip())
 
 
-# tokenmaxxing's index per provider. A provider with no index file, or none of its
+# The account index per provider. A provider with no index file, or none of its
 # accounts listed, has nothing to vend yet: a fresh machine installs the pool before
 # its first `pi-pool login`.
-TM_INDEX = {"anthropic": "accounts.json", "openai-codex": "codex-accounts.json"}
-
-
 def pooled_accounts(home, provider):
-    tm = Path(os.environ.get("TOKENMAXXING_HOME") or home / ".config/tokenmaxxing")
     try:
-        index = json.loads((tm / TM_INDEX[provider]).read_text())
+        index = json.loads((home / ".config/pi-pool/accounts" / f"{provider}.json").read_text())
     except FileNotFoundError:
         return 0
     except (OSError, ValueError):
@@ -124,7 +120,7 @@ def check_hooks(home):
             results[args[1]] = {"ok": exit_code == 0, "exit": exit_code, "skipped": "no pooled account yet",
                                 "sec": round(time.monotonic() - started, 2)}
             continue
-        # HOME stays the caller's: the macOS Keychain the anthropic stores live in follows it.
+        # HOME stays the caller's: the macOS Keychain the anthropic credentials live in follows it.
         try:
             done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
                                   env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))

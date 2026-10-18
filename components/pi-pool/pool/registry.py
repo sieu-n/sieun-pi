@@ -1,4 +1,4 @@
-"""Usage math, accounts and session keys, tokenmaxxing index loading, and state.json load
+"""Usage math, accounts and session keys, account index loading, and state.json load
 and migration."""
 import collections, dataclasses, json, os, re, time
 
@@ -7,17 +7,17 @@ from . import base
 
 # ------------------------------------------------------------- usage math
 SESSION_WINDOW_MAX_SEC = 6 * 3600
-# tokenmaxxing reads every account its check covers at least every 15 min
-# (SAMPLE_INTERVAL_MAX_MS), so a 5h sample older than this is one nobody reads: a
-# team seat, which the check skips, or any account while the check is down.
+# `pi-pool sample` reads every account at least every 15 min (usage.SAMPLE_MAX_SEC),
+# so a 5h sample older than this is one nobody reads: any account while the
+# sampler is down.
 STALE_USAGE_SEC = 20 * 60
 # A `pi-pool refresh` read has landed or failed by then.
 REFRESH_TIMEOUT_SEC = 180
 
 
 def live_pct(window, now):
-    """A v2 window's usable-against percentage NOW, mirroring tokenmaxxing's
-    liveUsed: a cached reset that has passed means the window is empty again
+    """A window's usable-against percentage NOW: a cached reset that has passed
+    means the window is empty again
     (never a block reason), and a NULL reset self-bounds at sampledAt + the
     window's own duration so a stale snapshot cannot block forever."""
     if not window:
@@ -34,13 +34,13 @@ def live_pct(window, now):
 
 
 def is_session_window(window):
-    """tokenmaxxing's isSessionWindow: classified by duration, never by position."""
+    """A session window is classified by duration, never by position."""
     secs = window.get("windowSeconds")
     return secs is not None and secs <= SESSION_WINDOW_MAX_SEC
 
 
 def session_window(account):
-    """The unnamed session (5h) window, tokenmaxxing's sessionWindow."""
+    """The unnamed session (5h) window."""
     return next((w for w in account.get("windows") or []
                  if w.get("name") is None and is_session_window(w)), None)
 
@@ -55,25 +55,25 @@ def usage_unsampled(a, now):
 
 
 def weekly_window(account):
-    """The longest unnamed non-session window, tokenmaxxing's weeklyWindow."""
+    """The longest unnamed non-session window."""
     rows = [w for w in account.get("windows") or []
             if w.get("name") is None and not is_session_window(w)]
     return max(rows, key=lambda w: w.get("windowSeconds") or 0) if rows else None
 
 
 def usage_pct(account, now):
-    """(session %, weekly %) from an index v2 account's unnamed windows."""
+    """(session %, weekly %) from an index account's unnamed windows."""
     return live_pct(session_window(account), now), live_pct(weekly_window(account), now)
 
 
 def family_tokens(name):
-    """tokenmaxxing's familyTokens: lowercase, split on space, dot and dash."""
+    """A model or limit name as tokens: lowercase, split on space, dot and dash."""
     return [t for t in re.split(r"[\s.-]+", name.strip().lower()) if t]
 
 
 def gated_pct(account, cfg, now):
-    """Worst live per-model cap among the gated families (switch_models),
-    tokenmaxxing's gatedWindows over the index's NAMED windows."""
+    """Worst live per-model cap among the gated families (switch_models), over
+    the index's NAMED windows."""
     families = [f.lower() for f in cfg["switch_models"]]
     worst = 0
     for w in account.get("windows") or []:
@@ -123,7 +123,7 @@ def session_models(state, key, provider, cfg, now):
 
 
 def fmt_dur(sec):
-    """Compact countdown, tokenmaxxing-watch style (4d22h / 3h39m / 42m)."""
+    """Compact countdown (4d22h / 3h39m / 42m)."""
     if sec is None:
         return "-"
     sec = int(sec)
@@ -153,9 +153,9 @@ def reset_in(window, now):
 # state.json v2. One file, one writer per key space: intent (pins) is written
 # only by the CLI, observation (vends, cooldowns) only by the hook, and
 # truth (usage, needs-reauth) is never written here at all - it is read from
-# tokenmaxxing's indexes on every request. "A pin exists but its account cannot
+# the account indexes on every request. "A pin exists but its account cannot
 # serve" is derived per request and never stored, so it heals itself.
-Keychain = collections.namedtuple("Keychain", "service store", defaults=(None,))
+Keychain = collections.namedtuple("Keychain", "service")
 CredFile = collections.namedtuple("CredFile", "path")
 
 
@@ -170,7 +170,6 @@ class Account:
     session_pct: int
     weekly_pct: int
     gated_pct: int
-    is_live: bool
     cred: object
     plan: str = ""
     tier: str = ""
@@ -249,34 +248,6 @@ def resolve_session_arg(id_str, state):
     return None
 
 
-# ---------------------------------------------------- supervised-session presence
-def presence_account_ids(presence_dir):
-    """Accounts a tokenmaxxing-supervised session is running on right now.
-
-    Each presence file is {accountId, pid, startedAt}, named by session id.
-    tokenmaxxing verifies the pid's start time; a live pid is enough here,
-    because the answer only adds a picker penalty and blocks a codex refresh.
-    An unreadable record is skipped, never guessed.
-    """
-    ids = set()
-    try:
-        names = os.listdir(presence_dir)
-    except FileNotFoundError:
-        return ids
-    for name in names:
-        rec = base.load_json(os.path.join(presence_dir, name))
-        if not isinstance(rec, dict) or not rec.get("accountId") or not isinstance(rec.get("pid"), int):
-            continue
-        try:
-            os.kill(rec["pid"], 0)
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            pass
-        ids.add(rec["accountId"])
-    return ids
-
-
 def assert_codex_identity(token, expected_id):
     """A cheap boundary check against a stale parked file: fail closed
     rather than serve the wrong account's token."""
@@ -287,24 +258,14 @@ def assert_codex_identity(token, expected_id):
 
 # ---------------------------------------------------------- boundary parsers
 def load_index(provider):
-    """Parse tokenmaxxing's index for one provider into Accounts. The only
-    place either wire shape is understood. Raises when the file is
-    unreadable, which the caller degrades on."""
+    """Parse one provider's index into Accounts. The only place the index's
+    wire shape is understood. Raises when the file is unreadable, which the
+    caller degrades on."""
     if provider == "anthropic":
         return _load_index_anthropic()
     if provider == "openai-codex":
         return _load_index_codex()
     raise ValueError(f"unknown provider {provider}")
-
-
-def _read_index(path):
-    idx = base.load_json(path)
-    if not idx:
-        raise RuntimeError(f"tokenmaxxing {os.path.basename(path)} unreadable")
-    if idx.get("version") != base.TM_INDEX_VERSION:
-        raise RuntimeError(f"tokenmaxxing {os.path.basename(path)} is schema v{idx.get('version')}; "
-                           f"pi-pool reads v{base.TM_INDEX_VERSION} (tokenmaxxing >= 1.44)")
-    return idx
 
 
 def org_suffix(record):
@@ -329,19 +290,16 @@ def record_labels(records):
 
 
 def _load_index_anthropic():
-    idx = _read_index(base.TM_ACCOUNTS)
-    cfg, now, live = base.config(), time.time(), presence_account_ids(base.TM_LIVE)
-    records = idx.get("accounts", [])
+    records = base.read_index("anthropic")["accounts"]
+    cfg, now = base.config(), time.time()
     labels = record_labels(records)
     out = []
     for a in records:
         five, seven = usage_pct(a, now)
-        store = base.store_dir(a["id"])
         out.append(Account(
             provider="anthropic", id=a["id"], email=a.get("email") or a["label"], label=labels[a["id"]],
             needs_reauth=bool(a.get("needsReauth")), session_pct=five, weekly_pct=seven,
-            gated_pct=gated_pct(a, cfg, now), is_live=a["id"] in live,
-            cred=Keychain(base.store_service(store), store),
+            gated_pct=gated_pct(a, cfg, now), cred=Keychain(base.claude_service(a["id"])),
             tier=a.get("tier") or "", windows=tuple(a.get("windows") or ()),
             usage_at=(a.get("lastUsageAt") or 0) / 1000,
         ))
@@ -349,16 +307,14 @@ def _load_index_anthropic():
 
 
 def _load_index_codex():
-    idx = _read_index(base.TM_CODEX_ACCOUNTS)
-    now, live = time.time(), presence_account_ids(base.TM_CODEX_LIVE)
+    now = time.time()
     out = []
-    for a in idx.get("accounts", []):
+    for a in base.read_index("openai-codex")["accounts"]:
         session_pct, weekly_pct = usage_pct(a, now)
         out.append(Account(
             provider="openai-codex", id=a["id"], email=a.get("email") or a["label"],
             needs_reauth=bool(a.get("needsReauth")), session_pct=session_pct,
-            weekly_pct=weekly_pct, gated_pct=0, is_live=a["id"] in live,
-            cred=CredFile(os.path.join(base.TM_CODEX_STORES, a["id"][:8], "auth.json")),
+            weekly_pct=weekly_pct, gated_pct=0, cred=CredFile(base.codex_secret(a["id"])),
             plan=(a.get("tier") or "").lower(), tier=a.get("tier") or "",
             windows=tuple(a.get("windows") or ()), usage_at=(a.get("lastUsageAt") or 0) / 1000,
         ))
@@ -389,8 +345,7 @@ def empty_provider_state():
 
 
 def with_pool_state(accounts, state, provider):
-    """Apply what state.json knows about each account and tokenmaxxing's index
-    does not: `pi-pool off` and the provider's own 429 (`pi-pool limited`)."""
+    """Apply what state.json knows about each account and the index does not: `pi-pool off` and the provider's own 429 (`pi-pool limited`)."""
     prov = state["providers"][provider]
     off = prov.get("disabled") or {}
     limits = prov.get("limits") or {}

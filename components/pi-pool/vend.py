@@ -9,11 +9,11 @@ protocols accept a bare access token as the apiKey (pi-ai sniffs
 account id straight out of the JWT), so a short-lived ACCESS token is all
 either provider ever needs.
 
-Prime receives access tokens only. This script reads tokenmaxxing's
-per-account credential stores (tokenmaxxing >= 1.37: a keychain item keyed by
-stores/<uuid8> for anthropic, codex-stores/<uuid8>/auth.json for codex),
-refreshes in place under the same locks tokenmaxxing and Claude Code take, and
-prints only an access token.
+Prime receives access tokens only. This script reads the pool's own account
+store (~/.config/pi-pool/accounts: an index per provider, a Keychain item or
+0600 file per Claude account, a 0600 auth.json per Codex account), refreshes in
+place under the index lock, and prints only an access token. A machine with
+remote.json asks the machine that holds the accounts instead (pool/remote.py).
 Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
@@ -86,11 +86,13 @@ USAGE = """usage: pi-pool [command]
   off <email|id> [--provider <p>]
                                   keep an account pooled but never pick it
   on <email|id> [--provider <p>] let the pool pick it again
-  rm <email|id> [--provider <p>] tokenmaxxing rm, then drop its pins here
+  rm <email|id> [--provider <p>] delete the account's credential and record, then drop its pins here
   login [<email|id>] [--provider <p>] [--timeout <sec>]
-                                  tokenmaxxing add (or auth <account>) driven as JSON lines
+                                  sign in (Claude: OAuth with a localhost callback or a pasted code;
+                                  Codex: a device code) as JSON lines, then file the login with
+                                  the machine that holds the accounts
   refresh [<email|id> ...] [--provider <p>] [--json | --stream]
-                                  read usage now for every account or the named ones (tokenmaxxing's own read);
+                                  read usage now for every account or the named ones;
                                   --stream prints one JSON line per event while the reads run
   resets [<email|id> ...] [--json]
                                   read each Claude account's banked usage-limit resets (spends nothing)
@@ -113,6 +115,9 @@ USAGE = """usage: pi-pool [command]
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
+  sample                         read each account whose usage figure is due (the pool host's
+                                  timer runs it every minute)
+  file-login                     file the sign-in harvest on stdin in this machine's store
   serve                          answer another machine's token requests and account commands
                                   on the tailnet address in serve.json (pool/remote.py)
 """
@@ -135,7 +140,7 @@ def cli(args):
         "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
-        "serve": pool.remote.cmd_serve,
+        "serve": pool.remote.cmd_serve, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

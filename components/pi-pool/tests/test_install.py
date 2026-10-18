@@ -24,10 +24,10 @@ class Install(unittest.TestCase):
         self.repo, self.home = self.base / "checkout", self.base / "home"
         self.home.mkdir()
         # One pooled account per provider, so install runs both hooks.
-        self.tokenmaxxing = self.home / ".config/tokenmaxxing"
-        self.tokenmaxxing.mkdir(parents=True)
-        for index in ("accounts.json", "codex-accounts.json"):
-            (self.tokenmaxxing / index).write_text(json.dumps({"version": 2, "accounts": [{"id": "fixture-account"}]}))
+        self.accounts = self.home / ".config/pi-pool/accounts"
+        self.accounts.mkdir(parents=True)
+        for provider in ("anthropic", "openai-codex"):
+            (self.accounts / f"{provider}.json").write_text(json.dumps({"version": 1, "accounts": [{"id": "fixture-account"}]}))
         component = self.repo / "components/pi-pool"
         for path, text in {"vend.py": "VERSION = 1\n", "bin/pi-pool": "#!/bin/sh\n", "bin/pi-pool-token": HOOK,
                            "app/extension/index.ts": "export default () => {};\n",
@@ -80,8 +80,7 @@ class Install(unittest.TestCase):
         self.assertEqual((code, again["tests"], again["relinked"], again["previous"]), (0, "already installed", [], first))
 
     def test_a_machine_with_no_pooled_account_yet_installs_and_skips_both_hooks(self):
-        shutil.rmtree(self.tokenmaxxing)
-        (self.home / ".config/pi-pool").mkdir(parents=True)
+        shutil.rmtree(self.accounts)
         (self.home / ".config/pi-pool/hook-fails").write_text("VERSION")
         code, out = self.run_installer()
         self.assertEqual(code, 0, out)
@@ -106,7 +105,7 @@ class Install(unittest.TestCase):
         self.assertEqual((self.home / ".config/pi-pool/vend.py").read_text(), "VERSION = 1\n")
 
     def test_rollback_after_the_first_install_puts_the_old_links_back(self):
-        (self.home / ".config/pi-pool").mkdir(parents=True)
+        (self.home / ".config/pi-pool").mkdir(parents=True, exist_ok=True)
         checkout_bin = self.repo / "components/pi-pool/bin"
         (self.home / ".config/pi-pool/bin").symlink_to(checkout_bin)
         self.run_installer()
@@ -138,7 +137,7 @@ class Install(unittest.TestCase):
         self.assertEqual(self.current(), f"releases/{first}")
 
     def test_a_first_install_whose_hook_fails_puts_the_old_links_back(self):
-        (self.home / ".config/pi-pool").mkdir(parents=True)
+        (self.home / ".config/pi-pool").mkdir(parents=True, exist_ok=True)
         (self.home / ".config/pi-pool/hook-fails").write_text("VERSION = 1")
         (self.home / ".config/pi-pool/bin").symlink_to("/checkout/bin")
         code, err = self.run_installer()

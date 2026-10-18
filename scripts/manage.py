@@ -17,7 +17,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "install-manifest.json"
 MISSING = {"kind": "missing"}
-PROTECTED = {"auth.json", "models.json", "credentials.json", "sessions", "memories", "learned-memories", "tokenmaxxing", ".git"}
+PROTECTED = {"auth.json", "models.json", "credentials.json", "sessions", "memories", "learned-memories", ".git"}
 BUILD_DIRS = {".venv", "node_modules", "__pycache__", "dist", ".git", ".test-artifacts", ".pytest_cache", ".cache"}
 
 

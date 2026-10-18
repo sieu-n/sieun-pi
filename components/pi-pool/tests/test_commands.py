@@ -1,154 +1,16 @@
-"""pi-pool command tests: the usage refresh, a seat with no weekly window, banked
-resets, `use` idempotence, the fallback login and adopt-logins. The fixtures and
+"""pi-pool command tests: banked resets, `use` idempotence, the fallback login and
+adopt-logins. The fixtures and
 the loaded vend.py come from test_core.py.
 """
-import base64, contextlib, io, json, os, shutil, subprocess, tempfile, time, types, unittest, unittest.mock
+import base64, contextlib, io, json, os, shutil, tempfile, time, types, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
-from test_core import ALL, CFG, KEY, SOURCE
+from test_core import ALL, CFG, KEY
 from vend.pool import base, commands, limit_resets, registry, vending
 
 
 def setUpModule():
     isolate_test_module()
-
-
-class RefreshUsage(unittest.TestCase):
-    """`refresh` runs usage-read.ts once per provider and passes its events on
-    with provider and email. A fake script stands in for bun; no network."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.probed = []
-        probe = unittest.mock.patch.object(vending, "probe_failed_reads", self.probed.append)
-        probe.start()
-        self.addCleanup(probe.stop)
-
-    def fake(self, body):
-        path = os.path.join(self.tmp, "bun")
-        with open(path, "w") as f:
-            # argv: --no-env-file <usage-read.ts> <src> <provider> [ids...]
-            f.write('#!/bin/sh\nprovider="$4"\n' + body)
-        os.chmod(path, 0o755)
-        return unittest.mock.patch.object(commands, "tokenmaxxing_runtime", lambda: (path, "src"))
-
-    def run_refresh(self, *args):
-        out = io.StringIO()
-        with unittest.mock.patch.object(base, "log", lambda *a, **k: None), contextlib.redirect_stdout(out):
-            code = commands.cmd_refresh(list(args))
-        return code, out.getvalue()
-
-    READS = (
-        'if [ "$provider" = anthropic ]; then\n'
-        '  echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"id":"b","email":"b@x"}]}\'\n'
-        '  echo \'{"event":"reading","id":"a"}\'\n'
-        '  echo \'{"event":"read","id":"a","ok":true,"usage_at":1790000000}\'\n'
-        '  echo \'{"event":"read","id":"b","ok":false,"reason":"rate limited","retry_at":1790000600}\'\n'
-        'else\n'
-        '  echo \'{"event":"accounts","accounts":[{"id":"c","email":"c@x"}]}\'\n'
-        '  echo \'{"event":"read","id":"c","ok":true,"usage_at":1790000001}\'\n'
-        'fi\n')
-
-    def test_stream_names_provider_and_email_on_every_read(self):
-        with self.fake(self.READS):
-            code, out = self.run_refresh("--stream", "--provider", "anthropic")
-        events = [json.loads(line) for line in out.splitlines()]
-        self.assertEqual(code, 0)
-        self.assertEqual([e["event"] for e in events], ["accounts", "reading", "read", "read", "end"])
-        self.assertEqual((events[1]["email"], events[2]["email"], events[3]["provider"]), ("a@x", "a@x", "anthropic"))
-        self.assertEqual((events[3]["ok"], events[3]["reason"], events[3]["retry_at"]), (False, "rate limited", 1790000600))
-
-    def test_json_reports_every_provider(self):
-        with self.fake(self.READS):
-            code, out = self.run_refresh("--json")
-        report = json.loads(out)["providers"]
-        self.assertEqual(code, 0)
-        self.assertEqual([r["ok"] for r in report["anthropic"]], [True, False])
-        self.assertEqual(report["openai-codex"], [{"id": "c", "email": "c@x", "label": "c@x", "ok": True, "reason": None, "retry_at": None, "usage_at": 1790000001}])
-
-    def test_an_anthropic_account_whose_read_failed_is_probed(self):
-        with self.fake(self.READS):
-            code, _ = self.run_refresh("--json")
-        self.assertEqual(code, 0)
-        self.assertEqual(self.probed, [{"b"}])
-
-    def test_named_accounts_need_a_provider(self):
-        code, out = self.run_refresh("--json", "a@x")
-        self.assertEqual(code, 1)
-        self.assertIn("--provider", json.loads(out)["error"])
-
-    def test_named_account_is_resolved_to_its_id(self):
-        seen = os.path.join(self.tmp, "args")
-        account = types.SimpleNamespace(id="abc-123", email="a@x", label="a@x")
-        with self.fake(f'echo "$@" > {seen}\necho \'{{"event":"accounts","accounts":[]}}\'\n'), \
-             unittest.mock.patch.object(registry, "load_index", lambda provider: [account]):
-            code, _ = self.run_refresh("--json", "--provider", "anthropic", "a@x")
-        self.assertEqual(code, 0)
-        with open(seen) as f:
-            self.assertTrue(f.read().split()[-2:] == ["anthropic", "abc-123"])
-
-    def test_a_read_still_running_at_the_deadline_is_reported_unfinished(self):
-        events = []
-        with self.fake('echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"}]}\'\necho \'{"event":"reading","id":"a"}\'\nexec sleep 30\n'):
-            errors = commands.read_usage({"anthropic": None}, events.append, timeout=3)
-        self.assertEqual(errors, {})
-        self.assertEqual(events[-1], {"event": "read", "provider": "anthropic", "id": "a", "email": "a@x", "label": "a@x", "ok": False,
-                                      "reason": "the read did not finish in 3s", "retry_at": None})
-
-    def test_a_helper_crash_is_an_error(self):
-        with self.fake('echo "boom" >&2\nexit 3\n'):
-            code, out = self.run_refresh("--json", "--provider", "openai-codex")
-        self.assertEqual(code, 1)
-        self.assertEqual(json.loads(out)["errors"], {"openai-codex": "boom"})
-
-    def test_runtime_comes_from_the_tokenmaxxing_wrapper(self):
-        os.makedirs(os.path.join(self.tmp, "bin"))
-        wrapper = os.path.join(self.tmp, "bin", "tokenmaxxing")
-        with open(wrapper, "w") as f:
-            f.write('#!/bin/sh\nexec "/x/bun" --no-env-file run "/y/tokenmaxxing/src/main.ts" "$@"\n')
-        os.chmod(wrapper, 0o755)
-        with unittest.mock.patch.object(base, "TM", self.tmp):
-            self.assertEqual(commands.tokenmaxxing_runtime(), ("/x/bun", "/y/tokenmaxxing/src"))
-
-    def test_usage_read_loads_against_the_installed_tokenmaxxing(self):
-        """Contract check: a tokenmaxxing auto-update that renames a function usage-read.ts calls fails here."""
-        try:
-            bun, src = commands.tokenmaxxing_runtime()
-        except RuntimeError as e:
-            self.skipTest(str(e))
-        done = subprocess.run([bun, "--no-env-file", commands.USAGE_READ, src, "anthropic", "not-an-account"], capture_output=True, text=True,
-                              timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=self.tmp))
-        lines = [json.loads(line) for line in done.stdout.splitlines()]
-        self.assertEqual((done.returncode, lines[-1]), (0, {"event": "read", "id": "not-an-account", "ok": False, "reason": "not in the pool", "retry_at": None}))
-
-
-class SeatWithoutAWeeklyWindow(unittest.TestCase):
-    """A team seat's usage has a 5h window and no weekly one. tokenmaxxing's
-    read rejects that body, so usage-read.ts lands it through app/usage-seat.ts."""
-
-    def windows(self, body):
-        try:
-            bun, _ = commands.tokenmaxxing_runtime()
-        except RuntimeError as e:
-            self.skipTest(str(e))
-        script = ("import { seatWindows } from %s; console.log(JSON.stringify(seatWindows(%s, 1000)));"
-                  % (json.dumps(os.path.join(SOURCE, "app", "usage-seat.ts")), json.dumps(body)))
-        done = subprocess.run([bun, "--no-env-file", "-e", script], capture_output=True, text=True, timeout=60)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
-
-    def test_a_five_hour_only_body_becomes_a_session_window_and_its_model_rows(self):
-        body = {"five_hour": {"utilization": 10.0, "resets_at": "2026-10-10T14:59:59.9+00:00"}, "seven_day": None,
-                "limits": [{"kind": "weekly_scoped", "percent": 4, "resets_at": "2026-10-10T13:59:59+00:00",
-                            "scope": {"model": {"display_name": "Fable"}}}, {"kind": "session", "percent": 10}]}
-        self.assertEqual(self.windows(body), [
-            {"name": None, "usedPercentage": 10.0, "resetsAt": 1791644399900, "windowSeconds": 18000, "sampledAt": 1000},
-            {"name": "Fable", "usedPercentage": 4, "resetsAt": 1791640799000, "windowSeconds": 604800, "sampledAt": 1000}])
-
-    def test_a_body_without_a_five_hour_window_is_not_a_seat(self):
-        self.assertIsNone(self.windows({"five_hour": None, "seven_day": None}))
-        self.assertIsNone(self.windows({"five_hour": {"utilization": 1}, "seven_day": {"utilization": 2}}))
 
 
 GRANT = {"id": "opus55-launch", "label": "Launch reset", "resets_total": 1, "resets_left": 1, "starts_at": "2026-09-22T16:00:00+00:00",

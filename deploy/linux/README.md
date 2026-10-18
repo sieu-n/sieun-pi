@@ -34,7 +34,7 @@ PRIME_AGENT_DOWNLOAD_BASE_URL=$B PRIME_AGENT_INSTALL_METHOD=binary PRIME_AGENT_I
   PRIME_AGENT_EXPECTED_SHA256=83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2 sh install.sh 0.9.8
 prime-agent --version   # 0.9.8
 
-# Bun for the poteto-mode scripts and tokenmaxxing
+# Bun for the poteto-mode scripts
 curl -fsSL https://bun.sh/install | bash && export PATH=$HOME/.bun/bin:$PATH
 
 # settings.json first, so apply keeps it: no aside, cua-driver or paper MCP servers, which are macOS apps

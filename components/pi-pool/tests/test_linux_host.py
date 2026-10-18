@@ -18,7 +18,7 @@ class FileSecrets(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def test_an_item_is_written_0600_in_a_0700_folder_read_back_and_deleted(self):
-        service = base.store_service(os.path.join(base.TM_STORES, "0a1b2c3d"))
+        service = base.claude_service("0a1b2c3d")
         self.assertIsNone(base.kc_read(service))
         base.kc_write(service, "it's \"quoted\"\n")
         path = os.path.join(self.dir, service)
@@ -33,11 +33,11 @@ class FileSecrets(unittest.TestCase):
         self.assertIsNone(base.kc_read(service))
 
     def test_the_keychain_adapter_round_trips_a_claude_blob_through_the_file(self):
-        adapter = base.KeychainAdapter("Claude Code-credentials-1234abcd")
+        adapter = base.KeychainAdapter("pi-pool.anthropic.1234abcd")
         blob = {"accessToken": "a", "refreshToken": "r", "expiresAt": 1792072000000}
         adapter.write(blob)
         self.assertEqual(adapter.read(), blob)
-        with open(os.path.join(self.dir, "Claude Code-credentials-1234abcd")) as f:
+        with open(os.path.join(self.dir, "pi-pool.anthropic.1234abcd")) as f:
             self.assertEqual(json.load(f), {"claudeAiOauth": blob})
 
     def test_a_service_that_names_a_path_is_refused(self):
@@ -47,13 +47,13 @@ class FileSecrets(unittest.TestCase):
 
     def test_PI_POOL_SECRETS_file_picks_the_files_on_macos_too(self):
         with tempfile.TemporaryDirectory(prefix="pi-pool-test-") as home:
-            env = dict(os.environ, PI_POOL_SECRETS="file", PI_POOL_DIR=os.path.join(home, "pool"), TOKENMAXXING_HOME=os.path.join(home, "tm"))
+            env = dict(os.environ, PI_POOL_SECRETS="file", PI_POOL_DIR=os.path.join(home, "pool"))
             code = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('vend', 'vend.py'); m = importlib.util.module_from_spec(s); "
                     "sys.modules['vend'] = m; s.loader.exec_module(m); b = m.pool.base; b.kc_write('svc', 'x'); print(b.FILE_SECRETS, b.kc_read('svc'), b.SECRETS)")
             out = subprocess.run([sys.executable, "-B", "-c", code], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  env=env, capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.split(), ["True", "x", os.path.join(home, "tm", "secrets")])
+        self.assertEqual(out.stdout.split(), ["True", "x", os.path.join(home, "pool", "accounts", "secrets")])
 
 
 if __name__ == "__main__":

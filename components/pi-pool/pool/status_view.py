@@ -79,7 +79,7 @@ def build_rows(accounts, tree, book, cooldowns, cfg, now, cooldown_reasons=None)
             "usable": reason is None, "serves": sched.serve_reason(a, cooldowns, now) is None, "reason": reason,
             "current": a.id == tree.current, "pinned": a.id in (tree.pin, tree.pool_pin),
             # user-history's parsePoolRows requires a boolean `seat`; false until it drops the field.
-            "live": a.is_live, "seat": False, "disabled": a.disabled,
+            "seat": False, "disabled": a.disabled,
             "score": round(sched.score(a, cfg, now, p, book.load), 2) if reason is None else None,
             "slot_cap": sched.slot_cap(a, cfg),
         }
@@ -104,9 +104,8 @@ def build_rows(accounts, tree, book, cooldowns, cfg, now, cooldown_reasons=None)
 
 
 # ------------------------------------------------------------------ rendering
-# `status` and `watch` draw one card per account in a grid, the same layout as
-# `tokenmaxxing status`, plus what only the pool knows: pins, the
-# sessions on each account, cooldowns, waiters, and each account's score.
+# `status` and `watch` draw one card per account in a grid: its usage windows,
+# pins, the sessions on each account, cooldowns, waiters, and its score.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CARD_GAP = 3
 NOTE_INDENT = "    "
@@ -194,8 +193,6 @@ def account_card(p, a, ctx):
         badges.append(p.yellow(f"{ctx['waiting'][a.id]} waiting"))
     if sessions:
         badges.append(p.green(f"{sessions} session{'s' if sessions != 1 else ''}"))
-    if a.is_live:
-        badges.append(p.cyan("supervised"))
     if reason == "disabled":
         badges.append(p.dim("disabled"))
     elif reason == "needs-reauth":

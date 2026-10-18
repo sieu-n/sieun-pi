@@ -153,8 +153,6 @@ def admit_reason(a, cooldowns, cfg, now, priority="normal"):
         return "depleted"
     if registry.usage_unsampled(a, now):
         return "unsampled"
-    if a.is_live and not cfg["allow_active_account"]:
-        return "live-elsewhere"
     return None
 
 
@@ -180,7 +178,7 @@ def window_reset_at(window):
 def admissible_at(a, cooldowns, cfg, now, priority="normal"):
     """When the account passes R2 for this class again, epoch seconds; inf when
     no reset is known or its credential cannot serve."""
-    if a.disabled or a.needs_reauth or (a.is_live and not cfg["allow_active_account"]):
+    if a.disabled or a.needs_reauth:
         return float("inf")
     at = max(now, a.limited_until, cooldowns.get(a.id, 0))
     families = [f.lower() for f in cfg["switch_models"]]
@@ -202,7 +200,7 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal"):
 
 
 def by_tier(a, table, default):
-    """The entry for tokenmaxxing's tier name or its first word."""
+    """The entry for the account's tier name or its first word."""
     tier = (a.tier or "").lower()
     return table.get(tier, table.get(tier.split(" ")[0], default)) if tier else default
 
@@ -284,7 +282,7 @@ def score(a, cfg, now, priority, load):
     pace = max(0.0, cfg["seven_day_max_pct"] - week_pct(a)) / max(1.0, hours)
     cap = admit_cap(cfg, priority)
     headroom = max(0.0, cap - a.session_pct) / cap
-    trees = load.get(a.id, 0) + 1 + int(a.is_live)
+    trees = load.get(a.id, 0) + 1
     return pace * headroom * tier_units(a, cfg) / trees
 
 

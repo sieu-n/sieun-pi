@@ -55,11 +55,11 @@ export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
   return value.rows.map((row: unknown): PoolAccount => {
     if (!isRecord(row) || typeof row.id !== "string" || !row.id || typeof row.email !== "string" || typeof row.usage !== "string" ||
       !(row.reason === null || typeof row.reason === "string") || typeof row.usable !== "boolean" || typeof row.current !== "boolean" ||
-      typeof row.pinned !== "boolean" || typeof row.live !== "boolean" || typeof row.seat !== "boolean") {
+      typeof row.pinned !== "boolean" || typeof row.seat !== "boolean") {
       throw new Error("pi-pool returned an invalid account");
     }
     return { id: row.id, email: row.email, label: text(row.label) ?? row.email, usage: row.usage, reason: row.reason, usable: row.usable, current: row.current, pinned: row.pinned,
-      live: row.live, seat: row.seat, session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
+      seat: row.seat, session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
       tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
       cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true,

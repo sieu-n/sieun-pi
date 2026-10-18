@@ -372,7 +372,7 @@ export interface PoolWindow { kind: "session" | "weekly" | "model"; label: strin
 export interface PoolAccount {
   /** `label` is what to show: the email, plus the organization when two pooled accounts share the email. */
   id: string; email: string; label: string; plan?: string; usage: string; session_pct: number | null; weekly_pct: number | null;
-  usable: boolean; reason: string | null; current: boolean; pinned: boolean; live: boolean; seat: boolean; score: number | null;
+  usable: boolean; reason: string | null; current: boolean; pinned: boolean; seat: boolean; score: number | null;
   tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null; disabled: boolean;
   /** Epoch ms until which the provider answered 429 for this account (`pi-pool limited`); null when no limit is on file. */
   limitedUntil: number | null;

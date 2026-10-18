@@ -162,7 +162,7 @@ test("stall action: an owner turn restarts after 30 s, then 5, 10, 20 min; other
 });
 
 test("pool: Claude serves when an account that is on is usable; it frees up at the earliest limit, cooldown or spent-window reset", async () => {
-  const row = (over: Partial<PoolAccount>): PoolAccount => ({ id: "a", email: "a@x", label: "a@x", usage: "", reason: null, usable: false, current: false, pinned: false, live: true, seat: false,
+  const row = (over: Partial<PoolAccount>): PoolAccount => ({ id: "a", email: "a@x", label: "a@x", usage: "", reason: null, usable: false, current: false, pinned: false, seat: false,
     session_pct: null, weekly_pct: null, score: null, tier: null, windows: [], usageAt: null, cooldownUntil: null, cooldownReason: null, limitedUntil: null, disabled: false, sessions: 0, ...over });
   const now = 1_000_000;
   assert.deepEqual(claudeStateOf([row({ limitedUntil: now + 600_000 }), row({ cooldownUntil: now + 300_000, limitedUntil: now - 1 }),
@@ -171,7 +171,7 @@ test("pool: Claude serves when an account that is on is usable; it frees up at t
   assert.deepEqual(claudeStateOf([], now), { serves: false, freeAt: null });
   let reads = 0;
   let clock = 0;
-  const listing = JSON.stringify({ provider: "anthropic", rows: [{ id: "a", email: "a@x", label: "a@x", usage: "", reason: null, usable: true, current: true, pinned: false, live: true, seat: false }] });
+  const listing = JSON.stringify({ provider: "anthropic", rows: [{ id: "a", email: "a@x", label: "a@x", usage: "", reason: null, usable: true, current: true, pinned: false, seat: false }] });
   const reader = claudeReader(60_000, () => clock, async () => { reads++; return listing; });
   assert.deepEqual(await reader(), { serves: true, freeAt: null });
   clock = 59_999;

@@ -97,7 +97,7 @@ A source license does not grant rights to a third party's data.
 | Prime Agent 0.9.4 | Tested extension host and Python skill runtime. Installed separately for interactive use. |
 | Node.js, npm, Python 3.11+, uv, Bun | Build and check tools. Use the versions required by the current install guide. |
 | Aside and its MCP server | Browser calls. The example settings use an `aside` executable on `PATH`; the wrapper also supports `ASIDE_CLI`. |
-| Tokenmaxxing stores and macOS Keychain | Account-pool operation. The source installer does not seed account stores or install credentials. |
+| The pool account store and macOS Keychain | Account-pool operation. The source installer does not seed account stores or install credentials. |
 | Virev API key | Web search. Requests use `api.virev.ai` unless configured otherwise. Search can incur charges. |
 | Linear, GitHub, Graphite, and local wiki services | Only the workflows that call them. A source check does not prove service access. |
 

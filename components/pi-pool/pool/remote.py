@@ -15,9 +15,11 @@ REMOTE = os.path.join(base.POOL, "remote.json")
 KEY_ENV = "PI_POOL_SESSION_KEY"
 OFF_ENV = "PI_POOL_REMOTE"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
-LOCAL_COMMANDS = {"admit", "release", "owner-turn", "queue", "priority", "adopt-logins", "config", "set", "log", "serve"}
-# These hold a terminal open; run them on the machine that holds the accounts.
-HOLDER_ONLY = {"watch", "login"}
+# A sign-in runs where its browser is and files the login with the holder (file-login).
+LOCAL_COMMANDS = {"admit", "release", "owner-turn", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
+                  "login"}
+# This holds a terminal open; run it on the machine that holds the accounts.
+HOLDER_ONLY = {"watch"}
 # Prime gives the token hook 10 s (vend.log_when_killed); answer before that so the hook can log why.
 TOKEN_WAIT_SEC = 9
 
@@ -44,10 +46,10 @@ def session_fields():
     return {"key": key.key, "uuid": key.uuid, "active": key.active_id} if key else None
 
 
-def ask(cfg, argv):
-    """(exit code, stdout, stderr) of argv run by the holder's pool."""
+def ask(cfg, argv, stdin=None):
+    """(exit code, stdout, stderr) of argv run by the holder's pool, with `stdin` as its input."""
     token = not (argv and argv[0] == "--cli")
-    body = json.dumps({"argv": argv, "session": session_fields()}).encode()
+    body = json.dumps({"argv": argv, "session": session_fields(), "stdin": stdin}).encode()
     request = urllib.request.Request(cfg["url"].rstrip("/") + "/run", data=body, method="POST", headers={
         "Authorization": "Bearer " + cfg["secret"], "Content-Type": "application/json"})
     try:
@@ -112,12 +114,13 @@ def make_handler(cfg, root):
                 return self.send_error(403)
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                argv, session = req["argv"], req.get("session")
+                argv, session, given_in = req["argv"], req.get("session"), req.get("stdin")
             except (ValueError, KeyError, TypeError):
                 return self.send_error(400)
-            if not valid_argv(argv) or not (session is None or isinstance(session, dict)):
+            if not valid_argv(argv) or not (session is None or isinstance(session, dict)) \
+                    or not (given_in is None or isinstance(given_in, str)):
                 return self.send_error(400)
-            done = subprocess.run(holder_command(root, argv), env=holder_env(session), stdin=subprocess.DEVNULL,
+            done = subprocess.run(holder_command(root, argv), env=holder_env(session), input=given_in or "",
                                   capture_output=True, text=True)
             body = json.dumps({"code": done.returncode, "out": done.stdout, "err": done.stderr}).encode()
             self.send_response(200)

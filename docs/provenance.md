@@ -72,12 +72,12 @@ The tested host is Prime Agent 0.9.4. This does not establish full upstream Pi c
 
 ## Tokenmaxxing
 
-`vend.py` explicitly follows tokenmaxxing's credential refresh, account-store, expiry, and usage-cap behavior.
+pi-pool adapted tokenmaxxing's credential refresh, usage-window and usage-sampling behavior (`pool/base.py`, `pool/registry.py`, `pool/usage.py`). Since 2026-10-18 it keeps its own account store and does not use, call or install tokenmaxxing.
 Local upstream source at `d4ed9c4a5564681b4b409918560c3582df1d5d16` identifies `anaclumos` as author and MIT as the license.
 The public [upstream license](https://github.com/anaclumos/tokenmaxxing/blob/1a82259/LICENSE) names `Copyright (c) 2026 anaclumos`.
 The full notice is retained in [`LICENSES/tokenmaxxing-MIT.txt`](../LICENSES/tokenmaxxing-MIT.txt) for adapted portions.
 This does not claim that tokenmaxxing authored the whole pool.
-Its application, credentials, and account stores are not distributed here.
+Its application is not distributed here.
 
 Source licenses do not grant access to provider accounts or override provider service terms.
 Account pooling must use accounts the operator is authorized to use and must comply with the provider's terms.

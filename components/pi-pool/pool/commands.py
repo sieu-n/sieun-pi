@@ -1,7 +1,7 @@
 """pin, unpin, switch, config, set, log, use, priority, and the usage refresh."""
-import json, os, queue, re, shutil, subprocess, sys, threading, time
+import json, os, sys, time
 
-from . import base, registry, sched, vending, status_view
+from . import base, registry, sched, usage, vending, status_view
 
 
 def cmd_pin(rest):
@@ -223,121 +223,11 @@ def cmd_priority(rest):
     return 0
 
 
-USAGE_READ = os.path.join(base.CODE_ROOT, "app", "usage-read.ts")
-_WRAPPER_RUN = re.compile(r'exec\s+"([^"]+)"\s.*?\brun\s+"([^"]+)/main\.ts"')
-
-
-def tokenmaxxing_exe():
-    own = os.path.join(base.TM, "bin", "tokenmaxxing")
-    return own if os.access(own, os.X_OK) else shutil.which("tokenmaxxing")
-
-
-def tokenmaxxing_runtime():
-    """The Bun binary and the `src` directory of the tokenmaxxing install the
-    wrapper runs. usage-read.ts imports tokenmaxxing's own read and save code
-    from that directory, so the read always matches the installed release."""
-    exe = tokenmaxxing_exe()
-    if not exe:
-        raise RuntimeError("tokenmaxxing is not installed")
-    real = os.path.realpath(exe)
-    if real.endswith(os.path.join("src", "main.ts")):
-        bun = shutil.which("bun")
-        if not bun:
-            raise RuntimeError("bun is not on PATH")
-        return bun, os.path.dirname(real)
-    try:
-        with open(real, encoding="utf-8", errors="replace") as fh:
-            match = _WRAPPER_RUN.search(fh.read(4096))
-    except OSError as e:
-        raise RuntimeError(f"cannot read {exe}: {e}")
-    if not match:
-        raise RuntimeError(f"cannot find the tokenmaxxing source behind {exe}")
-    return match.group(1), match.group(2)
-
-
-def read_usage(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC):
-    """Run usage-read.ts once per provider, all at once, and pass each event to
-    `emit` with its provider, email and label. `selection` maps a provider to account
-    ids, or to None for every account. An account still unread at the deadline
-    is reported as not finished. Returns the providers that failed as a whole."""
-    bun, src = tokenmaxxing_runtime()
-    env = dict(os.environ, TOKENMAXXING_HOME=base.TM)
-    events, procs, errors, pumps = queue.Queue(), {}, {}, []
-    for provider, ids in selection.items():
-        proc = subprocess.Popen([bun, "--no-env-file", USAGE_READ, src, provider, *(ids or [])], stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-        procs[provider] = proc
-
-        def pump(provider=provider, proc=proc):
-            for line in proc.stdout:
-                events.put((provider, line))
-            events.put((provider, None))
-        pumps.append(threading.Thread(target=pump, daemon=True))
-        pumps[-1].start()
-    emails, pending, open_, listed = {}, {p: set() for p in procs}, set(procs), set()
-    labels = {}
-    for provider in procs:
-        try:
-            labels.update({(provider, a.id): a.label for a in registry.load_index(provider)})
-        except Exception:
-            pass
-    deadline = time.monotonic() + timeout
-    while open_:
-        try:
-            provider, line = events.get(timeout=max(0.0, deadline - time.monotonic()))
-        except queue.Empty:
-            break
-        if line is None:
-            open_.discard(provider)
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("event")
-        if kind == "accounts":
-            listed.add(provider)
-            for a in event.get("accounts") or []:
-                emails[(provider, a.get("id"))] = a.get("email")
-                a["label"] = labels.get((provider, a.get("id"))) or a.get("email")
-                pending[provider].add(a.get("id"))
-        elif kind == "read":
-            pending[provider].discard(event.get("id"))
-        elif kind == "error":
-            errors[provider] = str(event.get("message") or "usage-read failed")
-        if kind in ("reading", "read"):
-            event["email"] = emails.get((provider, event.get("id")))
-            event["label"] = labels.get((provider, event.get("id"))) or event["email"]
-        emit(dict(event, provider=provider))
-    for provider, proc in procs.items():
-        killed = proc.poll() is None
-        if killed:
-            proc.kill()
-        proc.wait()
-        said = (proc.stderr.read() or "").strip().splitlines()
-        if proc.returncode and provider not in errors and provider not in listed:
-            errors[provider] = (f"usage-read did not finish in {timeout}s" if killed
-                                else said[-1] if said else f"usage-read exited {proc.returncode}")[:300]
-            emit({"event": "error", "provider": provider, "message": errors[provider]})
-        for account in sorted(pending[provider], key=str):
-            emit({"event": "read", "provider": provider, "id": account, "email": emails.get((provider, account)),
-                  "label": labels.get((provider, account)) or emails.get((provider, account)),
-                  "ok": False, "reason": f"the read did not finish in {timeout}s", "retry_at": None})
-    for pump in pumps:
-        pump.join(timeout=5)
-    for proc in procs.values():
-        proc.stdout.close()
-        proc.stderr.close()
-    return errors
-
-
 def cmd_refresh(rest):
-    """Read usage now for every account, or for the named ones, through
-    tokenmaxxing's own read (app/usage-read.ts). It skips no account for having
-    been read recently, but it waits out a rate limit the usage endpoint set.
-    It writes only tokenmaxxing's usage figures and moves no session or pin.
+    """Read usage now for every account, or for the named ones (pool/usage.py).
+    It skips no account for having been read recently, but it waits out a rate
+    limit the usage endpoint set. It writes only the index's usage figures and
+    moves no session or pin.
     --stream prints each event as one JSON line while the reads run; --json
     prints one report at the end. Never prints a credential."""
     stream = "--stream" in rest
@@ -379,10 +269,7 @@ def cmd_refresh(rest):
         elif not as_json and event.get("event") == "read":
             print(f"{event['provider']:14s} {event.get('label') or event.get('id')}  {'read' if event.get('ok') else event.get('reason')}", flush=True)
 
-    try:
-        errors = read_usage(selection, emit)
-    except RuntimeError as e:
-        return fail(str(e))
+    errors = usage.read_many(selection, emit)
     failed = [r["label"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
     base.log("usage_refresh", providers=list(selection), accounts=sum(len(r) for r in rows.values()), failed=failed, errors=errors)
     failed_claude = {r["id"] for r in rows.get("anthropic", []) if not r["ok"]}

@@ -25,7 +25,9 @@ if key and key["key"] == "fixture-waits":
 sys.stdout.write("sk-ant-oat-fixture-" + json.dumps([sys.argv[1:], key, os.environ.get("PI_POOL_REMOTE")]))
 """
 HOLDER_CLI = """import json, os, sys
-print(json.dumps({"argv": sys.argv[1:], "key": json.loads(os.environ.get("PI_POOL_SESSION_KEY") or "null")}))
+given = sys.stdin.read()
+print(json.dumps({"argv": sys.argv[1:], "key": json.loads(os.environ.get("PI_POOL_SESSION_KEY") or "null"),
+                  **({"stdin": given} if given else {})}))
 """
 
 
@@ -81,12 +83,12 @@ class Remote(unittest.TestCase):
             json.dump({"url": f"http://127.0.0.1:{port or self.port}", "secret": secret}, f)
         return pool
 
-    def run_on(self, pool, argv, session="fixture-box"):
+    def run_on(self, pool, argv, session="fixture-box", cwd=None):
         env = dict(os.environ, PI_POOL_DIR=pool,
                    PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID=session)
         env.pop("PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", None)
         return subprocess.run([sys.executable, "-B", *argv], env=env, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=60, cwd=cwd)
 
     def no_token_reason(self, pool):
         [e] = [e for e in events(pool) if e["event"] == "hook_no_token"]
@@ -139,9 +141,20 @@ class Remote(unittest.TestCase):
         self.assertEqual(self.no_token_reason(pool), "remote_timeout")
 
     def test_a_terminal_command_is_refused_by_the_holder(self):
-        run = self.run_on(self.client(), [CLI, "login"])
+        run = self.run_on(self.client(), [CLI, "watch"])
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("HTTP 400", run.stderr)
+
+    def test_a_login_filed_from_another_machine_reaches_the_holder_on_stdin_only(self):
+        code = ("import importlib.util, json, os, sys; s = importlib.util.spec_from_file_location('vend', 'vend.py'); "
+                "m = importlib.util.module_from_spec(s); sys.modules['vend'] = m; s.loader.exec_module(m); r = m.pool.remote; "
+                "print(json.dumps(r.ask(r.client(), ['--cli', 'file-login'], stdin=os.environ['FIXTURE_STDIN'])))")
+        os.environ["FIXTURE_STDIN"] = '{"secret": 1}'
+        self.addCleanup(os.environ.pop, "FIXTURE_STDIN")
+        run = self.run_on(self.client(), ["-c", code], cwd=SOURCE)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        exit_code, out, _ = json.loads(run.stdout)
+        self.assertEqual((exit_code, json.loads(out)["argv"], json.loads(out)["stdin"]), (0, ["file-login"], '{"secret": 1}'))
 
 
 if __name__ == "__main__":

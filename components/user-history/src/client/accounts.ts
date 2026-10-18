@@ -30,7 +30,7 @@ export function forgetAccounts(): void { cache.clear(); }
 export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
 export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
-export type AccountState = "off" | "needs-login" | "needs-terms" | "refused" | "cooldown" | "limited" | "depleted" | "pinned" | "seat" | "live";
+export type AccountState = "off" | "needs-login" | "needs-terms" | "refused" | "cooldown" | "limited" | "depleted" | "pinned" | "seat";
 /** The pool's cooldown reason for an account whose updated Consumer Terms are not accepted on claude.ai yet (pi-pool's pool/base.py NEEDS_TERMS). */
 export const NEEDS_TERMS = "needs terms";
 export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = {
@@ -43,7 +43,6 @@ export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = 
   depleted: { label: "Depleted", tone: "warning" },
   pinned: { label: "Pinned", tone: "accent" },
   seat: { label: "Seat", tone: "accent" },
-  live: { label: "Live", tone: "success" },
 };
 
 /** The one badge a row shows: what stops it serving first, else its role in the pool. A ready account shows none. */
@@ -55,7 +54,6 @@ export function accountState(row: PoolAccount): AccountState | null {
   if (row.reason === "depleted") return "depleted";
   if (row.pinned) return "pinned";
   if (row.seat) return "seat";
-  if (row.live || row.reason === "live-elsewhere") return "live";
   return null;
 }
 

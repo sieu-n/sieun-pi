@@ -1,11 +1,12 @@
-"""pi-pool's account admin commands: off, on, rm and login, run as the real
-CLI against an isolated PI_POOL_DIR, HOME and TOKENMAXXING_HOME. A fake
-`tokenmaxxing` stands in for the real one: it records its arguments and, for
-login, draws the screens claude and codex show. No network, no keychain.
+"""pi-pool's account admin commands: off, on, limited, refused, rm and login. The
+admin commands run as the real CLI against an isolated PI_POOL_DIR and HOME; the
+sign-in runs in this process with its HTTP calls faked. No network, no keychain.
 """
-import hashlib, json, math, os, select, shutil, signal, subprocess, sys, tempfile, textwrap, time, unicodedata, unittest
+import base64, http.client, json, math, os, shutil, subprocess, tempfile, threading, time, unittest, unittest.mock, urllib.parse
 
 from fixture_isolation import isolate_test_module
+import test_core  # noqa: F401  (loads vend.py with an isolated pool folder)
+from vend.pool import base, remote, signin, usage
 
 
 def setUpModule():
@@ -13,107 +14,37 @@ def setUpModule():
 
 
 PI_POOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "pi-pool")
-FILE_KEYCHAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "file_keychain.py")
-CLAUDE_INDEX = {"version": 2, "accounts": [
+CLAUDE_INDEX = {"version": 1, "accounts": [
     {"id": "aaaa1111-0000-0000-0000-000000000000", "email": "a@x", "label": "a@x", "windows": []},
     {"id": "bbbb2222-0000-0000-0000-000000000000", "email": "b@x", "label": "b@x", "windows": []}]}
-CODEX_INDEX = {"version": 2, "accounts": [
+CODEX_INDEX = {"version": 1, "accounts": [
     {"id": "cccc3333-0000-0000-0000-000000000000", "email": "c@x", "label": "c@x", "tier": "plus", "windows": []}]}
 A, B = CLAUDE_INDEX["accounts"][0]["id"], CLAUDE_INDEX["accounts"][1]["id"]
-
-# The screens a fake login draws. FAKE_LOGIN picks the flow; every run writes
-# its argv and pid next to itself so a test can check what ran and that it ended.
-FAKE_TOKENMAXXING = textwrap.dedent("""\
-    #!/usr/bin/python3 -B
-    import hashlib, json, os, subprocess, sys, time, unicodedata
-    here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "argv.txt"), "a") as f:
-        f.write(" ".join(sys.argv[1:]) + "\\n")
-    with open(os.path.join(here, "pid.txt"), "w") as f:
-        f.write(str(os.getpid()))
-    mode = os.environ.get("FAKE_LOGIN", "")
-    say = lambda text: (sys.stdout.write(text + "\\n"), sys.stdout.flush())
-    if sys.argv[1] == "rm":
-        if mode == "rm-fails":
-            say("no account matches that selector")
-            sys.exit(1)
-        say("removed")
-        sys.exit(0)
-    if mode == "codex":
-        say("Follow these steps to sign in with ChatGPT using device code authorization:")
-        say("1. Open this link in your browser and sign in to your account")
-        say("   https://auth.openai.com/codex/device")
-        say("2. Enter this one-time code (expires in 15 minutes)")
-        say("   ABCD-12345")
-        time.sleep(1)
-        say("added c2@x (plus)")
-        sys.exit(0)
-    if mode == "hang":
-        say("Choose the text style that looks best with your terminal")
-        time.sleep(600)
-        sys.exit(0)
-    if mode == "claude":
-        say("Choose the text style that looks best with your terminal")
-        sys.stdin.readline()
-        attempt = 0
-        while True:
-            attempt += 1
-            say("Select login method:")
-            sys.stdin.readline()
-            subprocess.run([os.environ["BROWSER"], f"https://claude.ai/oauth/authorize?state=cb{attempt}&redirect_uri=http://localhost:1/callback"])
-            link = f"https://claude.ai/oauth/authorize?code=true&state=s{attempt}&code_challenge=c{attempt}"
-            sys.stdout.write(f"\\x1b]8;;{link}\\x07Sign in\\x1b]8;;\\x07\\n")
-            say("Paste code here if prompted >")
-            code = sys.stdin.readline().strip()
-            if code == "good":
-                break
-            say("OAuth error: Invalid code")
-            sys.stdin.readline()
-        say("Login successful. Press Enter to continue")
-        sys.stdin.readline()
-        # `add` in the home it was given: one record, its credential parked in
-        # that home's store, as tokenmaxxing does.
-        record = json.loads(os.environ["FAKE_HARVEST"])
-        home = os.environ["TOKENMAXXING_HOME"]
-        with open(os.path.join(home, "accounts.json"), "w") as f:
-            json.dump({"version": 2, "accounts": [record]}, f)
-        store = os.path.join(home, "stores", record["id"][:8])
-        service = "Claude Code-credentials-" + hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()[:8]
-        try:
-            with open(os.environ["FAKE_KEYCHAIN"]) as f:
-                items = json.load(f)
-        except FileNotFoundError:
-            items = {}
-        items[service] = os.environ.get("FAKE_SECRET", "secret-" + record["oauthAccount"]["organizationUuid"])
-        with open(os.environ["FAKE_KEYCHAIN"], "w") as f:
-            json.dump(items, f)
-        say(("reauthed " if sys.argv[1] == "auth" else "added ") + record["email"])
-        sys.exit(0)
-    sys.exit(3)
-""")
 
 
 class PoolFixture(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="pi-pool-admin-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.tm, self.pool = os.path.join(self.root, "tm"), os.path.join(self.root, "pool")
-        os.makedirs(os.path.join(self.tm, "bin"))
-        os.makedirs(self.pool)
-        for name, index in (("accounts.json", CLAUDE_INDEX), ("codex-accounts.json", CODEX_INDEX)):
-            with open(os.path.join(self.tm, name), "w") as f:
-                json.dump(index, f)
-        self.exe = os.path.join(self.tm, "bin", "tokenmaxxing")
-        with open(self.exe, "w") as f:
-            f.write(FAKE_TOKENMAXXING)
-        os.chmod(self.exe, 0o755)
-        self.env = dict(os.environ, HOME=self.root, PI_POOL_DIR=self.pool, TOKENMAXXING_HOME=self.tm)
-        self.keychain = os.path.join(self.root, "keychain.json")
+        self.pool = os.path.join(self.root, "pool")
+        self.accounts = os.path.join(self.pool, "accounts")
+        os.makedirs(self.accounts)
+        self.write_index("anthropic", CLAUDE_INDEX)
+        self.write_index("openai-codex", CODEX_INDEX)
+        self.env = dict(os.environ, HOME=self.root, PI_POOL_DIR=self.pool, PI_POOL_SECRETS="file")
         for name in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"):
             self.env.pop(name, None)
 
-    def cli(self, *args, fake=""):
-        done = subprocess.run([PI_POOL, *args], env=dict(self.env, FAKE_LOGIN=fake), capture_output=True, text=True, timeout=30)
+    def write_index(self, provider, index):
+        with open(os.path.join(self.accounts, f"{provider}.json"), "w") as f:
+            json.dump(index, f)
+
+    def index(self, provider="anthropic"):
+        with open(os.path.join(self.accounts, f"{provider}.json")) as f:
+            return json.load(f)["accounts"]
+
+    def cli(self, *args):
+        done = subprocess.run([PI_POOL, *args], env=self.env, capture_output=True, text=True, timeout=30)
         return done.returncode, (done.stdout + done.stderr).strip()
 
     def rows(self, provider="anthropic"):
@@ -129,13 +60,6 @@ class PoolFixture(unittest.TestCase):
         with open(os.path.join(self.pool, "state.json"), "w") as f:
             json.dump(state, f)
 
-    def ran(self):
-        path = os.path.join(self.tm, "bin", "argv.txt")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return f.read().splitlines()
-
 
 class LimitedSurvivesARestart(PoolFixture):
     """`pi-pool limited` writes the 429 to state.json; a later process, which is
@@ -145,10 +69,8 @@ class LimitedSurvivesARestart(PoolFixture):
 
     def setUp(self):
         super().setUp()
-        index = {"version": 2, "accounts": CODEX_INDEX["accounts"] + [
-            {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus", "windows": []}]}
-        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
-            json.dump(index, f)
+        self.write_index("openai-codex", {"version": 1, "accounts": CODEX_INDEX["accounts"] + [
+            {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus", "windows": []}]})
         now = time.time()
         self.write_state({"version": 2, "providers": {
             "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}},
@@ -214,11 +136,9 @@ class LimitedSurvivesARestart(PoolFixture):
 
     def test_with_only_a_depleted_account_left_the_session_waits_for_the_first_account_back(self):
         reset_ms = (time.time() + 7200) * 1000
-        index = {"version": 2, "accounts": CODEX_INDEX["accounts"] + [
+        self.write_index("openai-codex", {"version": 1, "accounts": CODEX_INDEX["accounts"] + [
             {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
-             "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]}
-        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
-            json.dump(index, f)
+             "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]})
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
@@ -258,8 +178,6 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
         self.assertEqual(json.loads(out)["providers"]["anthropic"]["email"], "b@x")
         row = self.rows()["a@x"]
         self.assertEqual((row["usable"], row["cooldown_reason"]), (False, "needs terms"))
-        with open(os.path.join(self.tm, "accounts.json")) as f:
-            self.assertGreater(json.load(f)["accounts"][0]["enforcedUntil"], time.time() * 1000)
         with open(os.path.join(self.pool, "pi-pool.log")) as f:
             events = [json.loads(line) for line in f]
         self.assertEqual([(e["account"], e["reason"], e["next"]) for e in events if e["event"] == "refused"],
@@ -317,7 +235,14 @@ class OffAndOn(PoolFixture):
 
 
 class Remove(PoolFixture):
-    def test_rm_runs_tokenmaxxing_rm_and_forgets_every_intent(self):
+    def secret(self, name):
+        return os.path.join(self.accounts, "secrets", name)
+
+    def test_rm_deletes_the_credential_and_record_and_forgets_every_intent(self):
+        os.makedirs(os.path.join(self.accounts, "secrets"))
+        for account in (A, B):
+            with open(self.secret("pi-pool.anthropic." + account), "w") as f:
+                f.write("{}")
         self.cli("off", "a@x")
         state = self.state()
         prov = state["providers"]["anthropic"]
@@ -328,271 +253,273 @@ class Remove(PoolFixture):
 
         self.assertEqual(self.cli("rm", "a@x"), (0, "removed a@x from the anthropic pool"))
 
-        self.assertEqual(self.ran(), ["rm " + A])
+        self.assertEqual([r["id"] for r in self.index()], [B])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.accounts, "secrets"))), ["pi-pool.anthropic." + B])
         prov = self.state()["providers"]["anthropic"]
         self.assertEqual((prov["pin"], prov["disabled"], prov["cooldowns"]), (None, {}, {B: 9e12}))
         self.assertEqual(self.state()["sessions"]["s1"]["pins"], {"openai-codex": {"account_id": "cccc", "at": at}})
 
-    def test_rm_passes_the_codex_flag(self):
+    def test_rm_deletes_a_codex_auth_file(self):
+        c = CODEX_INDEX["accounts"][0]["id"]
+        os.makedirs(os.path.join(self.accounts, "openai-codex"))
+        with open(os.path.join(self.accounts, "openai-codex", c + ".json"), "w") as f:
+            f.write("{}")
         self.assertEqual(self.cli("rm", "c@x", "--provider", "openai-codex")[0], 0)
-        self.assertEqual(self.ran(), ["rm --codex " + CODEX_INDEX["accounts"][0]["id"]])
+        self.assertEqual(self.index("openai-codex"), [])
+        self.assertEqual(os.listdir(os.path.join(self.accounts, "openai-codex")), [])
 
-    def test_a_failed_rm_changes_nothing_here(self):
-        self.cli("off", "a@x")
-        before = self.state()
-        code, out = self.cli("rm", "a@x", fake="rm-fails")
+    def test_an_unknown_account_changes_nothing(self):
+        code, out = self.cli("rm", "z@x")
         self.assertNotEqual(code, 0)
-        self.assertIn("no account matches that selector", out)
-        self.assertEqual(self.state(), before)
+        self.assertIn("z@x is not in the anthropic pool", out)
+        self.assertEqual(len(self.index()), 2)
 
 
 def harvest(login, org, email, org_name=None, tier="max 20x"):
-    """The record `tokenmaxxing add` writes for one sign-in."""
-    return {"id": login, "label": email, "email": email, "tier": tier, "addedAt": "2026-01-01T00:00:00Z",
-            "windows": [{"name": "five_hour", "usedPercentage": 7, "resetsAt": None, "windowSeconds": 18000, "sampledAt": 1}],
-            "lastUsageAt": 1, "needsReauth": False,
-            "oauthAccount": {"accountUuid": login, "emailAddress": email, "organizationUuid": org,
-                             "organizationName": org_name or f"{email}'s Organization"}}
+    """What a Claude sign-in hands to file_login."""
+    return {"record": {"id": login, "email": email, "tier": tier,
+                       "oauthAccount": {"accountUuid": login, "emailAddress": email, "organizationUuid": org,
+                                        "organizationName": org_name or f"{email}'s Organization"}},
+            "secret": {"accessToken": "at-" + org, "refreshToken": "rt-" + org, "expiresAt": 9e12}}
 
 
-def store_service(tm, account_id):
-    store = os.path.join(tm, "stores", account_id[:8])
-    return "Claude Code-credentials-" + hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()[:8]
+class InProcessStore(PoolFixture):
+    """The pool's module paths pointed at this test's folder, with Keychain items as files."""
+
+    def setUp(self):
+        super().setUp()
+        lock = lambda p: os.path.join(self.accounts, p + ".lock")
+        for patch in (
+                unittest.mock.patch.dict(base.INDEX, {p: os.path.join(self.accounts, p + ".json") for p in base.PROVIDERS}),
+                unittest.mock.patch.dict(base.INDEX_LOCK, {p: lock(p) for p in base.PROVIDERS}),
+                unittest.mock.patch.multiple(base, ACCOUNTS=self.accounts, SECRETS=os.path.join(self.accounts, "secrets"),
+                                             CODEX_SECRETS=os.path.join(self.accounts, "openai-codex"), FILE_SECRETS=True,
+                                             STATE=os.path.join(self.pool, "state.json"), LOCK=os.path.join(self.pool, "lock"),
+                                             log=lambda *a, **k: None),
+                unittest.mock.patch.object(usage, "read_account", lambda *a: {"ok": True}),
+                unittest.mock.patch.object(remote, "client", lambda: None)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def secrets(self):
+        folder = os.path.join(self.accounts, "secrets")
+        out = {}
+        for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+            with open(os.path.join(folder, name)) as f:
+                out[name] = json.load(f)["claudeAiOauth"]["refreshToken"]
+        return out
 
 
-class LoginRun:
-    """One `pi-pool login` with a pipe on stdin and every stdout line parsed.
-    Every read has a deadline and the process is killed on the way out. The
-    CLI runs with a file for a Keychain (tests/file_keychain.py)."""
+class FakeInput:
+    """Input.lines() from a script: each call returns the next batch; a batch may be a
+    callable that gets the events emitted so far. An exhausted script waits."""
 
-    def __init__(self, test, args, fake, harvested=None):
-        env = dict(test.env, FAKE_LOGIN=fake, FAKE_KEYCHAIN=test.keychain,
-                   FAKE_HARVEST=json.dumps(harvested or harvest("dddd4444-0000-0000-0000-000000000000", "org-d", "d@x")))
-        self.proc = subprocess.Popen(["/usr/bin/python3", "-B", FILE_KEYCHAIN, "login", *args], env=env,
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        test.addCleanup(self.kill)
-        self.buffer = b""
+    def __init__(self, *batches):
+        self.batches, self.events = list(batches), []
 
-    def kill(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait(5)
-        for pipe in (self.proc.stdin, self.proc.stdout):
-            try:
-                pipe.close()
-            except OSError:
-                pass
-
-    def event(self, timeout=20):
-        deadline = time.time() + timeout
-        while b"\n" not in self.buffer:
-            left = deadline - time.time()
-            if left <= 0:
-                raise AssertionError("no event from pi-pool login in %ss" % timeout)
-            if select.select([self.proc.stdout], [], [], left)[0]:
-                chunk = os.read(self.proc.stdout.fileno(), 65536)
-                if not chunk:
-                    raise AssertionError("pi-pool login closed stdout; last output %r" % self.buffer)
-                self.buffer += chunk
-        line, self.buffer = self.buffer.split(b"\n", 1)
-        return json.loads(line)
-
-    def send(self, text):
-        self.proc.stdin.write(text.encode())
-        self.proc.stdin.flush()
-
-    def exit_code(self):
-        return self.proc.wait(15)
+    def lines(self, wait):
+        if not self.batches:
+            time.sleep(min(wait, 0.05))
+            return []
+        batch = self.batches.pop(0)
+        if batch == "close":
+            raise signin.LoginFailed("cancelled")
+        return batch(self.events) if callable(batch) else batch
 
 
-class Login(PoolFixture):
-    def fake_ended(self):
-        with open(os.path.join(self.tm, "bin", "pid.txt")) as f:
-            pid = int(f.read())
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return True
-            time.sleep(0.1)
-        return False
+TOKENS = {"access_token": "at", "refresh_token": "rt", "expires_in": 28800, "scope": "user:inference user:profile",
+          "account": {"uuid": "dddd4444-0000-0000-0000-000000000000", "email_address": "d@x"}}
+PROFILE = {"account": {"uuid": "dddd4444-0000-0000-0000-000000000000", "email": "d@x"},
+           "organization": {"uuid": "org-d", "name": "d@x's Organization", "organization_type": "claude_max",
+                            "rate_limit_tier": "default_claude_max_20x"}}
 
-    def test_codex_reports_the_device_code_then_done(self):
-        run = LoginRun(self, ["--provider", "openai-codex"], "codex")
-        self.assertEqual(run.event(), {"event": "url", "url": "https://auth.openai.com/codex/device", "manual_url": None, "code": "ABCD-12345", "paste": False})
-        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "added c2@x (plus)"})
-        self.assertEqual(run.exit_code(), 0)
-        self.assertEqual(self.ran(), ["add --codex"])
 
-    def test_claude_takes_a_pasted_code_and_retries_a_refused_one(self):
-        run = LoginRun(self, ["--provider", "anthropic"], "claude")
-        first = run.event()
+def state_of(event):
+    return urllib.parse.parse_qs(urllib.parse.urlparse(event["url"]).query)["state"][0]
+
+
+class ClaudeSignIn(InProcessStore):
+    def run_login(self, stdin, accept=("good",)):
+        sent = []
+
+        def post(url, body, form=False):
+            sent.append(body)
+            return (200, TOKENS) if body.get("code") in accept else (400, {"error": "invalid_grant"})
+        with unittest.mock.patch.object(signin, "post", post), \
+             unittest.mock.patch.object(signin, "claude_profile", lambda token: PROFILE):
+            harvest = signin.claude_login(stdin.events.append, stdin, time.time() + 10)
+        return harvest, sent
+
+    def test_a_pasted_code_signs_in_and_a_refused_one_is_retried(self):
+        stdin = FakeInput(["bad"], lambda events: ["good#" + state_of(events[0])])
+        harvest, sent = self.run_login(stdin)
+        first = stdin.events[0]
         self.assertEqual((first["event"], first["paste"], first["code"]), ("url", True, None))
-        self.assertIn("state=cb1", first["url"])
-        self.assertIn("state=s1", first["manual_url"])
-        run.send("bad")
-        run.send("\n")
-        self.assertEqual(run.event()["event"], "retry")
-        second = run.event()
-        self.assertEqual((second["event"], "state=s2" in second["manual_url"]), ("url", True))
-        run.send("good\n")
-        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "added d@x (max 20x) \u2192 pool now has 3 accounts"})
-        self.assertEqual(run.exit_code(), 0)
+        self.assertTrue(first["url"].startswith(signin.CLAUDE_AUTHORIZE_URL + "?code=true&client_id=" + base.CLIENT_ID))
+        self.assertIn("redirect_uri=http%3A%2F%2Flocalhost%3A", first["url"])
+        self.assertIn("redirect_uri=" + urllib.parse.quote(signin.CLAUDE_MANUAL_REDIRECT, safe=""), first["manual_url"])
+        self.assertEqual(stdin.events[1]["event"], "retry")
+        self.assertEqual(sent[-1]["redirect_uri"], signin.CLAUDE_MANUAL_REDIRECT)
+        self.assertEqual(harvest["record"], {"id": PROFILE["account"]["uuid"], "email": "d@x", "tier": "max 20x", "oauthAccount": {
+            "accountUuid": PROFILE["account"]["uuid"], "emailAddress": "d@x", "organizationUuid": "org-d",
+            "organizationName": "d@x's Organization"}})
+        self.assertEqual((harvest["secret"]["refreshToken"], harvest["secret"]["subscriptionType"],
+                          harvest["secret"]["rateLimitTier"], harvest["secret"]["scopes"]),
+                         ("rt", "max", "default_claude_max_20x", ["user:inference", "user:profile"]))
 
-    def test_sign_in_again_files_the_new_login_into_that_accounts_store(self):
-        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
-        self.assertEqual(run.event()["event"], "url")
-        run.send("good\n")
-        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "reauthed b@x (max 20x)"})
-        self.assertEqual(run.exit_code(), 0)
-        self.assertEqual(self.ran(), ["add"])
-        with open(self.keychain) as f:
-            self.assertEqual(json.load(f), {store_service(self.tm, B): "secret-org-b"})
-        self.assertEqual(os.listdir(os.path.join(self.pool, "logins")), [])
+    def test_the_localhost_callback_signs_in_and_sends_the_browser_on(self):
+        answers = []
 
-    def test_a_new_sign_in_drops_that_accounts_429_limit_only(self):
+        def visit(events):
+            url = urllib.parse.urlparse(urllib.parse.parse_qs(urllib.parse.urlparse(events[0]["url"]).query)["redirect_uri"][0])
+            conn = http.client.HTTPConnection("127.0.0.1", url.port, timeout=5)
+            conn.request("GET", f"/callback?code=good&state={state_of(events[0])}")
+            answer = conn.getresponse()
+            answers.append((answer.status, answer.getheader("Location")))
+            return []
+        with unittest.mock.patch.dict(os.environ, {"PI_POOL_TEST_ALLOW_LOOPBACK": "1"}):
+            harvest, sent = self.run_login(FakeInput(visit))
+        self.assertEqual(answers, [(302, signin.CLAUDE_SUCCESS_URL)])
+        self.assertTrue(sent[-1]["redirect_uri"].startswith("http://localhost:"))
+        self.assertEqual(harvest["secret"]["accessToken"], "at")
+
+    def test_a_code_from_another_sign_in_is_not_sent(self):
+        stdin = FakeInput(["good#not-this-state"], lambda events: ["good#" + state_of(events[0])])
+        harvest, sent = self.run_login(stdin)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(stdin.events[1]["event"], "retry")
+
+    def test_three_refused_codes_end_the_sign_in(self):
+        with self.assertRaisesRegex(signin.LoginFailed, "three times"):
+            self.run_login(FakeInput(["bad"], ["bad"], ["bad"]))
+
+    def test_closing_stdin_cancels(self):
+        with self.assertRaisesRegex(signin.LoginFailed, "cancelled"):
+            self.run_login(FakeInput("close"))
+
+    def test_the_deadline_ends_a_sign_in_that_never_finishes(self):
+        with unittest.mock.patch.object(signin, "post", lambda *a, **k: (400, None)):
+            with self.assertRaisesRegex(signin.LoginFailed, "did not finish in time"):
+                signin.claude_login(lambda e: None, FakeInput(), time.time() + 0.3)
+
+
+def jwt(claims):
+    return "x." + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=") + ".y"
+
+
+class CodexSignIn(InProcessStore):
+    def test_the_device_code_is_shown_and_the_grant_becomes_a_harvest(self):
+        id_token = jwt({"email": "c2@x", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-2", "chatgpt_plan_type": "plus"}})
+        answers = iter([(200, {"device_auth_id": "dev-1", "user_code": "ABCD-12345", "interval": "0"}),
+                        (403, None),
+                        (200, {"authorization_code": "auth-code", "code_verifier": "ver"}),
+                        (200, {"id_token": id_token, "access_token": "at", "refresh_token": "rt"})])
+        sent = []
+        stdin = FakeInput([], [], [])
+        with unittest.mock.patch.object(signin, "post", lambda url, body, form=False: (sent.append((url, body, form)), next(answers))[1]):
+            harvest = signin.codex_login(stdin.events.append, stdin, time.time() + 10)
+        self.assertEqual(stdin.events, [{"event": "url", "url": "https://auth.openai.com/codex/device", "manual_url": None,
+                                         "code": "ABCD-12345", "paste": False}])
+        self.assertEqual(sent[-1], (base.CODEX_TOKEN_URL, {"grant_type": "authorization_code", "code": "auth-code",
+                                                           "client_id": base.CODEX_CLIENT_ID, "code_verifier": "ver",
+                                                           "redirect_uri": "https://auth.openai.com/deviceauth/callback"}, True))
+        self.assertEqual(harvest["record"], {"id": "acct-2", "email": "c2@x", "tier": "plus"})
+        self.assertEqual(harvest["secret"]["tokens"]["account_id"], "acct-2")
+
+    def test_filing_a_codex_login_writes_its_auth_file_and_record(self):
+        secret = {"tokens": {"access_token": "at", "refresh_token": "rt", "account_id": "acct-2"}}
+        said, account_id = signin.file_login("openai-codex", {"record": {"id": "acct-2", "email": "c2@x", "tier": "plus"}, "secret": secret})
+        self.assertEqual(said, "added c2@x (plus) \u2192 pool now has 2 accounts")
+        with open(os.path.join(self.accounts, "openai-codex", "acct-2.json")) as f:
+            self.assertEqual(json.load(f), secret)
+        self.assertEqual(oct(os.stat(os.path.join(self.accounts, "openai-codex", "acct-2.json")).st_mode & 0o777), "0o600")
+
+
+class Filing(InProcessStore):
+    def test_a_new_login_is_added_and_its_credential_filed(self):
+        said, account_id = signin.file_login("anthropic", harvest("dddd4444-0000-0000-0000-000000000000", "org-d", "d@x"))
+        self.assertEqual(said, "added d@x (max 20x) \u2192 pool now has 3 accounts")
+        self.assertEqual(self.secrets(), {"pi-pool.anthropic." + account_id: "rt-org-d"})
+
+    def test_sign_in_again_replaces_that_accounts_credential(self):
+        self.assertEqual(signin.file_login("anthropic", harvest(B, "org-b", "b@x"), "b@x")[0], "reauthed b@x (max 20x)")
+        self.assertEqual(self.secrets(), {"pi-pool.anthropic." + B: "rt-org-b"})
+
+    def test_sign_in_again_as_another_account_changes_nothing(self):
+        with self.assertRaisesRegex(signin.LoginRefused, "nothing changed"):
+            signin.file_login("anthropic", harvest(A, "org-a", "a@x"), "b@x")
+        self.assertEqual(self.secrets(), {})
+
+    def test_an_unknown_target_is_refused(self):
+        with self.assertRaisesRegex(signin.LoginRefused, "z@x is not in the anthropic pool"):
+            signin.file_login("anthropic", harvest(A, "org-a", "a@x"), "z@x")
+
+    def test_a_new_sign_in_drops_that_accounts_limit_and_terms_or_revoked_cooldown_only(self):
         until = time.time() + 3600
-        limits = {A: {"until": until, "at": time.time(), "session": None},
-                  B: {"until": until, "at": time.time(), "session": None}}
         self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}, "limits": limits},
+            "anthropic": {"pin": None, "disabled": {}, "cooldowns": {A: until, B: until},
+                          "cooldown_reasons": {A: "oauth not allowed for organization", B: "token rejected (401)"},
+                          "limits": {A: {"until": until, "at": 1, "session": None}, B: {"until": until, "at": 1, "session": None}}},
             "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
-        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
-        self.assertEqual(run.event()["event"], "url")
-        run.send("good\n")
-        self.assertTrue(run.event()["ok"])
-        self.assertEqual(run.exit_code(), 0)
-        self.assertEqual(list(self.state()["providers"]["anthropic"]["limits"]), [A])
-
-    def test_a_new_sign_in_drops_that_accounts_terms_refusal_only(self):
-        until = time.time() + 3600
-        self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "disabled": {}, "limits": {},
-                          "cooldowns": {A: until, B: until}, "cooldown_reasons": {A: "needs terms", B: "needs terms"}},
-            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
-        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
-        self.assertEqual(run.event()["event"], "url")
-        run.send("good\n")
-        self.assertTrue(run.event()["ok"])
-        self.assertEqual(run.exit_code(), 0)
+        signin.file_login("anthropic", harvest(B, "org-b", "b@x"), "b@x")
         prov = self.state()["providers"]["anthropic"]
-        self.assertEqual((list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A]))
+        self.assertEqual((list(prov["limits"]), list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A], [A]))
 
-    def test_a_new_sign_in_drops_that_accounts_revoked_token_cooldown_only(self):
-        until = time.time() + 3600
-        self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "disabled": {}, "limits": {}, "cooldowns": {A: until, B: until},
-                          "cooldown_reasons": {A: "oauth not allowed for organization", B: "token rejected (401)"}},
-            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
-        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
-        self.assertEqual(run.event()["event"], "url")
-        run.send("good\n")
-        self.assertTrue(run.event()["ok"])
-        self.assertEqual(run.exit_code(), 0)
-        prov = self.state()["providers"]["anthropic"]
-        self.assertEqual((list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A]))
-
-    def test_an_unknown_account_fails_without_running_tokenmaxxing(self):
-        run = LoginRun(self, ["z@x"], "claude")
-        self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "z@x is not in the anthropic pool"})
-        self.assertEqual(run.exit_code(), 1)
-        self.assertEqual(self.ran(), [])
-
-    def test_closing_stdin_cancels_and_ends_the_login(self):
-        run = LoginRun(self, ["--provider", "anthropic"], "claude")
-        self.assertEqual(run.event()["event"], "url")
-        run.proc.stdin.close()
-        self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "cancelled"})
-        self.assertEqual(run.exit_code(), 1)
-        self.assertTrue(self.fake_ended())
-        self.assertEqual([name for name in os.listdir(self.pool) if name.endswith(".urls")], [])
-
-    def test_sigterm_stops_the_login_cleanly(self):
-        run = LoginRun(self, ["--provider", "anthropic"], "claude")
-        self.assertEqual(run.event()["event"], "url")
-        run.proc.send_signal(signal.SIGTERM)
-        self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "the sign-in was stopped"})
-        self.assertTrue(self.fake_ended())
-
-    def test_the_deadline_ends_a_login_that_never_finishes(self):
-        run = LoginRun(self, ["--provider", "anthropic", "--timeout", "2"], "hang")
-        self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "the sign-in did not finish in 1 min"})
-        self.assertTrue(self.fake_ended())
+    def test_a_client_files_its_login_with_the_holder(self):
+        asked = []
+        with unittest.mock.patch.object(remote, "client", lambda: {"url": "http://holder", "secret": "s"}), \
+             unittest.mock.patch.object(remote, "ask", lambda cfg, argv, stdin=None: (asked.append((argv, json.loads(stdin))), (0, '{"message": "reauthed b@x", "id": "x"}\n', ""))[1]):
+            said = signin.file_anywhere("anthropic", harvest(B, "org-b", "b@x"), "b@x")
+        self.assertEqual(said, "reauthed b@x")
+        self.assertEqual(asked[0][0], ["--cli", "file-login"])
+        self.assertEqual((asked[0][1]["provider"], asked[0][1]["target"], asked[0][1]["secret"]["refreshToken"]),
+                         ("anthropic", "b@x", "rt-org-b"))
+        self.assertEqual(self.secrets(), {})
 
 
-class SecondOrganization(PoolFixture):
+class SecondOrganization(InProcessStore):
     """One login in two organizations is two accounts, each with its own
-    store, usage and limits (tokenmaxxing alone keys by the login)."""
+    credential, usage and limits."""
     TEAM = "eeee5555-0000-0000-0000-000000000000"
 
     def setUp(self):
         super().setUp()
         index = json.loads(json.dumps(CLAUDE_INDEX))
-        index["accounts"][0]["oauthAccount"] = harvest(A, "org-a", "a@x")["oauthAccount"]
-        with open(os.path.join(self.tm, "accounts.json"), "w") as f:
-            json.dump(index, f)
-        with open(self.keychain, "w") as f:
-            json.dump({store_service(self.tm, A): "secret-org-a"}, f)
-
-    def sign_in(self, args, harvested):
-        run = LoginRun(self, args, "claude", harvested)
-        self.assertEqual(run.event()["event"], "url")
-        run.send("good\n")
-        done = run.event()
-        run.exit_code()
-        return done
-
-    def index(self):
-        with open(os.path.join(self.tm, "accounts.json")) as f:
-            return json.load(f)["accounts"]
+        index["accounts"][0]["oauthAccount"] = harvest(A, "org-a", "a@x")["record"]["oauthAccount"]
+        self.write_index("anthropic", index)
 
     def team_id(self):
         return next(r["id"] for r in self.index() if r.get("oauthAccount", {}).get("organizationUuid") == self.TEAM)
 
     def test_the_second_organization_becomes_its_own_account(self):
-        done = self.sign_in([], harvest(A, self.TEAM, "a@x", "Team", tier="team 5x"))
-        self.assertEqual(done, {"event": "done", "ok": True, "message": "added a@x (Team) (team 5x) \u2192 pool now has 3 accounts"})
-        team = self.team_id()
+        said, team = signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team", tier="team 5x"))
+        self.assertEqual(said, "added a@x (Team) (team 5x) \u2192 pool now has 3 accounts")
         self.assertNotIn(team, (A, B))
         rows = {row["id"]: row for row in json.loads(self.cli("ls", "--json")[1])["rows"]}
         self.assertEqual((rows[A]["label"], rows[A]["email"]), ("a@x (personal)", "a@x"))
         self.assertEqual((rows[team]["label"], rows[team]["email"], rows[team]["tier"]), ("a@x (Team)", "a@x", "team 5x"))
-        with open(self.keychain) as f:
-            self.assertEqual(json.load(f), {store_service(self.tm, A): "secret-org-a", store_service(self.tm, team): "secret-" + self.TEAM})
-        self.assertEqual(os.listdir(os.path.join(self.pool, "logins")), [])
 
     def test_the_same_organization_again_signs_in_in_place(self):
-        self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
+        signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team"))
         team = self.team_id()
-        done = self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
-        self.assertEqual(done["message"], "reauthed a@x (Team) (max 20x)")
-        self.assertEqual(len(self.index()), 3)
-        done = self.sign_in([team], harvest(A, self.TEAM, "a@x", "Team"))
-        self.assertTrue(done["ok"], done)
+        self.assertEqual(signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team"))[0], "reauthed a@x (Team) (max 20x)")
+        self.assertEqual(signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team"), team)[1], team)
         self.assertEqual(len(self.index()), 3)
 
     def test_sign_in_again_with_the_other_organization_changes_nothing(self):
         before = self.index()
-        done = self.sign_in([A], harvest(A, self.TEAM, "a@x", "Team"))
-        self.assertFalse(done["ok"])
-        self.assertIn("nothing changed", done["message"])
+        with self.assertRaisesRegex(signin.LoginRefused, "nothing changed"):
+            signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team"), A)
         self.assertEqual(self.index(), before)
-        with open(self.keychain) as f:
-            self.assertEqual(json.load(f), {store_service(self.tm, A): "secret-org-a"})
 
     def test_a_shared_email_names_no_account_but_a_label_or_id_does(self):
-        self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
+        signin.file_login("anthropic", harvest(A, self.TEAM, "a@x", "Team"))
         code, out = self.cli("off", "a@x")
         self.assertNotEqual(code, 0)
         self.assertIn("a@x names 2 accounts", out)
         self.assertEqual(self.cli("off", "a@x (Team)"), (0, "a@x (Team) is off; the pool never picks it until pi-pool on"))
         self.assertEqual(list(self.state()["providers"]["anthropic"]["disabled"]), [self.team_id()])
         self.assertEqual(self.cli("on", A)[0], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class UseNewSession(PoolFixture):
@@ -615,3 +542,7 @@ class UseNewSession(PoolFixture):
         code, out = self.cli("use", "a@x", "--session", "01a0cc8e", "--new-session")
         self.assertEqual(code, 2)
         self.assertFalse(os.path.exists(os.path.join(self.pool, "state.json")), "a refused pin writes nothing")
+
+
+if __name__ == "__main__":
+    unittest.main()

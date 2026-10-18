@@ -38,7 +38,7 @@ When an account runs out, the chat moves to another account on its next request,
 - A Codex chat that fell back to a lower plan moves back to a higher-plan account when one frees up.
 - When no pooled account can serve, requests use your own `/login` as a fallback.
 - At each session start the extension moves a stored `/login` out of Prime's `auth.json`, because a stored login would silently bypass the pool.
-- Prime only receives short-lived access tokens, and refresh tokens stay in tokenmaxxing's stores.
+- Prime only receives short-lived access tokens, and refresh tokens stay in the pool's own account store.
 
 ```mermaid
 flowchart LR
@@ -67,7 +67,7 @@ The same actions work from a shell.
 | `pi-pool use <email>` / `use --follow` | Pins this chat to one account, or lets it follow the pool again. |
 | `pi-pool pin <email>` / `unpin` | Puts every chat on one account while it can serve. |
 | `pi-pool off <email>` / `on <email>` | Keeps an account in the pool but never picks it, or lets the pool pick it again. |
-| `pi-pool login [<email>]` | Adds an account, or signs one in again, through tokenmaxxing. |
+| `pi-pool login [<email>]` | Adds an account, or signs one in again, with the provider's own OAuth sign-in. |
 | `pi-pool refresh` | Reads every account's usage now instead of waiting for the next sample. |
 | `pi-pool log [n]` | Prints the last pool events, including each switch and its reason. |
 
@@ -101,7 +101,6 @@ It reads their local transcripts, so it needs no API key.
 ### What the pool needs
 
 - macOS with `/usr/bin/python3`. Claude credentials live in the macOS Keychain.
-- [tokenmaxxing](https://github.com/anaclumos/tokenmaxxing) 1.44 or later, with your Claude and Codex accounts added to it. pi-pool reads its account index and does not install it.
 - Install or update the pool with `/usr/bin/python3 -B components/pi-pool/install.py`, and undo it with `install.py rollback`. See [the pool README](components/pi-pool/README.md) for how a request picks an account, the config keys and the safety rules.
 
 ## 2. Browser chat
@@ -294,7 +293,7 @@ git clone https://github.com/sieu-n/sieun-pi.git ~/src/sieun-pi && cd ~/src/sieu
 npm install --global --ignore-scripts "./$(npm pack --silent)"
 sieun-pi plan --out ~/sieun-pi-plan.json && sieun-pi apply --plan ~/sieun-pi-plan.json && sieun-pi verify
 /usr/bin/python3 -B components/pi-pool/install.py
-bun add -g tokenmaxxing && tokenmaxxing init      # then pi-pool login for each extra account
+pi-pool login && pi-pool login --provider openai-codex   # one per account
 pi-pool enable anthropic && pi-pool enable openai-codex
 sieun-pi chat start && sieun-pi open
 ```
@@ -329,7 +328,6 @@ It runs Prime Agent 0.9.8 on macOS. Every item below is public or installable.
 | --- | --- | --- |
 | Prime Agent 0.9.8 | The agent host, daemon and Python kernel that everything else plugs into. | Prime Intellect: `curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh \| sh` ([repo](https://github.com/PrimeIntellect-ai/prime-agent)) |
 | sieun-pi | The skills, extensions and rules in this repository. | This repo: `npm install --global --ignore-scripts 'git+https://github.com/sieu-n/sieun-pi.git'` |
-| tokenmaxxing | Keeps the pool of Claude and Codex logins that pi-pool draws from. pi-pool needs 1.44 or later. | Third party: `bun add -g tokenmaxxing` ([repo](https://github.com/anaclumos/tokenmaxxing)) |
 | Aside | The browser agents drive through the `aside-browser` skill and the `aside` MCP server. | Third party: app from [aside.com/download](https://aside.com/download), CLI with `curl -fsSL https://releases.aside.com/install.sh \| bash` |
 | cua-driver | Reads and clicks native macOS apps through MCP. | Third party: `/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"` ([repo](https://github.com/trycua/cua)) |
 | Paper | Lets agents read and edit Paper design files through MCP. | Third party: install [Paper Desktop](https://paper.design/docs/mcp); it installs the `paper` CLI. |

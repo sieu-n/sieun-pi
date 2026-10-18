@@ -16,7 +16,7 @@ class KeychainAccountTests(unittest.TestCase):
         # 10-12 19:52 KST: a Prime daemon started with only HOME, PATH and TERM read every store under account "unknown",
         # `security` answered 44 (not found) for all 17 items, and pi-pool told every account to log in again.
         with tempfile.TemporaryDirectory(prefix="pi-pool-test-") as pool:
-            env = {k: v for k, v in os.environ.items() if k not in ("USER", "LOGNAME", "TOKENMAXXING_KEYCHAIN_ACCOUNT")}
+            env = {k: v for k, v in os.environ.items() if k not in ("USER", "LOGNAME")}
             env.update(PI_POOL_DIR=pool, HOME=pool)
             code = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('vend', 'vend.py'); m = importlib.util.module_from_spec(s); "
                     "sys.modules['vend'] = m; s.loader.exec_module(m); print(m.pool.base.KC_ACCOUNT)")

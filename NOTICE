@@ -29,11 +29,11 @@ Tokenmaxxing
   Copyright (c) 2026 anaclumos
   License: MIT, reproduced in LICENSES/tokenmaxxing-MIT.txt.
   Source: https://github.com/anaclumos/tokenmaxxing
-  Scope: components/pi-pool/vend.py follows tokenmaxxing's credential refresh,
-  account-store, expiry, and usage-cap contracts. This notice covers any
-  adapted portions. It does not claim tokenmaxxing authorship of the whole
-  account pool. The tokenmaxxing application and account stores are not
-  distributed here.
+  Scope: components/pi-pool adapted tokenmaxxing's credential refresh,
+  usage-window and usage-sampling behavior (pool/base.py, pool/registry.py,
+  pool/usage.py). This notice covers those adapted portions. It does not
+  claim tokenmaxxing authorship of the whole account pool. pi-pool does not
+  use, call or install tokenmaxxing.
 
 Keep this notice and the applicable LICENSES files when redistributing
 these portions. External dependencies retain their own licenses.

@@ -81,7 +81,7 @@ def failure_reason(error):
     holder = re.search(r"pi-pool-token: no token \((\w+)\)", text)
     if holder:
         return holder.group(1)
-    if "could not lock " in text or "refresh lock on " in text:
+    if "could not lock " in text:
         return "lock_wait_timeout"
     if any(marker in text for marker in (
         "invalid_grant", "refresh_token_reused", "refresh failed http ",
@@ -91,7 +91,7 @@ def failure_reason(error):
         return "credential_provider_refused"
     if "no credential " in text or "store was cleared" in text:
         return "credential_missing"
-    if "accounts.json unreadable" in text:
+    if "anthropic.json unreadable" in text or "openai-codex.json unreadable" in text:
         return "account_index_unreadable"
     if "account can serve this session" in text:
         return "no_account"

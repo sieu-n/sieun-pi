@@ -1,7 +1,7 @@
 # pi-pool - account pooling for Prime Agent (pi)
 
-Every pi session draws its Claude and Codex credentials from the accounts already
-pooled in `tokenmaxxing`, instead of one fixed login. You can move one session to a
+Every pi session draws its Claude and Codex credentials from a pool of accounts that
+pi-pool keeps itself, instead of one fixed login. You can move one session to a
 different account while it runs, with no `/login` and no restart.
 
 ## Source and runtime state
@@ -76,8 +76,7 @@ not a link.
 Prime's `models.json` names `~/.config/pi-pool/bin/pi-pool-token`, so it follows
 `current` with no edit. `pi-pool enable` writes that same link path when it exists.
 State stays where it is: `state.json`, `pi-pool.log`, `config.json`, `fallback.json`,
-`rotations/` and `backups/` under `~/.config/pi-pool`, and the accounts under
-tokenmaxxing. The installer keeps the 10 newest releases plus `current` and `previous`.
+`rotations/`, `backups/` and `accounts/` under `~/.config/pi-pool`. The installer keeps the 10 newest releases plus `current` and `previous`.
 A running session keeps the extension code it loaded, from its own release, until it
 is rebuilt; a new session loads `current`.
 
@@ -86,58 +85,49 @@ The CLI rejects state roots inside the code directory.
 
 ## One pool for two machines
 
-The Mac holds every account and does every OAuth refresh. A second machine (us-metal02)
-has no accounts. Two copies of one refresh token would make each other invalid, so the
-second machine never gets one.
+One machine holds every account and does every OAuth refresh; since 2026-10-18 that is
+us-metal02. Another machine (the Mac) has no accounts. Two copies of one refresh token
+would make each other invalid, so a client never gets one.
 
-The holder runs `pi-pool serve` from the launchd job `com.sieun.pi-pool-serve`
-(`deploy/macos/com.sieun.pi-pool-serve.plist`). The job needs `ProcessType Interactive`:
-with launchd's default throttling, a token from us-metal02 took 5.3 to 9.4 s at load 81
-on 10-18 and Prime's 10 s hook limit cut some off, and with it the same tokens took 0.9 to 1.4 s. It listens
-on the address in `serve.json`, which is the Mac's tailnet IP, and answers only requests
-that carry the secret from that file. The other machine keeps the same secret and the
-holder's URL in `remote.json`. Both files are mode 0600 in the pool folder.
+The holder runs `pi-pool serve` and the usage sampler as systemd user units
+(`deploy/systemd/`: `pi-pool-serve.service`, `pi-pool-sample.service` and
+`pi-pool-sample.timer`). `serve` listens on the address in `serve.json`, the holder's
+tailnet IP, and answers only requests that carry the secret from that file. The client
+keeps the same secret and the holder's URL in `remote.json`. Both files are mode 0600 in
+the pool folder.
 
 With `remote.json` in place, `pi-pool-token` and every account command (`who`, `ls`,
-`limited`, `refused`, `model`, `use`, `switch`, `status` and the rest) go to the holder,
-which runs them for the asking session's key. Turn slots (`admit`, `release`,
-`owner-turn`, `queue`, `priority`) and `adopt-logins`, `config`, `set` and `log` run on
-the asking machine, so each machine keeps its own slot count. `watch` and `login` run
-only on the holder.
+`limited`, `refused`, `model`, `use`, `switch`, `status`, `refresh`, `rm` and the rest) go
+to the holder, which runs them for the asking session's key. Turn slots (`admit`,
+`release`, `owner-turn`, `queue`, `priority`) and `adopt-logins`, `config`, `set` and `log`
+run on the asking machine, so each machine keeps its own slot count. `login` runs where
+its browser is and files the login with the holder (`file-login`, the credential on the
+request body's stdin, never in argv). `watch` runs only on the holder.
 
-When the second machine gets no token, its hook logs one `hook_no_token` line with the
+When a client gets no token, its hook logs one `hook_no_token` line with the
 reason. The reason is `remote_unreachable`, `remote_timeout` (no answer in 9 s), `remote_refused` or the holder's own reason,
 such as `no_account` or `slot_wait`. `pool/remote.py` has the code, and
 `tests/test_remote.py` covers it.
 
-## External credential dependencies
+## The account store
 
-pi-pool depends on the user's existing tokenmaxxing pool under
-`~/.config/tokenmaxxing` (or `TOKENMAXXING_HOME`). It reads the per-account
-store layout that tokenmaxxing 1.44 and later use, index schema version 2.
-A version 1 index makes every command fail with the schema version in the error.
-This repository does not install or seed those stores.
+The holder keeps its accounts in `~/.config/pi-pool/accounts` (mode 0700). Nothing else
+reads or writes it.
 
-| dependency | use |
+| file | use |
 |---|---|
-| `accounts.json` (v2) | Claude account ids, emails, usage `windows` and `needsReauth` |
-| `stores/<uuid8>/` | One Claude store per account. Its credential is the Keychain item `Claude Code-credentials-<sha256(store path)[:8]>`, the same item a supervised `claude` reads |
-| macOS Keychain | Claude credentials, read and written through `/usr/bin/security` using `USER` as the keychain account |
-| `secrets/<service>` | Claude credentials on a host without `/usr/bin/security` (Linux), or with `PI_POOL_SECRETS=file`: one 0600 file per Keychain service name in a 0700 folder (`tests/test_linux_host.py`) |
-| `lock` and `stores/<uuid8>/.oauth_refresh.lock` + `stores/<uuid8>.lock` | tokenmaxxing's Claude pool lock, then Claude Code's own refresh lock on that store |
-| `live/` | Presence files of supervised `claude` sessions, a picker penalty only |
-| `codex-accounts.json` (v2) | Codex account ids, emails, plan (`tier`), usage `windows` and `needsReauth` |
-| `codex-stores/<uuid8>/auth.json` | One Codex store per account, refreshed in place |
-| `codex-lock` | tokenmaxxing's Codex refresh lock |
-| `codex-live/` | Presence files of supervised `codex` sessions. pi-pool never refreshes a store one of them runs on |
+| `anthropic.json`, `openai-codex.json` | The index per provider, `{"version": 1, "accounts": [...]}`: id, label, email, tier, `oauthAccount` (Claude), usage `windows`, `lastUsageAt`, `lastProbeAt`, `usageRetryAt` and `needsReauth` |
+| `anthropic.lock`, `openai-codex.lock` | The flock of each index. Every index write and every refresh of that provider's credentials takes it |
+| macOS Keychain | A Claude credential (`{"claudeAiOauth": {...}}`) is the item `pi-pool.anthropic.<account id>`, written through `/usr/bin/security` with `USER` as the Keychain account |
+| `secrets/<service>` | The same item on a host without `/usr/bin/security` (Linux), or with `PI_POOL_SECRETS=file`: one 0600 file per service name in a 0700 folder (`tests/test_linux_host.py`) |
+| `openai-codex/<account id>.json` | A Codex credential, the Codex CLI's `auth.json` shape, mode 0600 |
 
-A dead refresh token (`invalid_grant`, `refresh_token_reused`) sets `needsReauth`
-on that account in tokenmaxxing's index, so `tokenmaxxing auth --all` offers it.
-On a switch or a fresh rotation, pi-pool also sends one free
-`/v1/messages/count_tokens` request. A 401 or a 403 such as
-`oauth_not_allowed_for_organization` puts the account on a
-`refused_cooldown_sec` cooldown (24 hours by default) and sets tokenmaxxing's own
-`enforcedUntil` on the account.
+A missing index is an empty pool; an index of another shape makes every command fail with
+`<file> unreadable`. A dead refresh token (`invalid_grant`, `refresh_token_reused`) sets
+`needsReauth`, and the account shows Sign in again. On a switch or a fresh rotation,
+pi-pool also sends one free `/v1/messages/count_tokens` request. A 401 or a 403 such as
+`oauth_not_allowed_for_organization` puts the account on a `refused_cooldown_sec`
+cooldown (24 hours by default).
 
 Refresh requests use `https://platform.claude.com/v1/oauth/token` and
 `https://auth.openai.com/oauth/token`. They require network access and valid grants.
@@ -188,9 +178,10 @@ until the session's next provider request runs the hook.
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
     pi-pool refresh [<email|id> ...] [--provider p] [--json | --stream]
                                   read usage now for every account, or the named ones (needs --provider)
+    pi-pool sample                read each account whose usage figure is due (the holder's timer, every minute)
     pi-pool off <email|id> [--provider <p>]   keep an account pooled but never pick it (`ls --json` shows `disabled`)
     pi-pool on <email|id> [--provider <p>]    let the pool pick it again
-    pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins here
+    pi-pool rm <email|id> [--provider <p>]    delete the account's credential and record, then drop its pins here
     pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]
                                   add an account or sign one in again (Claude: by organization, see below)
                                   for a browser: stdout is JSON lines ({"event":"url"} with the link and the
@@ -209,31 +200,41 @@ until the session's next provider request runs the hook.
 
 `--session` takes a session uuid, a uuid prefix, or the short active id.
 
+## Sign in
+
+`pi-pool login` signs in with each provider's own OAuth client, the one Claude Code and the
+Codex CLI use, so the grants refresh like theirs.
+
+- Claude uses PKCE. The first `url` event carries two links: `url`, whose redirect is a
+  localhost callback this process serves, and `manual_url`, whose redirect is Anthropic's
+  code page. A browser on the same machine finishes through `url`; a code pasted on stdin
+  (`code#state`) finishes through `manual_url`. A refused code emits `retry`; three end the
+  sign-in. The grant's plan comes from `GET /api/oauth/profile`.
+- Codex uses the device-code flow: the `url` event carries `https://auth.openai.com/codex/device`
+  and the code to enter.
+
+The login is then filed by the holder (`pool/signin.py` `file_login`): its credential under
+the account it belongs to, its record in the index, its `pi-pool limited` record and any
+`needs terms` or `token rejected (401)` cooldown dropped, and its usage read once.
+
 ## One login in two organizations
 
 One Claude login can hold several organizations, for example a personal Max plan and a
-team seat on the same email. tokenmaxxing keys an account by the login's account uuid
-alone, so `tokenmaxxing add` for the second organization overwrites the first one's
-record and Keychain item.
+team seat on the same email. So pi-pool keys a Claude account by the pair (account uuid,
+organization uuid):
 
-So `pi-pool login` for Claude runs `tokenmaxxing add` in a scratch home under
-`<state>/logins/<pid>` and files the result itself, under tokenmaxxing's pool lock:
-
-1. It reads the harvested record's `oauthAccount` (account uuid and organization uuid).
-2. A record of the same pair is signed in again in place. A record with no organization
+1. A record of the same pair is signed in again in place. A record with no organization
    on file matches by account uuid alone.
-3. A new pair becomes a new record. The first organization of a login keeps the account
+2. A new pair becomes a new record. The first organization of a login keeps the account
    uuid as its id; another gets uuid5(`ORG_ID_NAMESPACE`, `<account>:<org>`), with its own
-   store, Keychain item, usage, limits and cooldowns.
-4. With an account named (`pi-pool login <id>`), a login of any other pair is refused and
+   credential, usage, limits and cooldowns.
+3. With an account named (`pi-pool login <id>`), a login of any other pair is refused and
    nothing is written.
-5. The scratch Keychain items and folder are deleted, whatever the outcome.
 
 Rows carry `label`: the email, or `email (organization)` when two accounts share the email
 (`personal` for the organization Anthropic makes per login). Every command takes an id, a
 label, a unique id prefix, or an email only one account has; a shared email exits with the
-labels to choose from. Add a second organization only through `pi-pool login` or
-Settings > Accounts: a hand-run `tokenmaxxing add` or `auth` still keys by the login.
+labels to choose from.
 
 `ls --json` names the pool `pin`, the tree's `priority` and its `wait` (`{account, slot_at}`
 or null; `who --json` carries the same `wait` per provider and `priority` at the top). Its
@@ -245,33 +246,27 @@ what `status` draws: `tier` (`max 20x`, `pro`), `windows`
 `usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), `cooldown_until`
 and `cooldown_reason` for a refused account, and `limited_until` for an account with a 429 on file.
 
-`refresh` reads usage now for every account, or the named ones. `tokenmaxxing status`
-cannot do this: it skips a Claude account read in the last 90 s to 15 min and reports it
-as `cached`. So `refresh` runs `app/usage-read.ts` with tokenmaxxing's own Bun, once per
-provider. That script imports tokenmaxxing's own read and save functions from the installed
-release (found through the `tokenmaxxing` wrapper), reads four accounts at a time, and saves
-each result under tokenmaxxing's pool lock. It still waits out a rate limit the usage
-endpoint set, and reports it with the time of the next read. If an auto-update renames a
-function it calls, it fails with the missing name, and the contract test in
-`tests/test_commands.py` fails too. It writes only tokenmaxxing's usage figures and moves no
-session or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
+`refresh` reads usage now for every account, or the named ones (`pool/usage.py`), four
+at a time, and saves each result under the index lock. It skips no account for having
+been read recently, but it waits out a rate limit the usage endpoint set and reports it
+with the time of the next read. It writes only usage figures and moves no session or pin.
+Claude usage comes from `GET https://api.anthropic.com/api/oauth/usage?at_wall=1&skip_spend=1`,
+Codex usage from `GET https://chatgpt.com/backend-api/wham/usage`. A team seat's Claude body
+has a 5h window and no weekly one; its 5h and per-model windows land as they are.
 
-A team seat's usage has a 5h window and no weekly one, and tokenmaxxing's read rejects that
-body. When tokenmaxxing's read fails without a rate limit, `usage-read.ts` reads the account
-once more and lands the 5h and per-model windows (`app/usage-seat.ts`). tokenmaxxing's minute
-`check` still skips such an account, so its figures move only on a `refresh`.
-The hook runs that `refresh` itself, detached, when the seat's 5h sample is older than
-20 minutes and it would otherwise take a tree, and logs `usage_read`. On 2026-10-13 nothing
-read the Virev seat for 31.6 h, its old sample read as 0%, and it took 9 trees from 22:40 to
-22:56 KST before Anthropic refused it at 23:04 until 03:40.
+`sample` runs every minute on the holder (`pi-pool-sample.timer`). It reads each account
+whose figure is older than its interval: 15 minutes scaled by the headroom of its fullest
+window, never under 90 seconds, and 15 minutes once a window is full. An account that
+needs a sign-in is skipped. The hook also starts a detached `refresh` of an account whose
+5h sample is older than 20 minutes when it would otherwise take a tree, and logs
+`usage_read`. On 2026-10-13 nothing read the Virev seat for 31.6 h, its old sample read as
+0%, and it took 9 trees from 22:40 to 22:56 KST before Anthropic refused it at 23:04 until 03:40.
 
 `--stream` prints one JSON line per event while the reads run: `accounts` (the list),
 `reading`, `read` with `ok` and `usage_at` or `reason` and `retry_at` (epoch seconds),
 `error`, and a final `end`. Every line carries `provider`, and `reading` and `read` carry
-`email`. A read still running after 180 s is reported as not finished. `--json` prints one
-report at the end. Claude usage is also sampled every minute by
-tokenmaxxing's `check` timer; Codex usage only when tokenmaxxing samples it, so Codex
-figures can be hours old.
+`email` and `label`. A read still running after 180 s is reported as not finished. `--json` prints one
+report at the end.
 
 ## Banked resets
 
@@ -383,7 +378,7 @@ for every admission. Anthropic accounts carry no plan, so it never fires there.
 
 ## A 429 moves the session in the same turn
 
-Usage figures come from tokenmaxxing samples that can be 15 minutes old, so the provider's
+Usage figures come from samples that can be 15 minutes old, so the provider's
 own 429 is the first sign that an account is used up. The extension handles it on
 `message_end`:
 
@@ -456,21 +451,18 @@ writes the provider entry into `~/.prime/agent/models.json`. The entry needs `ba
 A provider entry with only `apiKey` fails `validateConfig` and takes every model down,
 not just codex.
 
-Codex credentials live in `~/.config/tokenmaxxing/codex-stores/<uuid8>/auth.json`. A
-rotation takes tokenmaxxing's `codex-lock` and is journalled before the write. A store
-that a supervised codex session runs on is never refreshed here: the codex CLI owns
-that rotation.
+Codex credentials live in `~/.config/pi-pool/accounts/openai-codex/<account id>.json`. A
+rotation takes the Codex index lock and is journalled before the write.
 
 ## Why the pool vends access tokens, never refresh tokens
 
 pi and Claude Code use the same OAuth client
-(`9d1c250a-e61b-44d9-88ed-5944d1962f5e`), so tokenmaxxing's credentials work in pi
-unchanged. But Anthropic rotates the refresh token on every refresh, so two independent
+(`9d1c250a-e61b-44d9-88ed-5944d1962f5e`), so a pooled grant works in pi unchanged. But Anthropic rotates the refresh token on every refresh, so two independent
 refreshers on one grant family kill each other: whoever refreshes second gets
 `invalid_grant`.
 
 So pi is never given a refresh token. The hook vends a short-lived access token, and any
-rotation happens inside tokenmaxxing's own store under tokenmaxxing's own flock.
+rotation happens inside the pool's own store under its index lock.
 
 This works because pi sniffs the key string, not the credential type
 (`isOAuthToken = apiKey.includes("sk-ant-oat")`), so a plain `apiKey` that happens to be
@@ -495,7 +487,7 @@ the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 | login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
 | 429 swap | on a 429 it runs `pi-pool limited`; when another account takes the session it drops the reset from the message so Prime retries in about a second on that account, else it sets the reset to the session's slot (see "A 429 moves the session in the same turn") |
 | hook retry | a turn that failed with "Failed to resolve API key ... pi-pool-token" loses Prime's lifecycle-failure tag, so Prime retries it like any unclassified error; when `pi-pool who` shows the session waiting, the failure becomes a rate limit that waits until its slot |
-| refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. `pi-pool refresh` sends the same probe right away to each Claude account whose usage read failed, since a revoked token fails the read with no reason and trees wait for an account with no fresh read. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too. A successful `pi-pool login` drops a `needs terms` or `token rejected (401)` cooldown |
+| refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. `pi-pool refresh` sends the same probe right away to each Claude account whose usage read failed, since a revoked token fails the read with no reason and trees wait for an account with no fresh read. A refused account gets a 24h cooldown in the pool. A successful `pi-pool login` drops a `needs terms` or `token rejected (401)` cooldown |
 
 Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account
 line is a widget.
@@ -566,19 +558,19 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
-`admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
+`admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
 `mac_working_max`, `tree_working_max`, `queue_aging_s` and `lease_s`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
-`min_runway_hours`), the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+`min_runway_hours`), `allow_active_account`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties
 
 - Prime receives access tokens only. Refresh tokens stay in private stores and rotation journals.
-- A refresh takes tokenmaxxing's own flock and writes the rotation straight back.
+- A refresh takes the provider's index lock and writes the rotation straight back.
 - Rotations are journalled to `rotations/` before the write; a crash in that window is
   healed on the next vend.
 - The pool flock is never held across a refresh, so `pi-pool use` never queues behind one.

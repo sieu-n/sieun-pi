@@ -166,12 +166,12 @@ class RelocatedSource(unittest.TestCase):
         self.assertIsNot(first.pool.base.DEFAULTS, second.pool.base.DEFAULTS)
 
     def test_account_completions_return_items_from_both_pools(self):
-        tokenmaxxing = self.home / ".config" / "tokenmaxxing"
-        tokenmaxxing.mkdir(parents=True)
-        (tokenmaxxing / "accounts.json").write_text(json.dumps({"version": 2, "accounts": [
+        accounts = self.state / "accounts"
+        accounts.mkdir(parents=True)
+        (accounts / "anthropic.json").write_text(json.dumps({"version": 1, "accounts": [
             {"id": "synthetic-claude", "label": "claude", "email": "claude@example.test", "windows": []}
         ]}))
-        (tokenmaxxing / "codex-accounts.json").write_text(json.dumps({"version": 2, "accounts": [
+        (accounts / "openai-codex.json").write_text(json.dumps({"version": 1, "accounts": [
             {"id": "synthetic-codex", "label": "codex", "email": "codex@example.test", "windows": []}
         ]}))
         before = self.snapshot()

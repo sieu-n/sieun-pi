@@ -119,7 +119,7 @@
   const shownRefresh = $derived(refresh && watchedRefreshes.includes(refresh.id) ? refresh : null);
   const refreshEntry = (row: PoolAccount): UsageRefreshAccount | undefined => shownRefresh?.accounts.find(entry => entry.id === row.id);
   const columns = $derived(current ? windowColumns(current.rows) : []);
-  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-terms": 4, "needs-login": 5, off: 6 };
+  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-terms": 4, "needs-login": 5, off: 6 };
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)));
 
   function rank(row: PoolAccount): number {

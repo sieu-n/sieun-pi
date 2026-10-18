@@ -216,7 +216,7 @@ class IntentWriter:
             disabled.pop(account_id, None)
 
     def forget_account(self, provider, account_id):
-        """Drop every intent that names an account tokenmaxxing no longer has.
+        """Drop every intent that names an account the index no longer has.
         Vends are the hook's records and stay; the next request rewrites them."""
         prov = self._state["providers"][provider]
         if prov.get("pin") == account_id:
@@ -234,12 +234,9 @@ class IntentWriter:
 
 # ----------------------------------------------------------------- credentials
 def credential_for_keychain(a, cfg):
-    """(access_token, source) from the account's tokenmaxxing store.
-
-    Supervised claude sessions share the same store and refresh it themselves,
-    so a refresh here takes tokenmaxxing's pool flock and Claude Code's own
-    refresh lock on the store, then re-reads before rotating."""
-    service, store = a.cred.service, a.cred.store
+    """(access_token, source) from the account's Keychain item. A refresh takes
+    the index flock, then re-reads before rotating."""
+    service = a.cred.service
     adapter = base.KeychainAdapter(service)
     creds = adapter.read()
     if not creds:
@@ -250,7 +247,7 @@ def credential_for_keychain(a, cfg):
     if remaining > cfg["refresh_skew_sec"]:
         return creds["accessToken"], "store"
 
-    with base.Flock(base.TM_LOCK, timeout=base.TM_LOCK_TIMEOUT), base.ClaudeRefreshLock(store):
+    with base.index_lock("anthropic"):
         creds2 = base.recover_rotation(service, adapter)
         if (creds2["expiresAt"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"]:
             return creds2["accessToken"], "store"
@@ -258,11 +255,11 @@ def credential_for_keychain(a, cfg):
             merged = base.refresh_token(creds2)
         except RuntimeError as e:
             if str(e).startswith("invalid_grant"):
-                base.mark_needs_reauth(base.TM_ACCOUNTS, a.id)
+                base.mark_needs_reauth("anthropic", a.id)
             raise
         # A refresh rotates the grant server-side the instant it returns: journal
         # it BEFORE the keychain write, or a crash in between strands the account
-        # on a superseded refresh token that neither pi nor Claude Code can use.
+        # on a superseded refresh token.
         base.journal_write(service, merged)
         adapter.write(merged)
         base.journal_clear(service)
@@ -272,11 +269,9 @@ def credential_for_keychain(a, cfg):
 
 
 def credential_for_codex(a, cfg):
-    """(access_token, source) from the account's codex-stores/<uuid8>/auth.json.
-    Never refreshes a store a supervised codex session is running on: the codex
-    CLI holds that grant and a rotation here would revoke it."""
+    """(access_token, source) from the account's auth.json."""
     adapter = base.CodexFileAdapter(a.cred.path)
-    store_key = "codex-" + a.id[:8]
+    store_key = "codex-" + a.id
     blob = adapter.read()
     if not blob or not (blob.get("tokens") or {}).get("access_token"):
         raise RuntimeError(f"no credential in {a.label}'s codex store; run `pi-pool login {a.id} --provider openai-codex`")
@@ -284,10 +279,8 @@ def credential_for_codex(a, cfg):
     if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
         registry.assert_codex_identity(token, a.id)
         return token, "store"
-    if a.is_live:
-        raise RuntimeError("codex store expiring while a codex session runs on it; leaving rotation to the codex CLI")
 
-    with base.Flock(base.TM_CODEX_LOCK, timeout=base.TM_LOCK_TIMEOUT):
+    with base.index_lock("openai-codex"):
         blob = base.recover_rotation(store_key, adapter)
         token = blob["tokens"]["access_token"]
         if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
@@ -297,7 +290,7 @@ def credential_for_codex(a, cfg):
             fresh = base.refresh_codex_token(blob["tokens"]["refresh_token"])
         except RuntimeError as e:
             if str(e).startswith("refresh_token_reused"):
-                base.mark_needs_reauth(base.TM_CODEX_ACCOUNTS, a.id)
+                base.mark_needs_reauth("openai-codex", a.id)
             raise
         merged = base.merge_codex_tokens(blob, fresh)
         base.journal_write(store_key, merged)
@@ -332,7 +325,7 @@ def fallback_token(provider, cfg):
     """The user's own OAuth login for `provider`, adopted out of Prime's
     auth.json (see adopt-logins). Used only when no pooled account can serve.
     It is an independent grant family, so refreshing it never touches a store."""
-    with base.Flock(os.path.join(base.POOL, "fallback.lock"), timeout=base.TM_LOCK_TIMEOUT):
+    with base.Flock(os.path.join(base.POOL, "fallback.lock"), timeout=base.INDEX_LOCK_TIMEOUT):
         fb = load_fallback()
         creds = fb.get(provider)
         if not creds or creds.get("type") != "oauth":
@@ -412,7 +405,7 @@ def cmd_adopt_logins(rest=()):
         hits = [p for p in wanted if p in auth]
         if not hits:
             return 0
-        with base.Flock(os.path.join(base.POOL, "fallback.lock"), timeout=base.TM_LOCK_TIMEOUT):
+        with base.Flock(os.path.join(base.POOL, "fallback.lock"), timeout=base.INDEX_LOCK_TIMEOUT):
             fb = load_fallback()
             stamp = time.strftime("%Y%m%d-%H%M%S")
             os.makedirs(os.path.join(base.POOL, "backups"), mode=0o700, exist_ok=True)
@@ -430,19 +423,12 @@ def cmd_adopt_logins(rest=()):
 
 
 def apply_refusal(provider, account, refusal, cfg, now):
-    """Cool an API-refused account down in the pool, and an anthropic one in
-    tokenmaxxing too."""
+    """Cool an API-refused account down in the pool."""
     until = now + cfg["refused_cooldown_sec"]
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         HookWriter(state).set_cooldown(provider, account.id, until, refusal)
         base.save_json(base.STATE, state)
-    if provider != "anthropic":
-        return
-    try:
-        base.mark_refused(account.id, until)
-    except Exception as e:
-        base.log("mark_refused_failed", account=account.label, error=str(e))
 
 
 def cmd_probe(rest=()):
@@ -598,7 +584,7 @@ def vend(provider):
 
     Lock discipline: take the pool flock to read, prune, decide and write the
     admission or wait, release it, fetch or refresh the credential under
-    tokenmaxxing's own lock, then re-take the pool flock to record the vend. The
+    the index lock, then re-take the pool flock to record the vend. The
     pool flock is never held across a refresh, so `pi-pool use` never queues
     behind one. When the flock stays busy past STATE_LOCK_TIMEOUT, the tree keeps
     the account it was last vended, if that account can still serve.

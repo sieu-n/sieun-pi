@@ -547,9 +547,9 @@ class SwitchLog(unittest.TestCase):
                 self.assertEqual(status_view.switches_today("openai-codex", NOW), (1, 1))
 
 
-# The Virev team seat on 2026-10-13, as tokenmaxxing's index held it: one 5h sample
-# from 2026-10-12 06:05Z (100%, reset 07:40Z) and its Fable week. tokenmaxxing's minute
-# check skips team seats, so at 22:40 KST the sample was 31.6 h old and read as 0%.
+# The Virev team seat on 2026-10-13, as the account index held it: one 5h sample
+# from 2026-10-12 06:05Z (100%, reset 07:40Z) and its Fable week. The sampler of the
+# time skipped team seats, so at 22:40 KST the sample was 31.6 h old and read as 0%.
 VIREV = "e128c1aa-bc3a-5286-8733-e64aff2b73ce"
 VIREV_WINDOWS = (
     {"name": None, "usedPercentage": 100, "resetsAt": 1791790800258, "windowSeconds": FIVE, "sampledAt": 1791785103366},

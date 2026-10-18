@@ -270,9 +270,9 @@ test("frontmatter: plain, quoted and folded values", () => {
   assert.deepEqual(frontmatter("# no frontmatter"), {});
 });
 
-test("searchPath reaches claude through the tokenmaxxing wrapper before the bare binary", () => {
+test("searchPath puts the user's own bin first and the node that runs the server on it", () => {
   const parts = searchPath("/h").split(":");
-  assert.ok(parts.indexOf("/h/.config/tokenmaxxing/bin") < parts.indexOf("/h/.local/bin"));
+  assert.equal(parts[0], "/h/.local/bin");
   assert.ok(parts.includes(dirname(process.execPath)));
   assert.ok(!parts.some(part => part.includes("kernel-venv")));
 });

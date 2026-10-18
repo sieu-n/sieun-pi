@@ -33,11 +33,9 @@ function primeHook(env: NodeJS.ProcessEnv): string | undefined {
 async function emptyHome() {
   const home = await mkdtemp(join(tmpdir(), "token-hook-home-"));
   const pool = join(home, ".config", "pi-pool");
-  const tokenmaxxing = join(home, ".config", "tokenmaxxing");
-  await mkdir(pool, { recursive: true });
-  await mkdir(join(tokenmaxxing, "stores"), { recursive: true });
-  await writeFile(join(tokenmaxxing, "accounts.json"), JSON.stringify({ version: 2, accounts: [] }));
-  const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", HOME: home, PI_POOL_DIR: pool, TOKENMAXXING_HOME: tokenmaxxing, PI_POOL_SECRETS: "file",
+  await mkdir(join(pool, "accounts"), { recursive: true });
+  await writeFile(join(pool, "accounts", "anthropic.json"), JSON.stringify({ version: 1, accounts: [] }));
+  const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", HOME: home, PI_POOL_DIR: pool, PI_POOL_SECRETS: "file",
     PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: "fixture-empty-store" };
   return { home, pool, env, sessions: join(home, ".prime", "agent", "sessions") };
 }
@@ -68,7 +66,7 @@ test("token hook watch: an empty store in a temp HOME makes the hook log why, an
   const log = (await readFile(join(f.pool, "pi-pool.log"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as { event: string; reason?: string; session?: string });
   const noToken = log.filter(line => line.event === "hook_no_token");
   assert.equal(noToken.length, 1, JSON.stringify(log));
-  assert.equal(noToken[0]!.reason, "RuntimeError: no anthropic account can serve this session");
+  assert.equal(noToken[0]!.reason, "no_account");
   assert.equal(noToken[0]!.session, "fixture-empty-store");
 
   await writeSession(f.sessions, "01a14400-0000-7000-8000-000000000001", [failed(NOW - 4 * 60_000), failed(NOW - 3 * 60_000)]);

@@ -14,7 +14,7 @@ The model:
   max 5x and team, measured 2026-10-12) and its week a fifth of that. A 5h window
   starts on the first request after it reset. An account at 100% answers 429 until
   that window resets.
-- The pickers see usage sampled every --sample-sec (600 s), as tokenmaxxing's
+- The pickers see usage sampled every --sample-sec (600 s), as the pool's
   samples lag; the provider answers from the true figures.
 - A 429 runs `pi-pool limited`. Old: the retry goes at once to `next`, else the
   tree sleeps until the provider's reset (Prime's wait-for-usage). New: the retry

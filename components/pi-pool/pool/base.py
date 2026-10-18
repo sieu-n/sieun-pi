@@ -1,21 +1,11 @@
-"""Paths, config, the pool log and locks, the Keychain, token refresh, refusal probes and
-rotation journals."""
-import base64, fcntl, hashlib, json, os, pwd, re, subprocess, time, unicodedata, urllib.request, urllib.error
+"""Paths, config, the pool log and locks, the account store, the Keychain, token refresh,
+refusal probes and rotation journals."""
+import base64, fcntl, json, os, pwd, re, subprocess, time, urllib.request, urllib.error
 
 
 HOME = os.path.expanduser("~")
-TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
-TM_ACCOUNTS = os.path.join(TM, "accounts.json")
-TM_CODEX_ACCOUNTS = os.path.join(TM, "codex-accounts.json")
-TM_STORES = os.path.join(TM, "stores")
-TM_CODEX_STORES = os.path.join(TM, "codex-stores")
-TM_LIVE = os.path.join(TM, "live")
-TM_CODEX_LIVE = os.path.join(TM, "codex-live")
-TM_LOCK = os.path.join(TM, "lock")
-TM_CODEX_LOCK = os.path.join(TM, "codex-lock")
-TM_INDEX_VERSION = 2
-# Claude Code and tokenmaxxing file each store under the login name; a process started without USER must still read them.
-KC_ACCOUNT = os.environ.get("TOKENMAXXING_KEYCHAIN_ACCOUNT") or os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+# The Keychain account every pool item is filed under; a process started without USER must still read them.
+KC_ACCOUNT = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
 
 # This file is pool/base.py, so the code root is the folder above it, where vend.py is.
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -27,6 +17,15 @@ LOCK = os.path.join(POOL, "lock")
 LOG = os.path.join(POOL, "pi-pool.log")
 CONFIG = os.path.join(POOL, "config.json")
 FALLBACK = os.path.join(POOL, "fallback.json")
+# The account store: one index per provider, each with its own flock, which also
+# serializes every refresh of that provider's credentials. A Claude credential is a
+# Keychain item (SECRETS on Linux), a Codex credential a 0600 auth.json file.
+ACCOUNTS = os.path.join(POOL, "accounts")
+INDEX = {"anthropic": os.path.join(ACCOUNTS, "anthropic.json"),
+         "openai-codex": os.path.join(ACCOUNTS, "openai-codex.json")}
+INDEX_LOCK = {provider: path[:-len(".json")] + ".lock" for provider, path in INDEX.items()}
+INDEX_VERSION = 1
+CODEX_SECRETS = os.path.join(ACCOUNTS, "openai-codex")
 
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -53,12 +52,12 @@ DEFAULTS = {
     # enter at slot pace. 2026-10-12 15:30: 25 vends landed on claude7 in 4 s.
     "admit_slot_sec": 120,
     "admit_per_unit": 1,
-    # what one plan is worth in tier units, by tokenmaxxing's tier name or its
+    # what one plan is worth in tier units, by the account's tier name or its
     # first word; anything else is 1. Measured 2026-10-12: a max 20x account took
     # about $7.5 of API-equivalent spend per 5h point, a max 5x or team seat $1.9.
     "tier_units": {"max 20x": 4, "max 5x": 1, "team": 1, "pro": 0.5},
     # R2 projection: the 5h percentage one busy tree spends per minute, by
-    # tokenmaxxing's tier name or its first word, for an account with no rate of
+    # the account's tier name or its first word, for an account with no rate of
     # its own yet (sched.observed_rate: none in a window's first 20 min); a tier
     # not listed is not projected. Measured from 23 windows on 10-12 and 10-13 that pi-pool.log shows
     # going from their start (429 `until` - 5 h) to the 429, with each request's
@@ -76,8 +75,6 @@ DEFAULTS = {
     "budget_wait_max_sec": 3600,
     # cooldown applied to an account after a vend-failure signal
     "cooldown_sec": 1200,
-    # allow an account a supervised session is running on
-    "allow_active_account": True,
     # anthropic-only per-model weekly caps that also count toward depletion
     "switch_models": ["fable"],
     # a session record with no vend and no fresh pin for this long is dropped
@@ -182,7 +179,7 @@ def config():
 
 
 class Flock:
-    """Advisory flock(2), same primitive tokenmaxxing uses on its lock file."""
+    """Advisory flock(2) on one lock file."""
 
     def __init__(self, path, timeout=6.0):
         self.path, self.timeout, self.fd = path, timeout, None
@@ -212,8 +209,8 @@ class Flock:
 
 # ---------------------------------------------------------------- keychain io
 # Linux has no Keychain and no /usr/bin/security, so off macOS each item is a 0600 file named by its
-# service in a 0700 folder beside the stores. PI_POOL_SECRETS=file picks the files on macOS too.
-SECRETS = os.path.join(TM, "secrets")
+# service in a 0700 folder inside the account store. PI_POOL_SECRETS=file picks the files on macOS too.
+SECRETS = os.path.join(ACCOUNTS, "secrets")
 FILE_SECRETS = os.environ.get("PI_POOL_SECRETS") == "file" or not os.path.exists("/usr/bin/security")
 
 
@@ -285,69 +282,14 @@ def kc_delete(service):
         raise RuntimeError(f"keychain delete failed for {service}: exit {r.returncode}")
 
 
-def store_dir(account_id):
-    """tokenmaxxing's storeDirFor: stores/<first 8 chars of the account id>."""
-    return os.path.join(TM_STORES, account_id[:8])
+def claude_service(account_id):
+    """The Keychain service of one Claude account's credential."""
+    return f"pi-pool.anthropic.{account_id}"
 
 
-def store_service(store):
-    """tokenmaxxing's namespacedCredService, which is also the keychain service
-    Claude Code itself uses when CLAUDE_SECURESTORAGE_CONFIG_DIR names `store`."""
-    digest = hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()
-    return f"Claude Code-credentials-{digest[:8]}"
-
-
-class ClaudeRefreshLock:
-    """Claude Code's credential-refresh lock on one store, mirroring
-    tokenmaxxing's withClaudeRefreshLock: mkdir `<store>/.oauth_refresh.lock`
-    and `<realpath store>.lock`, both treated as stale after 60s. Supervised
-    claude sessions on the same store refresh under this lock, so a refresh
-    here never races theirs."""
-
-    STALE_SEC = 60.0
-
-    def __init__(self, store, attempts=5, retry_sec=0.4):
-        self.store, self.attempts, self.retry_sec = store, attempts, retry_sec
-        self.held = []
-
-    @classmethod
-    def _try(cls, path):
-        try:
-            os.mkdir(path)
-            return True
-        except FileExistsError:
-            pass
-        try:
-            if time.time() - os.stat(path).st_mtime > cls.STALE_SEC:
-                os.rmdir(path)
-                os.mkdir(path)
-                return True
-        except OSError:
-            pass
-        return False
-
-    def __enter__(self):
-        os.makedirs(self.store, exist_ok=True)
-        primary = os.path.join(self.store, ".oauth_refresh.lock")
-        legacy = os.path.realpath(self.store) + ".lock"
-        for attempt in range(1, self.attempts + 1):
-            if self._try(primary):
-                if self._try(legacy):
-                    self.held = [legacy, primary]
-                    return self
-                os.rmdir(primary)
-            if attempt < self.attempts:
-                time.sleep(self.retry_sec)
-        raise TimeoutError(f"claude's refresh lock on {self.store} is contested")
-
-    def __exit__(self, *exc):
-        for path in self.held:
-            try:
-                os.rmdir(path)
-            except OSError:
-                pass
-        self.held = []
-        return False
+def codex_secret(account_id):
+    """The 0600 auth.json of one Codex account."""
+    return os.path.join(CODEX_SECRETS, f"{account_id}.json")
 
 
 def jwt_claims(token):
@@ -361,9 +303,9 @@ def jwt_claims(token):
 
 # ------------------------------------------------------------------- oauth io
 DEFAULT_SCOPES = ["user:inference", "user:profile"]
-# Budget for the 10s hook cap: pool lock + tokenmaxxing lock + refresh.
+# Budget for the 10s hook cap: pool lock + account index lock + refresh.
 STATE_LOCK_TIMEOUT = 2.5
-TM_LOCK_TIMEOUT = 3.0
+INDEX_LOCK_TIMEOUT = 3.0
 REFRESH_TIMEOUT = 5.0
 # Cloudflare fronts the token endpoint and rejects urllib's default signature
 # with a 1010 "access denied"; Claude Code's own UA is the honest identity here.
@@ -371,10 +313,9 @@ USER_AGENT = "claude-cli/2.1.75"
 
 
 def refresh_token(creds):
-    """Rotate an anthropic grant, mirroring tokenmaxxing's refreshCredential
-    contract: the server may omit refresh_token (reuse the old one) and may
-    return updated scope / refresh_token_expires_in. Non-token fields are
-    preserved."""
+    """Rotate an anthropic grant. The server may omit refresh_token (reuse the
+    old one) and may return updated scope / refresh_token_expires_in. Non-token
+    fields are preserved."""
     scopes = creds.get("scopes") or DEFAULT_SCOPES
     body = json.dumps({
         "grant_type": "refresh_token",
@@ -460,49 +401,55 @@ def anthropic_refusal(access_token, infer=False):
         return None
 
 
-def update_tm_account(index_path, account_id, change):
-    """Apply `change(record)` to one account in tokenmaxxing's own index and
-    write it back atomically when it returns True. Call under that index's flock."""
-    idx = load_json(index_path)
-    if not idx or idx.get("version") != TM_INDEX_VERSION:
-        return False
-    for rec in idx.get("accounts", []):
+def read_index(provider):
+    """One provider's index, {"version", "accounts"}. A missing file is an empty
+    pool (a fresh machine before its first `pi-pool login`); an unreadable or
+    foreign one raises."""
+    path = INDEX[provider]
+    if not os.path.exists(path):
+        return {"version": INDEX_VERSION, "accounts": []}
+    idx = load_json(path)
+    if not isinstance(idx, dict) or idx.get("version") != INDEX_VERSION or not isinstance(idx.get("accounts"), list):
+        raise RuntimeError(f"{os.path.basename(path)} unreadable")
+    return idx
+
+
+def write_index(provider, idx):
+    """Write one provider's index atomically, mode 0600. Call under its flock."""
+    os.makedirs(ACCOUNTS, mode=0o700, exist_ok=True)
+    path = INDEX[provider]
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(idx, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def index_lock(provider):
+    return Flock(INDEX_LOCK[provider], timeout=INDEX_LOCK_TIMEOUT)
+
+
+def update_account(provider, account_id, change):
+    """Apply `change(record)` to one account of the index and write it back when
+    it returns True. Call under that index's flock."""
+    idx = read_index(provider)
+    for rec in idx["accounts"]:
         if rec.get("id") == account_id and change(rec):
-            tmp = f"{index_path}.tmp.{os.getpid()}"
-            with open(tmp, "w") as f:
-                f.write(json.dumps(idx, indent=2) + "\n")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, index_path)
+            write_index(provider, idx)
             return True
     return False
 
 
-def mark_needs_reauth(index_path, account_id):
-    """Flag a dead grant in tokenmaxxing's own index, so `tokenmaxxing auth
-    --all` offers it and no later request retries the dead refresh. Call under
-    that index's flock."""
+def mark_needs_reauth(provider, account_id):
+    """Flag a dead grant in the index, so no later request retries the dead
+    refresh and the account shows Sign in again. Call under that index's flock."""
     def change(rec):
         if rec.get("needsReauth"):
             return False
         rec["needsReauth"] = True
         return True
-    if update_tm_account(index_path, account_id, change):
-        log("marked_needs_reauth", account_id=account_id)
-
-
-def mark_refused(account_id, until):
-    """Tell tokenmaxxing an account is refused until `until` (epoch seconds) via
-    its own enforcedUntil field, the one it sets when the server walls an
-    account. Its picker then keeps supervised `claude` sessions off it too."""
-    until_ms = int(until * 1000)
-
-    def change(rec):
-        if (rec.get("enforcedUntil") or 0) >= until_ms:
-            return False
-        rec["enforcedUntil"] = until_ms
-        return True
-    with Flock(TM_LOCK, timeout=TM_LOCK_TIMEOUT):
-        update_tm_account(TM_ACCOUNTS, account_id, change)
+    if update_account(provider, account_id, change):
+        log("marked_needs_reauth", provider=provider, account_id=account_id)
 
 
 def refresh_codex_token(refresh_token_value):
@@ -603,7 +550,7 @@ class KeychainAdapter:
 
 
 class CodexFileAdapter:
-    """recover_rotation's view of one codex-stores/<uuid8>/auth.json file."""
+    """recover_rotation's view of one Codex account's auth.json file."""
 
     def __init__(self, path):
         self.path = path
