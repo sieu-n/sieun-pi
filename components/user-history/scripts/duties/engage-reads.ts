@@ -11,7 +11,7 @@ import {
  * call, reads only. It measures goal p1, whether prod HAS THE CAPACITY to read 100k logged-in pages a day, years deep, without accounts dying
  * (the owner, 10-14: "i said 'Have the capacity to' which is what you should check"), and his standing canary rule, from:
  * - estate_pg_prod and estate_pg_stg through Grafana (grafana_ro): ig_engage_read_log, ig_engage_accounts, ig_engage_account_events, the
- *   config keys engage.rate_test_arms, engage.rate_test_started_at and pause.engage*, and on staging every pause.* row that reads 'true'
+ *   config keys engage.canary* (canaryOf below), engage.rate_test_stop_deaths and pause.engage*, and on staging every pause.* row that reads 'true'
  *   with its last config_audit writer;
  * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the accounts that can read now: active, bound and passing egress admission,
  *   GET /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
@@ -115,35 +115,39 @@ export interface EngageData {
   errors: { source: Source; message: string }[];
 }
 
-/** The rate-test roster from `engage.rate_test_arms` (`cap:id,id;cap:id`), as parse_arms in apps/crawler-v3/src/fleet/rate_test.py. Throws on a bad roster. */
-export function parseArms(raw: string): { dailyPages: number; ids: number[] }[] {
-  const arms: { dailyPages: number; ids: number[] }[] = [];
-  const seen = new Set<number>();
-  for (const part of raw.split(";").map(piece => piece.trim()).filter(Boolean)) {
-    const colon = part.indexOf(":");
-    if (colon < 0) throw new Error(`arm ${part} is not in the form cap:id,id`);
-    const dailyPages = Number(part.slice(0, colon));
-    if (!Number.isInteger(dailyPages) || dailyPages <= 0) throw new Error(`arm ${part} needs a daily cap above 0`);
-    const ids = part.slice(colon + 1).split(",").filter(text => text.trim()).map(Number);
-    if (!ids.length || ids.some(id => !Number.isInteger(id))) throw new Error(`arm ${part} names no account or a bad id`);
-    if (new Set(ids).size !== ids.length || ids.some(id => seen.has(id))) throw new Error(`an account of arm ${dailyPages} is in the roster twice`);
-    ids.forEach(id => seen.add(id));
-    arms.push({ dailyPages, ids });
-  }
-  return arms;
-}
+/** COHORT_HASH in apps/crawler-v3/src/platforms/instagram/engage/tuning.py, the id hash the hash-picked canary cohort uses. */
+export const COHORT_HASH = 2654435761n;
 
-/** The canary accounts running now: the roster once engage.rate_test_started_at has passed, else none, and why. */
-export function canaryRoster(config: Record<string, string>, now: number): { ids: Set<number>; note: string } {
-  const raw = (config["engage.rate_test_arms"] ?? "").trim();
-  const started = (config["engage.rate_test_started_at"] ?? "").trim();
-  if (!raw || !started) return { ids: new Set(), note: `no canary runs: engage.rate_test_arms is ${raw ? "set" : "empty"} and engage.rate_test_started_at is ${started ? "set" : "empty"}` };
-  let arms: { dailyPages: number; ids: number[] }[];
-  try { arms = parseArms(raw); } catch (error) { return { ids: new Set(), note: `no canary runs: engage.rate_test_arms is refused (${error instanceof Error ? error.message : String(error)})` }; }
-  const startAt = Date.parse(started);
-  if (!Number.isFinite(startAt) || !/(Z|[+-]\d\d:?\d\d)$/.test(started)) return { ids: new Set(), note: `no canary runs: engage.rate_test_started_at "${started}" is not an ISO time with its UTC offset` };
-  if (startAt > now) return { ids: new Set(), note: `no canary runs yet: the rate test starts at ${utc(startAt)}` };
-  return { ids: new Set(arms.flatMap(arm => arm.ids)), note: `canary arms ${arms.map(arm => `${arm.dailyPages}/day x ${arm.ids.length}`).join(", ")}, started ${utc(startAt)}` };
+/** Prod's canary: its accounts (dead ones too, so their deaths count as canary deaths), where the ids came from, which key resizes it, and why it is empty. */
+export interface Canary { ids: Set<number>; source: string; resize: string; empty?: string }
+
+/**
+ * The canary accounts as the crawler picks them (`_running_canary` in apps/crawler-v3/src/platforms/instagram/engage/experiment.py): the id roster
+ * engage.canary_accounts once it is set (auto-sns-agent 4012d607b9, which retires the hash keys into it), else the hash cohort of
+ * engage.canary_pct and engage.canary_offset over prod's accounts, and none while engage.canary_started_at is empty. Until 10-18 this read
+ * engage.rate_test_arms, which prod leaves empty on purpose, so d1 said no canary ran while 15 of 169 active accounts ran the hash cohort
+ * (canary_pct 10, canary_offset 65, config_audit 13970 and 13994) at 2,000 pages a day.
+ */
+export function canaryOf(config: Readonly<Record<string, string>>, accounts: readonly Pick<Account, "id">[]): Canary {
+  const roster = (config["engage.canary_accounts"] ?? "").trim();
+  const started = (config["engage.canary_started_at"] ?? "").trim();
+  let canary: Canary;
+  if (roster) {
+    const ids = roster.split(",").filter(text => text.trim()).map(Number);
+    if (ids.some(id => !Number.isInteger(id)) || new Set(ids).size !== ids.length)
+      return { ids: new Set(), source: "engage.canary_accounts", resize: "engage.canary_accounts", empty: `engage.canary_accounts "${roster.slice(0, 80)}" is refused: a bad or repeated id` };
+    canary = { ids: new Set(ids), source: "engage.canary_accounts", resize: "engage.canary_accounts" };
+  } else {
+    const pct = Number((config["engage.canary_pct"] ?? "").trim() || 0);
+    const offset = Number((config["engage.canary_offset"] ?? "").trim() || 0);
+    if (!Number.isInteger(pct) || !Number.isInteger(offset)) return { ids: new Set(), source: "engage.canary_pct", resize: "engage.canary_pct", empty: `engage.canary_pct "${config["engage.canary_pct"]}" or engage.canary_offset "${config["engage.canary_offset"]}" is not a whole number` };
+    const ids = accounts.filter(account => (BigInt(account.id) * COHORT_HASH + BigInt(offset)) % 100n < BigInt(pct)).map(account => account.id);
+    canary = { ids: new Set(ids), source: `the hash cohort engage.canary_pct ${pct}, engage.canary_offset ${offset}`, resize: "engage.canary_pct",
+      ...(pct > 0 ? {} : { empty: "engage.canary_accounts is empty and engage.canary_pct is 0" }) };
+  }
+  if (!canary.empty && !Number.isFinite(Date.parse(started))) return { ...canary, ids: new Set(),
+    empty: `${canary.source} names accounts, but engage.canary_started_at "${started}" is ${started ? "not a time" : "empty"}, so the crawler runs no canary` };
+  return canary;
 }
 
 /** The cause of one death, as cause_of in engage_deaths.py. grafana_ro cannot see the actor, so a death with no mapped code is unknown. */
@@ -226,17 +230,27 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   if (stagingStall) flagged.push(stagingStall);
   if (data.accounts && data.config && data.deaths) {
     const active = data.accounts.filter(account => account.status === "active");
-    const roster = canaryRoster(data.config, now);
+    const roster = canaryOf(data.config, data.accounts);
     const want = canaryWant(active.length);
     const have = active.filter(account => roster.ids.has(account.id)).length;
     metrics.canary_accounts_short = Math.max(0, want - have);
-    flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: `${roster.note}; ${have} of ${active.length} active prod accounts are in it, and ~10% is ${want}`
-      + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts to engage.rate_test_arms` : "") });
     const day = data.deaths.filter(death => now - death.at <= DAY);
     const killed = (deaths: readonly Death[]): number => new Set(deaths.filter(death => causeOf(death) === "instagram").map(death => death.accountId)).size;
     const fleetKilled = killed(day.filter(death => !roster.ids.has(death.accountId)));
     metrics.fleet_ig_killed_pct = active.length ? round1(100 * fleetKilled / active.length) : fleetKilled ? 100 : 0;
     metrics.canary_ig_deaths_1h = killed(day.filter(death => now - death.at <= HOUR && roster.ids.has(death.accountId)));
+    const lastDay = data.days?.reduce<string | null>((latest, row) => latest && latest > row.day ? latest : row.day, null) ?? null;
+    const canaryPages = data.days?.filter(row => row.day === lastDay && roster.ids.has(row.accountId)).map(row => row.pages) ?? [];
+    const pagesText = !data.days ? "their pages are not measured" : lastDay
+      ? `they read ${fmt(canaryPages.reduce((sum, pages) => sum + pages, 0))} pages on ${lastDay}, the busiest ${fmt(Math.max(0, ...canaryPages))}` : "no prod account read a page on a full UTC day";
+    const startAt = Date.parse((data.config["engage.canary_started_at"] ?? "").trim());
+    const sinceStart = Number.isFinite(startAt) ? killed(data.deaths.filter(death => death.at >= startAt && roster.ids.has(death.accountId))) : 0;
+    const stop = data.config["engage.rate_test_stop_deaths"]?.trim();
+    flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: (roster.empty
+      ? `no canary runs: ${roster.empty}; 0 of ${active.length} active prod accounts are in it, and ~10% is ${want}`
+      : `canary from ${roster.source}, started ${utc(startAt)}: ${have} of ${active.length} active prod accounts (${roster.ids.size} in it with the dead), ~10% is ${want}; ${pagesText}; `
+        + `Instagram killed ${killed(day.filter(death => roster.ids.has(death.accountId)))} of them in 24 h and ${sinceStart} since the start${stop ? ` (the canary stops at ${stop})` : ""}`)
+      + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts through ${roster.resize}` : "") });
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
     for (const death of day) flagged.push({ at: death.at, kind: "death",
       excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${roster.ids.has(death.accountId) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
@@ -322,7 +336,7 @@ export function lapsedOf(tsv: string): Lapsed {
   return { waiting, blocked, oldestAt: waiting + blocked ? oldest : null };
 }
 
-const CONFIG_SQL = "select key, value from config where key like 'engage.rate_test%' or key like 'pause.engage%'";
+const CONFIG_SQL = "select key, value from config where key like 'engage.canary%' or key = 'engage.rate_test_stop_deaths' or key like 'pause.engage%'";
 /**
  * The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365, the 24 h window of the duty. A walk
  * done in the window is reached when it ended since or exhausted, and an error stop under its walk_end otherwise. An open walk whose last
