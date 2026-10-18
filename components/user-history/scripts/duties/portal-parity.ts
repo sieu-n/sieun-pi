@@ -362,7 +362,9 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB)))];
   // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
   // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
-  // as soon as its receipt comes back.
+  // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
+  // after another got 429 'At most 5 crawl jobs' on 8 job rows, because the earlier run's jobs still held the org's slots.
+  const opened: { org: Org; id: string }[] = [];
   const jobsRun = (async () => {
     const results: (ProbeResult & { body: unknown })[] = [];
     for (const [index, op] of jobOps.entries()) {
@@ -374,6 +376,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
       const result = await call(org, op, jobRequest(request), start + PHASE1_MS, "docs example in job mode");
       const id = chainIds([result.body]).job_id?.value;
       if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancelJob(base, target.headers, org, id);
+      else if (id) opened.push({ org, id });
       results.push(result);
     }
     return results;
@@ -405,7 +408,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     const name = CHAINED.exec(op)![1]!;
     return call(orgs[sources[chained[name]!.from]!.org]!, op, request, start + PHASE2_MS, "id from this run, same test org");
   }));
-  await Promise.all(pageTwoRuns);
+  await Promise.all([...pageTwoRuns, ...opened.map(job => cancelJob(base, target.headers, job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
   for (const result of [...phase1, ...jobs, ...phase2]) {
