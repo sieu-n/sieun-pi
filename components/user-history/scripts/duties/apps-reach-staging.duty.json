@@ -1,0 +1,43 @@
+{
+  "name": "Apps reach staging",
+  "ownerWords": "and by the way the ultimate goal is to get an accepted version of each app in the prospects view.\n\nwhat should i review? report status (in 0%-100%) of each tab\n\nonly move things to 5174 when i say 5180 is good enough.",
+  "goal": "Each of the 6 Prospect apps on 5180 (Home, Inbox, Watchlist, Email, Creators, Connections) has an owner pick on Staging. No owner review the chat can still fix stays open over 48 h (a review with tap answers and no reply only waits on his tap), and virev-demo check and unit pass on sieun/dev. Each run gives the owner each tab's 0 to 100% status.",
+  "metrics": [
+    {
+      "key": "apps_picked",
+      "label": "Apps with the owner's pick on staging, of 6",
+      "op": ">=",
+      "target": 6,
+      "unit": " apps",
+      "headline": true
+    },
+    {
+      "key": "open_review_max_h",
+      "label": "Longest open owner review the chat can still fix",
+      "op": "<=",
+      "target": 48,
+      "unit": " h"
+    },
+    {
+      "key": "demo_ci_ok",
+      "label": "Demo CI green on sieun/dev (virev-demo check and unit)",
+      "op": ">=",
+      "target": 1
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/apps-reach-staging.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Every run, post one chat line with each tab's % from the tab_status slices, what done means and what is missing (c58). apps_picked under 6: per no_pick app, steer its live step job, else start one with rlm.create_session named '<app> variant set', built against the canonical flows (sessions/2026/10/10/1716-canonical-flows-storyboards), then one For you todo with links and screenshots. open_review_max_h over 48: per open_review slice over 48 h, start or steer '<app> review refresh': check off a todo the owner already answered (a Staging pick, a chat reply), else cut it to one-link yes or no items and edit it in place; never re-post to reset its age. An owner_held_review slice already has tap answers and no reply, so leave it to his tap. demo_ci_ok 0: start or steer 'virev-demo CI fix' (object-only, push-ci, own green run); on a source flag fix this precheck. Never write lines/staging.json, deploy, or move to 5174 (c40).",
+  "boardGoal": "p14"
+}

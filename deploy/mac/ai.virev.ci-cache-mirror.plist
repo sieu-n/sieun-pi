@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.virev.ci-cache-mirror</string>
+<key>ProgramArguments</key><array><string>/Users/sieunpark/.hermes/node/bin/node</string><string>/Users/sieunpark/.local/share/ci-cache-mirror/ci-cache-mirror.mjs</string><string>us-metal02</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/sieunpark</string><key>PATH</key><string>/usr/bin:/bin:/opt/homebrew/bin</string></dict>
+<key>KeepAlive</key><true/>
+<key>RunAtLoad</key><true/>
+<key>ThrottleInterval</key><integer>30</integer>
+<key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>/Users/sieunpark/.cache/virev/ci-cache-mirror.log</string>
+<key>StandardErrorPath</key><string>/Users/sieunpark/.cache/virev/ci-cache-mirror.log</string>
+</dict></plist>

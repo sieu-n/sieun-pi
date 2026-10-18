@@ -1,0 +1,52 @@
+{
+  "name": "Watchlist shows green",
+  "ownerWords": "your no.1 goal is to make this screen functional all green, including collabs. do whatever it takes, grind.\n\nanyhow, conclusion should be a stable pipeline capable of 100k pages/day or 10k pages/hour, use Convex efficiently (you know the proposal and implementation of the async jobs and sidecar api thing right cost shouldn't balloon), and most importantly staging and prod watchlist all green.",
+  "goal": "Every account in the owner's prod Watchlist (org_3IrtoOAEP0nk1aCQHGVME02Dy6E) shows green for posts and collabs: each watch has an unpaused prod monitor row read ok in the last 24 h. Staging's Watchlist rows are green too, every owner collab watch is set up on prod, and finished prod reads rarely end in error.",
+  "metrics": [
+    {
+      "key": "owner_green_pct",
+      "label": "Watchlist accounts read ok in 24 h",
+      "op": ">=",
+      "target": 100,
+      "unit": "%",
+      "headline": true
+    },
+    {
+      "key": "staging_green_pct",
+      "label": "Staging Watchlist rows, posts and collabs, read ok in 24 h",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "collab_pushed_pct",
+      "label": "Owner's collab watches that prod is set up to read",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "prod_read_error_pct",
+      "label": "Finished prod watch reads in 24 h that ended in an error after retries",
+      "op": "<=",
+      "target": 5,
+      "unit": "%"
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "06:28"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/watchlist-green.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "For every missed metric, start or steer exactly one live fix job, with a board step under p35 whose text starts \"d2/<metric key>:\" and names the cause from the flagged numbers (pause on, no row, never read, error codes, a stalled loop, a source_error). A live job that owns the cause (agent_observe.list_agents(); today \"watchlist all green\", Instagram Main for the census) gets the new numbers by message. If none is live, start one with rlm.create_session(brief, name=..., cwd=...) and set the step's job to it; never start a second copy. Its brief names the metric, value, target and cause, and asks for shipped code changes until green. No run ends with a miss and no live fix job. Run the next collab wave when its gate holds (the owner's go covers it). Once a day post an Aside screenshot of /app/analytics/monitor on staging and prod to the board; never touch a support or chat widget. Prod promotes need no ask (c74); nothing goes outside (c37). All on target: end the turn with no message.",
+  "boardGoal": "p35"
+}

@@ -1,0 +1,222 @@
+{
+  "automatic_writers": {
+    "config_actors": [
+      "doc-ids-extract",
+      "facebook-doc-ids-extract",
+      "metal-deploy"
+    ],
+    "config_sources": [
+      "metal-box-stop-loop"
+    ],
+    "note": "Writers that are part of the product. A lane controller or a supervised guard joins this list when its design ships. config_sources names a writer by config_audit.source when its actor also writes by hand: metal-box-stop-loop is the box stop loop, which runs as the systemd unit virev-box-stop.service since Crawler VP p173 closed on 10-16 00:40Z, while actor metal also writes by hand from source metal-owner."
+  },
+  "faults": [
+    {
+      "id": "F1",
+      "title": "Lane rates and pauses steered by hand",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p170"
+      ],
+      "owner": "Crawler ops / Crawler VP (01a115e2), TikTok Shop thread, metal (01a11d24)",
+      "match": {
+        "config_key_prefixes": [
+          "instagram_census.",
+          "pause.instagram_census",
+          "tiktok_shop.",
+          "pause.tiktok_shop",
+          "meta_ads.",
+          "pause.meta_ads",
+          "media.concurrency",
+          "pause.media",
+          "pause.crawl",
+          "pause.refresh",
+          "pause.discovery",
+          "pause.xiaohongshu_anon",
+          "pause.douyin",
+          "media.sample_percent"
+        ]
+      }
+    },
+    {
+      "id": "F2",
+      "title": "Guards that act on prod live inside agent sessions",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p173",
+        "branch:sieun/box-selfheal",
+        "commit:98c14dbd1a"
+      ],
+      "owner": "metal (01a11d24) and each lane owner; the 10-14 20:19Z slice stop (s224) came from prod IO, which the census gauge Index Only Scan fix 98c14dbd1a removes",
+      "match": {
+        "config_reason_tag": "watch_proxy abort|metal box stop|[^:]{0,40}\\bwatch --act\\b",
+        "config_reason_regex": "left on with no owner",
+        "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py"
+      }
+    },
+    {
+      "id": "F3",
+      "title": "Acquisition writer count is fixed",
+      "designs": [
+        "commit:dca86c9471"
+      ],
+      "owner": "Instagram Main (01a10db0), acq-writer-autoscale (dca86c9471, in land 36 under pin b0edbbcd35 and on staging a8f85b4206; it reaches prod with promote 10 try 3, whose crawler-worker restart ends the hand-started prod writer)",
+      "match": {
+        "box_exec_regex": "acquisition-writer",
+        "config_key_prefixes": [
+          "throttle.watch_claims_per_tick"
+        ]
+      }
+    },
+    {
+      "id": "F4",
+      "title": "Collab slot split and re-read due times set by hand",
+      "designs": [
+        "p97"
+      ],
+      "owner": "collab lane self balance, fair crawl queue, posts reread inside 24h (p91)",
+      "match": {
+        "config_key_prefixes": [
+          "watch.deep_walk_slot_share",
+          "watch.",
+          "pause.watch",
+          "pause.jobs"
+        ]
+      }
+    },
+    {
+      "id": "F5",
+      "title": "Engage account states fixed by hand",
+      "designs": [
+        "p98"
+      ],
+      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix",
+      "match": {
+        "engage_event": {
+          "kind": "status",
+          "outcomes": [
+            "active",
+            "disabled"
+          ]
+        },
+        "config_key_prefixes": [
+          "pause.engage",
+          "proxy_endpoints.gateway"
+        ]
+      }
+    },
+    {
+      "id": "F6",
+      "title": "CI cancel and rerun waves by hand",
+      "designs": [
+        "01a1180e-6567-747f-bf44-452520ebdd1b/p155"
+      ],
+      "owner": "VP of CI (01a1180e), CI keeper Fable (01a0cc5e)",
+      "match": {
+        "mac_process_regex": "prio_loop|rwd\\d"
+      },
+      "done_at": "2026-10-14T22:06:26Z"
+    },
+    {
+      "id": "F7",
+      "title": "Deploys lose live changes and get blocked by sessions they do not own",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p172",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p148",
+        "commit:c6a255815c"
+      ],
+      "owner": "metal (01a11d24), release owner (01a10810)",
+      "match": {
+        "config_reason_regex": "docker update|deploy recreates",
+        "box_container_regex": "oneoff|one-off|copy"
+      }
+    },
+    {
+      "id": "F8",
+      "title": "Wrong not-found and gone verdicts",
+      "designs": [
+        "commit:477ed1034f",
+        "commit:699c919215",
+        "p90"
+      ],
+      "owner": "Instagram Main, watchlist all green",
+      "match": {}
+    },
+    {
+      "id": "F9",
+      "title": "One limit in two places, code and config",
+      "designs": [
+        "p77"
+      ],
+      "owner": "remove-unmeasured-caps, instagram access canary (p75)",
+      "match": {
+        "config_key_prefixes": [
+          "engage.rate_test_arms",
+          "engage.experiment_daily_pages",
+          "engage.experiment_pages_per_minute",
+          "engage.session_openings_per_10min",
+          "engage.rate_test_"
+        ]
+      }
+    },
+    {
+      "id": "F10",
+      "title": "Writes to the wrong environment",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p171"
+      ],
+      "owner": "Crawler ops",
+      "match": {
+        "config_reason_tag": "undo audit",
+        "config_reason_regex": "by mistake|wrong (env|key)"
+      }
+    },
+    {
+      "id": "F11",
+      "title": "Secrets in transcripts and logs",
+      "designs": [
+        "01a1180e-6567-747f-bf44-452520ebdd1b/p156"
+      ],
+      "owner": "VP of CI",
+      "match": {}
+    },
+    {
+      "id": "F12",
+      "title": "Staging runs out of work",
+      "designs": [
+        "p98"
+      ],
+      "owner": "Instagram Main, duty d1",
+      "match": {}
+    },
+    {
+      "id": "F13",
+      "title": "Kafka topic sizes and the prod media override set by hand",
+      "designs": [
+        "p116"
+      ],
+      "owner": "kafka retention design (launch chat p116), metal (01a11d24)",
+      "match": {
+        "config_key_prefixes": [
+          "kafka.topic."
+        ]
+      }
+    },
+    {
+      "id": "F14",
+      "title": "Live post media refresh fails, so media.mirror_kinds is flipped by hand",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p40"
+      ],
+      "owner": "Crawler VP (01a115e2), crawler ops train (media refresh hedge)",
+      "match": {
+        "config_key_prefixes": [
+          "media.mirror_kinds"
+        ]
+      }
+    }
+  ],
+  "exempt": {
+    "config_reason_regex": "^owner: \"|A/B|^Owner order",
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
+    "box_exec_regex": "\\.venv/bin/python - 3600 8$"
+  }
+}

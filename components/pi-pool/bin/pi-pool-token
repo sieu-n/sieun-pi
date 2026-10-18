@@ -1,0 +1,196 @@
+#!/usr/bin/python3 -B
+"""pi-pool-token: the models.json credential hook.
+
+With no arguments (or `--provider <p>`) it writes one access token to stdout and
+nothing else. Prime Agent runs it through a pipe on every provider request. A
+person or agent running it by hand would paste the live token into a terminal
+or a transcript, so the token path refuses a TTY and refuses unknown arguments
+(`--help` used to fall through and print the token).
+
+    pi-pool-token [--provider <p>]   token on stdout (pipe only)
+    pi-pool-token --status           pool status
+    pi-pool-token --cli <command>    same as `pi-pool <command>`
+
+A failed invocation writes fixed reason codes and elapsed times to the pool log.
+Credential values and exception messages never enter that record.
+"""
+import json
+import os
+import re
+from pathlib import Path
+import runpy
+import signal
+import sys
+import time
+
+SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
+
+
+def refuse(reason):
+    sys.stderr.write(
+        f"pi-pool-token: {reason}\n"
+        "This command prints a live credential. Prime Agent runs it through a pipe;\n"
+        "use `pi-pool status` or `pi-pool-token --cli <command>` for anything else.\n")
+    return 2
+
+
+def token_args_ok(argv):
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--status":
+            i += 1
+        elif argv[i] == "--provider" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            i += 2
+        else:
+            return False
+    return True
+
+
+def pool_log(event, **fields):
+    """One line in the pool log, the same file and format as pool/base.py's log()."""
+    folder = os.environ.get("PI_POOL_DIR") or os.path.join(os.path.expanduser("~"), ".config", "pi-pool")
+    try:
+        with open(os.path.join(folder, "pi-pool.log"), "a") as f:
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields}) + "\n")
+    except Exception:
+        pass
+
+
+class CountedStdout:
+    def __init__(self, stream):
+        self.stream, self.has_token = stream, False
+
+    def write(self, text):
+        written = self.stream.write(text)
+        self.has_token = self.has_token or bool(text[:written].strip())
+        return written
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def failure_reason(error):
+    text = str(error)
+    if "remote pool unreachable" in text:
+        return "remote_unreachable"
+    if "remote pool gave no answer" in text:
+        return "remote_timeout"
+    if "remote pool refused" in text:
+        return "remote_refused"
+    holder = re.search(r"pi-pool-token: no token \((\w+)\)", text)
+    if holder:
+        return holder.group(1)
+    if "could not lock " in text:
+        return "lock_wait_timeout"
+    if any(marker in text for marker in (
+        "invalid_grant", "refresh_token_reused", "refresh failed http ",
+        "keychain read failed", "oauth not allowed for organization", "token rejected (401)",
+        "forbidden (403)", "needs terms",
+    )):
+        return "credential_provider_refused"
+    if "no credential " in text or "store was cleared" in text:
+        return "credential_missing"
+    if "anthropic.json unreadable" in text or "openai-codex.json unreadable" in text:
+        return "account_index_unreadable"
+    if "account can serve this session" in text:
+        return "no_account"
+    if isinstance(error, TimeoutError):
+        return "operation_timeout"
+    if isinstance(error, SystemExit):
+        if isinstance(error.code, str) and error.code.startswith("pi-pool: this session waits for a slot on "):
+            return "slot_wait"
+        return "exit_nonzero"
+    return "exception"
+
+
+def interrupted_signal(error):
+    trace = error.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        if frame.f_code.co_name in ("on_term", "killed_while_loading"):
+            signum = frame.f_locals.get("signum")
+            if signum == signal.SIGTERM:
+                return signum
+        trace = trace.tb_next
+    return None
+
+
+def term_with_parent():
+    """Linux's /bin/sh (dash) runs the hook as a child instead of exec'ing it, so Prime's timeout SIGTERM reaches only the shell."""
+    if sys.platform == "linux":
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)
+
+
+def run_token(source, argv):
+    provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
+    if provider not in ("anthropic", "openai-codex"):
+        provider = "unknown"
+    started, wall = time.monotonic(), time.time()
+    invocation = f"{os.getpid()}-{time.monotonic_ns()}"
+    logged = False
+
+    def no_token(reason, **fields):
+        nonlocal logged
+        if logged:
+            return
+        logged = True
+        sys.stderr.write(f"pi-pool-token: no token ({reason})\n")
+        pool_log("hook_no_token", invocation=invocation, provider=provider, reason=reason,
+                 session=os.environ.get(SESSION_ENV), pid=os.getpid(),
+                 awake_sec=round(time.monotonic() - started, 3),
+                 wall_sec=round(time.time() - wall, 3), **fields)
+
+    def killed_while_loading(signum, frame):
+        no_token("interrupted", signal=signum, phase="load")
+        raise SystemExit(128 + signum)
+
+    previous_handler = signal.signal(signal.SIGTERM, killed_while_loading)
+    term_with_parent()
+    original = sys.stdout
+    out = sys.stdout = CountedStdout(original)
+    try:
+        runpy.run_path(str(source), run_name="__main__")
+        out.flush()
+    except SystemExit as error:
+        if error.code is None or error.code == 0:
+            out.flush()
+            if not out.has_token:
+                no_token("empty_result", exit_code=0)
+        else:
+            signum = interrupted_signal(error)
+            if signum is not None:
+                no_token("interrupted", signal=signum, phase="vend")
+            else:
+                no_token(failure_reason(error), exit_code=error.code if isinstance(error.code, int) else 1)
+        raise SystemExit(error.code if isinstance(error.code, int) else (0 if error.code is None else 1)) from None
+    except BaseException as error:
+        kind = type(error).__name__ if type(error).__module__ == "builtins" else "Exception"
+        no_token(failure_reason(error), error_type=kind)
+        raise SystemExit(1) from None
+    else:
+        if not out.has_token:
+            no_token("empty_result", exit_code=0)
+    finally:
+        sys.stdout = original
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--cli":
+        pass
+    elif not token_args_ok(argv):
+        return refuse(f"unknown argument {argv[0]!r}; not printing a token")
+    elif "--status" not in argv and sys.stdout.isatty():
+        return refuse("stdout is a terminal; not printing a token")
+    source = Path(__file__).resolve().parents[1] / "vend.py"
+    sys.argv = [str(source), *argv]
+    if argv and argv[0] == "--cli" or "--status" in argv:
+        runpy.run_path(str(source), run_name="__main__")
+    else:
+        run_token(source, argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

@@ -1,0 +1,46 @@
+{
+  "name": "Search visits grow",
+  "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow",
+  "goal": "Blog and tool visits on virev.ai climb toward the owner's 10,000 a day, led by Google clicks, and sign-ups whose first page was blog or tools climb toward his 300 a day (t9). Every miss has a live fix job pushing changes. google_clicks_d7 goes to 500 on 11-01, as program/brief.md says.",
+  "metrics": [
+    {
+      "key": "goal_visits_d7",
+      "label": "Search traffic, 7-day average of blog and tool visits, no bots or staff (PostHog)",
+      "op": ">=",
+      "target": 10000,
+      "unit": " visits/day",
+      "headline": true
+    },
+    {
+      "key": "google_clicks_d7",
+      "label": "Google clicks a day, 7-day average, all pages (Search Console)",
+      "op": ">=",
+      "target": 20,
+      "unit": " clicks/day"
+    },
+    {
+      "key": "signups_goal_d28",
+      "label": "Sign-ups a day whose first page was blog or tools, 28 days (Clerk, PostHog)",
+      "op": ">=",
+      "target": 300,
+      "unit": " signups/day"
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/seo-search-visits.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Run `uv run --project scripts/seo seo-goal` and `seo gsc pull` to save the day. Each missed metric gets one live fix job with a board step under p56: goal_visits_d7 and google_clicks_d7 go to \"google clicks lift\" (p58), and signups_goal_d28 to \"blog signups lift\" (p59). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. Its brief names the metric, value and target, and asks for shipped changes. source_errors: fix the read this run, or start \"seo sources fix\". Never end a run with a missed metric and no live fix job. apps/search stays parked (c40), nothing goes outside (c37), and prod promotes need no ask (c74). Tell the owner the four numbers and what shipped.",
+  "boardGoal": "p56"
+}

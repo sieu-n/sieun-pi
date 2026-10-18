@@ -1,0 +1,989 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { parseWake } from "./wakes.ts";
+import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
+import { otherBoxRoots, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
+import { jobRegistry } from "./chat-sources.ts";
+import { IdIndex } from "./id-index.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
+import type { Duplex } from "node:stream";
+import { applyAgentOps } from "./agent-board.ts";
+import type { ChatBackend } from "./chat-backend.ts";
+import type { ClientBundle, Asset } from "./chat-assets.ts";
+import { parseChatImages } from "./chat-images.ts";
+import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
+import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
+import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
+import { parsePublicOrigin } from "./chat-origin.ts";
+import { FeedSockets } from "./chat-socket.ts";
+import { isPriority, LabelError } from "./chat-labels.ts";
+import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
+import { ThreadError } from "./chat-threads.ts";
+import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
+import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
+import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
+import { interruptedRuns } from "./chat-resume.ts";
+import type { RemoteControl } from "./chat-remote.ts";
+import type { SlackControl } from "./chat-slack.ts";
+import type { SdkSync } from "./chat-sdk.ts";
+import { hostsView, thisBox } from "./chat-hosts.ts";
+import { parseAgentQueueInput } from "./chat-agent-queue.ts";
+import { toolChecks } from "./chat-tools.ts";
+import { skillsView } from "./chat-skills.ts";
+import { nextBriefView } from "./prompt-view.ts";
+import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { channelNameError } from "./shared/slack-channel.ts";
+import { parseStartSkill } from "./shared/start-skill.ts";
+
+const maxBodyBytes = 12 * 1024 * 1024;
+const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
+const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+class RequestError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
+
+/** A folder path for another box, taken as typed: it must be absolute there, and that box's daemon refuses one it does not have. */
+function remoteWorkspace(input: string, host: string): string {
+  const typed = input.trim().replace(/\/+$/, "") || "/";
+  if (!typed.startsWith("/")) throw new WorkspaceError(`Type the full folder path on ${host}, starting with /: ${input.trim()}`);
+  return typed;
+}
+
+export function renderShell(csrfToken: string, version: string, wiki: string | null): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Prime Agent chat</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f9fb">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
+<link rel="stylesheet" href="app.css">
+</head>
+<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}">
+<div id="app"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
+`;
+}
+
+async function jsonBody(request: IncomingMessage): Promise<unknown> {
+  if (request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new RequestError(415, "Expected application/json.");
+  const declaredLength = Number(request.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBodyBytes) { request.resume(); throw new RequestError(413, "Request is too large."); }
+  const chunks = await new Promise<Buffer[]>((resolve, reject) => {
+    let size = 0;
+    const parts: Buffer[] = [];
+    const cleanup = () => { request.off("data", data); request.off("end", end); request.off("error", failed); request.off("aborted", aborted); };
+    function failed(error: Error) { cleanup(); reject(error); }
+    function aborted() { failed(new RequestError(400, "Request was interrupted.")); }
+    function data(bytes: Buffer) {
+      size += bytes.length;
+      if (size > maxBodyBytes) { cleanup(); request.resume(); reject(new RequestError(413, "Request is too large.")); } else parts.push(bytes);
+    }
+    function end() { cleanup(); resolve(parts); }
+    request.on("data", data); request.once("end", end); request.once("error", failed); request.once("aborted", aborted);
+  });
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new RequestError(400, "Invalid JSON."); }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new RequestError(400, "Expected a JSON object.");
+  return value;
+}
+/**
+ * A text field. `max` bounds only an id-like field (a provider, model id, account or path), never what a person writes: a message, a name or a
+ * tag has no length cap (owner 10-18: every arbitrary limit is a soft cap). The request body cap bounds those.
+ */
+function text(value: unknown, field: string, max?: number): string {
+  if (typeof value !== "string" || (max !== undefined && value.length > max)) throw new RequestError(400, max === undefined ? `Expected ${field} as text.` : `Expected ${field} as text up to ${max} characters.`);
+  return value;
+}
+function requestId(value: unknown): string {
+  if (typeof value !== "string" || !requestIdPattern.test(value)) throw new RequestError(400, "Expected a request ID.");
+  return value;
+}
+/** Every box's live roots and the daemon send for the cross-host message routes, from the catalog that lists each box's daemon. */
+function rootDirectory(backend: ChatBackend): RootDirectory {
+  const catalog = backend.catalog;
+  return {
+    roots: () => {
+      const self = catalog.selfHost() ?? thisBox();
+      const seen = new Set<string>();
+      return [...catalog.daemonRows(), ...catalog.remoteRows()].filter(row => isTopLevel(row) && row.lifecycle !== "archived").flatMap(row => {
+        if (seen.has(row.sessionId)) return [];
+        seen.add(row.sessionId);
+        return [{ sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row),
+          host: catalog.hostOf(row.sessionId) ?? self, status: row.activity ?? row.lifecycle ?? "unknown" }];
+      });
+    },
+    send: async (sessionId, message) => {
+      const response = await (await catalog.daemonFor(sessionId)).request({ type: "send_message", targetActiveSessionId: sessionId, message }, 30_000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      return response.data as Record<string, unknown>;
+    },
+  };
+}
+
+function threadId(value: string): string {
+  if (!idPattern.test(value)) throw new RequestError(400, "Invalid thread ID.");
+  return value;
+}
+function archiveAudit(req: IncomingMessage, targetSessionId: string): (outcome: "started" | "completed" | "failed") => void {
+  const requestId = randomUUID();
+  const claim = req.headers["x-chat-agent-session"];
+  const sessionId = typeof claim === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claim) ? claim : null;
+  const agent = req.headers["user-agent"] ?? "";
+  const userAgent = agent === "node" || agent === "undici" ? "node" : agent.startsWith("curl/") ? "curl"
+    : agent.startsWith("python-") || agent.startsWith("Python/") ? "python" : agent.startsWith("Mozilla/") ? "browser" : agent ? "other" : "missing";
+  return outcome => {
+    try {
+      process.stderr.write(JSON.stringify({ event: "chat_archive", at: new Date().toISOString(), requestId, targetSessionId, outcome,
+        unverifiedClientClaims: { sessionId, userAgent } }) + "\n");
+    } catch {}
+  };
+}
+function parseImages(value: unknown) {
+  try { return parseChatImages(value); }
+  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : "Invalid images."); }
+}
+function parseMode(value: unknown): SendMode {
+  const mode = value ?? "followUp";
+  if (mode !== "steer" && mode !== "followUp") throw new RequestError(400, "Choose steer or followUp.");
+  return mode;
+}
+/**
+ * Who changes a check-in through this API. The page token proves the caller can reach the page, and an agent driving the owner's browser has
+ * it too (10-10 12:54Z: one agent session paused 9 chats from the owner's tab), so it says nothing about who asks. The owner's page marks its
+ * check-in requests with `X-Chat-Owner-Ui: 1`; an agent names itself with `X-Chat-Agent-Session: <session id>`, which wins; any other caller
+ * is an agent nobody named.
+ */
+function checkInActor(req: IncomingMessage): CheckInActor {
+  const session = req.headers["x-chat-agent-session"];
+  if (typeof session === "string") return { by: "agent", setter: idPattern.test(session) ? session : UNKNOWN_AGENT };
+  return req.headers["x-chat-owner-ui"] === "1" ? OWNER_UI : { by: "agent", setter: UNKNOWN_AGENT };
+}
+/** The kind of thread `POST api/threads` creates: a plain thread, or a chat. */
+function parseCheckInChange(body: Record<string, unknown>): CheckInChange {
+  const change: CheckInChange = {};
+  if (body.everyMs !== undefined) {
+    if (!validCheckInEvery(body.everyMs)) throw new RequestError(400, `Use whole minutes, ${CHECK_IN_MIN_MINUTES} or more.`);
+    change.everyMs = body.everyMs;
+  }
+  if (body.pause !== undefined) {
+    const pause = CHECK_IN_PAUSES.find(entry => entry === body.pause);
+    if (body.pause !== null && !pause) throw new RequestError(400, `Pause with ${CHECK_IN_PAUSES.join(", ")} or null.`);
+    change.pause = pause ?? null;
+  }
+  if (change.everyMs === undefined && change.pause === undefined) throw new RequestError(400, "Choose everyMs or pause.");
+  return change;
+}
+
+function parseKind(value: unknown): "thread" | "chat" {
+  if (value === undefined || value === null || value === "thread") return "thread";
+  if (value === "chat") return "chat";
+  throw new RequestError(400, "Choose kind thread or chat.");
+}
+/** The pool account a new chat starts on; absent means follow the pool. */
+function parseNewChatAccount(value: unknown): { provider: string; id: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const account = record(value);
+  const id = text(account.id, "account.id", 256);
+  if (id.startsWith("-")) throw new RequestError(400, "Choose an account.");
+  return { provider: text(account.provider, "account.provider", 64), id };
+}
+function parseAccountAction(body: Record<string, unknown>): AccountAction {
+  const provider = text(body.provider, "provider", 64);
+  const account = typeof body.account === "string" ? text(body.account, "account", 256) : undefined;
+  const id = typeof body.id === "string" ? threadId(body.id) : undefined;
+  switch (body.action) {
+    case "use": if (!account || !id) throw new RequestError(400, "Choose an account and a thread."); return { action: "use", provider, account, id };
+    case "follow": if (!id) throw new RequestError(400, "Choose a thread."); return { action: "follow", provider, id };
+    case "pin": if (!account) throw new RequestError(400, "Choose an account."); return { action: "pin", provider, account };
+    case "unpin": return { action: "unpin", provider };
+    case "switch": return { action: "switch", provider };
+    case "recheck": return { action: "recheck", provider };
+    case "resets": return { action: "resets", provider, ...(account ? { account } : {}) };
+    case "reset": {
+      if (!account) throw new RequestError(400, "Choose an account.");
+      const grant = typeof body.grant === "string" ? text(body.grant, "grant", 40) : undefined;
+      return { action: "reset", provider, account, ...(grant ? { grant } : {}) };
+    }
+    case "disable": case "enable": case "remove": if (!account) throw new RequestError(400, "Choose an account."); return { action: body.action, provider, account };
+    default: throw new RequestError(400, "Unknown account action.");
+  }
+}
+
+/** The defaults a new chat starts with; the model must be in the catalog and the effort, when given, one of that model's levels. */
+function parseDefaults(body: Record<string, unknown>, catalog: ModelCatalog): ChatDefaultsInput {
+  const provider = text(body.provider, "provider", 128);
+  const modelId = text(body.modelId, "modelId", 256);
+  const model = catalog.models.find(entry => entry.provider === provider && entry.id === modelId);
+  if (!model) throw new RequestError(400, "Choose a model from the catalog.");
+  if (body.thinkingLevel === undefined || body.thinkingLevel === null) return { provider, modelId };
+  if (!isThinkingLevel(body.thinkingLevel) || !model.thinkingLevels?.includes(body.thinkingLevel)) throw new RequestError(400, `Choose an effort ${model.name} supports.`);
+  return { provider, modelId, thinkingLevel: body.thinkingLevel };
+}
+
+function threadIds(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected thread IDs.");
+  return [...new Set(value.map(id => threadId(id)))];
+}
+function parseLabelAction(body: Record<string, unknown>): LabelAction {
+  const tagId = () => text(body.tagId, "tagId", 64);
+  const name = () => text(body.name, "name");
+  switch (body.op) {
+    case "create": return { op: "create", name: name(), ids: body.ids === undefined ? [] : threadIds(body.ids) };
+    case "rename": return { op: "rename", tagId: tagId(), name: name() };
+    case "delete": return { op: "delete", tagId: tagId() };
+    case "tag":
+      if (typeof body.on !== "boolean") throw new RequestError(400, "Choose on or off.");
+      return { op: "tag", tagId: tagId(), ids: threadIds(body.ids), on: body.on };
+    case "priority":
+      if (!isPriority(body.priority)) throw new RequestError(400, "Choose a priority from 0 to 3.");
+      return { op: "priority", ids: threadIds(body.ids), priority: body.priority };
+    default: throw new RequestError(400, "Unknown label action.");
+  }
+}
+
+class Bounded<V> {
+  private readonly map = new Map<string, V>();
+  constructor(private readonly limit: number) {}
+  get(key: string): V | undefined { return this.map.get(key); }
+  set(key: string, value: V): void {
+    this.map.set(key, value);
+    while (this.map.size > this.limit) this.map.delete(this.map.keys().next().value!);
+  }
+  clear(): void { this.map.clear(); }
+}
+
+/** A fixed `publicOrigin` with no Tailscale management, for tests and embedded servers. */
+function fixedRemote(publicOrigin: string | null, capability: string): RemoteControl {
+  const origin = parsePublicOrigin(publicOrigin);
+  return {
+    origin: () => origin,
+    view: editable => ({ mode: origin ? "custom" : "off", state: origin ? "on" : "off", origin, phoneUrl: origin ? `${origin}/${capability}/` : null, checkedAt: null, reachable: null, editable,
+      message: origin ? `On through ${origin}.` : "Off. Only this Mac can open the chat.",
+      keepRunning: { available: false, enabled: false, state: "off", message: "Start at login is not available for this chat instance." },
+      openAppAtLogin: { available: false, enabled: false, appName: null, message: "Opening the app at login is not available for this chat instance." } }),
+    set: async () => { throw new RequestError(409, "Phone access is fixed for this chat instance."); },
+    check: async () => {},
+  };
+}
+
+function parseSlackInput(body: Record<string, unknown>): SlackInput {
+  const input: SlackInput = {};
+  if (body.enabled !== undefined) { if (typeof body.enabled !== "boolean") throw new RequestError(400, "enabled must be true or false."); input.enabled = body.enabled; }
+  if (body.ownerUserId !== undefined) {
+    if (body.ownerUserId !== null && typeof body.ownerUserId !== "string") throw new RequestError(400, "ownerUserId must be a member id or null.");
+    input.ownerUserId = typeof body.ownerUserId === "string" ? body.ownerUserId.trim() || null : null;
+  }
+  if (input.enabled === undefined && input.ownerUserId === undefined) throw new RequestError(400, "Choose enabled or ownerUserId.");
+  return input;
+}
+
+/** The chat header's Slack dialog: connect (with the channel's name and visibility, or an existing channel), rename, or stop. */
+function parseSlackChatInput(body: Record<string, unknown>): SlackChatInput {
+  const name = (): string => {
+    if (typeof body.name !== "string") throw new RequestError(400, "name must be a channel name.");
+    const error = channelNameError(body.name);
+    if (error) throw new RequestError(400, error);
+    return body.name;
+  };
+  switch (body.action) {
+    case "connect": {
+      const input: SlackChatInput = { action: "connect" };
+      if (body.existing !== undefined) {
+        if (typeof body.existing !== "string" || !body.existing.trim()) throw new RequestError(400, "existing must be a channel id or #name.");
+        input.existing = body.existing.trim();
+      } else {
+        if (body.name !== undefined) input.name = name();
+        if (body.isPrivate !== undefined) { if (typeof body.isPrivate !== "boolean") throw new RequestError(400, "isPrivate must be true or false."); input.isPrivate = body.isPrivate; }
+      }
+      return input;
+    }
+    case "rename": return { action: "rename", name: name() };
+    case "stop": return { action: "stop" };
+    default: throw new RequestError(400, "action must be connect, rename or stop.");
+  }
+}
+
+/** A new chat's Slack channel: absent for no sync, else its name (the default when empty) and visibility. */
+function parseSlackSetup(value: unknown): SlackChannelSetup | undefined {
+  if (value === undefined || value === null || value === false) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new RequestError(400, "slack must be { name, isPrivate } or absent.");
+  const setup = value as Record<string, unknown>;
+  if (typeof setup.name !== "string") throw new RequestError(400, "slack.name must be a channel name.");
+  const error = channelNameError(setup.name);
+  if (error) throw new RequestError(400, error);
+  if (setup.isPrivate !== undefined && typeof setup.isPrivate !== "boolean") throw new RequestError(400, "slack.isPrivate must be true or false.");
+  return { name: setup.name, isPrivate: setup.isPrivate !== false };
+}
+
+function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
+  const input: RemoteAccessInput = {};
+  if (body.tailscale !== undefined) { if (typeof body.tailscale !== "boolean") throw new RequestError(400, "tailscale must be true or false."); input.tailscale = body.tailscale; }
+  if (body.keepRunning !== undefined) { if (typeof body.keepRunning !== "boolean") throw new RequestError(400, "keepRunning must be true or false."); input.keepRunning = body.keepRunning; }
+  if (body.openAppAtLogin !== undefined) {
+    if (typeof body.openAppAtLogin !== "boolean") throw new RequestError(400, "openAppAtLogin must be true or false.");
+    input.openAppAtLogin = body.openAppAtLogin;
+  }
+  if (input.tailscale === undefined && input.keepRunning === undefined && input.openAppAtLogin === undefined) throw new RequestError(400, "Choose tailscale, keepRunning or openAppAtLogin.");
+  return input;
+}
+
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
+  backend: ChatBackend; bundle: ClientBundle | Promise<ClientBundle>; port: number; capability: string; csrfToken: string;
+  identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
+  /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
+  remote?: RemoteControl;
+  /** Settings > Slack; null for instances that run no Slack bridge (tests, extra data dirs). */
+  slack?: SlackControl | null;
+  /** Settings > Updates and the SDK auto-update; null for instances that do not manage their packages. */
+  sdk?: SdkSync | null;
+  onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
+  /** How `api/wiki-page` reads a page; a probe points it at its own wiki and content folder. */
+  wikiPage?: (path: string) => Promise<WikiPageView>;
+  /** The tailnet login whose devices may open the chat from the bare tailnet URL (`tailnetOwner` in chat-remote.ts); null turns that off. */
+  tailnetOwner?: () => Promise<string | null>;
+}): Promise<{ url: string; close(): Promise<void> }> {
+  const base = "/" + capability + "/";
+  let owner: Promise<string | null> | undefined;
+  const ownerLogin = () => owner ??= tailnetOwner().catch(() => null);
+  /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
+  const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
+  const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
+  const tools = toolChecks({ dutyStore: backend.duties?.store });
+  const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
+    selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
+  const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
+  let host = "";
+  let closing: Promise<void> | undefined;
+
+  const server = createServer((req, res) => { void handle(req, res); });
+  server.requestTimeout = 15000;
+  server.headersTimeout = 10000;
+  server.maxHeadersCount = 30;
+  server.on("clientError", (_error, socket) => { socket.destroy(); });
+  const feeds = new FeedSockets(async (feed, send) => {
+    if (feed.feed === "sessions") {
+      sendBuild(version => send("build", { version }));
+      return backend.catalog.subscribe(event => send("sessions", event));
+    }
+    if (feed.feed === "login") return logins.subscribe(login => send("login", login));
+    if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));
+    if (feed.feed === "usage") {
+      if (!backend.usage) throw new Error("Usage analytics is off in this chat.");
+      return backend.usage.subscribe(summary => send("usage", summary));
+    }
+    try { return await backend.threads.subscribe(threadId(feed.id), event => send("thread", event)); }
+    catch (error) {
+      send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
+      return () => {};
+    }
+  });
+  server.on("upgrade", (req, socket, head) => { upgrade(req, socket, head); });
+
+  function json(res: ServerResponse, status: number, value: unknown) {
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(value));
+  }
+  function serveAsset(req: IncomingMessage, res: ServerResponse, asset: Asset) {
+    if (req.headers["if-none-match"] === asset.etag) { res.writeHead(304, { ETag: asset.etag, "Cache-Control": "no-cache" }); res.end(); return; }
+    res.writeHead(200, { "Content-Type": asset.contentType, ETag: asset.etag, "Cache-Control": "no-cache", "Content-Length": asset.body.length });
+    res.end(asset.body);
+  }
+  function close(): Promise<void> {
+    if (closing) return closing;
+    closing = (async () => {
+      feeds.close();
+      await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+      sends.clear();
+      await logins.close();
+      await refreshes.close();
+      await backend.close();
+    })();
+    return closing;
+  }
+  /** The page origin for the requested host: loopback HTTP, or the remote HTTPS origin while phone access is on. */
+  function requestOrigin(req: IncomingMessage): string | null {
+    // The remote origin can change while the server runs (Settings, a renamed tailnet machine), so it is read per request.
+    const externalOrigin = remote.origin();
+    return req.headers.host === host ? `http://${host}`
+      : externalOrigin !== null && req.headers.host === new URL(externalOrigin).host ? externalOrigin : null;
+  }
+  /**
+   * The live feeds socket at `<capability>/api/ws`. Browsers send Origin on every WebSocket handshake and do not apply
+   * CORS to it, so the exact Origin and the page token in `?token=` stand in for the checks a POST gets.
+   */
+  function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const refuse = (status: number, reason: string) => {
+      socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\nCache-Control: no-store\r\n\r\n`);
+    };
+    socket.on("error", () => { socket.destroy(); });
+    const origin = requestOrigin(req);
+    if (origin === null) { refuse(421, "Misdirected Request"); return; }
+    let url: URL;
+    try { url = new URL(req.url ?? "/", origin); } catch { refuse(400, "Bad Request"); return; }
+    if (url.origin !== origin || url.pathname !== base + "api/ws") { refuse(404, "Not Found"); return; }
+    if (closing) { refuse(410, "Gone"); return; }
+    if (req.headers.origin !== origin || url.searchParams.get("token") !== csrfToken) { refuse(403, "Forbidden"); return; }
+    feeds.accept(req, socket, head);
+  }
+  async function handle(req: IncomingMessage, res: ServerResponse) {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Content-Security-Policy", contentSecurityPolicy);
+    try {
+      const origin = requestOrigin(req);
+      if (origin === null) throw new RequestError(421, "Unexpected host.");
+      const url = new URL(req.url ?? "/", origin);
+      // A typed or bookmarked http://127.0.0.1:<port>/ opens the chat. The browser sends Sec-Fetch-Site: none only for
+      // navigations the person started, so a link or script on another site still gets 404 and never learns the path.
+      if (origin === `http://${host}` && url.pathname === "/" && req.method === "GET" && req.headers["sec-fetch-site"] === "none" &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document") {
+        res.writeHead(302, { Location: base }); res.end(); return;
+      }
+      // https://<machine>.<tailnet>.ts.net/ opens the chat on the owner's own tailnet devices, also after the http://<machine>/ short-name
+      // redirect, which arrives cross-site. tailscale serve sets Tailscale-User-Login and drops a client's own, and funnel visitors get none.
+      const login = req.headers["tailscale-user-login"];
+      if (origin !== `http://${host}` && url.pathname === "/" && req.method === "GET" && typeof login === "string" &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && login === await ownerLogin()) {
+        res.writeHead(302, { Location: base }); res.end(); return;
+      }
+      if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
+      // The diagram frame is sandboxed with an opaque origin, so its own script request arrives cross-site. Both are static.
+      const frameRoute = url.pathname.slice(base.length);
+      if (req.method === "GET" && frameRoute === "render" && req.headers["sec-fetch-dest"] === "iframe") {
+        res.removeHeader("X-Frame-Options");
+        res.setHeader("Content-Security-Policy", renderPolicy(origin, base));
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderPage); return;
+      }
+      if (req.method === "GET" && frameRoute === "render.js" && req.headers["sec-fetch-dest"] === "script") { serveAsset(req, res, await buildRenderBundle()); return; }
+      const shellNavigation = req.method === "GET" && url.pathname === base &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document";
+      if ((req.headers["sec-fetch-site"] === "cross-site" && !shellNavigation) ||
+        (req.headers.origin !== undefined && req.headers.origin !== origin)) {
+        throw new RequestError(403, "Cross-origin requests are blocked.");
+      }
+      const route = url.pathname.slice(base.length);
+      if (closing) throw new RequestError(410, "Chat service is stopping. Run sieun-pi chat start again.");
+      const method = req.method ?? "GET";
+      if (method === "GET" && route === "api/identity") { await identityReady; json(res, 200, { service: "sieun-pi-chat", ...identity }); return; }
+      if (route === "api/service-stop") {
+        if (method !== "POST") throw new RequestError(405, "Expected POST.");
+        if (req.headers["x-chat-stop-token"] !== stopToken || req.headers.origin !== `http://${host}`) throw new RequestError(403, "Service authorization is missing.");
+        const body = record(await jsonBody(req));
+        if (body.instanceId !== identity.instanceId) throw new RequestError(409, "The service instance changed. Check chat status before stopping.");
+        res.once("finish", () => { void onStop(); });
+        json(res, 200, { stopped: true });
+        return;
+      }
+      if (method === "GET") {
+        if (!route.startsWith("api/")) {
+          const built = await bundle;
+          if (route === "") { const wiki = await wikiOrigin(); res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki)); return; }
+          if (route === "app.js") { serveAsset(req, res, built.js); return; }
+          if (route === "app.css") { serveAsset(req, res, built.css); return; }
+          const appFile = built.app?.(route);
+          if (appFile) { serveAsset(req, res, appFile); return; }
+        }
+        if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
+        // The board skill on a box without the chat role reads the chat's files here (skills/board, hosts.json roles.chat).
+        if (route === "api/agent/board") {
+          const board = await backend.boards.read(threadId(url.searchParams.get("chat") ?? ""));
+          if (!board) throw new RequestError(404, "No board for this chat.");
+          json(res, 200, board); return;
+        }
+        if (route === "api/agent/siblings") {
+          if (!backend.catalog.hostsListed()) throw new RequestError(503, "Another box has not listed its sessions yet; try again shortly.");
+          const roots = await otherBoxRoots(rootDirectory(backend), text(url.searchParams.get("session"), "session", 128)).catch(error => { throw new RequestError(404, (error as Error).message); });
+          json(res, 200, { agents: roots.map(siblingRow) }); return;
+        }
+        if (route === "api/agent/jobs") {
+          const text = await readFile(join(dirname(backend.boards.dir), "chat-jobs.json"), "utf8").catch(() => "{\"jobs\":{}}");
+          res.writeHead(200, { "Content-Type": "application/json" }); res.end(text); return;
+        }
+        if (route === "api/agent/corrections" || route === "api/agent/sends") {
+          const name = route === "api/agent/corrections" ? "corrections.json" : "sends.jsonl";
+          const text = await readFile(join(dirname(backend.boards.dir), name), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+          if (text === null) throw new RequestError(404, `No ${name} on the chat host.`);
+          res.writeHead(200, { "Content-Type": name.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8" }); res.end(text); return;
+        }
+        if (route === "api/interrupted") { json(res, 200, await interruptedRuns.check()); return; }
+        const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
+        if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
+        if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }
+        if (route === "api/models") {
+          const id = url.searchParams.get("id");
+          json(res, 200, await backend.threads.models(id ? threadId(id) : null)); return;
+        }
+        if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
+        if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
+        if (route === "api/new-chat") { json(res, 200, await backend.newChat.read()); return; }
+        if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
+        if (route === "api/slack") { json(res, 200, slack ? slack.view(origin === `http://${host}`) : null); return; }
+        if (route === "api/slack/channels") {
+          // The setup dialog's existing-channel list; null when the bot cannot list, so the dialog shows a field for an id or #name instead.
+          if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+          json(res, 200, { channels: await slack.channels().catch(() => null) }); return;
+        }
+        if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
+        if (route === "api/hosts") { json(res, 200, await hosts()); return; }
+        if (route === "api/agent-queue") {
+          if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
+          json(res, 200, await backend.agentQueue.view()); return;
+        }
+        if (route === "api/tools") { json(res, 200, await tools.view(false)); return; }
+        if (route === "api/skills") { json(res, 200, await skillsView()); return; }
+        if (route.startsWith("api/usage/")) {
+          const analytics = backend.usage;
+          if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
+          const query = url.searchParams;
+          if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")), parseMetric(query.get("metric")))); return; }
+          if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
+        }
+        if (route === "api/accounts") {
+          const id = url.searchParams.get("id");
+          const model = url.searchParams.get("model");
+          json(res, 200, await listAccounts(id ? threadId(id) : null, model ? text(model, "model", 256) : null)); return;
+        }
+        if (route === "api/local-image") {
+          let image: Awaited<ReturnType<typeof readLocalImage>>;
+          try { image = await readLocalImage(url.searchParams.get("path") ?? ""); }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
+          // An SVG opened on its own is a document; the sandbox keeps any script in it from running as this page.
+          if (image.mimeType === "image/svg+xml") res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+          res.writeHead(200, { "Content-Type": image.mimeType, "Content-Length": image.bytes.length });
+          res.end(image.bytes);
+          return;
+        }
+        if (route === "api/local-file") {
+          // A `file:` artifact link on the board: read-only text under the chat's allowed folders (readLocalText).
+          try { json(res, 200, await readLocalText(url.searchParams.get("path") ?? "")); }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
+          return;
+        }
+        if (route === "api/wiki-page") {
+          // A `wiki:` artifact link or a report's linked page: its HTML or markdown through the llm-wiki dev server, so a phone on the tailnet can read it too.
+          try { json(res, 200, await wikiPage(url.searchParams.get("path") ?? "")); }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
+          return;
+        }
+        const image = /^api\/images\/([a-f0-9]{64})$/.exec(route);
+        if (image) {
+          const entry = backend.threads.images.get(image[1]!);
+          if (!entry) throw new RequestError(404, "Image is no longer cached. Reopen the thread.");
+          res.writeHead(200, { "Content-Type": entry.mimeType, "Content-Length": entry.bytes.length, "Cache-Control": "private, max-age=3600, immutable" });
+          res.end(entry.bytes);
+          return;
+        }
+        const thread = /^api\/threads\/([^/]+)\/([a-z-]+)$/.exec(route);
+        if (thread) {
+          const id = threadId(decodeURIComponent(thread[1]!));
+          const action = thread[2];
+          if (action === "tool-output") {
+            const toolCallId = url.searchParams.get("toolCallId") ?? "";
+            if (!toolCallId || toolCallId.length > 512) throw new RequestError(400, "Choose a tool call.");
+            json(res, 200, await backend.threads.toolOutput(id, toolCallId)); return;
+          }
+          if (action === "part") {
+            const message = Number(url.searchParams.get("message")); const part = Number(url.searchParams.get("part") ?? 0);
+            if (!Number.isSafeInteger(message) || message < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
+            json(res, 200, await backend.threads.part(id, message, part)); return;
+          }
+          if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
+          if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
+          if (action === "prompt") {
+            const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);
+            const view = backend.prompt ? await backend.prompt(id, via) : null;
+            if (!view) throw new RequestError(404, "This session has no session file left.");
+            json(res, 200, view); return;
+          }
+          if (action === "check-in") {
+            const view = await backend.chats.checkInView(id);
+            if (!view) throw new RequestError(404, "This thread is not a chat.");
+            json(res, 200, view); return;
+          }
+          if (action === "duties") {
+            if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            json(res, 200, { duties: await backend.duties.view(id) }); return;
+          }
+          if (action === "duty-brief") {
+            const duty = url.searchParams.get("duty") ?? "";
+            if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            const brief = duty ? await backend.duties.nextBrief(id, duty) : null;
+            if (!brief) throw new RequestError(404, "This chat has no such duty.");
+            json(res, 200, nextBriefView(id, duty, brief, `Next run of ${(await backend.duties.view(id)).find(view => view.duty.id === duty)?.duty.name ?? duty}`)); return;
+          }
+          if (action === "agents") {
+            // The chat's agents as its row carries them; the chat_board tool reads this for its "Agents:" lines.
+            if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            await backend.catalog.summary(id);
+            const row = (await backend.catalog.rows()).find(candidate => candidate.id === id);
+            json(res, 200, { agents: row?.agents ?? [] }); return;
+          }
+        }
+        throw new RequestError(404, "Not found.");
+      }
+      if (method !== "POST") throw new RequestError(405, "Expected POST.");
+      if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== origin) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
+      const body = record(await jsonBody(req));
+      // agent_message.send from a root to a root on another box, which the sender's daemon does not run (src/cross-host-message.ts).
+      if (route === "api/agent/message") {
+        // Right after a restart the other boxes' roots are not listed yet (10-18 05:14:37Z start, Mac listed 05:14:55Z), and a send then read
+        // 'No sibling matches ... on any box either' for Fable and the release owner; 503 tells the sender's kernel to try again.
+        if (!backend.catalog.hostsListed()) throw new RequestError(503, "Another box has not listed its sessions yet; try again shortly.");
+        const receipt = await sendCrossHost(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256), text(body.message, "message"))
+          .catch(error => { throw new RequestError(409, (error as Error).message); });
+        json(res, 200, receipt); return;
+      }
+      // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
+      if (route === "api/agent/check-in") {
+        const chat = threadId(text(body.chat, "chat", 128));
+        const settings = checkInSettings(join(dirname(backend.boards.dir), "check-in-settings.json"));
+        const now = Date.now();
+        const changed = body.change === undefined ? [] : [await chatCheckIn(settings, chat, parseChatCheckIn(body.change), now)];
+        json(res, 200, { changed, line: checkInLine(await settings.get(chat), now) }); return;
+      }
+      if (route === "api/agent/jobs") {
+        const jobs = jobRegistry(join(dirname(backend.boards.dir), "chat-jobs.json"));
+        const names = Array.isArray(body.names) ? body.names.filter((name): name is string => typeof name === "string") : [];
+        if (body.op === "add") await jobs.add(names, text(body.chat, "chat", 256), typeof body.chatId === "string" ? body.chatId : undefined);
+        else if (body.op === "remove") await jobs.remove(names);
+        else throw new RequestError(400, "Send {op: add|remove, names, chat?, chatId?}.");
+        json(res, 200, { ok: true }); return;
+      }
+      if (route === "api/agent/corrections") {
+        const call = parseCorrectionCall(body.call);
+        const chat = record(body.chat);
+        const ref = { id: threadId(text(chat.id, "chat.id", 128)), name: typeof chat.name === "string" ? chat.name : "" };
+        // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads (extension/index.ts).
+        const dataDir = dirname(backend.boards.dir);
+        const cleanRoom = await new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(ref.id), () => false);
+        const ledger = new CorrectionLedger(dataDir, cleanRoom ? CLEAN_ROOM_CORRECTIONS_FILE : undefined);
+        json(res, 200, { text: correctionResult(await ledger.apply(call, ref)) }); return;
+      }
+      if (route === "api/agent/wakes") {
+        // board.wake from a box without the chat role: the same file it writes on the chat host, delivered through that box's relay (src/wakes.ts).
+        const wake = parseWake(body);
+        if (!wake) throw new RequestError(400, "Send {session, on: {kind: run|time, ...}, note, since}.");
+        const key = wake.on.kind === "run" ? `run-${wake.on.run}` : `time-${Math.floor(wake.on.at / 1000)}`;
+        const folder = join(dirname(backend.boards.dir), "wakes");
+        const path = join(folder, `${wake.session}-${key}.json`);
+        await writeFile(`${path}.tmp`, JSON.stringify(wake), { mode: 0o600 });
+        await rename(`${path}.tmp`, path);
+        json(res, 200, { path }); return;
+      }
+      if (route === "api/threads") {
+        const id = requestId(body.requestId);
+        // The hosts.json box the New chat picker chose; absent means the box this service runs on.
+        const host = typeof body.host === "string" ? text(body.host, "host", 64) : undefined;
+        // Another box's folder is on its disk, so its daemon checks it when it starts the session.
+        const cwd = backend.catalog.isOtherHost(host) ? remoteWorkspace(text(body.cwd, "cwd", 1024), host!) : await resolveWorkspace(text(body.cwd, "cwd", 1024));
+        const message = text(body.message, "message");
+        const images = parseImages(body.images);
+        if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
+        const provider = typeof body.provider === "string" ? text(body.provider, "provider", 128) : undefined;
+        const modelId = typeof body.modelId === "string" ? text(body.modelId, "modelId", 256) : undefined;
+        const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
+        const account = parseNewChatAccount(body.account);
+        const name = typeof body.name === "string" ? text(body.name, "name").trim() : "";
+        const kind = parseKind(body.kind);
+        const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
+        let creation = creations.get(id);
+        if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
+        if (!creation) {
+          creation = { fingerprint, result: (async () => {
+            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}) };
+            // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
+            const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
+            // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
+            await backend.created.add(thread.id).catch(() => {});
+            await backend.newChat.remember(host ?? backend.catalog.selfHost() ?? thisBox(), cwd).catch(() => {});
+            if (account) {
+              // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
+              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }
+              catch (error) {
+                await backend.threads.archive(thread.id).catch(() => {});
+                if (kind === "chat") await backend.chats.forget(thread.id).catch(() => {});
+                throw new RequestError(502, error instanceof Error ? error.message : String(error));
+              }
+            }
+            // A thread the owner starts is high in the pool from its first request; a priority label set below re-syncs it.
+            await backend.poolPriorities?.set(thread.id, "high");
+            // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
+            if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
+            // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
+            await backend.ownerTurn?.(thread.id);
+            await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
+            // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
+            if (syncSlack) {
+              const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.chat(thread.id, { action: "connect", ...syncSlack }).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+              if (failure) return { id: thread.id, notice: `Not synced to Slack: ${failure}` };
+            }
+            return { id: thread.id };
+          })() };
+          creations.set(id, creation);
+        }
+        json(res, 200, await creation.result); return;
+      }
+      if (route === "api/workspaces/resolve") { json(res, 200, { cwd: await resolveWorkspace(text(body.path, "path", 1024)) }); return; }
+      if (route === "api/workspaces/choose") {
+        if (origin !== `http://${host}`) throw new RequestError(409, "The folder dialog opens only on the Mac running the chat. Type the path instead.");
+        const start = typeof body.start === "string" ? await resolveWorkspace(body.start).catch(() => null) : null;
+        json(res, 200, { cwd: await chooseFolder(start) }); return;
+      }
+      if (route === "api/labels") {
+        const action = parseLabelAction(body);
+        const result = await backend.labels.apply(action);
+        await backend.catalog.notify();
+        if (action.op === "priority") void backend.poolPriorities?.sync();
+        json(res, 200, { ok: true, ...result }); return;
+      }
+      if (route === "api/defaults") {
+        await backend.defaults.write(parseDefaults(body, await backend.threads.models(null)));
+        json(res, 200, backend.defaults.read()); return;
+      }
+      if (route === "api/new-chat") {
+        let startSkill: string | null;
+        try { startSkill = parseStartSkill(body.startSkill); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+        json(res, 200, await backend.newChat.write({ startSkill })); return;
+      }
+      if (route === "api/remote") {
+        // A leaked link must not be able to widen or cut network access, so the switches change only on the Mac itself.
+        if (origin !== `http://${host}`) throw new RequestError(403, "Change phone access on the Mac that runs the chat.");
+        await remote.set(parseRemoteInput(body));
+        json(res, 200, remote.view(true)); return;
+      }
+      if (route === "api/sdk") {
+        if (!sdk) throw new RequestError(409, "This chat instance does not manage its prime-agent packages.");
+        if (body.action === "update") await sdk.start().catch(error => { throw new RequestError(409, error instanceof Error ? error.message : String(error)); });
+        else if (body.action === "auto" && typeof body.auto === "boolean") await sdk.setAuto(body.auto);
+        else throw new RequestError(400, "Use action update, or action auto with auto true or false.");
+        json(res, 200, await sdk.view()); return;
+      }
+      if (route === "api/chats/update") {
+        // Settings > Updates, Update all chats: every chat reloads onto the current brief, an idle one now, a busy one when its turn ends; the rows show the progress.
+        json(res, 200, { chats: await backend.chats.updateAll() }); return;
+      }
+      if (route === "api/interrupted") {
+        json(res, 200, await interruptedRuns.resume(async sessionId => {
+          await backend.threads.abort(sessionId);
+          // A native abort holds the session's input until the next human prompt; reopen it so its head's message gets through.
+          await backend.threads.resumeQueue(sessionId).catch(() => {});
+        }, async sessionId => { await backend.threads.resume(sessionId); }));
+        return;
+      }
+      if (route === "api/slack" || route === "api/slack/check") {
+        // Like phone access: a leaked link must not be able to connect this Mac's agents to Slack or cut them off.
+        if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+        if (origin !== `http://${host}`) throw new RequestError(403, "Change Slack on the Mac that runs the chat.");
+        if (route === "api/slack") await slack.set(parseSlackInput(body)).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
+        else await slack.check();
+        json(res, 200, slack.view(true)); return;
+      }
+      if (route === "api/agent-queue") {
+        if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
+        let input: AgentQueueInput;
+        try { input = parseAgentQueueInput(body); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+        json(res, 200, await backend.agentQueue.apply(input).catch(error => { throw new RequestError(502, error instanceof Error ? error.message : String(error)); })); return;
+      }
+      if (route === "api/tools/check") { json(res, 200, await tools.view(true)); return; }
+      if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
+      if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
+      if (route === "api/accounts") {
+        const action = parseAccountAction(body);
+        const notice = await runAccountAction(action);
+        // A thread moved to another account goes again now if its turn failed or waits on a provider retry.
+        if ((action.action === "use" || action.action === "follow") && action.id) await backend.chats.retryNow(action.id);
+        json(res, 200, { ...await listAccounts("id" in action ? action.id : null), ...(notice ? { notice } : {}) }); return;
+      }
+      if (route === "api/accounts/login") {
+        const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
+        json(res, 200, logins.start(text(body.provider, "provider", 64), account)); return;
+      }
+      if (route === "api/accounts/refresh") {
+        const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
+        json(res, 200, refreshes.start(text(body.provider, "provider", 64), account)); return;
+      }
+      if (route === "api/accounts/login/paste") { json(res, 200, logins.paste(text(body.id, "id", 64), text(body.code, "code", 4096))); return; }
+      if (route === "api/accounts/login/cancel") { json(res, 200, logins.cancel(text(body.id, "id", 64))); return; }
+      const thread = /^api\/threads\/([^/]+)\/([a-z-]+)$/.exec(route);
+      if (!thread) throw new RequestError(404, "Not found.");
+      const id = threadId(decodeURIComponent(thread[1]!));
+      switch (thread[2]) {
+        case "prompt": {
+          const rid = requestId(body.requestId);
+          const message = text(body.message, "message");
+          const images = parseImages(body.images);
+          const mode = (await backend.chats.ids()).has(id) ? "steer" : parseMode(body.mode);
+          if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
+          const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
+          let pending = sends.get(rid);
+          if (pending && pending.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to a different message.");
+          // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
+          if (!pending) { pending = { fingerprint, result: (async () => { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message, images, mode }); })() }; sends.set(rid, pending); }
+          await pending.result;
+          json(res, 200, { accepted: true }); return;
+        }
+        case "abort": {
+          const chat = (await backend.chats.ids()).has(id);
+          await backend.threads.abort(id);
+          if (chat) await backend.threads.resumeQueue(id);
+          break;
+        }
+        case "archive": {
+          const audit = archiveAudit(req, id);
+          audit("started");
+          try {
+            if ((await backend.chats.ids()).has(id)) {
+              await backend.chats.archive(id);
+              await backend.catalog.notify();
+            } else await backend.threads.archive(id);
+            audit("completed");
+          } catch (error) { audit("failed"); throw error; }
+          break;
+        }
+        case "unarchive":
+          // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
+          await backend.threads.unarchive(id);
+          if (await backend.chats.restore(id)) await backend.catalog.notify();
+          break;
+        case "slack": {
+          // A chat's own channel, like archive: any page with the write token may change it. Connecting the workspace stays Mac-only (api/slack).
+          // Connect is idempotent: the bridge runs the actions of one chat in turn, so a double click or two tabs make one channel.
+          if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+          if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          const input = parseSlackChatInput(body);
+          if (slack.view(false).state !== "on") throw new RequestError(409, "Slack is not connected. Connect it in Settings > Slack.");
+          await slack.chat(id, input).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
+          json(res, 200, slack.view(origin === `http://${host}`)); return;
+        }
+        case "older": await backend.threads.older(id); break;
+        case "board": {
+          // The owner's side of the chat board: todo ops. The chat then gets a steer that says in plain words what the owner did.
+          if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          let applied: Awaited<ReturnType<typeof backend.boards.apply>>;
+          try {
+            const ops = parseBoardOps(body.ops);
+            if (!ops.length) throw new RequestError(400, "Add a board op.");
+            applied = await backend.boards.apply(id, ops, "owner");
+          } catch (error) {
+            if (error instanceof BoardError) throw new RequestError(error.kind === "forbidden" ? 403 : error.kind === "unknown" ? 409 : 400, error.message);
+            throw error;
+          }
+          const board = applied.board!;
+          backend.threads.setBoard(id, board);
+          let sent = true;
+          let error: string | undefined;
+          try { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
+          catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
+          json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
+        }
+        case "agent-board": {
+          // A session's chat_board write (agentOpsViaService): this release's gates judge it, whatever extension build the session loaded.
+          try { json(res, 200, await applyAgentOps(dirname(backend.boards.dir), id, body.ops)); return; }
+          catch (error) {
+            if (error instanceof BoardError) throw new RequestError(error.kind === "forbidden" ? 403 : error.kind === "unknown" ? 409 : 400, error.message);
+            throw error;
+          }
+        }
+        case "duties": {
+          // The owner's Run now, Pause, Resume and cadence on the Duties card; the reply is the chat's duties after the change. The check-in duty's
+          // pause and cadence are the chat's check-in setting, the one the header's control sets.
+          if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          const duty = text(body.duty, "duty", 16);
+          const action = body.action;
+          if (action !== "run" && action !== "pause" && action !== "resume" && action !== "schedule") throw new RequestError(400, "Choose run, pause, resume or schedule.");
+          let found: boolean;
+          if (action === "schedule") {
+            try { found = await backend.duties.setSchedule(id, duty, body.schedule, checkInActor(req)); }
+            catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+          } else found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
+            : await backend.duties.setStatus(id, duty, action === "pause" ? "paused" : "active", checkInActor(req));
+          if (!found) throw new RequestError(404, "This chat has no such duty.");
+          json(res, 200, { duties: await backend.duties.view(id) }); return;
+        }
+        case "job-steer": {
+          // A check-in job's message to a job of its chat (scripts/job-steer.ts): the server delivers it, because a root cannot message a chat's subagents.
+          const steered = await backend.chats.steerJob(id, text(body.job, "job", 256), text(body.message, "message"));
+          if (!steered) throw new RequestError(404, "This thread is not a chat.");
+          if ("jobs" in steered) throw new RequestError(404, `The chat has no job by that name. Its jobs: ${steered.jobs.join(", ") || "none"}.`);
+          json(res, 200, steered); return;
+        }
+        case "check-in": {
+          // The interval and pause for the chat's check-in, from the owner's page or an agent (checkInActor); the chat changes its own through chat_board.
+          const view = await backend.chats.setCheckIn(id, parseCheckInChange(body), checkInActor(req));
+          if (!view) throw new RequestError(404, "This thread is not a chat.");
+          await backend.catalog.notify();
+          json(res, 200, view); return;
+        }
+        case "rename": {
+          const name = text(body.name, "name").trim();
+          if (!name) throw new RequestError(400, "Give the thread a name.");
+          await backend.threads.rename(id, name); break;
+        }
+        case "model":
+          // A turn that failed or waits on a provider retry goes again now on the new model, so the next send is not stuck behind it.
+          await backend.threads.setModel(id, text(body.provider, "provider", 128), text(body.modelId, "modelId", 256));
+          await backend.chats.retryNow(id);
+          break;
+        case "thinking": await backend.threads.setThinking(id, text(body.level, "level", 16)); break;
+        case "queue": {
+          const lane = body.lane;
+          if (lane !== "steering" && lane !== "followUp") throw new RequestError(400, "Choose a queue lane.");
+          const index = body.index;
+          if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) throw new RequestError(400, "Choose a queued message.");
+          const expectedText = text(body.expectedText, "expectedText");
+          const replacement = "text" in body && body.text !== undefined ? text(body.text, "text") : undefined;
+          if (replacement !== undefined && !replacement.trim()) throw new RequestError(400, "Queued text cannot be empty.");
+          const status = await backend.threads.mutateQueue(id, { lane, index, expectedText, ...(replacement === undefined ? {} : { text: replacement }) });
+          json(res, status === "applied" ? 200 : 409, { status, ...(status === "applied" ? {} : { error: "The queue changed. It was refreshed." }) }); return;
+        }
+        case "read": {
+          const summary = await backend.catalog.summary(id);
+          const activity = Date.parse(summary?.lastActivityAt ?? summary?.modified ?? "");
+          await backend.readState.mark(id, { entryId: String(summary?.messageCount ?? 0), timestamp: Math.max(Date.now(), Number.isFinite(activity) ? activity : 0) });
+          await backend.catalog.notify();
+          break;
+        }
+        default: throw new RequestError(404, "Not found.");
+      }
+      json(res, 200, { ok: true });
+    } catch (error) {
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError || error instanceof UsageError || error instanceof CheckInRefused ? error.status : error instanceof WorkspaceError ? 400 : 502;
+      if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
+    }
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a loopback TCP address.");
+    host = `127.0.0.1:${address.port}`;
+    server.on("error", () => { void close(); });
+    return { url: `http://${host}${base}`, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "New articles get indexed",
+  "ownerWords": "keep publishing blog articles daily",
+  "goal": "A new blog article or language edition goes live on virev.ai every day and answers 200, and Google indexes each new one within 3 days. Every miss has a live fix job pushing changes; the older unindexed backlog, IndexNow and the ledger are detail lines.",
+  "metrics": [
+    {
+      "key": "days_since_new_article",
+      "label": "Days since a new article went live",
+      "op": "<=",
+      "target": 1,
+      "unit": " days",
+      "headline": true
+    },
+    {
+      "key": "new_unindexed_3d",
+      "label": "Articles from the last 14 days still unindexed 3+ days after going live",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed (sitemap, pages, Search Console)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/seo-new-articles.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Each missed metric gets one live fix job with a board step under p40: days_since_new_article goes to \"daily articles ship\", which lands and promotes the next built article or writes the next one from opportunities.md, one subagent per article, and new_unindexed_3d goes to \"crawl demand fix\" (p60). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. source_errors: fix the read this run, or start \"seo sources fix\". Also run `seo indexnow --new` when the detail lists unsent URLs, and score each overdue ledger check. Never end a run with a missed metric and no live fix job. Nothing goes outside (c37), and prod promotes need no ask (c74).",
+  "boardGoal": "p40"
+}

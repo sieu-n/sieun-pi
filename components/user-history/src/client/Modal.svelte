@@ -1,0 +1,72 @@
+<script lang="ts">
+  import type { Snippet } from "svelte";
+  import { tooltip } from "./ui/tooltip.ts";
+  import Icon from "./Icon.svelte";
+  import type { IconName } from "./icons.ts";
+
+  /**
+   * `tall` fixes the height at `height` (the reader, the plan view), so a long document scrolls inside a frame that does not grow and shrink
+   * while it loads. `maximizable` adds a full screen toggle beside Close; it is hidden when `full` already fills the window (a phone).
+   */
+  let { title, onclose, width = "720px", height = "86vh", full = false, tall = false, maximizable = false, icon, header, children }: {
+    title: string; onclose: () => void; width?: string; height?: string; full?: boolean; tall?: boolean; maximizable?: boolean; icon?: IconName; header?: Snippet; children: Snippet;
+  } = $props();
+  let dialog: HTMLDialogElement | undefined = $state();
+  let maximized = $state(false);
+
+  /** Focus goes back to the control that opened the modal; the dialog's own restore is lost when Svelte removes the node on close. */
+  $effect(() => {
+    const node = dialog;
+    if (!node) return;
+    const opener = document.activeElement;
+    node.showModal();
+    return () => {
+      if (node.open) node.close();
+      const active = document.activeElement;
+      if (opener instanceof HTMLElement && opener.isConnected && (active === null || active === document.body || node.contains(active))) opener.focus();
+    };
+  });
+</script>
+
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+<dialog bind:this={dialog} class="modal" class:full={full || maximized} class:tall style:--modal-width={width} style:--modal-height={height} aria-label={title}
+  oncancel={event => { event.preventDefault(); onclose(); }}
+  onkeydown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onclose(); } }}
+  onclick={event => { if (event.target === dialog) onclose(); }}>
+  <div class="frame">
+    <header class="head">
+      {#if icon}<span class="kind-icon"><Icon name={icon} size={16} /></span>{/if}
+      <h2>{title}</h2>
+      {#if header}<div class="extra">{@render header()}</div>{/if}
+      <span class="window">
+        {#if maximizable && !full}
+          <button type="button" class="icon-button" aria-label={maximized ? "Exit full screen" : "Full screen"} aria-pressed={maximized} use:tooltip={maximized ? "Exit full screen" : "Full screen"} onclick={() => { maximized = !maximized; }}><Icon name={maximized ? "shrinkBox" : "expandBox"} /></button>
+        {/if}
+        <button type="button" class="icon-button" aria-label="Close" use:tooltip={"Close (Esc)"} onclick={onclose}><Icon name="x" /></button>
+      </span>
+    </header>
+    <div class="body">{@render children()}</div>
+  </div>
+</dialog>
+
+<style>
+  .modal { width: min(var(--modal-width), calc(100vw - 32px)); max-height: min(86vh, 900px); padding: 0; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-elevated); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
+  .modal::backdrop { background: light-dark(rgba(16, 18, 23, 0.28), rgba(0, 0, 0, 0.55)); }
+  .modal[open] { animation: pop 0.14s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
+  .frame { display: flex; flex-direction: column; max-height: min(86vh, 900px); }
+  .head { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--border); }
+  h2 { margin: 0; font-size: 14px; font-weight: 600; flex: none; }
+  .kind-icon { display: inline-flex; flex: none; color: var(--text-muted); }
+  .modal.tall { height: var(--modal-height); max-height: var(--modal-height); }
+  .modal.tall .frame { height: 100%; max-height: none; }
+  .modal.tall h2 { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .extra { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .window { display: flex; flex: none; align-items: center; gap: 2px; margin-left: auto; }
+  .body { flex: 1; min-height: 0; overflow: auto; }
+  .modal.full { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+  .modal.full[open] { animation: none; }
+  .modal.full .frame { height: 100%; max-height: none; }
+  .modal.full .head { padding: 10px 12px 10px 20px; }
+  .modal.full h2 { font-size: 16px; }
+</style>

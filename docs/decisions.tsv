@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-09-10T09:39:12.967653+00:00	frame	Target Prime Agent first and create a private GitHub repo	Existing source uses Prime runtime APIs and company-specific policy	config/source-inventory.json	source inventory captured
+2026-09-10T09:48:40.142632+00:00	design	Use manifest-driven source links; seed settings only when absent	Both candidates recommend links; settings saves replace symlinks	docs/design.md	installer implementation delegated
+2026-09-10T10:14:14.671273+00:00	verify	Apply reviewed source links and refresh source helper copy	Isolated retry/native loader and final source tests passed	docs/verification.md	63 live targets verified; protected digests unchanged
+2026-09-10T10:17:02.147880+00:00	live-verification	Generate updater runtime outside Documents	LaunchAgent python exited2 with Errno1 Operation not permitted after source app was linked into Documents	pi-pool/patch.err.log and launchctl print	fix delegated; manual patch and63targetchecks still pass
+2026-09-10T10:28:20.280546+00:00	verify	Activate generated updater runtime	Build334 tests and copied-runtime checks passed	docs/verification.md	Real launchd exit0; fresh bundle-only stdout; no new stderr; extension unchanged
+2026-09-10T10:35:04.414277+00:00	verification-fix	Use file-stat log observation in watcher test	Overlapping test directory observer failed3/8; file-stat observer passed8/8; restored directory observer failed5/8	tests/virev-shell.test.mjs	Production watcher unchanged; same5s deadline; no retry or readiness sleep

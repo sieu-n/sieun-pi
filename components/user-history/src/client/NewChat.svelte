@@ -1,0 +1,327 @@
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { api } from "./api.ts";
+  import { store } from "./store.svelte.ts";
+  import { ui } from "./ui.svelte.ts";
+  import { labels, type TagSelection } from "./labels.ts";
+  import { PRIORITY_LABEL } from "./organize.ts";
+  import type { HostCard, ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import { defaultHost, hostGlance } from "./hosts.ts";
+  import { relativeTime, shortPath } from "./format.ts";
+  import { startMessage } from "../shared/start-skill.ts";
+  import ModelPicker from "./ModelPicker.svelte";
+  import Composer from "./Composer.svelte";
+  import Popover from "./Popover.svelte";
+  import Icon from "./Icon.svelte";
+  import AccountChip from "./AccountChip.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
+  import Floating from "./ui/Floating.svelte";
+  import TagPicker from "./ui/TagPicker.svelte";
+  import TagChip from "./TagChip.svelte";
+  import PriorityBars from "./PriorityBars.svelte";
+  import PriorityPicker from "./PriorityPicker.svelte";
+  import Lightbox from "./ui/Lightbox.svelte";
+  import SlackLogo from "./SlackLogo.svelte";
+  import SlackChannelDialog, { type SlackConnectInput } from "./SlackChannelDialog.svelte";
+
+  let { narrow }: { narrow: boolean } = $props();
+  let workspaces = $state<Workspace[]>([]);
+  let cwd = $state("");
+  let customCwd = $state("");
+  let catalog = $state<ModelCatalog | null>(null);
+  let catalogError = $state<string | null>(null);
+  let model = $state<ModelInfo | null>(null);
+  let effort = $state<ThinkingLevel | null>(null);
+  let workspaceOpen = $state(false);
+  /** Every box a new chat can start on, and the one picked: the owner's last pick while it answers, else this box. Hidden with one box. */
+  let hosts = $state<HostCard[]>([]);
+  let host = $state<string | null>(null);
+  let hostOpen = $state(false);
+  /** Each box's folder from the owner's last new chat there; a picked box starts on it, else on its most recent folder. */
+  let lastWorkspace = $state<Record<string, string>>({});
+  let hostsRead = $state(false), workspacesRead = $state(false);
+  const selfName = $derived(hosts.find(entry => entry.self)?.name ?? null);
+  const hostWorkspaces = $derived(host === null ? workspaces : workspaces.filter(workspace => (workspace.host ?? selfName) === host));
+  /** The box whose default folder cwd holds, so a box pick moves cwd once and a folder chosen after it stays. */
+  let cwdHost: string | null | undefined = undefined;
+  $effect(() => {
+    if (!hostsRead || !workspacesRead || host === cwdHost) return;
+    cwdHost = host;
+    cwd = (host !== null ? lastWorkspace[host] : undefined) ?? hostWorkspaces[0]?.cwd ?? "";
+  });
+  /** An explicit thread name; empty lets Prime Agent title the thread from its first message. */
+  let threadName = $state("");
+  /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
+  let kind = $state<"thread" | "chat">("thread");
+  /** The start skill set in Settings > New chats, null when none is set (a fresh install). */
+  let startSkill = $state<string | null>(null);
+  /** Starts a new thread's or chat's first message with the start skill. On for every new one; a message that already starts with "/" is sent as typed. */
+  let useStartSkill = $state(true);
+  /** The new chat's Slack channel (name, private or public), chosen in the Slack dialog. Null by default; offered only for a chat while Slack is connected. */
+  let slack = $state<SlackChannelSetup | null>(null);
+  let slackOpen = $state(false);
+  const slackOffered = $derived(kind === "chat" && store.slack?.state === "on");
+  const closePopover = () => { workspaceOpen = false; hostOpen = false; };
+  let lightbox = $state<number | null>(null);
+
+  /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
+  let draftTags = $state<string[]>([]);
+  let draftPriority = $state<Priority>(0);
+  let labelPicker = $state<{ field: "name" | "tags" | "priority"; anchor: HTMLElement } | null>(null);
+  const shownTags = $derived(store.tags.filter(tag => draftTags.includes(tag.id)));
+  const draftSelection: TagSelection = {
+    label: "Tags for the new thread",
+    coverage: tag => draftTags.includes(tag.id) ? "all" : "none",
+    set: async (tagId, on) => { draftTags = on ? [...draftTags.filter(entry => entry !== tagId), tagId] : draftTags.filter(entry => entry !== tagId); },
+    create: async name => { const tagId = await labels.create(name, []); if (tagId && !draftTags.includes(tagId)) draftTags = [...draftTags, tagId]; },
+  };
+  function pick(event: MouseEvent, field: "name" | "tags" | "priority"): void {
+    const anchor = event.currentTarget as HTMLElement;
+    labelPicker = labelPicker?.field === field ? null : { field, anchor };
+  }
+
+  const hour = new Date().getHours();
+  const greeting = hour < 5 ? "Still up?" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const shownEffort = $derived(effort ?? (model ? null : catalog?.thinkingLevel ?? null));
+  const modelLabel = $derived((model?.name ?? catalog?.current?.name ?? "Default model") + (shownEffort ? " · " + shownEffort : ""));
+  const effortLevels = $derived((model ?? catalog?.current)?.thinkingLevels ?? catalog?.availableThinkingLevels ?? []);
+  $effect(() => { if (effort && !effortLevels.includes(effort)) effort = null; });
+  const activeModel = $derived(model ?? catalog?.current ?? null);
+  /** The pool account for the new chat; null follows the pool. A model from another provider resets it. */
+  let account = $state<NewChatAccount | null>(null);
+  $effect(() => { if (account && activeModel && activeModel.provider !== account.provider) account = null; });
+  const acceptsImages = $derived((model ?? catalog?.current)?.input.includes("image") ?? true);
+
+  async function loadHosts(): Promise<void> {
+    try {
+      const view = await api.hosts();
+      hosts = view.hosts;
+      lastWorkspace = view.lastWorkspace;
+      if (!host || !hosts.some(entry => entry.name === host)) host = defaultHost(hosts, view.lastHost);
+    } catch (error) { if (!hosts.length) store.toast(errorText(error)); }
+    finally { hostsRead = true; }
+  }
+  onMount(() => {
+    void loadHosts();
+    api.workspaces().then(list => { workspaces = list; }, error => store.toast(errorText(error))).finally(() => { workspacesRead = true; });
+  });
+  $effect(() => {
+    void store.defaultsRevision;
+    let cancelled = false;
+    api.newChat().then(settings => { if (!cancelled) startSkill = settings.startSkill; }, () => {});
+    return () => { cancelled = true; };
+  });
+  $effect(() => {
+    void store.defaultsRevision;
+    let cancelled = false;
+    api.models(null).then(result => { if (!cancelled) { catalog = result; catalogError = null; } }, error => { if (!cancelled) catalogError = error instanceof Error ? error.message : String(error); });
+    return () => { cancelled = true; };
+  });
+
+  /** The folder dialog opens on the Mac running the service, so it is offered only on a loopback page. */
+  const canChooseFolder = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+  let choosing = $state(false);
+  const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+  function useWorkspace(path: string): void {
+    cwd = path;
+    if (!hostWorkspaces.some(workspace => workspace.cwd === path)) workspaces = [{ cwd: path, host, count: 0 }, ...workspaces];
+    customCwd = "";
+    closePopover();
+  }
+  async function typeWorkspace(): Promise<void> {
+    if (!customCwd.trim()) return;
+    try { useWorkspace(await api.resolveWorkspace(customCwd)); } catch (error) { store.toast(errorText(error)); }
+  }
+  async function browseWorkspace(): Promise<void> {
+    if (choosing) return;
+    choosing = true;
+    try { const chosen = await api.chooseFolder(cwd); if (chosen) useWorkspace(chosen); }
+    catch (error) { store.toast(errorText(error)); }
+    finally { choosing = false; }
+  }
+
+  async function send(text: string, images: ImageInput[], _mode: SendMode): Promise<boolean> {
+    if (!cwd) { store.toast("Choose a workspace first."); return false; }
+    const tags = shownTags.map(tag => tag.id);
+    const priority = draftPriority;
+    const chosen = activeModel;
+    const name = threadName.trim();
+    const message = startMessage(text, useStartSkill ? startSkill : null);
+    const id = await store.createChat({ cwd, ...(host && hosts.length > 1 ? { host } : {}), ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+      ...(account ? { account } : {}) });
+    if (!id) return false;
+    threadName = "";
+    useStartSkill = true;
+    slack = null;
+    draftTags = [];
+    draftPriority = 0;
+    await Promise.all([
+      ...tags.map(tagId => labels.setTag([id], tagId, true)),
+      priority ? labels.setPriority([id], priority) : null,
+    ]);
+    return true;
+  }
+</script>
+
+<div class="new-chat">
+  <div class="top">
+    {#if !store.sidebarOpen || narrow}
+      <button class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
+    {/if}
+  </div>
+  <div class="center">
+    <div class="column">
+      {#if store.pending}
+        <div class="pending fade-in">
+          <div class="bubble">
+            {#if store.pending.images.length}
+              <div class="images">
+                {#each store.pending.images as image, index (index)}
+                  <button type="button" class="view" aria-label="View image {index + 1}" onclick={() => { lightbox = index; }}><img src={"data:" + image.mimeType + ";base64," + image.data} alt="Attached" /></button>
+                {/each}
+              </div>
+            {/if}
+            {#if store.pending.message}<div class="text">{store.pending.message}</div>{/if}
+          </div>
+          {#if store.pending.name}<div class="pending-name">{store.pending.name}</div>{/if}
+          <div class="starting"><span class="spinner"></span> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}{store.pending.host ? ` on ${store.pending.host}` : ""}</div>
+        </div>
+      {:else}
+        <div class="greeting-row">
+          <h1 class="greeting">{greeting}</h1>
+          <div class="segmented" role="radiogroup" aria-label="Kind of thread">
+            <button type="button" role="radio" aria-checked={kind === "thread"} class:on={kind === "thread"} use:tooltip={"A Prime Agent session that does the work itself"} onclick={() => { kind = "thread"; }}>Thread</button>
+            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 2 hours"} onclick={() => { kind = "chat"; }}>Chat</button>
+          </div>
+        </div>
+        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder={kind === "chat" ? "Say what this chat is about" : "Ask Prime Agent anything"} />
+        <div class="options-row">
+          <div class="group" role="group" aria-label="Setup for the new thread">
+            {#if hosts.length > 1}
+              <Popover open={hostOpen} onclose={closePopover} width={380} label="Host">
+                {#snippet trigger()}
+                  <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={hostOpen} aria-label="Host: {host ?? 'none'}" use:tooltip={"The box this chat runs on"}
+                    onclick={() => { hostOpen = !hostOpen; if (hostOpen) void loadHosts(); }}>
+                    <Icon name="server" size={14} /><span class="label">{host ?? "Host"}</span><Icon name="chevronDown" size={12} />
+                  </button>
+                {/snippet}
+                {#each hosts as entry (entry.name)}
+                  <button type="button" class="menu-item" class:current={entry.name === host} disabled={entry.state !== "up"} onclick={() => { host = entry.name; closePopover(); }}>
+                    <span class="host-name">{entry.name}</span>
+                    <span class="hint">{hostGlance(entry)}</span>
+                  </button>
+                {/each}
+              </Popover>
+            {/if}
+            <Popover open={workspaceOpen} onclose={closePopover} width={340} label="Workspace">
+              {#snippet trigger()}
+                <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={workspaceOpen} aria-label="Workspace: {cwd || 'none'}" onclick={() => { workspaceOpen = !workspaceOpen; }}>
+                  <Icon name="folder" size={14} /><span class="label">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              {#each hostWorkspaces as workspace (workspace.cwd)}
+                <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => useWorkspace(workspace.cwd)}>
+                  <span class="path"><bdi>{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</bdi></span>
+                  <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
+                </button>
+              {/each}
+              <div class="menu-separator"></div>
+              <form class="custom" onsubmit={event => { event.preventDefault(); void typeWorkspace(); }}>
+                <input class="field" placeholder="~/path or /absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
+                <button class="button small primary" type="submit" disabled={!customCwd.trim()}>Use</button>
+              </form>
+              {#if canChooseFolder}
+                <button type="button" class="menu-item choose" disabled={choosing} onclick={() => void browseWorkspace()}>
+                  <Icon name="folder" size={14} /><span>{choosing ? "Waiting for the folder dialog…" : "Choose path…"}</span>
+                </button>
+              {/if}
+            </Popover>
+            <AccountChip threadId={null} provider={activeModel?.provider} model={activeModel ? activeModel.id + " " + activeModel.name : undefined}
+              choice={account} onchoose={next => { account = next; }} />
+            <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
+              defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
+            {#if startSkill}
+              <label class="bar-button check" use:tooltip={`Start with /skill:${startSkill}`}><input type="checkbox" bind:checked={useStartSkill} /><span>{startSkill}</span></label>
+            {/if}
+            {#if slackOffered}
+              <button type="button" class="bar-button" class:slack-on={slack !== null} aria-haspopup="dialog" aria-expanded={slackOpen}
+                use:tooltip={slack ? `Slack channel #${slack.name}. Change it or drop it` : "Give this chat a Slack channel: write there to steer it, its replies come back"} onclick={() => { slackOpen = true; }}>
+                <SlackLogo size={13} /><span class="label">{slack ? `#${slack.name}` : "Slack"}</span>
+              </button>
+            {/if}
+          </div>
+          <div class="group" role="group" aria-label="Labels for the new thread">
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "name"} aria-label={threadName.trim() ? "Thread name: " + threadName.trim() : "Thread name"}
+              onclick={event => pick(event, "name")}>
+              <Icon name="pencil" size={13} /><span class="name-label" class:set={threadName.trim()}>{threadName.trim() || "Name"}</span>
+            </button>
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
+              <Icon name="tag" size={13} />
+              {#if shownTags.length}{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}{:else}<span>Tags</span>{/if}
+            </button>
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
+              <PriorityBars level={draftPriority} /><span>{draftPriority ? PRIORITY_LABEL[draftPriority] : "Priority"}</span>
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
+  </div>
+</div>
+
+{#if lightbox !== null && store.pending}
+  <Lightbox images={store.pending.images.map((image, index) => ({ src: "data:" + image.mimeType + ";base64," + image.data, alt: `Image ${index + 1}` }))} index={lightbox} onclose={() => { lightbox = null; }} />
+{/if}
+{#if slackOpen}
+  <SlackChannelDialog chatName={threadName} draft={slack} onconnect={async (input: SlackConnectInput) => { if ("name" in input) slack = input; return true; }}
+    onclear={() => { slack = null; }} onclose={() => { slackOpen = false; }} />
+{/if}
+{#if labelPicker}
+  {#if labelPicker.field === "name"}
+    <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Name for the new thread" onclose={() => { labelPicker = null; }}>
+      <div class="menu-heading">Thread name</div>
+      <input class="field name-field" type="text" placeholder="Leave empty to name it from the first message" aria-label="Thread name" autocomplete="off" spellcheck="false"
+        data-autofocus bind:value={threadName}
+        onkeydown={event => { if (event.key === "Enter") { event.preventDefault(); labelPicker = null; requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus()); } }} />
+    </Floating>
+  {:else if labelPicker.field === "tags"}
+    <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags for the new thread" onclose={() => { labelPicker = null; }}><TagPicker selection={draftSelection} /></Floating>
+  {:else}
+    <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority for the new thread" onclose={() => { labelPicker = null; }}>
+      <div class="menu-heading">Priority</div>
+      <PriorityPicker value={draftPriority} autofocus onchange={level => { draftPriority = level; labelPicker = null; }} />
+    </Floating>
+  {/if}
+{/if}
+
+<style>
+  .new-chat { display: flex; flex-direction: column; height: 100%; }
+  .top { display: flex; align-items: center; padding: 0 8px; height: 40px; }
+  .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
+  .column { width: 100%; max-width: var(--column); }
+  .greeting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; }
+  .greeting { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+  .name-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name-label.set { color: var(--text); font-weight: 600; }
+  .name-field { display: block; width: calc(100% - 16px); margin: 4px 8px 8px; }
+  .pending-name { align-self: flex-start; font-size: 15px; font-weight: 600; }
+  .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
+  .group .bar-button { gap: 6px; }
+  .slack-on { color: var(--accent-bold); background: var(--accent-soft); }
+  .check { cursor: pointer; user-select: none; }
+  .check input { margin: 0; accent-color: var(--accent, currentColor); cursor: pointer; }
+  .options-row :global(.bar-button), .options-row :global(.account) { height: 26px; font-size: 12.5px; }
+  .host-name { white-space: nowrap; }
+  .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
+  .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
+  .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }
+  .bubble { max-width: min(85%, 640px); padding: 10px 16px; border-radius: 18px 18px 6px 18px; background: var(--user-bubble); }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .view { display: block; cursor: zoom-in; border-radius: var(--radius-small); }
+  .images img { max-width: 200px; max-height: 200px; border-radius: var(--radius-small); display: block; }
+  .starting { align-self: flex-start; display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 14px; }
+  @container app (max-width: 899px) { .greeting { font-size: 24px; } .center { padding-bottom: 4vh; } }
+</style>

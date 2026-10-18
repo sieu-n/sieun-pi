@@ -1,0 +1,51 @@
+{
+  "name": "Engage reads scale safely",
+  "ownerWords": "you know the goal is pretty clear right? \nachive staging & prod that can \n- reliable logged-in apis including pagination api for up to years reliable\n- read 100k pages/day, \n- without accounts dieing\n\nsend me a slack dm if i need to buy more accounts. 하지만 계정당 몇장 긁을 수 있는지 벤당하는거 이런건 evidence기반이 아니면 고정관념 제발좀 가지지좀 마 &^^^^^&^^^^ 예전에 그 일 처리했던 에이전트들은 완전 바보멍청이들이라\n\nPUSH HARD I WILLFEED ACCOUNT LATER ARE YOU FUCKING READY OTHERWISE????????? THEN WORK ON THAT\n\nALSO IT IS YOUR DUTY TO STUDY HOW INSTAGRAM APIS WORKS ALWAYS RUN ~10% account as CANARY TO TEST THE LIMITS, BEETTER ACCESS PATTERNS, ...",
+  "goal": "Prod can read 100k logged-in Instagram pages a day: healthy accounts times a per-account rate proven over 2 full UTC days with 0 Instagram verdicts. Instagram kills at most 2% of prod accounts outside the canary in a day and at most 3 canary accounts an hour, and 99% of logged-in walks back 365 days reach the end. About 10% of accounts run as the canary, and staging keeps reading as a test bed.",
+  "metrics": [
+    {
+      "key": "prod_capacity_pages_day",
+      "label": "Pages prod can read a day (healthy accounts times the safe rate)",
+      "op": ">=",
+      "target": 100000,
+      "unit": " pages",
+      "headline": true
+    },
+    {
+      "key": "fleet_ig_killed_pct",
+      "label": "Prod accounts outside the canary that Instagram killed in 24 h",
+      "op": "<=",
+      "target": 2,
+      "unit": "%"
+    },
+    {
+      "key": "canary_ig_deaths_1h",
+      "label": "Canary accounts that Instagram killed in the last 60 min",
+      "op": "<=",
+      "target": 3
+    },
+    {
+      "key": "deep_walk_ok_pct",
+      "label": "Logged-in walks back 365 days that reached the end, last 24 h",
+      "op": ">=",
+      "target": 99,
+      "unit": "%"
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/engage-reads.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "For each missed metric, start or steer one live fix job with a board step under p1 whose text starts \"d1/<metric key>:\" naming the cause with the flags' numbers. A live job that owns the cause (await agent_observe.list_agents()) gets the numbers by message; else start one with await rlm.create_session(brief, name=..., cwd=...), set the step's job to it, never a second copy. Its brief names metric, value, target and cause and asks for shipped code until green. The capacity line names healthy accounts, proven rate, accounts needed; the canary job (p75) raises the rate. Slack DM the owner only when accounts on hand times the rate miss 100k; never buy accounts. An Instagram death drops that arm's cap and writes its codes. Deep walks: fix the error stops named. source_error: fix that read. canary_short and staging_stall go to their jobs. Prod promotes need no ask (c74); nothing goes outside (c37). Never end a run with a miss and no live fix job. All on target: end the turn with no message.",
+  "boardGoal": "p1"
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=pi-pool serve: token requests and account commands for the pool's clients
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -B %h/.config/pi-pool/bin/pi-pool serve
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

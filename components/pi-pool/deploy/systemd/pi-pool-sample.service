@@ -1,0 +1,6 @@
+[Unit]
+Description=pi-pool sample: read each account whose usage figure is due
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B %h/.config/pi-pool/bin/pi-pool sample

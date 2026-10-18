@@ -1,0 +1,17 @@
+[Unit]
+Description=ci-cache: the one GitHub Actions poller for sieu-n/auto-sns-agent (scripts/dev/ci-cache.mjs poll), writing ~/.cache/virev/ci-runs.json for ci-run-status, the gh shim and board.wake(run=)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/node/bin/node %h/.local/share/ci-cache/scripts/dev/ci-cache.mjs poll
+Restart=always
+RestartSec=30
+Nice=10
+StandardOutput=append:%h/.cache/virev/ci-cache.log
+StandardError=append:%h/.cache/virev/ci-cache.log
+
+[Install]
+WantedBy=default.target
