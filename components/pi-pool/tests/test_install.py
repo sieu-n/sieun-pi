@@ -117,8 +117,10 @@ class Install(unittest.TestCase):
         self.commit("pool", **{"pool/__init__.py": "VALUE = 1\n"})
         code, out = self.run_installer()
         self.assertEqual(code, 0, out)
-        cached = list((self.home / ".local/share/pi-pool/current/pool/__pycache__").glob("__init__.*.pyc"))
-        self.assertEqual(len(cached), 1, cached)
+        source = os.path.realpath(self.home / ".local/share/pi-pool/current/pool/__init__.py")
+        where = subprocess.run(["/usr/bin/python3", "-c", "import importlib.util, sys; print(importlib.util.cache_from_source(sys.argv[1]))", source],
+                               capture_output=True, text=True, check=True).stdout.strip()
+        self.assertTrue(os.path.isfile(where), where)
 
     def add_client(self):
         source = INSTALLER.parent
