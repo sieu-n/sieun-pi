@@ -128,7 +128,7 @@ export type PeerOptions = {
   log: (line: string) => void;
   /** The rows or the state changed. */
   onChange: () => void;
-  onHello?: (hello: { appVersion?: string }) => void;
+  onHello?: (hello: { appVersion?: string; supervisorGeneration?: string }) => void;
 };
 
 /**

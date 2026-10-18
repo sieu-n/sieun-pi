@@ -208,6 +208,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
+  catalog.onSupervisorChange(() => {
+    dutyLog("chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon");
+    chats.interruptedSoon();
+  });
   const unwatchBoards = boards.watch((id, board) => {
     threads.setBoard(id, board);
     void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));

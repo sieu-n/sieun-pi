@@ -471,6 +471,10 @@ export class Catalog {
   private schedules = new Map<string, ThreadSchedule>();
   private observedDaemonVersion: { version: string | undefined } | undefined;
   private daemonVersionListener: (version: string | undefined) => void = () => {};
+  private supervisorGeneration: string | undefined;
+  private readonly supervisorListeners = new Set<() => void>();
+  /** Runs `listener` when a connect meets a new supervisor (`daemon_hello.supervisorGeneration` changed): a Prime update or a daemon restart, which cut the turns it stopped. */
+  onSupervisorChange(listener: () => void): void { this.supervisorListeners.add(listener); }
   /** A backend can connect before SDK sync is attached. Replay that hello as well as later reconnects. */
   set onDaemonVersion(listener: (version: string | undefined) => void) {
     this.daemonVersionListener = listener;
@@ -492,7 +496,13 @@ export class Catalog {
     // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
     this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: 1500, helloMs: 1500 }, changeMs: 150,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
-      onHello: hello => { this.observedDaemonVersion = { version: hello.appVersion }; this.daemonVersionListener(hello.appVersion); } });
+      onHello: hello => {
+        this.observedDaemonVersion = { version: hello.appVersion };
+        this.daemonVersionListener(hello.appVersion);
+        const generation = hello.supervisorGeneration;
+        if (generation && this.supervisorGeneration && generation !== this.supervisorGeneration) for (const listener of this.supervisorListeners) listener();
+        if (generation) this.supervisorGeneration = generation;
+      } });
     if (hosts) {
       // Another box's list or reachability changed: its rows go into the next frame with this box's copy.
       hosts.onChange = () => { if (this.peer.listed && !this.closed) void this.apply(this.peer.list()).catch(() => {}); };

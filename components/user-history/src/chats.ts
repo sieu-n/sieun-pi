@@ -108,6 +108,11 @@ export function withLiveRoster(children: readonly ChildAgent[], roster: readonly
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
+/**
+ * After the 10-18 update the new supervisor listened at 06:47:22Z, a wake sent at 06:47:36Z failed with "Session worker is starting", and one
+ * at 06:48:44Z went through, 82 s after the start.
+ */
+export const SUPERVISOR_RESUME_MS = 90_000;
 /** A check-in whose job could not start runs again after this long, not a whole interval later (`CheckInStart`). */
 export const CHECK_IN_RETRY_MS = 5 * 60_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
@@ -713,6 +718,12 @@ export class Chats {
     for (const id of owners) if (this.chatIds.has(id)) owners.delete(id);
     return owners;
   }
+
+  /**
+   * A new daemon supervisor (a Prime update or a restart) cut the turns it stopped: the pass over interrupted jobs runs SUPERVISOR_RESUME_MS
+   * from now instead of up to JOB_CLEANUP_EVERY_MS later. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
+   */
+  interruptedSoon(): void { this.rootsSweptAt = this.now() - JOB_CLEANUP_EVERY_MS + SUPERVISOR_RESUME_MS; }
 
   /**
    * The jobs of the chats, from the catalog rows: tells `awake` whether any chat or job works, and looks at each subagent and create_session

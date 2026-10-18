@@ -8,7 +8,7 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { OWNER_UI } from "../src/checkin-settings.ts";
 import { JOB_CLEANUP_EVERY_MS } from "../src/chat-checkin.ts";
 import { InterruptedRuns } from "../src/chat-resume.ts";
-import { Chats } from "../src/chats.ts";
+import { CHECK_IN_TICK_MS, Chats, SUPERVISOR_RESUME_MS } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { InterruptedReport, InterruptedRun } from "../src/shared/interrupted.ts";
 import type { ChatAgent, SessionRow } from "../src/shared/types.ts";
@@ -34,7 +34,16 @@ test("resumeJobs messages each interrupted job itself, reopens a dead worker's h
   const owned = new Set(["chat1", "chat2"]);
   await runs.resumeJobs(run => run.session_id !== "chat1" && owned.has(run.head_session_id ?? ""), async id => { reopened.push(id); });
   assert.deepEqual(reopened, ["chat2"]);
-  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", "j-alert,j-curl,j-dead"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", "j-alert,j-curl,j-dead", "--this-box"]]);
+});
+
+test("the send pass reads the other boxes only when a job is on one of them", async () => {
+  // 10-18: the 06:56Z send pass named 11 jobs on us-metal02, spent the Mac's 30 to 60 s lists on top, and died on the 90 s limit.
+  const onMac = { ...job("j-mac", "cut_off", "chat1"), host: "mac" };
+  const calls: string[][] = [];
+  const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [job("j-box", "cut_off", "chat1"), onMac], heads: [], checked_at: "now" }; });
+  await runs.resumeJobs(() => true, async () => {});
+  assert.deepEqual(calls[1], ["--direct", "--only", "j-box,j-mac"]);
 });
 
 test("resumeJobs runs nothing more when no job of a chat is interrupted", async () => {
@@ -71,5 +80,28 @@ test("the server resumes the interrupted jobs of its active chats and their root
   assert.equal(asked.length, 1, "once per job sweep");
   await step(1);
   assert.equal(asked.length, 2);
+  chats.close();
+});
+
+test("a new daemon supervisor brings the pass over interrupted jobs forward", async () => {
+  // census writer speed, 10-18: Prime's update cut it at 06:46:02Z, and the next pass of a 10 min sweep came too late; it waited 29 min.
+  const dir = await mkdtemp(join(tmpdir(), "interrupted-jobs-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = Date.parse("2026-10-18T06:40:00Z");
+  const rows = (): SessionRow[] => [row("c1", at, { chat: true, agents: [] })];
+  let passes = 0;
+  const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, {}, () => now, rows), interrupted: async () => { passes++; return null; } }, () => {});
+  await chats.adopt();
+  const step = async (ms: number) => { now += ms; await chats.tick(); await chats.settled(); };
+  await step(0);
+  assert.equal(passes, 1);
+  await step(CHECK_IN_TICK_MS);
+  chats.interruptedSoon();
+  await step(SUPERVISOR_RESUME_MS - 1);
+  assert.equal(passes, 1, "the new workers get time to start");
+  await step(1);
+  assert.equal(passes, 2, "the pass runs SUPERVISOR_RESUME_MS after the new supervisor, not at the next 10 min sweep");
   chats.close();
 });

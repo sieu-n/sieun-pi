@@ -97,14 +97,17 @@ export class InterruptedRuns {
         }
       };
       await reopenAll(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []));
-      const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named]);
+      // The send pass skips the other boxes when every job is on this one: the Mac's lists took 30 to 60 s of a 50 to 110 s pass on 10-18,
+      // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
+      const box = jobs.some(run => run.host) ? [] : ["--this-box"];
+      const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box]);
       // A job the daemon archived when it went down answers "Unknown active session" to every send, its parent's agent_message included
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
       const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
       if (!lost.length) return sent;
       await reopenAll(lost);
-      const again = await this.run(["--direct", "--only", lost.join(","), ...named]);
+      const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box]);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
       return { ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) };
     });

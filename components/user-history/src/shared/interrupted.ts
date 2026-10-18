@@ -15,6 +15,8 @@ export interface InterruptedRun {
   reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed" | "worker_stopped" | "aborted" | "never_started";
   session_id?: string;
   head_session_id?: string;
+  /** The box the run is on, when it is not this one. */
+  host?: string;
   error: string;
   errored_at: string;
   head: string;
