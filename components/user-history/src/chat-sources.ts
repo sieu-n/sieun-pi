@@ -151,6 +151,25 @@ export function deletedJobRecord(path: string): DeletedJobRecord {
   };
 }
 
+/**
+ * The jobs the failed-turn check (`Chats.wakeJob`) found fine, each with the activity stamp it had then, on disk so a service restart does not
+ * look at them again. The check kept them in memory only, so after each restart it opened every job of the last 24 h with its file page and
+ * attach: 384 opens in the first minute after the 21:33:56Z restart on 10-18, while the chat's main thread was 74 to 97% busy for 4 minutes.
+ */
+export interface QuietJobRecord {
+  read(): Promise<Map<string, string>>;
+  write(quiet: ReadonlyMap<string, string>): Promise<void>;
+}
+/** `<data dir>/quiet-jobs.json`: `{ [job session id]: activity stamp }`, written whole by rename. */
+export function quietJobRecord(path: string): QuietJobRecord {
+  const file: JsonFile<Record<string, string>> = { path, label: "Quiet job record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {} };
+  return {
+    async read() { return new Map(Object.entries(await snapshotJsonFile(file))); },
+    async write(quiet) { await transactJsonFile(file, state => { for (const key of Object.keys(state)) delete state[key]; Object.assign(state, Object.fromEntries(quiet)); }); },
+  };
+}
+
 /** A job spawned longer ago than this when the server first sees it gets no `[brief check]`, so a restart does not check every old job. */
 export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
 
@@ -259,6 +278,8 @@ export interface CheckInSource {
   briefChecks?: BriefCheckRecord;
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */
   deletedJobs?: DeletedJobRecord;
+  /** The jobs the failed-turn check found fine (`<data dir>/quiet-jobs.json`). Absent (tests): each serve looks at every job once. */
+  quietJobs?: QuietJobRecord;
   /**
    * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
    * they opened, under its session folder `dir`, the repo copies in the wiki session folders it opened, and the /tmp trees it made with the

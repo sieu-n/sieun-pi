@@ -118,6 +118,8 @@ export const ADOPT_SCAN_MS = 10 * 60_000;
 export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
 /** A job of a chat quiet for longer than this is not looked at for a failed turn. */
 export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
+/** How long after a change the quiet jobs are written (`Chats.keepQuiet`). */
+export const QUIET_WRITE_MS = 5_000;
 /** A bad job end found later than this after it happened (the first wake after a deploy reads a day of jobs) is left to the check-in. */
 export const JOB_END_NOTE_MAX_AGE_MS = 2 * 60 * 60_000;
 /** A job as the scheduler found it in its chat's row: the chat and its Agents entry. */
@@ -199,8 +201,13 @@ export class Chats {
   private jobsSeen: Set<string> | undefined;
   private readonly jobsCurrent = new Set<string>();
   private readonly jobWakes = new Map<string, JobWake>();
-  /** The activity stamp at which a job thread was last found with no transient failure; it is looked at again once the stamp changes. */
+  /**
+   * The activity stamp at which a job thread was last found with no transient failure; it is looked at again once the stamp changes. It is
+   * read from `quietJobs` before the first look and written back a few seconds after a change (`keepQuiet`).
+   */
   private readonly jobQuiet = new Map<string, string>();
+  private quietRead: Promise<void> | undefined;
+  private quietWrite: ReturnType<typeof setTimeout> | undefined;
   /** When each chat's finished jobs were last checked, and the jobs already deleted (or tried once). */
   private readonly cleanedAt = new Map<string, number>();
   private readonly deletedJobs = new Set<string>();
@@ -784,6 +791,7 @@ export class Chats {
       }
     }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
+    await (this.quietRead ??= this.readQuiet());
     const now = this.now();
     const threads = new Set<string>();
     for (const row of chatRows) {
@@ -800,6 +808,23 @@ export class Chats {
     }
     for (const threadId of this.jobThreads) if (!threads.has(threadId)) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); this.jobGone.delete(threadId); }
     this.jobThreads = threads;
+    this.keepQuiet();
+  }
+
+  private async readQuiet(): Promise<void> {
+    const kept = await this.source.quietJobs?.read().catch(error => { this.log(`chats: quiet jobs: ${error instanceof Error ? error.message : String(error)}`); return null; });
+    for (const [threadId, stamp] of kept ?? []) if (!this.jobQuiet.has(threadId)) this.jobQuiet.set(threadId, stamp);
+  }
+
+  /** Writes `jobQuiet` to `quietJobs` QUIET_WRITE_MS after a change, once for every change in that time. */
+  private keepQuiet(): void {
+    const record = this.source.quietJobs;
+    if (!record || this.quietWrite) return;
+    this.quietWrite = setTimeout(() => {
+      this.quietWrite = undefined;
+      void record.write(new Map(this.jobQuiet)).catch(error => this.log(`chats: quiet jobs: ${error instanceof Error ? error.message : String(error)}`));
+    }, QUIET_WRITE_MS);
+    this.quietWrite.unref();
   }
 
   /**
@@ -909,6 +934,7 @@ export class Chats {
       if (action === "none") {
         this.jobWakes.delete(threadId);
         this.jobQuiet.set(threadId, stamp);
+        this.keepQuiet();
         if (job && state && jobEnd(state.messages)) this.queue(job.chat, () => this.jobEndNote(threadId, job));
         return;
       }
@@ -1564,5 +1590,9 @@ export class Chats {
     return new Map([...this.chatIds].map(id => [id, { version: loaded[id] ?? null, current: this.brief.version, updating: this.forced.has(id) || this.reloadWaiting.has(id) }]));
   }
 
-  close(): void { clearInterval(this.timer); this.unobserve(); }
+  close(): void {
+    clearInterval(this.timer);
+    this.unobserve();
+    if (this.quietWrite) { clearTimeout(this.quietWrite); this.quietWrite = undefined; void this.source.quietJobs?.write(new Map(this.jobQuiet)).catch(() => {}); }
+  }
 }
