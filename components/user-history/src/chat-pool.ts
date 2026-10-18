@@ -208,14 +208,38 @@ export function askHookd(socket: string, script: string, args: readonly string[]
   });
 }
 
-/** One `pi-pool snapshot --json`: through hookd when it answers, else the CLI process, which is all that runs until hookd is installed. */
-async function readSnapshot(threads: readonly PoolThread[]): Promise<PoolSnapshot> {
-  const args = snapshotArgs(threads);
+/** One pi-pool command as {code, out, err}: through hookd when it answers, else the CLI process, which is all that runs until hookd is installed. */
+async function poolPart(args: readonly string[], timeout = 15000): Promise<PoolPart> {
   const env = poolEnv();
   const script = await realpath(executable).catch(() => executable);
   const said = await askHookd(join(poolDir(), "hook.sock"), script, args, env);
-  const stdout = said ? partOut(said) : await run(args);
-  return parsePoolSnapshot(JSON.parse(stdout));
+  if (said) return said;
+  return new Promise(resolve => {
+    execFile(executable, [...args], { timeout, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => {
+      const code = !error ? 0 : typeof error.code === "number" ? error.code : 1;
+      resolve({ code, out: String(stdout), err: String(stderr) || (error && typeof error.code !== "number" ? error.message : "") });
+    });
+  });
+}
+
+/** What pi-pool prints for a command it does not know (vend.py USAGE): an installed pool from before `snapshot` (3f47ff8c). */
+const UNKNOWN_COMMAND = /^usage: pi-pool \[command\]/;
+
+/**
+ * One `pi-pool snapshot --json` for `threads`. A pool installed before the command answers with its usage text, and then the tick runs
+ * the separate reads the snapshot stands for (`queue --json`, `config`, and per thread `who --json` and `ls --json` for each provider),
+ * so a chat released ahead of the pool keeps working.
+ */
+export async function readSnapshot(threads: readonly PoolThread[], part: (args: readonly string[]) => Promise<PoolPart> = poolPart): Promise<PoolSnapshot> {
+  const said = await part(snapshotArgs(threads));
+  if (said.code === 0 || !UNKNOWN_COMMAND.test(said.err.trimStart())) return parsePoolSnapshot(JSON.parse(partOut(said)));
+  const flags = (thread: PoolThread) => [...thread.session ? ["--session", thread.session] : [], ...thread.model ? ["--model", thread.model] : []];
+  const [queue, config, ...perThread] = await Promise.all([part(["queue", "--json"]), part(["config"]), ...threads.map(async thread => {
+    const [who, ...ls] = await Promise.all([part(["who", "--json", ...flags(thread)]),
+      ...pooledProviders.map(provider => part(["ls", "--json", "--provider", provider, ...flags(thread)]))]);
+    return { ...thread, who: who!, ls: Object.fromEntries(pooledProviders.map((provider, n) => [provider, ls[n]!])) as Record<PooledProvider, PoolPart> };
+  })]);
+  return { queue: queue as PoolPart, config: config as PoolPart, threads: perThread as PoolSnapshot["threads"] };
 }
 
 /**
