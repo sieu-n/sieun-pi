@@ -45,7 +45,13 @@ export const NEW_WINDOW_DAYS = 14;
 export const WIN_WINDOW_DAYS = 30;
 const PAGE_CONCURRENCY = 16;
 
-export interface ArticleState { published: string; firstSeen: string; status: number }
+/**
+ * A sitemap URL is an article when its page carries article:published_time or datePublished, and a listing (/blog/page/N, /blog/tag/x, a
+ * category hub such as /blog/tiktok) when it answered 200 without one. On 10-18 115 of the 128 new_unindexed_3d URLs were /page/N and /tag/
+ * listings and about 9 were category hubs, so only articles count. A state row from before this field has no kind and is fetched again.
+ */
+export type PageKind = "article" | "listing";
+export interface ArticleState { published: string; firstSeen: string; status: number; kind?: PageKind }
 export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string> }
 export interface InspectRow { url: string; http: number; verdict?: string | null; coverage_state?: string | null; error?: string | null }
 export interface InspectRead { rows: InspectRow[]; not_asked: string[]; quota_left_before?: number }
@@ -144,27 +150,32 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
 
   if (sitemap) {
     const articles = [...sitemap].filter(([, lastmod]) => lastmod).map(([url]) => url);
-    const toFetch = articles.filter(url => state.articles[url]?.status !== 200);
+    const toFetch = articles.filter(url => state.articles[url]?.status !== 200 || !state.articles[url]?.kind);
     const pages = await mapLimit(toFetch, PAGE_CONCURRENCY, async url => {
       try {
         const response = await deps.fetch(url);
-        return { url, status: response.status, published: response.status === 200 ? publishedDay(await response.text()) : "" };
-      } catch { return { url, status: 0, published: "" }; }
+        const published = response.status === 200 ? publishedDay(await response.text()) : "";
+        const kind: PageKind | undefined = response.status !== 200 ? undefined : published ? "article" : "listing";
+        return { url, status: response.status, published, kind };
+      } catch { return { url, status: 0, published: "", kind: undefined }; }
     });
     const fresh: string[] = [];
     for (const page of pages) {
       const known = state.articles[page.url];
       const published = page.published || known?.published || sitemap.get(page.url)!.slice(0, 10);
       const firstSeen = known?.firstSeen ?? (previous ? today : published);
-      if (!known && previous) fresh.push(page.url);
-      state.articles[page.url] = { published, firstSeen, status: page.status };
+      const kind = page.kind ?? known?.kind;
+      if (!known && previous && kind === "article") fresh.push(page.url);
+      state.articles[page.url] = { published, firstSeen, status: page.status, ...(kind ? { kind } : {}) };
     }
     for (const url of Object.keys(state.articles)) if (!sitemap.has(url)) delete state.articles[url];
     const broken = articles.filter(url => state.articles[url]!.status !== 200);
     if (broken.length) flagged.push(...listSlice("not_200", "Articles in the sitemap that did not answer 200:", broken.map(url => `${path(url)} (${state.articles[url]!.status || "no answer"})`), at));
     if (fresh.length) flagged.push(...listSlice("new_articles", `New in the sitemap since the last run (${fresh.length}):`, fresh.map(path), at));
 
-    const live = articles.filter(url => state.articles[url]!.status === 200);
+    const live = articles.filter(url => state.articles[url]!.status === 200 && state.articles[url]!.kind === "article");
+    const listings = articles.filter(url => state.articles[url]!.kind === "listing").length;
+    if (listings) flagged.push({ at, kind: "listings", excerpt: `Detail: ${listings} sitemap URLs are listing pages (pagination, tags, category hubs) with no article:published_time, left out of every metric.` });
     const newest = live.reduce((max, url) => state.articles[url]!.firstSeen > max ? state.articles[url]!.firstSeen : max, "");
     if (newest) {
       metrics.days_since_new_article = Math.max(0, daysBetween(newest, today));
