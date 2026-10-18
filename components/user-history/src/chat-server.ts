@@ -9,7 +9,7 @@ import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
-import { readWikiPage, type WikiPageView } from "./chat-wiki.ts";
+import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError } from "./chat-labels.ts";
@@ -43,7 +43,7 @@ class RequestError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
-export function renderShell(csrfToken: string, version: string): string {
+export function renderShell(csrfToken: string, version: string, wiki: string | null): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -59,7 +59,7 @@ export function renderShell(csrfToken: string, version: string): string {
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
 <link rel="stylesheet" href="app.css">
 </head>
-<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}">
+<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}">
 <div id="app"></div>
 <script type="module" src="app.js"></script>
 </body>
@@ -497,7 +497,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (method === "GET") {
         if (!route.startsWith("api/")) {
           const built = await bundle;
-          if (route === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version)); return; }
+          if (route === "") { const wiki = await wikiOrigin(); res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki)); return; }
           if (route === "app.js") { serveAsset(req, res, built.js); return; }
           if (route === "app.css") { serveAsset(req, res, built.css); return; }
           const appFile = built.app?.(route);
