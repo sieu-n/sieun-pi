@@ -4,7 +4,7 @@
 // 8 red duties had no live fix job and nothing ran them until their next daily slot, so a red duty now gets a push run.
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -209,6 +209,55 @@ test("a due duty starts while another chat's push check waits on the daemon", as
     assert.ok(started.some(name => name.startsWith("whole system")));
     assert.ok(!started.some(name => name.startsWith("crawler pipeline")));
     duties.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a run that a restart cut while it measured runs again in the next process, so its slot keeps a record", async () => {
+  // 10-18 06:12Z: d7 measured, waited on the daemon's fix reads, and the 06:15Z release ended it with no record; its next run came at 06:42Z.
+  const dir = await mkdtemp(join(tmpdir(), "duty-measure-cut-"));
+  try {
+    const gate = join(dir, "gate");
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { existsSync, writeFileSync } from "node:fs";
+while (!existsSync(${JSON.stringify(gate)})) await new Promise(done => setTimeout(done, 20));
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { clean_min_30: 2 } }));`);
+    const store = new DutyStore(dir);
+    const now = Date.parse("2026-10-18T06:12:00Z");
+    await store.update(CHAT, duties => { duties.push({
+      id: "d7", name: "Whole system", ownerWords: "watch this", goal: "clean minutes", onMiss: "fix it", status: "active", schedule: { kind: "every", minutes: 30 },
+      metrics: [{ key: "clean_min_30", label: "Clean minutes", op: ">=", target: 30, headline: true }],
+      precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, createdAt: now - 60 * MIN, updatedAt: now - 60 * MIN, runCount: 1, lastRunAt: now - 31 * MIN }); });
+    const host = (lines: string[], started: string[]) => ({
+      isChat: async () => true, now: () => now, tickMs: 0, node: process.execPath, log: (line: string) => lines.push(line),
+      jobs: {
+        chat: async (id: string) => ({ id, name: "AI harness", cwd: dir, board: id }),
+        working: async () => false,
+        retire: async () => {},
+        start: async (_chat: unknown, name: string) => { started.push(name); return { id: `job-${started.length}`, name }; },
+      },
+    });
+    const started: string[] = [];
+    const cut = new Duties(store, host([], started));
+    void cut.tick();
+    const marker = join(store.chatDir(CHAT), "d7.measuring.json");
+    for (let wait = 0; !(await readFile(marker, "utf8").then(() => true, () => false)); wait++) {
+      if (wait > 500) throw new Error("the run never started measuring");
+      await new Promise(done => setTimeout(done, 20));
+    }
+    const lines: string[] = [];
+    const next = new Duties(store, host(lines, started));
+    await writeFile(gate, "");
+    await next.tick();
+    await next.settled();
+    assert.ok(lines.some(line => line.includes("measured; it runs again")), lines.join("\n"));
+    await cut.settled();
+    assert.equal(started.length, 1);
+    assert.equal((await store.runs(CHAT)).filter(run => run.duty === "d7" && run.job).length, 1);
+    assert.equal(await readFile(marker, "utf8").then(() => true, () => false), false);
+    cut.close();
+    next.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

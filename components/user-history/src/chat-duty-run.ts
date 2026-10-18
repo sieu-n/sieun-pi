@@ -504,7 +504,7 @@ export class Duties {
     const key = `${chatId}/${dutyId}`;
     if (this.running.has(key)) return false;
     const run = this.run(chatId, dutyId, trigger, slot).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`))
-      .finally(() => { this.running.delete(key); this.steps.delete(key); });
+      .finally(async () => { await rm(this.measuringFile(chatId, dutyId), { force: true }); this.running.delete(key); this.steps.delete(key); });
     this.running.set(key, run);
     return true;
   }
@@ -653,6 +653,13 @@ export class Duties {
   private pendingFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.pending.json`); }
 
   /**
+   * A standing duty's run from its measure to its record, kept in `<dutyId>.measuring.json`, so a restart in between runs it again (`resume`).
+   * The run moves lastRunAt at its start, so a release that cut the measure lost the slot with no record: d7's 06:12Z run on 10-18 measured,
+   * waited on the daemon's fix reads, and the 06:15Z release ended it, so Whole system ran next at 06:42Z.
+   */
+  private measuringFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.measuring.json`); }
+
+  /**
    * Appends a measured run's record, then starts its duty job (`launch`) and writes the job, or why none started, into the record. The record
    * comes first because the start waits for a working slot in the Mac-wide turn queue, and a restart during that wait lost it: on 10-15 the
    * cc3dcb8 and 1ba8ab0 releases each dropped a measured Skills and tools Run now, and about 8 restarts from 09:11Z to 09:41Z left no check-in
@@ -664,6 +671,7 @@ export class Duties {
     const older = await readPending(file);
     await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
     await writeFile(file, JSON.stringify({ at: record.at, ...pending } satisfies PendingStart), { mode: 0o600 });
+    await rm(this.measuringFile(chatId, record.duty), { force: true });
     if (older && older.at !== record.at) await this.store.updateRun(chatId, record.duty, older.at, stored => { if (!stored.job) stored.summary += `; ${NOT_STARTED}: a later run took its place`; });
     if (append) { await this.store.appendRun(chatId, record); await this.writeReadings(chatId, record.duty, record); }
     let launched: Launched;
@@ -694,6 +702,16 @@ export class Duties {
    */
   private async resume(chatId: string): Promise<void> {
     const names = await readdir(this.store.chatDir(chatId)).catch(() => [] as string[]);
+    for (const name of names.filter(entry => entry.endsWith(".measuring.json"))) {
+      const dutyId = name.slice(0, -".measuring.json".length);
+      if (this.running.has(`${chatId}/${dutyId}`)) continue;
+      const file = this.measuringFile(chatId, dutyId);
+      const measuring = await readFile(file, "utf8").then(text => JSON.parse(text) as { at: number; trigger: DutyTrigger; slot: number | null }).catch(() => null);
+      await rm(file, { force: true });
+      if (!measuring || !(await this.store.list(chatId)).some(duty => duty.id === dutyId)) continue;
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the server restarted while the run of ${new Date(measuring.at).toISOString()} measured; it runs again`);
+      this.start(chatId, dutyId, measuring.trigger, measuring.slot);
+    }
     for (const name of names.filter(entry => entry.endsWith(".pending.json"))) {
       const dutyId = name.slice(0, -".pending.json".length);
       const key = `${chatId}/${dutyId}`;
@@ -776,6 +794,8 @@ export class Duties {
     const started = this.now();
     const at = slot ?? started;
     this.steps.set(key, { at: started, step: "measuring" });
+    await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
+    await writeFile(this.measuringFile(chatId, dutyId), JSON.stringify({ at: started, trigger, slot }), { mode: 0o600 });
     // A push run leaves lastRunAt and lastSlotAt alone, since they set when the duty is due next.
     if (trigger !== "push") await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
