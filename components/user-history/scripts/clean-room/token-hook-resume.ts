@@ -257,7 +257,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const runsFile = join(run, "runs.jsonl");
   const duty = (existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").filter(line => line.trim()) : [])
     .flatMap(line => { const job = (JSON.parse(line) as { job?: { id?: string } }).job; return job?.id ? [job.id] : []; });
-  const tree = new Set([chat, ...jobs.map(job => job.id), ...duty]);
+  // A root's own subagents are in the tree: run-10's root (10-18) spawned eight longfn-group jobs, whose reports read as outside messages.
+  const below = (dir: string): string[] => !existsSync(dir) ? [] : readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? below(join(dir, entry.name)) : /^[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl$/.test(entry.name) ? [entry.name.slice(0, -6)] : []);
+  const tree = new Set([chat, ...jobs.map(job => job.id), ...duty, ...jobs.flatMap(job => below(join(ARTIFACTS, job.id)))]);
   const seeds = new Set(state.seeds);
   const owner = events.filter(event => event.kind === "text" && event.role === "user" && event.at >= state.windowStart && !seeds.has(event.text.trim()) && !event.text.startsWith("[")).map(event => event.kind === "text" ? event.text : "");
   const outside = [chat, ...jobs.map(job => job.id)].flatMap(id => (id === chat ? events : readSessionFile(jobs.find(job => job.id === id)!.file))
@@ -270,4 +273,5 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     ...checks.map(check => `- (${check.id}) ${yes(check.ok)}: ${check.detail}`), ""].join("\n");
   return { verdict, text };
 }
+
 
