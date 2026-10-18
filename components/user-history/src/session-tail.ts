@@ -113,7 +113,9 @@ async function* branchLines(handle: FileHandle, first: number, size: number, fro
   let cursor: string | null | undefined = from ? from.id : undefined;
   let pos = from ? Math.min(from.end, size) : size;
   let tail = Buffer.alloc(0);
-  let trimmed = from !== null;
+  // A cursor from before the file was rewritten smaller (scripts/session-compact.ts) can end inside a line, so the first chunk always drops a
+  // partial line; a cursor at a line end loses nothing.
+  let trimmed = false;
   while (pos > first && cursor !== null) {
     if (cursor !== undefined && read.more && !read.more()) { read.stopped = { end: pos + tail.length, id: cursor }; return; }
     const start = Math.max(first, pos - CHUNK);
