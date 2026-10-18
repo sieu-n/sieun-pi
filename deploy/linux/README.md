@@ -31,7 +31,7 @@ Prime's update restart coordinator starts the new supervisor itself, and session
 `prime-agent-daemon-ctl start` adopts the supervisor that answers on the socket, or starts one, and writes its PID to the PIDFile. While an update restart coordinator is alive, it waits for that coordinator's supervisor instead of starting a second one.
 On 10-18 at 03:03Z the old `Type=simple` unit ran ExecStart again after the update stopped the old supervisor, that start failed with `ELOCKED` because the new supervisor held the socket lock, and the unit tracked none of them.
 
-Update Prime from a local feed with `deploy/linux/prime-install.sh <feed-dir> <expect-version> [--rollback]`, installed as `~/setup-logs/prime-install.sh`.
+Update Prime from a local feed with `deploy/linux/prime-install.sh <feed-dir> <expect-version> [--rollback]`, installed as `~/setup-logs/prime-install.sh`. After a good update it deletes each release under `~/.local/share/prime-agent/releases` that `bin/prime-agent` and `bin/previous` do not name and no running process uses.
 The script re-runs itself detached with `setsid` and `nohup`, prints its log path and returns at once, because Prime's update prepare aborts a busy agent bash command after 5 s. On 10-18 that abort killed an attached run mid-wait and skipped its post-checks.
 The detached run serves the feed, writes `~/.config/sieun-pi/prime-update.env`, runs `systemctl --user reload --no-block prime-agent-daemon.service`, waits for the reload, checks that the daemon runs the expected build, and writes `<log>.result` with `result=<ctl result> rc=<0|1>`.
 ExecReload runs `prime-agent-daemon-ctl update`, and systemd reads the PIDFile when the reload ends, so MainPID moves to the new supervisor with no restart.

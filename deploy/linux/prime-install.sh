@@ -48,6 +48,22 @@ if [ -z "$PRIME_INSTALL_LOG" ]; then
   exit 0
 fi
 
+# The updater keeps every release it installed: on us-metal02 on 10-18 six of about 165 MB each, four of which nothing ran.
+# After a good update this keeps the releases bin/prime-agent and bin/previous name and any a running process names in its
+# exe, cwd, command line or maps, and deletes the rest.
+prune_releases() {
+  local root=$HOME/.local/share/prime-agent/releases keep used dir
+  keep=" $(for link in prime-agent previous; do basename "$(dirname "$(readlink -f "$HOME/.local/share/prime-agent/bin/$link")")"; done | tr '\n' ' ')"
+  used=$({ find /proc/[0-9]*/exe /proc/[0-9]*/cwd -maxdepth 0 -printf '%l\n'; cat /proc/[0-9]*/cmdline | tr '\0' '\n'; cat /proc/[0-9]*/maps; } 2>/dev/null | grep -o "$root/[^/ ]*" | sort -u)
+  for dir in "$root"/*/; do
+    [ -d "$dir" ] || continue
+    dir=${dir%/}
+    case "$keep" in *" ${dir##*/} "*) continue;; esac
+    grep -qxF "$dir" <<< "$used" && continue
+    rm -rf "$dir" && echo "removed release ${dir##*/}, which nothing runs"
+  done
+}
+
 LOG=$PRIME_INSTALL_LOG
 RESULT=
 trap ': > "$ENVF"; [ -n "$SRV" ] && kill $SRV 2>/dev/null; echo "result=${RESULT:-none} rc=$RC" > "$LOG.result.tmp" && mv "$LOG.result.tmp" "$LOG.result"' EXIT
@@ -71,7 +87,7 @@ PID=$(systemctl --user show -p MainPID --value $UNIT)
 RUNNING=$(readlink /proc/$PID/exe)
 echo "after $NOW daemon pid $PID exe $RUNNING"
 case "$RESULT" in
-  ok) case "$RUNNING" in *"$WANT"*) echo "daemon on new build";; *) echo "ctl reported ok but the daemon runs $RUNNING"; RC=1;; esac;;
+  ok) case "$RUNNING" in *"$WANT"*) echo "daemon on new build"; prune_releases;; *) echo "ctl reported ok but the daemon runs $RUNNING"; RC=1;; esac;;
   prepare-refused) echo "prepare refused, daemon still old. --force does not clear this. Reopen named sessions still meant to run that have their saved file, leave unknown ones untouched, stop only work marked finished, and do not update until it clears:"; grep -h -e "Cannot prepare" -e "could not restart" -e "Could not prepare" $LOG.update; RC=1;;
   restore-failed-successor-adopted) echo "the coordinator's restore failed ($(grep -o 'result=restore-failed-successor-adopted restored [a-z0-9]* of [a-z0-9]*' $LOG.update | tail -1 | cut -d' ' -f2-)), and the unit adopted supervisor $PID, which runs $RUNNING. Prime's own recovery restores the rest; check the sessions before calling the update done."; RC=1;;
   busy-refused) echo "busy-session confirmation refused although PRIME_UPDATE_ARGS had --force; check that the unit loads $ENVF"; RC=1;;

@@ -754,6 +754,23 @@ class InstallScriptTest(unittest.TestCase):
         self.assertEqual(self.wait_for_result(log), "result=restore-failed-successor-adopted rc=1\n", log.read_text())
         self.assertIn("the coordinator's restore failed (restored 0 of 91)", log.read_text())
 
+    def test_a_good_update_deletes_the_releases_nothing_runs(self):
+        # 10-18: us-metal02 held six Prime releases of about 165 MB each, and nothing ran four of them.
+        releases = self.home / ".local/share/prime-agent/releases"
+        for name in ("old", "previous", "current", "in-use"):
+            (releases / name).mkdir(parents=True)
+        bin_dir = self.home / ".local/share/prime-agent/bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "prime-agent").symlink_to("../releases/current/prime-agent")
+        (bin_dir / "previous").symlink_to("../releases/previous/prime-agent")
+        user = subprocess.Popen(["sleep", "60"], cwd=releases / "in-use")
+        self.addCleanup(user.kill)
+        out = subprocess.run([str(INSTALL), str(self.feed), "python"], env=dict(self.env, FAKE_RELOAD_SECONDS="1"), capture_output=True, text=True, timeout=30)
+        log = Path(out.stdout.splitlines()[0])
+        self.assertEqual(self.wait_for_result(log), "result=ok rc=0\n", log.read_text())
+        self.assertEqual(sorted(p.name for p in releases.iterdir()), ["current", "in-use", "previous"])
+        self.assertIn("removed release old, which nothing runs", log.read_text())
+
 
 class ChatUnitTest(unittest.TestCase):
     def test_a_chat_stop_kills_the_helpers_it_left_and_never_starts_a_daemon(self):

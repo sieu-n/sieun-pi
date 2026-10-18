@@ -1,13 +1,13 @@
 // us-metal02 to the Mac, 07:52 to 07:57Z on 10-18: agents' `hosts transcript mac` and `hosts read --from 0` read frontend bro's 130 MB file whole
 // through the relay three times (299 MB), while the chat service already held a byte-range copy and the chat's 10 MB attach snapshot timed out.
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { mirrorFile } from "../src/host-mirror.ts";
+import { mirrorFile, pruneMirror } from "../src/host-mirror.ts";
 import type { Host } from "../src/hosts.ts";
 
 test("the service and a CLI read share one copy of a Mac file and fetch only the bytes it grew by", async t => {
@@ -44,4 +44,18 @@ test("the service and a CLI read share one copy of a Mac file and fetch only the
   await writeFile(remote, "rewritten\n");
   await mirrorFile(host, remote, local);
   assert.equal(await readFile(local, "utf8"), "rewritten\n");
+});
+
+// us-metal02, 10-18: the Mac's copy folder kept 92 copies (0.81 GB) of chats that had moved from the Mac to the box, which no row named.
+test("a prune deletes the copies no row names and keeps a whole copy being written", async t => {
+  const root = await mkdtemp(join(tmpdir(), "host-mirror-prune-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const kept = join(root, "Users/x/.prime/agent/sessions/01a1-live.jsonl");
+  const moved = join(root, "Users/x/.prime/agent/sessions/01a1-moved.jsonl");
+  const writing = join(root, "Users/x/.prime/agent/sessions/01a1-new.jsonl.0f.tmp");
+  await mkdir(join(root, "Users/x/.prime/agent/sessions"), { recursive: true });
+  for (const file of [kept, moved, writing]) await writeFile(file, "{}\n");
+  assert.deepEqual(await pruneMirror(root, new Set([kept])), [moved]);
+  assert.deepEqual((await readdir(join(root, "Users/x/.prime/agent/sessions"))).sort(), ["01a1-live.jsonl", "01a1-new.jsonl.0f.tmp"]);
+  assert.deepEqual(await pruneMirror(join(root, "missing"), new Set()), []);
 });

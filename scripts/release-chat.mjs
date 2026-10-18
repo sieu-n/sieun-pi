@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,8 @@ Those steps get PATH and the locale from this shell and a private HOME, TMPDIR a
 A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), and that release makes it as soon as it takes
 the lock, before its own build, so a build that hangs or fails never holds the chat on older code.
 A restart counts as applied only while the service manager reports the service running (systemctl is-active, launchctl print).
+After the flip it deletes each release folder except current, the one current named before, the one the chat was last started on, a waiting
+release's and any folder a running process names, so a rollback further back than the release before current builds that commit again.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main.`;
 
 const LABEL = "com.sieun.agent-chat";
@@ -332,6 +334,43 @@ function kickstart(home) {
   writeFileSync(join(home, STARTED), JSON.stringify({ id, at: new Date().toISOString() }) + "\n");
 }
 
+/** The text of every running process that can name a folder: its cwd, exe, command line, open files and mapped files (/proc), else its command line and cwd (ps, lsof). */
+function processText() {
+  if (existsSync("/proc/self/maps")) {
+    const parts = [];
+    const read = fn => { try { parts.push(fn()); } catch {} };
+    for (const pid of readdirSync("/proc").filter(name => /^\d+$/.test(name))) {
+      const dir = join("/proc", pid);
+      read(() => readlinkSync(join(dir, "cwd")));
+      read(() => readlinkSync(join(dir, "exe")));
+      read(() => readFileSync(join(dir, "cmdline"), "utf8").replaceAll("\0", " "));
+      read(() => readFileSync(join(dir, "maps"), "utf8"));
+      read(() => { for (const fd of readdirSync(join(dir, "fd"))) read(() => readlinkSync(join(dir, "fd", fd))); });
+    }
+    return parts.join("\n");
+  }
+  const out = (command, args) => spawnSync(command, args, { encoding: "utf8" }).stdout ?? "";
+  return out("ps", ["-axww", "-o", "command="]) + out("lsof", ["-nP", "-a", "-d", "cwd", "-Fn"]);
+}
+
+/**
+ * Deletes each release folder except current, the release current named before this flip (the rollback target), the release the chat was last
+ * started on, the release of each waiting release's commit and any folder a running process names, and each build scratch whose release process
+ * is gone. On us-metal02 on 10-18 the folder held 118 releases of 15 MB each (1.5 GB) that nothing ran, and 1.3 GB of them came in that day.
+ */
+function prune(home, keep) {
+  const prefix = realpathSync(home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const used = new Set([...processText().matchAll(new RegExp(`${prefix}/([^/\\s]+)`, "g"))].map(match => match[1]));
+  const started = (() => { try { return JSON.parse(readText(join(home, STARTED))).id; } catch { return null; } })();
+  const kept = new Set([...keep, started, ...waiting(home).map(entry => `release-${entry.sha.slice(0, 7)}`)]);
+  for (const name of readdirSync(home)) {
+    const scratch = /^\.building-release-.+-(\d+)$/.exec(name);
+    if (used.has(name) || (scratch ? alive(Number(scratch[1])) : !RELEASE_NAME.test(name) || kept.has(name) || !lstatSync(join(home, name)).isDirectory())) continue;
+    rmSync(join(home, name), { recursive: true, force: true });
+    log(`removed ${name}, which nothing runs`);
+  }
+}
+
 const chatHome = () => resolve(process.env.SIEUN_PI_CHAT_HOME || join(homedir(), ".local/share/sieun-pi-chat"));
 
 async function main() {
@@ -369,6 +408,7 @@ async function main() {
   flip(home, id);
   log(`current: ${before ?? "(none)"} -> ${id}`);
   restart(options, home, sha);
+  prune(home, [id, before]);
   console.log(id);
 }
 

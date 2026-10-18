@@ -169,7 +169,7 @@ class Judge:
         if self.proc is None:
             self.proc = subprocess.Popen(
                 ["node", CHECK, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                bufsize=0, start_new_session=True,
+                bufsize=0, start_new_session=True, env=check_env(),
             )
             self.key, self.pid = key, os.getpid()
         self.next_id += 1
@@ -211,8 +211,16 @@ class Judge:
                 self.buffer += chunk
 
 
+def check_env() -> dict:
+    """send-check.ts keeps its compiled TypeScript in Node's compile cache: 0.13 CPU s and 96 MB of fresh pages a run without it, 0.04 CPU s
+    and 59 MB with it (10-18, about 130 runs a minute). Only the check gets the cache. Set for every Node child of a kernel, it took one entry per
+    script path, and the per-commit export, release and job trees gave each run new paths: 1.2 GB on us-metal02 by 16:45Z on 10-18, 19 MB a
+    minute after it was emptied."""
+    return {**os.environ, "NODE_COMPILE_CACHE": os.path.join(os.path.expanduser("~"), ".cache", "node-compile-cache")}
+
+
 def one_shot(check: dict) -> dict:
-    proc = subprocess.run(["node", CHECK], input=json.dumps(check), capture_output=True, text=True, timeout=30)
+    proc = subprocess.run(["node", CHECK], input=json.dumps(check), capture_output=True, text=True, timeout=30, env=check_env())
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
@@ -472,15 +480,8 @@ def wrap_http_modules() -> None:
         sys.meta_path.insert(0, WrapOnImport())
 
 
-def cache_node_compiles() -> None:
-    """Node children of this process keep their compiled TypeScript in a cache. Each `node send-check.ts` run stripped its types in wasm
-    again: 0.13 CPU s and 96 MB of fresh pages a run without the cache, 0.04 CPU s and 59 MB with it (10-18, about 130 runs a minute)."""
-    os.environ.setdefault("NODE_COMPILE_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "node-compile-cache"))
-
-
 def install() -> None:
     guard_children()
-    cache_node_compiles()
     wrap_mcp()
     wrap_http_modules()
     wrap_sockets()

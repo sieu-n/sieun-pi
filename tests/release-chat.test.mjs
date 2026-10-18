@@ -502,3 +502,25 @@ test("the typecheck and tests see none of the agent's sockets, dirs, tokens or k
   await new Promise((done) => setTimeout(done, 50));
   assert.equal(accepted.length, 0);
 });
+
+test("a release deletes the folders nothing runs and keeps current, the one before, the started one and one a process uses", async (t) => {
+  // 10-18: ~/.local/share/sieun-pi-chat held 118 release folders (1.5 GB) on us-metal02, and nothing ran 116 of them.
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  assert.equal(f.release([f.c2, "--no-kickstart"]).status, 0);
+  assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
+  writeFileSync(path.join(f.home, "release-4f1c45a-d1canary.log"), "");
+  mkdirSync(path.join(f.home, ".building-release-abcdef0-999999"));
+  const user = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: path.join(f.home, id(f.c2)) });
+  t.after(() => user.kill());
+  const result = f.release([f.c4, "--no-kickstart"]);
+  assert.equal(result.status, 0, result.stderr);
+  user.kill();
+  assert.deepEqual(readdirSync(f.home).filter(name => name.startsWith("release-") || name.startsWith(".building-")).sort(),
+    [id(f.c1), id(f.c2), id(f.c3), id(f.c4), "release-4f1c45a-d1canary.log"].sort());
+  await new Promise(done => user.on("close", done));
+  const next = f.commit("five");
+  f.publish();
+  assert.equal(f.release([next, "--no-kickstart"]).status, 0);
+  assert.deepEqual(readdirSync(f.home).filter(name => name.startsWith("release-")).sort(), [id(f.c1), id(f.c4), id(next), "release-4f1c45a-d1canary.log"].sort());
+});

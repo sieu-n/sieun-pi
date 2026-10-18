@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, type SessionSummary } from "prime-agent";
-import { mirrorFile } from "./host-mirror.ts";
+import { mirrorFile, pruneMirror } from "./host-mirror.ts";
 import { HostBridge, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
 import { SessionPeer } from "./session-peer.ts";
 
@@ -68,7 +68,8 @@ export class HostCatalogs {
       if (host.name === self?.name) continue;
       const client = new DaemonClient(bridge.socketPath(host.name));
       const peer = new SessionPeer({ name: host.name, client, file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
-        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, log: line => this.log(`hosts: ${line}`), onChange: () => this.onChange() });
+        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, log: line => this.log(`hosts: ${line}`),
+        onChange: () => { if (copies) this.pruneCopies(host.name); this.onChange(); } });
       this.remotes.set(host.name, { host, client, peer });
     }
   }
@@ -182,6 +183,23 @@ export class HostCatalogs {
     })().finally(() => { this.mirrors.delete(key); });
     this.mirrors.set(key, job);
     return job;
+  }
+
+  /** The full list each host's copies were last pruned against. */
+  private readonly prunedAt = new Map<string, number>();
+
+  /**
+   * After each full list of a host, deletes this box's copies of that host's files that no row names. On 10-18 the Mac's copy folder kept 92
+   * copies (0.81 GB) of chats that had moved from the Mac to us-metal02, and no reader opens a copy without a row.
+   */
+  private pruneCopies(name: string): void {
+    const remote = this.remotes.get(name);
+    const full = remote?.peer.counts.full ?? 0;
+    if (!remote || !full || this.prunedAt.get(name) === full) return;
+    this.prunedAt.set(name, full);
+    const keep = new Set(remote.peer.list().flatMap(row => (row.sessionFile ? [mirrorPath(remote.host, row.sessionFile)] : [])));
+    void pruneMirror(join(MIRROR_DIR, name), keep).then(gone => { if (gone.length) this.log(`hosts: removed ${gone.length} copies of ${name} files no row names`); },
+      error => this.log(`hosts: prune ${name} copies: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   close(): void {

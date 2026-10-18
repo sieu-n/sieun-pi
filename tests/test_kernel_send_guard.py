@@ -456,11 +456,12 @@ class ChildProcesses(KernelGuardBase):
         out = self.run_cells("pass\n")
         self.assertIn(str(CHILD_DIR), out["pythonpath"].split(os.pathsep))
 
-    def test_install_leaves_httpx_unimported_and_caches_node_compiles(self):
-        # 10-18: importing httpx at install cost every child Python 0.15 CPU s, and each node send-check.ts run stripped its types again.
+    def test_install_leaves_httpx_unimported_and_the_node_compile_cache_to_the_check(self):
+        # 10-18: importing httpx at install cost every child Python 0.15 CPU s. NODE_COMPILE_CACHE set for every node child of a kernel grew
+        # ~/.cache/node-compile-cache to 1.2 GB on us-metal02 in a day, one entry per script path, so only send-check.ts gets it.
         out = self.run_cells("import os, sys\nRESULT = {'httpx': 'httpx' in sys.modules, 'cache': os.environ.get('NODE_COMPILE_CACHE')}\n")
         self.assert_passed(out)
-        self.assertEqual(out["result"], {"httpx": False, "cache": str(self.tmp / "home" / ".cache" / "node-compile-cache")})
+        self.assertEqual(out["result"], {"httpx": False, "cache": None})
 
     def test_httpx_imported_after_install_is_wrapped(self):
         out = self.run_cells("import httpx, httpx._client\nRESULT = [getattr(httpx.Client.send, 'send_guarded', False), getattr(httpx.AsyncClient.send, 'send_guarded', False)]\n")
