@@ -1,0 +1,14 @@
+[Unit]
+Description=pi-pool hookd: the token hook and the chat's pool commands from one resident Python
+
+[Service]
+ExecStart=/usr/bin/python3 -B %h/.local/share/pi-pool/current/bin/pi-pool hookd --release %h/.local/share/pi-pool/current
+Restart=always
+RestartSec=1
+# A restart stops hookd only; a run it forked finishes and answers its client.
+KillMode=process
+# Prime and the chat run with umask 077, and a run makes the pool's files as they would.
+UMask=0077
+
+[Install]
+WantedBy=default.target

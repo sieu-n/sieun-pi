@@ -121,7 +121,15 @@ def term_with_parent():
         ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)
 
 
-def run_token(source, argv):
+def run_vend(source, vend):
+    """vend.py as a script: loaded fresh by runpy, or the module `pi-pool hookd` already loaded."""
+    if vend is None:
+        runpy.run_path(str(source), run_name="__main__")
+    else:
+        sys.exit(vend.main() or 0)
+
+
+def run_token(source, argv, vend=None):
     provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
     if provider not in ("anthropic", "openai-codex"):
         provider = "unknown"
@@ -145,11 +153,13 @@ def run_token(source, argv):
         raise SystemExit(128 + signum)
 
     previous_handler = signal.signal(signal.SIGTERM, killed_while_loading)
-    term_with_parent()
+    if vend is None:
+        # Under hookd this process's parent is hookd; the C client stands in for the shell and sends its SIGTERM.
+        term_with_parent()
     original = sys.stdout
     out = sys.stdout = CountedStdout(original)
     try:
-        runpy.run_path(str(source), run_name="__main__")
+        run_vend(source, vend)
         out.flush()
     except SystemExit as error:
         if error.code is None or error.code == 0:
@@ -175,7 +185,7 @@ def run_token(source, argv):
         signal.signal(signal.SIGTERM, previous_handler)
 
 
-def main():
+def main(vend=None):
     argv = sys.argv[1:]
     if argv and argv[0] == "--cli":
         pass
@@ -186,9 +196,9 @@ def main():
     source = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "vend.py")
     sys.argv = [str(source), *argv]
     if argv and argv[0] == "--cli" or "--status" in argv:
-        runpy.run_path(str(source), run_name="__main__")
+        run_vend(source, vend)
     else:
-        run_token(source, argv)
+        run_token(source, argv, vend)
 
 
 if __name__ == "__main__":

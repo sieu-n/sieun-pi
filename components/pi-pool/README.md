@@ -58,7 +58,11 @@ The tests and the token hooks still run `/usr/bin/python3`, and they read only t
    the commit's tree id for this directory, so installing the same code twice reuses it.
 4. The runtime links point at `~/.local/share/pi-pool/current`. Then `current` flips to
    the new release in one rename, and the release it replaced becomes `previous`.
-5. Both token hooks run through `~/.config/pi-pool/bin/pi-pool-token`. If either hook
+5. With `cc` on the machine, `bin/pi-pool-token.c` becomes `bin/pi-pool-token`, the C
+   client of `pi-pool hookd`, and the Python hook moves to `bin/pi-pool-token.py`. With no
+   `cc` the Python hook stays `bin/pi-pool-token` and the install output says so. On Linux
+   the installer writes `pi-pool-hookd.service` to `~/.config/systemd/user/` and restarts it.
+6. Both token hooks run through `~/.config/pi-pool/bin/pi-pool-token`. If either hook
    exits nonzero, hangs past 10 s or is missing, `current` and the links go back to where
    they were and the command exits 1. Only token lengths are read.
 
@@ -86,6 +90,29 @@ is rebuilt; a new session loads `current`.
 
 For a custom state directory, pass the same `PI_POOL_DIR` to the CLI and Prime Agent.
 The CLI rejects state roots inside the code directory.
+
+## The resident hook server
+
+On us-metal02 on 10-18 Prime ran the token hook 16 times a second at 0.2 CPU s each, and
+0.11 s of that was Python start-up. `pi-pool hookd` (`pool/hookd.py`, unit
+`pi-pool-hookd.service`) loads vend.py and the pool once and listens on
+`<pool dir>/hook.sock`, mode 0600. It forks one child per request, and the child runs the
+same hook or CLI code with the client's argv, environment, cwd and parent pid, so every
+pool decision is the same code as before.
+
+The C hook client sends its fds 0, 1 and 2 with the request, so the token goes straight to
+Prime's pipe. It runs the Python hook itself for `--status`, `--cli`, other arguments and a
+terminal, when the socket does not answer, and when hookd answers `F`. Once the whole
+request is sent it never runs the Python hook, so one request never vends twice. A
+SIGTERM to the client, or a client that goes away, reaches the run as a SIGTERM, which
+logs `hook_killed` and `hook_no_token` `interrupted` as before.
+
+hookd answers `F` when the script is not in the release it loaded or when the client's
+`HOME`, `USER`, `PI_POOL_DIR`, `PI_POOL_SECRETS` or `PYTHON*` variables differ from its
+own. When `current` names another release it answers `F` and exits, and systemd starts it
+on the new code. `pi-pool serve` hands its runs to hookd in pipe mode, which answers one
+JSON line with the code, stdout and stderr. The protocol is in `pool/hookd.py`, and
+`tests/test_hookd.py` covers it.
 
 ## One pool for two machines
 

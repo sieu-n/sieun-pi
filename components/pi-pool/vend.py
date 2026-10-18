@@ -125,6 +125,9 @@ USAGE = """usage: pi-pool [command]
   file-login                     file the sign-in harvest on stdin in this machine's store
   serve                          answer another machine's token requests and account commands
                                   on the tailnet address in serve.json (pool/remote.py)
+  hookd [--release <link>]       answer the token hook and pool commands on <pool dir>/hook.sock
+                                  from one resident Python (pool/hookd.py); exits when <link>
+                                  stops naming the release it loaded
 """
 
 
@@ -145,7 +148,7 @@ def cli(args):
         "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue, "prod": pool.turns.cmd_prod,
-        "serve": pool.remote.cmd_serve, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
+        "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

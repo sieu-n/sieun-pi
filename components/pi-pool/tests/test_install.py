@@ -55,9 +55,9 @@ class Install(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD:components/pi-pool")[:12]
 
-    def run_installer(self, *args):
+    def run_installer(self, *args, env=None):
         done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "components/pi-pool/install.py"), *args,
-                               "--home", str(self.home)], capture_output=True, text=True)
+                               "--home", str(self.home)], capture_output=True, text=True, env=env)
         return done.returncode, json.loads(done.stdout) if done.returncode == 0 else done.stderr
 
     def current(self):
@@ -119,6 +119,40 @@ class Install(unittest.TestCase):
         self.assertEqual(code, 0, out)
         cached = list((self.home / ".local/share/pi-pool/current/pool/__pycache__").glob("__init__.*.pyc"))
         self.assertEqual(len(cached), 1, cached)
+
+    def add_client(self):
+        source = INSTALLER.parent
+        for name in ("bin/pi-pool-token.c", "deploy/systemd/pi-pool-hookd.service"):
+            (self.repo / "components/pi-pool" / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(source / name, self.repo / "components/pi-pool" / name)
+        self.commit("client")
+
+    def test_install_builds_the_hook_client_and_writes_the_hookd_unit(self):
+        self.add_client()
+        code, out = self.run_installer()
+        self.assertEqual(code, 0, out)
+        bin_dir = self.home / ".local/share/pi-pool/current/bin"
+        self.assertNotEqual((bin_dir / "pi-pool-token").read_bytes(), HOOK.encode())
+        self.assertTrue(os.access(bin_dir / "pi-pool-token", os.X_OK))
+        self.assertEqual((bin_dir / "pi-pool-token.py").read_text(), HOOK)
+        self.assertTrue(out["client"].startswith("built with"), out)
+        unit = self.home / ".config/systemd/user/pi-pool-hookd.service"
+        self.assertEqual(unit.read_text(), (INSTALLER.parent / "deploy/systemd/pi-pool-hookd.service").read_text())
+        self.assertEqual(out["hookd"], {"unit": str(unit), "systemctl": "skipped: not this user's systemd"})
+        # No hookd answers in this HOME, so the client ran the Python hook for both providers.
+        self.assertEqual({p: h["ok"] for p, h in out["hooks"].items()}, {"anthropic": True, "openai-codex": True})
+
+    def test_with_no_cc_the_python_hook_stays_bin_pi_pool_token(self):
+        self.add_client()
+        path = self.base / "path"
+        path.mkdir()
+        os.symlink(shutil.which("git"), path / "git")
+        code, out = self.run_installer(env=dict(os.environ, PATH=str(path)))
+        self.assertEqual(code, 0, out)
+        bin_dir = self.home / ".local/share/pi-pool/current/bin"
+        self.assertEqual((bin_dir / "pi-pool-token").read_text(), HOOK)
+        self.assertFalse((bin_dir / "pi-pool-token.py").exists())
+        self.assertEqual(out["client"], "no cc; bin/pi-pool-token is the Python hook")
 
     def test_only_committed_source_ships(self):
         (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")
