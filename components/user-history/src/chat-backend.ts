@@ -48,6 +48,7 @@ import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { SendOnce, sessionFileOf } from "./send-once.ts";
+import { deliverThroughParent } from "./subagent-relay.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
@@ -245,7 +246,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir) });
   const agentMessage = {
-    deliver: (session: string, text: string): Promise<"sent" | "gone"> => sendOnce.deliver(session, text),
+    deliver: (session: string, text: string): Promise<"sent" | "gone"> =>
+      deliverThroughParent(session, text, { fileOf: id => sessionFileOf(id, agentDir), deliver: (id, message) => sendOnce.deliver(id, message) }, dutyLog),
     startRoot: async (root: string): Promise<void> => {
       const summary = await catalog.summary(root);
       const sessionPath = summary && catalog.daemonPath(summary);

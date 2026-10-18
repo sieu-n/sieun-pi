@@ -25,7 +25,8 @@ export interface InterruptedHead {
   name: string;
   working: boolean;
   paused_in_tree: string[];
-  result: string | { deliveryStatus?: string; deliveryMode?: string } | { error: string };
+  /** `relayed_through`: the parent that got the message for a stopped subagent the daemon no longer holds. */
+  result: string | { deliveryStatus?: string; deliveryMode?: string; relayed_through?: string } | { error: string };
 }
 
 /** A run `--direct` or `--include-children` messaged itself, and the answer. */

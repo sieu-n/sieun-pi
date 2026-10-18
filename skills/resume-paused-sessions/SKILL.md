@@ -35,6 +35,16 @@ A message cannot reach a hung run. Abort it first, then pass its full session id
 
 A run whose Prime worker died shows `workerState` `failed` in `prime-agent list --json`. It takes no abort, stop or message, and each one answers "Session worker is failed". The script lists it as `worker_failed` and skips any head whose own worker died. Reopen that head from its saved file with a daemon `create` that passes its `sessionPath`, then run the script again. The daemon drops the dead worker and starts the head on a new one. The chat Resume button and a pinned chat both do the reopen.
 
+## Stopped subagents
+
+The daemon finds a subagent only while its tree's worker holds it. After the chat service's idle unload or a restart drops one, `prime-agent send <id>` answers "Unknown active session". To resume such a subagent, name its full session id:
+
+```
+python3 ~/.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py --direct --only <session id>
+```
+
+The script reads the subagent from its file under `~/.prime/agent/session-artifacts/<root>/sub-*/`, even when an archive or abort came before its cut turn. The send to it fails, so the script sends its parent a `[relay]` note with the subagent's name, id and last step. The note asks the parent to pass the message on with `agent_message.send(..., receiver_role="child", receiver_name=<name>)`, and that call reopens the subagent in the parent's tree. A parent the daemon does not hold either gets the note through its own parent. The result shows `relayed_through` with the parent's id. The chat service's wakes, brief keeper and alert bridge send the same way (`components/user-history/src/subagent-relay.ts`).
+
 ## Verify
 
 After 30 to 60 seconds, run `prime-agent list` and check that the heads and their children show `working`. Run the script with `--dry-run` again to see what is still interrupted.

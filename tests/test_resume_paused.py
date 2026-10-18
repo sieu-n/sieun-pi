@@ -446,6 +446,46 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered"}])
         self.assertEqual(self.sent, [("56018fdc0c63", "continue")])
 
+    def test_a_named_subagent_the_daemon_dropped_mid_tool_gets_its_continue_through_its_parent(self):
+        # 10-18 04:45:48Z: census writer speed, a Crawler VP subagent, was archived mid tool call; the daemon no longer held it, so a send to
+        # it answered "Unknown active session", and `prime-agent send` could not resume it. Its parent's rlm handle reopens it.
+        chat = "01a115e2-9544-7204-b8db-8ce4d5319048"
+        sid = "01a14ceb-1e15-745d-a4cd-3f29b6766d94"
+        (self.root / "sessions").mkdir()
+        (self.root / "sessions" / f"{chat}.jsonl").write_text(json.dumps(role(60, "user")) + "\n")
+        folder = self.root / "artifacts" / chat / "sub-ec6414ff"
+        folder.mkdir(parents=True)
+        (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": "census writer speed"}))
+        call = {"type": "message", "timestamp": at(31), "message": {"role": "assistant", "stopReason": "toolUse", "content": [
+            {"type": "toolCall", "name": "ipython", "arguments": {"code": "print(sampler.tail(5))"}}]}}
+        archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(30), "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}}
+        (folder / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [role(40, "user"), call, archived, aborted]) + "\n")
+
+        def send(target, text):
+            if target == sid:
+                raise resume_paused.CommandError(f"prime-agent send --json {sid} continue failed (1): Error: Unknown active session: {sid}")
+            self.sent.append((target, text))
+            return {"deliveryStatus": "delivered"}
+
+        with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.object(resume_paused, "list_sessions", return_value=[]):
+            self.sessions = resume_paused.with_saved_owners([], resume_paused.saved_rows({sid}), {sid})
+            args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                      only=sid, state=str(self.root / "state.json"))
+            with patch.object(resume_paused, "send", side_effect=send), patch.object(resume_paused, "pool_bin", return_value=None):
+                report = resume_paused.resume(self.sessions, args, NOW)
+        self.assertEqual([(p["name"], p["reason"]) for p in report["paused"]], [("census writer speed", "cut_off")])
+        self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered", "relayed_through": chat}])
+        [(target, note)] = self.sent
+        self.assertEqual(target, chat)
+        self.assertIn('receiver_name="census writer speed"', note)
+        self.assertIn(sid, note)
+        self.assertIn('The last thing it did: ipython {"code": "print(sampler.tail(5))"}', note)
+        self.assertTrue(note.endswith("\n\ncontinue"))
+
     def test_a_restart_window_starts_at_the_old_supervisors_last_line_not_at_the_new_ones_start(self):
         # 10-17: the old supervisor's last line came at 19:46:18Z. The new one wrote 40 recovered or not-adopted worker lines at 19:48:47Z
         # to 19:48:48Z and listened at 19:48:48.539Z, so the window was 5 s long and missed every cut at 19:46Z.

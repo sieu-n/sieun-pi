@@ -65,7 +65,10 @@ export interface WakeDeps {
   runState: (on: Extract<WakeOn, { kind: "run" }>) => Promise<RunState>;
   /** The run's CI cache stamp (any string that changes when the run moves), or null when the cache has none. */
   stamp?: (run: number) => Promise<string | null>;
-  /** Sends the session the text; resolves "gone" when the daemon knows no such session. */
+  /**
+   * Sends the session the text; resolves "gone" when the daemon knows no such session. The service's deliver sends a stopped subagent's text
+   * through its parent (`deliverThroughParent`), so its wake is not dropped.
+   */
   deliver: (session: string, text: string) => Promise<"sent" | "gone">;
   /**
    * Starts the worker of the chat tree `root` with no prompt. The daemon finds a child only while its tree's worker runs, so a child whose tree

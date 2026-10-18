@@ -44,6 +44,17 @@ With --direct each interrupted run gets the message itself and no head gets a
 list, and a message to the head no longer hides a run below it. The chat
 server runs it that way for the jobs of its chats, naming them with --only.
 
+A subagent the daemon no longer holds answers "Unknown active session" to a
+send: the daemon finds a subagent only while its tree's worker holds it, and the
+idle unload and restarts drop it from there. Its message then goes to its parent
+with the subagent's name, id and last step, asking it to send the message on
+through its rlm handle (agent_message), which reopens the subagent in its tree.
+A parent the daemon does not hold either gets that note through its own parent.
+A run named with --only is read from its file under session-artifacts when the
+daemon does not list it, and an archive or abort before its cut turn does not
+hide it, so `--direct --only <id>` resumes a subagent stopped mid-turn.
+
+
 --owners names the sessions that own an open step of a chat. Each one is looked
 at even when its worker is gone or it was archived (read from its session file
 on disk), an empty aborted reply counts for it ("aborted"), and a spawned job
@@ -662,8 +673,11 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if only and full not in only:
             continue
         owner = full in OWNERS
+        # A run named with --only is the caller's pick: it is read from its file when the daemon does not hold it, and an archive or abort
+        # before its cut turn does not hide it (a deleted job still does).
+        named = full in only
         unloaded_at = UNLOADED.get(full)
-        if s.get("lifecycle") != "live" and not (owner and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
+        if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
                 and not archived_by_restart(entries_of(sid), restarts):
             continue
         if s.get("workerState") == "failed":
@@ -698,14 +712,14 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             verdict = ("never_started", "Its worker stopped before its first task reached it.")
         else:
             unstuck = full in UNSTUCK
-            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
+            if not unstuck and not named and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
                 continue
-            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner, restarts)
+            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner or named, restarts)
             if not verdict:
                 continue
             # The unload's stop counts only for a turn that failed on the token hook; any other run it stopped stays stopped.
             hidden = archived_by_unload(entries_of(sid), unloaded_at) and (s.get("lifecycle") != "live" or stopped_on_purpose(entries_of(sid), last, restarts))
-            if hidden and not unstuck and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
+            if hidden and not unstuck and not named and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
                 continue
         if s.get("sessionFile") and deleted_on_purpose(s["sessionFile"]):
             continue
@@ -780,6 +794,55 @@ def live_id(session_id):
     return row["id"] if row else None
 
 
+UNKNOWN_SESSION = "Unknown active session"
+
+
+def last_step(path):
+    """The last thing the run at `path` did: its last reply text or tool call, cut to 200 characters."""
+    for entry in reversed(tail_entries(path)):
+        msg = entry.get("message") or {}
+        if entry.get("type") != "message" or msg.get("role") != "assistant":
+            continue
+        for part in reversed(msg.get("content") or []):
+            if isinstance(part, dict) and part.get("type") == "toolCall":
+                return f"{part.get('name')} {json.dumps(part.get('arguments'))[:180]}"
+        if reply_text(entry):
+            return reply_text(entry)[:200]
+    return None
+
+
+def relay_note(name, session_id, text, doing=None):
+    return (f'[relay] Your subagent "{name}" ({session_id}) is stopped, so the chat service could not reach it. '
+            f'Send it the message below with agent_message.send(message, receiver_role="child", receiver_name={json.dumps(name)}), '
+            "which reopens it in your tree. Skip it only if you stopped that subagent on purpose."
+            + (f"\nThe last thing it did: {doing}" if doing else "") + "\n\n" + text)
+
+
+def relay(session_id, text, describe=True):
+    """Sends `text` for the stopped subagent `session_id` to its parent, whose rlm handle reopens it; a parent the daemon does not hold
+    either gets it through its own parent, up to the root, whose send reopens it from its file. None when `session_id` is no subagent.
+
+    The daemon finds a subagent only while its tree's worker holds it: `prime-agent send <id>` to one the idle unload or a restart dropped
+    answers "Unknown active session" (10-18 04:29Z e9280d6280ea, and five Crawler VP subagents whose wakes were dropped at 05:00Z)."""
+    path = session_files([session_id]).get(session_id)
+    folder = Path(path).parent if path else None
+    try:
+        name = json.loads((folder / "rlm-subagent.json").read_text()).get("sessionName") if folder and folder.name.startswith("sub-") else None
+    except (OSError, ValueError, AttributeError):
+        name = None
+    parent = parent_of(path) if name else None
+    if not parent:
+        return None
+    note = relay_note(name, session_id, text, last_step(path) if describe else None)
+    try:
+        result = send(parent, note)
+    except CommandError as error:
+        result = relay(parent, note, describe=False) if UNKNOWN_SESSION in str(error) else None
+        if result is None:
+            raise
+    return {**result, "relayed_through": parent}
+
+
 def direct_resume(paused, args, state, now):
     """--direct: each interrupted run gets the message itself, and no head gets a list. A hung run takes no message until
     it is aborted, and a run in a dead worker takes none at all."""
@@ -795,9 +858,10 @@ def direct_resume(paused, args, state, now):
             try:
                 res = send(p.get("target", p["id"]), text)
             except CommandError as error:
-                live = live_id(p["session_id"]) if "target" in p and "Unknown active session" in str(error) else None
+                gone = UNKNOWN_SESSION in str(error)
+                live = live_id(p["session_id"]) if "target" in p and gone else None
                 try:
-                    res = send(live, text) if live else {"error": str(error)[:300]}
+                    res = send(live, text) if live else (gone and relay(p["session_id"], text)) or {"error": str(error)[:300]}
                 except CommandError as again:
                     res = {"error": str(again)[:300]}
             if "error" not in res:
@@ -890,7 +954,7 @@ def main():
     ap.add_argument("--json", action="store_true", help="print JSON")
     ap.add_argument("--unstuck", default="", help="comma-separated full session ids the caller aborted because they were hung")
     ap.add_argument("--direct", action="store_true", help="message each interrupted run itself and send no head a list")
-    ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs")
+    ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs, read from their files when the daemon does not list them")
     ap.add_argument("--owners", default="", help="comma-separated full session ids that own an open step of a chat (see above)")
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
@@ -900,7 +964,7 @@ def main():
 
     try:
         sessions = list_sessions()
-        read = OWNERS | set(UNLOADED)
+        read = OWNERS | set(UNLOADED) | set(filter(None, args.only.split(",")))
         if read:
             sessions = with_saved_owners(sessions, saved_rows(read - {s.get("sessionId") or s["id"] for s in sessions}), read)
         report = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
