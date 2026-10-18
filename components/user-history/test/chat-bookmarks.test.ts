@@ -53,7 +53,8 @@ test("api/bookmarks: GET lists; POST adds, removes and clears with the write tok
     assert.equal((await post({ op: "pin", chat: "c1", at: 5 })).status, 400);
     assert.equal((await post({ op: "add", chat: "c1", at: -1, text: "hi" })).status, 400);
     assert.equal((await post({ op: "add", chat: "c 1", at: 5, text: "hi" })).status, 400);
-    assert.equal((await post({ op: "add", chat: "c1", at: 5, text: "x".repeat(BOOKMARK_TEXT_MAX + 1) })).status, 400);
+    assert.equal((await post({ op: "add", chat: "c3", at: 5, text: "x".repeat(BOOKMARK_TEXT_MAX + 1) })).status, 200);
+    await post({ op: "remove", chat: "c3", at: 5 });
     const added = await post({ op: "add", chat: "c1", at: 5, text: "hi" });
     assert.deepEqual([added.status, added.body.bookmarks.map(b => [b.chat, b.at, b.text])], [200, [["c1", 5, "hi"]]]);
     await post({ op: "add", chat: "c2", at: 9, text: "there" });

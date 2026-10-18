@@ -14,7 +14,7 @@ import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
-import { BOOKMARK_TEXT_MAX, type BookmarkAction } from "./shared/bookmarks.ts";
+import type { BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
@@ -213,7 +213,7 @@ function parseBookmarkAction(body: Record<string, unknown>): BookmarkAction {
   const chat = threadId(text(body.chat, "chat", 256));
   if (typeof body.at !== "number" || !Number.isSafeInteger(body.at) || body.at < 0) throw new RequestError(400, "Choose a message time.");
   if (body.op === "remove") return { op: "remove", chat, at: body.at };
-  if (body.op === "add") return { op: "add", chat, at: body.at, text: text(body.text, "text", BOOKMARK_TEXT_MAX) };
+  if (body.op === "add") return { op: "add", chat, at: body.at, text: text(body.text, "text") };
   throw new RequestError(400, "Choose add, remove or clear.");
 }
 function parseLabelAction(body: Record<string, unknown>): LabelAction {
