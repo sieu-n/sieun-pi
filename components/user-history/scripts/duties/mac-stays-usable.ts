@@ -9,8 +9,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * (src/mac-usable-watch.ts, one line a minute) and reports the share of minutes the Mac was usable (`USABLE`, from ops guy's pressure feed) over
  * the last hour and the last 24 h, the minutes each harness part missed, the top miss with the chat trees behind it, and the longest run of
  * unusable minutes in the last hour, the quiet sessions behind an idle miss, and each tool call a quiet session sat in. A run of OFF_STREAK_ALERT or more is flagged as an alert for the duty job to tell the chat. The Prime
- * worker footprint is a detail line with no target. Each unusable minute goes to the harness side when more than HARNESS_TURNS agent turns
- * worked in it or the Prime workers held more than HARNESS_GB, and to the apps' or owner's side otherwise, with the feed's largest owners named for those minutes. No model call.
+ * worker footprint is a detail line with no target. Each unusable minute goes to the harness side when the Prime workers held more than
+ * HARNESS_GB, and to the apps' or owner's side otherwise, with the feed's largest owners named for those minutes. No model call.
  */
 
 const MINUTE = 60_000;
@@ -18,15 +18,14 @@ const HOUR = 60 * MINUTE;
 /** Unusable minutes in a row that make an alert: the 10 the harness team set for this duty on 10-14. */
 export const OFF_STREAK_ALERT = 10;
 /**
- * An unusable minute is the harness's when more agent turns than HARNESS_TURNS worked in it, or the Prime workers held more than HARNESS_GB.
- * Over the 721 watch minutes with a feed reading from 10-14 20:31Z to 10-15 08:51Z, none of the 567 with 14 or fewer turns working was unusable
- * and 32 of the 154 with more were (components/pi-pool/tests/usable_minutes_1014_1015.json); pi-pool's critical limit of 12 plus 2 borrows is the
- * same 14. Over the same 721 minutes, none of the 364 with the workers at 16 GB or less was unusable, and at
- * 09:30Z on 10-15 the Mac read 168% kernel_task with 14 turns working and the workers at 25.9 GB.
+ * An unusable minute is the harness's when the Prime workers held more than HARNESS_GB, a measured footprint. Whether a minute is unusable at
+ * all comes only from ops guy's feed (`USABLE`: pressure, swapouts, kernel_task). Until 10-18 a minute with more than 14 agent turns working
+ * also went to the harness side; the owner never set that number (his queue holds 30 slots, c88), and c67 asks a metric to measure what his
+ * words ask, so the turn count is gone. Over today's 120 unusable minutes to 01:24Z the change moved 4 to the app or owner side: 00:39Z,
+ * 00:49Z, 01:10Z and 01:24Z, with the workers at 14.46 to 15.56 GB.
  */
-export const HARNESS_TURNS = 14;
 export { HARNESS_GB };
-export const isHarnessMinute = (line: WatchLine): boolean => (line.queue?.working ?? 0) > HARNESS_TURNS || line.workerGb > HARNESS_GB;
+export const isHarnessMinute = (line: WatchLine): boolean => line.workerGb > HARNESS_GB;
 
 const PARTS: readonly TargetPart[] = ["usable", "idle", "queue"];
 const PART_WORDS: Record<TargetPart, string> = {
@@ -121,10 +120,10 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
     flagged.push({ kind: "usable", excerpt: `The Mac was usable in ${fed(hour).length - missMinutes.usable.length} of the ${fed(hour).length} minutes with a feed reading in the last hour ` +
       `(${hour.length} watched)${missMinutes.usable.length ? `; unusable minutes by cause: ${why.filter(([, count]) => count).map(([miss, count]) => `${USABLE_WORDS[miss]} ${count}`).join(", ")}` : ""}.` });
     const harness = missMinutes.usable.filter(isHarnessMinute), other = missMinutes.usable.filter(line => !isHarnessMinute(line));
-    if (harness.length) flagged.push({ kind: "harness_side", excerpt: `${harness.length} unusable minutes had more than ${HARNESS_TURNS} agent turns working or more than ` +
+    if (harness.length) flagged.push({ kind: "harness_side", excerpt: `${harness.length} unusable minutes had more than ` +
       `${HARNESS_GB} GB in Prime workers (${harness.map(line => `${clock(line.at)} ${line.queue?.working ?? "?"} turns, ` +
       `${line.workers} workers ${line.workerGb} GB, ${line.live} live sessions`).join("; ")}): the harness side. Workers behind them: ${treesBehind("usable", harness) || "none named"}.` });
-    if (other.length) flagged.push({ kind: "other_side", excerpt: `${other.length} unusable minutes had ${HARNESS_TURNS} or fewer agent turns working and ${HARNESS_GB} GB or less in Prime workers; the feed's largest owners then: ` +
+    if (other.length) flagged.push({ kind: "other_side", excerpt: `${other.length} unusable minutes had ${HARNESS_GB} GB or less in Prime workers; the feed's largest owners then: ` +
       `${ownersBehind(other) || "the feed named no owners"}.` });
   }
   const named = missMinutes.idle.findLast(line => line.quiet?.length);
