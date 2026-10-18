@@ -138,6 +138,15 @@ function agentsOf(dir: string, chat: { id: string; name: string }): { jobs: Map<
  * its number and then names the job it started answers first (r3e's Reddit reply read "all 7 Reddit crawl operations are blocked live" before
  * "I started the job", and the unit list read no number in it).
  */
+/**
+ * Whether the job had finished by `at`: the last Agents card snapshot at or before it that lists the job shows it done. A spawned helper hands
+ * its result to its parent as it ends and then drops off the card.
+ */
+let runDir = "";
+function doneAt(job: string, at: number): boolean {
+  const last = listJson<Agent[]>(join(runDir, "agents")).filter(snap => snap.at <= at && snap.value.some(agent => agent.sessionId === job)).at(-1);
+  return last?.value.some(agent => agent.sessionId === job && agent.state === "done") ?? false;
+}
 export function firstReply(events: readonly SessionEvent[], since: number, task = ""): Check {
   const reply = events.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= since)?.text ?? "";
   const own = new Set(task.match(/\d+/g) ?? []);
@@ -151,6 +160,7 @@ export function firstReply(events: readonly SessionEvent[], since: number, task 
 const taskText = (name: string): string => TASKS[name] ?? "";
 
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
+  runDir = run;
   const roots = [state.chat.id, ...(state.control ? [state.control.id] : [])];
   const read = (id: string): SessionEvent[] => readSession(id, roots);
   const end = Date.now();
@@ -203,6 +213,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       // A job asleep on a board.wake it set, with no [wake] delivered since, waits on purpose, and the chat's rule (board.wake over a held
       // kernel) asks for that. In r3c both jobs slept on CI runs queued 1.5 h and were scored quiet and dead, and the idle unload archived one.
       if (asleepAt(own, slot.at)) { coordLines.push(`slot ${iso(slot.at)}, job ${name}: asleep on its board.wake, left alone`); continue; }
+      // A job that finished its part and handed its result back is done, not quiet: r3h's 6 "yt trace" helpers each returned their rows and ended,
+      // and (2) scored them quiet 32 min at 13:10Z.
+      if (doneAt(job, slot.at)) {
+        coordLines.push(`slot ${iso(slot.at)}, job ${name}: finished and reported, left alone`); continue;
+      }
       const failed = head.some(event => event.kind === "text" && event.at <= slot.at && event.at >= lastAt - 60_000 && new RegExp(`(child-failed|ended|stopped)[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(ended|stopped|failed)`, "i").test(event.text));
       const quietFor = slot.at - lastAt;
       if (!failed && quietFor < state.everyMs) continue;

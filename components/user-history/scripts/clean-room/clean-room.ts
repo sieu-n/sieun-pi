@@ -528,6 +528,11 @@ async function stallJobs(run: string, until: number, afterMs: number): Promise<v
       if (!moved && Date.now() - seen.get(job.sessionId)! < afterMs) continue;
       try {
         await call(srv, "POST", `api/threads/${job.sessionId}/abort`, {});
+        // The job's helpers go too: in r3h the YouTube job's 6 tracers kept writing after its abort and finished the page by 12:55Z.
+        for (const helper of agents.filter(agent => agent !== job && agent.key?.startsWith("child:") && agent.state === "working" && !/^check-in /.test(agent.name ?? ""))) {
+          const child = helper.sessionId ?? helper.key!.slice("child:".length);
+          await call(srv, "POST", `api/threads/${child.startsWith("sub-") ? sessionOnDisk(chat.id, child) ?? child : child}/abort`, {}).catch(error => log(run, `stall helper ${helper.name}: ${error instanceof Error ? error.message : String(error)}`));
+        }
         stalled.set(chat.id, job.sessionId);
         log(run, `stalled job ${job.name} (${job.sessionId}) of ${chat.name}: aborted its turn ${moved ? "after the goal's first move" : `after ${Math.round(afterMs / 60_000)} min of work`}`);
       } catch (error) { log(run, `stall ${job.sessionId}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -535,6 +540,41 @@ async function stallJobs(run: string, until: number, afterMs: number): Promise<v
     await new Promise(resolve => setTimeout(resolve, 15_000));
   }
   writeJson(join(run, "stalls.json"), Object.fromEntries(stalled));
+}
+
+/** A spawned helper's session id from its child id's folder under the chat's session-artifacts; undefined when it is not there yet. */
+function sessionOnDisk(chat: string, child: string): string | undefined {
+  const visit = (dir: string, depth: number): string | undefined => {
+    if (depth > 4 || !existsSync(dir)) return undefined;
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (!name.startsWith("sub-") || !statSync(path).isDirectory()) continue;
+      if (name === child) return readdirSync(path).find(file => file.endsWith(".jsonl") && file !== "semantic-edges.jsonl")?.slice(0, -6);
+      const deeper = visit(path, depth + 1);
+      if (deeper) return deeper;
+    }
+    return undefined;
+  };
+  return visit(join(homedir(), ".prime/agent/session-artifacts", chat), 0);
+}
+
+/** Whether a session's own transcript, under one of the run's chats' session-artifacts, ends archived: by its id, or by its child id's folder. */
+function archivedOnDisk(chats: readonly string[], id: string): boolean {
+  const found: string[] = [];
+  const visit = (dir: string, depth: number) => {
+    if (depth > 4 || !existsSync(dir)) return;
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (name === `${id}.jsonl`) found.push(path);
+      else if (name === id && statSync(path).isDirectory()) found.push(...readdirSync(path).filter(file => file.endsWith(".jsonl") && file !== "semantic-edges.jsonl").map(file => join(path, file)));
+      else if (name.startsWith("sub-") && statSync(path).isDirectory()) visit(path, depth + 1);
+    }
+  };
+  for (const chat of chats) visit(join(homedir(), ".prime/agent/session-artifacts", chat), 0);
+  return found.length > 0 && found.every(file => {
+    const states = readFileSync(file, "utf8").split("\n").filter(line => line.startsWith('{"type":"session_state"'));
+    return states.length > 0 && states.at(-1)!.includes('"status":"archived"');
+  });
 }
 
 /**
@@ -570,6 +610,9 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   const archive = (id: string, what: string) => call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived ${what} ${id}`), (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (/: 404 /.test(message)) { log(run, `${what} ${id} is gone already`); return; }
+    // A job archived with its chat answers 502 "not on this box" once the chat is gone, so its own transcript decides: r3h's job and its 6
+    // helpers on 10-18 had all ended archived, and teardown failed on them twice.
+    if (archivedOnDisk(chats, id)) { log(run, `${what} ${id} is archived already, by its own transcript`); return; }
     failed.push(id);
     log(run, `archive ${id}: ${message}`);
   });
