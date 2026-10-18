@@ -7,6 +7,7 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostStats } from "./host-stats.ts";
 
 const VERSION = 1;
 const UPGRADE = "prime-daemon";
@@ -82,13 +83,14 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-/** The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades byte for byte to the daemon socket, and serves reads under the roots. */
+/** The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades byte for byte to the daemon socket, serves reads under the roots and the box's CPU, memory and turn queue. */
 export function createRelay(config, log = () => {}) {
   const server = createServer(async (request, response) => {
     try {
       if (!authorized(request, config.token)) return send(response, 401, { error: "unauthorized" });
       const url = new URL(request.url ?? "/", "http://relay");
       if (request.method === "GET" && url.pathname === "/v1/health") return send(response, 200, { ok: true, daemon: await daemonAnswers(config.daemonSocket) ? "answering" : "down", version: VERSION });
+      if (request.method === "GET" && url.pathname === "/v1/host") return send(response, 200, await hostStats());
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/file") return await serveFile(request, response, url, config.roots);
       send(response, 404, { error: "unknown route" });
     } catch (error) {

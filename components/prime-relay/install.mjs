@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing,
+Copies relay.mjs and host-stats.ts from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -96,9 +96,10 @@ function launchdPlist(node, script) {
 function main() {
   const options = args(process.argv.slice(2));
   const sha = execFileSync("git", ["-C", repo, "rev-parse", "--verify", `${options.ref}^{commit}`], { encoding: "utf8", env: gitEnv }).trim();
-  const source = execFileSync("git", ["-C", repo, "show", `${sha}:components/prime-relay/relay.mjs`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 });
+  const show = file => execFileSync("git", ["-C", repo, "show", `${sha}:components/prime-relay/${file}`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 });
   const script = join(share, "relay.mjs");
-  writeAtomic(script, source, 0o644);
+  writeAtomic(join(share, "host-stats.ts"), show("host-stats.ts"), 0o644);
+  writeAtomic(script, show("relay.mjs"), 0o644);
   writeAtomic(join(share, "release.json"), `${JSON.stringify({ sha, installedAt: new Date().toISOString() })}\n`, 0o644);
   if (!existsSync(tokenFile)) writeAtomic(tokenFile, `${randomBytes(32).toString("hex")}\n`, 0o600);
   const current = existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf8")) : {};
