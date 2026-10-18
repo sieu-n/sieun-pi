@@ -21,8 +21,20 @@ export function rosterMerge(rows: ReadonlyMap<string, SessionSummary>, live: rea
   const next = new Map(rows);
   const liveKeys = new Set(live.map(rowKey));
   for (const [key, row] of next) if (row.activeSessionId !== undefined && !liveKeys.has(key)) next.set(key, saved(row));
-  for (const row of live) next.set(rowKey(row), merged(next.get(rowKey(row)), row));
+  for (const row of live) { dropStarting(next, row); next.set(rowKey(row), merged(next.get(rowKey(row)), row)); }
   return next;
+}
+
+/**
+ * A subagent's roster entry before its session file exists names its child id as its session id and has no file, so it sits under key
+ * `id:<child id>`. Its real row comes under its file's key and takes its place. On 10-18 on us-metal02 the starting row stayed beside the
+ * real one until the next full list, so the chat listed the job twice under one key and the page threw each_key_duplicate about every 3 s.
+ */
+function dropStarting(rows: Map<string, SessionSummary>, row: SessionSummary): void {
+  if (!row.sessionFile || !row.rlmChildId) return;
+  const key = `id:${row.rlmChildId}`;
+  const starting = rows.get(key);
+  if (starting && !starting.sessionFile && starting.rlmChildId === row.rlmChildId && starting.parentSessionId === row.parentSessionId) rows.delete(key);
 }
 
 /**
@@ -66,6 +78,7 @@ export function applyRosterUpdate(rows: ReadonlyMap<string, SessionSummary>, age
   for (const entry of update.changed ?? []) {
     const row = { ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary;
     const key = rowKey(row);
+    dropStarting(next, row);
     next.set(key, merged(next.get(key), row));
     agents.set(entry.agentId, key);
   }
