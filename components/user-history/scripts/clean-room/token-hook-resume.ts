@@ -43,29 +43,61 @@ function jobIds(chat: string): Set<string> {
 }
 /**
  * The short ids the hook names the jobs by: Prime sets the hook's session variable to the active id, the last 12 characters of the session id
- * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from `prime-agent list`.
+ * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from `prime-agent list`, with the pids of
+ * the workers that run those sessions, which start their hooks.
  */
-function activeIds(jobs: ReadonlySet<string>): Set<string> {
+function activeIds(jobs: ReadonlySet<string>): { ids: Set<string>; workers: Set<number> } {
   const ids = new Set([...jobs].map(id => id.slice(-12)));
+  const workers = new Set<number>();
   try {
-    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; activeSessionId?: string }[] }).sessions;
-    for (const row of rows) if (row.sessionId && jobs.has(row.sessionId) && row.activeSessionId) { ids.add(row.activeSessionId); ids.add(row.activeSessionId.slice(-12)); }
+    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; activeSessionId?: string; workerPid?: number }[] }).sessions;
+    for (const row of rows) {
+      if (!row.sessionId || !jobs.has(row.sessionId)) continue;
+      if (row.activeSessionId) { ids.add(row.activeSessionId); ids.add(row.activeSessionId.slice(-12)); }
+      if (typeof row.workerPid === "number" && row.workerPid > 0) workers.add(row.workerPid);
+    }
   } catch { /* the suffix still matches */ }
-  return ids;
+  return { ids, workers };
 }
-/** The session each running pi-pool-token serves, from its environment. */
-function hookRuns(): { pid: number; session: string }[] {
-  return process.platform === "linux" ? linuxHookRuns() : macHookRuns();
+/** The pids of the chat services on this box, which run a hook check for a tree; empty off Linux. */
+function chatServices(): Set<number> {
+  if (process.platform !== "linux") return new Set();
+  return new Set(readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+    try { return /chat-service-cli\.mjs\0serve\0/.test(readFileSync(`/proc/${name}/cmdline`, "utf8")) ? [Number(name)] : []; } catch { return []; }
+  }));
 }
-/** On Linux, from /proc: each process whose argv runs pi-pool-token itself, and its session variable. */
-function linuxHookRuns(): { pid: number; session: string }[] {
-  return readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+/** The children, grandchildren and great-grandchildren of `parents` on Linux, from each thread's /proc children list. */
+export function descendants(parents: ReadonlySet<number>, depth = 3): number[] {
+  const found: number[] = [];
+  let level = [...parents];
+  for (let step = 0; step < depth && level.length; step++) {
+    level = level.flatMap(pid => {
+      try {
+        return readdirSync(`/proc/${pid}/task`).flatMap(tid => {
+          try { return readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").split(" ").filter(Boolean).map(Number); } catch { return []; }
+        });
+      } catch { return []; }
+    });
+    found.push(...level);
+  }
+  return found;
+}
+/** The session each running pi-pool-token under `parents` serves, from its environment; on Linux only the parents' descendants are read. */
+function hookRuns(parents: ReadonlySet<number>): { pid: number; session: string }[] {
+  return process.platform === "linux" ? linuxHookRuns(parents) : macHookRuns();
+}
+/**
+ * On Linux, each process under `parents` whose argv runs pi-pool-token itself, and its session variable. Only the parents' process trees are
+ * read: on 10-18 a run that read every /proc entry each 20 ms held 0.5 of a core for its whole 40-minute window on us-metal02.
+ */
+export function linuxHookRuns(parents: ReadonlySet<number>): { pid: number; session: string }[] {
+  return descendants(parents).flatMap(pid => {
     try {
-      const argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0");
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
       const at = argv.findIndex(arg => arg.endsWith("pi-pool/bin/pi-pool-token"));
       if (at < 0 || at > 2 || argv.includes("--cli") || !/(?:^|\/)(?:sh|bash|zsh|python3?(?:\.\d+)?|pi-pool-token)$/.test(argv[0] ?? "")) return [];
-      const session = readFileSync(`/proc/${name}/environ`, "utf8").split("\0").find(entry => entry.startsWith(`${SESSION_ENV}=`))?.slice(SESSION_ENV.length + 1);
-      return session ? [{ pid: Number(name), session }] : [];
+      const session = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").find(entry => entry.startsWith(`${SESSION_ENV}=`))?.slice(SESSION_ENV.length + 1);
+      return session ? [{ pid, session }] : [];
     } catch { return []; }
   });
 }
@@ -91,12 +123,19 @@ export async function killHooks(run: string, until: number, windowMs: number): P
   let first: number | undefined;
   let jobs = new Set<string>();
   let active = new Set<string>();
+  let parents = new Set<number>();
   let looked = 0;
   while (Date.now() < until && (first === undefined || Date.now() < first + windowMs)) {
     const stateFile = join(run, "run.json");
     const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : undefined;
-    if (chat && Date.now() - looked > 5000) { looked = Date.now(); jobs = jobIds(chat); active = jobs.size ? activeIds(new Set([chat, ...jobs])) : new Set(); }
-    for (const hook of active.size ? hookRuns() : []) {
+    if (chat && Date.now() - looked > 5000) {
+      looked = Date.now();
+      jobs = jobIds(chat);
+      const tree = jobs.size ? activeIds(new Set([chat, ...jobs])) : { ids: new Set<string>(), workers: new Set<number>() };
+      active = tree.ids;
+      parents = new Set([...tree.workers, ...active.size ? chatServices() : []]);
+    }
+    for (const hook of active.size ? hookRuns(parents) : []) {
       if (!active.has(hook.session) && !jobs.has(hook.session) && hook.session !== chat) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
       const kill = { at: Date.now(), pid: hook.pid, session: hook.session };
