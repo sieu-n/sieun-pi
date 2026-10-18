@@ -26,6 +26,18 @@ test("Tailscale's peer entry reads the Mac by its address or its DNS name, and o
   assert.deepEqual(peerReach(status(false), "100.83.139.73"), { online: true });
 });
 
+test("lanes that ask while one Tailscale read runs share it and write one offline line and one back line", async () => {
+  let online = false;
+  const lines: string[] = [];
+  let clock = Date.parse("2026-10-18T16:27:47Z");
+  const reach = new HostReach({ addressOf: () => MAC, status: async () => { await new Promise(done => setTimeout(done, 5)); return status(online); }, log: line => lines.push(line), now: () => clock });
+  await Promise.all(Array.from({ length: 21 }, () => reach.reach("mac")));
+  online = true;
+  clock += 60_000;
+  await Promise.all(Array.from({ length: 21 }, () => reach.reach("mac")));
+  assert.deepEqual(lines, ["hosts: mac is offline (Tailscale last seen 3h ago); messages to its sessions wait until it is back", "hosts: mac is back online after 1 min; its waiting messages go now"]);
+});
+
 /** An outbox whose Mac sessions sit on a box Tailscale reads offline until `wake()`; every sleep moves the clock by its length. */
 async function rig(answers: boolean) {
   const dir = await mkdtemp(join(tmpdir(), "outbox-offline-"));

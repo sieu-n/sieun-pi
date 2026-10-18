@@ -67,12 +67,15 @@ export class HostReach {
     const status = await this.read();
     const reach = status === null ? { online: true } as const : peerReach(status, address);
     const now = this.now();
+    // The state after the read, not before it: the lanes that asked during one read share it, so only the first writes the line. At 16:27:47Z
+    // on 10-18 a restart's 21 Mac lanes asked at once and each wrote "mac is offline".
+    const current = this.down.get(host);
     if (!reach.online) {
-      if (!known) this.deps.log(`hosts: ${host} is offline (Tailscale last seen ${seenAgo(now, reach.lastSeen)}); messages to its sessions wait until it is back`);
-      this.down.set(host, { since: known?.since ?? now, readAt: now, lastSeen: reach.lastSeen });
-    } else if (known) {
+      if (!current) this.deps.log(`hosts: ${host} is offline (Tailscale last seen ${seenAgo(now, reach.lastSeen)}); messages to its sessions wait until it is back`);
+      this.down.set(host, { since: current?.since ?? now, readAt: now, lastSeen: reach.lastSeen });
+    } else if (current) {
       this.down.delete(host);
-      this.deps.log(`hosts: ${host} is back online after ${Math.round((now - known.since) / 60_000)} min; its waiting messages go now`);
+      this.deps.log(`hosts: ${host} is back online after ${Math.round((now - current.since) / 60_000)} min; its waiting messages go now`);
     }
     return reach;
   }
