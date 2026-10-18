@@ -20,6 +20,13 @@ export const ESCALATE_MS = 30 * 60_000;
  * set 24 h on 10-18, after prod backup alerts fired from 10-16 for over 3 days with nobody on them.
  */
 export const REOPEN_MS = 24 * 3_600_000;
+/**
+ * How soon after it resolved a rule's fire counts as the same incident. Grafana resets a rule to "Normal (Updated)" each time an obs deploy
+ * provisions a change to it, and the next evaluation fires it again with a new startsAt. On 10-18 b2-prod-growth went Normal (Updated) at
+ * 12:47:50Z, 16:57:03Z and 17:02:00Z and fired again 3 to 4 min later each time, and each fire started a new triage job on the same
+ * blocked cause (01:46 and 02:01 KST). The slowest Grafana rule group evaluates every 300 s (70 groups read 10-18), plus one bridge tick.
+ */
+export const REFIRE_MS = 300_000 + TICK_MS;
 export const OWNERS_PATH = "ops/alert-relay/owners.json";
 export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?active=true";
 
@@ -156,7 +163,8 @@ export const owed = (rule: Tracked): boolean => !isResolved(rule) && (rule.job =
  * 2. Any other firing joins the open rule of its chat and rule, or opens a new one, which replaces the chat's resolved entry of that rule and
  *    keeps its job, so a live job gets the next fire.
  * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
- * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident.
+ * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident, and
+ *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing.
  */
 export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; fired: Set<string> } {
   const rules: Record<string, Tracked> = structuredClone(state.rules);
@@ -169,7 +177,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const key = owner.get(id);
     if (!key) { rest.push(alert); continue; }
     const rule = rules[key]!;
-    if (isResolved(rule)) fired.add(key);
+    if (isResolved(rule) && now - rule.resolvedAt! > REFIRE_MS) fired.add(key);
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
     rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels };
@@ -180,14 +188,21 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     let key = Object.keys(rules).find(key => rules[key]!.chat === chat && rules[key]!.rule === name && !isResolved(rules[key]!));
     if (!key) {
       let job: RuleJob | undefined;
+      let blip: Tracked | undefined;
       for (const [old, rule] of Object.entries(rules)) {
         if (rule.chat !== chat || !isResolved(rule) || (rule.rule !== name && rule.rule !== alert.alertname)) continue;
         job ??= rule.job;
+        if (now - rule.resolvedAt! <= REFIRE_MS) blip ??= rule;
         delete rules[old];
       }
       key = ruleKey(chat, name);
-      rules[key] = { chat, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {}, ...job ? { job } : {} };
-      fired.add(key);
+      if (blip) {
+        const { resolvedAt: _resolved, ...same } = blip;
+        rules[key] = { ...same, rule: name, alertname: alert.alertname };
+      } else {
+        rules[key] = { chat, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {}, ...job ? { job } : {} };
+        fired.add(key);
+      }
     }
     const rule = rules[key]!;
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];

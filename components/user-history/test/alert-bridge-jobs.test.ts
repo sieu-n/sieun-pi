@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AlertBridge, ESCALATE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob } from "../src/alert-bridge.ts";
+import { AlertBridge, ESCALATE_MS, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 
 const NOW = Date.parse("2026-10-18T16:00:00Z");
@@ -70,23 +70,43 @@ test("a second fire of the same rule uid goes to its live job by message and sta
   await f.bridge.tick();
   f.set([]); f.at(NOW + 60_000);
   await f.bridge.tick();
-  f.set([ciAlert("aaaa000000000002", "2026-10-18T16:05:00.000Z")]); f.at(NOW + 6 * 60_000);
+  f.set([ciAlert("aaaa000000000002", "2026-10-18T16:05:00.000Z")]); f.at(NOW + 7 * 60_000);
   await f.bridge.tick();
   assert.equal(f.started.length, 1, "the live job gets the fire");
   assert.deepEqual(f.sent.map(({ session }) => session), ["job-1"]);
-  assert.match(f.sent[0]!.text, /^\[alert\] Your rule ci-history-stale \(CI history ingest .*, firing since 2026-10-18T16:05Z\) fired again at 2026-10-18T16:06Z\./);
+  assert.match(f.sent[0]!.text, /^\[alert\] Your rule ci-history-stale \(CI history ingest .*, firing since 2026-10-18T16:05Z\) fired again at 2026-10-18T16:07Z\./);
   assert.deepEqual(Object.keys((await f.state()).rules), [ruleKey(CI, "ci-history-stale")]);
-  f.at(NOW + 7 * 60_000);
+  f.at(NOW + 7.5 * 60_000);
   await f.bridge.tick();
   assert.equal(f.sent.length, 1, "a rule that keeps firing is not sent again");
   f.set([]); f.at(NOW + 8 * 60_000);
   await f.bridge.tick();
   f.working.clear();
-  f.set([ciAlert("aaaa000000000002", "2026-10-18T16:05:00.000Z")]); f.at(NOW + 9 * 60_000);
+  f.set([ciAlert("aaaa000000000002", "2026-10-18T16:20:00.000Z")]); f.at(NOW + 8 * 60_000 + REFIRE_MS + 30_000);
   await f.bridge.tick();
   assert.equal(f.started.length, 2);
-  assert.deepEqual(f.started[1]!.previous, { id: "job-1", name: "alert ci-history-stale 1", at: NOW + 6 * 60_000 });
+  assert.deepEqual(f.started[1]!.previous, { id: "job-1", name: "alert ci-history-stale 1", at: NOW + 7 * 60_000 });
   assert.equal(f.sent.length, 1);
+});
+
+test("a rule that Grafana resets to Normal (Updated) and fires again minutes later stays one incident, so its ended job gets no successor", async () => {
+  const f = await fixture();
+  f.set([ciAlert()]);
+  await f.bridge.tick();
+  f.working.clear();
+  f.set([]); f.at(NOW + 10 * 60_000);
+  await f.bridge.tick();
+  f.set([ciAlert("aaaa000000000003", "2026-10-18T16:13:00.000Z")]); f.at(NOW + 14 * 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the refire after a rule update starts no second job");
+  assert.equal(f.sent.length, 0);
+  const rule = (await f.state()).rules[ruleKey(CI, "ci-history-stale")]!;
+  assert.equal(rule.startsAt, "2026-10-18T15:58:00.000Z");
+  assert.equal(rule.wokeAt, NOW);
+  assert.equal(firingRules(await f.state(), CI).length, 1);
+  f.at(NOW + REOPEN_MS);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "the day-later reopen still applies");
 });
 
 test("a rule that still fires a day after its job took it and ended gets a new job, and one whose job still works does not", async () => {
