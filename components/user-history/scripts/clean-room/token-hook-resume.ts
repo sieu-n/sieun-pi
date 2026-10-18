@@ -128,7 +128,8 @@ export async function killHooks(run: string, until: number, windowMs: number): P
   let looked = 0;
   while (Date.now() < until && (first === undefined || Date.now() < first + windowMs)) {
     const stateFile = join(run, "run.json");
-    const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : undefined;
+    // setup writes run.json while this polls, so a read can catch it half written (run-9, 10-18 11:06Z).
+    const chat = (() => { try { return (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id; } catch { return undefined; } })();
     if (chat && Date.now() - looked > 5000) {
       looked = Date.now();
       // Only the chat's root jobs: the chat keeps its token, as the chats of the 16 dead roots did, so nothing above a root steers it back.
