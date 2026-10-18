@@ -1,0 +1,65 @@
+#!/bin/bash
+# Scenario test for asa-mac-sync.py against two scratch repos ("mac" and "box").
+set -u
+D=$(cd "$(dirname "$0")" && pwd)
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; cd "$W"
+export ASA_SYNC_REPO=$W/box ASA_SYNC_URL=$W/mac ASA_SYNC_LOG=$W/sync.log ASA_SYNC_CARRY=$W/carried ASA_SYNC_BLOCK_STATE=$W/blocked.json ASA_SYNC_BLOCK_ALERT_S=0 ASA_SYNC_PRIME_BIN=$W/fake-prime ASA_SYNC_STATE=$W
+G="git -c user.email=t@t -c user.name=t"
+fail=0
+run() { /usr/bin/python3 -B "$D/asa-mac-sync.py" | tail -1; }
+expect() { if tail -1 "$W/sync.log" | grep -q "$1"; then echo "PASS $2"; else echo "FAIL $2: $(tail -1 "$W/sync.log")"; fail=1; fi; }
+printf '#!/bin/sh\necho "$3" >> "$(dirname "$0")/sent.txt"\n' > "$W/fake-prime"; chmod +x "$W/fake-prime"
+mkdir mac && cd mac && git init -q -b sieun/dev && mkdir -p apps/llm-wiki/content src
+echo p1 > apps/llm-wiki/content/page.html; echo c1 > src/code.py; echo x > src/other.py
+git add . && $G commit -qm c1 && cd ..
+git clone -q -b sieun/dev mac box
+mac_commit() { (cd "$W/mac" && printf "$2" > "$1" && git add "$1" && $G commit -qm "$3"); }
+
+mac_commit src/code.py 'c2\n' c2; run >/dev/null; expect '"fast-forward"' "1 clean fast-forward"
+run >/dev/null; expect '"noop"' "2 nothing new"
+echo live > "$W/box/src/code.py"; mac_commit src/code.py 'c3\n' c3; run >/dev/null; expect '"overlap": \["src/code.py"\]' "3 live edit that overlaps the range rides on the move, keeping the live side (box stuck 06:36Z to 08:3xZ on 10-18)"
+[ "$(cat "$W/box/src/code.py")" = live ] && [ "$(cd "$W/box" && git rev-parse HEAD)" = "$(cd "$W/mac" && git rev-parse HEAD)" ] && ls "$W"/carried/*/src/code.py >/dev/null && echo "PASS 3b box at the tip, live line kept, old bytes saved" || { echo "FAIL 3b"; fail=1; }
+(cd "$W/box" && git checkout -q -- src/code.py)
+printf 'u\n' > "$W/box/src/added.py"; mac_commit src/added.py 'a\n' added; run >/dev/null; expect '"kept_local": \["src/added.py"\]' "3c an untracked file the range adds keeps its bytes and does not hold the move"
+(cd "$W/box" && git checkout -q -- src/added.py)
+touch "$W/box/.git/index.lock"; mac_commit src/code.py 'c3b\n' c3b; run >/dev/null; expect 'index.lock exists' "3d a fresh index.lock holds the move"
+touch -d '5 minutes ago' "$W/box/.git/index.lock"; run >/dev/null; expect '"fast-forward"' "3e an index.lock older than STALE_LOCK_S with no holder is removed and the move goes on (box stuck behind one on 10-18)"
+[ ! -e "$W/box/.git/index.lock" ] && echo "PASS 3f stale lock gone" || { echo "FAIL 3f"; fail=1; }
+echo live > "$W/box/src/other.py"; mac_commit src/code.py 'c3c\n' c3c; run >/dev/null; expect '"fast-forward"' "4 live edit on a path the range does not write"
+[ "$(cat "$W/box/src/other.py")" = live ] && echo "PASS 4b live edit kept" || { echo "FAIL 4b"; fail=1; }
+printf 'p1\np2 box\n' > "$W/box/apps/llm-wiki/content/page.html"; mac_commit apps/llm-wiki/content/page.html 'p1\np2\n' p2
+run >/dev/null; expect '"kept_local": \["apps/llm-wiki/content/page.html"\]' "5 wiki page edited on the box keeps its bytes"
+[ "$(tail -1 "$W/box/apps/llm-wiki/content/page.html")" = "p2 box" ] && echo "PASS 5b box bytes kept" || { echo "FAIL 5b"; fail=1; }
+printf 'new\n' > "$W/box/apps/llm-wiki/content/new.html"; mac_commit apps/llm-wiki/content/new.html 'new\n' p3
+run >/dev/null; expect '"preapplied": 1' "6 untracked file equal to the tip"
+(cd "$W/box" && echo s > src/staged.py && git add src/staged.py); mac_commit src/code.py 'c4\n' c4
+run >/dev/null; expect 'stages changes' "7 staged index skips"
+(cd "$W/box" && git rm -q --cached src/staged.py && rm src/staged.py)
+(cd "$W/mac" && printf 'top\nmid\nend\n' > src/carry.py && git add src/carry.py && $G commit -qm carry0); run >/dev/null
+printf 'top\nmid\nend\nlive\n' > "$W/box/src/carry.py"; (cd "$W/mac" && printf 'TOP\nmid\nend\n' > src/carry.py && git add src/carry.py && $G commit -qm carry1)
+run >/dev/null; expect '"carried": \["src/carry.py"\]' "7a live edit that merges cleanly rides on the move"
+[ "$(cat "$W/box/src/carry.py" | tr '\n' ' ')" = "TOP mid end live " ] && ls "$W"/carried/*/src/carry.py >/dev/null && echo "PASS 7a2 merged bytes on disk, old bytes saved" || { echo "FAIL 7a2"; fail=1; }
+(cd "$W/box" && git checkout -q -- src/carry.py)
+echo draft > "$W/box/src/draft.py"; touch -d '2 hours ago' "$W/box/src/draft.py"; mac_commit src/draft.py 'final\n' landed-draft
+run >/dev/null; expect '"superseded": \["src/draft.py"\]' "7d a draft older than the commit that changed its path takes the tip's bytes"
+[ "$(cat "$W/box/src/draft.py")" = final ] && ls "$W"/carried/*/src/draft.py >/dev/null && echo "PASS 7d2 draft saved, tip bytes on disk" || { echo "FAIL 7d2"; fail=1; }
+mac_commit src/code.py 'c4b\n' c4b; (cd "$W/box" && git update-index --cacheinfo "100644,$(cd "$W/mac" && git rev-parse HEAD:src/code.py),src/code.py")
+run >/dev/null; expect '"fast-forward"' "7b a path staged at the tip's bytes does not hold the move"
+[ "$(cat "$W/box/src/code.py")" = c4b ] && [ -z "$(cd "$W/box" && git status --porcelain -- src/code.py)" ] && echo "PASS 7c its file gets the tip's bytes" || { echo "FAIL 7c"; fail=1; }
+(cd "$W/box" && echo b > src/boxonly.py && git add src/boxonly.py && $G commit -qm box)
+run >/dev/null; expect 'commits the Mac tip lacks' "8 box commit the Mac lacks skips"
+B=$(cd "$W/box" && git rev-parse HEAD)
+(cd "$W/mac" && echo b > src/boxonly.py && git add src/boxonly.py && $G commit -qm "box
+
+Replayed-From: $B")
+mac_commit src/code.py 'c5\n' c5
+run >/dev/null; expect '"converge"' "9 box commit replayed on the Mac: the box follows the Mac tip"
+H=$(cd "$W/box" && git rev-parse HEAD); M=$(cd "$W/mac" && git rev-parse HEAD)
+[ "$H" = "$M" ] && [ "$(cat "$W/box/src/code.py")" = c5 ] && echo "PASS 9b box HEAD and tree equal the Mac tip" || { echo "FAIL 9b $H $M"; fail=1; }
+(cd "$W/box" && echo d > src/d.py && git add src/d.py && $G commit -qm d)
+(cd "$W/mac" && echo d > src/d.py && git add src/d.py && $G commit -qm "d, same bytes, no trailer")
+run >/dev/null; expect '"converge"' "10 same bytes on the Mac without a trailer converge"
+run >/dev/null; expect '"noop"' "11 nothing new after converge"
+grep -q "has not followed the Mac" "$W/sent.txt" && grep -q "follows the Mac again" "$W/sent.txt" && echo "PASS 12 a block alerts the ops chat once and the recovery says so" || { echo "FAIL 12"; fail=1; }
+[ "$(grep -c "has not followed" "$W/sent.txt")" -le 3 ] && echo "PASS 12b one alert per block" || { echo "FAIL 12b $(grep -c "has not followed" "$W/sent.txt")"; fail=1; }
+exit $fail

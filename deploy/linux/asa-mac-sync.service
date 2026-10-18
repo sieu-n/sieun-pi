@@ -1,0 +1,8 @@
+[Unit]
+Description=asa-mac-sync: fast-forward the box auto-sns-agent checkout to the Mac checkout's sieun/dev
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B %h/.local/share/asa-mac-sync/asa-mac-sync.py
+TimeoutStartSec=10min
