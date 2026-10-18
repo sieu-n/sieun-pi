@@ -127,8 +127,11 @@ export interface UnloadSource {
   title(id: string): string | null;
   /** `get_state` or `kill` for the row's active session, through the daemon of the row's box. */
   request(row: SessionSummary, type: "get_state" | "kill"): Promise<DaemonAnswer>;
-  /** Runs after a kill succeeded: record the stop, and unarchive a chat, since the kill writes the archived state. */
-  stopped(row: SessionSummary, isChat: boolean): Promise<void>;
+  /**
+   * Runs after a kill succeeded: record the stop, and keep a chat or the owner's plain thread listed, since the kill writes the archived state.
+   * `since` is when this stop began, so an explicit archive from then on wins.
+   */
+  stopped(row: SessionSummary, isChat: boolean, since: number): Promise<void>;
   log(line: string): void;
   now(): number;
 }
@@ -229,13 +232,14 @@ export class IdleUnloader {
       source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${answer.error}${unknownActive(answer.error) ? "; skipped until its row changes" : ""}`);
       return false;
     };
+    const since = source.now();
     const state = await source.request(row, "get_state");
     if (!state.success) return failed(state);
     if (stateBusy(state.data)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
     const killed = await source.request(row, "kill");
     if (!killed.success) return failed(killed);
     this.gone.add(goneKey(row));
-    await source.stopped(row, chats.has(row.sessionId));
+    await source.stopped(row, chats.has(row.sessionId), since);
     return true;
   }
 }

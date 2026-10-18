@@ -174,6 +174,9 @@ export class ThreadHub {
   /** Pins being resumed now (queued or attaching), and the failed ones with when to try next. */
   private readonly pinning = new Set<string>();
   private readonly pinRetry = new Map<string, { at: number; failures: number }>();
+  /** Archives through this server under way, and when the last one started or ended, so `keepListed` never undoes one (an explicit archive wins). */
+  private readonly archiving = new Map<string, number>();
+  private readonly archivedAt = new Map<string, number>();
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
@@ -470,7 +473,10 @@ export class ThreadHub {
     if (!summary.sessionFile) throw new ThreadError(409, "This saved thread has no session file.");
     const host = this.catalog.hostOf(summary.sessionId);
     const file = !host ? summary.sessionFile : await this.catalog.localFile(summary).catch(error => {
-      throw new ThreadError(502, `The session file on ${host} did not read: ${error instanceof Error ? error.message : String(error)}`);
+      // A 404 from the relay: the file left that box (a chat moved to another box, or its parent deleted the job), so the thread is gone.
+      // Until 10-18 it read as a 502, and the job wake retried 23 moved subagents a stale Mac row still listed 786 times.
+      const gone = (error as { status?: unknown }).status === 404;
+      throw new ThreadError(gone ? 404 : 502, `The session file on ${host} ${gone ? "is gone" : "did not read"}: ${error instanceof Error ? error.message : String(error)}`);
     });
     if (!file || !existsSync(file)) {
       void this.catalog.refresh().catch(() => {});
@@ -919,6 +925,16 @@ export class ThreadHub {
    * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
    */
   async archive(id: string): Promise<void> {
+    this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
+    this.archivedAt.set(id, Date.now());
+    try { await this.archiveNow(id); } finally {
+      const left = (this.archiving.get(id) ?? 1) - 1;
+      if (left > 0) this.archiving.set(id, left); else this.archiving.delete(id);
+      this.archivedAt.set(id, Date.now());
+    }
+  }
+
+  private async archiveNow(id: string): Promise<void> {
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
     this.unpin(id);
@@ -952,10 +968,28 @@ export class ThreadHub {
   async unarchive(id: string): Promise<void> {
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
+    this.reactivate(id, summary);
+    await this.catalog.refresh();
+  }
+
+  /**
+   * After the idle unload's kill, which writes the archived state: the thread stays on the owner's list as a saved thread, unless an archive
+   * through this server ran at any point from `since` (when the unload began that stop), which wins. On 10-18 the unload's kill hid the plain
+   * thread 01a14c31 at 05:39:42Z, 3 min after it was restored, because only chats were unarchived after it. False when it left the thread as is.
+   */
+  async keepListed(id: string, since: number): Promise<boolean> {
+    const summary = await this.catalog.summary(id);
+    if (!summary || this.archiving.has(id) || (this.archivedAt.get(id) ?? -Infinity) >= since) return false;
+    this.reactivate(id, summary);
+    await this.catalog.refresh();
+    return true;
+  }
+
+  /** Synchronous, so an archive cannot interleave between the check in `keepListed` and these writes. */
+  private reactivate(id: string, summary: SessionSummary): void {
     this.setSessionState(summary, "active");
     this.catalog.holdLifecycle(id, "active");
     this.catalog.forget(id);
-    await this.catalog.refresh();
   }
 
   /** Skips a file deleted since the listing: SessionManager.open would recreate a stub at the old path. */
