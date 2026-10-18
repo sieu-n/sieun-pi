@@ -28,7 +28,7 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 6. To go back on purpose, run `node scripts/release-chat.mjs <sha or release id> --rollback`, which reuses a built release folder.
 7. A release whose diff touches only scripts/duties or tests takes `--no-kickstart`, because duty prechecks read `current` at each run.
 8. Never run `ln -sfn` on `current` or kickstart the service by hand, because a hand step skips the lock and the newer-only check.
-9. A flip is not a restart. When a newer release that descends from this one waits for the lock, this release writes `restart.owed` and leaves the restart to it, so the running chat keeps the code it started on until that restart. On us-metal02 on 10-18 the chat ran release-6d3b60d from 06:57:18Z while `current` moved 8 times.
+9. A flip is not a restart. When a newer release that descends from this one waits for the lock, this release writes `restart.owed` and leaves the restart to it, so the running chat keeps the code it started on until that restart. On us-metal02 on 10-18 the chat ran release-6d3b60d from 06:57:18Z while `current` moved 8 times. A release that took the lock with `restart.owed` already there restarts at its own end even when another release waits, because a steady queue on 10-18 passed one restart on 12 times and left the chat 51 min behind `current`. A release stopped or failed after it took the lock still makes the restart it owes.
 
 ## Merges, pushes and promotes
 

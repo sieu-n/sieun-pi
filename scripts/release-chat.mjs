@@ -17,6 +17,7 @@ The build runs npm run typecheck and npm test of components/user-history inside 
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
+A release that was left that restart makes it at its end even when another release waits, so the chat never trails current by more than one build.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback.`;
 
 const LABEL = "com.sieun.agent-chat";
@@ -212,16 +213,19 @@ const OWED = "restart.owed";
  * Restarts the service for this release, or for an earlier one whose restart it owes (restart.owed), unless a release that descends from `sha`
  * waits for the lock: that one then restarts once for all of them. On us-metal02 releases from several jobs restarted the chat 6 times between
  * 04:39 and 04:52Z on 10-18, and each restart cut frontend bro's check-in job between its turn-queue admission and its creation.
+ * A release that found restart.owed when it took the lock (`inherited`) restarts now instead of leaving it again: on 10-18 a steady queue of
+ * releases passed one restart on 12 times and the chat ran code 51 min older than current.
  */
-function restart(options, home, sha) {
+function restart(options, home, sha, inherited) {
   const owed = join(home, OWED);
   if (!options.kickstart && !existsSync(owed)) return;
   const later = waiting(home).filter(entry => spawnSync("git", ["-C", options.repo, "merge-base", "--is-ancestor", sha, entry.sha], { env: gitEnv }).status === 0);
-  if (later.length) {
+  if (later.length && !inherited) {
     writeFileSync(owed, JSON.stringify({ sha, at: new Date().toISOString() }) + "\n");
     log(`restart left to the waiting release of ${later.map(entry => `${entry.sha.slice(0, 7)} (pid ${entry.pid})`).join(", ")}, which restarts once for both`);
     return;
   }
+  if (later.length) log(`restarting now for the restart this release was left, before the waiting release of ${later.map(entry => entry.sha.slice(0, 7)).join(", ")}`);
   kickstart(home);
   rmSync(owed, { force: true });
 }
@@ -282,7 +286,7 @@ async function main() {
   covered();
   checkNewer(options.repo, home, sha, options.rollback);
   await takeLock(home, sha, options.rollback ? null : options.repo);
-  held = { options, home, sha };
+  held = { options, home, sha, inherited: existsSync(join(home, OWED)) };
   covered();
   checkNewer(options.repo, home, sha, options.rollback);
   if (existsSync(dir)) log(`${id} is built already; reusing it`);
@@ -291,7 +295,7 @@ async function main() {
   const before = liveRelease(home);
   flip(home, id);
   log(`current: ${before ?? "(none)"} -> ${id}`);
-  restart(options, home, sha);
+  restart(options, home, sha, held.inherited);
   console.log(id);
 }
 
@@ -302,7 +306,7 @@ main().catch(error => {
   log(error.message);
   // A release that fails, or finds its commit live, after it took the lock still restarts for one that left it the restart.
   if (held && existsSync(join(held.home, OWED))) {
-    try { restart({ ...held.options, kickstart: false }, held.home, held.sha); } catch (restartError) { log(restartError.message); }
+    try { restart({ ...held.options, kickstart: false }, held.home, held.sha, held.inherited); } catch (restartError) { log(restartError.message); }
   }
   if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);

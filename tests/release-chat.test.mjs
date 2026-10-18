@@ -72,6 +72,7 @@ function fixture(t) {
   const c1 = commit("one");
   const c2 = commit("two");
   const c3 = commit("three");
+  const c4 = commit("four");
   git("checkout", "-q", "-b", "side", c1);
   const side = commit("side");
   git("checkout", "-q", "main");
@@ -92,7 +93,7 @@ function fixture(t) {
   const current = () => readlinkSync(path.join(home, "current"));
   const kicked = () => (existsSync(kicks) ? readFileSync(kicks, "utf8").trim().split("\n") : []);
   const seen = (sha, step) => JSON.parse(readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.json`), "utf8"));
-  return { dir, repo, home, c1, c2, c3, side, env, release, releaseAsync, current, kicked, seen };
+  return { dir, repo, home, c1, c2, c3, c4, side, env, release, releaseAsync, current, kicked, seen };
 }
 
 const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 7)}`);
@@ -262,6 +263,26 @@ test("a release stopped during its tests still makes the restart it owes, onto t
   assert.deepEqual(f.kicked(), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
   assert.equal(existsSync(path.join(f.home, "release.lock")), false);
+});
+
+test("a release that was left a restart makes it before a steady queue of newer releases can pass it on again", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const lockHolder = () => { try { return JSON.parse(readFileSync(path.join(f.home, "release.lock"), "utf8")).sha; } catch { return null; } };
+  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  while (lockHolder() !== f.c2) await new Promise((done) => setTimeout(done, 20));
+  const second = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
+  while (!readdirSync(f.home).some((name) => /^release\.lock\.\d+$/.test(name))) await new Promise((done) => setTimeout(done, 20));
+  while (lockHolder() !== f.c3) await new Promise((done) => setTimeout(done, 20));
+  const third = f.releaseAsync([f.c4]);
+  const [a, b, c] = await Promise.all([first, second, third]);
+  for (const result of [a, b, c]) assert.equal(result.status, 0, result.stderr);
+  assert.match(a.stderr, /restart left to the waiting release of/);
+  assert.doesNotMatch(b.stderr, /restart left to/);
+  assert.match(b.stderr, new RegExp(`restarting now for the restart this release was left, before the waiting release of ${f.c4.slice(0, 7)}`));
+  assert.equal(f.current(), id(f.c4));
+  assert.equal(f.kicked().length, 2);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
 test("a release that finds its commit live once it takes the lock still makes the restart it owes, with the live release's units", { timeout: 120000 }, async (t) => {
