@@ -47,6 +47,24 @@ class HookNoToken(unittest.TestCase):
     def test_an_unreadable_store_index_logs_why_no_token_came(self):
         self.assertEqual(self.run_hook({"version": 2, "accounts": []}), "account_index_unreadable")
 
+    def test_a_session_named_in_hook_deny_gets_no_token_until_its_entry_ends(self):
+        home = tempfile.mkdtemp(prefix="pi-pool-deny-home-")
+        self.addCleanup(shutil.rmtree, home, True)
+        pool = os.path.join(home, ".config", "pi-pool")
+        os.makedirs(os.path.join(pool, "accounts"))
+
+        def run(session, until):
+            with open(os.path.join(pool, "hook-deny.json"), "w") as f:
+                json.dump({"sessions": {"denied-tree": until}}, f)
+            env = dict(os.environ, HOME=home, PI_POOL_DIR=pool, PI_POOL_SECRETS="file", PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID=session)
+            done = subprocess.run([sys.executable, "-B", HOOK], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            return done.returncode, [e["reason"] for e in events(pool) if e["event"] == "hook_no_token" and e["session"] == session][-1:]
+
+        self.assertEqual(run("denied-tree", time.time() + 600), (1, ["denied"]))
+        # An ended entry, or another session, goes on to the pool, which here has no account.
+        self.assertEqual(run("denied-tree", time.time() - 1)[1], ["no_account"])
+        self.assertEqual(run("other-tree", time.time() + 600)[1], ["no_account"])
+
     def test_a_kill_while_vend_loads_is_logged(self):
         self.kill_while_loading("import sys, time\nprint('loading', file=sys.stderr, flush=True)\ntime.sleep(30)\n")
 

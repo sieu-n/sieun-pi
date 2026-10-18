@@ -143,6 +143,21 @@ def say(text):
         pass
 
 
+def denied(session):
+    """The until time when <pool dir>/hook-deny.json names this session, else None. The clean room's kill-hooks writes it to make one tree's
+    turns fail on the token hook the way the 10-16 to 10-17 outage did. Hook runs go through hookd and answer in a few ms, faster than any
+    process kill, so in runs 12 and 13 on 10-18 a SIGKILL of the hook process missed. The file holds {"sessions": {<id>: <until epoch>}}.
+    With no file or no live entry, the hook runs as before."""
+    folder = os.environ.get("PI_POOL_DIR") or os.path.join(os.path.expanduser("~"), ".config", "pi-pool")
+    try:
+        with open(os.path.join(folder, "hook-deny.json")) as f:
+            entries = json.load(f).get("sessions") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    until = entries.get(session) if session else None
+    return until if isinstance(until, (int, float)) and until > time.time() else None
+
+
 def run_token(source, argv, vend=None):
     provider = argv[argv.index("--provider") + 1] if "--provider" in argv else "anthropic"
     if provider not in ("anthropic", "openai-codex"):
@@ -166,6 +181,9 @@ def run_token(source, argv, vend=None):
         no_token("interrupted", signal=signum, phase="load")
         raise SystemExit(128 + signum)
 
+    if denied(os.environ.get(SESSION_ENV)) is not None:
+        no_token("denied")
+        raise SystemExit(1)
     previous_handler = signal.signal(signal.SIGTERM, killed_while_loading)
     if vend is None:
         # Under hookd this process's parent is hookd; the C client stands in for the shell and sends its SIGTERM.

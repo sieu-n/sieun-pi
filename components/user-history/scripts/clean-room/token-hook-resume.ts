@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
@@ -59,6 +59,16 @@ function rootJobs(chat: string): { id: string; name: string }[] {
     const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; sessionName?: string; runtimeKind?: string }[] }).sessions;
     return rows.flatMap(row => row.sessionId && row.sessionName && names.has(row.sessionName) && row.runtimeKind !== "subagent" ? [{ id: row.sessionId, name: row.sessionName }] : []);
   } catch { return []; }
+}
+const POOL_DIR = process.env.PI_POOL_DIR ?? join(HOME, ".config/pi-pool");
+let denied = "";
+/** Writes <pool dir>/hook-deny.json naming `ids` until `until` (epoch ms), or removes it for none, only when that changes. */
+function denyHooks(ids: readonly string[], until: number): void {
+  const body = ids.length ? JSON.stringify({ sessions: Object.fromEntries(ids.map(id => [id, until / 1000])) }) : "";
+  if (body === denied) return;
+  denied = body;
+  const file = join(POOL_DIR, "hook-deny.json");
+  if (body) { writeFileSync(`${file}.tmp`, body); renameSync(`${file}.tmp`, file); } else rmSync(file, { force: true });
 }
 /** The pids of the Prime daemons on this box, whose children are the session workers; empty off Linux. */
 function daemonPids(): Set<number> {
@@ -165,6 +175,9 @@ export async function killHooks(run: string, until: number, windowMs: number): P
     // A continue that reopens a stopped root starts it on a new worker, which runs its hook within a second, before the next read of the list.
     // So each poll also reads the daemons' children and scans any new one.
     if (active.size) for (const pid of childrenOf(daemons)) parents.add(pid);
+    // The hook answers through pi-pool's hookd in a few ms, faster than a kill (runs 12 and 13), so the tree is also named in hook-deny.json,
+    // which bin/pi-pool-token reads before it vends. The entry ends with the window, and the file is cleared after it.
+    if (active.size) { first ??= Date.now(); denyHooks([...active], first + windowMs); }
     for (const hook of active.size ? hookRuns(parents) : []) {
       if (!active.has(hook.session) && !jobs.has(hook.session)) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
@@ -175,6 +188,7 @@ export async function killHooks(run: string, until: number, windowMs: number): P
     }
     await new Promise(resolve => setTimeout(resolve, 20));
   }
+  denyHooks([], 0);
   writeFileSync(join(run, "hook-window.json"), JSON.stringify({ from: first ?? null, to: first === undefined ? null : Math.min(Date.now(), first + windowMs), kills: kills.length }, null, 1));
   return kills;
 }
