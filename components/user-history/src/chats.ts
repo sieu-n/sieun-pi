@@ -599,14 +599,10 @@ export class Chats {
     }
     this.deletedJobs.add(child.id);
     try {
-      if (sessionId !== undefined && await this.source.waking?.(sessionId)) {
+      const busy = await this.jobBusy(id, current, sessionId);
+      if (busy !== undefined) {
         this.deletedJobs.delete(child.id);
-        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: it waits on a board.wake`);
-        return "kept";
-      }
-      if (sessionId !== undefined && await this.threads.sessionActive(sessionId)) {
-        this.deletedJobs.delete(child.id);
-        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
+        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: ${busy}`);
         return "kept";
       }
       const result = await this.threads.deleteSubagent(id, child.id);
@@ -627,15 +623,41 @@ export class Chats {
   }
 
   /**
+   * Why a job that ended its turn is still at work, or undefined when nothing under it works: a board.wake of its session or of one under it, a
+   * subagent at work under it (`jobLive`), or the daemon showing its session or one under it in a turn, a tool call or a background bash. A job
+   * that ends its turn while its subagents work waits for their replies: metal-management 10-18, crawler lanes to box sent "Step landed: ..." at
+   * 06:53:20Z and ended its turn waiting on crawl-deploy and crawl-verify, and the cleanup deleted it at 06:53:57Z and cut both mid tool call.
+   */
+  private async jobBusy(id: string, child: ChildAgent, sessionId: string | undefined): Promise<string | undefined> {
+    if (sessionId !== undefined && await this.source.waking?.(sessionId)) return "it waits on a board.wake";
+    if (await this.jobLive(id, sessionId !== undefined ? { ...child, sessionId } : child)) return "a session under it waits on a board.wake or a subagent under it works";
+    if (sessionId === undefined) return undefined;
+    if (await this.threads.sessionActive(sessionId)) return "its session runs a tool call or a background bash";
+    for (const session of this.treeBelow(sessionId)) if (await this.threads.sessionActive(session)) return "a subagent under it runs a turn, a tool call or a background bash";
+    return undefined;
+  }
+
+  /** Every session the daemon lists at any depth under `session`. */
+  private treeBelow(session: string): string[] {
+    const found: string[] = [];
+    const seen = new Set([session]);
+    for (let index = -1; index < found.length; index++) {
+      for (const below of this.below(index < 0 ? session : found[index]!)) if (!seen.has(below)) { seen.add(below); found.push(below); }
+    }
+    return found;
+  }
+
+  /**
    * Hands the open steps a reported job still owns (`handBackSteps`) to the chat: each step's job becomes the chat and its note names the job,
    * then the chat gets one turn to close or continue them (`handBackText`). The note keeps the job named, so it is kept and later saved on the
-   * step (`parkJob`) unless the chat steers it. A job asleep on a board.wake, or one whose wakes cannot be read yet, keeps its steps.
+   * step (`parkJob`) unless the chat steers it. A job still at work (`jobBusy`), or one whose wakes cannot be read yet, keeps its steps.
    */
   private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
     const name = childName(child);
     try {
       const sessionId = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
-      if (this.source.waking && (sessionId === undefined || await this.source.waking(sessionId))) return false;
+      if (this.source.waking && sessionId === undefined) return false;
+      if (await this.jobBusy(id, child, sessionId) !== undefined) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
         note: [line, step.note].filter(Boolean).join("\n") })));
