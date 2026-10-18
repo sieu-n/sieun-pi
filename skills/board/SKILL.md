@@ -36,7 +36,11 @@ board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bas
 
 Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
 
-The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached with `nohup <command> > <file> 2>&1 &` and set `board.wake(at=<its end>)`.
+The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached, with no `nice` in front, and set `board.wake(at=<its end>)`.
+
+1. On a Linux box, run `systemd-run --user --unit=<name> --collect --same-dir -E PATH sh -c '<command> > <file> 2>&1'`. After the wake, `systemctl --user status <name>` shows a run still going, and a finished run's unit is gone, so read the file. Pass any other variable the command needs with another `-E <NAME>`.
+2. Never start it there with `nohup` from `bash()`. On 10-18 on us-metal02, r3f's clean-room collect, started with `(nohup node ... &)` at 07:33Z, died with no output when its session ended its turn on a `board.wake`, and a release chat's run started the same way died too.
+3. On the Mac, run `nohup <command> > <file> 2>&1 &`.
 
 A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. Give every network call a timeout.
 
