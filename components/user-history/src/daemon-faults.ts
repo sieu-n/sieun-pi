@@ -80,8 +80,28 @@ export function faultReason(text: string): string | undefined {
   if (/Daemon worker (?:socket|client) closed/.test(text)) return "its worker's connection closed";
   if ((found = /Session worker is (failed|stopping|starting)/.exec(text))) return `its session worker was ${found[1]}`;
   if (/read ECONNRESET/.test(text)) return "its worker reset the connection";
-  if (/too many pending messages/.test(text)) return "the session refused it with too many pending messages";
+  // A pending-limit refusal is no fault: the outbox keeps every such send until the target has room (src/agent-outbox.ts), and
+  // `readQueueOverruns` shows it as detail. On 10-18 01a0cc5e's refusals made each minute from 11:15Z dirty.
   return undefined;
+}
+
+/** A send that met a target over the daemon's pending message limit and waited in the agent outbox (src/agent-outbox.ts). */
+export interface QueueOverrun { at: number; host: string; session: string; pending?: number; limit: number }
+
+const OVER_TARGET = /^outbox ([0-9a-f]{8})(?: on [\w.-]+)?: (?:queued m-\S+ from .* while the target held (\d+|an unknown number) of (\d+) pending|the target is full at (\d+) of (\d+) pending)/;
+
+/** The outbox lines of sends to a target over its pending limit: one the sender's kernel handed over (`queue`), or one the outbox met as full. */
+export function readQueueOverruns(lines: readonly string[], local: string): QueueOverrun[] {
+  const found: QueueOverrun[] = [];
+  for (const raw of lines) {
+    const stamped = STAMPED.exec(raw);
+    const at = stamped ? Date.parse(stamped[1]!) : NaN;
+    const line = stamped && OVER_TARGET.exec(stamped[2]!);
+    if (!line || !Number.isFinite(at)) continue;
+    const pending = Number(line[2] ?? line[4]);
+    found.push({ at, host: hostOf(stamped[2]!, local), session: line[1]!, ...Number.isFinite(pending) ? { pending } : {}, limit: Number(line[3] ?? line[5]) });
+  }
+  return found;
 }
 
 const hostOf = (text: string, local: string): string => SOCKET.exec(text)?.[1] ?? ON_BOX.exec(text)?.[1] ?? local;

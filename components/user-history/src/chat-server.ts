@@ -791,6 +791,18 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           .catch(error => { throw new RequestError(409, (error as Error).message); });
         json(res, 200, answer); return;
       }
+      // An agent_message.send the daemon refused for the target's pending message limit: it waits in the agent outbox (message-limit-check.py).
+      if (route === "api/agent/queue") {
+        const from = record(body.from);
+        const role = body.role === "child" || body.role === "parent" || body.role === "sibling" ? body.role : undefined;
+        if (!role) throw new RequestError(400, "Choose role child, parent or sibling.");
+        const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+        const pending = count(body.pending), limit = count(body.limit);
+        json(res, 200, await backend.messages.queue({ session: threadId(text(body.to, "to", 128)), text: text(body.message, "message"),
+          from: { id: text(from.id, "from.id", 128), name: text(from.name, "from.name") }, role, behind: body.behind === true,
+          ...pending === undefined ? {} : { pending }, ...limit === undefined ? {} : { limit },
+          ...typeof body.root === "string" ? { root: threadId(body.root) } : {} })); return;
+      }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
       if (route === "api/agent/check-in") {
         const chat = threadId(text(body.chat, "chat", 128));

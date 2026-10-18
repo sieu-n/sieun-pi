@@ -26,6 +26,11 @@ its own reference. It does three things.
 5. Failed siblings. A root whose worker died answers every send with "Session worker is failed", and one the daemon dropped with "Unknown
    active session" (10-18: "runner reviewer" on the Mac, about 04:30 to 05:37Z). Such a sibling send asks the chat service to open that root
    from its file (api/agent/reopen) and goes out once more.
+6. A full target. Prime's daemon refuses a send to a session that holds 20 unfinished messages ("Target session has too many pending messages:
+   21 unfinished, limit is 20"), and on 10-18 ops guy's send to Vent and several of the AI harness chat's to VP of CI failed so, each sender
+   left to remember a retry. The owner made every such limit a target (c98), so the send goes to the chat service's agent outbox
+   (api/agent/queue, src/agent-outbox.ts), which delivers it once the target has room, and the sender gets a "queued" receipt. Later sends
+   from this kernel to that target go behind it in the outbox until it went, so they keep their order.
 """
 
 import asyncio
@@ -39,7 +44,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 18
+VERSION = 19
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -60,6 +65,10 @@ CROSS_HOST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cross-ho
 NO_SIBLING = "No sibling matches"
 # A root whose worker died or that the daemon dropped refuses every send until it is opened again from its file (src/reopen-send.ts).
 REOPENABLE = re.compile(r"Session worker is failed|Unknown active session")
+FULL = re.compile(r"too many pending messages: (\d+) unfinished, limit is (\d+)")
+QUEUED_NOTE = "queued: {target} has {pending} pending (target {limit}), delivers when it drains"
+# (receiver_role, receiver_name) -> {"to": session id, "from": {id, name}, "root": id or None} for each target this kernel queued a send to.
+QUEUED_TO = {}
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z")
 
@@ -146,16 +155,55 @@ def landed_at(session_id, texts, since):
         return None
 
 
+def roster_target(roster, payload):
+    """The roster row the send's receiver_role and receiver_name name, or None."""
+    role, name = payload.get("receiver_role"), payload.get("receiver_name")
+    agents = roster.get("agents", []) if isinstance(roster, dict) else []
+    return next((agent for agent in agents if isinstance(agent, dict) and agent.get("relationship") == role and
+                 (role == "parent" or name in (agent.get("sessionName"), agent.get("sessionId"), agent.get("activeSessionId")))), None)
+
+
+async def queued(real, payload, error=None):
+    """The "queued" receipt for a send the daemon refused for the target's pending limit (error), kept in the chat service's agent outbox; with
+    no error, for a send to a target this kernel queued one to while that one still waits there, else None. Raises error when the outbox
+    cannot take the refused send."""
+    counts = FULL.search(str(error)) if error is not None else None
+    key = (payload.get("receiver_role"), payload.get("receiver_name"))
+    try:
+        held = QUEUED_TO.get(key)
+        if counts or not held:
+            roster = await real("agent_observe.list")
+            target, me = roster_target(roster, payload), roster.get("current") if isinstance(roster, dict) else None
+            if not target or not isinstance(target.get("sessionId"), str) or not isinstance(me, dict) or not isinstance(me.get("sessionId"), str):
+                raise RuntimeError("the agent roster did not name the target and this session")
+            held = {"to": target["sessionId"], "from": {"id": me["sessionId"], "name": str(me.get("sessionName") or me["sessionId"])},
+                    "root": target["sessionId"] if target.get("runtimeKind") == "top-level" else None}
+        body = {"from": held["from"], "to": held["to"], "role": key[0], "message": payload.get("message"), "behind": counts is None,
+                **({"pending": int(counts.group(1)), "limit": int(counts.group(2))} if counts else {}), **({"root": held["root"]} if held["root"] else {})}
+        answer = await cross_host("queue", body)
+    except Exception as failure:
+        if counts is None:
+            return None
+        raise RuntimeError(f"{error}; the chat service's outbox did not take it either: {failure}") from None
+    if answer.get("deliveryStatus") != "queued":
+        QUEUED_TO.pop(key, None)
+        return None
+    QUEUED_TO[key] = held
+    name = payload.get("receiver_name") or payload.get("receiver_role") or "the target"
+    limit = answer.get("target")
+    note = QUEUED_NOTE.format(target=name, pending=answer.get("pending", f"{limit} or more"), limit=limit)
+    print(note)
+    return {"deliveryStatus": "queued", "message": payload.get("message"), "receiverRole": payload.get("receiver_role"),
+            "receiverName": payload.get("receiver_name"), "queuedId": answer.get("id"), "pending": answer.get("pending"), "target": limit, "note": note}
+
+
 async def copy_state(real, payload, earlier):
     """Where the earlier copy is: "landed", "queued" (the target has queued messages), "busy" (it runs a turn), "absent", or "unknown"."""
     try:
         roster = await real("agent_observe.list")
     except Exception:
         return "unknown", None
-    role, name = payload.get("receiver_role"), payload.get("receiver_name")
-    agents = roster.get("agents", []) if isinstance(roster, dict) else []
-    target = next((agent for agent in agents if isinstance(agent, dict) and agent.get("relationship") == role and
-                   (role == "parent" or name in (agent.get("sessionName"), agent.get("sessionId"), agent.get("activeSessionId")))), None)
+    target = roster_target(roster, payload)
     if not target or not isinstance(target.get("sessionId"), str):
         return "unknown", None
     at = landed_at(target["sessionId"], earlier["texts"], earlier["since"])
@@ -362,12 +410,17 @@ async def request(request_type, payload=None, *args, **kwargs):
         if target:
             reply = await cross_host("send", {"from": own_root(), "to": target["sessionId"], "message": payload.get("message")})
         else:
-            try:
-                reply = await real(request_type, payload, *args, **kwargs)
-            except Exception as error:
-                if not direct:
-                    raise
-                reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
+            reply = await queued(real, payload) if direct and (payload.get("receiver_role"), payload.get("receiver_name")) in QUEUED_TO else None
+            if reply is None:
+                try:
+                    reply = await real(request_type, payload, *args, **kwargs)
+                except Exception as error:
+                    if not direct:
+                        raise
+                    if FULL.search(str(error)):
+                        reply = await queued(real, payload, error)
+                    else:
+                        reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
         if request_type == "agent_observe.list":
             reply = await with_other_boxes(reply)
         if direct:

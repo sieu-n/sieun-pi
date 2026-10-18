@@ -15,7 +15,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
-import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
+import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
@@ -385,6 +385,8 @@ export interface Inputs {
   daemonFaults?: readonly DaemonFault[];
   /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
   workerMisses?: readonly number[];
+  /** Sends that met a target over the daemon's pending message limit and waited in the agent outbox: detail, never a dirty minute (owner c98). */
+  queueOverruns?: readonly QueueOverrun[];
   /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
   listed?: ReadonlyMap<string, ListedSession>;
 }
@@ -609,6 +611,17 @@ export function measure(input: Inputs): PrecheckOutput {
       asleep.map(view => `${view.name} ${view.sleeping!.gb} GB in ${view.sleeping!.workers} whole workers and ${view.sleeping!.kernels} kernels (${view.sleeping!.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")})`).join("; ") + "." });
   }
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
+  const overruns = (input.queueOverruns ?? []).filter(entry => entry.at >= start && entry.at < start + WINDOW_MS);
+  if (overruns.length) {
+    const byTarget = new Map<string, QueueOverrun[]>();
+    for (const entry of overruns) byTarget.set(`${entry.session} on ${entry.host}`, [...byTarget.get(`${entry.session} on ${entry.host}`) ?? [], entry]);
+    const words = [...byTarget.values()].map(list => {
+      const most = Math.max(...list.map(entry => entry.pending ?? entry.limit));
+      const name = faultName({ at: list[0]!.at, host: list[0]!.host, session: list[0]!.session, what: "" }) ?? `session ${list[0]!.session}`;
+      return `${name} on ${list[0]!.host} at up to ${most} of ${list[0]!.limit} (${list.length} ${list.length === 1 ? "send" : "sends"} from ${clock(list[0]!.at)})`;
+    });
+    flagged.push({ kind: "queue_overruns", excerpt: `${byTarget.size} ${byTarget.size === 1 ? "target" : "targets"} held more pending messages than the daemon's target, and their sends waited in the agent outbox, not counted dirty: ${words.join("; ")}` });
+  }
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
@@ -865,13 +878,15 @@ async function main(): Promise<void> {
   const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
   const daemonFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box))]
     .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE);
+  const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
   const result = measure({
     now, watch, day,
     log: readServiceLog(serviceLines),
     pool: readPoolLog(await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES), now),
     daemonFaults,
     workerMisses: workerPolls,
-    listed: listedSessions(await catalogCopies(dataDir), daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : [])),
+    queueOverruns,
+    listed: listedSessions(await catalogCopies(dataDir), [...daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]),
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
     boards,

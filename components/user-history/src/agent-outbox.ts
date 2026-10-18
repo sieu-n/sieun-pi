@@ -40,10 +40,50 @@ class Full extends Error {}
 /** The target's worker is stopping or starting, so nothing was sent. */
 class Moving extends Error {}
 
-/** The daemon's pending message limit a refusal names ("Target session has too many pending messages: 20 unfinished, limit is 20"). */
-export function pendingLimit(error: unknown): number | undefined {
-  const found = /too many pending messages: \d+ unfinished, limit is (\d+)/.exec(error instanceof Error ? error.message : String(error));
-  return found ? Number(found[1]) : undefined;
+/** The counts a pending-limit refusal names ("Target session has too many pending messages: 21 unfinished, limit is 20"). */
+export function pendingCounts(error: unknown): { pending: number; limit: number } | undefined {
+  const found = /too many pending messages: (\d+) unfinished, limit is (\d+)/.exec(error instanceof Error ? error.message : String(error));
+  return found ? { pending: Number(found[1]), limit: Number(found[2]) } : undefined;
+}
+
+/** The pending message limit of prime-agent 0.9.8's send_message, which every refusal on 10-18 named; the target when a queued send names none. */
+export const DAEMON_PENDING_LIMIT = 20;
+
+/**
+ * An agent_message.send the daemon refused for the target's pending message limit, which the sender's kernel hands to the outbox instead of
+ * raising (message-limit-check.py, owner c98: a limit is a target, never a refusal).
+ */
+export interface QueuedSend {
+  session: string;
+  text: string;
+  /** The sender, whom the delivered text names, since the daemon heads a message from the chat service with the service's client id only. */
+  from: { id: string; name: string };
+  /** The receiver_role the sender used. */
+  role: "child" | "parent" | "sibling";
+  /** The refusal's counts; absent for a send that only follows an earlier queued one (`behind`). */
+  pending?: number;
+  limit?: number;
+  /** Queue it only while an earlier message to the session still waits here, so the sender's messages keep their order; else "clear". */
+  behind?: boolean;
+  root?: string;
+}
+
+export interface QueuedReceipt {
+  deliveryStatus: "queued" | "clear";
+  id?: string;
+  /** The target's unfinished messages when the send came, when known. */
+  pending?: number;
+  target: number;
+  /** Messages to the session that wait here ahead of this one. */
+  ahead: number;
+}
+
+/** The delivered text: who sent it and how to answer, then the message. */
+export function queuedText(from: QueuedSend["from"], role: QueuedSend["role"], text: string): string {
+  const who = role === "child" ? "your parent" : role === "parent" ? "your job" : "sibling";
+  const answer = role === "child" ? 'receiver_role="parent"' : `receiver_role="${role === "parent" ? "child" : "sibling"}", receiver_name=${JSON.stringify(from.id)}`;
+  return `[message from ${who} ${from.name} (${from.id}), held in the chat service's outbox while this session's queue was full; answer with ` +
+    `agent_message.send(text, ${answer})]\n\n${text}`;
 }
 
 /** The root of a subagent's tree from its session file (`session-artifacts/<root>/...`); undefined for a root's own file. */
@@ -101,7 +141,8 @@ export class AgentOutbox {
       },
       final: error => error instanceof Gone ? error.message : null,
       uncertain: isSendTimeout,
-      quiet: error => error instanceof Full || error instanceof Moving,
+      // A pending-limit refusal is a wait like Full: send() logs it once with its counts, and the Whole system precheck reads that line as detail.
+      quiet: error => error instanceof Full || error instanceof Moving || pendingCounts(error) !== undefined,
       held: async entry => {
         const host = deps.reach && deps.hostOf?.(entry.threadId);
         return !!host && !(await deps.reach!(host)).online;
@@ -115,9 +156,33 @@ export class AgentOutbox {
    * same target, with only its ISO times changed (`sendKey`), is the same message. `root` is started when the daemon does not find the target.
    */
   async deliver(session: string, text: string, root?: string): Promise<void> {
+    await this.keep(session, text, root);
+  }
+
+  /** `deliver`, answering the id of the entry that holds the message. */
+  private async keep(session: string, text: string, root?: string): Promise<string> {
     const key = sendKey(session, text);
-    if (await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key)) return;
-    await this.outbox.submit({ id: `m-${randomUUID()}`, threadId: session, text, images: [], mode: "steer", fingerprint: key, ...root ? { root } : {} });
+    const held = await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key);
+    if (held) return held.id;
+    const id = `m-${randomUUID()}`;
+    await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, ...root ? { root } : {} });
+    return id;
+  }
+
+  /**
+   * Keeps a send the daemon refused for its pending limit (`QueuedSend`) and delivers it once the target has room, after the messages to it that
+   * wait here already. The target is marked full first, so the outbox reads get_state for room before it sends and gets no second refusal.
+   */
+  async queue(send: QueuedSend): Promise<QueuedReceipt> {
+    const ahead = (await this.outbox.waiting(send.session)).length;
+    const limit = send.limit ?? this.full.get(send.session) ?? DAEMON_PENDING_LIMIT;
+    if (send.behind && !ahead) return { deliveryStatus: "clear", target: limit, ahead };
+    if (send.pending !== undefined) this.full.set(send.session, limit);
+    const pending = send.pending ?? (await this.deps.target(send.session).catch(() => null))?.unfinished;
+    const id = await this.keep(send.session, queuedText(send.from, send.role, send.text), send.root);
+    this.deps.log(`outbox ${this.where(send.session)}: queued ${id} from ${send.from.name} (${send.from.id.slice(0, 8)}) while the target held ` +
+      `${pending ?? "an unknown number of"} of ${limit} pending, ${ahead} ahead of it here`);
+    return { deliveryStatus: "queued", id, ...pending === undefined ? {} : { pending }, target: limit, ahead };
   }
 
   private async send(session: string, entry: Stored): Promise<"sent" | "gone"> {
@@ -131,10 +196,10 @@ export class AgentOutbox {
         }
         throw new Moving(error instanceof Error ? error.message : String(error));
       }
-      const limit = pendingLimit(error);
-      if (limit !== undefined && !this.full.has(session)) {
-        this.full.set(session, limit);
-        this.deps.log(`outbox ${this.where(session)}: the target is full; ${entry.id} and the sends after it wait until it holds fewer than ${limit} unfinished messages`);
+      const counts = pendingCounts(error);
+      if (counts && !this.full.has(session)) {
+        this.full.set(session, counts.limit);
+        this.deps.log(`outbox ${this.where(session)}: the target is full at ${counts.pending} of ${counts.limit} pending; ${entry.id} and the sends after it wait until it holds fewer`);
       }
       throw error;
     }

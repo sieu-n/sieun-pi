@@ -118,6 +118,12 @@ export class Outbox {
     return [...this.entries.values()].find(entry => entry.doneAt === undefined && match(entry));
   }
 
+  /** The thread's entries not delivered or failed yet, oldest first. */
+  async waiting(threadId: string): Promise<Stored[]> {
+    await this.ready;
+    return this.lane(threadId).filter(entry => entry.doneAt === undefined);
+  }
+
   /** The thread's entries the page shows: queued, sending and failed, oldest first. */
   view(threadId: string): OutboxEntry[] {
     return this.lane(threadId).filter(entry => entry.state !== "delivered").map(publicEntry);

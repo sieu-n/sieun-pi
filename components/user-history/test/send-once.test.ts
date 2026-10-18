@@ -188,8 +188,8 @@ test("send once: a target the daemon refused as full gets no send until get_stat
   await messages.deliver(SESSION, "[cross-host message from babysitter] land 38 is green");
   await until(() => daemon.state.looks >= 10 || daemon.state.sends >= 3);
   assert.equal(daemon.state.sends, 1, "no send while the target holds 20 unfinished messages");
-  assert.equal(daemon.lines.filter(line => /too many pending messages/.test(line)).length, 1);
-  assert.equal(daemon.lines.filter(line => /try \d+/.test(line)).length, 1, "the waits write no try line");
+  assert.equal(daemon.lines.filter(line => /the target is full at 20 of 20 pending/.test(line)).length, 1);
+  assert.equal(daemon.lines.filter(line => /try \d+/.test(line)).length, 0, "the refusal and the waits write no try line, which the precheck would count as a fault");
   daemon.state.mode = "ok";
   daemon.state.unfinished = 19;
   await messages.outbox.idle();
