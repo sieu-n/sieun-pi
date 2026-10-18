@@ -27,6 +27,7 @@ The owner, 2026-10-18, after he found the ops guy's p45 and p221 at 64 of 71 and
 2. Close each done or stale step in the same batch, done with the evidence you checked or dropped with the reason.
 3. Move each risk to one line on the chat's risk page, a wiki page named for the chat's area that a job writes, with how it is checked and what to do when it fires. Make sure a duty metric counts the risks that fire, then remove the step with `plan_remove` and name the page and the duty in its goal's note.
 4. Move each upkeep step into a duty metric, as in "Fix the duties" below, then remove the step and name the duty in its goal's note.
+   When that duty's check script does not exist yet, replace the upkeep step with one work step, "Build the duty <name>", with a job and a "Done when" line naming the duty and its metric, and drop the upkeep wording from the plan.
 5. A goal whose open steps were all risk or upkeep closes, with a note naming the page and the duty that now hold it.
 6. Give each kept goal a done line: its note starts with "Done when" and the check the owner would make by hand, and a goal with a number also carries a `target`.
 7. Give each open step a live owner, which is a job at work or asleep on a `board.wake`, or block it only on an open For you todo that links it. Start a job for each step that has neither, in the same turn.
