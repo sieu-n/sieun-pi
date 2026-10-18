@@ -46,25 +46,6 @@ export function stripHeredocs(str: string): string {
 	return out.join("\n");
 }
 
-/** Each heredoc's opener line and body, so a guard can judge a script fed to a shell (`bash <<'EOF'`). */
-export function heredocs(str: string): { opener: string; body: string }[] {
-	const out: { opener: string; body: string }[] = [];
-	let open: { opener: string; tag: string; lines: string[] } | null = null;
-	for (const line of str.split("\n")) {
-		if (open) {
-			if (line.trim() === open.tag) {
-				out.push({ opener: open.opener, body: open.lines.join("\n") });
-				open = null;
-			} else open.lines.push(line);
-			continue;
-		}
-		const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
-		if (m) open = { opener: line.slice(0, m.index), tag: m[2], lines: [] };
-	}
-	if (open) out.push({ opener: open.opener, body: open.lines.join("\n") });
-	return out;
-}
-
 export const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"]);
 const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
 const WRAPPERS = new Set(["command", "exec", "time", "nice", "nohup", "setsid", "stdbuf", "ionice", "builtin", "caffeinate"]);

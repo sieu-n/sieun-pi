@@ -15,10 +15,6 @@ export function log(scope: string, message: string): void {
 	}
 }
 
-export function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 const OFF = new Set(["off", "0", "false"]);
 
 /** `GLOBAL_RULES=off` turns every feature off; `GLOBAL_RULES_<FEATURE>=off` turns one off. */
