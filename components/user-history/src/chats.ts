@@ -1,5 +1,6 @@
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
+import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
@@ -49,11 +50,6 @@ export const NO_REPORT_GRACE_MS = 90_000;
 export const NO_REPORT_SAME_END_MS = 60_000;
 /** How many graces a no-report check waits while the chat is mid-turn before it tells the chat anyway. */
 export const NO_REPORT_BUSY_TRIES = 6;
-/**
- * A root session's artifacts folder, where the daemon keeps each direct subagent's folder by child id: `session-artifacts/<session id>`
- * beside the folder of its session file (prime-agent `getSessionArtifactPathForFile`).
- */
-export const artifactsDir = (sessionFile: string): string => join(dirname(dirname(sessionFile)), "session-artifacts", basename(sessionFile, ".jsonl"));
 /**
  * The daemon's rows say only whether a subagent runs. The hub's attach keeps a finished job "done" while a follow-up task runs and shows the work
  * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too.
