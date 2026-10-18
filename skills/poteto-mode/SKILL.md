@@ -65,7 +65,6 @@ Read the leaf skill in full for any principle you apply.
 | principle-sequence-verifiable-units | Work has many steps. Cut it into small units that each end in a check. |
 | principle-guard-the-context-window | Output, files, or fan-out planning are large. Send bulk to subagents and keep summaries here. |
 | principle-encode-lessons-in-structure | You write the same instruction twice. Turn it into a lint, check, flag, or script. |
-| principle-soft-caps | You add or keep a limit in code, a tool, a brief or a check. Let the action through and flag it, and keep a hard stop only for integrity, security, money, outside sends, vendor limits and destructive actions. |
 
 ## Autonomy
 

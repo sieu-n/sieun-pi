@@ -7,8 +7,6 @@ description: Read a browser chat's board, corrections and the log of outside sen
 
 A chat's board holds the plan of goals and steps and the owner's todos. The chat server keeps it in `~/.prime/agent/browser-chat/boards/<chat session id>.json`. The `chat_board` tool shows only the open checklist, so read the rest with this module.
 
-Every limit sieun-pi sets on chats, jobs, duties, the plan and subagents is a soft cap, so the action goes through with a warning. Only integrity, security, money, outside sends (c37), vendor limits and destructive actions on shared state stay hard, as the principle-soft-caps skill says.
-
 ## Read the board
 
 Call the pre-imported `board` module in the Python REPL. Each call returns plain text.

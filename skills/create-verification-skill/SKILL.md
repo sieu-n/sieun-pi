@@ -8,6 +8,8 @@ disable-model-invocation: true
 
 Write `.prime/agent/skills/verify-<app>/` in the target repo. Its reader is an agent that has never seen the app and opens the skill mid-task.
 
+If the repo already has a verify skill or a guide for this app, add the missing steps to it instead of writing a new skill, and keep the new skill short (owner, 2026-10-18).
+
 ## 1. Interview the repo
 
 Answer these questions from the code. Ask the user only what the code cannot show.
