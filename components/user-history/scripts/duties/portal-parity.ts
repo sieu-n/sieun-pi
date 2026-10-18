@@ -164,12 +164,17 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   return { verdict: "portal", code };
 }
 
-/** The next-page token in a page-1 answer and the parameter the operation takes it in, or null when there is no next page to try. */
+/**
+ * The next-page token in a page-1 answer and the parameter the operation takes it in, or null when there is no next page to try.
+ * An answer that says `has_more: false` has no next page: on 2026-10-18 prod GET /v1/facebook/live/profile/events for nasa answered
+ * `has_more: false` and `cursor: null` with the Page's `next_page_id`, and sending that id as `cursor` hung prod for 90 s.
+ */
 export function nextPage(operation: Operation, body: unknown): { param: string; value: string } | null {
   const accepts = new Set((operation.parameters ?? []).filter(p => p.in === "query").map(p => p.name));
   const record = body as { data?: Record<string, unknown>; meta?: Record<string, unknown> } | null;
   for (const holder of [record?.data, record?.meta, record as Record<string, unknown> | null]) {
     if (!holder || typeof holder !== "object" || Array.isArray(holder)) continue;
+    if (holder.has_more === false) return null;
     for (const key of CURSOR_KEYS) {
       const value = holder[key];
       if (typeof value !== "string" || !value) continue;
