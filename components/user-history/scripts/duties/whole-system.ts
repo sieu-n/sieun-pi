@@ -8,7 +8,7 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { OPEN, walk } from "../../src/checkin-steps.ts";
+import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -379,6 +379,11 @@ export interface Inputs {
   ownerActivity?: ReadonlyMap<string, number>;
   /** Sessions that own an open step and sleep on a board.wake, they or a subagent below them (`treeWakes`): a live owner, as for check-ins (80cbdd1). */
   waking?: ReadonlySet<string>;
+  /**
+   * Sessions that own an open step and whose last turn ended waiting for a pi-pool slot (`endsOnPoolWait`): a live owner that goes on when its
+   * slot comes, as the check-in reads one (`poolWait`).
+   */
+  poolWaiting?: ReadonlySet<string>;
   /** Per chat, each job name with the sessions of its jobs that are not deleted (`jobSessions`), for a step whose session id is an old copy's. */
   named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   /** Opens, status reads, sends and worker starts that failed or ran over SLOW_MS, from service.log and the supervisor's log (src/daemon-faults.ts). */
@@ -552,12 +557,17 @@ export function measure(input: Inputs): PrecheckOutput {
     const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
     return { chat, value: read > 0 ? liveStuck(read, at!, run!.flagged, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking) : 0, at };
   }).filter(entry => entry.value > 0);
+  // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
+  // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
+  const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
     const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
     if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
-    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking ?? new Set(), input.named?.get(chat.id))) return [];
-    return [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, and no fix step on its board has a live owner now`];
+    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
+    const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
+    return [`${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
+      `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now`];
   }));
   // Every box's sleeping sessions count: each line's total over its boxes, averaged over the lines that measured any.
   const sleepingTotals = input.watch.filter(line => Date.parse(line.at) > start).flatMap(line => {
@@ -792,6 +802,38 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
   return out;
 }
 
+/** How much of a transcript's end `poolWaitingOwners` reads: in 1,448 job transcripts on 10-18 the last assistant line started at most 155 KB before the end. */
+const POOL_TAIL_BYTES = 1_000_000;
+/** Whether a transcript's last assistant turn ended on a pi-pool slot wait (`POOL_WAIT`), from its last lines. */
+export function endsOnPoolWait(lines: readonly string[]): boolean {
+  for (let at = lines.length - 1; at >= 0; at--) {
+    if (!lines[at]!.includes('"role":"assistant"')) continue;
+    try {
+      const message = (JSON.parse(lines[at]!) as { message?: { stopReason?: unknown; errorMessage?: unknown } }).message;
+      return message?.stopReason === "error" && typeof message.errorMessage === "string" && POOL_WAIT.test(message.errorMessage);
+    } catch { continue; }
+  }
+  return false;
+}
+
+/** The step owners whose transcript, a root's under sessions or a job's under its chat's session-artifacts, ends on a pi-pool slot wait. */
+async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>, named: Inputs["named"] = new Map()): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const [chat, board] of boards) {
+    const owners = new Set<string>();
+    walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) for (const session of stepSessions(item, named.get(chat) ?? new Map())) owners.add(session); });
+    if (owners.size === 0) continue;
+    const subs = (await readdir(join(agentDir, "session-artifacts", chat)).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
+    for (const session of owners) {
+      const files = [join(agentDir, "sessions", `${session}.jsonl`), ...subs.map(sub => join(agentDir, "session-artifacts", chat, sub, `${session}.jsonl`))];
+      const found = (await Promise.all(files.map(async file => ({ file, at: (await stat(file).catch(() => null))?.mtimeMs })))).filter(entry => entry.at !== undefined);
+      const newest = found.sort((a, b) => b.at! - a.at!)[0];
+      if (newest && endsOnPoolWait(await tailLines(newest.file, POOL_TAIL_BYTES))) out.add(session);
+    }
+  }
+  return out;
+}
+
 /**
  * The step owners that sleep on an owed board.wake, they or a subagent below them: launch main bro's deep walks 99 (p137) and hand run lanes
  * autoscale (p145) slept on CI run wakes on 10-18 and wrote nothing while they waited.
@@ -892,6 +934,7 @@ async function main(): Promise<void> {
     boards,
     ownerActivity: await ownerActivity(join(dataDir, ".."), boards, named),
     waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now, named),
+    poolWaiting: await poolWaitingOwners(join(dataDir, ".."), boards, named),
     named,
   });
   // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
