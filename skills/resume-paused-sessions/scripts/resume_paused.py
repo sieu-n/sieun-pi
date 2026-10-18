@@ -1327,6 +1327,14 @@ def never_started(session, entries, nbytes=256_000):
     return (notice, task) if isinstance(task, str) and task.strip() else None
 
 
+def recovered_after(entries, ts):
+    """The daemon wrote its worker recovery notice after the message at `ts`: the worker that ran the turn died and its in-flight work was
+    not replayed, so the turn is cut now and needs no grace. On 10-18 the pass that reopened chat 01a14ec0 ran 65 s after its job's cut, and
+    the 2 min grace would have left the job's continue to the next pass, 10 min later."""
+    return any(e.get("type") == "custom_message" and e.get("customType") == RECOVERY_NOTICE and (parse_ts(e.get("timestamp")) or ts) > ts
+               for e in entries)
+
+
 def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
@@ -1347,7 +1355,7 @@ def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     if not cut_off:
         return None
     ts = parse_ts(last.get("timestamp"))
-    if ts is None or (now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN:
+    if ts is None or ((now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN and not recovered_after(entries, ts)):
         return None
     return ("cut_off", "The turn stopped with no reply after a " + ("tool call" if role != "user" else "message") + ".")
 

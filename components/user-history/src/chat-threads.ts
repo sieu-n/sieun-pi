@@ -1027,6 +1027,21 @@ export class ThreadHub {
     return promise;
   }
 
+  /**
+   * Opens `id` again after the daemon listed its worker as failed: the hub's binding to the dead worker goes first, so the resume attaches or
+   * opens the file with a daemon create. The binding outlives the worker and the catalog's row too: after a SIGKILL of chat 01a14ec0's worker
+   * on 10-18 at 11:29:49Z the hub read the chat "connected" and the catalog read it "ready" on the dead pid, so the interrupted-job pass's
+   * resume returned at once, nothing reopened the chat, and its cut job got `skipped: worker_failed`. The supervisor's "Recovered worker" line
+   * at 11:29:49Z was journal recovery, not a ready worker: the record stayed failed until the chat's own revive started a new one at 11:38:19Z.
+   */
+  async reopenFailed(id: string): Promise<void> {
+    if (this.readOnly) throw new ThreadError(409, "A scratch serve only reads: it does not reopen a thread.");
+    const thread = this.threads.get(id);
+    const stale = thread?.live;
+    if (thread && stale) { thread.live = null; stale.unsubscribe(); await stale.connection.dispose().catch(() => {}); }
+    await this.resume(id);
+  }
+
   private async resumeOnce(id: string, ask: { foreground: boolean }): Promise<Thread> {
     const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;

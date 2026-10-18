@@ -94,6 +94,16 @@ class ResumePausedTests(unittest.TestCase):
         report = self.run_resume(dry_run=True)
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("aaaaaaaaaaaa", "cut_off")])
 
+    def test_a_cut_turn_with_the_worker_recovery_notice_after_it_counts_inside_the_grace_period(self):
+        recovery = {"type": "custom_message", "customType": "prime-agent.worker_recovery", "timestamp": at(0.9), "content": "x"}
+        call = assistant(1, "toolUse")
+        call["message"]["content"] = [{"type": "toolCall", "name": "ipython"}]
+        self.session("aaaaaaaaaaaa", [role(1.2, "toolResult"), call, recovery])
+        self.session("bbbbbbbbbbbb", [call, role(0.5, "toolResult")])
+        self.session("cccccccccccc", [dict(recovery, timestamp=at(1.5)), call])
+        report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("aaaaaaaaaaaa", "cut_off")])
+
     def test_idle_head_gets_continue_with_the_stopped_children(self):
         self.session("headheadhead", [assistant(5, "stop")])
         self.session("childchild01", [assistant(30, "error", "fetch failed")], parent="headheadhead")
