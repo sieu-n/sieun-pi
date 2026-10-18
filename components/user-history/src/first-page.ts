@@ -56,9 +56,22 @@ function cutParts(content: string | (TextPart | ImagePart)[], limit: number): st
  * and what shows only when he opens a work row is cut to its preview with `truncated` set, which the page already fetches in full on open
  * (`api.toolOutput`, `api.part`). The full snapshot right after the first page replaces these. A message with nothing to cut comes back as is.
  */
-export function previewMessage(message: ThreadMessage): ThreadMessage {
-  const preview = cutMessage(message);
-  return JSON.stringify(preview).length === JSON.stringify(message).length ? message : preview;
+export function previewMessage(message: ThreadMessage): ThreadMessage { return previewOf(message).message; }
+
+/**
+ * Each message's preview and its JSON length, kept per message object: a thread's messages are never changed in place, and a busy chat's state
+ * changes many times a second, so a shell or a new feed builds only the previews of messages it has not seen.
+ */
+const previews = new WeakMap<ThreadMessage, { message: ThreadMessage; size: number }>();
+function previewOf(message: ThreadMessage): { message: ThreadMessage; size: number } {
+  let found = previews.get(message);
+  if (!found) {
+    const preview = cutMessage(message);
+    const size = JSON.stringify(preview).length;
+    found = { message: size === JSON.stringify(message).length ? message : preview, size };
+    previews.set(message, found);
+  }
+  return found;
 }
 
 function cutMessage(message: ThreadMessage): ThreadMessage {
@@ -92,8 +105,8 @@ export function firstPage(messages: readonly ThreadMessage[], start: string | un
   let used = 0;
   let first = messages.length;
   while (first > floor) {
-    const preview = previewMessage(messages[first - 1]!);
-    const size = JSON.stringify(preview).length + 1;
+    const { message: preview, size: length } = previewOf(messages[first - 1]!);
+    const size = length + 1;
     const run = first < messages.length && messages[first - 1]!.timestamp === messages[first]!.timestamp;
     if (shown.length && !run && used + size > bytes) break;
     shown.push(preview);
@@ -139,6 +152,7 @@ export class FirstPages {
       } catch { return undefined; }
     }
     if (stale) return held?.text;
+    if (held && stale) return held.text;
     if (!held?.file || held.size === null) return undefined;
     const size = await stat(held.file).then(found => found.size, () => null);
     return size === held.size ? held.text : undefined;

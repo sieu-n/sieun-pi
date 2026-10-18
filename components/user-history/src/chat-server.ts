@@ -21,7 +21,8 @@ import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, rende
 import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
-import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
+import { contentSecurityPolicy, escapeAttribute, shellHead, shellTail } from "./shell.ts";
+import type { EarlyShell } from "./early-shell.ts";
 import { AgentsDiff, agentsView, parseHave, SessionsDiff, withoutAgents, withoutArchived } from "./shared/sessions-delta.ts";
 import { prepaintHash, prepaintHtml } from "./prepaint.ts";
 import { childLabels, wireEvent } from "./first-page.ts";
@@ -50,7 +51,6 @@ import { timeRead } from "./chat-latency.ts";
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + " " + prepaintHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /**
  * The chat files a box without the chat role reads through the service: the corrections ledger and send log for the board skill, and the
@@ -63,57 +63,12 @@ class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
 /** A folder path for another box, taken as typed: it must be absolute there, and that box's daemon refuses one it does not have. */
 function remoteWorkspace(input: string, host: string): string {
   const typed = input.trim().replace(/\/+$/, "") || "/";
   if (!typed.startsWith("/")) throw new WorkspaceError(`Type the full folder path on ${host}, starting with /: ${input.trim()}`);
   return typed;
-}
-
-/**
- * The page shell, in two parts. `shellHead` goes out at once: the script and style by their hashed names (`assetName`), so a later load
- * reads them from the browser's cache, and the inline boot script, which opens the feeds socket while app.js is still on its way
- * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load; a preload above
- * app.js asks for it first, since the chat's still view (prepaint.ts) paints once it arrives. `data-chats`
- * names the chats, so a thread URL paints its chat view from the snapshot instead of waiting for the sessions list to say it is a chat
- * (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
- */
-export function shellHead(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<title>Prime Agent chat</title>
-<link rel="preload" href="${escapeAttribute(assets.css)}" as="style">
-<script type="module" src="${escapeAttribute(assets.js)}"></script>
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
-<link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f9fb">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
-</head>
-<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}" data-chats="${escapeAttribute([...chats].join(","))}">
-<script>${bootFeedScript}</script>
-<link rel="stylesheet" href="${escapeAttribute(assets.css)}">
-`;
-}
-
-/**
- * The rest of the shell, with the first frames of the thread the URL names (`?t=`) in the shape its feed sends them, so the page paints the
- * thread with no request of its own. app.js is a module script, so it runs only once this part has arrived. `prepaint` is the chat's still
- * view (prepaint.ts), which paints before app.js arrives.
- */
-export function shellTail(thread: { id: string; json: string } | null = null, prepaint = ""): string {
-  const inline = thread ? `<script type="application/json" id="boot-thread" data-id="${escapeAttribute(thread.id)}">${thread.json}</script>\n` : "";
-  return `${inline}${prepaint}<div id="app"></div>
-</body>
-</html>
-`;
 }
 
 async function jsonBody(request: IncomingMessage): Promise<unknown> {
@@ -383,10 +338,12 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, listenFd = null, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
+export async function startChatServer({ backend, bundle, port, listenFd = null, early = null, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
   backend: ChatBackend; bundle: ClientBundle | Promise<ClientBundle>; port: number; capability: string; csrfToken: string;
   /** The port's socket that systemd holds across restarts (`takeListenFd`); the server listens on it instead of binding `port`. */
   listenFd?: number | null;
+  /** The server a starting service already listens on and answers page shells with (src/early-shell.ts); it gets every request from here on. */
+  early?: EarlyShell | null;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
@@ -418,7 +375,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   let host = "";
   let closing: Promise<void> | undefined;
 
-  const server = createServer((req, res) => { void handle(req, res); });
+  const server = early?.server ?? createServer((req, res) => { void handle(req, res); });
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   server.maxHeadersCount = 30;
@@ -469,7 +426,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       return () => {};
     }
   });
-  server.on("upgrade", (req, socket, head) => { upgrade(req, socket, head); });
+  if (!early) server.on("upgrade", (req, socket, head) => { upgrade(req, socket, head); });
 
   /**
    * JSON over 8 KB and the page's assets go out gzipped when the browser takes it. The Mac in Korea reads this box at about 370 KB/s, and on
@@ -512,6 +469,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     } catch (error) { process.stderr.write(`${new Date().toISOString()} shell ${id.slice(0, 8)}: no still view: ${error instanceof Error ? error.message : String(error)}\n`); }
     prepainted = { json, html };
     return html;
+  }
+  /** The wiki origin from hosts.json, read again at most every 30 s and behind the shell, so a shell never waits on the file. */
+  let wikiLast: string | null | undefined;
+  let wikiAt = 0;
+  function wikiCached(): Promise<string | null> | string | null {
+    if (Date.now() - wikiAt < 30_000 && wikiLast !== undefined) return wikiLast;
+    wikiAt = Date.now();
+    const next = wikiOrigin().then(found => { wikiLast = found; return found; }, () => wikiLast ?? null);
+    return wikiLast === undefined ? next : wikiLast;
   }
   /**
    * The shell goes out as a packed stream: its head is flushed at once, so the browser fetches app.js and opens the socket while the server
@@ -639,7 +605,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const named = url.searchParams.get("t");
             const id = named && idPattern.test(named) ? named : null;
             const frames = id ? inlineFrames(id) : Promise.resolve(null);
-            const [wiki, chats] = await Promise.all([wikiOrigin(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
+            const [wiki, chats] = await Promise.all([wikiCached(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
             const html = startHtml(req, res);
             html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
             const found = await frames;
@@ -1144,7 +1110,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
   }
   try {
-    await new Promise<void>((resolve, reject) => {
+    if (early) early.take((req, res) => { void handle(req, res); }, upgrade);
+    else await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       const listening = () => { server.removeListener("error", reject); resolve(); };
       if (listenFd === null) server.listen(port, "127.0.0.1", listening);

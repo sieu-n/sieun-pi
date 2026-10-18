@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import esbuildSvelte from "esbuild-svelte";
 import { iconPng } from "./chat-icon.ts";
+import { bundleCacheDir, clientSourceHash } from "./client-bundle.ts";
 import { scopeClass, type PrepaintModule } from "./prepaint.ts";
 
 const sveltePlugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
@@ -104,6 +105,11 @@ const prebuiltFiles = (stem: string) => [stem, `${stem}.br`, `${stem}.gz`];
 
 export async function writePrebuilt(dir = PREBUILT_DIR): Promise<void> {
   const { js, css, prepaint } = await compileAndPack();
+  await writeBuilt(dir, js, css, prepaint);
+}
+
+/** A packed bundle into `dir`, through a draft folder renamed into place, so a folder that exists is whole. */
+async function writeBuilt(dir: string, js: Asset, css: Asset, prepaint: string): Promise<void> {
   const draft = `${dir.replace(/\/+$/, "")}.${process.pid}.tmp`;
   await rm(draft, { recursive: true, force: true });
   await mkdir(draft, { recursive: true });
@@ -136,18 +142,28 @@ const bundleOf = async (js: Asset, css: Asset, prepaint: string): Promise<Client
   return { js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset, ...(loaded ? { prepaint: loaded } : {}) };
 };
 
-/** The release's prebuilt bundle (`readPrebuilt`), else a compile in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering. */
+/**
+ * The release's prebuilt bundle (`readPrebuilt`), else the one a former start cached for the same client sources (client-bundle.ts
+ * `bundleCacheDir`), else a compile in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering, cached for the next start.
+ * Releases on 10-18 came from a helper that wrote no prebuilt bundle, and each restart compiled the same client again.
+ */
 export async function buildClientBundle(dir = PREBUILT_DIR): Promise<ClientBundle> {
-  return await readPrebuilt(dir) ?? await compileInWorker();
+  const cache = bundleCacheDir(await clientSourceHash());
+  const found = await readPrebuilt(dir) ?? await readPrebuilt(cache);
+  if (found) return found;
+  const { js, css, prepaint, bundle } = await compileInWorker();
+  void writeBuilt(cache, js, css, prepaint).catch(error => { process.stderr.write(`client bundle cache ${cache}: ${error instanceof Error ? error.message : String(error)}\n`); });
+  return bundle;
 }
 
-function compileInWorker(): Promise<ClientBundle> {
+function compileInWorker(): Promise<{ js: Asset; css: Asset; prepaint: string; bundle: Promise<ClientBundle> }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./chat-assets-worker.mjs", import.meta.url));
     worker.once("message", (compiled: Compiled) => {
       void worker.terminate();
       if (!compiled.ok) { reject(new Error(compiled.error)); return; }
-      resolve(bundleOf(revive(compiled.js), revive(compiled.css), compiled.prepaint));
+      const js = revive(compiled.js), css = revive(compiled.css);
+      resolve({ js, css, prepaint: compiled.prepaint, bundle: bundleOf(js, css, compiled.prepaint) });
     });
     worker.once("error", reject);
     worker.once("exit", code => { reject(new Error(`The client bundle worker exited (${code}) with no bundle.`)); });
