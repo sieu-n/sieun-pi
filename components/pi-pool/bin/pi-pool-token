@@ -23,7 +23,6 @@ import signal
 import sys
 import time
 
-TOKEN_FLAGS = {"--provider"}
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 
 

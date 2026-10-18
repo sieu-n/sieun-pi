@@ -345,8 +345,7 @@ A pin is an owner intent applied once: the tree's next request moves to the pinn
 account if it passes R2 (a high tree skips R4). After that the pin steers the tree only
 when it must move or starts cold (no request for `cache_ttl_sec`), and it never pulls a warm
 tree back. A pool pin (`pi-pool pin`) moves trees at slot pace while its account passes R2.
-On load the pool drops pins whose `by` starts with `recovery:` (the lost 2026-10-11 recovery
-pool), pins older than `pin_ttl_sec` and the old `recovery_batches` key.
+On load the pool drops pins older than `pin_ttl_sec`.
 
 Every vend that changes a tree's account logs one `vend` line with `reason` (`new`,
 `switch`, `back`, `session_pin`, `pool_pin`, `upgrade`), the yielded pin in `shadowed`
@@ -358,9 +357,9 @@ line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 Removed on 2026-10-12: the hop onto a depleted account when nothing was usable (on
 2026-10-12 15:01-15:04 it moved 18 trees 85 times in 4 minutes, each onto an account that
 answered 429 a minute later), the random runway-cubed pick, `use --force`, and a pin pulling
-its tree back the moment its account reset. `tests/replay_scheduler.py` replays a day of real
-requests through the old resolver and this one; its numbers are in the pool-scheduler session
-folder (`replay.md`). `tests/test_scheduler.py` holds one or more tests per rule, and
+its tree back the moment its account reset. The replay of a day of real requests through the
+old resolver and this one is in the pool-scheduler session folder (`replay.md`).
+`tests/test_scheduler.py` holds one or more tests per rule, and
 `tests/mutation_check.py` takes each rule out of a copy of the code and fails when no test
 in that file notices.
 
