@@ -57,8 +57,11 @@ FAKE = textwrap.dedent(
         os.kill(old, 15)
         while os.path.exists(sock):
             time.sleep(0.01)
-        env = dict(os.environ, FAKE_BEHAVIOR="serve")
+        env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY="2" if mode == "slow-successor" else "0")
         subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if mode == "slow-successor":
+            status("failed", message=f"Timed out waiting for daemon to start on {sock}.")
+            sys.exit(1)
         status("complete")
         sys.exit(0)
     sock = sys.argv[sys.argv.index("--daemon-socket") + 1]
@@ -69,6 +72,7 @@ FAKE = textwrap.dedent(
         sys.exit(int(behavior[4:]))
     if behavior == "wait":
         time.sleep(60)
+    time.sleep(float(os.environ.get("FAKE_LISTEN_DELAY", "0")))
     server = socket.socket(socket.AF_UNIX)
     server.bind(sock)
     server.listen(8)
@@ -347,6 +351,18 @@ class DaemonCtlTest(unittest.TestCase):
                 self.assertEqual(self.pid_in_file(), old.pid)
                 old.terminate()
                 old.wait()
+
+    def test_update_exits_0_and_tracks_a_successor_that_listens_after_the_coordinator_timed_out(self):
+        # 10-18 06:47Z on us-metal02: the successor listened 2 s after Prime's coordinator gave up, the reload exited 5,
+        # and systemd counted the dead MainPID as a stop and restarted the unit (NRestarts 0 to 1).
+        old = self.serve()
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_MODE="slow-successor", FAKE_BEHAVIOR="wait"))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("result=restart-failed", result.stdout)
+        new = self.pid_in_file()
+        self.assertNotEqual(new, old.pid)
+        self.assertEqual(int(Path(self.env["FAKE_PIDS"]).read_text().split()[-1]), new)
+        self.assertIn(f"restart-failed, but supervisor {new} owns {self.sock}; exit 0", result.stdout)
 
     def test_update_reports_a_failed_update_after_tracking_the_supervisor(self):
         self.serve()

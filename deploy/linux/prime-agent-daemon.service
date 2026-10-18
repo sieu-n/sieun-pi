@@ -12,6 +12,9 @@ EnvironmentFile=-%h/.config/sieun-pi/prime-update.env
 ExecStartPre=/bin/mkdir -p -m 0700 /tmp/prime-agent-%U
 ExecStart=%h/.local/bin/prime-agent-daemon-ctl start %h/.local/bin/prime-agent /tmp/prime-agent-%U/daemon.sock %t/prime-agent-daemon.pid
 ExecReload=%h/.local/bin/prime-agent-daemon-ctl update %h/.local/bin/prime-agent /tmp/prime-agent-%U/daemon.sock %t/prime-agent-daemon.pid %h/.config/sieun-pi/prime-update.env
+# systemd reads the PIDFile only after a successful ExecReload. After a failed one it finds the old MainPID dead,
+# counts the unit as stopped and Restart= starts it again, so prime-agent-daemon-ctl update exits 0 on restart-failed
+# once a supervisor owns the socket (10-18 06:47Z: NRestarts 0 to 1 when the successor listened 2 s late).
 Restart=always
 RestartSec=5
 UMask=0077
