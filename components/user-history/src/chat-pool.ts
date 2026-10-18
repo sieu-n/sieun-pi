@@ -137,8 +137,38 @@ export function resetsNotice(value: Record<string, unknown>): string {
 
 const session = (sessionId: string | null) => sessionId ? ["--session", sessionId] : [];
 
-/** `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. */
-export async function listAccounts(sessionId: string | null, model: string | null = null): Promise<AccountsView> {
+/**
+ * The last accounts reading for each thread and model, newest ask last. On 10-18 one read ran 4 pi-pool processes of 0.25 to 0.33 s each, and
+ * under load 40 api/accounts took 1.0 to 2.2 s on the box and 5.1 to 14 s from the owner's Mac, twice past the page's 30 s timeout, on every
+ * chat switch. An answer is about 17 KB, so 100 readings, 2.5 times the 40 rows the sidebar showed that day, keep under 2 MB.
+ */
+const readings = new Map<string, { view: AccountsView | null; read: Promise<AccountsView> | null }>();
+const KEPT_READINGS = 100;
+
+/** A pool change this service makes (an account action, a key, a priority, a login, a usage refresh) drops every reading, so the next ask waits for a new one. */
+export function forgetAccountReadings(): void { readings.clear(); }
+
+/**
+ * `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. With a reading for
+ * the thread and model it answers at once with it and starts the next one behind it, one at a time, so the chip is at most one ask behind.
+ * `fresh` waits for a new reading.
+ */
+export function listAccounts(sessionId: string | null, model: string | null = null, { fresh = false, read = readAccounts }: { fresh?: boolean; read?: typeof readAccounts } = {}): Promise<AccountsView> {
+  const key = (sessionId ?? "") + "|" + (model ?? "");
+  const entry = readings.get(key) ?? { view: null, read: null };
+  readings.delete(key);
+  readings.set(key, entry);
+  if (readings.size > KEPT_READINGS) readings.delete(readings.keys().next().value!);
+  if (!entry.read) {
+    const next = read(sessionId, model);
+    entry.read = next;
+    const settle = () => { if (entry.read === next) entry.read = null; };
+    next.then(view => { entry.view = view; settle(); }, settle);
+  }
+  return entry.view && !fresh ? Promise.resolve(entry.view) : entry.read;
+}
+
+async function readAccounts(sessionId: string | null, model: string | null): Promise<AccountsView> {
   const forModel = model ? ["--model", model] : [];
   const [resolution, poolConfig] = await Promise.all([run(["who", "--json", ...session(sessionId), ...forModel]).then(JSON.parse).catch(() => null),
     run(["config"]).then(stdout => parsePoolConfig(JSON.parse(stdout))).catch(() => null)]);
@@ -265,7 +295,7 @@ export function parseQueueTimers(value: unknown): AgentQueueTimers {
 
 export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max" | "queue_aging_s" | "lease_s";
 export async function setPoolKey(key: AgentQueueKey, value: number): Promise<void> {
-  await run(poolCommand.set(key, value));
+  try { await run(poolCommand.set(key, value)); } finally { forgetAccountReadings(); }
 }
 
 /**
@@ -296,7 +326,7 @@ export async function releaseTurn(sessionId: string): Promise<void> {
 /** Sets a root session's pool class; the pool keeps it on the tree record, so every subagent of the root shares it. */
 export async function setPoolPriority(sessionId: string, priority: PoolPriority): Promise<void> {
   if (!sessionId || sessionId.startsWith("-")) throw new Error("Choose a thread.");
-  await run(poolCommand.priority(sessionId, priority));
+  try { await run(poolCommand.priority(sessionId, priority)); } finally { forgetAccountReadings(); }
 }
 
 const accountArgument = (account: string | undefined): string => {
@@ -306,6 +336,10 @@ const accountArgument = (account: string | undefined): string => {
 
 /** Runs one pool action. Returns a sentence to show when the action reports something beyond the new pool state. */
 export async function runAccountAction(action: AccountAction): Promise<string | null> {
+  try { return await accountAction(action); } finally { forgetAccountReadings(); }
+}
+
+async function accountAction(action: AccountAction): Promise<string | null> {
   if (!isPooled(action.provider)) throw new Error("Choose a pooled provider.");
   const provider = ["--provider", action.provider];
   switch (action.action) {
@@ -424,6 +458,7 @@ export class AccountLogins {
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-2000); });
     child.once("error", error => { stderr = error.message; });
     child.once("close", code => {
+      forgetAccountReadings();
       if (this.child !== child) return;
       this.child = null;
       for (const timer of this.timers) clearTimeout(timer);
@@ -565,7 +600,7 @@ export class UsageRefreshes {
         if (!event) continue;
         if (event.event === "accounts") edit(run => ({ ...run, accounts: event.accounts.map(entry => ({ ...entry, state: "queued", reason: null, usageAt: null, retryAt: null })) }));
         else if (event.event === "reading") setAccount(event.id, { state: "reading" });
-        else if (event.event === "read") setAccount(event.id, { state: event.ok ? "read" : "failed", reason: event.ok ? null : event.reason ?? "Not read.", usageAt: event.usageAt, retryAt: event.retryAt });
+        else if (event.event === "read") { forgetAccountReadings(); setAccount(event.id, { state: event.ok ? "read" : "failed", reason: event.ok ? null : event.reason ?? "Not read.", usageAt: event.usageAt, retryAt: event.retryAt }); }
         else if (event.event === "error") edit(run => ({ ...run, message: event.message }));
       }
     });
@@ -574,6 +609,7 @@ export class UsageRefreshes {
     const deadline = setTimeout(() => { stopped = true; child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000).unref(); }, this.deadlineMs);
     child.once("close", code => {
       clearTimeout(deadline);
+      forgetAccountReadings();
       if (this.children.get(provider) === child) this.children.delete(provider);
       const said = stderr.trim().split("\n").at(-1)?.slice(0, 300);
       edit(run => {
