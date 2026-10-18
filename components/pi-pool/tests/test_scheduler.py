@@ -732,6 +732,24 @@ class SwitchLog(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_vend(state, [acct("a", five=90, five_reset_in=600), acct("b", five=30, tier="max 5x")])
 
+    def test_a_refused_request_logs_parked_with_the_accounts_that_take_its_class(self):
+        state = empty_state()
+        put(state, KEY, on="b")
+        logged, _ = self.run_vend(state, [acct("a", five=90), acct("b", five=100)])
+        [parked] = [kw for e, kw in logged if e == "parked"]
+        self.assertEqual((parked["session"], parked["room"], parked["at"]), (KEY.key, [], NOW))
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "c", "slot_at": NOW + 600, "since": NOW}}
+        state["providers"][P]["admissions"] = {"c": [[NOW, "busy"]]}
+        logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
+        self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [["c@x"]])
+
+    def test_a_tree_that_waited_logs_unparked_when_it_gets_an_account(self):
+        state = empty_state()
+        put(state, KEY, on="b")
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": NOW - 5, "since": NOW - 900}}
+        logged, out = self.run_vend(state, [acct("a", five=10), acct("b", five=100)])
+        self.assertEqual((out, [kw["account"] for e, kw in logged if e == "unparked"]), ("fixture-token", ["a@x"]))
+
     def test_switches_today_counts_switch_lines_per_provider(self):
         day = time.strftime("%Y-%m-%d", time.localtime(NOW))
         before = time.strftime("%Y-%m-%d", time.localtime(NOW - 86400))

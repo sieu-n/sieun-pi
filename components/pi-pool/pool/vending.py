@@ -578,6 +578,14 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     d = sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
     if key is None or d is None:
         return d, tree, False
+    if isinstance(d, sched.Wait):
+        # One line per refused request, for the Whole system duty: `room` names the accounts that take this
+        # class on their last read, so a refusal with room is a turn held while the pool has accounts free.
+        base.log("parked", provider=provider, session=key.key, at=round(now, 1), account=d.slot_account.label,
+                 slot_at=round(d.slot_at), backoff=d.backoff, priority=tree.priority,
+                 room=[a.label for a in accounts if sched.admit_reason(a, cooldowns, cfg, now, tree.priority) is None])
+    elif tree.wait and admit_now:
+        base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label)
     if isinstance(d, sched.Admit) and admit_now:
         writer.admit(key, provider, d.account.id, now)
         return d, tree, True

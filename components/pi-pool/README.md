@@ -408,6 +408,10 @@ Every vend that changes a tree's account logs one `vend` line with `reason` (`ne
 with `why` (`depleted`, `limited`, `busy`, ...) and the `previous` account, and one `switch`
 line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 `credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
+Every refused request logs one `parked` line with `at` in epoch seconds, the slot, `backoff` and
+`room`, the accounts that take the tree's class on their last read, and the first request
+that gets an account after a wait logs one `unparked` line. The Whole system duty reads
+these (components/user-history/scripts/duties/whole-system.ts `readPoolLog`).
 `pi-pool status` counts today's `switch` lines per provider.
 
 Removed on 2026-10-12: the hop onto a depleted account when nothing was usable (on
