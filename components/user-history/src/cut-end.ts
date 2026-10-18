@@ -45,6 +45,35 @@ export function cutEnd(lines: readonly string[]): Cut | null {
   return end && !reportedBefore(lines, end.index) ? { at: end.at, cause: end.cause, ...(end.archivedAt === undefined ? {} : { archivedAt: end.archivedAt }) } : null;
 }
 
+/** A cut and the input that ended it, if one came since: `resumedAt` is that input's time. */
+export interface CutSpan extends Cut { resumedAt?: number }
+
+/** Whether a transcript line is an input to the session: a message to it, a user turn, or a pi-pool queue place. */
+const isInput = (line: string): boolean =>
+  line.includes('"customType":"agent_message"') || line.includes('"customType":"pi-pool-queue"') || line.includes('"role":"user"');
+
+/**
+ * Every cut in the lines (`cutEnd`), each with the input that ended it, and last the cut the lines end on, if any. A cut ended by a later input
+ * was a real wait all the same: census writer speed was stopped mid-tool at 06:46:13Z on 10-18 and got its next message only at 07:15:10Z,
+ * and d7 at 07:25Z and 07:30Z read no hold, because the job no longer ended cut.
+ */
+export function cutSpans(lines: readonly string[]): CutSpan[] {
+  const spans: CutSpan[] = [];
+  const add = (end: number, resumedAt?: number) => {
+    const cut = lastCut(lines, end);
+    if (!cut || reportedBefore(lines, cut.index)) return;
+    spans.push({ at: cut.at, cause: cut.cause, ...cut.archivedAt === undefined ? {} : { archivedAt: cut.archivedAt }, ...resumedAt === undefined ? {} : { resumedAt } });
+  };
+  lines.forEach((line, index) => {
+    if (!isInput(line)) return;
+    let at = NaN;
+    try { at = Date.parse((JSON.parse(line) as { timestamp?: string }).timestamp ?? ""); } catch { return; }
+    if (Number.isFinite(at)) add(index, at);
+  });
+  add(lines.length);
+  return spans;
+}
+
 /** Whether the job sent its parent a message between its last input and the line at `index`: a cut after its report left nothing waiting. */
 function reportedBefore(lines: readonly string[], index: number): boolean {
   for (let back = index - 1; back >= 0; back--) {
@@ -55,9 +84,9 @@ function reportedBefore(lines: readonly string[], index: number): boolean {
   return false;
 }
 
-function lastCut(lines: readonly string[]): (Cut & { index: number }) | null {
+function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: number }) | null {
   let archivedAfter: number | undefined;
-  for (let index = lines.length - 1; index >= 0; index--) {
+  for (let index = end - 1; index >= 0; index--) {
     let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string } };
     try { entry = JSON.parse(lines[index]!); } catch { continue; }
     if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
@@ -111,6 +140,23 @@ export async function tailLines(file: string, bytes: number): Promise<string[]> 
     return from > 0 ? lines.slice(1) : lines;
   } finally { await handle.close(); }
 }
+
+/**
+ * `cutSpans` of a session file for the cuts that ended at or after `since` and the cut it ends on: longer tails up to CUT_CONFIRM_BYTES until
+ * the lines hold an input from before `since`, so every input since then has the turn before it. Empty when the file is gone.
+ */
+export async function readCutSpans(file: string, since: number): Promise<CutSpan[]> {
+  let lines: string[] = [];
+  for (const bytes of [CUT_TAIL_BYTES, 1_000_000, CUT_CONFIRM_BYTES]) {
+    lines = await tailLines(file, bytes);
+    if (lines.some(line => isInput(line) && inputBefore(line, since))) break;
+  }
+  return cutSpans(lines).filter(span => span.resumedAt === undefined || span.resumedAt >= since);
+}
+
+const inputBefore = (line: string, since: number): boolean => {
+  try { return Date.parse((JSON.parse(line) as { timestamp?: string }).timestamp ?? "") < since; } catch { return false; }
+};
 
 /** Whether the lines hold the job's last input, so `cutEnd` saw the whole turn and a longer tail cannot change its answer. */
 const holdsInput = (lines: readonly string[]): boolean => lines.some(line => line.includes('"customType":"agent_message"') || line.includes('"role":"user"'));
