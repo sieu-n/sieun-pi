@@ -1,7 +1,10 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
+import { buildReload, onLeave } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
-import { applyThreadEvent } from "../shared/thread-state.ts";
+import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
+import { messageKey } from "../shared/message-key.ts";
+import { keepOlder, newestPage, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
 import { hashFor, parseHash } from "./permalink.ts";
@@ -17,7 +20,12 @@ export interface PendingChat { cwd: string; host?: string; name?: string; kind?:
 const NEW_ROW_WAIT_MS = 3000;
 
 /** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
-type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
+/**
+ * `newest` is where the newest page of the last snapshot starts, so a thread left alone can drop the older pages loaded since. `olderLoading`
+ * is set while an older page is on its way.
+ */
+type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number;
+  newest: NewestPage | null; olderLoading: boolean };
 
 class Store {
   sessions = $state<SessionRow[]>([]);
@@ -56,6 +64,7 @@ class Store {
     void this.loadSlack();
     this.readHash();
     window.addEventListener("hashchange", () => this.readHash());
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") this.trimHidden(); });
     this.sessionsStop = api.sessionsStream(event => {
       this.sessions = event.sessions;
       this.tags = event.tags;
@@ -65,11 +74,18 @@ class Store {
   }
 
   private updateOffered = false;
-  /** A restarted service with new client code: reload at once unless that would drop an unsent draft or a starting chat, then offer it instead. */
+  /** A restarted service with new client code: `buildReload` picks a reload now, one when the owner leaves the page, or a Reload offer. */
   private onBuild(version: string): void {
     if (!version || version === document.body.dataset.build || this.updateOffered) return;
-    if (!this.pending && !hasUnsentDrafts()) { location.reload(); return; }
     this.updateOffered = true;
+    const unsent = () => this.pending !== null || hasUnsentDrafts();
+    const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), unsent: unsent() });
+    if (plan === "now") location.reload();
+    else if (plan === "on-leave") onLeave(() => { if (unsent()) this.offerReload(); else location.reload(); });
+    else this.offerReload();
+  }
+
+  private offerReload(): void {
     this.toast("A new version of this page is ready.", "info", { label: "Reload", run: () => location.reload() }, null);
   }
 
@@ -120,7 +136,7 @@ class Store {
   thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
 
   private patch(id: string, change: Partial<ThreadEntry>): void {
-    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0 };
+    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
     this.threads = { ...this.threads, [id]: { ...current, ...change } };
   }
 
@@ -136,8 +152,9 @@ class Store {
       const current = this.threads[id];
       if (!current) return;
       if (event.type === "snapshot") {
-        performance.measure("thread-snapshot:" + id, "thread-open:" + id);
-        this.patch(id, { state: applyThreadEvent({ ...event.snapshot, connection: "connected" }, event), loading: false, error: null });
+        if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
+        const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
+        this.patch(id, { state: keepOlder(current.state, page), newest: newestPage(page), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
@@ -148,11 +165,50 @@ class Store {
     this.patch(id, { close });
   }
 
+  /**
+   * Leaving a thread. A chat keeps its subscription, so switching back paints the state it holds and needs no new snapshot (10-18: each
+   * switch back waited 2.5 to 16 s for one under a busy server). An open tab never holds a chat's session attached (chat-threads.ts
+   * `resting`). Any other thread closes it, since a listener keeps a plain thread attached on the server (`sweep`).
+   */
   release(id: string): void {
     const entry = this.threads[id];
-    if (!entry?.close) return;
+    if (!entry?.close || this.session(id)?.chat) return;
     entry.close();
     this.patch(id, { close: null });
+  }
+
+  /** Part `part` of the message at `index` in the thread's loaded messages, whole: the snapshot clips long parts. */
+  part(id: string, index: number, part: number): Promise<{ text: string }> {
+    const messages = this.threads[id]?.state?.messages;
+    if (!messages?.[index]) return Promise.reject(new Error("That message is not loaded any more."));
+    return api.part(id, messageKey(messages, index), part);
+  }
+
+  /** The page before the oldest loaded message, put in front of it. A session file that changed under the cursor (409) opens the thread again. */
+  async loadOlder(id: string): Promise<void> {
+    const entry = this.threads[id];
+    const cursor = entry?.state?.older;
+    if (!entry || cursor === undefined || entry.olderLoading) return;
+    this.patch(id, { olderLoading: true });
+    try {
+      const page = await api.olderPage(id, cursor);
+      const current = this.threads[id];
+      if (current?.state && current.state.older === cursor) this.patch(id, { state: prependOlder(current.state, page) });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) { this.threads[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
+      else this.toast(error instanceof Error ? error.message : String(error));
+    } finally { this.patch(id, { olderLoading: false }); }
+  }
+
+  /** A hidden tab drops the older pages of every thread but the open one, so threads the owner scrolled through once do not stay in memory. */
+  private trimHidden(): void {
+    let threads = this.threads;
+    for (const [id, entry] of Object.entries(threads)) {
+      if (id === this.selectedId || !entry.state) continue;
+      const state = trimToNewest(entry.state, entry.newest);
+      if (state !== entry.state) threads = { ...threads, [id]: { ...entry, state } };
+    }
+    if (threads !== this.threads) this.threads = threads;
   }
 
   warm(id: string): void {
