@@ -343,8 +343,17 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   return measured;
 }
 
-/** Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then once a minute until the returned stop is called; a sample still running when the next tick comes skips that tick. */
-export function startMacUsableWatch(source: WatchSource, everyMs = MINUTE, firstMs = 5_000): () => void {
+/**
+ * The first wall-clock half minute (hh:mm:30) after `at`. The Whole system duty counts each wall-clock minute by the line in it, so a line taken
+ * at its middle still lands in it up to 29 s late. A once-a-minute interval drifted later with event-loop lag instead: across the 1,095 gaps of
+ * the 10-17 and 10-18 files, 748 ran over 60 s, so the phase crept over minute marks, and the duty read 03:53Z on 10-18 as unwatched with lines
+ * at 03:52:07.717Z and 03:53:08.347Z.
+ */
+export const nextSampleAt = (at: number): number => Math.floor((at - MINUTE / 2) / MINUTE) * MINUTE + MINUTE + MINUTE / 2;
+
+/** Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then at each `nextSampleAt` until the returned stop is called; a sample still running when the next tick comes skips that tick. */
+export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => void {
+  const now = source.now ?? Date.now;
   let running = false;
   let landed = false;
   const tick = () => {
@@ -353,10 +362,15 @@ export function startMacUsableWatch(source: WatchSource, everyMs = MINUTE, first
     void sample(source).then(line => { if (line) landed = true; })
       .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
   };
-  const timer = setInterval(tick, everyMs);
+  let due = nextSampleAt(now());
+  let timer: NodeJS.Timeout;
+  const arm = () => {
+    timer = setTimeout(() => { tick(); due = nextSampleAt(Math.max(now(), due)); arm(); }, Math.max(0, due - now()));
+    timer.unref();
+  };
+  arm();
   const first = setInterval(() => { if (landed) clearInterval(first); else tick(); }, firstMs);
-  timer.unref();
   first.unref();
   tick();
-  return () => { clearInterval(timer); clearInterval(first); };
+  return () => { clearTimeout(timer); clearInterval(first); };
 }

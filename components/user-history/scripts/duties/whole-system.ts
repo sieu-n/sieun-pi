@@ -225,7 +225,8 @@ const minutes = (ms: number): number => Math.round(ms / MINUTE);
 
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
-  const start = now - WINDOW_MS;
+  // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
+  const start = Math.floor(now / MINUTE) * MINUTE - WINDOW_MS;
   const flagged: FlaggedSlice[] = [];
   const queueHolds: Hold[] = [
     ...input.log.holds,
@@ -237,8 +238,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const isHarness = harnessSide(input.watch);
   const dirty: string[] = [];
   for (let minute = 0; minute < 30; minute++) {
-    const to = start + (minute + 1) * MINUTE;
-    const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at > to - MINUTE && at <= to; });
+    const from = start + minute * MINUTE, to = from + MINUTE;
+    const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < to; });
     const why: string[] = [];
     if (!line) { unwatched++; why.push("no watch line"); }
     else if (!line.usable) why.push("no pressure reading");
@@ -249,7 +250,7 @@ export function measure(input: Inputs): PrecheckOutput {
     }
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     if (line && queuedWithFreeSlots(line, input.okLimit)) { freeSlot++; why.push("a turn queued with free slots"); }
-    if (why.length) dirty.push(`${clock(to)} ${why.join(", ")}`);
+    if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else clean++;
   }
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
