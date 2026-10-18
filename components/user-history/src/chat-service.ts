@@ -244,7 +244,7 @@ async function startHosts(primary: boolean): Promise<{ bridge: { close(): Promis
     const bridge = new HostBridge(registry, { log });
     if (primary) await bridge.start();
     log(`hosts: ${registry.hosts.map(host => host.name).join(", ")} from ${HOSTS_FILE}${primary ? ", bridges open" : ""}`);
-    return { bridge: primary ? bridge : null, catalogs: new HostCatalogs(registry, bridge, undefined, log) };
+    return { bridge: primary ? bridge : null, catalogs: new HostCatalogs(registry, bridge, undefined, log, primary) };
   } catch (error) { log(`hosts: ${error instanceof Error ? error.message : String(error)}`); return null; }
 }
 
@@ -342,7 +342,7 @@ async function serve(options: Options): Promise<void> {
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
   const hosts = await startHosts(service.primary);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
-    ownChatsOnly: adopt === "own", hosts: hosts?.catalogs ?? null });
+    ownChatsOnly: adopt === "own", hosts: hosts?.catalogs ?? null, copyFile: service.primary ? join(service.directory, "session-copy.json") : null });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;

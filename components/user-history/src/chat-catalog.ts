@@ -13,6 +13,7 @@ import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
 import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
+import { SessionPeer } from "./session-peer.ts";
 import type { Host } from "./hosts.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
 
@@ -420,20 +421,6 @@ export function parseSummaries(value: unknown): SessionSummary[] {
 }
 
 /**
- * The last full list with the daemon's live roster rows laid over it, matched by session file the way the daemon merges its own `list all`;
- * undefined when the set of live sessions changed (a live row the full list lacks, or a row it had as live that the roster no longer has),
- * which needs a full list again.
- */
-export function rosterOverlay(scanned: readonly SessionSummary[], live: readonly SessionSummary[]): SessionSummary[] | undefined {
-  const key = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
-  const liveByKey = new Map(live.map(row => [key(row), row]));
-  const known = new Set(scanned.map(key));
-  for (const row of live) if (!known.has(key(row))) return undefined;
-  for (const row of scanned) if (row.activeSessionId !== undefined && !liveByKey.has(key(row))) return undefined;
-  return scanned.map(row => liveByKey.get(key(row)) ?? row);
-}
-
-/**
  * `unreadCount` kept per messages array and read marker. The hub replaces a chat's array on each new message, and on 10-18 counting every unread
  * chat's feed again on each projection took 10% of it.
  */
@@ -451,13 +438,11 @@ export const RATES_MS = 2000;
 
 /** How long a refresh waits for a session list: the SDK's default request deadline, which every list used before p349. */
 const LIST_WAIT_MS = 30000;
-/** The SDK arms a timer on every request, and setTimeout runs a delay above 2^31 - 1 ms at once, so this is the longest wait it takes. */
-const NO_DEADLINE_MS = 2 ** 31 - 1;
 
-/** The promise's result, or a rejection after `ms`; the promise itself keeps running. */
-function waitFor<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** The promise's result, or a rejection after `ms` for this caller only; the promise itself keeps running. */
+function waitFor<T>(promise: Promise<T>, ms: number, box: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms waiting for the Prime Agent daemon response to "list"; the list keeps running and the next refresh waits on it.`)), ms); });
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms waiting for the session list of ${box}; the list keeps running and the copy takes it when it answers.`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
@@ -494,42 +479,47 @@ export class Catalog {
   private readonly listeners = new Set<(event: SessionsEvent) => void>();
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
-  private subscribed = false;
-  /** A session list arrived on the present daemon connection. Until it does, an "up" frame would show an empty sidebar. */
-  private listed = false;
+  /** This box's sessions, kept the way every other box's are (`SessionPeer`): the roster stream keeps them current, and no page waits on a list. */
+  private readonly peer: SessionPeer;
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
-  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
-  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  private connecting: Promise<void> | undefined;
-  private refreshing: Promise<void> | undefined;
-  private refreshingScope: "full" | "roster" | undefined;
-  private fullList: Promise<void> | undefined;
-  /** The rows of the last list, the base a roster refresh lays the live rows over. */
-  private scanned: SessionSummary[] | undefined;
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
-    private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null) {
+    private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null) {
     this.client = new DaemonClient(socketPath);
+    // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
+    this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: 1500, helloMs: 1500 }, changeMs: 150,
+      reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
+      onHello: hello => { this.observedDaemonVersion = { version: hello.appVersion }; this.daemonVersionListener(hello.appVersion); } });
     if (hosts) {
-      // Another box's list or reachability changed: its rows go into the next frame with this box's last list.
-      hosts.onChange = () => { if (this.scanned && !this.closed) void this.apply(this.scanned).catch(() => {}); };
+      // Another box's list or reachability changed: its rows go into the next frame with this box's copy.
+      hosts.onChange = () => { if (this.peer.listed && !this.closed) void this.apply(this.peer.list()).catch(() => {}); };
       hosts.start();
     }
     this.client.onMessage(message => {
-      if (message.type === "roster_update") this.scheduleRefresh();
       if (message.type === "heartbeats_changed") this.scheduleSchedulesRefresh();
     });
-    this.client.onClose(error => {
-      this.subscribed = false;
-      this.listed = false;
+    this.client.onClose(() => {
       clearTimeout(this.schedulesTimer);
       this.schedulesTimer = undefined;
-      this.setDaemon("down", error.message);
-      this.scheduleReconnect();
     });
+  }
+
+  /**
+   * This box's copy or link changed. A link that closes and comes back within the copy's reconnect shows no banner; one whose connect failed
+   * shows a banner that names this box, over the rows it last had.
+   */
+  private peerChanged(): void {
+    if (this.closed) return;
+    if (this.peer.state === "down") this.setDaemon("down", this.unreachable(this.peer.error));
+    if (this.peer.state === "up") { this.setDaemon("up"); this.scheduleSchedulesRefresh(0); }
+    if (this.peer.listed) void this.apply(this.peer.list()).catch(() => {});
+  }
+
+  private unreachable(cause: string | undefined): string {
+    return `The Prime Agent daemon on ${this.peer.name} is not reachable.${cause ? " " + cause : ""}`;
   }
 
   private setDaemon(state: "up" | "down", error?: string): void {
@@ -539,45 +529,19 @@ export class Catalog {
     if (changed && state === "down") void this.emit();
   }
 
-  private scheduleReconnect(): void {
-    if (this.closed || this.reconnectTimer || this.listeners.size === 0) return;
-    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.refresh().catch(() => {}); }, 2000);
-  }
-
+  /** A link to this box's daemon subscribed to its roster; the copy connects again on its own after a failure. */
   async connect(): Promise<void> {
     if (this.closed) throw new Error("Chat catalog is closed");
-    if (this.client.isConnected && this.subscribed) return;
-    if (this.connecting) return this.connecting;
-    this.connecting = (async () => {
-      try {
-        await this.client.reconnect(1500);
-        const hello = await this.client.waitForHello(1500);
-        this.observedDaemonVersion = { version: hello.appVersion };
-        this.daemonVersionListener(hello.appVersion);
-        const response = await this.client.request({ type: "roster_subscribe" }, undefined, { recoverable: false });
-        if (!response.success) throw new Error(response.error);
-        this.subscribed = true;
-        this.setDaemon("up");
-        this.scheduleSchedulesRefresh(0);
-      } catch (error) {
-        this.client.resetTransportForReconnect();
-        const message = "Prime Agent daemon is not reachable. " + (error instanceof Error ? error.message : String(error));
-        this.setDaemon("down", message);
-        this.scheduleReconnect();
-        throw new Error(message);
-      } finally { this.connecting = undefined; }
-    })();
-    return this.connecting;
-  }
-
-  private scheduleRefresh(): void {
-    if (this.refreshTimer || this.closed) return;
-    this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.refresh("roster").catch(() => {}); }, 150);
+    try { await this.peer.connect(); } catch (error) {
+      const message = this.unreachable(error instanceof Error ? error.message : String(error));
+      this.setDaemon("down", message);
+      throw new Error(message);
+    }
   }
 
   /** Schedules are a separate native projection: a slow worker never gates session delivery. */
   private scheduleSchedulesRefresh(delay = SCHEDULE_REFRESH_MS): void {
-    if (this.closed || this.schedulesTimer || !this.subscribed) return;
+    if (this.closed || this.schedulesTimer || !this.peer.subscribed) return;
     this.schedulesTimer = setTimeout(() => {
       this.schedulesTimer = undefined;
       void this.refreshSchedules();
@@ -591,7 +555,7 @@ export class Catalog {
       try {
         const jobs = await this.client.request({ type: "cron_list" }, undefined, { recoverable: false });
         if (!jobs.success) throw new Error(jobs.error);
-        if (this.closed || !this.subscribed) return;
+        if (this.closed || !this.peer.subscribed) return;
         this.schedules = parseSchedules(jobs.data);
         await this.emit();
       } catch (error) {
@@ -605,57 +569,25 @@ export class Catalog {
   }
 
   /**
-   * Reads the daemon's sessions. A `full` refresh lists them all (`list` with `all`: every live row plus the daemon's disk scan of every saved
-   * session and its spawn ledger). A roster_update only needs the live rows, so a `roster` refresh lists the roster alone and lays it over
-   * the last full list; it falls back to a full list when a session started or stopped since then (rosterOverlay). Measured 10-12 23:30 KST:
-   * the daemon sent 116 roster_updates in 60 s, and the full list was 7.7 MB and 1,135 rows in 16.6 s while the roster list was 1.3 MB and
-   * 377 rows in 0.4 s, so a full list on every roster_update kept one disk scan running in the daemon at all times.
+   * Brings this box's copy up to date (`SessionPeer.sync`: a roster list over the copy, a full list only when there is no copy) and lays it into
+   * the rows. Until 10-18 a refresh ran a full list and waited for its frame to go out too, and a wait past 30 s set the whole page's daemon
+   * state down: 7 of 9 "Timed out after 30000ms" lines from 04:22Z to 06:20Z were such waits, while this box's full list never took over 5.8 s.
+   * A wait past LIST_WAIT_MS now rejects for its caller only, and the sync keeps running.
    */
-  async refresh(scope: "full" | "roster" = "full"): Promise<void> {
-    if (this.refreshing) {
-      // A full refresh asked for during a roster one runs after it: its caller waits for a session the roster list may not show yet.
-      if (scope === "full" && this.refreshingScope !== "full") return this.refreshing.catch(() => {}).then(() => this.refresh("full"));
-      return this.refreshing;
-    }
-    this.refreshingScope = scope;
-    this.refreshing = (async () => {
-      await this.connect();
-      const overlaid = scope === "roster" && this.scanned ? rosterOverlay(this.scanned, await this.list(false, LIST_WAIT_MS)) : undefined;
-      if (overlaid) await this.apply(overlaid);
-      else await waitFor(this.listAll(), LIST_WAIT_MS);
-    })().catch(error => {
-      if (!this.closed) {
-        this.setDaemon("down", error instanceof Error ? error.message : String(error));
-        this.scheduleReconnect();
-      }
-      throw error;
-    }).finally(() => { this.refreshing = undefined; this.refreshingScope = undefined; });
-    return this.refreshing;
-  }
-
-  /**
-   * The one full list in flight. A refresh waits on it for LIST_WAIT_MS and then gives up, but the list keeps running: the next refresh waits
-   * on the same list, and its rows land when it answers. Measured 10-13 02:33 KST at load 40: the full list was 8.9 MB with no answer after
-   * 120 s, and each refresh that gave up at 30 s sent a new one, so a new disk scan started in the daemon about every 32 s and every late
-   * answer was dropped.
-   */
-  private listAll(): Promise<void> {
-    if (this.fullList) return this.fullList;
-    const started = Date.now();
-    const seconds = () => ((Date.now() - started) / 1000).toFixed(1);
-    this.fullList = this.list(true, NO_DEADLINE_MS).then(rows => {
-      process.stderr.write(`catalog: full list answered in ${seconds()} s, ${rows.length} rows\n`);
-      return this.apply(rows);
-    }, error => {
-      if (!this.closed) process.stderr.write(`catalog: full list failed after ${seconds()} s: ${error instanceof Error ? error.message : String(error)}\n`);
-      throw error;
-    }).finally(() => { this.fullList = undefined; });
-    return this.fullList;
+  async refresh(): Promise<void> {
+    await waitFor(this.peer.sync(() => this.connect()), LIST_WAIT_MS, this.peer.name);
+    this.index(this.peer.list());
+    void this.emit().catch(() => {});
   }
 
   private async apply(rows: SessionSummary[]): Promise<void> {
     if (this.closed) return;
-    this.scanned = rows;
+    this.index(rows);
+    await this.emit();
+  }
+
+  /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
+  private index(rows: SessionSummary[]): void {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
     this.own = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : [row.sessionId]));
@@ -677,12 +609,9 @@ export class Catalog {
       const existing = this.childById.get(row.sessionId);
       if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) this.childById.set(row.sessionId, row);
     }
-    this.listed = true;
     const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
-    this.setDaemon("up");
     void this.readCuts();
-    await this.emit();
   }
 
   /** Reads the cut ends of children that changed since the last read, one pass at a time, and hands the roster on again when one moved. */
@@ -701,12 +630,6 @@ export class Catalog {
     } catch (error) {
       if (!this.closed) process.stderr.write(`catalog: cut ends: ${error instanceof Error ? error.message : String(error)}\n`);
     } finally { this.cutsReading = false; }
-  }
-
-  private async list(all: boolean, timeoutMs: number): Promise<SessionSummary[]> {
-    const response = await this.client.request(all ? { type: "list", all: true } : { type: "list" }, timeoutMs, { recoverable: false });
-    if (!response.success) throw new Error(response.error);
-    return parseSummaries(response.data);
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
@@ -809,9 +732,12 @@ export class Catalog {
     return this.emitNext;
   }
 
-  /** Frames wait for the first session list of a connection: a schedule reply or a notify that lands before it would report "up" with no rows. */
+  /**
+   * Frames wait for the copy's first rows: a schedule reply or a notify that lands before them would report "up" with no rows. A "down" frame
+   * goes out only with its cause, so a service start shows no banner before its first connect.
+   */
   private async emitOnce(): Promise<void> {
-    if (this.listeners.size === 0 || (this.daemon === "up" && !this.listed)) return;
+    if (this.listeners.size === 0 || (this.daemon === "up" && !this.peer.listed) || (this.daemon === "down" && !this.lastError)) return;
     const event = await this.event();
     for (const listener of [...this.listeners]) listener(event);
   }
@@ -857,7 +783,7 @@ export class Catalog {
 
   /** The daemon's rows from the last list as it sent them, live roster rows laid over; empty before the first full list. */
   daemonRows(): readonly SessionSummary[] {
-    return this.scanned ?? [];
+    return this.peer.listed ? this.peer.list() : [];
   }
 
   private find(sessionId: string): SessionSummary | undefined {
@@ -887,6 +813,12 @@ export class Catalog {
   }
 
   forget(sessionId: string): void { this.summaries.delete(sessionId); }
+
+  /** Changes the row of a session this server changed itself, such as a saved session's new name, in the copy of the box that lists it. */
+  patchRow(sessionId: string, fields: Partial<SessionSummary>): void {
+    if (!this.hosts?.patch(sessionId, fields) && !this.peer.patch(sessionId, fields)) return;
+    if (this.peer.listed) void this.apply(this.peer.list()).catch(() => {});
+  }
 
   /** This box's session ids and active session ids from its last list, and the ones of them with a worker now. */
   private own = new Set<string>();
@@ -990,8 +922,7 @@ export class Catalog {
 
   async close(): Promise<void> {
     this.closed = true;
-    clearTimeout(this.refreshTimer);
-    clearTimeout(this.reconnectTimer);
+    this.peer.close();
     clearTimeout(this.schedulesTimer);
     clearTimeout(this.ratesTimer);
     this.listeners.clear();

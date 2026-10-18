@@ -18,6 +18,8 @@ test("emits asked for during a projection share one projection after it, and eac
     await new Promise<void>(resolve => gates.push(resolve));
     return { type: "sessions", sessions: [], tags: [], daemon: "down", error: `projection ${index}` };
   });
+  // A down frame goes out only with its cause, so the test gives the catalog one.
+  (catalog as unknown as { lastError: string }).lastError = "Connection to the Prime Agent daemon closed.";
   const frames: string[] = [];
   (catalog as unknown as { listeners: Set<(event: SessionsEvent) => void> }).listeners.add(event => frames.push(event.error ?? ""));
   const first = catalog.notify();

@@ -2,8 +2,8 @@ import { appendFile, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DaemonClient, type SessionSummary } from "prime-agent";
-import { parseSummaries } from "./chat-catalog.ts";
 import { HostBridge, readHostFile, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
+import { SessionPeer } from "./session-peer.ts";
 
 /** Copies of other boxes' session files, refreshed by byte range, so readers that open a session file by path work for every host. */
 export const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
@@ -12,11 +12,6 @@ const RECONNECT_MS = 5000;
 const CHANGE_DEBOUNCE_MS = 300;
 /** A copy brought up to date this recently is used as it is; a check-in tick asks for the same chat's file several times in a row. */
 const MIRROR_FRESH_MS = 2000;
-/** Updates the rows cannot place within this wait share one roster list. */
-const CATCH_UP_MS = 1000;
-const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
-  "workerState", "workerPid"] as const;
-
 /** Where this box keeps its copy of another box's file. */
 export const mirrorPath = (host: Pick<Host, "name">, path: string): string => join(MIRROR_DIR, host.name, path);
 
@@ -26,215 +21,48 @@ export function remotePath(host: Pick<Host, "name">, path: string): string {
   return path.startsWith(prefix + "/") ? path.slice(prefix.length) : path;
 }
 
-/** The key the daemon merges its own `list all` by, so a live roster row replaces the saved row of the same session. */
-const rowKey = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
+type Remote = { host: Host; client: DaemonClient; peer: SessionPeer };
 
-/** A row as saved: the daemon's passivated form of a session whose worker stopped. */
-function saved(row: SessionSummary): SessionSummary {
-  const copy: Record<string, unknown> = { ...row, activity: "idle" };
-  for (const field of LIVE_FIELDS) delete copy[field];
-  return copy as unknown as SessionSummary;
-}
-
-/** The rows with a roster list laid over them: its rows replace or join theirs, and a row live before but missing from it is saved now. */
-export function rosterMerge(rows: ReadonlyMap<string, SessionSummary>, live: readonly SessionSummary[]): Map<string, SessionSummary> {
-  const next = new Map(rows);
-  const liveKeys = new Set(live.map(rowKey));
-  for (const [key, row] of next) if (row.activeSessionId !== undefined && !liveKeys.has(key)) next.set(key, saved(row));
-  for (const row of live) next.set(rowKey(row), { ...next.get(rowKey(row)), ...row });
-  return next;
-}
-
-/**
- * The roster's agent id for a row, as the daemon forms it (rosterAgentIdForSummary): a subagent is its parent's session path and child id, any
- * other session its session id. The daemon canonicalizes the parent path; the listed path is the same string on both boxes today.
- */
-export function agentIdOf(row: Pick<SessionSummary, "runtimeKind" | "rlmChildId" | "sessionId" | "parentSessionPath" | "parentActiveSessionId">): string {
-  if (row.runtimeKind === "subagent" && row.rlmChildId) {
-    const parent = row.parentSessionPath ?? row.parentActiveSessionId;
-    return parent ? `${parent}#${row.rlmChildId}` : row.rlmChildId;
-  }
-  return row.sessionId;
-}
-
-/** Every live row's agent id to its row key, so a later removal finds its row. */
-export function liveAgents(rows: ReadonlyMap<string, SessionSummary>): Map<string, string> {
-  const agents = new Map<string, string>();
-  for (const [key, row] of rows) if (row.activeSessionId !== undefined) agents.set(agentIdOf(row), key);
-  return agents;
-}
-
-/** One `roster_update`: the agents whose summary changed, and the agent ids that left the roster. */
-export type RosterUpdate = { changed?: { agentId: string; status?: string; summary: Partial<SessionSummary> & { sessionId: string } }[]; removed?: string[]; resync?: true };
-
-/**
- * A roster_update laid over the rows: a changed agent's summary replaces or joins its row, and a removed one's row is saved. `unknown` is true
- * when the update names an agent the rows cannot place, so the caller lists the roster to catch up.
- */
-export function applyRosterUpdate(rows: ReadonlyMap<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate): { rows: Map<string, SessionSummary>; unknown: boolean } {
-  const next = new Map(rows);
-  let unknown = update.resync === true;
-  for (const entry of update.changed ?? []) {
-    const row = { ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary;
-    const key = rowKey(row);
-    next.set(key, { ...next.get(key), ...row });
-    agents.set(entry.agentId, key);
-  }
-  for (const agentId of update.removed ?? []) {
-    const key = agents.get(agentId) ?? [...next.entries()].find(([, row]) => agentIdOf(row) === agentId)?.[0];
-    const row = key === undefined ? undefined : next.get(key);
-    if (key === undefined || !row) { unknown = true; continue; }
-    next.set(key, saved(row));
-    agents.delete(agentId);
-  }
-  return { rows: next, unknown };
-}
-
-type Remote = {
-  host: Host;
-  client: DaemonClient;
-  subscribed: boolean;
-  /** The host's rows by rowKey: its full list at connect, with every roster update laid over it since; empty before the first list. */
-  rows: Map<string, SessionSummary>;
-  /** Each roster agent id the updates named, to the row key it changed. */
-  agents: Map<string, string>;
-  /** False until the full list of this connection landed; roster updates before it wait for that list. */
-  listed: boolean;
-  /** A full list landed at least once since this service started; the rows then stay, as saved ones while the box is down. */
-  everListed: boolean;
-  connecting?: Promise<void> | undefined;
-  listing?: Promise<void> | undefined;
-  changeTimer?: ReturnType<typeof setTimeout> | undefined;
-  catchUpTimer?: ReturnType<typeof setTimeout> | undefined;
-  reconnectTimer?: ReturnType<typeof setTimeout> | undefined;
-  error?: string | undefined;
-};
+/** Where this box keeps its copy of a box's session list (`SessionPeer`) across restarts. */
+export const copyPath = (name: string): string => join(MIRROR_DIR, `${name}.sessions.json`);
 
 /**
  * The daemons of the other hosts in hosts.json, each through its bridge socket: their session lists, tagged by host, and a client per host,
  * so the catalog merges every box into one sidebar and each command goes to the daemon that runs the session. The box this service runs on
- * stays the catalog's own client and is not in here.
+ * stays the catalog's own client and is not in here. Each box's rows are a `SessionPeer` copy, which the catalog keeps for this box too.
  */
 export class HostCatalogs {
   private readonly remotes = new Map<string, Remote>();
   private readonly mirrors = new Map<string, Promise<string>>();
   private readonly mirroredAt = new Map<string, number>();
-  private closed = false;
   /** Called after a host's rows changed or it went down, so the catalog lays them into its next frame. */
   onChange: () => void = () => {};
 
+  /** `copies` keeps each box's copy on disk (`copyPath`) so a restart lists nothing; tests leave it off. */
   constructor(readonly registry: HostsRegistry, private readonly bridge: HostBridge, readonly self: Host | null = selfHost(registry),
-    private readonly log: (line: string) => void = () => {}) {
+    private readonly log: (line: string) => void = () => {}, copies = false) {
     for (const host of registry.hosts) {
       if (host.name === self?.name) continue;
-      const remote: Remote = { host, client: new DaemonClient(bridge.socketPath(host.name)), subscribed: false, rows: new Map(), agents: new Map(), listed: false, everListed: false };
-      remote.client.onMessage(message => { if (message.type === "roster_update") this.onRoster(remote, message as RosterUpdate); });
-      remote.client.onClose(error => {
-        remote.subscribed = false;
-        remote.listed = false;
-        remote.error = error.message;
-        this.onChange();
-        this.scheduleReconnect(remote);
-      });
-      this.remotes.set(host.name, remote);
+      const client = new DaemonClient(bridge.socketPath(host.name));
+      const peer = new SessionPeer({ name: host.name, client, file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
+        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, log: line => this.log(`hosts: ${line}`), onChange: () => this.onChange() });
+      this.remotes.set(host.name, { host, client, peer });
     }
   }
 
-  /** True once every other box answered one full list since this service started; before that a session missing from the rows may be on one. */
-  allListed(): boolean { return [...this.remotes.values()].every(remote => remote.everListed); }
+  /** True once every other box's copy holds a full list, this run's or the disk copy's; before that a session missing from the rows may be on one. */
+  allListed(): boolean { return [...this.remotes.values()].every(remote => remote.peer.listed); }
 
   /** The name the rows of this box carry; null when this machine is not in hosts.json. */
   get selfName(): string | null { return this.self?.name ?? null; }
 
-  start(): void { for (const remote of this.remotes.values()) void this.refresh(remote, true).catch(() => {}); }
-
-  private scheduleReconnect(remote: Remote): void {
-    if (this.closed || remote.reconnectTimer) return;
-    remote.reconnectTimer = setTimeout(() => { remote.reconnectTimer = undefined; void this.refresh(remote, true).catch(() => {}); }, RECONNECT_MS);
-    remote.reconnectTimer.unref();
-  }
-
-  /** Lays a roster update over the host's rows, with no list; an update it cannot place lists the roster (live sessions only) once. */
-  private onRoster(remote: Remote, update: RosterUpdate): void {
-    if (!remote.listed) return;
-    this.counts.updates++;
-    const { rows, unknown } = applyRosterUpdate(remote.rows, remote.agents, update);
-    remote.rows = rows;
-    this.changed(remote);
-    if (unknown) this.catchUp(remote);
-  }
-
-  /** One roster list for the updates of the next second that the rows could not place. */
-  private catchUp(remote: Remote): void {
-    if (this.closed || remote.catchUpTimer) return;
-    remote.catchUpTimer = setTimeout(() => { remote.catchUpTimer = undefined; void this.refresh(remote, false).catch(() => {}); }, CATCH_UP_MS);
-  }
-
-  private changed(remote: Remote): void {
-    this.ids = null;
-    if (this.closed || remote.changeTimer) return;
-    remote.changeTimer = setTimeout(() => { remote.changeTimer = undefined; this.onChange(); }, CHANGE_DEBOUNCE_MS);
-  }
+  start(): void { for (const remote of this.remotes.values()) void remote.peer.sync().catch(() => {}); }
 
   /** How many full lists, roster lists and roster updates this service took from the other boxes since it started. */
-  readonly counts = { full: 0, roster: 0, updates: 0 };
-
-  private async connect(remote: Remote): Promise<void> {
-    if (remote.client.isConnected && remote.subscribed) return;
-    remote.connecting ??= (async () => {
-      try {
-        await remote.client.reconnect(5000);
-        await remote.client.waitForHello(10_000);
-        const response = await remote.client.request({ type: "roster_subscribe" }, 30_000, { recoverable: false });
-        if (!response.success) throw new Error(response.error);
-        remote.subscribed = true;
-        remote.error = undefined;
-      } catch (error) {
-        remote.client.resetTransportForReconnect();
-        throw error;
-      } finally { remote.connecting = undefined; }
-    })();
-    return remote.connecting;
-  }
-
-  /**
-   * Lists one host: everything at connect and after a reconnect (`full`), else only its live roster laid over the rows it has. A full list of
-   * the Mac was 3,307 rows in 6 to 21 s, and the roster overlay that needed one whenever a session started or stopped ran it every 10 to 40 s
-   * (10-18 03:03Z to 03:11Z), so between connects the rows follow the roster updates instead.
-   */
-  private refresh(remote: Remote, full: boolean): Promise<void> {
-    if (remote.listing) return remote.listing.then(() => full ? undefined : this.refresh(remote, false));
-    remote.listing = (async () => {
-      try {
-        await this.connect(remote);
-        const list = async (all: boolean) => {
-          const response = await remote.client.request(all ? { type: "list", all: true } : { type: "list" }, 2 ** 31 - 1, { recoverable: false });
-          if (!response.success) throw new Error(response.error);
-          return parseSummaries(response.data);
-        };
-        const started = Date.now();
-        if (full || !remote.listed) {
-          remote.rows = new Map((await list(true)).map(row => [rowKey(row), row]));
-          remote.agents = liveAgents(remote.rows);
-          remote.listed = true;
-          remote.everListed = true;
-          this.counts.full++;
-          this.log(`hosts: ${remote.host.name}: full list answered in ${((Date.now() - started) / 1000).toFixed(1)} s, ${remote.rows.size} rows`);
-        } else {
-          remote.rows = rosterMerge(remote.rows, await list(false));
-          remote.agents = liveAgents(remote.rows);
-          this.counts.roster++;
-        }
-        this.changed(remote);
-      } catch (error) {
-        remote.error = error instanceof Error ? error.message : String(error);
-        this.log(`hosts: ${remote.host.name}: ${remote.error}`);
-        this.onChange();
-        this.scheduleReconnect(remote);
-        throw error;
-      } finally { remote.listing = undefined; }
-    })();
-    return remote.listing;
+  get counts(): { full: number; roster: number; updates: number } {
+    const total = { full: 0, roster: 0, updates: 0 };
+    for (const { peer } of this.remotes.values()) { total.full += peer.counts.full; total.roster += peer.counts.roster; total.updates += peer.counts.updates; }
+    return total;
   }
 
   /**
@@ -243,34 +71,38 @@ export class HostCatalogs {
    * resolves through the /Users/sieunpark link into the box's own sessions. A host whose daemon is not reachable keeps its last rows as saved.
    */
   rows(): SessionSummary[] {
-    return [...this.remotes.values()].flatMap(remote => [...remote.rows.values()].map(row => {
-      const local = row.sessionFile ? { ...row, sessionFile: mirrorPath(remote.host, row.sessionFile) } : row;
-      return remote.subscribed ? local : saved(local);
-    }));
+    return [...this.remotes.values()].flatMap(remote => remote.peer.list().map(row => row.sessionFile ? { ...row, sessionFile: mirrorPath(remote.host, row.sessionFile) } : row));
   }
 
   /** Each other host with its rows as `rows` gives them, for the watch's per-host numbers. */
   hostRows(): { host: Host; rows: SessionSummary[] }[] {
-    return [...this.remotes.values()].map(remote => ({ host: remote.host, rows: [...remote.rows.values()].map(row => remote.subscribed ? row : saved(row)) }));
+    return [...this.remotes.values()].map(remote => ({ host: remote.host, rows: remote.peer.list() }));
   }
 
   /** True when the host's daemon lists the session with a worker now. */
   isActive(id: string): boolean {
-    for (const remote of this.remotes.values()) {
-      if (!remote.subscribed) continue;
-      for (const row of remote.rows.values()) if ((row.sessionId === id || row.activeSessionId === id) && row.activeSessionId !== undefined) return true;
-    }
+    for (const remote of this.remotes.values()) if (remote.peer.isActive(id)) return true;
     return false;
+  }
+
+  /** Changes another box's row of a session this server changed itself; false when no box lists it. */
+  patch(sessionId: string, fields: Partial<SessionSummary>): boolean {
+    let found = false;
+    for (const remote of this.remotes.values()) if (remote.peer.patch(sessionId, fields)) found = true;
+    return found;
   }
 
   /** Session ids and active session ids of the other boxes' rows to their host; rebuilt after a change, since a frame asks once per row. */
   private ids: Map<string, Host> | null = null;
+  private idsVersion = "";
 
   /** The host whose daemon lists this session id or active session id; null for this box's own sessions and unknown ids. */
   hostOf(id: string): Host | null {
-    if (!this.ids) {
+    const version = [...this.remotes.values()].map(remote => remote.peer.version).join(",");
+    if (!this.ids || this.idsVersion !== version) {
       this.ids = new Map();
-      for (const remote of this.remotes.values()) for (const row of remote.rows.values()) {
+      this.idsVersion = version;
+      for (const remote of this.remotes.values()) for (const row of remote.peer.list()) {
         this.ids.set(row.sessionId, remote.host);
         if (row.activeSessionId) this.ids.set(row.activeSessionId, remote.host);
       }
@@ -285,15 +117,15 @@ export class HostCatalogs {
   async ready(name: string): Promise<DaemonClient | null> {
     const remote = this.remotes.get(name);
     if (!remote) return null;
-    await this.connect(remote);
+    await remote.peer.connect();
     return remote.client;
   }
 
   socketPath(name: string): string { return this.bridge.socketPath(name); }
 
-  /** Every host's state for the Hosts view: up once its daemon answered a roster subscribe on this connection. */
+  /** Every host's state for the Hosts view: up once its daemon answered a roster subscribe on this connection, stale while it does not. */
   status(): { name: string; up: boolean; error: string | null; rows: number }[] {
-    return [...this.remotes.values()].map(remote => ({ name: remote.host.name, up: remote.subscribed, error: remote.subscribed ? null : remote.error ?? null, rows: remote.rows.size }));
+    return [...this.remotes.values()].map(({ host, peer }) => ({ name: host.name, up: peer.subscribed, error: peer.subscribed ? null : peer.error ?? null, rows: peer.list().length }));
   }
 
   /**
@@ -324,11 +156,8 @@ export class HostCatalogs {
   }
 
   close(): void {
-    this.closed = true;
     for (const remote of this.remotes.values()) {
-      clearTimeout(remote.changeTimer);
-      clearTimeout(remote.catchUpTimer);
-      clearTimeout(remote.reconnectTimer);
+      remote.peer.close();
       remote.client.close();
     }
   }

@@ -95,7 +95,7 @@
 <div class="app" class:narrow bind:this={root} style:--sidebar="{ui.sidebarWidth}px">
   {#if store.daemon === "down"}
     <div class="banner" role="alert">
-      <span>The Prime Agent daemon is not reachable{store.daemonError ? ". " + store.daemonError : "."}</span>
+      <span>{store.daemonError ?? "The Prime Agent daemon is not reachable."}</span>
       <button class="button small" onclick={() => store.retry()}>Retry</button>
     </div>
   {/if}
