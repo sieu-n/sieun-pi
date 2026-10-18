@@ -8,7 +8,7 @@ import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/
 import { type DsQuery, DAY, PG, REPO, SOURCE_DEADLINE_MS, grafanaClient, num, readGrafanaAuth, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
- * The Hand fix designs duty's precheck for launch main bro (`node --import tsx scripts/duties/hand-fixes.ts`). Code only, no model call, reads
+ * The Hand fixes designed duty's precheck for launch main bro (`node --import tsx scripts/duties/hand-fixes.ts`). Code only, no model call, reads
  * only. The owner (10-14 01:30Z) asked that every fault fixed by hand become a design that fixes itself, and rule c63 says each hand fix starts
  * a design job the same turn. This check finds the hand fixes made since its last run and matches each to a fault in hand-fixes.faults.json:
  * - config_audit on prod and staging Postgres through Grafana (estate_pg_prod, estate_pg_stg, user grafana_ro); /ops/controls writes land there;

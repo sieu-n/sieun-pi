@@ -8,7 +8,7 @@ import {
 } from "./estate-reads.ts";
 
 /**
- * The Watchlist shows green duty's precheck for launch main bro (`node --import tsx scripts/duties/watchlist-green.ts`). Code only, no model
+ * The Watchlist green duty's precheck for launch main bro (`node --import tsx scripts/duties/watchlist-green.ts`). Code only, no model
  * call, reads only. It measures goal p35 (the Watchlist screen, /app/analytics/monitor, all green on staging and prod, collabs included) from:
  * - the owner org's watch keys: prod Convex befitting-sparrow-356, internalQuery search/watchTargets:pageKeys with orgId, paged in this one node
  *   process with an admin key the owner's Convex CLI login (~/.convex/config.json) authorizes, the call `convex run --deployment-name` makes;
@@ -30,11 +30,16 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * - staging_green_pct >= 100: the staging half of that sentence. It is the share of unpaused staging monitor rows, posts and collabs, read ok in
  *   24 h, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
  *   Paused staging rows are out of the staging Watchlist by design: the owner's t17 answer asked for "only like 10 accounts" in staging.
- * - collab_pushed_pct >= 100: the same "including collabs"; a collab watch with no unpaused prod tagged monitor row can never turn green.
+ * - watchlist_risks <= 0: the standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks) that fire, counted
+ *   one each: an owner watch whose chip reads Stopped (stopReason below, the rules of apps/search/src/lib/watchlist/words.ts; p119, and a dead
+ *   doc_id, F16, shows as a wave of hidden stops), a prod Kafka stream whose unread records fill over BUS_FILL_LIMIT of its byte cap or whose
+ *   broker retention.bytes differs from the registry in code (p116, the two crawler-bus-retention.yaml alerts), 1 while those byte gauges are
+ *   missing on prod (no alert can fire then), and an owner collab watch with no unpaused prod tagged monitor row (it can never turn green).
+ *   It took collab_pushed_pct's slot on 10-18 (c75); collab_pushed_pct stays as run detail.
  * - prod_read_error_pct <= READ_ERROR_TARGET_PCT: the error share of prod watch runs that settled with an answer (ok, error or gone) in 24 h, from
  *   watch_target_claims. A proxy connect a retry recovered settles ok, so it is no error here (c73: up to about half of connects fail by design).
  *   Starved runs (no account free) and superseded runs never asked Instagram, so they are detail lines.
- * The rest is run detail, written to output.metrics after the judged keys and never judged: prod_posts_fresh_pct, prod_loop_age_s,
+ * The rest is run detail, written to output.metrics after the judged keys and never judged: collab_pushed_pct, owner_stopped_watches, prod_posts_fresh_pct, prod_loop_age_s,
  * staging_posts_green_pct, staging_tagged_not_green and source_errors. A failed source still misses the metrics it feeds (NEEDS), and a prod
  * watch scheduler loop that is stalled past LOOP_STALL_S, or never ticked, misses prod_read_error_pct, since no read can finish while it stands.
  * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the two ssh reads once a day.
@@ -56,10 +61,14 @@ export const LOOP_STALL_S = 300;
 export const OWNER_ORG = "org_3IrtoOAEP0nk1aCQHGVME02Dy6E";
 export const PROD_CONVEX = "befitting-sparrow-356";
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows";
+/** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
+export const BUS_FILL_LIMIT = 0.8;
+
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  owner_green_pct: ["convex keys", "prod rows"], collab_pushed_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
+  owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
   prod_read_error_pct: ["prod rows", "grafana auth", "prod gauges", "prod config"],
+  watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams"],
 };
 
 /** One watch_targets monitor row: platform, kind (posts, tagged, post, ads), lower-case target, its last run, and whether the crawler holds
@@ -67,11 +76,15 @@ export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
 export interface WatchRow {
   platform: string; kind: string; target: string; paused: boolean; lastOutcome: string; lastRunAt: number | null;
   lastStopReason: string; lastErrorCode: string; isPrivate: boolean;
+  /** err_streak, whether next_due_at is set, and for a row waiting for an account the time of its last ok run (else its created_at). */
+  errStreak: number; due: boolean; noAccountSince: number | null;
 }
+/** One prod Kafka stream fault watchlist_risks counts: a fill over BUS_FILL_LIMIT, a retention.bytes changed by hand, or missing byte gauges. */
+export interface StreamFault { topic: string; why: string }
 export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
 export interface WatchData {
   now: number;
-  keys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string;
+  keys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
   errors: { source: Source; message: string }[];
 }
 
@@ -88,11 +101,32 @@ const NOT_FOUND_CODES = new Set(["profile_not_found", "post_not_found", "adverti
 export const isClosed = (row: WatchRow): boolean =>
   row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode))
   || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private");
+/** The codes and limits of words.ts that decide a Stopped chip. */
+const HIDDEN_CODES = new Set(["timeline_hidden"]);
+const TRANSIENT_CODES = new Set(["scrape_blocked", "login_wall", "rate_limited", "challenge", "blocked", "asset_error", "transport", "timeout", "unreachable", "upstream_unavailable", "geo_target_unavailable"]);
+const NO_ACCOUNT_CODES = new Set(["fleet_exhausted", "no_serveable_persona", "leased_persona_unavailable", "fleet_starved"]);
+const NO_ACCOUNT_STOP_MS = 2 * DAY;
+const STOP_AFTER_FAILURES = 3;
+/**
+ * Why an unpaused row's Watchlist chip reads Stopped, or null, by watchWords in apps/search/src/lib/watchlist/words.ts: Instagram hides the
+ * account from logged-out readers, no account for 2 days, or a failed check the crawler no longer retries. A removed or private account reads
+ * checked there, never Stopped. Holds (heldBy) read Waiting and are not modelled; pause.watch has its own flag.
+ */
+export function stopReason(row: WatchRow, now: number): string | null {
+  if (row.paused || isClosed(row)) return null;
+  const code = row.lastErrorCode;
+  if ((row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && HIDDEN_CODES.has(code))) return "Instagram hides this account";
+  if (row.lastOutcome === "starved" || (row.lastOutcome === "error" && NO_ACCOUNT_CODES.has(code)))
+    return row.noAccountSince !== null && now - row.noAccountSince >= NO_ACCOUNT_STOP_MS ? "no account for 2 days" : null;
+  if (row.lastOutcome !== "error") return null;
+  const forGood = row.errStreak >= STOP_AFTER_FAILURES && !TRANSIENT_CODES.has(code);
+  return row.due && !forGood ? null : `failed ${code || "error"}`;
+}
 export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
-  !!row && !row.paused && (isClosed(row) || (row.lastOutcome === "ok" && row.lastRunAt !== null && now - row.lastRunAt <= DAY));
+  !!row && !row.paused && (isClosed(row) || (row.lastOutcome === "ok" && row.lastStopReason !== "hidden" && row.lastRunAt !== null && now - row.lastRunAt <= DAY));
 /** Why a watch is not green, as a flag phrase. */
 const notGreen = (kind: string, row: WatchRow | undefined): string => !row ? `${kind} no monitor row` : row.paused ? `${kind} paused`
-  : !row.lastOutcome ? `${kind} never ran` : row.lastOutcome !== "ok" ? `${kind} last ${row.lastOutcome}` : `${kind} ok but older than 24 h`;
+  : !row.lastOutcome ? `${kind} never ran` : row.lastOutcome !== "ok" ? `${kind} last ${row.lastOutcome}` : row.lastStopReason === "hidden" ? `${kind} Stopped, hidden` : `${kind} ok but older than 24 h`;
 const tally = (why: Map<string, number>): [string, number][] => [...why.entries()].sort((a, b) => b[1] - a[1]);
 const listWhy = (why: readonly [string, number][]): string => why.map(([reason, count]) => `${count} ${reason}`).join(", ");
 
@@ -104,6 +138,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
   let collabs = 0;
   let pushed = 0;
   let unread = 0;
+  const stops = new Map<string, number>();
   for (const key of keys) {
     const want = rowKeyOf(key);
     if (!want) { unread++; continue; }
@@ -113,9 +148,12 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     accounts.set(account, (accounts.get(account) ?? true) && green);
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
     if (!green) { const reason = notGreen(want.kind, row); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    const stop = row && stopReason(row, now);
+    if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
   }
   const green = [...accounts.values()].filter(Boolean).length;
-  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why) };
+  const stopped = [...stops.values()].reduce((sum, count) => sum + count, 0);
+  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why), stopped, stops: tally(stops) };
 }
 
 /** The unpaused monitor rows of the given kinds (posts and tagged: the Watchlist's posts and collabs), how many are green, and why the rest are not. */
@@ -152,7 +190,15 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   if (data.keys && data.rows) {
     const owner = ownerGreen(data.keys, data.rows, now);
     metrics.owner_green_pct = owner.accounts ? round1(100 * owner.green / owner.accounts) : 0;
-    metrics.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
+    detail.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
+    detail.owner_stopped_watches = owner.stopped;
+    if (data.streams) {
+      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed);
+      flagged.push({ at, kind: "watchlist_risks", excerpt: (`${metrics.watchlist_risks} Watchlist risks firing: ${owner.stopped} owner watches read Stopped`
+        + (owner.stops.length ? ` (${listWhy(owner.stops)}${owner.stops.some(([reason]) => reason.includes("hides")) ? "; a wave of hidden stops on posts can mean a dead doc_id, F16" : ""})` : "")
+        + `; ${data.streams.length} prod Kafka stream faults${data.streams.length ? ` (${data.streams.map(fault => `${fault.topic}: ${fault.why}`).join("; ")})` : ""}`
+        + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read. Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
+    }
     flagged.push({ at, kind: "owner_watchlist", excerpt: `${owner.green} of ${owner.accounts} owner org accounts green on prod; ${owner.pushed} of ${owner.collabs} collab watches have an unpaused prod tagged monitor row` +
       (owner.why.length ? `; watches not green: ${listWhy(owner.why)}` : "") + (owner.unread ? `; ${owner.unread} keys not in platform:kind:target form` : "") });
     if (!owner.accounts) flagged.push({ at, kind: "no_keys", excerpt: `Convex pageKeys returned no watch key for ${OWNER_ORG}` });
@@ -194,16 +240,16 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
 }
 
 /** The tab-separated monitor rows the remote psql prints: platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
- *  last_stop_reason, last_error_code, and the account's is_private (t or f). */
+ *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), and the no-account since time. */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length !== 9) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate] = cells as
-      [string, string, string, string, string, string, string, string, string];
+    if (cells.length !== 12) continue;
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, noAccountSince] = cells as
+      [string, string, string, string, string, string, string, string, string, string, string, string];
     rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
-      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t" });
+      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", noAccountSince: noAccountSince ? Number(noAccountSince) : null });
   }
   return rows;
 }
@@ -233,6 +279,33 @@ async function gauges(query: DsQuery): Promise<Gauges> {
   return { rows: byKindTier(rows), overdue: byKindTier(overdue), ...(loop[0] ? { loopAge: loop[0].value } : {}) };
 }
 
+/**
+ * The prod Kafka stream faults: each topic whose unread records fill over BUS_FILL_LIMIT of its byte cap, each topic whose broker
+ * retention.bytes differs from the registry's, and one fault while the byte gauges are missing, by the two prod rules of
+ * apps/infra/metal/config/obs/grafana/alerting/crawler-bus-retention.yaml.
+ */
+export async function streamFaults(query: DsQuery): Promise<StreamFault[]> {
+  const uid = PROM.prod;
+  const [fill, caps, records] = await Promise.all([
+    promInstant(query, uid, 'max by (topic, group) (crawler_v3_bus_group_lag_records{world="prod"}) / on(topic) group_left() max by (topic) (crawler_v3_bus_topic_retained_records{world="prod"} > 0) * on(topic) group_left() max by (topic) (crawler_v3_bus_topic_fullest_partition_bytes{world="prod"}) / on(topic) group_left() max by (topic) (crawler_v3_bus_topic_retention_bytes{world="prod",source="broker"})'),
+    promInstant(query, uid, 'max by (topic, source) (crawler_v3_bus_topic_retention_bytes{world="prod"})'),
+    promInstant(query, uid, 'max by (topic, group) (crawler_v3_bus_group_lag_records{world="prod"}) / on(topic) group_left() max by (topic) (crawler_v3_bus_topic_retained_records{world="prod"} > 0)'),
+  ]);
+  if (!caps.length) {
+    const top = records.sort((a, b) => b.value - a.value)[0];
+    return [{ topic: "all", why: `crawler_v3_bus_topic_retention_bytes is missing on prod, so neither size alert can fire${top ? ` (fullest unread share of retained records: ${top.labels.topic} ${round1(100 * top.value)}%)` : ""}` }];
+  }
+  const faults: StreamFault[] = [];
+  const over = new Map<string, number>();
+  for (const series of fill) if (series.value > BUS_FILL_LIMIT) over.set(series.labels.topic ?? "?", Math.max(over.get(series.labels.topic ?? "?") ?? 0, series.value));
+  for (const [topic, value] of over) faults.push({ topic, why: `unread records fill ${round1(100 * value)}% of its byte cap` });
+  const byTopic = new Map<string, Record<string, number>>();
+  for (const series of caps) byTopic.set(series.labels.topic ?? "?", { ...byTopic.get(series.labels.topic ?? "?"), [series.labels.source ?? "?"]: series.value });
+  for (const [topic, cap] of byTopic) if (cap.broker !== undefined && cap.registry !== undefined && cap.broker !== cap.registry)
+    faults.push({ topic, why: `broker retention.bytes ${cap.broker} differs from the registry's ${cap.registry}, a change by hand` });
+  return faults;
+}
+
 /** Every distinct watch key of one org on prod Convex, read with the owner's Convex CLI login. */
 export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal): Promise<string[]> {
   const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" };
@@ -256,7 +329,10 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
 
 const ROWS_SQL = "select w.platform, w.kind, lower(w.target), case when w.paused then 't' else 'f' end, coalesce(w.last_outcome, ''), " +
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, ''), coalesce(w.last_stop_reason, ''), coalesce(w.last_error_code, ''), " +
-  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end " +
+  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end, " +
+  "w.err_streak, case when w.next_due_at is null then 'f' else 't' end, " +
+  "case when w.last_outcome = 'starved' or w.last_error_code in ('fleet_exhausted', 'no_serveable_persona', 'leased_persona_unavailable', 'fleet_starved') then " +
+  "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end " +
   "from watch_targets w where w.tier = 'monitor';";
 const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
 
@@ -285,19 +361,20 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     data.errors.push({ source: "grafana auth", message: deps.authError ?? "no Grafana login" });
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
-  const [keys, prodText, stagingText, prod, pause] = await Promise.all([
+  const [keys, prodText, stagingText, prod, pause, streams] = await Promise.all([
     step("convex keys", deps.keys),
     step("prod rows", deps.rows),
     step("staging rows", deps.staging),
     query ? step("prod gauges", () => gauges(query)) : undefined,
     query ? step("prod config", async () => String((await sqlRows(query, PG.prod, "select value from config where key = 'pause.watch'"))[0]?.value ?? "")) : undefined,
+    query ? step("prod streams", () => streamFaults(query)) : undefined,
   ]);
   const rows = prodText === undefined ? undefined : parseRows(prodText);
   const staging = stagingText === undefined ? undefined : parseRows(stagingText);
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the ssh read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "the ssh read returned no staging watch_targets monitor row" });
   Object.assign(data, keys && { keys }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging },
-    prod && { prod }, pause !== undefined && { pauseWatch: pause });
+    prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
 

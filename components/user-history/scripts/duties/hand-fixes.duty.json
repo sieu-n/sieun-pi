@@ -1,5 +1,5 @@
 {
-  "name": "Hand fix designs",
+  "name": "Hand fixes designed",
   "ownerWords": "look, YOUR JOB IS TO MAKE SURE THE SOFTWARE IS DURABLE. 자체적으로 고쳐질 수 있게 설계를 바꾸는게 니 역할이야\n\n문제를 고치는게 아니라 소프트웨어 엔지니어야 너는",
   "goal": "Every hand fix on prod or staging (a config write, a hand-started process, a thaw, a re-queue, a CI cancel or rerun) maps to a known fault with a live design job, and a fault whose design shipped needs no more hand fixes. No prod or staging writer runs by hand in an agent session or a docker exec. A source this check cannot read counts as a miss.",
   "metrics": [
