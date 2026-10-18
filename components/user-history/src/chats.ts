@@ -556,6 +556,9 @@ export class Chats {
    * so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
+    await this.load();
+    // The hub reports every thread it attaches, and a serve on its own chats opens live chats too (a profile serve read 01a14d31 on 10-18).
+    if (!this.chatIds.has(id)) return;
     const children = this.children.get(id);
     if (!children?.length) return;
     let board: ChatBoard | null;

@@ -480,6 +480,30 @@ class OneHoldStay(unittest.TestCase):
         self.assertEqual((out, len(calls)), ("fixture-token", 2))
         self.assertEqual(state["sessions"][KEY.key]["vends"]["anthropic"]["account_id"], "a")
 
+    def test_credential_for_called_as_the_cliproxy_sync_calls_it_still_refreshes_under_the_index_lock(self):
+        # auto-sns-agent 36c65d3d8f: cliproxy_claude_sync.py runs credential_for(account, base.config()) every minute.
+        expiring = {"accessToken": "old", "refreshToken": "r", "expiresAt": time.time() * 1000}
+        locked = []
+
+        @contextlib.contextmanager
+        def index_lock(provider):
+            locked.append(provider)
+            yield
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(base.KeychainAdapter, "read", return_value=expiring))
+            stack.enter_context(unittest.mock.patch.object(base.KeychainAdapter, "write"))
+            stack.enter_context(unittest.mock.patch.object(base, "index_lock", index_lock))
+            stack.enter_context(unittest.mock.patch.object(base, "recover_rotation", return_value=expiring))
+            stack.enter_context(unittest.mock.patch.object(base, "refresh_token",
+                                                           return_value=dict(expiring, accessToken="new", expiresAt=(time.time() + 3600) * 1000)))
+            for name in ("journal_write", "journal_clear", "log"):
+                stack.enter_context(unittest.mock.patch.object(base, name))
+            self.assertIsNone(vending.credential_for(B, CFG, refresh=False))
+            self.assertEqual(locked, [])
+            self.assertEqual(vending.credential_for(B, CFG), ("new", "refreshed"))
+            self.assertEqual(locked, ["anthropic"])
+
 class IndexWindows(unittest.TestCase):
     """Index windows, classified by windowSeconds and name
     rather than array position, for both providers."""

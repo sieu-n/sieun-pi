@@ -32,7 +32,7 @@ only ever follows the Mac. Any box-only commit the Mac lacks skips the run and i
 It never drops a commit the Mac lacks and never pushes. Every run writes one JSON
 line to the log, and a skipped run names its reason.
 """
-import fcntl, json, os, shutil, stat, subprocess, sys, tempfile, time
+import calendar, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 
 REPO = os.environ.get("ASA_SYNC_REPO") or os.path.expanduser("~/Documents/Github/auto-sns-agent")
 URL = os.environ.get("ASA_SYNC_URL") or "mac:/Users/sieunpark/Documents/Github/auto-sns-agent"
@@ -47,6 +47,15 @@ BLOCK_ALERT_S = int(os.environ.get("ASA_SYNC_BLOCK_ALERT_S") or 600)
 # The ops chat box-memory-guard sends to.
 OPS_THREAD = os.environ.get("ASA_SYNC_OPS_THREAD") or "01a11af8-962e-773d-a19a-ee4104011987"
 PRIME_BIN = os.environ.get("ASA_SYNC_PRIME_BIN") or os.path.expanduser("~/.local/bin/prime-agent")
+# The 10 min ops alert at 08:24Z on 2026-10-18 sat with nobody acting while ecosystem.config.cjs held the box. So the VP of CI asked for the
+# session that wrote a blocking path to hear of it at BLOCK_ALERT_S, and for one line on the AI harness chat's For you list at FORYOU_S.
+FORYOU_S = int(os.environ.get("ASA_SYNC_FORYOU_S") or 1800)
+FORYOU_CHAT = os.environ.get("ASA_SYNC_FORYOU_CHAT") or "01a1164b-4a2d-742d-b27a-82f086ed0200"
+USER_HISTORY = os.path.expanduser("~/.local/share/sieun-pi-chat/current/components/user-history")
+BOARD_APPLY = (os.environ["ASA_SYNC_BOARD_APPLY"].split() if os.environ.get("ASA_SYNC_BOARD_APPLY") else
+               [os.path.expanduser("~/.local/node/bin/node"), "--import", "tsx", "scripts/board-apply.ts"])
+TRANSCRIPTS = os.environ.get("ASA_SYNC_TRANSCRIPTS") or os.path.expanduser("~/.prime/agent")
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The longest .git/index.lock a live git held in sync.log on 2026-10-18 was 65 s (08:18:51Z to 08:19:56Z).
 STALE_LOCK_S = int(os.environ.get("ASA_SYNC_STALE_LOCK_S") or 70)
 GIT = "/usr/bin/git"
@@ -67,7 +76,10 @@ def log(outcome, **kw):
 
 
 def watch_block(outcome, line):
-    """Message the ops chat once when the box has not followed the Mac for BLOCK_ALERT_S."""
+    """Tell the ops chat and the session that wrote each blocking path at BLOCK_ALERT_S, and the owner's For you at FORYOU_S.
+
+    It only tells: a live edit stays where it is until its session commits it or puts it back.
+    """
     try:
         state = json.load(open(BLOCK_STATE))
     except (OSError, ValueError):
@@ -75,22 +87,128 @@ def watch_block(outcome, line):
     now = time.time()
     if outcome in ("noop", "fast-forward", "converge"):
         if state.get("alerted"):
-            send(f"[asa-mac-sync] us-metal02 follows the Mac again: {outcome} at {line['ts']}, HEAD {line.get('now') or line.get('head')}.")
+            send(OPS_THREAD, f"[asa-mac-sync] us-metal02 follows the Mac again: {outcome} at {line['ts']}, HEAD {line.get('now') or line.get('head')}.")
+        if state.get("todo"):
+            board_ops([{"op": "todo_update", "id": state["todo"], "done": True}])
         state = {}
-    else:
+    elif outcome != "stale-lock":
         state.setdefault("since", now)
-        if not state.get("alerted") and now - state["since"] >= BLOCK_ALERT_S:
-            mins = int((now - state["since"]) // 60)
-            state["alerted"] = send(f"[asa-mac-sync] us-metal02 auto-sns-agent sieun/dev has not followed the Mac for {mins} min. "
-                                    f"Last run: {json.dumps(line)[:900]}. Log: {LOG}")
+        mins = int((now - state["since"]) // 60)
+        if now - state["since"] >= BLOCK_ALERT_S:
+            if not state.get("alerted"):
+                state["alerted"] = send(OPS_THREAD, f"[asa-mac-sync] us-metal02 auto-sns-agent sieun/dev has not followed the Mac for {mins} min. "
+                                                    f"Last run: {json.dumps(line)[:900]}. Log: {LOG}")
+            owners = state.setdefault("owners", {})
+            for rel, session, why in blockers(line):
+                if rel in owners:
+                    continue
+                told = bool(session) and send(session, f"[asa-mac-sync] us-metal02's auto-sns-agent checkout has not followed the Mac's sieun/dev for {mins} min, "
+                                                       f"because {why}. Please commit it or put it back to HEAD. The sync never drops it on its own. Log: {LOG}")
+                owners[rel] = {"session": session, "told": told}
+        if now - state["since"] >= FORYOU_S and not state.get("todo"):
+            state["todo"] = ask_owner(mins, line, state.get("owners", {}))
     with open(BLOCK_STATE + ".tmp", "w") as f:
         json.dump(state, f)
     os.replace(BLOCK_STATE + ".tmp", BLOCK_STATE)
 
 
-def send(text):
-    r = subprocess.run([PRIME_BIN, "send", OPS_THREAD, text], capture_output=True, timeout=60)
+def send(agent, text):
+    r = subprocess.run([PRIME_BIN, "send", agent, text], capture_output=True, timeout=60)
     return r.returncode == 0
+
+
+def board_ops(ops):
+    """Applies chat_board ops to FORYOU_CHAT's board with the chat's own board-apply script. Its summary lines, or "" when it refused."""
+    r = subprocess.run([*BOARD_APPLY, FORYOU_CHAT, json.dumps(ops)], cwd=USER_HISTORY if os.path.isdir(USER_HISTORY) else None,
+                       capture_output=True, timeout=120)
+    return r.stdout.decode(errors="replace") if r.returncode == 0 else ""
+
+
+def ask_owner(mins, line, owners):
+    """Puts one line on FORYOU_CHAT's For you list. The todo id, or None when the board took nothing."""
+    who = "; ".join(f"session {v['session'][:8]} wrote {rel}" + (" and was told" if v["told"] else "") for rel, v in owners.items() if v["session"])
+    paths = [rel for rel in owners] or [line.get("reason", "an unknown reason")]
+    text = (f"The box copy of auto-sns-agent has not followed the Mac for {mins} min, held up by {', '.join(paths[:3])}. "
+            f"{(who[0].upper() + who[1:] + '.') if who else 'No session could be found for it.'} Should this chat get it committed or dropped?")
+    links = [{"label": f"session {v['session'][:8]}", "target": f"thread:{v['session']}"} for v in owners.values() if v["session"]][:4]
+    out = board_ops([{"op": "todo_add", "text": text, "choices": ["Yes, get it sorted", "Leave it"],
+                      "links": links + [{"label": "sync log", "target": f"file:{LOG}"}]}])
+    m = re.search(r"[Aa]dded a todo (t\d+)", out)
+    return m.group(1) if m else None
+
+
+def blockers(line):
+    """(path, session or None, why) for each path that holds a skipped run: a dirty or staged path, or a held .git/index.lock."""
+    if line.get("reason") == ".git/index.lock exists":
+        lock = os.path.join(REPO, ".git", "index.lock")
+        return [(".git/index.lock", session, f"a git process of your session (pid {pid}) holds .git/index.lock")
+                for pid, session in ((pid, environ_session(pid)) for pid in lock_holders(lock))][:1] or [(".git/index.lock", None, "")]
+    rows = []
+    for rel in (line.get("dirty") or line.get("staged") or [])[:10]:
+        found = writer(rel)
+        rows.append((rel, found and found[0], found and f"your session last wrote {rel} at {time.strftime('%H:%M:%SZ', time.gmtime(found[1]))} "
+                                                       f"and the run skips on it ({line['reason']})"))
+    return rows
+
+
+def environ_session(pid):
+    try:
+        env = open(f"/proc/{pid}/environ", "rb").read().decode(errors="replace").split("\0")
+    except OSError:
+        return None
+    harness = next((e.split("=", 1)[1] for e in env if e.startswith("RLM_HARNESS_STATE_DIR=")), "")
+    m = SESSION_ID.search(os.path.basename(os.path.dirname(harness)))
+    return m.group(0) if m else None
+
+
+def writer(rel):
+    """(session id, call time) of the newest Prime tool call that names rel at or before the file's mtime, preferring one that writes it.
+
+    A transcript is <session id>.jsonl under TRANSCRIPTS/sessions or session-artifacts, and only one written since the file was can hold the call.
+    On 2026-10-18 the 08:25:43Z write of ecosystem.config.cjs was session 01a14dfb's ipython call with open(..., 'w'), found this way.
+    """
+    try:
+        mtime = os.lstat(os.path.join(REPO, rel)).st_mtime
+    except FileNotFoundError:
+        mtime = time.time()
+    needle, best = rel.encode(), {}
+    for top in ("sessions", "session-artifacts"):
+        for dirpath, _dirs, files in os.walk(os.path.join(TRANSCRIPTS, top)):
+            for name in files:
+                path = os.path.join(dirpath, name)
+                if not name.endswith(".jsonl") or not SESSION_ID.fullmatch(name[:-6]):
+                    continue
+                try:
+                    if os.stat(path).st_mtime < mtime:
+                        continue
+                    with open(path, "rb") as f:
+                        data = f.read()
+                except OSError:
+                    continue
+                if needle not in data:
+                    continue
+                for raw in data.splitlines():
+                    if needle not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                        at = calendar.timegm(time.strptime(row["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
+                        calls = [c for c in row["message"]["content"] if c.get("type") in ("toolCall", "tool_use")]
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    if at > mtime + 2:
+                        continue
+                    for c in calls:
+                        args = json.dumps(c.get("arguments", c.get("input")))
+                        if rel not in args:
+                            continue
+                        writes = c.get("name") == "edit" or bool(WRITES.search(args))
+                        if (writes, at) > best.get("key", (False, 0)):
+                            best = {"key": (writes, at), "session": name[:-6]}
+    return (best["session"], best["key"][1]) if best else None
+
+
+WRITES = re.compile(r"'w'|\\\"w\\\"|write_text|write_bytes|old_str|sed -i|--write|\bcp |\bmv |checkout |git apply|tee | > ")
 
 
 def git(*args, check=True, inp=None, timeout=300):

@@ -3,12 +3,13 @@
 set -u
 D=$(cd "$(dirname "$0")" && pwd)
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; cd "$W"
-export ASA_SYNC_REPO=$W/box ASA_SYNC_URL=$W/mac ASA_SYNC_LOG=$W/sync.log ASA_SYNC_CARRY=$W/carried ASA_SYNC_BLOCK_STATE=$W/blocked.json ASA_SYNC_BLOCK_ALERT_S=0 ASA_SYNC_PRIME_BIN=$W/fake-prime ASA_SYNC_STATE=$W
+export ASA_SYNC_REPO=$W/box ASA_SYNC_URL=$W/mac ASA_SYNC_LOG=$W/sync.log ASA_SYNC_CARRY=$W/carried ASA_SYNC_BLOCK_STATE=$W/blocked.json ASA_SYNC_BLOCK_ALERT_S=0 ASA_SYNC_PRIME_BIN=$W/fake-prime ASA_SYNC_STATE=$W ASA_SYNC_TRANSCRIPTS=$W/prime ASA_SYNC_BOARD_APPLY=$W/fake-board
 G="git -c user.email=t@t -c user.name=t"
 fail=0
 run() { /usr/bin/python3 -B "$D/asa-mac-sync.py" | tail -1; }
 expect() { if tail -1 "$W/sync.log" | grep -q "$1"; then echo "PASS $2"; else echo "FAIL $2: $(tail -1 "$W/sync.log")"; fail=1; fi; }
-printf '#!/bin/sh\necho "$3" >> "$(dirname "$0")/sent.txt"\n' > "$W/fake-prime"; chmod +x "$W/fake-prime"
+printf '#!/bin/sh\necho "$2 $3" >> "$(dirname "$0")/sent.txt"\n' > "$W/fake-prime"; chmod +x "$W/fake-prime"
+printf '#!/bin/sh\necho "$@" >> "$(dirname "$0")/board.txt"\necho "added a todo t9 \\"x\\""\n' > "$W/fake-board"; chmod +x "$W/fake-board"
 mkdir mac && cd mac && git init -q -b sieun/dev && mkdir -p apps/llm-wiki/content src
 echo p1 > apps/llm-wiki/content/page.html; echo c1 > src/code.py; echo x > src/other.py
 git add . && $G commit -qm c1 && cd ..
@@ -33,11 +34,17 @@ run >/dev/null; expect '"kept_local": \["apps/llm-wiki/content/page.html"\]' "5 
 printf 'new\n' > "$W/box/apps/llm-wiki/content/new.html"; mac_commit apps/llm-wiki/content/new.html 'new\n' p3
 run >/dev/null; expect '"preapplied": 1' "6 untracked file equal to the tip"
 (cd "$W/box" && echo s > src/staged.py && git add src/staged.py); mac_commit src/code.py 'c4\n' c4
-run >/dev/null; expect 'stages changes' "7 staged index skips"
+S=01a14dfb-a0b6-776e-a08f-1a87496f2061; mkdir -p "$W/prime/sessions"
+printf '{"timestamp":"%s","message":{"role":"assistant","content":[{"type":"toolCall","name":"ipython","arguments":{"code":"open(\\"src/staged.py\\",\\"w\\").write(\\"s\\")"}}]}}\n' "$(date -u -d '-1 sec' +%Y-%m-%dT%H:%M:%S.000Z)" > "$W/prime/sessions/$S.jsonl"
+ASA_SYNC_FORYOU_S=0 run >/dev/null; expect 'stages changes' "7 staged index skips"
+grep -q "^$S .*your session last wrote src/staged.py" "$W/sent.txt" && echo "PASS 7e the session that wrote the blocking path is told (ecosystem.config.cjs held the box 08:25Z to 08:34Z on 10-18 and only the ops chat heard)" || { echo "FAIL 7e"; fail=1; }
+grep -q 'todo_add.*Session 01a14dfb wrote src/staged.py and was told' "$W/board.txt" && echo "PASS 7f past FORYOU_S one line goes on the chat's For you list" || { echo "FAIL 7f"; fail=1; }
+ASA_SYNC_FORYOU_S=0 run >/dev/null; [ "$(grep -c "^$S " "$W/sent.txt")" = 1 ] && [ "$(grep -c todo_add "$W/board.txt")" = 1 ] && [ -e "$W/box/src/staged.py" ] && echo "PASS 7g told once, asked once, the edit stays" || { echo "FAIL 7g"; fail=1; }
 (cd "$W/box" && git rm -q --cached src/staged.py && rm src/staged.py)
 (cd "$W/mac" && printf 'top\nmid\nend\n' > src/carry.py && git add src/carry.py && $G commit -qm carry0); run >/dev/null
 printf 'top\nmid\nend\nlive\n' > "$W/box/src/carry.py"; (cd "$W/mac" && printf 'TOP\nmid\nend\n' > src/carry.py && git add src/carry.py && $G commit -qm carry1)
 run >/dev/null; expect '"carried": \["src/carry.py"\]' "7a live edit that merges cleanly rides on the move"
+grep -q '"todo_update", "id": "t9", "done": true' "$W/board.txt" && echo "PASS 7h the For you line is checked off once the box follows again" || { echo "FAIL 7h"; fail=1; }
 [ "$(cat "$W/box/src/carry.py" | tr '\n' ' ')" = "TOP mid end live " ] && ls "$W"/carried/*/src/carry.py >/dev/null && echo "PASS 7a2 merged bytes on disk, old bytes saved" || { echo "FAIL 7a2"; fail=1; }
 (cd "$W/box" && git checkout -q -- src/carry.py)
 echo draft > "$W/box/src/draft.py"; touch -d '2 hours ago' "$W/box/src/draft.py"; mac_commit src/draft.py 'final\n' landed-draft
@@ -61,5 +68,5 @@ H=$(cd "$W/box" && git rev-parse HEAD); M=$(cd "$W/mac" && git rev-parse HEAD)
 run >/dev/null; expect '"converge"' "10 same bytes on the Mac without a trailer converge"
 run >/dev/null; expect '"noop"' "11 nothing new after converge"
 grep -q "has not followed the Mac" "$W/sent.txt" && grep -q "follows the Mac again" "$W/sent.txt" && echo "PASS 12 a block alerts the ops chat once and the recovery says so" || { echo "FAIL 12"; fail=1; }
-[ "$(grep -c "has not followed" "$W/sent.txt")" -le 3 ] && echo "PASS 12b one alert per block" || { echo "FAIL 12b $(grep -c "has not followed" "$W/sent.txt")"; fail=1; }
+[ "$(grep -c "^01a11af8.* has not followed" "$W/sent.txt")" -le 3 ] && echo "PASS 12b one alert per block" || { echo "FAIL 12b $(grep -c "^01a11af8.* has not followed" "$W/sent.txt")"; fail=1; }
 exit $fail

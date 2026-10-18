@@ -24,7 +24,7 @@ test("a chat's worker that grows with the jobs it runs is no oversized process",
 
 test("a worker that holds far more than its sessions do is flagged with its footprint per session", () => {
   const latest = line("06:21:27", [worker(1811158, "VP of CI", 0.9, 1), worker(1590926, "metal-management", 2.5, 14)]);
-  const found = oversized(latest, [...DAY, latest]);
+  const found = oversized(latest, [...DAY, latest]).map(entry => entry.text);
   assert.equal(found.length, 1);
   assert.match(found[0]!, /^us-metal02: Prime worker 1811158 \(VP of CI\) holds 0\.9 GB for 1 sessions, 0\.90 GB each of its own, over 3x the day's median there of 0\.\d\d GB per session$/);
 });
@@ -39,7 +39,7 @@ test("a worker whose memory is its sessions' work is no oversized process", () =
 
 test("a flagged worker names how much of it is work", () => {
   const latest = line("07:30:30", [worker(852974, "d7 cut job resume", 1.7, 1, 0.2)]);
-  assert.deepEqual(oversized(latest, [...DAY, latest]), ["us-metal02: Prime worker 852974 (d7 cut job resume) holds 1.7 GB for 1 sessions, 0.2 GB of it their work, 1.50 GB each of its own, over 3x the day's median there of 0.24 GB per session"]);
+  assert.deepEqual(oversized(latest, [...DAY, latest]).map(entry => entry.text), ["us-metal02: Prime worker 852974 (d7 cut job resume) holds 1.7 GB for 1 sessions, 0.2 GB of it their work, 1.50 GB each of its own, over 3x the day's median there of 0.24 GB per session"]);
 });
 
 test("the watch counts the commands every kernel runs and the whole kernel of a session at work as the worker's work", () => {
@@ -52,4 +52,14 @@ test("the watch counts the commands every kernel runs and the whole kernel of a 
     kernels: [kernel(10, "resume", 1.3, 0.11), kernel(20, "ads", 0.09), kernel(30, "snap", 3.6, 3.45)], swap_used_bytes: null, pressure_level: null, cpu_s: 0 };
   const top = watchLine({ now: Date.parse("2026-10-18T07:30:30Z"), rows, footprints, queue: null, chats: new Set(), title: () => null, cpuMs: 0 }).top;
   assert.deepEqual(top.map(entry => [entry.pid, entry.sessions, entry.workGb]), [[4111, 2, 3.6], [852974, 1, 1.19]]);
+});
+
+// Worker 132424 grew from 3 to 38 GB at 07:49Z on 10-18 and was stopped with only top and status kept, which could not tell JS heap from native memory.
+test("a flagged worker's evidence names its largest mappings and its threads", async () => {
+  const { largestMappings, threadLine } = await import("../src/proc-evidence.ts");
+  const smaps = ["7f0000000000-7f0400000000 rw-p 00000000 00:00 0 ", "Size: 16777216 kB", "Rss:   9000000 kB",
+    "55d000000000-55d000100000 r-xp 00000000 08:01 42   /usr/bin/prime-agent", "Rss:   1024 kB",
+    "7e0000000000-7e0100000000 rw-p 00000000 00:00 0   [heap]", "Rss:   2000000 kB"].join("\n");
+  assert.deepEqual(largestMappings(smaps, 2).map(map => [map.name, map.rssKb]), [["[anon]", 9000000], ["[heap]", 2000000]]);
+  assert.equal(threadLine("2078261 (HeapHelper) R 132424 132424 132424 0 -1 4194368 0 0 0 0 14000 406 0 0 20 0 19 0 1 0 0"), "2078261 HeapHelper R 144.1 s");
 });
