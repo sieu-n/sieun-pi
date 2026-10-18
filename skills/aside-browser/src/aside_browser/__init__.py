@@ -614,11 +614,23 @@ def _page_target(info: dict[str, Any]) -> str:
 # ---------------------------------------------------------------- transport
 
 
+_STALE_SERVER = ("REPL session not found", "Connection closed")
+
+
 async def _call(tool: str, arguments: dict[str, Any]) -> str:
     from rlm import mcp
 
     try:
-        result = await mcp.call_tool(SERVER, tool, arguments)
+        try:
+            result = await mcp.call_tool(SERVER, tool, arguments)
+        except Exception as exc:
+            # A restart of Aside.app drops the MCP server's REPL session ("REPL session not found"),
+            # and a dead `aside mcp` process gives "Connection closed". A fresh server fixes both
+            # (seen 2026-10-18 after Aside was restarted to free RAM), so reload once and retry.
+            if isinstance(exc, KeyError) or not any(s in str(exc) for s in _STALE_SERVER):
+                raise
+            await mcp.reload(SERVER)
+            result = await mcp.call_tool(SERVER, tool, arguments)
     except KeyError:
         return await _cli_fallback(tool, arguments)
     except Exception as exc:  # McpToolError and transport errors
