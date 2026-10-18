@@ -34,6 +34,7 @@ const SESSION_COMMANDS: Command[] = [
   { name: "autonomous", description: "Set or view autonomous mode", argumentHint: "[status|on|off]", source: "session" },
 ];
 type NativeEvent = Parameters<Parameters<DaemonAgentConnection["subscribe"]>[0]>[0];
+type NativeSnapshot = Awaited<ReturnType<DaemonAgentConnection["getInitialSnapshot"]>>;
 type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubscribe: () => void };
 
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
@@ -524,14 +525,16 @@ export class ThreadHub {
     try {
       await client.connect(3000);
       await client.waitForHello(3000);
+      // Events wait until `bind`, so `liveSnapshot` reads the attach snapshot as it came. Otherwise one event between the two made
+      // getInitialSnapshot fetch get_messages and get_session_context, each the whole context with every image.
       return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true,
-        ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
+        deferSessionEvents: true, ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
     } catch (error) { client.close(); throw error; }
   }
 
   /** The daemon's side of an attached session: its state, queue, streaming message, children, and its live context's messages for `liveGap`. */
-  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined): Promise<ThreadSnapshot> {
-    const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
+  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined, given?: NativeSnapshot): Promise<ThreadSnapshot> {
+    const [snapshot, queue] = await Promise.all([given ?? connection.getInitialSnapshot(), connection.getQueue()]);
     const messages = this.projector.messages(snapshot.messages);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
     return { kind: "live", info: projectInfo(snapshot.state, summary, this.catalogModel(snapshot.state.model ?? null)), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
@@ -692,6 +695,7 @@ export class ThreadHub {
     thread.lastEventAt = Date.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };
+    void connection.flushBufferedSessionEvents();
   }
 
   private async refreshInfo(thread: Thread): Promise<void> {
@@ -710,12 +714,12 @@ export class ThreadHub {
     thread.broadcast({ type: "queue", queue: { steering: [...queue.steering], followUp: [...queue.followUp] } });
   }
 
-  /** A compaction, a resync or a reconnect: the newest messages again from the file, with the daemon's state and what the file lacks. */
-  private async resnapshot(thread: Thread): Promise<void> {
+  /** A compaction, a resync or a session switch: the newest messages again from the file, with the daemon's state and what the file lacks. */
+  private async resnapshot(thread: Thread, given?: NativeSnapshot): Promise<void> {
     const live = thread.live;
     if (!live) return;
     const summary = await this.catalog.summary(thread.id);
-    const [snapshot, tail] = await Promise.all([this.liveSnapshot(live.connection, summary), this.fileTail(summary)]);
+    const [snapshot, tail] = await Promise.all([this.liveSnapshot(live.connection, summary, given), this.fileTail(summary)]);
     if (thread.live !== live) return;
     thread.flush();
     const { older: _older, ...rest } = snapshot;
@@ -739,13 +743,16 @@ export class ThreadHub {
           if (native === "agent_end" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;
         }
+        // A resync carries the snapshot the connection just took; asking for it again went to get_messages once any event had come since. A
+        // reconnect sends its resync before "connected", so "connected" takes no snapshot of its own.
         case "session_resynced":
+          await this.resnapshot(thread, event.snapshot);
+          return;
         case "session_replaced":
           await this.resnapshot(thread);
           return;
         case "connection_status":
           thread.broadcast({ type: "status", connection: event.status === "connected" ? "connected" : "reconnecting", ...(event.error ? { error: event.error } : {}) });
-          if (event.status === "connected") await this.resnapshot(thread);
           return;
         case "closed":
           thread.broadcast({ type: "status", connection: "closed", ...(event.error ? { error: event.error } : {}) });
