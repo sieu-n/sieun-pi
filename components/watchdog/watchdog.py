@@ -10,7 +10,7 @@ import json
 import os
 import time
 
-from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, log, pa
+from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, log, pa, stop_reason
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -41,6 +41,7 @@ def snapshot():
     """One reading of every session + process/journal evidence."""
     sessions = json.loads(pa('list', '--all', '--json').stdout)['sessions']
     now = dt.datetime.now(dt.timezone.utc)
+    archived, test_chats = chat_ids('archived-chats.json'), chat_ids('clean-room-chats.json')
     recs, table = [], None
     for s in sessions:
         f = s.get('sessionFile')
@@ -104,6 +105,7 @@ def snapshot():
             sleepy=sleepy,
             busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
             tls=tls,
+            stopped=stop_reason(s.get('sessionId'), f, evs, archived, test_chats),
         ))
     # Attribute a parked shell to a session: a deliberate wait sleeps INSIDE the kernel, so a
     # shell child alive for as long as the session has been silent is that session's wedge.
@@ -161,7 +163,9 @@ def classify(r, prev, repeats=None):
         return 'SELF', 'watchdog session'
     if r['sid'] in HOLD:
         return 'HELD', 'under manual diagnosis, watchdog hands off'
-    """-> (verdict, reason). Verdicts: SELF, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    if r.get('stopped') and r['life'] == 'live':
+        return 'ARCHIVED', r['stopped']
+    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
         # Idle with input that never got an answer = a turn dropped (machine sleep, worker
         # restart). A session genuinely waiting on its user ends with an ASSISTANT message,
@@ -483,7 +487,7 @@ def _cycle(dry_run=False, verbose=True):
         for psid, kids in sorted(groups.items(), key=lambda g: next(
                 (x['stale_min'] or 0 for x in recs if x['sid'] == g[0]), float('inf'))):
             par = next((x for x in recs if x['sid'] == psid), None)
-            if not par or par['life'] != 'live' or psid in noted or not admit(par, 'CHILD_WEDGED'):
+            if not par or par['life'] != 'live' or par.get('stopped') or psid in noted or not admit(par, 'CHILD_WEDGED'):
                 continue
             names = ', '.join(f"{k['name']} ({k.get('last_asst_min')}m)" for k in kids)
             if len(kids) >= 2:
@@ -512,7 +516,7 @@ def _cycle(dry_run=False, verbose=True):
 
     # Restarts cancel rlm heartbeats silently: snapshot them and re-create them once when they vanish.
     try:
-        actions.extend(heartbeat_rearm(recs, admit, now, dry_run=dry_run))
+        actions.extend(heartbeat_rearm([r for r in recs if not r.get('stopped')], admit, now, dry_run=dry_run))
     except Exception as e:  # the heartbeat check must never stop a recovery cycle
         with open(LOG_F, 'a') as f:
             f.write(json.dumps({'kind': 'heartbeats_error', 'error': f'{type(e).__name__}: {e}'[:300],
@@ -527,7 +531,7 @@ def _cycle(dry_run=False, verbose=True):
         print(f'== watchdog {now.isoformat(timespec="seconds")}')
         order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
                  'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
-                 'HELD': 2, 'OK': 3, 'SELF': 4}
+                 'HELD': 2, 'ARCHIVED': 3, 'OK': 3, 'SELF': 4}
         for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
                         key=lambda x: (order[x['verdict']], -(x['stale_min'] or 0))):
             print(f"  {r['verdict']:<12} d{r['depth']} {r['id']} {str(r['stale_min']):>6}m msgs={r['msgs']:<5} "

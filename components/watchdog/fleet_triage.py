@@ -27,6 +27,9 @@ Usage:
 import json, os, re, subprocess, sys, time, datetime as dt
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from wd_common import chat_ids, stop_reason  # noqa: E402
+
 WATCH = Path.home() / '.prime/agent/watchdog'
 STATE_F = WATCH / 'triage_state.json'
 LOG_F = WATCH / 'triage.jsonl'
@@ -103,7 +106,7 @@ def head_of(s, by):
     return cur
 
 
-def classify(s, t):
+def classify(s, t, archived=frozenset(), test_chats=frozenset()):
     evs = tail_events(s['sessionFile']) if s.get('sessionFile') and os.path.exists(s['sessionFile']) else []
     msgs = [e for e in evs if e.get('type') == 'message']
     last = msgs[-1] if msgs else None
@@ -121,7 +124,8 @@ def classify(s, t):
              provider=(s.get('model') or {}).get('provider'), act=s.get('activity'), stream=stream, busy=busy,
              kids=bool(s.get('hasRunningRlmChildren')), last_role=role, stop=stop, err=err[:200],
              last_age=round(last_age, 1) if last_age is not None else None,
-             asst_age=round(asst_age, 1) if asst_age is not None else None, tail=txt[-240:], recent=recent[-6000:])
+             asst_age=round(asst_age, 1) if asst_age is not None else None, tail=txt[-240:], recent=recent[-6000:],
+             stopped=stop_reason(s.get('sessionId'), s.get('sessionFile'), evs, archived, test_chats))
     if last_age is None:
         v = 'UNKNOWN'
     elif last_age > STALE_H * 60 and not stream:
@@ -180,12 +184,14 @@ def triage():
             if k:
                 by[k] = s
     selfs = {os.environ.get('FLEET_TRIAGE_SELF'), os.environ.get('PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID')} - {None, ''}
+    archived, test_chats = chat_ids('archived-chats.json'), chat_ids('clean-room-chats.json')
     out = []
     for s in ss:
         if s.get('lifecycle') != 'live' or s['sessionId'] in selfs or s.get('activeSessionId') in selfs:
             continue
-        r = classify(s, t)
+        r = classify(s, t, archived, test_chats)
         h = head_of(s, by)
+        r['stopped'] = r['stopped'] or stop_reason(h['sessionId'], h.get('sessionFile'), [], archived, test_chats)
         r['head_sid'], r['head_name'] = h['sessionId'], h.get('sessionName') or ''
         r['head_active'] = h.get('activeSessionId')
         out.append(r)
@@ -243,7 +249,7 @@ def apply(rows, dry=False):
     heads = {}
     for r in rows:
         v = r['verdict']
-        if v not in ('FROZEN', 'ACCOUNT_ERR', 'NET_ERR', 'DROPPED', 'CUT_OFF'):
+        if v not in ('FROZEN', 'ACCOUNT_ERR', 'NET_ERR', 'DROPPED', 'CUT_OFF') or r.get('stopped'):
             continue
         sig = f"{r['sid']}:{v}:{r['last_age'] and round(t/60 - r['last_age'])}"
         key = r['sid']

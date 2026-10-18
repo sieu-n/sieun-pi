@@ -23,6 +23,12 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 4. The probe ends its turn with the rpc `abort` command and then closes its stdin, so the supervisor logs no failed command. A probe that is still running 15 s later gets SIGTERM and then SIGKILL sent to its own process group, which it got from `start_new_session`.
 5. The old probe ran `prime-agent -p` and, after 100 s, `pkill -f 'prime-agent -p --model <m>'`. On 10-18 pi-pool held it in a slot wait, the kill made the supervisor log "prompt_and_wait failed: Daemon worker client closed" at 12:44:48Z and 12:54:46Z, which made dirty minutes in the Whole system precheck, and at 13:14:22Z the pattern also killed a pong probe another agent ran by hand.
 
+## Archived chats
+
+1. A cycle never wakes a session whose chat the owner archived (`archived-chats.json`), a clean-room test chat (`clean-room-chats.json`), or a session listed live whose newest `session_state` entry is archived. Its verdict is `ARCHIVED`, and `fleet_triage.py --apply` skips the same sessions.
+2. Both files come from the chat service's data folder, `$AGENT_CHAT_DATA_DIR` or `~/.prime/agent/browser-chat`. A subagent counts by the root of its session-artifacts tree.
+3. On 10-18 a cycle sent plan-and-duties run-1's test chat "Your last turn was dropped" at 14:34:58Z, 6.8 min after its teardown archived it, and the chat went on working into run-2. `tests/test_archived.py` replays that case.
+
 ## Install
 
 ```sh
