@@ -7,7 +7,7 @@ import type { ChatBackend } from "../src/chat-backend.ts";
 const ORIGIN = "https://box.example.ts.net";
 const NAVIGATE = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
 
-function get(url: string, headers: Record<string, string>): Promise<{ status: number; location?: string }> {
+function get(url: string, headers: Record<string, string>): Promise<{ status: number; location: string | undefined }> {
   return new Promise((resolve, reject) => {
     const req = request(url, { headers }, res => { res.resume(); resolve({ status: res.statusCode ?? 0, location: res.headers.location }); });
     req.on("error", reject); req.end();
