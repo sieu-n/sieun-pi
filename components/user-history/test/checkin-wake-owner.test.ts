@@ -73,16 +73,16 @@ test("launch main bro 10-14: the release driver asleep on its 14:40Z board.wake 
   assert.match(run.findings, /release driver thread: asleep on a board\.wake at 14:40Z, last activity 35 min ago, on p53/);
 });
 
-test("launch main bro 10-14 control: a wake overdue past the 2 min delivery gap, a service that stopped ticking, or no wake leaves p53, p75 and p56 stuck", async () => {
+test("launch main bro 10-14 control: a wake overdue past the 2 min delivery gap, or no wake, leaves p53, p75 and p56 stuck; a late tick does not", async () => {
   assert.deepEqual(flags(await checkIn({ now: WAKE_AT + 2 * 60_000 })), [], "at 14:42Z the wake is still within one delivery gap");
   const overdue = await checkIn({ now: WAKE_AT + 3 * 60_000 });
   assert.deepEqual(flags(overdue), STUCK, "at 14:43Z the wake is 3 min overdue");
   assert.match(overdue.findings, /owner release driver thread \(idle\)/);
-  assert.deepEqual(flags(await checkIn({ now: READ_AT, tickedAt: READ_AT - 3 * 60_000 })), STUCK, "the service's last tick is 3 min old, so nobody delivers the wake");
+  assert.deepEqual(flags(await checkIn({ now: READ_AT, tickedAt: READ_AT - 3 * 60_000 })), [], "a last tick 3 min old does not erase a wake still ahead (AI harness 10-18 01:32Z)");
   assert.deepEqual(flags(await checkIn({ now: READ_AT, wake: false })), STUCK, "the release driver with no wake is idle");
 });
 
-test("wakes: a subagent asleep on a board.wake for a CI run is a working owner and gets no status ask, until the service stops ticking", async () => {
+test("wakes: a subagent asleep on a board.wake for a CI run is a working owner and gets no status ask, even while the service's tick is late", async () => {
   const fact = { key: "k7", name: "train lander", state: "working" as const, item: { id: "p200", text: "Land train 1", status: "doing" as const } };
   assert.equal(silentJobs([fact], () => READ_AT - 2 * 60 * 60_000, READ_AT).length, 1, "a working job silent for 2 h gets an ask");
   assert.deepEqual(silentJobs([{ ...fact, wake: "a board.wake on run 38576851186" }], () => READ_AT - 2 * 60 * 60_000, READ_AT), [], "an ask would wake it");
@@ -96,7 +96,7 @@ test("wakes: a subagent asleep on a board.wake for a CI run is a working owner a
   assert.deepEqual(asleep.output.flagged.filter(slice => slice.item === "p200").map(slice => slice.kind), []);
   assert.match(asleep.findings, /- p200 \(live\) "Land train 1" doing, owner job train lander \(asleep on a board\.wake on run 38576851186\)/);
   const stale = await checkIn({ now: READ_AT, tickedAt: READ_AT - 3 * 60_000, wake: false, board, memo, children: [child], wakes: [wake] });
-  assert.ok(stale.output.flagged.some(slice => slice.kind === "stuck_steps" && slice.item === "p200"), "with no tick for 3 min the wake is not owed");
+  assert.deepEqual(stale.output.flagged.filter(slice => slice.item === "p200").map(slice => slice.kind), [], "a tick 3 min late still owes the run wake");
 });
 
 test("launch main bro 10-14: a step that waits on the release driver thread is not blocked on others while the driver sleeps on its wake", async () => {

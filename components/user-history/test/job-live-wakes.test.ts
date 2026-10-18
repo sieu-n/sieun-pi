@@ -152,3 +152,22 @@ test("job row: an agent whose session or subagent sleeps on a board.wake shows t
     [wake(SHARED.session, { kind: "run", run: 39080016700 }), wake(WATCHDOG.session, { kind: "time", at: Date.parse("2026-10-18T00:55:00.000Z") })], session => tree.get(session) ?? []);
   assert.deepEqual(rows.map(row => row.wait), ["waits for run 39080016700", "waits for 00:55Z", undefined]);
 });
+
+test("pendingWakes: a .ticked stamp past WAKE_LATE_MS keeps run wakes and time wakes still ahead, so a busy service never erases the wake set (AI harness 10-18 01:32Z: p534, p535, p532)", async () => {
+  const AT = Date.parse("2026-10-18T01:32:30.000Z");
+  const dir = await mkdtemp(join(tmpdir(), "stale-tick-"));
+  const files = [
+    { session: "01a14b75-84d5-74cc-9f26-cfe5ddbf8741", on: { kind: "run", run: 39081582639 }, note: "land ab71c92731 with --probed on green, then close p534", since: 1792286571228 },
+    { session: "01a14b76-9cd4-7779-8361-c9f03fc05609", on: { kind: "run", run: 39086346905 }, note: "p535: land 9feeb12d3b with --probed on green", since: 1792286733989 },
+    { session: "01a143a3-12c7-751c-ac79-acb71368065a", root: HARNESS, on: { kind: "time", at: 1792353600000 }, note: "dup-sends recount", since: 1792278972328 },
+    { session: "01a14c69-1018-75db-bcfb-05b616e8197b", on: { kind: "time", at: AT - 60_000 }, note: "due a minute ago", since: AT - 10 * 60_000 },
+  ];
+  for (const wake of files) await writeFile(join(dir, `${wake.session}-${wake.on.kind}.json`), JSON.stringify(wake));
+  await writeFile(join(dir, TICKED), new Date(AT - 2 * 60_000 - 15_000).toISOString());
+  assert.deepEqual((await pendingWakes(dir, AT)).map(wake => wake.session).sort(), files.slice(0, 3).map(wake => wake.session).sort(),
+    "the tick is 2 min 15 s old: both queued-run wakes and the 10-19 time wake stay owed, and only the time wake already due waits for a fresh tick");
+  await writeFile(join(dir, TICKED), new Date(AT - 20_000).toISOString());
+  assert.equal((await pendingWakes(dir, AT)).length, 4, "with a fresh tick the due time wake is owed too");
+  await rm(join(dir, TICKED));
+  assert.equal((await pendingWakes(dir, AT)).length, 3, "with no stamp at all the files still name live waits");
+});

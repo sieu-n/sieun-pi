@@ -209,13 +209,15 @@ export async function runStamp(id: number): Promise<string | null> {
 export const WAKE_LATE_MS = 2 * 60_000;
 
 /**
- * The wakes the service still owes at `now`, given its last finished tick (`tickedAt`, from TICKED): none when that tick is over WAKE_LATE_MS
- * old; else every run wake, since the service reads its run at least every RUN_LOOK_MS and sends the wake once the run finished, and every time
- * wake due at most WAKE_LATE_MS ago. The check-in counts a job asleep on one as a live owner (`withWakes`).
+ * The wakes the service still owes at `now`: every run wake and every time wake still ahead, whatever the age of the last tick (`tickedAt`,
+ * from TICKED), since a wake file stays until the service sends it; and a time wake already due only while the last tick is at most
+ * WAKE_LATE_MS old and the wake is due at most WAKE_LATE_MS ago. The check-in counts a job asleep on one as a live owner (`withWakes`). AI
+ * harness 10-18 01:32Z: the service was busy for about 2 min (a 4.1 s catalog list, a burst of session opens, idle unloads), TICKED aged past
+ * WAKE_LATE_MS, and the old rule owed none of the 75 pending wakes, so that check-in nudged jobs asleep on their wakes and restarted one.
  */
 export function owedWakes(wakes: readonly Wake[], tickedAt: number | undefined, now: number): Wake[] {
-  if (tickedAt === undefined || now - tickedAt > WAKE_LATE_MS) return [];
-  return wakes.filter(wake => wake.on.kind === "run" || now - wake.on.at <= WAKE_LATE_MS);
+  const ticking = tickedAt !== undefined && now - tickedAt <= WAKE_LATE_MS;
+  return wakes.filter(wake => wake.on.kind === "run" || wake.on.at > now || (ticking && now - wake.on.at <= WAKE_LATE_MS));
 }
 
 /** The wake files in `dir` the service still owes at `now` (`owedWakes`). */
