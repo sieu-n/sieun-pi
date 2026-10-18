@@ -136,6 +136,11 @@ export function buildRequest(op: string, operation: Operation, ids: Record<strin
  * (apps/api-portal/src/lib/server/gateway.ts), so the fix is in the crawler's reader fleet, not the portal.
  */
 const CRAWLER_CAPACITY = "capacity_exhausted";
+/**
+ * The portal's 503 on job results when a closed crawl route, such as the Instagram feed breaker, failed the job (auto-sns-agent
+ * 2a71670a01, apps/api-portal/src/lib/server/crawl-jobs.ts): the fix is in the crawler.
+ */
+const CRAWLER_CLOSED = "temporarily_unavailable";
 const JOB_FINISHED = "job_finished";
 
 /** The error code of a portal error body, if any. */
@@ -155,7 +160,7 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   // A cancel of a job that already ended answers 409 job_finished with the job's real state, which is the route working.
   if (status === 409 && code === JOB_FINISHED) return { verdict: "ok", code };
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
-  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY) return { verdict: "crawler", code };
+  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
   return { verdict: "portal", code };
 }
 
