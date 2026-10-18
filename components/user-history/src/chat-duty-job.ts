@@ -141,13 +141,18 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
 
 /**
  * One line per missed metric: its streak and what this run must do about it. A metric with a live fix job gets a steer, one with none gets a
- * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work.
+ * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work. A
+ * windowed count with no new event since the last run (`quietSince`) gets no job.
  */
 export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = ""): string {
   const link = JSON.stringify(dutyLink(dutyId, streak.key));
   const where = `${streak.key} (${label}) is ${streak.value}${unit}, target ${streak.op} ${streak.target}${unit}, missed ${runs(streak.misses)} in a row` +
     `${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}.`;
   const fix = streak.fix;
+  if (streak.quietSince !== undefined) {
+    return `${where} Its newest counted event is from ${localTime(streak.quietSince)}, before the last run, so no new event came since and the number ` +
+      `falls as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
+  }
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +
       "root-cause job with rlm.create_session that finds why the last fix did not move the number and fixes that cause in code. Do not run the " +

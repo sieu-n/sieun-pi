@@ -22,7 +22,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   walk_problems also counts box drift: the walk runs on us-metal02's 5180, so its tree has to match the owner's Mac tree (readBoxSync).
  * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h,
  * outside_requests, box_drift and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
- * show a clean day, plus 1 to source_errors and a flagged slice.
+ * show a clean day, plus 1 to source_errors and a flagged slice. `lastEventAt` names the newest restart and SSR timeout, so a miss streak whose
+ * events stopped is not called stuck (`MetricStreak.quietSince`).
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -265,6 +266,7 @@ const iso = (at: number) => new Date(at).toISOString().slice(0, 19) + "Z";
 export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput> {
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
+  const lastEventAt: Record<string, number> = {};
   const metrics = { walk_problems: 0, health_ms: 0, restarts_24h: 0, ssr_timeouts_24h: 0,
     configure_ms: 0, dev_tree_mb: 0, guard_restarts_24h: 0, config_restarts_24h: 0, outside_requests: 0, box_drift: 0, source_errors: 0 };
   const sourceError = (kind: string, excerpt: string) => { metrics.source_errors++; flagged.push({ at, kind, excerpt }); };
@@ -290,6 +292,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   } else {
     const events = ssrTimeouts(errorLog, at, deps.pm2.zone);
     metrics.ssr_timeouts_24h = events.length;
+    if (events.length) lastEventAt.ssr_timeouts_24h = Math.max(...events.map(event => event.last));
     for (const event of events) {
       const edits = typeof outLog === "string" ? `, ${editsBefore(outLog, event.first, deps.pm2.zone)} file changes in the 3 min before` : "";
       flagged.push({ at, kind: "ssr_timeout", excerpt: `${event.lines} timeout lines ${iso(event.first)} to ${iso(event.last)}${edits}; last: ${event.sample}` });
@@ -304,6 +307,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   } else {
     const { events, config } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at, deps.pm2.zone);
     metrics.restarts_24h = events.length;
+    if (events.length) lastEventAt.restarts_24h = Math.max(...events.map(event => event.at));
     metrics.config_restarts_24h = config.length;
     for (const event of events) {
       const codes = [...new Set(event.exits.map(exit => exit.code))].join(", ");
@@ -349,7 +353,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   metrics.walk_problems += sync.problems;
   metrics.box_drift = sync.drift;
   flagged.push({ at, kind: sync.kind, excerpt: sync.excerpt });
-  return { metrics, flagged };
+  return { metrics, flagged, lastEventAt };
 }
 
 /** Where the owner's Mac demo sync watcher (~/.local/share/virev-demo-sync on the Mac) writes its drift check, relative to the repo. */
