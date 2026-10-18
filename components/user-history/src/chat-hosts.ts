@@ -3,7 +3,7 @@ import { machineView, type HostStats, type MachineView } from "../../prime-relay
 import { parseAgentQueue, parseQueueTimers } from "./chat-pool.ts";
 import { queueRows } from "./chat-agent-queue.ts";
 import { hostHealth, hostToken, loadHosts, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
-import type { AgentQueuePool, HostCard, HostRole, HostsView } from "./shared/types.ts";
+import type { AgentQueuePool, HostCard, HostRole, HostsView, NewChatPicks } from "./shared/types.ts";
 
 /** One relay read: GET /v1/host answers in about 0.2 s from the Mac over the tailnet (185 ms ping on 10-18), so 5 s means the box is away. */
 const RELAY_TIMEOUT_MS = 5_000;
@@ -41,7 +41,7 @@ export interface HostsOptions {
   /** This box's turn queue, read in-process (the Agent queue pane's own reading). */
   selfQueue: () => Promise<AgentQueuePool>;
   title: (id: string) => string | null;
-  lastHost: () => Promise<string | null>;
+  picks: () => Promise<NewChatPicks>;
   load?: () => Promise<HostsRegistry>;
   selfMachine?: () => Promise<MachineView>;
   remote?: (host: Host) => Promise<HostStats>;
@@ -52,7 +52,7 @@ export const thisBox = (): string => hostname().split(".")[0]!.toLowerCase();
 
 /** Settings > Hosts and the New chat host picker: every box in hosts.json, this one first, each read once per call. */
 export function hostsView(options: HostsOptions): () => Promise<HostsView> {
-  const { selfQueue, title, lastHost, load = loadHosts, selfMachine = machineView, remote = relayStats } = options;
+  const { selfQueue, title, picks, load = loadHosts, selfMachine = machineView, remote = relayStats } = options;
 
   async function selfCard(host: Host | null): Promise<HostCard> {
     const [machine, queue] = await Promise.all([selfMachine(), selfQueue()]);
@@ -73,7 +73,9 @@ export function hostsView(options: HostsOptions): () => Promise<HostsView> {
     try { registry = await load(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") registryError = message(error); }
     const self = registry ? selfHost(registry) : null;
     const others = registry?.hosts.filter(host => host.name !== self?.name) ?? [];
-    const [hosts, last] = await Promise.all([Promise.all([selfCard(self), ...others.map(remoteCard)]), lastHost().catch(() => null)]);
-    return { hosts, lastHost: last && hosts.some(host => host.name === last) ? last : null, registryError, checkedAt: Date.now() };
+    const [hosts, last] = await Promise.all([Promise.all([selfCard(self), ...others.map(remoteCard)]), picks().catch((): NewChatPicks => ({ lastHost: null, lastWorkspace: {} }))]);
+    const listed = (name: string) => hosts.some(host => host.name === name);
+    return { hosts, lastHost: last.lastHost && listed(last.lastHost) ? last.lastHost : null,
+      lastWorkspace: Object.fromEntries(Object.entries(last.lastWorkspace).filter(([name]) => listed(name))), registryError, checkedAt: Date.now() };
   };
 }

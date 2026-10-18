@@ -23,7 +23,7 @@ import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
-import { hostsView } from "./chat-hosts.ts";
+import { hostsView, thisBox } from "./chat-hosts.ts";
 import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
@@ -373,7 +373,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
   const tools = toolChecks({ dutyStore: backend.duties?.store });
-  const hosts = hostsView({ title: id => backend.catalog.title(id), lastHost: () => backend.newChat.lastHost(),
+  const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   const streams = new Set<EventStream>();
@@ -682,7 +682,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
             await backend.created.add(thread.id).catch(() => {});
-            if (host) await backend.newChat.setLastHost(host).catch(() => {});
+            await backend.newChat.remember(host ?? backend.catalog.selfHost() ?? thisBox(), cwd).catch(() => {});
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
               try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }

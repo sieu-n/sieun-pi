@@ -39,21 +39,22 @@ test("parseMachine refuses a reading without CPU or memory numbers", () => {
 test("hostsView lists this box first, reads the others through their relays, and marks a box that does not answer", async () => {
   const self = { ...REGISTRY.hosts[1]!, hostname: (await import("node:os")).hostname() };
   const registry: HostsRegistry = { version: 1, hosts: [REGISTRY.hosts[0]!, self] };
-  const view = await hostsView({ selfQueue, title: () => null, lastHost: async () => "us-metal02", load: async () => registry, selfMachine: async () => machine(40),
+  const view = await hostsView({ selfQueue, title: () => null, picks: async () => ({ lastHost: "us-metal02", lastWorkspace: { "us-metal02": "/home/sieun/src", mac: "/Users/sieunpark/x", "gone-box": "/srv" } }), load: async () => registry, selfMachine: async () => machine(40),
     remote: async () => { throw new Error("relay us-metal02 did not answer"); } })();
   assert.deepEqual(view.hosts.map(host => [host.name, host.self, host.state]), [["mac", true, "up"], ["us-metal02", false, "unreachable"]]);
   assert.deepEqual(view.hosts[1]!.roles, ["chat", "pool", "wiki"]);
   assert.equal(view.lastHost, "us-metal02");
+  assert.deepEqual(view.lastWorkspace, { "us-metal02": "/home/sieun/src", mac: "/Users/sieunpark/x" }, "a box no longer listed loses its folder");
   assert.equal(view.registryError, null);
 });
 
 test("hostsView with no hosts.json shows this box alone, and a broken file says why", async () => {
   const missing = Object.assign(new Error("no file"), { code: "ENOENT" });
-  const alone = await hostsView({ selfQueue, title: () => null, lastHost: async () => "gone-box", load: async () => { throw missing; }, selfMachine: async () => machine(1) })();
+  const alone = await hostsView({ selfQueue, title: () => null, picks: async () => ({ lastHost: "gone-box", lastWorkspace: {} }), load: async () => { throw missing; }, selfMachine: async () => machine(1) })();
   assert.equal(alone.hosts.length, 1);
   assert.equal(alone.hosts[0]!.self, true);
   assert.equal(alone.lastHost, null, "a last host no longer listed is dropped");
-  const broken = await hostsView({ selfQueue, title: () => null, lastHost: async () => null, load: async () => { throw new Error("hosts.json: needs {\"version\": 1}"); }, selfMachine: async () => machine(1) })();
+  const broken = await hostsView({ selfQueue, title: () => null, picks: async () => ({ lastHost: null, lastWorkspace: {} }), load: async () => { throw new Error("hosts.json: needs {\"version\": 1}"); }, selfMachine: async () => machine(1) })();
   assert.match(broken.registryError ?? "", /version/);
 });
 

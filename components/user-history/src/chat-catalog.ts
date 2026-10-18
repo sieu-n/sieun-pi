@@ -897,17 +897,25 @@ export class Catalog {
     return { ...rest, archived: true, kind: "saved", status: "saved", working: false, subagentsRunning: 0, unread: false };
   }
 
+  /** This box's hosts.json name; null without hosts.json. */
+  selfHost(): string | null { return this.hosts?.selfName ?? null; }
+
+  /** Each box's folders, its 30 most recently used, so New chat offers a box only the folders on its own disk. */
   async workspaces(): Promise<Workspace[]> {
     if (this.summaries.size === 0) await this.refresh().catch(() => {});
-    const byCwd = new Map<string, Workspace>();
+    const byFolder = new Map<string, Workspace>();
     for (const row of this.summaries.values()) {
       const at = row.lastActivityAt ?? row.modified ?? row.created;
-      const entry = byCwd.get(row.cwd) ?? { cwd: row.cwd, count: 0 };
+      const host = this.hostOf(row.sessionId) ?? this.selfHost();
+      const key = `${host ?? ""}\0${row.cwd}`;
+      const entry = byFolder.get(key) ?? { cwd: row.cwd, host, count: 0 };
       entry.count++;
       if (at && (!entry.lastUsedAt || at > entry.lastUsedAt)) entry.lastUsedAt = at;
-      byCwd.set(row.cwd, entry);
+      byFolder.set(key, entry);
     }
-    return [...byCwd.values()].sort((left, right) => (right.lastUsedAt ?? "").localeCompare(left.lastUsedAt ?? "")).slice(0, 30);
+    const perHost = new Map<string | null, number>();
+    return [...byFolder.values()].sort((left, right) => (right.lastUsedAt ?? "").localeCompare(left.lastUsedAt ?? ""))
+      .filter(entry => { const shown = perHost.get(entry.host) ?? 0; perHost.set(entry.host, shown + 1); return shown < 30; });
   }
 
   async close(): Promise<void> {

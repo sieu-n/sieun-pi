@@ -367,7 +367,8 @@ export interface ChatDefaultsInput { provider: string; modelId: string; thinking
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const isThinkingLevel = (value: unknown): value is ThinkingLevel => typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
 export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" | "session" }
-export interface Workspace { cwd: string; lastUsedAt?: string; count: number }
+/** A folder threads ran in on one box: `host` is its hosts.json name, null for this box when there is no hosts.json. */
+export interface Workspace { cwd: string; host: string | null; lastUsedAt?: string; count: number }
 export interface ImageInput { type: "image"; mimeType: string; data: string }
 export type SendMode = "steer" | "followUp";
 
@@ -497,9 +498,10 @@ interface HostCardBase { name: string; address: string; roles: HostRole[];
 export type HostCard = HostCardBase & (
   | { state: "up"; daemon: "answering" | "down"; pingMs: number | null; machine: MachineView; queue: AgentQueuePool }
   | { state: "unreachable"; pingMs: number; error: string });
-export interface HostsView { hosts: HostCard[];
-  /** The box the owner's last new chat or thread went to, the New chat host picker's default; null before the first pick. */
-  lastHost: string | null;
+/** The owner's last New chat picks: the box his last new chat or thread went to, and per box the folder his last one there started in. */
+export interface NewChatPicks { lastHost: string | null; lastWorkspace: Record<string, string> }
+/** `lastHost` is the New chat host picker's default and `lastWorkspace` each box's default folder, both only for boxes listed. */
+export interface HostsView extends NewChatPicks { hosts: HostCard[];
   /** Why hosts.json did not read; null when it read or is absent (then the list is this box alone). */
   registryError: string | null;
   checkedAt: number }

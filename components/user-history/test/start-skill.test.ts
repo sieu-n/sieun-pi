@@ -35,12 +35,14 @@ test("start skill: a fresh data directory has none; Settings sets and clears it 
     assert.equal((await post({ startSkill: "my-skill" }, { Origin: origin })).status, 403);
     assert.equal((await post({ startSkill: "/skill:my-skill" })).status, 400);
     assert.deepEqual(await (await post({ startSkill: "my-skill" })).json(), { startSkill: "my-skill" });
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, "new-chat.json"), "utf8")), { startSkill: "my-skill", lastHost: null });
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "new-chat.json"), "utf8")), { startSkill: "my-skill", lastHost: null, lastWorkspace: {} });
     assert.deepEqual(await (await fetch(server.url + "api/new-chat")).json(), { startSkill: "my-skill" });
     assert.deepEqual(await (await post({ startSkill: null })).json(), { startSkill: null });
-    await store.setLastHost("us-metal02");
-    assert.equal(await store.lastHost(), "us-metal02");
-    assert.deepEqual(await store.read(), { startSkill: null }, "the last host stays out of the New chats settings");
+    await store.remember("us-metal02", "/home/sieun/src");
+    await store.remember("mac", "/Users/sieunpark/x");
+    await store.remember("us-metal02", "/home/sieun/other");
+    assert.deepEqual(await store.picks(), { lastHost: "us-metal02", lastWorkspace: { "us-metal02": "/home/sieun/other", mac: "/Users/sieunpark/x" } });
+    assert.deepEqual(await store.read(), { startSkill: null }, "the last picks stay out of the New chats settings");
   } finally { await server.close(); }
 });
 

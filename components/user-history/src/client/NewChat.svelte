@@ -39,6 +39,18 @@
   let hosts = $state<HostCard[]>([]);
   let host = $state<string | null>(null);
   let hostOpen = $state(false);
+  /** Each box's folder from the owner's last new chat there; a picked box starts on it, else on its most recent folder. */
+  let lastWorkspace = $state<Record<string, string>>({});
+  let hostsRead = $state(false), workspacesRead = $state(false);
+  const selfName = $derived(hosts.find(entry => entry.self)?.name ?? null);
+  const hostWorkspaces = $derived(host === null ? workspaces : workspaces.filter(workspace => (workspace.host ?? selfName) === host));
+  /** The box whose default folder cwd holds, so a box pick moves cwd once and a folder chosen after it stays. */
+  let cwdHost: string | null | undefined = undefined;
+  $effect(() => {
+    if (!hostsRead || !workspacesRead || host === cwdHost) return;
+    cwdHost = host;
+    cwd = (host !== null ? lastWorkspace[host] : undefined) ?? hostWorkspaces[0]?.cwd ?? "";
+  });
   /** An explicit thread name; empty lets Prime Agent title the thread from its first message. */
   let threadName = $state("");
   /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
@@ -90,12 +102,14 @@
     try {
       const view = await api.hosts();
       hosts = view.hosts;
+      lastWorkspace = view.lastWorkspace;
       if (!host || !hosts.some(entry => entry.name === host)) host = defaultHost(hosts, view.lastHost);
     } catch (error) { if (!hosts.length) store.toast(errorText(error)); }
+    finally { hostsRead = true; }
   }
   onMount(() => {
     void loadHosts();
-    api.workspaces().then(list => { workspaces = list; if (!cwd && list[0]) cwd = list[0].cwd; }, error => store.toast(error instanceof Error ? error.message : String(error)));
+    api.workspaces().then(list => { workspaces = list; }, error => store.toast(errorText(error))).finally(() => { workspacesRead = true; });
   });
   $effect(() => {
     void store.defaultsRevision;
@@ -117,7 +131,7 @@
 
   function useWorkspace(path: string): void {
     cwd = path;
-    if (!workspaces.some(workspace => workspace.cwd === path)) workspaces = [{ cwd: path, count: 0 }, ...workspaces];
+    if (!hostWorkspaces.some(workspace => workspace.cwd === path)) workspaces = [{ cwd: path, host, count: 0 }, ...workspaces];
     customCwd = "";
     closePopover();
   }
@@ -215,7 +229,7 @@
                   <Icon name="folder" size={14} /><span class="label">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
                 </button>
               {/snippet}
-              {#each workspaces as workspace (workspace.cwd)}
+              {#each hostWorkspaces as workspace (workspace.cwd)}
                 <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => useWorkspace(workspace.cwd)}>
                   <span class="path"><bdi>{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</bdi></span>
                   <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
