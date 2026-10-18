@@ -420,9 +420,9 @@ export class Duties {
     return task;
   }
 
-  private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[]): Promise<Record<string, FixLink>> {
+  private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = []): Promise<Record<string, FixLink>> {
     const live = this.host.fixLive;
-    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false));
+    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged);
   }
 
   /** Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). */
@@ -430,7 +430,7 @@ export class Duties {
     if (record.verdict !== "missed") return [];
     const counted = verdictKeys(metrics);
     const board = this.host.board ? await this.host.board(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: read the board: ${message(error)}`); return null; }) : null;
-    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)));
+    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)), record.flagged);
     if (Object.keys(fixes).length) record.fixes = fixes;
     return metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key));
   }

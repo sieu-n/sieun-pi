@@ -1,4 +1,4 @@
-import type { DutyRunRecord, FixLink } from "./chat-duties.ts";
+import type { DutyRunRecord, FixLink, FlaggedSlice } from "./chat-duties.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
 /**
@@ -18,28 +18,37 @@ export const dutyLink = (duty: string, metric: string): string => `${duty}/${met
 const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 const stepNumber = (id: string): number => Number(/\d+$/.exec(id)?.[0] ?? 0);
 
-function linked(board: ChatBoard | null, duty: string): Map<string, PlanItem[]> {
-  const byMetric = new Map<string, PlanItem[]>();
-  const visit = (items: readonly PlanItem[]) => {
+interface Linked { item: PlanItem; path: readonly string[] }
+
+function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
+  const byMetric = new Map<string, Linked[]>();
+  const visit = (items: readonly PlanItem[], above: readonly string[]) => {
     for (const item of items) {
+      const path = [...above, item.id];
       const link = item.duty ? parseDutyLink(item.duty) : null;
-      if (link?.duty === duty) byMetric.set(link.metric, [...byMetric.get(link.metric) ?? [], item]);
-      visit(item.children);
+      if (link?.duty === duty) byMetric.set(link.metric, [...byMetric.get(link.metric) ?? [], { item, path }]);
+      visit(item.children, path);
     }
   };
-  visit(board?.plan ?? []);
+  visit(board?.plan ?? [], []);
   return byMetric;
 }
 
 /**
  * The fix step for each of `metrics` on the board: the open step with a live job first, then any open step, then the newest closed one, so a
  * metric that still misses after its fix closed names that fix. `live` says whether a step's job is at work; a closed step never counts as live.
+ * Steps at or under an item the run flagged for that metric (`flagged`, by kind) come first: Crawler VP's check-in at 21:21Z on 10-18 flagged
+ * goal_gaps on p681, whose push step p696 has the job "tiktok shop products push", and recorded p671 "linkedin api fixes" under p670 instead.
  */
-export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>): Promise<Record<string, FixLink>> {
+export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>,
+  flagged: readonly FlaggedSlice[] = []): Promise<Record<string, FixLink>> {
   const steps = linked(board, duty);
   const fixes: Record<string, FixLink> = {};
   for (const metric of metrics) {
-    const found = steps.get(metric) ?? [];
+    const items = new Set(flagged.flatMap(slice => slice.kind === metric && slice.item ? [slice.item] : []));
+    const under = (step: Linked) => step.path.some(id => items.has(id));
+    const ranked = steps.get(metric) ?? [];
+    const found = [...ranked.filter(under), ...ranked.filter(step => !under(step))].map(step => step.item);
     const open = found.filter(item => OPEN.has(item.status));
     let pick: { item: PlanItem; live: boolean } | undefined;
     for (const item of open) {
