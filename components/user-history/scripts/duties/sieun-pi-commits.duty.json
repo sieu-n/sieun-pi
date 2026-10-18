@@ -1,0 +1,33 @@
+{
+  "name": "Main commits report",
+  "ownerWords": "how many commits landed on sieun-pi main in the last 4 days, and which component got the most of them? then find the 10 biggest commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
+  "goal": "The top-10 report of the last 4 days of sieun-pi main commits stays current: it explains all 10 biggest commits and covers origin/main to within a day, refreshed daily (c66).",
+  "metrics": [
+    {
+      "key": "commits_explained",
+      "label": "Commits explained on the report page (What each commit changed sections)",
+      "op": ">=",
+      "target": 10,
+      "unit": " commits",
+      "headline": true
+    },
+    {
+      "key": "report_lag_h",
+      "label": "Hours from the report's newest covered main commit to the newest commit on origin/main",
+      "op": "<=",
+      "target": 24,
+      "unit": " h"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/sieun-pi-commits.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Steer the live \"main commits report\" job by message with `node --import tsx scripts/job-steer.ts 01a14c54-2762-7381-82d0-a8a4ea4aafe6 \"main commits report\" <message>` from components/user-history, naming the missed metric, its value and target. If no such job is live (agent_observe.list_agents), start one with await rlm.create_session(brief, name=\"main commits report\") with the owner's words first, and set it as the job of the p1 step. The job re-counts the last 4 days of sieun-pi origin/main commits per component, re-picks the 10 biggest, and writes or updates the explanation of each one on the report page. Never start a second copy. Nothing goes outside (c37). With all metrics on target, end the turn with no message.",
+  "boardGoal": "p1"
+}
