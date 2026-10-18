@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
+import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
@@ -171,6 +172,8 @@ export interface WatchLine {
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
   cpuMs: number;
+  /** How slow the chat service on this box was to the owner since the last line (src/chat-latency.ts); absent on lines written before it. */
+  chat?: ChatLatency;
 }
 
 /**
@@ -487,8 +490,9 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
     })))]);
   const resumed = process.cpuUsage();
+  const latency = takeLatency();
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
-    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB) };
+    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

@@ -55,15 +55,17 @@ test("d7 names a CPU minute's job rigs by chat and job, and counts the harness m
     { owner: "01a14d31/scratch-cpu-b", cores: 17, command: "node src/chat-service-cli.mjs serve" },
     { owner: "p8iso-PVXA-d.service", cores: 5, command: "tsgo --noEmit" }] } });
   const own = linux(1.3, { cpuCores, harnessSplit: { own: 40, rigs: 20, top: [] } });
-  const lines = Array.from({ length: 30 }, (_, minute) => line(minute, minute === 28 ? rigs : minute === 29 ? own : linux(0.5, { cpuCores })));
+  const lines = Array.from({ length: 30 }, (_, minute) => minute === 28 ? { ...line(minute, rigs), chat: { readMs: 2400, read: "api/threads", loopMs: 900 } }
+    : line(minute, minute === 29 ? own : linux(0.5, { cpuCores })));
   const chats = [{ id: "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb", name: "AI harness developer environment VP", duties: [], runs: [] }];
   const { metrics, flagged } = measure({ now: RUN, watch: lines, log: { holds: [] }, chats });
-  assert.equal(metrics.harness_unusable_min_30, 2);
+  assert.equal(metrics.harness_unusable_min_30, 1);
   assert.equal(metrics.harness_rig_unusable_min_30, 1);
+  assert.equal(metrics.cpu_busy_min_30, 1, "11:32Z, when the harness stayed fast");
   assert.match(flagged?.find(slice => slice.kind === "minutes")?.excerpt ?? "", /and 1 harness minutes went mostly to job rigs\)/);
+  assert.match(flagged?.find(slice => slice.kind === "busy_minutes")?.excerpt ?? "", /11:32Z us-metal02 busy at 1\.3 runnable a core, harness 60 cores, 40 its own and 20 in job rigs/);
   const dirty = flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "";
-  assert.match(dirty, /11:31Z us-metal02 unusable \(cpu; harness 60 cores, 12 its own and 48 in job rigs: AI harness developer environment VP, job scratch-cpu-b 17 \(node src\/chat-service-cli\.mjs serve\), p8iso-PVXA-d\.service 5 \(tsgo --noEmit\)\)/);
-  assert.match(dirty, /11:32Z us-metal02 unusable \(cpu; harness 60 cores, 40 its own and 20 in job rigs\)/);
+  assert.match(dirty, /11:31Z us-metal02 unusable \(cpu: the chat answered api\/threads in 2\.4 s; harness 60 cores, 12 its own and 48 in job rigs: AI harness developer environment VP, job scratch-cpu-b 17 \(node src\/chat-service-cli\.mjs serve\), p8iso-PVXA-d\.service 5 \(tsgo --noEmit\)\)/);
   assert.equal(parseUsableRaw({ platform: "linux", reading: rigs }, RUN) && (parseUsableRaw({ platform: "linux", reading: rigs }, RUN) as LinuxUsable).harnessSplit?.rigs, 48);
   assert.equal((parseUsableRaw({ platform: "linux", reading: { ...rigs, harnessSplit: { own: -1 } } }, RUN) as LinuxUsable).harnessSplit, undefined);
 });

@@ -14,6 +14,7 @@ import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type Sle
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
+import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
@@ -127,7 +128,8 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
- * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable, no start, wake or parked
+ * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable (a CPU miss counts
+ * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
  * failed or ran over 30 s on any box (src/daemon-faults.ts). Supporting: queue holds and open steps nobody
  * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
@@ -336,6 +338,8 @@ export interface Inputs {
   named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   /** Opens, status reads, sends and worker starts that failed or ran over SLOW_MS, from service.log and the supervisor's log (src/daemon-faults.ts). */
   daemonFaults?: readonly DaemonFault[];
+  /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
+  workerMisses?: readonly number[];
   /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
   listed?: ReadonlyMap<string, ListedSession>;
 }
@@ -409,10 +413,11 @@ export function measure(input: Inputs): PrecheckOutput {
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, other = 0, unattributed = 0, daemonFail = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const side = sideOf(input.watch);
   const dirty: string[] = [];
+  const busy: string[] = [];
   const unknownLines: string[] = [];
   const perHost = new Map<string, { usable: number; unusable: number; unknown: number }>();
   const hostCount = (name: string) => { const known = perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0 }; perHost.set(name, known); return known; };
@@ -427,10 +432,20 @@ export function measure(input: Inputs): PrecheckOutput {
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
-      const miss = unusable(view.usable);
+      const found = unusable(view.usable);
+      const own = view.name === (line.host ?? UNNAMED_HOST);
+      const slow = found.includes("cpu")
+        ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: input.daemonFaults ?? [] }) : [];
+      // A CPU miss the harness stayed fast through is real job work on a busy box, a detail line and no fault (harness-slow.ts).
+      const miss = found.filter(kind => kind !== "cpu" || slow.length > 0);
+      if (found.includes("cpu") && !slow.length) {
+        busyMin++;
+        const runnable = isLinuxReading(view.usable) ? ` at ${view.usable.runnablePerCore} runnable a core` : "";
+        busy.push(`${clock(from)} ${view.name} busy${runnable}${rigWords(view, faultName).replace(/^; /, ", ")}`);
+      }
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      why.push(`${view.name} unusable (${miss.join(", ")}${rigWords(view, faultName)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${rigWords(view, faultName)})`);
       const read = side(line, view);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) rigged = true;
@@ -496,6 +511,7 @@ export function measure(input: Inputs): PrecheckOutput {
     fed_min_30: fed,
     harness_unusable_min_30: harness,
     harness_rig_unusable_min_30: rigMin,
+    cpu_busy_min_30: busyMin,
     other_unusable_min_30: other,
     unattributed_unusable_min_30: unattributed,
     held_min_30: held,
@@ -519,6 +535,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
+  if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
   const asleep = latest ? hostViews(latest).filter(view => view.sleeping && view.sleeping.gb > 0) : [];
   if (latest && asleep.length) {
     flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes. At ${clock(Date.parse(latest.at))}: ` +
@@ -775,12 +792,14 @@ async function main(): Promise<void> {
   const named = await jobSessions(join(dataDir, "..", "session-artifacts"), live);
   const serviceLines = await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES);
   const box = watch.at(-1)?.host ?? hostname();
+  const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
   const daemonFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box))]
     .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE);
   const result = measure({
     now, watch, day,
     log: readServiceLog(serviceLines),
     daemonFaults,
+    workerMisses: workerPolls,
     listed: listedSessions(await catalogCopies(dataDir), daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : [])),
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),

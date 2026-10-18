@@ -54,8 +54,11 @@ const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading |
     ...other ? {} : { error: "relay mac answered 502 to /v1/watch" } }] });
 
 test("each box is judged on its own reading, a Linux box by memory stall and runnable tasks a core, and a box with no reading is unknown", () => {
-  const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, minute === 3 ? linux(72, 0.6) : minute === 4 ? linux(0, 1.2) : linux(0, 0.58),
-    minute === 10 ? null : mac));
+  const lines = Array.from({ length: 30 }, (_, minute) => {
+    const line = boxLine(minute, minute === 3 ? linux(72, 0.6) : minute === 4 ? linux(0, 1.2) : linux(0, 0.58), minute === 10 ? null : mac);
+    // A CPU minute is dirty only when the harness was slow in it (src/harness-slow.ts).
+    return minute === 4 ? { ...line, chat: { readMs: 1800, read: "api/threads", loopMs: 40 } } : line;
+  });
   const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
   assert.equal(metrics.clean_min_30, 27);
   assert.equal(metrics.unknown_min_30, 1, "the minute the Mac's relay did not answer is neither clean nor dirty");
@@ -63,7 +66,7 @@ test("each box is judged on its own reading, a Linux box by memory stall and run
   assert.equal(metrics.unusable_min_30_us_metal02, 2);
   assert.equal(metrics.unknown_min_30_mac, 1);
   assert.equal(metrics.usable_min_30_mac, 29);
-  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /us-metal02 unusable \(pressure\).*us-metal02 unusable \(cpu\)/);
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /us-metal02 unusable \(pressure\).*us-metal02 unusable \(cpu: the chat answered api\/threads in 1\.8 s\)/);
   assert.match(flagged?.find(slice => slice.kind === "unknown_minutes")?.excerpt ?? "", /mac unread \(relay mac answered 502/);
 });
 
@@ -180,8 +183,9 @@ test("a Linux CPU minute goes to the side whose cgroups used the most cores, and
     "06:05:30": read(2.49, harness), "06:07:39": read(1.48, apps), "06:15:49": read(1.43) };
   const lines: WatchLine[] = Array.from({ length: 30 }, (_, minute) => {
     const stamp = new Date(RUN_0621 - 10_000 - (30 - minute) * 60_000 + 30_000).toISOString().slice(11, 19);
-    const box = Object.entries(dirty).find(([clock]) => clock.slice(0, 5) === stamp.slice(0, 5))?.[1] ?? read(0.7, harness);
-    return { ...boxLine(minute, box, mac), at: at(`${stamp}.000`) };
+    const box = Object.entries(dirty).find(([clock]) => clock.slice(0, 5) === stamp.slice(0, 5))?.[1];
+    // Each of those minutes had the harness slow too, so it stays dirty under the CPU rule (src/harness-slow.ts).
+    return { ...boxLine(minute, box ?? read(0.7, harness), mac), at: at(`${stamp}.000`), ...box ? { chat: { readMs: 0, loopMs: 1500 } } : {} };
   });
   const { metrics, flagged } = measure({ now: RUN_0621, watch: lines, log: { holds: [] }, chats: [] });
   assert.equal(metrics.unusable_min_30_us_metal02, 10);
@@ -189,7 +193,7 @@ test("a Linux CPU minute goes to the side whose cgroups used the most cores, and
   assert.equal(metrics.other_unusable_min_30, 1, "06:07Z, when the apps' cgroups used the most cores");
   assert.equal(metrics.unattributed_unusable_min_30, 1, "06:15Z, a line from before cpuCores");
   assert.equal(metrics.clean_min_30, 20, "a CPU overload with no cause read is still a dirty minute");
-  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /06:15Z us-metal02 unusable \(cpu\)/);
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /06:15Z us-metal02 unusable \(cpu: the chat's event loop stalled 1\.5 s\)/);
   assert.match(flagged?.find(slice => slice.kind === "minutes")?.excerpt ?? "", /8 unusable minutes on the harness side, 1 on the app or owner side, 1 with no cause read/);
 });
 

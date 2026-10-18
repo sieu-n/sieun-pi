@@ -44,6 +44,7 @@ import { nextBriefView } from "./prompt-view.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
+import { timeRead } from "./chat-latency.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -550,6 +551,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     feeds.accept(req, socket, head, parseUrlSubscriptions(url.searchParams.get("subs")));
   }
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    timeRead(req, res, base);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
