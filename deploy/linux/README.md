@@ -9,7 +9,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `prime-agent-daemon.service` | The Prime Agent daemon on `/tmp/prime-agent-<uid>/daemon.sock`, with the agent workers under it, started and updated through `prime-agent-daemon-ctl`. |
 | `sieun-pi-chat.service` | The chat from `~/.local/share/sieun-pi-chat/current`, the release folder that `scripts/release-chat.mjs` builds. |
 | `prime-agent-watchdog.timer` | One cycle of `~/.prime/agent/watchdog/cron_cycle.py` every 10 minutes, as `com.sieun.prime-agent-watchdog` does on the Mac. |
-| `auto-sns-dev-pm2.service` | The auto-sns-agent pm2 daemon (`PM2_HOME=.cache/pm2-dev`) with every dev server in `scripts/dev/dev-apps.cjs`, llm-wiki included, as launchd `mac-pm2-boot` and `mac-pm2-keep` keep it on the Mac. |
+| `auto-sns-dev-pm2.service` | The auto-sns-agent pm2 daemon (`PM2_HOME=.cache/pm2-dev`) with every dev server in `scripts/dev/dev-apps.cjs`, llm-wiki included, as launchd `mac-pm2-boot` and `mac-pm2-keep` keep it on the Mac. Its `OOMPolicy=continue` lets pm2 restart only the app whose process the kernel OOM killer took, where the default policy stopped the unit and restarted all 8 apps on 10-18 at 05:55Z. |
 | `box-devserver-heal.service`, `box-pm2-keep.timer` | Box copies of the Mac's `mac-devserver-heal` and `mac-pm2-keep` in `~/.local/share/box-devserver-heal`: restart a hung dev server, refill an empty daemon, and `pm2 save` when the app list changes. |
 | `wiki-box-commit.timer` | `wiki-box-commit.mjs` every 5 minutes on the wiki host, which pushes the wiki pages written there to a `refs/wiki-box/<stamp>` object. |
 | `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |

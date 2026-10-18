@@ -1,0 +1,29 @@
+# auto-sns-agent dev servers on us-metal02: the repo pm2 daemon (PM2_HOME .cache/pm2-dev)
+# under systemd, the Linux side of the Mac's launchd mac-pm2-boot and mac-pm2-keep.
+# pm2 restarts a crashed app (ecosystem.config.cjs autorestart), systemd restarts the
+# daemon when it dies (a crash or a `pm2 kill`) and resurrects dump.pm2 at boot (linger).
+# pnpm dev, dev:status, dev:restart and dev:logs keep working, since they talk to this daemon.
+# After a pm2 start or delete, run `pm2 save` so a reboot restores the same list.
+# OOMPolicy=continue: when the kernel OOM killer kills one process here, pm2 restarts only the app
+# it belonged to. Under the default OOMPolicy=stop, systemd stopped the whole unit on 10-18 at 05:55Z,
+# so ExecStop's `pm2 kill` deleted all 8 apps and every dev server restarted.
+[Unit]
+Description=auto-sns-agent dev servers (pm2 .cache/pm2-dev): research-app 5173, search 5174, api-portal 5175, admin 5177, blog 5179, virev-demo 5180, convex-watcher
+After=network-online.target
+
+[Service]
+Type=forking
+Environment=PATH=%h/.nvm/versions/node/v26.8.1/bin:%h/.local/share/pnpm:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PM2_HOME=/home/sieun/Documents/Github/auto-sns-agent/.cache/pm2-dev
+WorkingDirectory=/home/sieun/Documents/Github/auto-sns-agent
+PIDFile=/home/sieun/Documents/Github/auto-sns-agent/.cache/pm2-dev/pm2.pid
+ExecStart=/home/sieun/.nvm/versions/node/v26.8.1/bin/node /home/sieun/Documents/Github/auto-sns-agent/node_modules/pm2/bin/pm2 resurrect
+ExecReload=/home/sieun/.nvm/versions/node/v26.8.1/bin/node /home/sieun/Documents/Github/auto-sns-agent/node_modules/pm2/bin/pm2 reload all
+ExecStop=/home/sieun/.nvm/versions/node/v26.8.1/bin/node /home/sieun/Documents/Github/auto-sns-agent/node_modules/pm2/bin/pm2 kill
+Restart=always
+OOMPolicy=continue
+RestartSec=2
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=default.target
