@@ -1,7 +1,7 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
-import type { CiRun, WakeWatch } from "./checkin-load.ts";
+import type { WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
@@ -147,21 +147,9 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
  * (queued turns). Absent: none.
  */
 export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>;
-  /** Every CI run the cache holds by id (`Train.all`), for a step whose wait names a run that is queued or running (`runMover`). Absent: none. */
-  runs?: ReadonlyMap<string, CiRun>;
   /** The live owners that carry each plan item (`stepCarriers`), for a step whose wait names another step (`stepCarrier`). Absent: none. */
   steps?: ReadonlyMap<string, readonly JobFact[]> }
 
-/**
- * A step whose wait names a CI run that the cache reads as queued or running, with an owner that has not failed or been cancelled, moves: the
- * run goes on by itself and its owner lands on its result. At 00:09Z on 10-18 frontend bro's p160 and p174 waited on queued runs 39080012885
- * and 39079924185 (attempt 2), and the Whole system duty counted both as stuck.
- */
-export function runMover(item: Pick<PlanItem, "waitFor">, owner: JobFact | undefined, runs: ReadonlyMap<string, CiRun> | undefined): string | undefined {
-  if (!runs?.size || !owner || owner.cancelled || owner.state === "failed") return undefined;
-  const id = [...firstClause(item.waitFor ?? "").matchAll(/\b(\d{9,})\b/g)].map(match => match[1]!).find(run => runs.get(run)?.running);
-  return id ? `its wait is on run ${id}, which CI still runs, and ${ownerLabel(owner)} lands on its result` : undefined;
-}
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
  * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names). Each of those
@@ -171,7 +159,9 @@ export function runMover(item: Pick<PlanItem, "waitFor">, owner: JobFact | undef
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>): string | undefined {
   const { item, owner, mine } = view;
-  const woke = wakeMover(item, movers.watches ?? new Map(), rows, self) ?? runMover(item, owner, movers.runs);
+  // A CI run moves the step only while a session sleeps on a board.wake for it: a queued run nobody watches lands on nobody. At 05:19Z on 10-18
+  // d7 read 9 stuck steps that waited on runs, lands and threads no live job watched (VP of CI's p209 and p214 among them).
+  const woke = wakeMover(item, movers.watches ?? new Map(), rows, self);
   if (woke) return woke;
   const queued = movers.queued ?? new Map<string, unknown>();
   const slot = "waits for a working slot in pi-pool's queue";

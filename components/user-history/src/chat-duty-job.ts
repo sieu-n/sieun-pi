@@ -218,7 +218,9 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "probe, land or push has not finished green and landed stays open with its job, which is a live owner.",
       "Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with " +
         "`await rlm.create_session(brief, name=..., cwd=...)`, which registers the session as a job of the chat, and set the step's job to that " +
-        "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",
+        "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run. " +
+        "A step that waits on a CI run, a land or another thread has a live owner only while a job sleeps on a `board.wake` for that run or land, " +
+        "or chases that thread; a wait nobody watches stays stuck, so give it that owner, or check the run now and do the next step.",
       ...chatJobRules(),
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
       `${report ? `Otherwise ${report[0]!.toLowerCase()}${report.slice(1)}` : `Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops ` +

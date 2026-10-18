@@ -282,6 +282,17 @@ export interface FoldMove { item: PlanItem; home: PlanItem; why: string }
  * 3,000,000 advertisers) and p681 (TikTok Shop, 1,118 of 2,000 products a minute) only because their steps rode crawler ops train.
  */
 export const ownersGoal = (goal: Pick<PlanItem, "target" | "requirements">): boolean => goal.target !== undefined || (goal.requirements?.length ?? 0) > 0;
+/**
+ * A duty's board goal, or a goal with an open fix step of a duty metric (`duty`), holds that duty's work and stays open: on 10-18 the VP of CI
+ * check-in folded p75 "Monorepo and GitHub Actions are designed right", d3's boardGoal, with p239 to p242 open on d3's metrics, and d3's headline
+ * read 0 review problems with 7 open.
+ */
+export const dutysGoal = (goal: PlanItem, duties: readonly Pick<DutyRef, "boardGoal">[]): boolean => {
+  if (duties.some(duty => duty.boardGoal === goal.id)) return true;
+  let fix = false;
+  walkItems(goal.children, item => { if (item.duty !== undefined && OPEN.has(item.status)) fix = true; });
+  return fix;
+};
 export interface FoldGoal { goal: PlanItem; duty?: DutyRef; moves: FoldMove[]; left: PlanItem[] }
 export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], self: ReadonlySet<string>, duties: readonly DutyRef[]): FoldGoal[] {
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
@@ -299,7 +310,7 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
   // mac stays usable 23:35) worked on them.
   const fixing = (goal: PlanItem): boolean => goal.duty !== undefined && ownerOf(goal, facts)?.state === "working";
   for (const goal of goals) {
-    if (fixing(goal) || ownersGoal(goal)) continue;
+    if (fixing(goal) || ownersGoal(goal) || dutysGoal(goal, duties)) continue;
     const duty = byDuty.get(goal.id);
     if (!duty && homeGoals.has(goal.id)) continue;
     // A home is an open goal, never a step: on ops guy's board (10-16 01:08) p259 and p260 were to fold under p138 "Fix: the M1 Air's Docker
