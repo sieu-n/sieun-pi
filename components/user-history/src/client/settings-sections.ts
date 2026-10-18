@@ -15,8 +15,3 @@ export const SETTINGS_SECTIONS = [
 ] as const satisfies readonly { id: string; label: string; icon: IconName; description: string }[];
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
-export type SettingsSectionInfo = (typeof SETTINGS_SECTIONS)[number];
-
-export function settingsSection(id: SettingsSection): SettingsSectionInfo {
-  return SETTINGS_SECTIONS.find(entry => entry.id === id)!;
-}

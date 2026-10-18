@@ -120,7 +120,6 @@ export const api = {
       if (summary) onSummary(summary); else onUnreadable();
     }, onError);
   },
-  usageSummary: () => get<UsageSummary>("api/usage/summary"),
   usageSeries: (window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric) => get<UsageSeries>(`api/usage/series?window=${window}&bucket=${bucket}&group=${group}&metric=${metric}`, 30000),
   usageModels: (window: UsageWindow) => get<{ models: UsageModelRow[] }>(`api/usage/models?window=${window}`, 30000).then(body => body.models),
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),

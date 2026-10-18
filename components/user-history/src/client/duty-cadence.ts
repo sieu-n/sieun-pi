@@ -1,4 +1,4 @@
-import { type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyView, headlineMetric } from "../shared/chat-duties.ts";
+import { type DutyRunRecord, type DutySchedule, type DutyView, headlineMetric } from "../shared/chat-duties.ts";
 import { effectiveRun } from "../shared/duty-streak.ts";
 import { CHECK_IN_MIN_MINUTES } from "../shared/types.ts";
 
@@ -80,12 +80,6 @@ export function flaggedLabel(view: DutyView): string {
     return words ? `${count(found.size, words.noun)} ${words.words}` : `${found.size} ${kind.replace(/_/g, " ")}`;
   }));
 }
-
-/** The duty's metrics with its headline metric first. */
-export const metricsHeadlineFirst = (metrics: readonly DutyMetric[]): DutyMetric[] => {
-  const headline = headlineMetric(metrics);
-  return headline ? [headline, ...metrics.filter(metric => metric !== headline)] : [...metrics];
-};
 
 /** A metric's value with its unit, as the metric table shows it. */
 export const metricText = (number: number, unit = ""): string => `${Math.round(number * 10) / 10}${unit}`;

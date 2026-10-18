@@ -14,7 +14,6 @@ export interface TagSelection { label: string; coverage: (tag: Tag) => Coverage;
 
 /** Label writes go to the server; the sessions stream then carries the saved result to every tab. Priority and tag toggles also patch the local rows so keys feel instant. */
 export const labels = {
-  tagMap(): Map<string, Tag> { return new Map(store.tags.map(tag => [tag.id, tag])); },
   async setPriority(ids: readonly string[], priority: Priority): Promise<void> {
     if (!ids.length) return;
     patchRows(ids, row => ({ ...row, priority }));

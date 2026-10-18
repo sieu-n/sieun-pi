@@ -53,10 +53,10 @@ class Ui {
   sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
   bookmarksOpen = $state(false);
-  /** The Heartbeats section at the top of the sidebar; open unless folded, and the choice holds across reloads. */
   /** Optional Agents view columns the person turned on or off; Status and Title always show. */
   agentsColumns = $state<Record<string, boolean>>(storedColumns());
   setAgentsColumn(key: string, on: boolean): void { this.agentsColumns = { ...this.agentsColumns, [key]: on }; store("chat.agentsColumns", JSON.stringify(this.agentsColumns)); }
+  /** The Heartbeats section at the top of the sidebar; open unless folded, and the choice holds across reloads. */
   heartbeatsOpen = $state(stored("chat.heartbeatsOpen") !== "0");
   setHeartbeatsOpen(open: boolean): void { this.heartbeatsOpen = open; store("chat.heartbeatsOpen", open ? "1" : "0"); }
   /** Threads an agent started through `rlm.create_session` are out of the sidebar unless this is on; the choice holds across reloads. */
@@ -70,7 +70,7 @@ class Ui {
     this.boardWidth = clampBoardWidth(width);
     if (persist) store("chat.boardWidth", String(this.boardWidth));
   }
-  /** The Plan and Notes cards of the board, folded or open; the choice holds across chats and reloads. For you decides for itself. */
+  /** The Duties, Agents and Plan cards of the board, folded or open; the choice holds across chats and reloads. For you decides for itself. */
   boardCards = $state.raw<Record<string, boolean>>(storedColumns("chat.boardCards"));
   setBoardCard(card: string, open: boolean): void { this.boardCards = { ...this.boardCards, [card]: open }; store("chat.boardCards", JSON.stringify(this.boardCards)); }
   /** Plan steps and notes the owner unfolded, keyed `<chat id>/<item id>`; everything with children starts folded. */

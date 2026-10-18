@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ICON_PATHS } from "../src/client/icons.ts";
-import { SETTINGS_SECTIONS, settingsSection } from "../src/client/settings-sections.ts";
+import { SETTINGS_SECTIONS } from "../src/client/settings-sections.ts";
 
 const CLIENT = join(import.meta.dirname, "../src/client");
 
@@ -16,7 +16,6 @@ test("every Settings tab has a label, a description and a drawn icon", () => {
     assert.ok(entry.label.trim(), entry.id);
     assert.ok(entry.description.trim().endsWith("."), entry.id);
     assert.ok(Object.hasOwn(ICON_PATHS, entry.icon), `${entry.id} icon ${entry.icon}`);
-    assert.equal(settingsSection(entry.id), entry);
   }
   assert.equal(new Set(SETTINGS_SECTIONS.map(entry => entry.icon)).size, SETTINGS_SECTIONS.length, "each tab has its own icon");
 });

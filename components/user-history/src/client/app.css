@@ -221,10 +221,6 @@ button.link-chip:hover .chip-label, button.link-chip:focus-visible .chip-label {
 .mono { font-family: var(--mono); }
 .caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -0.15em; background: var(--accent); animation: blink 1s steps(2, start) infinite; }
 @keyframes blink { to { visibility: hidden; } }
-.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
-.status-dot.running { background: var(--accent); }
-.status-dot.done { background: var(--success); }
-.status-dot.error { background: var(--danger); }
 /* Mode switch: one quiet recessed track, ocean marks the choice, no inner plate. */
 .segmented { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-sunken); }
 .segmented > button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: var(--radius-small); font-size: 12px; font-weight: 500; color: var(--text-muted); white-space: nowrap; transition: background-color 0.15s, color 0.15s; }

@@ -11,7 +11,7 @@ import { dutyJobBrief } from "../src/chat-duty-job.ts";
 import { ESCALATE_MS, type FiringAlert, resolveOps, stepNote, stepTitle } from "../src/alert-bridge.ts";
 import { endState, endStateKpi, endStateLine } from "../src/checkin-end-state.ts";
 import { type JobFact, LIVE_GAP_MS, liveWindowMs, stepView } from "../src/checkin-steps.ts";
-import { headlineLabel, metricsHeadlineFirst } from "../src/client/duty-cadence.ts";
+import { headlineLabel } from "../src/client/duty-cadence.ts";
 import { CHECK_IN_DUTY, type DutyMetric, type DutyView, judge } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
@@ -77,7 +77,6 @@ test("headline metric: the check-in is judged on goal_gaps first and stuck_steps
     { key: "end_state_pct", label: "Open steps moving, in For you or parked, all chats", op: ">=", target: 100, unit: "%", headline: true }];
   assert.equal(judge(metrics, { metrics: { corrections: 3, end_state_pct: 43 } }).summary, "end_state_pct 43% (target at least 100%), corrections 3 (target at most 1)");
   assert.equal(judge(metrics, { metrics: { corrections: 3, end_state_pct: 100 } }).summary, "end_state_pct 100% (on target), corrections 3 (target at most 1)");
-  assert.deepEqual(metricsHeadlineFirst(metrics).map(metric => metric.key), ["end_state_pct", "corrections"]);
   const run = { at: NOW, verdict: "missed", summary: "", metrics: { end_state_pct: { value: 43, target: 100, op: ">=", met: false } } };
   assert.equal(headlineLabel({ duty: { metrics }, runs: [run] } as unknown as DutyView), "Open steps moving, in For you or parked, all chats 43%, target at least 100%, off target");
   const brief = dutyJobBrief({ duty: { name: "Chat system", ownerWords: "w", goal: "g", metrics }, chat: { id: "c1", name: "dev VP", board: "/data/boards/c1.json" },
