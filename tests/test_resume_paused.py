@@ -743,6 +743,16 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(sent, [(full, "continue")])
         self.assertIsInstance(resume_paused.BOX, resume_paused.LocalBox)
 
+    def test_a_prime_update_notice_that_ends_the_file_counts_as_a_restart_archive(self):
+        # run-6's job, 10-18: its last turn failed on the token hook at 06:45:54Z, Prime's update stopped it with this notice at 06:46:02Z,
+        # and the daemon logged its restart window from 06:46:44Z, so the window alone did not cover the stop.
+        error = {"type": "message", "timestamp": "2026-10-18T06:45:54.754Z", "message": {"role": "assistant", "stopReason": "error", "content": [],
+                                                                                       "errorMessage": self.HOOK_ERROR}}
+        notice = {"type": "custom_message", "timestamp": "2026-10-18T06:46:02.955Z", "customType": "prime-agent.update_restart", "content": "updated"}
+        window = [(resume_paused.parse_ts("2026-10-18T06:46:44.186Z"), resume_paused.parse_ts("2026-10-18T06:47:22.452Z"))]
+        self.assertTrue(resume_paused.archived_by_restart([error, notice], window))
+        self.assertFalse(resume_paused.archived_by_restart([notice, error], window))
+
     def test_another_boxs_failed_worker_is_left_to_that_box(self):
         # After the chats moved to us-metal02 at 05:30Z on 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced.
         box = self.fake_relay({self.MAC_JOB: self.mac_job()})

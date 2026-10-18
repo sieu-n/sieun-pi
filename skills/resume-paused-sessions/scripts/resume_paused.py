@@ -708,7 +708,11 @@ def in_restart(stamp, restarts):
 
 
 def archived_by_restart(entries, restarts):
-    """The session's last archive came from a daemon restart, not from a person or a parent."""
+    """The session's last archive came from a daemon restart, not from a person or a parent. A Prime update marks the sessions it stops with
+    a prime-agent.update_restart notice and logs its restart window up to 40 s later (run-6's job: notice at 06:46:02Z, window 06:46:44 to
+    06:47:22Z on 10-18), so a notice that ends the file counts too."""
+    if entries and entries[-1].get("type") == "custom_message" and entries[-1].get("customType") == "prime-agent.update_restart":
+        return True
     archives = [e for e in entries if e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived"]
     return bool(archives) and in_restart(parse_ts(archives[-1].get("timestamp")), restarts)
 
@@ -1129,16 +1133,20 @@ def resume(sessions, args, now):
             "since_minutes": args.since_minutes, "checked_at": now.isoformat()}
 
 
-def resume_box(box, args):
+def resume_box(box, args, seen=None):
     """One box's pass: its sessions, the saved ones the owners and the idle unload's record name, and their resume. Another box's runs carry
-    its name in `host`."""
+    its name in `host`. `seen` holds the sessions a box before this one listed or read from its disk: another box looks only for the rest, so
+    it skips its daemon's full list (18 s for the Mac's 3069 rows on 10-18, against 3 s for the plain list) when every named session is
+    local. With that full list each pass took 56 s, and the chat service's 90 s limit killed the 06:56Z send pass that named run-6's job."""
     global BOX
     BOX = box
+    seen = set() if seen is None else seen
     try:
         sessions = list_sessions()
-        read = OWNERS | set(UNLOADED) | set(filter(None, args.only.split(",")))
+        read = (OWNERS | set(UNLOADED) | set(filter(None, args.only.split(",")))) - seen
         if read:
             sessions = with_saved_owners(sessions, saved_rows(read - {s.get("sessionId") or s["id"] for s in sessions}), read)
+        seen.update(s.get("sessionId") or s["id"] for s in sessions)
         part = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
     finally:
         BOX = LocalBox()
@@ -1168,9 +1176,10 @@ def main():
     UNLOADED.update({sid: stamp for sid, stamp in load_unloaded(UNLOADED_FILE).items() if stamp >= since})
 
     report = None
+    seen = set()
     for box in [LocalBox(), *([] if args.this_box else other_boxes())]:
         try:
-            part = resume_box(box, args)
+            part = resume_box(box, args, seen)
         except (CommandError, OSError, ValueError) as error:
             if not box.remote:
                 raise SystemExit(str(error))
@@ -1199,4 +1208,5 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
