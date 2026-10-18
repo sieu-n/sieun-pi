@@ -229,15 +229,6 @@ class FallbackKeepsSiblingProviders(unittest.TestCase):
         self.assertEqual(after["anthropic"]["access"], "new")
         self.assertEqual(after["openai-codex"]["access"], "c")
 
-    def test_legacy_bare_shape_is_wrapped(self):
-        fb_path = os.path.join(os.environ["PI_POOL_DIR"], "fallback-legacy.json")
-        base.save_json(fb_path, {"type": "oauth", "access": "old", "refresh": "r", "expires": 0})
-        fresh = {"accessToken": "new", "refreshToken": "r2", "expiresAt": 9e12}
-        with unittest.mock.patch.object(base, "FALLBACK", fb_path), \
-             unittest.mock.patch.object(base, "refresh_token", lambda creds: fresh):
-            self.assertEqual(vending.fallback_token("anthropic", CFG), "new")
-        self.assertEqual(base.load_json(fb_path)["anthropic"]["access"], "new")
-
     def test_codex_fallback_refreshes_and_keeps_its_account_id(self):
         fb_path = os.path.join(os.environ["PI_POOL_DIR"], "fallback-codex.json")
         base.save_json(fb_path, {"openai-codex": {"type": "oauth", "access": "old", "refresh": "cr",

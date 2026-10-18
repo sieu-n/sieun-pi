@@ -316,9 +316,7 @@ def agent_dir():
 
 
 def load_fallback():
-    fb = base.load_json(base.FALLBACK) or {}
-    # The first fallback.json held one bare anthropic credential.
-    return {"anthropic": fb} if fb and "type" in fb else fb
+    return base.load_json(base.FALLBACK) or {}
 
 
 def fallback_token(provider, cfg):
