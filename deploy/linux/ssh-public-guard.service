@@ -1,0 +1,14 @@
+[Unit]
+Description=nftables guard that closes ssh on the public interface of us-metal02
+DefaultDependencies=no
+Before=network-pre.target ssh.socket
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables-ssh-guard.nft
+ExecStop=/usr/sbin/nft delete table inet ssh_public_guard
+
+[Install]
+WantedBy=multi-user.target

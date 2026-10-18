@@ -31,4 +31,13 @@ command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh |
 systemctl enable --now tailscaled
 tailscale set --operator="$DEV_USER" 2>/dev/null || true
 tailscale status >/dev/null 2>&1 || echo "run: tailscale up --ssh --hostname us-metal02-dev --operator=$DEV_USER"
+# Port 22 answers only on lo, tailscale0 and wg-prod. The guard owns one nft table; nftables.service stays off because
+# /etc/nftables.conf starts with flush ruleset, which would wipe the Docker, ci and wg-prod tables.
+here=$(cd "$(dirname "$0")" && pwd)
+install -m 644 "$here/ssh-public-guard.nft" /etc/nftables-ssh-guard.nft
+install -m 644 "$here/ssh-public-guard.service" /etc/systemd/system/ssh-public-guard.service
+systemctl daemon-reload
+systemctl enable ssh-public-guard
+systemctl restart ssh-public-guard
+
 echo "dev: no slice limits; dev.slice holds docker, user-$(id -u "$DEV_USER").slice holds the harness and agents"
