@@ -2,6 +2,7 @@
 """Install pi-pool from a commit into its own folder, so Prime never runs checkout files.
 
     /usr/bin/python3 -B components/pi-pool/install.py [install] [--ref <commit>] [--borrow <holder>]
+    (on macOS it re-runs itself under /opt/homebrew/bin/python3)
     /usr/bin/python3 -B components/pi-pool/install.py rollback
     /usr/bin/python3 -B components/pi-pool/install.py status
 
@@ -351,5 +352,22 @@ def main():
     return 0
 
 
+# On macOS the installer reads the checkout under ~/Documents, which launchd refuses the Command Line Tools
+# Python (/usr/bin/python3): on 10-18 a prime-sync reinstall run that way stopped the Mac's sync from 08:28Z.
+# It re-runs itself under Homebrew Python. The pool's tests and token hooks still run /usr/bin/python3, the
+# Python the hooks name, and they read only the release under ~/.local/share.
+MAC_PYTHON = "/opt/homebrew/bin/python3"
+
+
+def mac_python(system, executable, exists=os.path.exists):
+    """The Python the installer should run under, or None to stay on this one."""
+    if system != "Darwin" or not exists(MAC_PYTHON) or os.path.realpath(executable).startswith("/opt/homebrew/"):
+        return None
+    return MAC_PYTHON
+
+
 if __name__ == "__main__":
+    python = mac_python(os.uname().sysname, sys.executable)
+    if python:
+        os.execv(python, [python, "-B", os.path.abspath(__file__), *sys.argv[1:]])
     sys.exit(main())

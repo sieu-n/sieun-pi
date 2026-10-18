@@ -45,6 +45,10 @@ session from 17:45 to 17:59, because the links pointed at source.
 /usr/bin/python3 -B components/pi-pool/install.py status
 ```
 
+On macOS the installer re-runs itself under `/opt/homebrew/bin/python3`, because launchd refuses the
+Command Line Tools Python access to `~/Documents`, where the Mac checkout lives (prime-sync, 10-18 08:28Z).
+The tests and the token hooks still run `/usr/bin/python3`, and they read only the release.
+
 `install` takes these steps.
 
 1. `git archive` exports `components/pi-pool` at the commit into a staging folder.

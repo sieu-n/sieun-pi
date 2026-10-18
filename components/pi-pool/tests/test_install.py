@@ -199,5 +199,24 @@ class Install(unittest.TestCase):
         self.assertEqual((self.home / ".local/bin/pi-pool").read_text(), "someone else's\n")
 
 
+class MacPython(unittest.TestCase):
+    """10-18: launchd refuses the Command Line Tools Python access to ~/Documents, where the Mac checkout lives."""
+
+    def load(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pool_installer", INSTALLER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_macos_reruns_under_homebrew_python(self):
+        installer = self.load()
+        yes = lambda path: True
+        self.assertEqual(installer.mac_python("Darwin", "/usr/bin/python3", yes), "/opt/homebrew/bin/python3")
+        self.assertIsNone(installer.mac_python("Darwin", "/opt/homebrew/bin/python3", yes))
+        self.assertIsNone(installer.mac_python("Darwin", "/usr/bin/python3", lambda path: False))
+        self.assertIsNone(installer.mac_python("Linux", "/usr/bin/python3", yes))
+
+
 if __name__ == "__main__":
     unittest.main()
