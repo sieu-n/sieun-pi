@@ -210,6 +210,12 @@ function emptyInfo(summary: SessionSummary): ThreadInfo {
 /** A pinned thread whose resume failed (a daemon timeout, a refused attach) is tried again after 15 s, doubling per failure up to 5 min. */
 const PIN_RETRY_MS = 15000;
 const PIN_RETRY_MAX_MS = 5 * 60_000;
+/**
+ * How long another box's attach snapshot may take to arrive. The snapshot is the whole context since the last compaction, images included, and
+ * the SDK's 30 s (DAEMON_SNAPSHOT_TIMEOUT_MS) fit only this box's socket: on 10-18 frontend bro's 9.9 MB came from the Mac at 0.26 to 1.4 MB/s
+ * as the link was busy or not, and from 07:38Z to 08:01Z its attach timed out 17 times, each pin retry pulling the same bytes again.
+ */
+const REMOTE_SNAPSHOT_MS = 5 * 60_000;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
@@ -501,7 +507,8 @@ export class ThreadHub {
     try {
       await client.connect(3000);
       await client.waitForHello(3000);
-      return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true });
+      return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true,
+        ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
     } catch (error) { client.close(); throw error; }
   }
 
