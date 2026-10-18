@@ -53,7 +53,7 @@ test("a job's end stops the rig processes in its /tmp trees and deletes them, an
   const killed: [number, string][] = [];
   let removed: readonly string[] = [];
   const source: LeftoverSource = {
-    strays: async () => [], started: async pid => pid, kill: (pid, signal) => { killed.push([pid, signal]); }, closeTabs: async () => 0,
+    strays: async () => [], stopServices: async () => [], started: async pid => pid, kill: (pid, signal) => { killed.push([pid, signal]); }, closeTabs: async () => 0,
     later: () => {}, removeCopies: async () => [],
     tmpTrees: async () => [a, b, c, d],
     inside: async () => [

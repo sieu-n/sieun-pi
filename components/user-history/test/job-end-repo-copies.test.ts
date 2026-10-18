@@ -59,7 +59,7 @@ test("a job's end deletes the untracked copies in the session folders it opened 
   const dir = mkdtempSync(join(tmpdir(), "job-tree-"));
   put(dir, "sub-1/01a14d68-e374-7628-af49-123296f33292.jsonl", opened);
   const source: LeftoverSource = {
-    strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {},
+    strays: async () => [], stopServices: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {},
     removeCopies: transcripts => removeRepoCopies(transcripts, content, async (_root, path) => path.endsWith("/kept")),
     tmpTrees: async () => [], inside: async () => [], removeTmp: async () => [], artifactCopies: async () => [], kernelStates: async () => [],
   };

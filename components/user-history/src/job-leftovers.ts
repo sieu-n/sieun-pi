@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
+import { stopOrphanServices } from "./orphan-services.ts";
 
 /**
  * What a job leaves behind once it is gone, and the stop of it. On 10-15 at 00:45Z a deleted job's nohup'd runner.py went on to start a 30 GB
@@ -14,7 +15,8 @@ import type { RawProcess } from "./mac-usable-watch.ts";
  * kernel and no Prime process (worker-footprint.py `strays`), and every Aside tab those sessions opened (`aside-browser-tabs.json` in their
  * session folders). Shared services (PM2, Aside, cua-driver) and Prime's own processes are never named, so ops guy's pm2 dev servers stay.
  * It also deletes the repo copies a job left in its wiki session folders and the /tmp and ~/scratch trees it made, after stopping the rig processes in them,
- * and the kernel-state.dill files and repo copies its sessions left in session-artifacts.
+ * and the kernel-state.dill files and repo copies its sessions left in session-artifacts, and stops the scopes of the services its sessions
+ * handed off before their kernels were freed.
  */
 
 export const ARTIFACTS = join(homedir(), ".prime", "agent", "session-artifacts");
@@ -24,7 +26,8 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; tmp: readonly string[]; artifacts: readonly string[] }
+/** `units` are the scopes of services the sessions handed off before their kernels were freed (`orphan-services.ts`), stopped with their records removed. */
+export interface Leftovers { stopped: readonly RawProcess[]; units: readonly string[]; tabs: number; copies: readonly string[]; tmp: readonly string[]; artifacts: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -48,6 +51,8 @@ export interface LeftoverSource {
   artifactCopies: (transcripts: readonly string[], dirs: readonly string[]) => Promise<readonly string[]>;
   /** The kernel-state.dill files of the sessions of these transcripts (`kernelStates`). */
   kernelStates: (transcripts: readonly string[]) => Promise<readonly string[]>;
+  /** Stops the scopes of the services these sessions handed off and removes their records (`stopOrphanServices`); returns the units. */
+  stopServices: (sessions: readonly string[]) => Promise<readonly string[]>;
 }
 
 /** The session ids, transcripts, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
@@ -355,6 +360,7 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
   const trees = await Promise.all((typeof dirs === "string" ? [dirs] : dirs).map(sessionTree));
   const sessions = [...new Set([...(session ? [session] : []), ...trees.flatMap(tree => tree.sessions)])];
+  const units = sessions.length ? await source.stopServices(sessions).catch(() => []) : [];
   const stopped = sessions.length ? await stop(source, await source.strays(sessions)) : [];
   if (session) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stop(source, found)).catch(() => []); });
   const ids = trees.flatMap(tree => tree.tabs);
@@ -367,7 +373,7 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const tmp = await endTmp(source, transcripts, typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ stopped: [], removed: [] }));
   const artifacts = await endArtifacts(source, transcripts, typeof dirs === "string" ? [dirs] : dirs).catch(() => []);
-  return { stopped: [...stopped, ...tmp.stopped], tabs: Math.max(tabs, 0), copies, tmp: tmp.removed, artifacts };
+  return { stopped: [...stopped, ...tmp.stopped], units, tabs: Math.max(tabs, 0), copies, tmp: tmp.removed, artifacts };
 }
 
 /** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
@@ -447,4 +453,5 @@ export const leftoverSource: LeftoverSource = {
     return fresh.length ? artifactCopies(fresh, dirs) : Promise.resolve([]);
   },
   kernelStates: transcripts => kernelStates(transcripts),
+  stopServices: sessions => stopOrphanServices(sessions),
 };
