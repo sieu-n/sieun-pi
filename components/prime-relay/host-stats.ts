@@ -299,9 +299,30 @@ const loadSchedstat = (): { at: number; times: Map<number, number> } | null => {
   } catch { return null; }
 };
 let lastSched = process.platform === "linux" ? loadSchedstat() : null;
+/** Where the next linuxUsable window starts: the last reading's time and per-CPU nanoseconds, null before the module could read schedstat. */
+export type SchedstatMark = { at: number; times: Record<string, number> };
+export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times) };
 /**
- * The box's LinuxUsable now. The first call's window starts when this module loaded, so the watch line a chat restart writes carries a
- * reading. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be read.
+ * Starts the next linuxUsable window at `mark`, the last reading of the process before a restart, so the first line after it averages over the
+ * same span as any other line. False, and the window stays at the module's load, when the mark is malformed, not older than this module's
+ * baseline, or a counter went back since it (a reboot).
+ */
+export function seedSchedstat(mark: unknown): boolean {
+  const { at, times } = (mark ?? {}) as { at?: unknown; times?: unknown };
+  if (!lastSched || typeof at !== "number" || !(at < lastSched.at) || !times || typeof times !== "object") return false;
+  const seeded = new Map<number, number>();
+  for (const [cpu, ns] of Object.entries(times)) {
+    const now = lastSched.times.get(Number(cpu));
+    if (typeof ns !== "number" || now === undefined || ns > now) return false;
+    seeded.set(Number(cpu), ns);
+  }
+  if (seeded.size !== lastSched.times.size) return false;
+  lastSched = { at, times: seeded };
+  return true;
+}
+/**
+ * The box's LinuxUsable now. The first call's window starts at the mark seedSchedstat took, else when this module loaded, so the watch line
+ * a chat restart writes carries a reading. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be read.
  */
 export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null> {
   const [memory, cpu, vmstat, schedstat, status] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat", "/proc/schedstat", "/proc/self/status"]

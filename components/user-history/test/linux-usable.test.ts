@@ -3,8 +3,11 @@
 import assert from "node:assert/strict";
 import { availableParallelism } from "node:os";
 import { test } from "node:test";
-import { linuxUsable, parseCpusAllowed, parseSchedstat, runnablePerCore } from "../../prime-relay/host-stats.ts";
-import { parseLinuxReading, parseUsableRaw, unusable } from "../src/mac-usable-watch.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { linuxUsable, parseCpusAllowed, parseSchedstat, runnablePerCore, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
+import { parseLinuxReading, parseUsableRaw, startMacUsableWatch, type Footprints, type WatchSource, unusable, watchFile } from "../src/mac-usable-watch.ts";
 
 // The harness's CPU set on us-metal02 from /proc/<pid>/status, the same for prime-agent-daemon, sieun-pi-chat, pi-pool-serve and prime-relay.
 const METAL_CPUS = "9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,49,51,53,55,57,59,61,63,65,67,69,71,73,75,77,79";
@@ -78,4 +81,41 @@ test("on a Linux box the first reading after a restart counts from the module's 
   const next = await linuxUsable(Date.now());
   assert.equal(next?.allowedCpus, availableParallelism());
   assert.ok(next && next.runnablePerCore > 0);
+});
+
+test("a restart's first window starts at the last process's reading, unless that reading is newer, ahead of the counters or malformed", { skip: process.platform !== "linux" }, async () => {
+  const mark = schedstatMark()!;
+  const ahead = { at: mark.at - 1_000, times: Object.fromEntries(Object.entries(mark.times).map(([cpu, ns]) => [cpu, ns + 1e12])) };
+  const missing = { at: mark.at - 1_000, times: Object.fromEntries(Object.entries(mark.times).slice(1)) };
+  for (const bad of [null, { at: "x", times: mark.times }, { at: mark.at + 1, times: mark.times }, ahead, missing]) assert.equal(seedSchedstat(bad), false, JSON.stringify(bad)?.slice(0, 60));
+  assert.equal(seedSchedstat({ at: mark.at - 60_000, times: mark.times }), true);
+  assert.equal(schedstatMark()!.at, mark.at - 60_000);
+  const reading = await linuxUsable(Date.now());
+  assert.ok(reading && reading.runnablePerCore >= 0);
+});
+
+function watchSource(dataDir: string, now: () => number): WatchSource {
+  return { dataDir, now, rows: () => [{ sessionId: "s1", lifecycle: "live", activeSessionId: "a1", workerPid: 1, activity: "idle" }], chats: async () => new Set<string>(),
+    title: () => null, queue: async () => { throw new Error("no queue"); }, log: line => { throw new Error(line); },
+    footprints: async () => ({ workers: {} }) as unknown as Footprints, feed: async () => ({ kind: "linux", memSomeAvg10: 0, memFullAvg10: 0, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore: 1.48, allowedCpus: 32 }) };
+}
+const lines = (dataDir: string, at: number): string[] => { try { return readFileSync(watchFile(dataDir, at), "utf8").trim().split("\n").filter(Boolean); } catch { return []; } };
+
+// 06:15:49Z on 10-18 read 1.43 from the service's boot alone, 19 s after the old process's 06:15:30Z line, and as the minute's last line it set it.
+test("a restart in a minute the last process already wrote writes no start line; a restart in an unwritten minute fills it", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "usable-watch-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  mkdirSync(join(dataDir, "mac-usable"), { recursive: true });
+  const at = Date.parse("2026-10-18T06:15:49Z");
+  writeFileSync(join(dataDir, "mac-usable", "last-sample.json"), JSON.stringify({ at: Date.parse("2026-10-18T06:15:30Z"), sched: null }));
+  const written = startMacUsableWatch(watchSource(dataDir, () => at));
+  await new Promise(done => setTimeout(done, 200));
+  written();
+  assert.deepEqual(lines(dataDir, at), []);
+  const later = Date.parse("2026-10-18T06:16:05Z");
+  const filled = startMacUsableWatch(watchSource(dataDir, () => later));
+  await new Promise(done => setTimeout(done, 200));
+  filled();
+  assert.equal(lines(dataDir, later).length, 1);
+  assert.equal(JSON.parse(readFileSync(join(dataDir, "mac-usable", "last-sample.json"), "utf8")).at, later);
 });

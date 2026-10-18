@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable } from "../../prime-relay/host-stats.ts";
+import { FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -440,7 +441,21 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const file = watchFile(source.dataDir, now());
   await mkdir(join(source.dataDir, "mac-usable"), { recursive: true });
   await appendFile(file, JSON.stringify(measured) + "\n");
+  const mark: LastSample = { at, sched: source.feed ? null : schedstatMark() };
+  const draft = `${lastSampleFile(source.dataDir)}.${process.pid}`;
+  await writeFile(draft, JSON.stringify(mark) + "\n");
+  await rename(draft, lastSampleFile(source.dataDir));
   return measured;
+}
+
+/** The last line this box wrote: its time, and on Linux the schedstat reading its window ended at, so the next process carries both on. */
+interface LastSample { at: number; sched: SchedstatMark | null }
+const lastSampleFile = (dataDir: string): string => join(dataDir, "mac-usable", "last-sample.json");
+function readLastSample(dataDir: string): LastSample | null {
+  try {
+    const value = JSON.parse(readFileSync(lastSampleFile(dataDir), "utf8")) as Partial<LastSample>;
+    return typeof value.at === "number" ? { at: value.at, sched: value.sched ?? null } : null;
+  } catch { return null; }
 }
 
 /**
@@ -451,11 +466,23 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
  */
 export const nextSampleAt = (at: number): number => Math.floor((at - MINUTE / 2) / MINUTE) * MINUTE + MINUTE + MINUTE / 2;
 
-/** Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then at each `nextSampleAt` until the returned stop is called; a sample still running when the next tick comes skips that tick. */
+/**
+ * Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then at each `nextSampleAt` until the returned
+ * stop is called; a sample still running when the next tick comes skips that tick. The start samples only fill a minute the last process left
+ * without a line, and on Linux their window starts at that process's last reading (`seedSchedstat`). On 10-18 each restart line came about 10 s
+ * after the service started, and its window held only the service's boot: 06:07:39Z read 1.48, 06:11:15Z 1.17, 06:15:49Z 1.43 and 06:21:27Z
+ * 1.48 runnable a core against 0.6 to 0.9 for the lines around them, and 06:15:49Z was the last line of a minute whose 06:15:30Z line read 0.61.
+ */
 export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => void {
   const now = source.now ?? Date.now;
+  const last = readLastSample(source.dataDir);
+  if (last?.sched && !source.feed) seedSchedstat(last.sched);
   let running = false;
   let landed = false;
+  const startTick = () => {
+    if (last && Math.floor(last.at / MINUTE) === Math.floor(now() / MINUTE) && source.rows().length) landed = true;
+    else tick();
+  };
   const tick = () => {
     if (running) return;
     running = true;
@@ -469,8 +496,8 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
     timer.unref();
   };
   arm();
-  const first = setInterval(() => { if (landed) clearInterval(first); else tick(); }, firstMs);
+  const first = setInterval(() => { if (landed) clearInterval(first); else startTick(); }, firstMs);
   first.unref();
-  tick();
+  startTick();
   return () => { clearTimeout(timer); clearInterval(first); };
 }
