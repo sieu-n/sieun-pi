@@ -29,9 +29,19 @@ export const QUEUE_READ_MS = 10_000;
 /** The queue from the shared pool read (chat-pool.ts readPoolStatus), at most QUEUE_READ_MS old. */
 export const boardQueueRead = (): Promise<AgentQueueReading> => readAgentQueue(QUEUE_READ_MS);
 
-/** The queued sessions; a read that fails gives none, so everything reads as it did before the queue. */
+/**
+ * The queued sessions; a read that fails gives none, so everything reads as it did before the queue. After the first read it answers at once
+ * with the last places and reads again behind them: every catalog projection asks, and a read older than QUEUE_READ_MS waits out the pool's
+ * tick and a `pi-pool snapshot`, which took up to 3.6 s through api/agent-queue on us-metal02 on 10-18 at 16:41Z, so api/threads/<id>/agents,
+ * which waits for a projection, answered in 1 to 7 s.
+ */
 export function queueReader(read: () => Promise<AgentQueueReading> = boardQueueRead): () => Promise<ReadonlyMap<string, QueuePlace>> {
-  return () => read().then(queuedPlaces, () => new Map<string, QueuePlace>());
+  let last: ReadonlyMap<string, QueuePlace> | null = null;
+  let reading: Promise<ReadonlyMap<string, QueuePlace>> | null = null;
+  return () => {
+    reading ??= read().then(queuedPlaces, () => new Map<string, QueuePlace>()).then(places => { last = places; reading = null; return places; });
+    return last ? Promise.resolve(last) : reading;
+  };
 }
 
 /** A duty run's key in the turn queue before its job's session exists: one per chat and duty, as a duty runs one run at a time. */

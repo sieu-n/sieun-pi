@@ -57,12 +57,12 @@ test("concurrent readers share one snapshot call, and a second within the tick a
 test("asks after a read wait for the next tick and go out as one call with every thread they named", async () => {
   const pool = fakePool(), time = clock();
   const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
-  const first = status.current();
+  const first = status.current([{ session: "a", model: null }, { session: "b", model: "m" }]);
   await settle();
   pool.calls[0]!.answer();
   await first;
   time.advance(500);
-  const later = [status.current([{ session: "a", model: null }]), status.current([{ session: "b", model: "m" }]), status.current()];
+  const later = [status.current([{ session: "a", model: null }], { maxAgeMs: 0 }), status.current([{ session: "b", model: "m" }], { maxAgeMs: 0 }), status.current([], { maxAgeMs: 0 })];
   await settle();
   assert.equal(pool.calls.length, 1, "no call before the tick ends");
   time.advance(1500);
@@ -228,4 +228,24 @@ test("a snapshot that fails for another reason fails the read, so readers keep t
   const broken = async (args: readonly string[]): Promise<PoolPart> => { asked.push([...args]); return { code: 1, out: "", err: "Traceback: boom\n" }; };
   await assert.rejects(readSnapshot([], broken), /boom/);
   assert.equal(asked.length, 1);
+});
+
+test("an ask for a thread with no reading skips the tick, so api/accounts for a thread the chat had not shown answers after one read", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const first = status.current();
+  await settle();
+  pool.calls[0]!.answer();
+  await first;
+  time.advance(500);
+  const poll = status.current([], { maxAgeMs: 0 });
+  await settle();
+  assert.equal(pool.calls.length, 1, "a poll of read threads still waits out the tick");
+  const fresh = status.current([{ session: "new", model: "opus" }]);
+  await settle(); await settle();
+  assert.equal(pool.calls.length, 2, "the new thread's read starts without waiting for the clock");
+  assert.deepEqual(pool.calls[1]!.threads.map(threadKey), ["new|opus"]);
+  pool.calls[1]!.answer();
+  assert.ok((await fresh).threads.has("new|opus"));
+  await poll;
 });

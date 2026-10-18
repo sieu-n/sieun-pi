@@ -252,7 +252,8 @@ export const POOL_TICK_MS = 2_000;
 const KEPT_THREADS = 100;
 
 /**
- * The pool's status for every reader in this service: one `pi-pool snapshot` at a time, at most one per `tickMs`, that every ask made while
+ * The pool's status for every reader in this service: one `pi-pool snapshot` at a time, at most one per `tickMs` unless an ask names a thread
+ * with no reading, that every ask made while
  * it waits for its turn joins, with the threads those asks name. `current` answers from the last reading when it is at most `maxAgeMs` old
  * and names the asked threads; else it waits for the next read. A read that fails leaves the last good reading in place and answers with it;
  * only an ask that nothing was ever read for fails. `forget` drops every reading after a pool change this service made.
@@ -264,6 +265,8 @@ export class PoolStatusReader {
   private next: Promise<void> | null = null;
   private running: Promise<void> = Promise.resolve();
   private lastStart = -Infinity;
+  /** Ends the tick's wait early, for an ask that names a thread with no reading. */
+  private wake: (() => void) | null = null;
   private generation = 0;
   private error: unknown = null;
 
@@ -275,6 +278,7 @@ export class PoolStatusReader {
     const stale = threads.filter(thread => !((this.threads.get(threadKey(thread))?.at ?? -Infinity) >= since));
     if (this.base && this.base.at >= since && !stale.length) return Promise.resolve(this.status(threads));
     for (const thread of stale) this.pending.set(threadKey(thread), thread);
+    if (stale.some(thread => !this.threads.has(threadKey(thread)))) this.wake?.();
     const generation = this.generation;
     return this.turn().then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs }));
   }
@@ -301,8 +305,10 @@ export class PoolStatusReader {
   private turn(): Promise<void> {
     this.next ??= (async () => {
       await this.running;
-      const wait = this.lastStart + this.tickMs - this.now();
-      if (wait > 0) await this.sleep(wait);
+      // A thread with no reading yet skips the tick: api/accounts for a thread the chat had not shown waited 1.9 to 2.8 s on us-metal02 on 10-18 at 16:39Z.
+      const wait = [...this.pending.keys()].some(key => !this.threads.has(key)) ? 0 : this.lastStart + this.tickMs - this.now();
+      if (wait > 0) await Promise.race([this.sleep(wait), new Promise<void>(resolve => { this.wake = resolve; })]);
+      this.wake = null;
       this.next = null;
       const asked = [...this.pending.values()];
       this.pending.clear();
