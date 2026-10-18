@@ -90,6 +90,29 @@ export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: n
 }
 export type MinuteSide = "harness" | "other" | "unknown";
 
+/**
+ * A Linux CPU miss's harness cores in the flag's words: its own work and the rigs jobs started (rig-cpu.ts), with the 3 owners whose rigs used
+ * the most, each by its chat and job. Empty for any other miss or a reading without the split. Asked on 10-18 after us-metal02's 10 unusable
+ * minutes from 11:23Z to 11:32Z, when scratch chat services, test rigs and iso builds of jobs held most of the harness's cores.
+ */
+export function rigWords(view: HostView, name: (fault: DaemonFault) => string | undefined): string {
+  const usable = view.usable;
+  if (!usable || !isLinuxReading(usable) || !usable.harnessSplit || !unusable(usable).includes("cpu")) return "";
+  const { own, rigs, top } = usable.harnessSplit;
+  const owners = top.slice(0, 3).map(line => {
+    const [root = "", job] = line.owner.split("/", 2);
+    const chat = /^[0-9a-f]{8}$/.test(root) ? name({ at: 0, host: view.name, session: root, what: "rig" }) ?? `chat ${root}` : root;
+    return `${job ? `${chat}, job ${job}` : chat} ${line.cores} (${line.command})`;
+  });
+  return `; harness ${Math.round(100 * (own + rigs)) / 100} cores, ${own} its own and ${rigs} in job rigs${owners.length ? `: ${owners.join(", ")}` : ""}`;
+}
+
+/** Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts). */
+export const rigsLead = (view: HostView): boolean => {
+  const usable = view.usable;
+  return !!usable && isLinuxReading(usable) && !!usable.harnessSplit && usable.harnessSplit.rigs > usable.harnessSplit.own;
+};
+
 /** `minuteSide` for each box of a line of `lines`, judged against the same box in the line before it there. */
 export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => MinuteSide {
   const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
@@ -386,7 +409,7 @@ export function measure(input: Inputs): PrecheckOutput {
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0, unattributed = 0, daemonFail = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, other = 0, unattributed = 0, daemonFail = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const side = sideOf(input.watch);
   const dirty: string[] = [];
@@ -399,6 +422,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const why: string[] = [];
     const unknown: string[] = [];
     const sides = new Set<MinuteSide>();
+    let rigged = false;
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
@@ -406,11 +430,13 @@ export function measure(input: Inputs): PrecheckOutput {
       const miss = unusable(view.usable);
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      why.push(`${view.name} unusable (${miss.join(", ")})`);
-      sides.add(side(line, view));
+      why.push(`${view.name} unusable (${miss.join(", ")}${rigWords(view, faultName)})`);
+      const read = side(line, view);
+      sides.add(read);
+      if (read === "harness" && rigsLead(view)) rigged = true;
     }
     if (line && !unknown.length) { fed++; if (!sides.size) usable++; }
-    if (sides.has("harness")) harness++;
+    if (sides.has("harness")) { harness++; if (rigged) rigMin++; }
     else if (sides.has("unknown")) unattributed++;
     else if (sides.size) other++;
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
@@ -469,6 +495,7 @@ export function measure(input: Inputs): PrecheckOutput {
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
+    harness_rig_unusable_min_30: rigMin,
     other_unusable_min_30: other,
     unattributed_unusable_min_30: unattributed,
     held_min_30: held,
@@ -487,7 +514,7 @@ export function measure(input: Inputs): PrecheckOutput {
   }
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
-    `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
+    `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });

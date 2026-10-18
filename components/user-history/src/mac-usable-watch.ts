@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
@@ -98,7 +99,17 @@ export function parseLinuxReading(reading: unknown): LinuxUsable | null {
     (swapoutsPerS !== null && !count(swapoutsPerS))) return null;
   const sides = reading.cpuCores;
   const cpuCores = isRecord(sides) && CPU_SIDES.every(side => count(sides[side])) ? Object.fromEntries(CPU_SIDES.map(side => [side, sides[side]])) as CpuSides : undefined;
-  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {} };
+  const split = parseHarnessSplit(reading.harnessSplit);
+  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {},
+    ...split ? { harnessSplit: split } : {} };
+}
+
+/** A harnessSplit (rig-cpu.ts) whose own and rigs cores are counts and whose top lines each name an owner, a count and a command; else undefined. */
+export function parseHarnessSplit(value: unknown): HarnessSplit | undefined {
+  if (!isRecord(value) || !count(value.own) || !count(value.rigs) || !Array.isArray(value.top)) return undefined;
+  const top = value.top.filter((line): line is RigLine => isRecord(line) && typeof line.owner === "string" && count(line.cores) && typeof line.command === "string")
+    .map(line => ({ owner: line.owner, cores: line.cores, command: line.command }));
+  return { own: value.own, rigs: value.rigs, top };
 }
 
 /** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */
