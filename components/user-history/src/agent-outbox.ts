@@ -39,6 +39,12 @@ export interface AgentOutboxDeps {
   reach?: (host: string) => Promise<PeerReach>;
   /** The record that stopped the target (`stopRecords`), or null. */
   stopped?: (session: string, file: string | null) => Promise<Stop | null>;
+  /**
+   * Opens a target that has no worker from its file (`reopenSession`); true when it opened one. The daemon can leave get_state and send_message
+   * for such a root unanswered: on us-metal02 on 10-18 the 22:15Z wakes to "metal box owner" (01a11d24) timed out, every get_state of it hung
+   * after that, and its lane held every later send for an hour, while a daemon create opened it in 1.6 s at 23:18Z and a send then went at once.
+   */
+  open?: (session: string) => Promise<boolean>;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -333,7 +339,11 @@ export class AgentOutbox {
     const file = await this.deps.fileOf(session).catch(() => null);
     const sent = (other: string) => unaged(other).trim() === entry.text.trim();
     if (file && await messageAt(file, since, sent)) return "landed";
-    const target = await this.deps.target(session).catch(() => null);
+    let target = await this.deps.target(session).catch(() => null);
+    if (target === null && await this.deps.open?.(session).catch(() => false)) {
+      this.deps.log(`outbox ${this.where(session)}: get_state did not answer for ${entry.id}, and the target had no worker; opened it from its file`);
+      target = await this.deps.target(session).catch(() => null);
+    }
     if (target === null) return "unknown";
     if (target.queued.some(item => item === entry.text || item === QUEUED_PREFIX + entry.text || item.includes(entry.text))) return "queued";
     // The worker may have written it between the file read and the queue read.

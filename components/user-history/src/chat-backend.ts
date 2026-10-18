@@ -286,6 +286,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
         busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
     },
     fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir),
+    open: async session => {
+      const summary = await catalog.summary(session);
+      return !!summary && !summary.workerState && await reopenSession(catalog, { agentDir }, session);
+    },
     startRoot: async root => {
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     } });
