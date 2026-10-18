@@ -187,6 +187,8 @@ test("a Linux CPU minute goes to the side whose cgroups used the most cores, and
   assert.equal(metrics.harness_unusable_min_30, 8);
   assert.equal(metrics.other_unusable_min_30, 1, "06:07Z, when the apps' cgroups used the most cores");
   assert.equal(metrics.unattributed_unusable_min_30, 1, "06:15Z, a line from before cpuCores");
+  assert.equal(metrics.clean_min_30, 20, "a CPU overload with no cause read is still a dirty minute");
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /06:15Z us-metal02 unusable \(cpu\)/);
   assert.match(flagged?.find(slice => slice.kind === "minutes")?.excerpt ?? "", /8 unusable minutes on the harness side, 1 on the app or owner side, 1 with no cause read/);
 });
 
