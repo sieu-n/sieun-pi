@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chatService, serviceCall } from "./chat-host.ts";
+import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 
 /*
  * Agent messages between root sessions on different boxes. Prime's daemon finds a sibling only among the roots it runs itself, so after the
@@ -19,6 +20,8 @@ export interface Root { sessionId: string; activeSessionId?: string; name: strin
 export interface RootDirectory {
   roots(): Promise<Root[]> | Root[];
   send(sessionId: string, text: string): Promise<Record<string, unknown>>;
+  /** Opens a root from its file with a daemon create (src/reopen-send.ts); false when it has no file to open. */
+  reopen(sessionId: string): Promise<boolean>;
 }
 
 /** The roster row a root on another box adds to agent_observe.list_agents, in the shape Prime's own rows have. */
@@ -64,13 +67,25 @@ export async function sendCrossHost(directory: RootDirectory, from: string, to: 
   return { ...receipt, host: target.host, crossHost: true };
 }
 
-/** `node cross-host-message.ts send|siblings` with {from, to, message} or {session} and the chat's dataDir on stdin prints the answer or {error}. */
+/**
+ * Opens the root `to` names, on any box, from its file. The sender's kernel asks for it when its own daemon answered a sibling send with
+ * "Session worker is failed" or "Unknown active session" (message-limit-check.py), then sends once more itself.
+ */
+export async function reopenSibling(directory: RootDirectory, from: string, to: string): Promise<{ reopened: boolean; sessionId: string; host: string }> {
+  const roots = await directory.roots();
+  const target = pickRoot(roots.filter(root => root.sessionId !== from && root.activeSessionId !== from), to);
+  if ("error" in target) throw new Error(target.error.replace(" on any box either", ""));
+  return { reopened: await directory.reopen(target.sessionId), sessionId: target.sessionId, host: target.host };
+}
+
+/** `node cross-host-message.ts send|siblings|reopen` with {from, to, message} or {session} and the chat's dataDir on stdin prints the answer or {error}. */
 async function cli(op: string): Promise<unknown> {
   const input = JSON.parse(readFileSync(0, "utf8")) as Record<string, unknown>;
   const dataDir = typeof input.dataDir === "string" ? input.dataDir : join(homedir(), ".prime/agent/browser-chat");
   const service = await chatService(dataDir);
   if (!service) throw new Error("No chat service is set up on this box or in hosts.json.");
   if (op === "send") return await serviceCall(service, "api/agent/message", { from: input.from, to: input.to, message: input.message }, AbortSignal.timeout(60_000));
+  if (op === "reopen") return await serviceCall(service, "api/agent/reopen", { from: input.from, to: input.to }, AbortSignal.timeout(DAEMON_WORKER_START_MS));
   if (op === "siblings") return await serviceCall(service, `api/agent/siblings?session=${encodeURIComponent(String(input.session))}`);
   throw new Error(`Unknown op ${op}.`);
 }

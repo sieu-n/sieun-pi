@@ -23,6 +23,9 @@ its own reference. It does three things.
 4. Cross-host siblings. Prime's daemon finds a sibling only among the roots it runs, so after the 10-18 move of the chats to us-metal02 a
    send from a box chat to a root on the Mac failed with 'No sibling matches'. In a root's kernel such a send goes to the chat service,
    which delivers it on the other box (src/cross-host-message.ts), and agent_observe.list_agents lists the other boxes' roots as siblings.
+5. Failed siblings. A root whose worker died answers every send with "Session worker is failed", and one the daemon dropped with "Unknown
+   active session" (10-18: "runner reviewer" on the Mac, about 04:30 to 05:37Z). Such a sibling send asks the chat service to open that root
+   from its file (api/agent/reopen) and goes out once more.
 """
 
 import asyncio
@@ -36,7 +39,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 16
+VERSION = 17
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -55,6 +58,8 @@ HELD_NOTE = (
 UNCONFIRMED = {}
 CROSS_HOST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cross-host-message.ts")
 NO_SIBLING = "No sibling matches"
+# A root whose worker died or that the daemon dropped refuses every send until it is opened again from its file (src/reopen-send.ts).
+REOPENABLE = re.compile(r"Session worker is failed|Unknown active session")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z")
 
@@ -236,10 +241,22 @@ async def with_other_boxes(roster):
     return {**roster, "agents": roster["agents"] + [agent for agent in extra if agent.get("sessionId") not in known]}
 
 
-async def send_other_box(payload, error):
-    """A sibling send the local daemon found no sibling for, delivered by the chat service to a root on another box; else the daemon's error."""
+async def send_other_box(payload, error, resend):
+    """A sibling send the local daemon found no sibling for, delivered by the chat service to a root on another box; a sibling send the local
+    daemon refused because the root's worker died or was dropped, sent once more after the chat service opened that root from its file
+    (resend); else the daemon's error."""
     root = own_root()
-    if not root or payload.get("receiver_role") != "sibling" or NO_SIBLING not in str(error):
+    if not root or payload.get("receiver_role") != "sibling":
+        raise error
+    if REOPENABLE.search(str(error)):
+        try:
+            answer = await cross_host("reopen", {"from": root, "to": payload.get("receiver_name")})
+        except RuntimeError as other:
+            raise RuntimeError(f"{error}; reopen: {other}") from None
+        if not isinstance(answer, dict) or not answer.get("reopened"):
+            raise error
+        return await resend()
+    if NO_SIBLING not in str(error):
         raise error
     try:
         reply = await cross_host("send", {"from": root, "to": payload.get("receiver_name"), "message": payload.get("message")})
@@ -294,7 +311,7 @@ async def request(request_type, payload=None, *args, **kwargs):
         except Exception as error:
             if not direct:
                 raise
-            reply = await send_other_box(payload, error)
+            reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
         if request_type == "agent_observe.list":
             reply = await with_other_boxes(reply)
         if direct:

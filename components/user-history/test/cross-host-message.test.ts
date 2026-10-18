@@ -28,7 +28,7 @@ function boxes(): RootDirectory & { sent: { host: string; session: string; text:
   return { sent, roots: () => ROOTS, send: async (session, text) => {
     sent.push({ host: ROOTS.find(root => root.sessionId === session)!.host, session, text });
     return { deliveryStatus: "queued", target: { sessionId: session } };
-  } };
+  }, reopen: async () => false };
 }
 
 test("a box chat's send to the release owner on the Mac goes to the Mac's daemon with the sender named", async () => {

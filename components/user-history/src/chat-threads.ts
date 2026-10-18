@@ -8,6 +8,7 @@ import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from 
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
+import { isReopenable } from "./reopen-send.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { readBranchTail } from "./session-tail.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
@@ -647,8 +648,8 @@ export class ThreadHub {
       const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
         at = mark("queue", at);
         const connection = await this.attach(activeSessionId).catch(error => {
-          if (!(error instanceof Error && error.message.startsWith(UNKNOWN_ACTIVE))) throw error;
-          marks.push(`listed active but the daemon has no ${activeSessionId}: read saved`);
+          if (!isReopenable(error)) throw error;
+          marks.push(`listed active but the daemon has no live ${activeSessionId}: read saved`);
           return null;
         });
         if (!connection) return null;
@@ -762,28 +763,16 @@ export class ThreadHub {
     const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;
     const summary = await this.summary(id);
-    let activeSessionId = liveSessionId(summary);
-    if (activeSessionId === undefined) {
-      if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
-      const client = await this.daemon(id);
-      // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
-      // A folder that is gone resumes in the daemon's folder rather than not at all. Another box's folder is that box's to check.
-      const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
-      const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
-      const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
-      if (!response.success) throw new ThreadError(502, response.error);
-      const data = response.data;
-      if (typeof data !== "object" || data === null || !("sessionId" in data) || data.sessionId !== id ||
-        !("activeSessionId" in data) || typeof data.activeSessionId !== "string" || !data.activeSessionId) {
-        throw new ThreadError(502, "Prime Agent returned no matching session for the resumed thread.");
-      }
-      activeSessionId = data.activeSessionId;
-    }
-    const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
+    const attachLive = (activeSessionId: string) => this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
-      try { return { connection, snapshot: await this.liveSnapshot(connection, summary, thread.full) }; }
+      try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary, thread.full) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
     });
+    // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
+    const listed = liveSessionId(summary);
+    const live = (listed === undefined ? null : await attachLive(listed).catch(error => { if (!isReopenable(error)) throw error; return null; }))
+      ?? await attachLive(await this.reopen(id, summary));
+    const { connection, activeSessionId, snapshot } = live;
     if (this.threads.get(id) !== thread) {
       await connection.dispose().catch(() => {});
       throw new ThreadError(409, "This thread was closed while it was resuming.");
@@ -793,6 +782,24 @@ export class ThreadHub {
     thread.broadcast({ type: "snapshot", snapshot });
     this.attached(thread);
     return thread;
+  }
+
+  /** Opens a saved or failed session from its file with a daemon create, which drops a dead worker's registration; resolves the new active id. */
+  private async reopen(id: string, summary: SessionSummary): Promise<string> {
+    if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
+    const client = await this.daemon(id);
+    // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
+    // A folder that is gone resumes in the daemon's folder rather than not at all. Another box's folder is that box's to check.
+    const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
+    const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
+    const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    if (!response.success) throw new ThreadError(502, response.error);
+    const data = response.data;
+    if (typeof data !== "object" || data === null || !("sessionId" in data) || data.sessionId !== id ||
+      !("activeSessionId" in data) || typeof data.activeSessionId !== "string" || !data.activeSessionId) {
+      throw new ThreadError(502, "Prime Agent returned no matching session for the resumed thread.");
+    }
+    return data.activeSessionId;
   }
 
   /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */

@@ -4,7 +4,9 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
 import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
-import { otherBoxRoots, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
+import { otherBoxRoots, reopenSibling, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
+import { getAgentDir } from "prime-agent";
+import { reopenSession, sendReopening } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
@@ -131,10 +133,12 @@ function rootDirectory(backend: ChatBackend): RootDirectory {
       });
     },
     send: async (sessionId, message) => {
-      const response = await (await catalog.daemonFor(sessionId)).request({ type: "send_message", targetActiveSessionId: sessionId, message }, 30_000, { recoverable: false });
+      const response = await sendReopening(sessionId, async () => (await catalog.daemonFor(sessionId)).request({ type: "send_message", targetActiveSessionId: sessionId, message }, 30_000, { recoverable: false }),
+        id => reopenSession(catalog, { agentDir: getAgentDir() }, id), line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
       if (!response.success) throw new Error(response.error);
       return response.data as Record<string, unknown>;
     },
+    reopen: sessionId => reopenSession(catalog, { agentDir: getAgentDir() }, sessionId),
   };
 }
 
@@ -652,6 +656,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const receipt = await sendCrossHost(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256), text(body.message, "message"))
           .catch(error => { throw new RequestError(409, (error as Error).message); });
         json(res, 200, receipt); return;
+      }
+      // A sibling send the sender's own daemon refused as "Session worker is failed" or "Unknown active session": open that root from its file.
+      if (route === "api/agent/reopen") {
+        if (!backend.catalog.hostsListed()) throw new RequestError(503, "Another box has not listed its sessions yet; try again shortly.");
+        const answer = await reopenSibling(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256))
+          .catch(error => { throw new RequestError(409, (error as Error).message); });
+        json(res, 200, answer); return;
       }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
       if (route === "api/agent/check-in") {

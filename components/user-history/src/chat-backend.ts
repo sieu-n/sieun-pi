@@ -45,10 +45,10 @@ import { trainFile } from "./checkin-load.ts";
 import { startProdTurns } from "./prod-turns.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
-import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { SendOnce, sessionFileOf } from "./send-once.ts";
 import { deliverThroughParent } from "./subagent-relay.ts";
+import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
@@ -228,16 +228,18 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
   const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
     send: async (session, text) => {
-      const response = await (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
+      const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
+        id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
       if (response.success) return "sent";
-      if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
+      // A subagent still unreachable after the reopen is relayed through its parent (deliverThroughParent).
+      if (REOPENABLE.test(response.error)) return "gone";
       throw new Error(response.error);
     },
     target: async session => {
       const client = await catalog.daemonFor(session).catch(() => null);
       const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
       if (!response) return null;
-      if (!response.success) return response.error.startsWith(UNKNOWN_ACTIVE) ? { queued: [], busy: false } : null;
+      if (!response.success) return REOPENABLE.test(response.error) ? { queued: [], busy: false } : null;
       const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
         isRunningTools?: unknown; unfinishedActionCount?: unknown };
       const actions = data.sessionActions;
@@ -249,11 +251,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     deliver: (session: string, text: string): Promise<"sent" | "gone"> =>
       deliverThroughParent(session, text, { fileOf: id => sessionFileOf(id, agentDir), deliver: (id, message) => sendOnce.deliver(id, message) }, dutyLog),
     startRoot: async (root: string): Promise<void> => {
-      const summary = await catalog.summary(root);
-      const sessionPath = summary && catalog.daemonPath(summary);
-      if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);
-      const response = await (await catalog.daemonFor(root)).request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
-      if (!response.success) throw new Error(response.error);
+      if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     },
   };
   const stopWakes = startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
