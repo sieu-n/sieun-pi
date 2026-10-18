@@ -24,7 +24,13 @@ export interface DaemonFault {
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 const SUPERVISOR = /^\[(\S+Z)\] supervisor: Supervisor command (\w+) failed: (?:Error: )?(.*)$/;
 const OPEN = /^open ([0-9a-f]{8}) (?:live|saved) \d+ messages: (.*), total (\d+)ms$/;
-const WORKER_START = /^daemon (create|resume|reload) (.+): (answered|refused) in ([\d.]+) s$/;
+const WORKER_START = /^daemon (create|resume|reload) (.+?): (answered|refused) in ([\d.]+) s(?:: (.*))?$/;
+/**
+ * A create refused because a session of its name exists: an earlier create of the same job that the daemon finished though its caller lost
+ * the answer, which the duty adopts (src/chat-duty-job.ts). 10-18 11:37:37Z the release cut off "visitors become paying users slack green guy
+ * 20:37" ("client closed", a fault), and its retry at 11:40:09Z was refused for the name, so the minute of the retry is no new fault.
+ */
+const NAME_TAKEN = /is unavailable: an agent of that name already exists/;
 const WORKER_NO_ANSWER = /^daemon (create|resume|reload) (.+): no answer after ([\d.]+) s: (.*)$/;
 /**
  * The service.log lines whose calls are opens, status reads or sends, by their prefix. Others, such as the catalog's copies of the Mac's
@@ -88,8 +94,9 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     }
     if ((found = WORKER_START.exec(text))) {
       const seconds = Number(found[4]);
-      if (found[3] === "refused" || seconds * 1000 > SLOW_MS)
-        faults.push({ at: at + seconds * 1000, host: local, ...titleOrSession(found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s` });
+      const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "");
+      if (refused || seconds * 1000 > SLOW_MS)
+        faults.push({ at: at + seconds * 1000, host: local, ...titleOrSession(found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}` });
       continue;
     }
     if ((found = WORKER_NO_ANSWER.exec(text))) {

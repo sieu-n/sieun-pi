@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { listedSessions, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
+import { timedWorkerStart } from "../src/daemon-worker-start.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 
 const MAC_HANG = [
@@ -82,6 +83,26 @@ test("a worker start refused or over 30 s counts at its end, and an answer in 5.
   assert.deepEqual(faults.map(fault => [new Date(fault.at).toISOString(), fault.title ?? fault.session, fault.what]), [
     ["2026-10-18T10:50:37.183Z", "/Users/sieunpark", "its create was refused in 215.1 s"],
     ["2026-10-18T08:21:46.192Z", "01a14ded", "its resume was answered in 37.2 s"],
+  ]);
+});
+
+// 10-18 11:37:37Z the release cut off a duty create ("client closed"), the daemon made the session anyway, and the retry at 11:40:09Z was
+// refused for the taken name, which the duty adopted; before the reason was logged that refusal made the minute dirty with no cause named.
+test("a worker start's refusal carries its reason, and a create refused for a name an earlier create took is left out", async () => {
+  const lines: string[] = [];
+  let now = Date.parse("2026-10-18T11:40:09.644Z");
+  await timedWorkerStart("create visitors become paying users slack green guy 20:37", async () => { now += 2_100;
+    return { success: false, error: 'Agent name "visitors become paying users slack green guy 20:37" is unavailable: an agent of that name already exists at depth 0 under this parent' }; },
+  line => { lines.push(line); }, () => now);
+  assert.match(lines[0]!, /refused in 2\.1 s: Agent name .* is unavailable: an agent of that name already exists/);
+  const faults = readServiceFaults([
+    "2026-10-18T11:37:37.028Z daemon create visitors become paying users slack green guy 20:37: no answer after 3.5 s: Prime Agent daemon client closed before the operation completed. Socket: /tmp/prime-agent-1001/daemon.sock.",
+    ...lines,
+    "2026-10-18T10:47:02.083Z daemon create check-in chat-057a 15:32: refused in 0.1 s: Session worker is failed",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => [fault.title, fault.what]), [
+    ["visitors become paying users slack green guy 20:37", "its create got no answer, the client closed before an answer"],
+    ["check-in chat-057a 15:32", "its create was refused in 0.1 s, its session worker was failed"],
   ]);
 });
 
