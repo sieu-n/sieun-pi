@@ -1,4 +1,5 @@
-import type { AssistantMessage, ChildAgent, ProjectedSessionEvent, ThreadEvent, ThreadMessage, ThreadSnapshot, ThreadState, ToolRun } from "./types.ts";
+import { keyIndex, parseCursor } from "./message-key.ts";
+import type { AssistantMessage, ChatBoard, ChildAgent, ProjectedSessionEvent, ThreadEvent, ThreadMessage, ThreadSnapshot, ThreadState, ToolRun } from "./types.ts";
 
 export function runStartedAtFromMessages(messages: readonly ThreadMessage[]): number | null {
   let startedAt: number | null = null;
@@ -79,11 +80,23 @@ function applySessionEvent(state: ThreadState, event: ProjectedSessionEvent, now
   }
 }
 
+/** A board's revision as a reconnecting page names it (`ThreadHave.board`). */
+export const boardKey = (board: ChatBoard): string => `${board.rev}|${board.updatedAt}`;
+
+/** A snapshot with `after` holds only the messages after that one: the held messages up to it come first, with the held `older` cursor. */
+function withHeld(state: ThreadState, snapshot: ThreadSnapshot): ThreadSnapshot {
+  if (snapshot.after === undefined) return snapshot;
+  const { after, older: _older, ...rest } = snapshot;
+  const cursor = parseCursor(after);
+  const index = cursor?.kind === "message" ? keyIndex(state.messages, cursor.key) : -1;
+  return { ...rest, messages: [...state.messages.slice(0, index + 1), ...snapshot.messages], ...(state.older !== undefined ? { older: state.older } : {}) };
+}
+
 export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = Date.now()): ThreadState {
   switch (event.type) {
     case "snapshot": {
       // The board, the wait, the outbox and the children come as their own events: a snapshot without them keeps the ones held.
-      const { snapshot } = event;
+      const snapshot = withHeld(state, event.snapshot);
       return { ...snapshot, children: snapshot.children ?? state.children, connection: state.connection,
         ...(snapshot.board === undefined && state.board !== undefined ? { board: state.board } : {}), ...(snapshot.wait === undefined && state.wait !== undefined ? { wait: state.wait } : {}),
         ...(snapshot.outbox === undefined && state.outbox !== undefined ? { outbox: state.outbox } : {}) };

@@ -22,7 +22,7 @@ import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
-import { SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
+import { parseSessionsHave, SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
 import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
@@ -433,6 +433,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       sendBuild(build => send("build", build));
       if (!feed.delta) return backend.catalog.subscribe(event => send("sessions", event));
       const diff = new SessionsDiff();
+      const held = feed.have ? parseSessionsHave(feed.have) : null;
+      if (held) diff.resume(held);
       return backend.catalog.subscribe(event => { const frame = diff.frame(feed.archived ? event : withoutArchived(event)); if (frame) send("sessions", frame); });
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
@@ -443,7 +445,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
     try {
       const id = threadId(feed.id);
-      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)));
+      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)), false, feed.have);
       pushSide(id, side => send("side", side));
       return stop;
     } catch (error) {

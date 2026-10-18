@@ -19,8 +19,8 @@ import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
-import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -129,17 +129,32 @@ class Thread {
    * the board as their own events. Until 10-18 a snapshot carried about 1,000 messages, the board and the children, 0.45 to 1.28 MB per frame.
    * A new feed (`first`) gets `firstFrame` before that snapshot, which is left out when the first frame already held the whole page.
    */
-  send(listener: Listener, board: boolean, children = this.state.children.length > 0, first = false): void {
+  /** The newest message key each listener got in a snapshot, so a later snapshot sends it only the messages after it (`after`). */
+  private readonly lastSent = new WeakMap<Listener, string>();
+  send(listener: Listener, board: boolean, children = this.state.children.length > 0, first = false, have?: ThreadHave): void {
     const { connection: _connection, error: _error, board: _board, children: held, messages, older, ...rest } = this.state;
-    const page = pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES);
-    const small = first ? this.firstFrame() : null;
-    if (small) listener(small);
-    if (small?.type !== "snapshot" || small.snapshot.messages.length < page.messages.length || small.snapshot.messages.some((message, index) => message !== page.messages[index])) {
-      listener({ type: "snapshot", snapshot: { ...rest, ...page } });
+    const after = have?.last ?? this.lastSent.get(listener);
+    const tail = after === undefined ? null : this.after(after);
+    if (tail && after !== undefined) listener({ type: "snapshot", snapshot: { ...rest, messages: tail, after } });
+    else {
+      const page = pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES);
+      const small = first ? this.firstFrame() : null;
+      if (small) listener(small);
+      if (small?.type !== "snapshot" || small.snapshot.messages.length < page.messages.length || small.snapshot.messages.some((message, index) => message !== page.messages[index])) {
+        listener({ type: "snapshot", snapshot: { ...rest, ...page } });
+      }
     }
+    if (messages.length) this.lastSent.set(listener, formatCursor({ kind: "message", key: messageKey(messages, messages.length - 1) }));
     if (children) listener({ type: "children", children: held });
-    if (board && this.state.board) listener({ type: "board", board: this.state.board });
+    if (board && this.state.board && have?.board !== boardKey(this.state.board)) listener({ type: "board", board: this.state.board });
   }
+  /** The messages after the one `cursor` names, when the thread holds it and at most a page follows it; null otherwise. */
+  private after(cursor: string): ThreadMessage[] | null {
+    const parsed = parseCursor(cursor);
+    const index = parsed?.kind === "message" ? keyIndex(this.state.messages, parsed.key) : -1;
+    return index >= 0 && this.state.messages.length - 1 - index <= FIRST_PAGE_MESSAGES ? this.state.messages.slice(index + 1) : null;
+  }
+
   /**
    * What a new feed paints first, and what the page shell inlines: a snapshot of the newest messages that fit FIRST_PAGE_BYTES, with what only
    * an opened work row shows cut to previews (src/first-page.ts). From Korea the full page of 100 messages took more than one round trip.
@@ -884,12 +899,13 @@ export class ThreadHub {
    * chat nor counts as activity. A tab's open and close count as activity, so the chat rests its idle time from the later one. The tab gets
    * the newest page at once, from what the thread holds or from the session file, and the live snapshot when the attach lands.
    */
-  async subscribe(id: string, listener: Listener, background = false): Promise<() => void> {
+  /** `have` is what a reconnecting page holds (chat-socket.ts `ThreadHave`): it gets the messages after its newest, and the board only when it changed. */
+  async subscribe(id: string, listener: Listener, background = false, have?: ThreadHave): Promise<() => void> {
     const thread = await this.start(id, background, true);
     thread.listeners.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
-    thread.send(listener, true, undefined, true);
+    thread.send(listener, true, undefined, have === undefined, have);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
     if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {

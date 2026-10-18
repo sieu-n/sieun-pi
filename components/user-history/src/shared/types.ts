@@ -192,7 +192,14 @@ export interface ThreadSnapshot {
    * A feed snapshot carries the newest page only (session-tail.ts PAGE_MESSAGES).
    */
   older?: string;
+  /**
+   * A reconnect's snapshot for a page that named its newest message (`ThreadHave.last`): `messages` are only the ones after that message,
+   * which the page keeps with everything before it and its own `older` cursor (shared/thread-state.ts `applyThreadEvent`).
+   */
+  after?: string;
 }
+/** What a reconnecting page holds of a thread: its newest message's key as a message cursor (`m<at>.<n>`) and its board's `boardKey`. */
+export interface ThreadHave { last?: string; board?: string }
 /** An older page: `GET api/threads/<id>/older?cursor=` answers the messages just before the cursor, oldest first, and the cursor before them. */
 export interface OlderPage { messages: ThreadMessage[]; older?: string }
 /** `retry`: the turn is restarted at `at`. `account`: no Claude account can serve the selected Anthropic model; `until` is when one frees up. Epoch ms. */

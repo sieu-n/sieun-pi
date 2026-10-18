@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadHave, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { OutboxAccepted } from "../shared/outbox.ts";
@@ -6,7 +6,7 @@ import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
-import { applySessionsDelta } from "../shared/sessions-delta.ts";
+import { applySessionsDelta, sessionsHave } from "../shared/sessions-delta.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
 
@@ -53,9 +53,9 @@ export const api = {
    * the archived rows either way.
    */
   sessionsStream(archived: boolean, onEvent: (event: SessionsEvent & { archived: number }) => void, onError: () => void, onBuild: (build: { version: string; assets?: string[] }) => void): () => void {
-    /** The list this subscription holds; a reconnect subscribes again and starts from the server's full list. */
+    /** The list this subscription holds; a reconnect names its rows (`sessionsHave`), and the server sends only the rows that differ. */
     let rows: SessionRow[] = [];
-    return subscribeFeed({ feed: "sessions", delta: true, ...(archived ? { archived: true as const } : {}) }, (event, data) => {
+    return subscribeFeed(() => { const have = sessionsHave(rows); return { feed: "sessions", delta: true, ...(archived ? { archived: true as const } : {}), ...(have ? { have } : {}) }; }, (event, data) => {
       if (event === "build") { onBuild(data as { version: string; assets?: string[] }); return; }
       if (event !== "sessions") return;
       const frame = data as SessionsEvent | SessionsDelta;
@@ -65,8 +65,8 @@ export const api = {
     }, onError);
   },
   /** `onSide` gets the feed's `side` frames: what the view shows beside the messages, pushed after the snapshot (shared/thread-side.ts). */
-  threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void, onSide: (side: ThreadSide) => void = () => {}): () => void {
-    const stop = subscribeFeed({ feed: "thread", id }, (event, data) => {
+  threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void, onSide: (side: ThreadSide) => void = () => {}, have: () => ThreadHave | undefined = () => undefined): () => void {
+    const stop = subscribeFeed(() => { const held = have(); return { feed: "thread", id, ...(held ? { have: held } : {}) }; }, (event, data) => {
       if (event === "side") { onSide(data as ThreadSide); return; }
       if (event !== "thread") return;
       const parsed = data as ThreadEvent;

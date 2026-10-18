@@ -2,8 +2,8 @@ import { api, ApiError, requestId } from "./api.ts";
 import { saveDrafts } from "./drafts.ts";
 import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
 import { primeThread, retryFeeds } from "./feeds.ts";
-import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
-import { messageKey } from "../shared/message-key.ts";
+import { applyThreadEvent, boardKey, threadStateFromSnapshot } from "../shared/thread-state.ts";
+import { formatCursor, messageKey } from "../shared/message-key.ts";
 import { rememberAccounts } from "./accounts.ts";
 import { dutiesFeed } from "./duties.svelte.ts";
 import { childUsage, pushedAccounts } from "./thread-side.svelte.ts";
@@ -267,7 +267,12 @@ class Store {
       this.dropSide(id);
       const current = this.entries[id];
       if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
-    }, side => this.side(id, side));
+    }, side => this.side(id, side), () => {
+      // A reconnect names the newest message and the board this page holds, and gets only what came after them.
+      const state = this.threads[id]?.state;
+      if (!state?.messages.length) return undefined;
+      return { last: formatCursor({ kind: "message", key: messageKey(state.messages, state.messages.length - 1) }), ...(state.board ? { board: boardKey(state.board) } : {}) };
+    });
     const apply = (event: ThreadEvent) => {
       const current = this.entries[id];
       if (!current) return;
@@ -277,7 +282,7 @@ class Store {
         void this.outbox.resend(id);
         if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
         const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
-        this.patch(id, { state: keepOlder(current.state, page), newest: newestPage(page), loading: false, error: null });
+        this.patch(id, { state: keepOlder(current.state, page), newest: event.snapshot.after !== undefined ? current.newest : newestPage(page), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) {
         this.dropSide(id);

@@ -786,11 +786,13 @@ export class Catalog {
   /** The last frame sent, which a new subscriber gets at once. */
   private lastEvent: SessionsEvent | undefined;
   /**
-   * The least time between two projections for the frames, 1 s. Measured on 10-18: the live daemon sent 13.3 roster updates a second, the
-   * catalog made 4.45 projections a second from them, and the chat service's main thread was 77% busy at load 135, so a page shell waited
-   * p50 0.5 s and p90 1.5 s on the box itself. The sidebar now trails a change by at most a second.
+   * The least time between two frame projections, from a sweep on 10-18. Scratch serve on a copy of browser-chat, fake daemons at the live
+   * rate (13.3 roster updates a second), one held page, 120 s each: a window of 0, 100, 150, 250, 500 and 1000 ms made 4.9, 4.6, 4.9, 4.0,
+   * 2.05 and 1.08 frames a second, and the main thread was 29.1, 29.1, 28.4, 24.6, 16.5 and 13.5% busy. A projection took about 200 ms
+   * there, so a window under that changes nothing. 500 ms keeps most of the cut and halves the sidebar's lag against 1 s. The first change
+   * after a quiet window goes out at once.
    */
-  emitGapMs = 1000;
+  emitGapMs = 500;
   /**
    * One projection at a time, at most one per `emitGapMs`: an emit asked for while one waits joins it, and one asked for while one runs waits
    * for it, and every such ask shares one run after it, so each caller still gets a frame built after its change. On 10-18 the service's main

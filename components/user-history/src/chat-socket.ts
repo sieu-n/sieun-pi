@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import type { ThreadHave } from "./shared/types.ts";
 
 /**
  * One WebSocket per browser tab carries every live feed the page watches. A tab used to hold an EventSource per feed, and
@@ -11,7 +12,11 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
  * and `{ type: "unsubscribe", sub }`. `sub` is a number the page picks. Server to client: `{ sub, event, data }` for a feed
  * event, and `{ event: "ping" }` every `pingMs` so proxies keep the socket open and the page can tell a dead socket.
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string };
+/**
+ * A reconnect names what the page already holds, so the server sends only what changed: `have` on the sessions feed is `id:hash` per row
+ * (shared/sessions-delta.ts `sessionsHave`), and on a thread feed its newest message key and the board's `rev|updatedAt` (`ThreadHave`).
+ */
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave };
 export type FeedSend = (event: string, data: unknown) => void;
 /** Starts one feed. A thread feed opens the thread first, so it may resolve later; the returned function stops it. */
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
@@ -36,9 +41,17 @@ function parseValue(value: unknown): { type: "subscribe"; sub: number; feed: Fee
   if (typeof sub !== "number" || !Number.isSafeInteger(sub) || sub < 0) return null;
   if (message.type === "unsubscribe") return { type: "unsubscribe", sub };
   if (message.type !== "subscribe") return { type: "reject", sub, message: "Unknown message type." };
-  if (message.feed === "sessions" && message.delta === true) return { type: "subscribe", sub, feed: { feed: "sessions", delta: true, ...(message.archived === true ? { archived: true } : {}) } };
+  if (message.feed === "sessions" && message.delta === true) {
+    const have = typeof message.have === "string" ? message.have : undefined;
+    return { type: "subscribe", sub, feed: { feed: "sessions", delta: true, ...(message.archived === true ? { archived: true } : {}), ...(have ? { have } : {}) } };
+  }
   if (message.feed === "sessions" || message.feed === "login" || message.feed === "refresh" || message.feed === "usage") return { type: "subscribe", sub, feed: { feed: message.feed } };
-  if (message.feed === "thread" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "thread", id: message.id } };
+  if (message.feed === "thread" && typeof message.id === "string" && message.id.length <= 512) {
+    const raw = typeof message.have === "object" && message.have !== null ? message.have as Record<string, unknown> : {};
+    const have: ThreadHave = { ...(typeof raw.last === "string" && /^m\d{1,16}\.\d{1,6}$/.test(raw.last) ? { last: raw.last } : {}),
+      ...(typeof raw.board === "string" && raw.board.length <= 100 ? { board: raw.board } : {}) };
+    return { type: "subscribe", sub, feed: { feed: "thread", id: message.id, ...(have.last || have.board ? { have } : {}) } };
+  }
   return { type: "reject", sub, message: `Unknown feed: ${String(message.feed).slice(0, 40)}.` };
 }
 
