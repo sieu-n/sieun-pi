@@ -75,7 +75,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/check-ins.md", "words, lines or file size (c39)", "duty metrics"],
     ["references/git.md", "rebase, amend) before a push needs no owner ask (c21)", "unpushed sieun-pi commits"],
     ["references/git.md", "run `git add -- <your files>` on the shared index afterwards", "private index commits"],
-    ["references/owner.md", "ask the owner a clarifying question at once, because he wants to be asked (c96)", "clarifying asks (c96)"],
+    ["references/owner.md", "ask the owner about each open point that changes the result, because he wants to be asked (c96)", "clarifying asks (c96)"],
     ["references/owner.md", "split a long answer into 2 or 3 messages like a person texting", "split replies (c97)"],
     ["references/owner.md", "one screenshot per variant inline in the chat message itself", "UI picks inline (c3)"],
     ["references/owner.md", "complete the Google or GitHub sign-in there", "logins through Aside (c4)"],
