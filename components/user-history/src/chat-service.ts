@@ -393,7 +393,7 @@ async function serve(options: Options): Promise<void> {
       try { if (removeInstance && instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
       finally {
-        // Sends still out get their answers before the links close, so none is left unconfirmed (SendOnce.idle).
+        // Sends still out get their answers before the links close, so a refusal is recorded as one (Outbox.close with drain).
         await backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`));
         stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close();
       }

@@ -499,8 +499,8 @@ export interface AlertBridgeDeps {
   file: string;
   alerts: () => Promise<FiringAlert[] | null>;
   boards: Pick<BoardStore, "read" | "apply">;
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-  startRoot?: (root: string) => Promise<void>;
+  /** Hands the session the text on disk (src/agent-outbox.ts); `root` is started when the daemon does not find the session. */
+  deliver: (session: string, text: string, root?: string) => Promise<void>;
   owners?: () => Promise<OwnerMap | null>;
   hasBoard?: (session: string) => Promise<boolean>;
   /** Starts a job of `chat` for `steps`, its alert steps with no owner. Absent, those steps wait for the chat's check-in. */
@@ -543,7 +543,7 @@ export class AlertBridge {
         const rule = state.rules[key]!;
         return { chat: chatName(rule.chat), step: rule.step ?? "", title: steps.get(key)?.text ?? rule.alertname, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule) };
       });
-      await this.send(OPS_ROUTE.session, escalationText(lines));
+      await this.deps.deliver(OPS_ROUTE.session, escalationText(lines), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of escalate) rules[key] = { ...rules[key]!, escalatedAt: now };
       state = { ...state, rules };
@@ -573,7 +573,7 @@ export class AlertBridge {
 
   private async jobFor(chat: string, lines: readonly StepLine[]): Promise<AlertJob> {
     const last = this.jobs.get(chat);
-    if (last && await this.deps.jobWorking?.(last) && await this.deps.deliver(last.id, moreStepsText(lines)) === "sent") return last;
+    if (last && await this.deps.jobWorking?.(last)) { await this.deps.deliver(last.id, moreStepsText(lines)); return last; }
     const job = await this.deps.startJob!(chat, lines);
     this.jobs.set(chat, job);
     return job;
@@ -640,15 +640,6 @@ export class AlertBridge {
       this.deps.log(`alerts: owners.json: ${message(error)}; routed by keywords`);
       return null;
     }
-  }
-
-  private async send(session: string, text: string): Promise<"sent" | "gone"> {
-    let result = await this.deps.deliver(session, text);
-    if (result === "gone" && this.deps.startRoot) {
-      await this.deps.startRoot(session);
-      result = await this.deps.deliver(session, text);
-    }
-    return result;
   }
 
   private async steps(state: BridgeState): Promise<Map<string, StepView>> {

@@ -9,6 +9,7 @@ export const drafts = new Map<string, Draft>();
 export function hasUnsentDrafts(): boolean { return [...drafts.values()].some(draft => draft.text.trim().length > 0 || draft.images.length > 0); }
 
 let attachmentId = 0;
+export const nextAttachmentId = (): number => ++attachmentId;
 
 /** A pasted or dropped file as a draft image, or the toast text that says why it was not added; `totalBytes` is what the draft holds already. */
 export async function readImage(file: File, totalBytes: number): Promise<DraftAttachment | string> {
@@ -22,6 +23,6 @@ export async function readImage(file: File, totalBytes: number): Promise<DraftAt
       reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
       reader.readAsDataURL(file);
     });
-    return { id: ++attachmentId, name: file.name || "image", mimeType: file.type, size: file.size, data, url: URL.createObjectURL(file) };
+    return { id: nextAttachmentId(), name: file.name || "image", mimeType: file.type, size: file.size, data, url: URL.createObjectURL(file) };
   } catch (error) { return error instanceof Error ? error.message : String(error); }
 }

@@ -46,8 +46,9 @@ import { startProdTurns } from "./prod-turns.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { SendOnce, sessionFileOf } from "./send-once.ts";
-import { deliverThroughParent } from "./subagent-relay.ts";
+import { sessionFileOf } from "./send-once.ts";
+import { AgentOutbox } from "./agent-outbox.ts";
+import { OwnerOutbox } from "./owner-outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
@@ -89,7 +90,11 @@ export interface ChatBackend {
    * daemon no longer lists (`sessionFileFor`); null for a session with no session file. Absent in tests that fake a backend.
    */
   prompt?: (id: string, via?: readonly string[]) => Promise<PromptView | null>;
-  /** Stops the wake ticker and resolves once every agent message out now has its answer (`SendOnce.idle`); the service runs it before it closes its daemon links. */
+  /** `<dataDir>/outbox/`: the owner's sends from the composer, on disk until the daemon takes them (src/owner-outbox.ts). */
+  outbox: OwnerOutbox;
+  /** `<dataDir>/agent-outbox/`: every agent message the service sends, on disk until the daemon takes it (src/agent-outbox.ts). */
+  messages: AgentOutbox;
+  /** Stops the wake ticker and the agent outbox and waits for its disk writes; the service runs it before it closes its daemon links. */
   drainSends?: () => Promise<void>;
   close(): Promise<void>;
 }
@@ -240,13 +245,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopWatch = ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
-  // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
-  const sendOnce = new SendOnce({ file: join(dataDir, "unconfirmed-sends.json"), log: dutyLog,
+  // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
+  // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
+  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog,
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
       if (response.success) return "sent";
-      // A subagent still unreachable after the reopen is relayed through its parent (deliverThroughParent).
+      // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).
       if (REOPENABLE.test(response.error)) return "gone";
       throw new Error(response.error);
     },
@@ -261,14 +267,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
         busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (typeof data.unfinishedActionCount === "number" && data.unfinishedActionCount > 0) };
     },
-    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir) });
-  const agentMessage = {
-    deliver: (session: string, text: string): Promise<"sent" | "gone"> =>
-      deliverThroughParent(session, text, { fileOf: id => sessionFileOf(id, agentDir), deliver: (id, message) => sendOnce.deliver(id, message) }, dutyLog),
-    startRoot: async (root: string): Promise<void> => {
+    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir),
+    startRoot: async root => {
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
-    },
-  };
+    } });
+  const agentMessage = { deliver: (session: string, text: string, root?: string) => agentOutbox.deliver(session, text, root) };
   const stopWakes = scratch ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopBriefs = scratch ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
@@ -334,20 +337,25 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const prioritySync = scratch ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
   if (!scratch) void poolPriorities.sync();
+  const ownerTurn = (id: string) => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
+  // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
+  const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
-    drainSends: async () => { stopWakes(); await sendOnce.idle(); },
+    drainSends: async () => { stopWakes(); await agentOutbox.close(); },
     prompt: async (id, via) => {
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
       const title = catalog.title(id);
       return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}) }) : null;
     },
-    ownerTurn: id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }),
+    ownerTurn, outbox, messages: agentOutbox,
     async close() {
       if (closed) return;
       closed = true;
+      await outbox.close();
+      await agentOutbox.close();
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
       stopWatch();

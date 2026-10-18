@@ -7,7 +7,7 @@ import { parseWake } from "./wakes.ts";
 import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
 import { otherBoxRoots, reopenSibling, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { getAgentDir } from "prime-agent";
-import { reopenSession, sendReopening } from "./reopen-send.ts";
+import { reopenSession } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
@@ -27,6 +27,7 @@ import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
+import { OutboxConflict } from "./outbox.ts";
 import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
@@ -156,11 +157,10 @@ function rootDirectory(backend: ChatBackend): RootDirectory {
           host: catalog.hostOf(row.sessionId) ?? self, status: row.activity ?? row.lifecycle ?? "unknown" }];
       });
     },
+    // The message waits on disk and the outbox delivers it, so the sender's kernel gets its receipt before the daemon answers (src/agent-outbox.ts).
     send: async (sessionId, message) => {
-      const response = await sendReopening(sessionId, async () => (await catalog.daemonFor(sessionId)).request({ type: "send_message", targetActiveSessionId: sessionId, message }, 30_000, { recoverable: false }),
-        id => reopenSession(catalog, { agentDir: getAgentDir() }, id), line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
-      if (!response.success) throw new Error(response.error);
-      return response.data as Record<string, unknown>;
+      await backend.messages.deliver(sessionId, message, sessionId);
+      return { deliveryStatus: "queued", target: { sessionId } };
     },
     reopen: sessionId => reopenSession(catalog, { agentDir: getAgentDir() }, sessionId),
   };
@@ -395,7 +395,6 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   const ownerLogin = () => owner ??= tailnetOwner().catch(() => null);
   /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
   const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
-  const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
   const tools = toolChecks({ dutyStore: backend.duties?.store });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
@@ -508,7 +507,6 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     closing = (async () => {
       feeds.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
-      sends.clear();
       await logins.close();
       await refreshes.close();
       await backend.close();
@@ -957,25 +955,16 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       const id = threadId(decodeURIComponent(thread[1]!));
       switch (thread[2]) {
         case "prompt": {
+          // The answer comes once the send is on disk; the outbox delivers it to the daemon and the thread feed shows where it is (src/outbox.ts).
           const rid = requestId(body.requestId);
           const message = text(body.message, "message");
           const images = parseImages(body.images);
           const mode = (await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id) ? "steer" : parseMode(body.mode);
           if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
-          let pending = sends.get(rid);
-          if (pending && pending.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to a different message.");
-          // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
-          if (!pending) { const archives = backend.chats.archives(id); pending = { fingerprint, result: (async () => {
-            const ready = backend.ownerTurn?.(id);
-            if (await backend.chats.reopen(id, archives)) {
-              void backend.catalog.notify().catch(error => process.stderr.write(`${new Date().toISOString()} chat ${id.slice(0, 8)}: reopen: sidebar update: ${error instanceof Error ? error.message : String(error)}\n`));
-            }
-            if (backend.chats.archives(id) !== archives) throw new RequestError(409, "The chat was archived before this message went.");
-            await backend.threads.prompt(id, { message, images, mode, ready });
-          })() }; sends.set(rid, pending); }
-          await pending.result;
-          json(res, 200, { accepted: true }); return;
+          try { json(res, 200, await backend.outbox.submit({ id: rid, threadId: id, text: message, images, mode, fingerprint })); }
+          catch (error) { throw error instanceof OutboxConflict ? new RequestError(409, error.message) : error; }
+          return;
         }
         case "abort": {
           const chat = (await backend.chats.ids()).has(id);

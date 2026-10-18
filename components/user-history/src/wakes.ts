@@ -66,16 +66,11 @@ export interface WakeDeps {
   /** The run's CI cache stamp (any string that changes when the run moves), or null when the cache has none. */
   stamp?: (run: number) => Promise<string | null>;
   /**
-   * Sends the session the text; resolves "gone" when the daemon knows no such session. The service's deliver sends a stopped subagent's text
-   * through its parent (`deliverThroughParent`), so its wake is not dropped.
+   * Hands the session the text on disk (src/agent-outbox.ts), which delivers it in the background: through a stopped subagent's parent, and
+   * after starting the tree `root` when the daemon does not find the session. The daemon finds a child only while its tree's worker runs
+   * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped).
    */
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-  /**
-   * Starts the worker of the chat tree `root` with no prompt. The daemon finds a child only while its tree's worker runs, so a child whose tree
-   * was evicted is "gone" until then (10-14 13:37Z: the idle sweep evicted this job's tree, wake-probe-2's wake at 13:39Z was dropped, and the
-   * same message reached it at 13:45Z once a wake had restarted the root). Absent: such a wake is dropped.
-   */
-  startRoot?: (root: string) => Promise<void>;
+  deliver: (session: string, text: string, root?: string) => Promise<void>;
   /**
    * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
@@ -93,8 +88,8 @@ export class Wakes {
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
   /**
-   * One pass: a session's due wakes go out as one message and their files are removed; a wake whose read or send failed stays for the next tick.
-   * Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
+   * One pass: a session's due wakes go to the outbox as one message and their files are removed; a wake whose read or outbox write failed stays
+   * for the next tick. Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
    * message, and the daemon refused the rest with "too many pending messages: 20 unfinished, limit is 20" every 2 s.
    */
   async tick(): Promise<number> {
@@ -109,7 +104,7 @@ export class Wakes {
       parsed.push({ file, wake });
     }
     // Every run is read at once and every session is sent at once: after the chat moved to us-metal02 (10-18 04:19Z) 170 wakes waited, and one
-    // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The send-once record keeps each send single.
+    // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The outbox keeps each send single (src/agent-outbox.ts).
     const runs = new Map<number, Extract<WakeOn, { kind: "run" }>>();
     for (const { wake } of parsed) if (wake.on.kind === "run" && !runs.has(wake.on.run)) runs.set(wake.on.run, wake.on);
     const states = new Map<number, RunState | null>(await Promise.all([...runs].map(async ([run, on]) => [run, await this.look(on, now)] as const)));
@@ -130,14 +125,10 @@ export class Wakes {
       try {
         const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
         const root = wakes.find(({ wake }) => wake.root)?.wake.root;
-        let result = await this.deps.deliver(session, text);
-        if (result === "gone" && root && this.deps.startRoot) {
-          await this.deps.startRoot(root);
-          result = await this.deps.deliver(session, text);
-        }
+        await this.deps.deliver(session, text, root);
         for (const { file } of wakes) await rm(file, { force: true });
-        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, sent ${Math.round((this.now() - now) / 1000)} s after the tick began`);
-        return result === "sent";
+        this.deps.log(`wakes: woke ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
+        return true;
       } catch (error) {
         this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
         return false;

@@ -1,5 +1,6 @@
 // Guards the 10-17 22:37Z clean-room run-4 failure: the owner's first message after an archive and reopen got a 502 before the worker attached.
 // Also guards 10-18 run-2: that message was answered, but the chat stayed in archived-chats.json and GET agents answered 404 "This thread is not a chat."
+// Since 10-18 08:16Z the route answers once the send is on disk (src/outbox.ts), so these tests wait for the outbox and read its entries.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -16,6 +17,7 @@ import { startChatServer } from "../src/chat-server.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
+import { OwnerOutbox } from "../src/owner-outbox.ts";
 import { source } from "./chats-helpers.ts";
 
 function latch() {
@@ -39,7 +41,7 @@ async function fixture(t: TestContext) {
   const creating = latch(), createReady = latch(), attaching = latch(), attachReady = latch(), accepted = latch(), replyReady = latch();
   const calls: { type: string; message?: string; streamingBehavior?: string; activeSessionId?: string }[] = [];
   const steering = latch(), steeringReady = latch(), detached = latch();
-  let holdSteering = false, holdKill = false;
+  let holdSteering = false, holdKill = false, promptTimesOut = false;
   const killing = latch(), killReady = latch();
   let killAnswer: { success: true } | { success: false; error: string } = { success: true };
   let responseData: unknown = live;
@@ -70,7 +72,9 @@ async function fixture(t: TestContext) {
       case "get_queue": return { success: true, data: { steering: [], followUp: [] } };
       case "prompt":
         { const writer = SessionManager.open(file); writer.appendMessage({ role: "user", content: command.message!, timestamp: 2 }); writer.flushNow(); }
-        accepted.resolve(); await replyReady.promise; return { success: true };
+        accepted.resolve(); await replyReady.promise;
+        if (promptTimesOut) { promptTimesOut = false; throw new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "prompt".'); }
+        return { success: true };
       case "set_steering_mode": if (holdSteering) { steering.resolve(); await steeringReady.promise; } return { success: true };
       case "detach": detached.resolve(); return { success: true };
       case "kill": if (holdKill) { killing.resolve(); await killReady.promise; } return killAnswer;
@@ -81,8 +85,10 @@ async function fixture(t: TestContext) {
   await catalog.refresh();
   const hub = new ThreadHub("/isolated-reopen.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   chats = new Chats(index, hub, sessionId => catalog.summary(sessionId), "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir), archived });
-  const backend = { chats, threads: hub, catalog,
-    close: async () => { chats.close(); await hub.close(); await catalog.close(); } } as unknown as ChatBackend;
+  const outbox = new OwnerOutbox(join(dir, "outbox"), { threads: hub, chats, catalog }, line => process.stderr.write(`${line}\n`),
+    { sleep: () => new Promise(done => setTimeout(done, 5)) });
+  const backend = { chats, threads: hub, catalog, outbox,
+    close: async () => { await outbox.close(); chats.close(); await hub.close(); await catalog.close(); } } as unknown as ChatBackend;
   const asset = { body: Buffer.from(""), etag: '"test"', contentType: "text/plain" };
   const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "test-token", stopToken: "test-stop",
     identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-reopen.sock" }, onStop: async () => {} });
@@ -97,31 +103,35 @@ async function fixture(t: TestContext) {
     method: "POST", headers: { "content-type": "application/json", origin: new URL(server.url).origin, "x-chat-token": "test-token" }, body: "{}" });
   const agents = () => fetch(server.url + `api/threads/${id}/agents`, { headers: { origin: new URL(server.url).origin, "x-chat-token": "test-token" } });
   const membership = async () => ({ chats: await index.ids(), archived: await archived.ids() });
-  return { id, file, hub, catalog, chats, calls, agents, membership, archive, steering, steeringReady, detached, holdSteering: () => { holdSteering = true; }, killing, killReady,
+  const delivered = () => outbox.outbox.idle();
+  const entries = () => outbox.outbox.view(id);
+  return { id, file, hub, catalog, chats, calls, agents, delivered, entries, timeOutPrompt: () => { promptTimesOut = true; }, membership, archive, steering, steeringReady, detached, holdSteering: () => { holdSteering = true; }, killing, killReady,
     holdKill: () => { holdKill = true; }, failKill: (error: string) => { killAnswer = { success: false, error }; }, creating, createReady, attaching, attachReady, accepted, replyReady, post,
     publish: () => { listed = live; }, response: (data: unknown) => { responseData = data; },
     close };
 }
 
-test("the first owner POST waits for the resumed snapshot even while the catalog still lists the archived session", async t => {
+const prompts = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(c => c.type === "prompt");
+async function until(check: () => boolean) { while (!check()) await new Promise(done => setTimeout(done, 5)); }
+
+test("the first owner POST answers once the send is on disk, and the send goes after the resumed snapshot", async t => {
   const f = await fixture(t);
   try {
-    let settled = false;
-    const response = f.post().then(value => { settled = true; return value; });
-    await f.creating.promise;
-    assert.equal(settled, false);
-    f.createReady.resolve();
-    const phase = await Promise.race([f.attaching.promise.then(() => "attach"), response.then(async res => `${res.status} ${await res.clone().text()}`)]);
-    assert.equal(phase, "attach");
-    assert.equal(settled, false);
-    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
-    f.attachReady.resolve(); f.replyReady.resolve();
-    const res = await response;
+    const res = await f.post();
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { accepted: true });
+    const body = await res.json() as { accepted: boolean; outbox: { id: string; state: string } };
+    assert.equal(body.accepted, true);
+    assert.equal(body.outbox.id, "reopen-owner-message-1");
+    assert.ok(body.outbox.state === "queued" || body.outbox.state === "sending");
+    await f.creating.promise;
+    f.createReady.resolve();
+    await f.attaching.promise;
+    assert.equal(prompts(f).length, 0);
+    f.attachReady.resolve(); f.replyReady.resolve();
+    await f.delivered();
     assert.equal((await f.catalog.summary(f.id))?.activeSessionId, undefined, "catalog freshness is not required for delivery");
-    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => [c.activeSessionId, c.message, c.streamingBehavior]),
-      [["resumed-worker", "first message after reopen", "steer"]]);
+    assert.deepEqual(prompts(f).map(c => [c.activeSessionId, c.message, c.streamingBehavior]), [["resumed-worker", "first message after reopen", "steer"]]);
+    assert.deepEqual(f.entries(), []);
     assert.equal(f.hub.state(f.id)?.info.sessionId, f.id);
     assert.equal(f.hub.state(f.id)?.messages.length, 1);
     assert.equal(SessionManager.open(f.file).getSessionState()?.status, "active");
@@ -133,19 +143,19 @@ test("the owner's first message to a chat he archived reopens it: same session a
   try {
     assert.equal((await f.agents()).status, 404, "an archived chat is not a chat");
     f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
-    const res = await f.post();
-    assert.equal(res.status, 200);
+    assert.equal((await f.post()).status, 200);
+    await f.delivered();
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
     assert.ok((await f.chats.ids()).has(f.id));
     const agents = await f.agents();
     assert.equal(agents.status, 200, await agents.clone().text());
-    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => [c.activeSessionId, c.message, c.streamingBehavior]),
-      [["resumed-worker", "first message after reopen", "steer"]]);
+    assert.deepEqual(prompts(f).map(c => [c.activeSessionId, c.message, c.streamingBehavior]), [["resumed-worker", "first message after reopen", "steer"]]);
     const users = SessionManager.open(f.file).getBranch().flatMap(e => e.type === "message" && e.message.role === "user" ? [e.message.content] : []);
     assert.deepEqual(users, ["original history", "first message after reopen"]);
     assert.equal(f.hub.state(f.id)?.info.sessionId, f.id);
     assert.equal((await f.catalog.rows()).find(row => row.id === f.id)?.archived, false);
     assert.equal((await f.post("reopen-owner-message-2", "second message")).status, 200, "a second send to the reopened chat");
+    await f.delivered();
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
   } finally { await f.close(); }
 });
@@ -154,12 +164,12 @@ test("concurrent owner sends with different request ids reopen the chat once and
   const f = await fixture(t);
   try {
     f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
-    const first = f.post("reopen-owner-message-a", "message a"), second = f.post("reopen-owner-message-b", "message b");
-    assert.deepEqual(await Promise.all([first, second].map(async res => { const done = await res; return `${done.status} ${await done.text()}`; })),
-      ["200 {\"accepted\":true}", "200 {\"accepted\":true}"]);
+    const answers = await Promise.all([f.post("reopen-owner-message-a", "message a"), f.post("reopen-owner-message-b", "message b")]);
+    assert.deepEqual(answers.map(res => res.status), [200, 200]);
+    await f.delivered();
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
     assert.equal(f.calls.filter(c => c.type === "create").length, 1);
-    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message).sort(), ["message a", "message b"]);
+    assert.deepEqual(prompts(f).map(c => c.message), ["message a", "message b"], "one thread's sends go in the order they came");
   } finally { await f.close(); }
 });
 
@@ -182,8 +192,9 @@ test("a sidebar update that fails after the reopen does not hold the first messa
     t.mock.method(process.stderr, "write", (chunk: string | Uint8Array, ...rest: never[]) => { errors.push(String(chunk)); return write(chunk, ...rest); });
     f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
     assert.equal((await f.post()).status, 200);
+    await f.delivered();
     await new Promise(done => setImmediate(done));
-    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message), ["first message after reopen"]);
+    assert.deepEqual(prompts(f).map(c => c.message), ["first message after reopen"]);
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
     assert.ok(errors.some(line => line.includes(`chat ${f.id.slice(0, 8)}: reopen: sidebar update: catalog notify failed`)), errors.join(""));
   } finally { await f.close(); }
@@ -193,17 +204,16 @@ test("an archive that lands after the attach, while the reopen writes the chat l
   const f = await fixture(t);
   try {
     f.holdSteering(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
-    const send = f.post();
+    assert.equal((await f.post()).status, 200);
     await f.steering.promise;
     const archived = f.archive();
     await f.detached.promise;
     const replacement = await f.hub.open(f.id, false, false);
     f.steeringReady.resolve();
-    const res = await send;
-    assert.equal(res.status, 409, await res.clone().text());
-    assert.deepEqual(await res.json(), { error: "The chat was archived before this message went." });
+    await f.delivered();
+    assert.deepEqual(f.entries().map(entry => [entry.state, entry.error]), [["failed", "The chat was archived before this message went."]]);
     assert.equal((await archived).status, 200);
-    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
+    assert.equal(prompts(f).length, 0);
     assert.equal(f.calls.filter(c => c.type === "create").length, 1, "no worker starts again for the archived chat");
     assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] });
     assert.equal(SessionManager.open(f.file).getSessionState()?.status, "archived");
@@ -216,15 +226,16 @@ test("an archive through the route while the reopen resumes keeps the chat archi
   const f = await fixture(t);
   try {
     f.replyReady.resolve();
-    const send = f.post();
+    assert.equal((await f.post()).status, 200);
     f.createReady.resolve();
     await f.attaching.promise;
     const archived = f.archive();
     while (f.chats.archives(f.id) === 0) await new Promise(done => setTimeout(done, 5));
     f.attachReady.resolve();
-    assert.equal((await send).status, 409);
     assert.equal((await archived).status, 200);
-    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
+    await f.delivered();
+    assert.deepEqual(f.entries().map(entry => entry.state), ["failed"]);
+    assert.equal(prompts(f).length, 0);
     assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] });
     assert.equal(SessionManager.open(f.file).getSessionState()?.status, "archived");
   } finally { await f.close(); }
@@ -235,19 +246,19 @@ test("an owner send that comes in while an older archive still stops the worker 
   try {
     f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
     assert.equal((await f.post("reopen-owner-message-first", "first")).status, 200);
+    await f.delivered();
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
     f.holdKill();
     const archived = f.archive();
     await f.killing.promise;
-    const send = f.post("reopen-owner-message-after-archive", "sent after the archive");
+    assert.equal((await f.post("reopen-owner-message-after-archive", "sent after the archive")).status, 200);
     await new Promise(done => setTimeout(done, 50));
     f.killReady.resolve();
     assert.equal((await archived).status, 200);
-    const res = await send;
-    assert.equal(res.status, 200, await res.clone().text());
+    await f.delivered();
     await new Promise(done => setTimeout(done, 50));
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] }, "the newer send reopened the chat after the archive's writes");
-    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message), ["first", "sent after the archive"]);
+    assert.deepEqual(prompts(f).map(c => c.message), ["first", "sent after the archive"]);
     assert.equal((await f.agents()).status, 200);
   } finally { await f.close(); }
 });
@@ -257,6 +268,7 @@ test("a kill the daemon refuses fails the archive route and writes no archive in
   try {
     f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
     assert.equal((await f.post("reopen-owner-message-first", "first")).status, 200);
+    await f.delivered();
     f.failKill("worker refused the kill");
     const archived = await f.archive();
     assert.equal(archived.status, 502, await archived.clone().text());
@@ -265,34 +277,48 @@ test("a kill the daemon refuses fails the archive route and writes no archive in
   } finally { await f.close(); }
 });
 
-test("a lost HTTP response after acceptance and concurrent same-ID retries deliver one owner message", async t => {
+test("same-ID resends while the prompt is out and after it went deliver one owner message", async t => {
   const f = await fixture(t);
   try {
     f.publish(); f.createReady.resolve(); f.attachReady.resolve();
-    const abort = new AbortController();
-    const first = f.post(undefined, undefined, abort.signal);
-    await f.accepted.promise;
-    abort.abort();
-    await assert.rejects(first, { name: "AbortError" });
-    const retry = f.post();
-    f.replyReady.resolve();
-    assert.equal((await retry).status, 200);
     assert.equal((await f.post()).status, 200);
+    await f.accepted.promise;
+    const retry = await f.post();
+    assert.equal(retry.status, 200);
+    assert.equal((await retry.json() as { outbox: { state: string } }).outbox.state, "sending");
+    f.replyReady.resolve();
+    await f.delivered();
+    const after = await f.post();
+    assert.equal((await after.json() as { outbox: { state: string } }).outbox.state, "delivered");
     assert.equal((await f.post(undefined, "different message")).status, 409);
-    assert.equal(f.calls.filter(c => c.type === "prompt").length, 1);
+    assert.equal(prompts(f).length, 1);
     const users = SessionManager.open(f.file).getBranch().filter(e => e.type === "message" && e.message.role === "user");
     assert.equal(users.length, 2, "original history and the first reopened message remain once each");
   } finally { await f.close(); }
 });
 
+test("a prompt that times out after it reached the session file is found there and not sent again", async t => {
+  const f = await fixture(t);
+  try {
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve(); f.timeOutPrompt();
+    assert.equal((await f.post()).status, 200);
+    await f.delivered();
+    assert.equal(prompts(f).length, 1);
+    assert.deepEqual(f.entries(), []);
+    const users = SessionManager.open(f.file).getBranch().filter(e => e.type === "message" && e.message.role === "user");
+    assert.equal(users.length, 2);
+  } finally { await f.close(); }
+});
+
 for (const data of [{}, { sessionId: "another-chat", activeSessionId: "wrong-worker" }, { activeSessionId: "wrong-worker" }]) {
-  test(`a resume response with no matching identity is rejected without sending: ${JSON.stringify(data)}`, async t => {
+  test(`a resume response with no matching identity sends nothing and keeps the send queued: ${JSON.stringify(data)}`, async t => {
     const f = await fixture(t);
     try {
       f.response(data); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
-      const res = await f.post();
-      assert.equal(res.status, 502);
-      assert.deepEqual(await res.json(), { error: "Prime Agent returned no matching session for the resumed thread." });
+      assert.equal((await f.post()).status, 200);
+      await until(() => f.calls.filter(c => c.type === "create").length >= 3);
+      assert.equal(f.entries().length, 1);
+      assert.ok(["queued", "sending"].includes(f.entries()[0]!.state), "a 502 from the daemon is tried again, never a failure");
       assert.equal(f.calls.filter(c => c.type === "attach" || c.type === "prompt").length, 0);
       assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] }, "a failed resume leaves the chat archived");
       assert.equal((await f.agents()).status, 404);
@@ -303,16 +329,15 @@ for (const data of [{}, { sessionId: "another-chat", activeSessionId: "wrong-wor
 for (const reopen of [false, true]) test(`archiving during resume cancels the old send${reopen ? " even after another open" : ""}`, async t => {
   const f = await fixture(t);
   try {
-    const response = f.post();
+    assert.equal((await f.post()).status, 200);
     f.createReady.resolve();
-    const phase = await Promise.race([f.attaching.promise.then(() => "attach"), response.then(res => `HTTP ${res.status}`)]);
-    assert.equal(phase, "attach");
+    await f.attaching.promise;
     await f.hub.archive(f.id);
     const replacement = reopen ? await f.hub.open(f.id, false, false) : undefined;
     f.attachReady.resolve(); f.replyReady.resolve();
-    const res = await response;
-    assert.equal(res.status, 409);
-    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
+    await f.delivered();
+    assert.deepEqual(f.entries().map(entry => entry.state), ["failed"]);
+    assert.equal(prompts(f).length, 0);
     assert.equal(f.hub.state(f.id), replacement?.state);
     assert.equal(f.calls.filter(c => c.type === "detach").length, 1);
     assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] }, "an archive during the resume keeps the chat archived");

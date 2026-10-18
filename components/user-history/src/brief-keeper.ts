@@ -200,10 +200,8 @@ export function primeWorkers(workersDir: string): (root: string, session: string
 
 export interface BriefDeps {
   dir: string;
-  /** Sends the session the text; resolves "gone" when the daemon knows no such session (wakes.ts). */
-  deliver: (session: string, text: string) => Promise<"sent" | "gone">;
-  /** Starts the worker of the tree `root`, so the daemon finds the session in it on the next tick (wakes.ts). */
-  startRoot: (root: string) => Promise<void>;
+  /** Hands the session the text on disk; the outbox starts the tree `root` when the daemon does not find the session (wakes.ts). */
+  deliver: (session: string, text: string, root?: string) => Promise<void>;
   /** The live worker of the tree `root` and whether it ran `session` (`primeWorkers`); undefined when none runs. */
   worker: (root: string, session: string) => Promise<TreeWorker | undefined>;
   /** Starts a root job registered under the chat `record.root` with the brief `restartText` makes (chat-duty-job.ts start); its session id. */
@@ -264,12 +262,7 @@ export async function briefTick(deps: BriefDeps): Promise<number> {
       continue;
     }
     try {
-      const result = await deps.deliver(act.session, briefText(record, now));
-      if (result === "gone") {
-        deps.log(`briefs: ${label} has no first prompt ${Math.round((now - record.at) / 60_000)} min after its spawn and the daemon does not find it; starting its tree ${record.root.slice(0, 8)}`);
-        await deps.startRoot(record.root);
-        continue;
-      }
+      await deps.deliver(act.session, briefText(record, now), record.root);
       await writeRecord(file, { ...record, sent: { at: now, worker: worker?.id ?? "" } });
       sent++;
       deps.log(`briefs: ${label} had no first prompt ${Math.round((now - record.at) / 60_000)} min after its spawn; sent its brief to ${act.session}`);

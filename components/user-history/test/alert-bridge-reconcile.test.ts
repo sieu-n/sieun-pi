@@ -29,7 +29,7 @@ async function fixture(list: unknown[], state?: BridgeState) {
   let now = NOW;
   const sent: { session: string; text: string }[] = [];
   const bridge = new AlertBridge({ file, boards, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => null,
-    hasBoard: async session => session !== METAL, deliver: async (session, text) => { sent.push({ session, text }); return "sent"; } });
+    hasBoard: async session => session !== METAL, deliver: async (session, text) => { sent.push({ session, text }); } });
   const steps = async (id: string): Promise<PlanItem[]> => {
     const found: PlanItem[] = [];
     walkItems((await boards.read(id))?.plan ?? [], item => { if (item.note?.startsWith("Grafana alert ")) found.push(item); });
@@ -114,7 +114,7 @@ test("owner: an alert burst's new steps go to one job at once, a working job get
   const sent: { session: string; text: string }[] = [];
   let working = true;
   const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), boards, now: () => now, log: () => {}, alerts: async () => parseAlerts(list),
-    owners: async () => null, deliver: async (session, text) => { sent.push({ session, text }); return "sent"; },
+    owners: async () => null, deliver: async (session, text) => { sent.push({ session, text }); },
     startJob: async (chat, steps) => { started.push({ chat, steps: steps.map(line => line.step) }); return { id: `job-${started.length}`, name: `alert ops guy ${started.length}` }; },
     jobWorking: async () => working });
   const steps = async (): Promise<PlanItem[]> => {

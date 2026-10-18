@@ -82,10 +82,11 @@ function applySessionEvent(state: ThreadState, event: ProjectedSessionEvent, now
 export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = Date.now()): ThreadState {
   switch (event.type) {
     case "snapshot": {
-      // The board, the wait and the children come as their own events: a snapshot without them keeps the ones held.
+      // The board, the wait, the outbox and the children come as their own events: a snapshot without them keeps the ones held.
       const { snapshot } = event;
       return { ...snapshot, children: snapshot.children ?? state.children, connection: state.connection,
-        ...(snapshot.board === undefined && state.board !== undefined ? { board: state.board } : {}), ...(snapshot.wait === undefined && state.wait !== undefined ? { wait: state.wait } : {}) };
+        ...(snapshot.board === undefined && state.board !== undefined ? { board: state.board } : {}), ...(snapshot.wait === undefined && state.wait !== undefined ? { wait: state.wait } : {}),
+        ...(snapshot.outbox === undefined && state.outbox !== undefined ? { outbox: state.outbox } : {}) };
     }
     case "event": return applySessionEvent(state, event.event, now);
     case "info": return { ...state, info: event.info };
@@ -93,6 +94,7 @@ export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = D
     case "children": return { ...state, children: event.children };
     case "board": return { ...state, board: event.board };
     case "wait": return { ...state, wait: event.wait };
+    case "outbox": return { ...state, outbox: event.outbox };
     case "status": return { ...state, connection: event.connection, ...(event.error === undefined ? {} : { error: event.error }) };
   }
 }

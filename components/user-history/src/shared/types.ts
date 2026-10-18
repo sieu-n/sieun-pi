@@ -1,3 +1,4 @@
+import type { OutboxEntry } from "./outbox.ts";
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -182,6 +183,8 @@ export interface ThreadSnapshot {
   board?: ChatBoard | null;
   /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
   wait?: ChatWait | null;
+  /** The owner's sends the server holds on disk and has not delivered yet, and the failed ones (src/outbox.ts). Absent keeps the list held. */
+  outbox?: OutboxEntry[];
   /**
    * Messages before `messages[0]` exist: the opaque cursor `GET api/threads/<id>/older?cursor=` takes (src/shared/message-key.ts `OlderCursor`).
    * A feed snapshot carries the newest page only (session-tail.ts PAGE_MESSAGES).
@@ -226,6 +229,8 @@ export type ThreadEvent =
   | { type: "children"; children: ChildAgent[] }
   | { type: "board"; board: ChatBoard }
   | { type: "wait"; wait: ChatWait | null }
+  /** The thread's queued, sending and failed owner sends; a send just delivered is listed once as "delivered", then dropped. */
+  | { type: "outbox"; outbox: OutboxEntry[] }
   | { type: "status"; connection: ThreadConnection; error?: string };
 
 export type SessionKind = "live" | "saved";

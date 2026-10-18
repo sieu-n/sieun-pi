@@ -9,6 +9,8 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { isReopenable } from "./reopen-send.ts";
+import { userMessageAt } from "./send-once.ts";
+import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
@@ -200,6 +202,11 @@ function liveSessionId(summary: SessionSummary): string | undefined {
   return summary.workerState === "failed" ? undefined : summary.activeSessionId;
 }
 
+/** A user message's text parts, joined and trimmed. */
+function userText(message: { content: string | readonly { type: string; text?: string }[] }): string {
+  return (typeof message.content === "string" ? message.content : message.content.map(part => part.type === "text" ? part.text ?? "" : "").join("")).trim();
+}
+
 /** What a thread shows of a resident session before its file or the daemon said more: the catalog's name, folder and usage. */
 function emptyInfo(summary: SessionSummary): ThreadInfo {
   const name = summary.sessionName?.trim();
@@ -238,6 +245,8 @@ export class ThreadHub {
   /** Archives through this server under way, and when the last one started or ended, so `keepListed` never undoes one (an explicit archive wins). */
   private readonly archiving = new Map<string, number>();
   private readonly archivedAt = new Map<string, number>();
+  /** When the last archive through this server began, so an owner send that came in before it does not go (`archivedSince`). */
+  private readonly archiveStarts = new Map<string, number>();
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
@@ -245,6 +254,8 @@ export class ThreadHub {
   private readonly catalogRows = new Map<string, SessionRow>();
   private readonly attaches = new AttachQueue();
   private readonly observers = new Set<ThreadObserver>();
+  /** Each thread's owner sends not delivered yet (`setOutbox`), for the threads that open later. */
+  private readonly outboxes = new Map<string, OutboxEntry[]>();
   private closed = false;
 
   /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
@@ -779,7 +790,8 @@ export class ThreadHub {
       const snapshot: ThreadSnapshot = first ? { ...first, kind: activeSessionId === undefined ? "saved" : "live" } : { kind: "live", info: emptyInfo(summary), messages: [], streaming: null,
         queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null };
       this.evict("saved");
-      const thread = new Thread(id, snapshot, (candidate, before) => this.childrenChanged(candidate, before));
+      const outbox = this.outboxes.get(id);
+      const thread = new Thread(id, outbox ? { ...snapshot, outbox } : snapshot, (candidate, before) => this.childrenChanged(candidate, before));
       thread.sessionFile = summary.sessionFile;
       thread.opening = true;
       this.threads.set(id, thread);
@@ -889,6 +901,42 @@ export class ThreadHub {
     const current = thread?.state.board;
     if (!thread || (current && current.rev === board.rev && current.updatedAt === board.updatedAt)) return;
     thread.broadcast({ type: "board", board });
+  }
+
+  /**
+   * The thread's owner sends not delivered yet (src/outbox.ts). The open thread's listeners get an outbox event, with `left`, the send just
+   * delivered, listed once as it leaves; a thread opened later starts with the list.
+   */
+  setOutbox(id: string, outbox: OutboxEntry[], left?: OutboxEntry): void {
+    if (outbox.length) this.outboxes.set(id, outbox); else this.outboxes.delete(id);
+    const thread = this.threads.get(id);
+    if (!thread || (!left && JSON.stringify(thread.state.outbox ?? []) === JSON.stringify(outbox))) return;
+    thread.broadcast({ type: "outbox", outbox: left ? [...outbox, left] : outbox });
+    thread.state = { ...thread.state, outbox };
+  }
+
+  /**
+   * Where an owner send that began at `since` and may have reached the daemon is: a user message with its text in the session file (or the
+   * open thread, for another box's session), its text in the worker's queue, neither, or unknown when the daemon did not answer.
+   */
+  async copyOf(id: string, text: string, imageCount: number, since: number): Promise<"landed" | "queued" | "absent" | "unknown"> {
+    const summary = await this.summary(id).catch(() => null);
+    if (!summary) return "unknown";
+    const said = text.trim();
+    const file = this.catalog.hostOf(id) ? undefined : summary.sessionFile;
+    const inFile = async () => file ? await userMessageAt(file, said, imageCount, since) !== null
+      : (this.threads.get(id)?.state.messages ?? []).some(message => message.role === "user" && message.timestamp >= since - 1_000 && userText(message) === said &&
+        (typeof message.content === "string" ? 0 : message.content.filter(part => part.type === "image").length) === imageCount);
+    if (await inFile()) return "landed";
+    const active = this.threads.get(id)?.live?.activeSessionId ?? liveSessionId(summary);
+    if (active) {
+      const response = await (await this.daemon(id)).request({ type: "get_state", activeSessionId: active }, undefined, { recoverable: false }).catch(() => null);
+      if (!response || (!response.success && !isReopenable(response.error))) return "unknown";
+      const actions = response.success ? (response.data as { sessionActions?: { steering?: unknown; followUps?: unknown } } | undefined)?.sessionActions : undefined;
+      if ([actions?.steering, actions?.followUps].some(list => Array.isArray(list) && list.some(item => typeof item === "string" && item.trim() === said))) return "queued";
+    }
+    // The worker may have written it between the file read and the queue read.
+    return await inFile() ? "landed" : "absent";
   }
 
   /** What the server waits for before it restarts a chat's failed owner turn; the open thread's listeners get a wait event when it changes. */
@@ -1016,7 +1064,7 @@ export class ThreadHub {
    * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
    * trip (230 ms to the Mac). Only a session with no live worker, or one whose listed worker is gone, waits for the resume to start it again.
    */
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined }, trigger = "prompt"): Promise<void> {
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
     const resumed = this.resume(id, false, trigger);
     resumed.catch(() => {});
     const held = this.threads.get(id)?.live?.activeSessionId;
@@ -1042,9 +1090,12 @@ export class ThreadHub {
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
     const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) };
+    // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
+    await input.sending?.();
     try { await ask(activeSessionId, "prompt", fields); } catch (error) {
       if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
       activeSessionId = (await resumed).live!.activeSessionId;
+      await input.sending?.();
       await ask(activeSessionId, "prompt", fields);
     }
     const thread = this.threads.get(id);
@@ -1124,6 +1175,7 @@ export class ThreadHub {
    * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
    */
   async archive(id: string): Promise<void> {
+    this.archiveStarts.set(id, Date.now());
     this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
     this.archivedAt.set(id, Date.now());
     try { await this.archiveNow(id); } finally {
@@ -1162,6 +1214,9 @@ export class ThreadHub {
       })().catch(() => {});
     }, 5000).unref();
   }
+
+  /** Whether an archive through this server began at or after `since`. */
+  archivedSince(id: string, since: number): boolean { return (this.archiveStarts.get(id) ?? -Infinity) >= since; }
 
   /** Undo an archive: the thread comes back as a saved thread that resumes on the next reply. */
   async unarchive(id: string): Promise<void> {

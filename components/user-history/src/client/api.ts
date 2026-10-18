@@ -1,6 +1,7 @@
 import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
+import type { OutboxAccepted } from "../shared/outbox.ts";
 import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
@@ -144,7 +145,7 @@ export const api = {
     post<{ id: string; notice?: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
-    post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
+    post<OutboxAccepted>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
   abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
   /** Reads the thread's whole session file; the thread's stream then sends a snapshot with every message. */
   olderPage: (id: string, cursor: string) => get<OlderPage>("api/threads/" + encodeURIComponent(id) + "/older?cursor=" + encodeURIComponent(cursor), 60000),

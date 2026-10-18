@@ -10,6 +10,7 @@ import { childUsage, pushedAccounts } from "./thread-side.svelte.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
 import { keepOlder, newestPage, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
+import { indexedDbStorage, memoryStorage, PageOutbox, pendingOf } from "./outbox.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
@@ -63,8 +64,17 @@ class Store {
   drawer = $state<SettingsSection | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
-  /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */
+  /** Chat sends each thread has not echoed back yet, by thread id, oldest first: the outbox's sends and the delivered ones (`pendingOf`). */
   pendingSends = $state.raw<Record<string, PendingSend[]>>({});
+  /** Edit on a failed send: the chat's composer takes its text and images and clears this. */
+  editSend = $state.raw<{ chat: string; text: string; images: ImageInput[] } | null>(null);
+  readonly outbox = new PageOutbox({
+    storage: typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage(),
+    post: send => api.prompt(send.threadId, { message: send.text, images: send.images, mode: "steer", requestId: send.id }),
+    status: error => error instanceof ApiError ? error.status : null,
+    onChange: view => { this.pendingSends = pendingOf(view); },
+    log: line => console.warn(line),
+  });
   /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
@@ -90,6 +100,7 @@ class Store {
     window.addEventListener("hashchange", () => this.readHash());
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (this.selectedId) this.seenAt.set(this.selectedId, this.hides); this.trimHidden(); } });
     this.subscribeSessions();
+    void this.outbox.resend();
   }
 
   private subscribeSessions(): void {
@@ -122,7 +133,7 @@ class Store {
   private onBuild(version: string): void {
     if (!version || version === document.body.dataset.build || this.updateOffered) return;
     this.updateOffered = true;
-    const unsent = () => this.pending !== null || hasUnsentDrafts();
+    const unsent = () => this.pending !== null || hasUnsentDrafts() || this.outbox.hasUnsent();
     const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), unsent: unsent() });
     if (plan === "now") location.reload();
     else if (plan === "on-leave") onLeave(() => { if (unsent()) this.offerReload(); else location.reload(); });
@@ -234,6 +245,9 @@ class Store {
       const current = this.threads[id];
       if (!current) return;
       if (event.type === "snapshot") {
+        // Each subscribe and socket reconnect brings one: the sends the server has not delivered go again with their ids.
+        if (event.snapshot.outbox) void this.outbox.server(event.snapshot.outbox);
+        void this.outbox.resend(id);
         if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
         const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
         this.patch(id, { state: keepOlder(current.state, page), newest: newestPage(page), loading: false, error: null });
@@ -243,6 +257,7 @@ class Store {
         this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
       }
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
+      if (event.type === "outbox") void this.outbox.server(event.outbox);
     };
     this.expectSide(id);
     this.patch(id, { close });
@@ -368,16 +383,22 @@ class Store {
   }
 
   /**
-   * A chat send: the bubble appears at once as pending and the box is free again; the message steers the thread so it lands
-   * even while it is busy. A refused send drops the bubble and shows the error; the composer gets its text back.
+   * A chat send goes into the page outbox (outbox.ts) and shows at once as a sending bubble; the outbox posts it until the server holds it,
+   * and the message steers the thread so it lands even while it is busy. It never shows a toast: a send that cannot go gets a note under
+   * its bubble with Retry and Edit.
    */
-  async sendChat(id: string, text: string, images: ImageInput[]): Promise<boolean> {
-    const send: PendingSend = { id: requestId(), text, at: Date.now(),
-      images: images.map(image => ({ type: "image", mimeType: image.mimeType, url: "data:" + image.mimeType + ";base64," + image.data })) };
-    this.pendingSends = { ...this.pendingSends, [id]: [...(this.pendingSends[id] ?? []), send] };
-    const ok = await this.send(id, text, images, "steer");
-    if (!ok) this.settleSends(id, new Set([send.id]));
-    return ok;
+  sendChat(id: string, text: string, images: ImageInput[]): Promise<void> {
+    return this.outbox.submit({ id: requestId(), threadId: id, text, images, at: Date.now() });
+  }
+
+  retrySend(sendId: string): Promise<void> { return this.outbox.retry(sendId, requestId(), Date.now()); }
+
+  /** Puts a failed send's text and images back in its chat's composer and drops it. */
+  editFailed(sendId: string): void {
+    const send = this.outbox.view.sends.find(held => held.id === sendId);
+    if (!send) return;
+    this.editSend = { chat: send.threadId, text: send.text, images: send.images };
+    void this.outbox.drop(sendId);
   }
 
   /**
@@ -397,13 +418,7 @@ class Store {
   }
 
   /** Forget pending sends the thread has echoed back (the chat view reports them), so the list never grows. */
-  settleSends(id: string, ids: ReadonlySet<string>): void {
-    const sends = this.pendingSends[id] ?? [];
-    if (!sends.some(send => ids.has(send.id))) return;
-    const left = sends.filter(send => !ids.has(send.id));
-    const { [id]: _dropped, ...rest } = this.pendingSends;
-    this.pendingSends = left.length ? { ...rest, [id]: left } : rest;
-  }
+  settleSends(ids: ReadonlySet<string>): void { void this.outbox.echoed(ids); }
 
   private slackLoad: Promise<void> | null = null;
   /** One read in flight: the page start and a chat header that mounts before it answers share it. */
