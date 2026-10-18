@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FEED_FRESH_MS, PRESSURE_FEED, groupOf } from "../../prime-relay/host-stats.ts";
+import { FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -35,7 +35,7 @@ export interface UsableReading { pressureLevel: number; swapoutsPerS: number; ke
 export interface FeedOwner { owner: string; label: string; gb: number }
 /** Owners kept a minute: the feed lists about 50, and the largest 8 held 41 of its 57 GB at 08:52Z on 10-15. */
 export const FEED_OWNERS = 8;
-export type UsableMiss = "pressure" | "swapouts" | "kernel_task";
+export type UsableMiss = "pressure" | "swapouts" | "kernel_task" | "cpu";
 
 /** The feed reading in `value`, or null when it is not schema v1, is older than FEED_FRESH_MS at `now`, or lacks a number. */
 export function parseFeed(value: unknown, now: number): UsableReading | null {
@@ -55,13 +55,44 @@ export function parseFeed(value: unknown, now: number): UsableReading | null {
 export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promise<UsableReading | null> =>
   parseFeed(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), now);
 
-/** What makes a reading's minute unusable, in USABLE's order; empty when the Mac is usable. */
-export function unusable(reading: UsableReading): UsableMiss[] {
+/**
+ * A Linux box's usable minute, from its own kernel: memory full stall (avg10) under 70%, the mark at which Android lmkd's default
+ * psi_complete_stall_ms (700 ms of a 1 s window) reads critical, as macOS's level 4 does (host-stats.ts parsePsi uses the same mark), and a
+ * 1-minute load under one runnable task a core, where the box's CPU is saturated by definition. The swap-out rate is kept as context with no
+ * mark: the Mac's 6,000 a second was measured in 16 KiB macOS pages, and no Linux measurement backs a number yet.
+ */
+export const LINUX_USABLE = { memFullAvg10: 70, loadPerCore: 1 } as const;
+/** One box's reading: ops guy's feed on the Mac, the kernel's own numbers on Linux. */
+export type HostUsable = UsableReading | LinuxUsable;
+export const isLinuxReading = (reading: HostUsable): reading is LinuxUsable => (reading as { kind?: unknown }).kind === "linux";
+
+/** What makes a reading's minute unusable, in USABLE's (or LINUX_USABLE's) order; empty when the box is usable. */
+export function unusable(reading: HostUsable): UsableMiss[] {
   const missed: UsableMiss[] = [];
+  if (isLinuxReading(reading)) {
+    if (reading.memFullAvg10 >= LINUX_USABLE.memFullAvg10) missed.push("pressure");
+    if (reading.loadPerCore >= LINUX_USABLE.loadPerCore) missed.push("cpu");
+    return missed;
+  }
   if (reading.pressureLevel >= USABLE.pressureLevel) missed.push("pressure");
   if (reading.swapoutsPerS >= USABLE.swapoutsPerS) missed.push("swapouts");
   if (reading.kernelTaskPct >= USABLE.kernelTaskPct) missed.push("kernel_task");
   return missed;
+}
+
+/** This box's reading now: ops guy's feed on macOS, the kernel's pressure, swap and load on Linux. */
+export const readUsable = async (now: number): Promise<HostUsable | null> => process.platform === "darwin" ? await readPressureFeed(now) : await linuxUsable(now);
+
+/** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */
+export function parseUsableRaw(value: unknown, now: number): HostUsable | null {
+  if (!isRecord(value)) return null;
+  if (value.platform === "darwin") return parseFeed(value.feed, now);
+  const reading = value.platform === "linux" && isRecord(value.reading) ? value.reading : null;
+  if (!reading || reading.kind !== "linux") return null;
+  const { memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, loadPerCore } = reading;
+  if (typeof memSomeAvg10 !== "number" || typeof memFullAvg10 !== "number" || typeof cpuSomeAvg10 !== "number" || typeof loadPerCore !== "number" ||
+    (swapoutsPerS !== null && typeof swapoutsPerS !== "number")) return null;
+  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, loadPerCore };
 }
 
 /** One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. */
@@ -73,10 +104,22 @@ export interface QueueLine {
   /** How long the oldest queued turn has waited, and its chat tree. */
   oldestWaitS: number; oldestTree: string | null;
 }
+/**
+ * Another box's numbers in a watch line, read through its relay (POST /v1/watch): its usability reading, its Prime workers and what its idle
+ * sessions hold. From 04:20Z on 10-18 the chat ran on us-metal02, and its lines measured only the box, so the Mac's workers left d7's numbers.
+ * `error` names a box whose relay did not answer; its numbers are then unknown, not zero.
+ */
+export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
+  sleeping?: SleepingLine; swapGb: number | null; error?: string }
+
 export interface WatchLine {
   at: string;
-  /** ops guy's feed this minute; null when it was stale or unreadable, absent on lines written before the watch read it. */
-  usable?: UsableReading | null;
+  /** The box that wrote the line (hosts.json's name); absent on lines written before 10-18 04:5xZ, all of them on the Mac. */
+  host?: string;
+  /** This box's reading this minute: ops guy's feed on the Mac, the kernel's on Linux; null when it was stale or unreadable, absent on lines written before the watch read it. */
+  usable?: HostUsable | null;
+  /** Every other box in hosts.json; absent on older lines. */
+  hosts?: HostWatchLine[];
   workers: number; workerGb: number; top: WorkerLine[];
   /** The live chat roots; absent on lines written before it was counted. */
   chatsLive?: number;
@@ -159,7 +202,7 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; idleMs?: number | null }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: HostUsable | null; idleMs?: number | null }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -321,10 +364,32 @@ export interface WatchSource {
   log: (line: string) => void;
   footprints?: typeof readFootprints;
   now?: () => number;
-  /** The pressure feed's reading at `now`; absent, `readPressureFeed`. */
-  feed?: (now: number) => Promise<UsableReading | null>;
+  /** This box's reading at `now`; absent, `readUsable`. */
+  feed?: (now: number) => Promise<HostUsable | null>;
   /** The daemon's idleEvictionMinutes, for `sleeping`; absent, the line has none. */
   idleMinutes?: () => IdleEvictionMinutes;
+  /** This box's name in hosts.json, written on each line. */
+  host?: string;
+  /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
+  remotes?: () => readonly RemoteWatch[];
+}
+export interface RemoteWatch { name: string; rows: readonly unknown[]; read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints }> }
+
+/** The pids of the workers that host the rows' sessions. */
+const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
+
+/** One other box's numbers from its relay, judged with this box's chat ids, titles and idle window; a failed read keeps the box with its error. */
+export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleMs?: number | null }): Promise<HostWatchLine> {
+  try {
+    const answer = await remote.read(workerPids(remote.rows));
+    const usable = parseUsableRaw(answer.usable, input.now);
+    const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
+      ...input.idleMs === undefined ? {} : { idleMs: input.idleMs } });
+    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working,
+      ...line.sleeping ? { sleeping: line.sleeping } : {}, swapGb: line.mac.swapGb };
+  } catch (error) {
+    return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
+  }
 }
 
 /** Takes one sample and appends its line; null when the catalog holds no rows yet. */
@@ -333,15 +398,18 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const started = process.cpuUsage();
   const rows = source.rows();
   if (!rows.length) return null;
-  const pids = [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
+  const pids = workerPids(rows);
   let own = process.cpuUsage(started);
   const at = now();
-  const [footprints, queue, chats, usable] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats(),
-    (source.feed ?? readPressureFeed)(at)]);
-  const resumed = process.cpuUsage();
   const idle = source.idleMinutes?.();
-  const line = { ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
-    ...idle === undefined ? {} : { idleMs: idle === "off" ? null : idle * MINUTE } }), serviceGb: round(process.memoryUsage().rss / GB) };
+  const idleMs = idle === undefined ? undefined : idle === "off" ? null : idle * MINUTE;
+  const chatIds = source.chats();
+  const [footprints, queue, chats, usable, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
+    (source.feed ?? readUsable)(at),
+    chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } }))))]);
+  const resumed = process.cpuUsage();
+  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
+    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB) };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

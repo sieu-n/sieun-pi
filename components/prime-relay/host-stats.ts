@@ -225,3 +225,38 @@ export async function hostStats(): Promise<HostStats> {
   const [machine, pool] = await Promise.all([machineView(), poolReading()]);
   return { machine, pool };
 }
+
+/**
+ * A Linux box's usability reading for the chat service's watch (sieun-pi src/mac-usable-watch.ts `unusable` judges it): memory and CPU
+ * pressure stall (avg10, % of the last 10 s), swap-outs a second since the previous call (null on the first), and the 1-minute load a core.
+ */
+export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; loadPerCore: number }
+/** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
+export function psiAvg10(text: string, kind: "some" | "full"): number | null {
+  const value = new RegExp(`^${kind} avg10=([\\d.]+)`, "m").exec(text)?.[1];
+  return value === undefined ? null : Number(value);
+}
+/** pswpout of /proc/vmstat: pages swapped out since boot. */
+export function parsePswpout(text: string): number | null {
+  const value = /^pswpout (\d+)$/m.exec(text)?.[1];
+  return value === undefined ? null : Number(value);
+}
+let lastSwap: { at: number; pages: number } | null = null;
+/** The box's LinuxUsable now; null when /proc/pressure/memory cannot be read (a kernel without PSI). */
+export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null> {
+  const [memory, cpu, vmstat] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat"].map(path => readFile(path, "utf8").catch(() => "")));
+  const memSome = psiAvg10(memory!, "some"), memFull = psiAvg10(memory!, "full");
+  if (memSome === null || memFull === null) return null;
+  const pages = parsePswpout(vmstat!);
+  const previous = lastSwap;
+  lastSwap = pages === null ? null : { at: now, pages };
+  const swapoutsPerS = pages !== null && previous && now > previous.at ? Math.max(0, (pages - previous.pages) * 1000 / (now - previous.at)) : null;
+  return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
+    swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), loadPerCore: Math.round(100 * loadavg()[0]! / Math.max(1, cpus().length)) / 100 };
+}
+/** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
+export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };
+export async function usableRaw(now = Date.now()): Promise<UsableRaw> {
+  if (process.platform === "darwin") return { platform: "darwin", feed: await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null) };
+  return { platform: "linux", reading: await linuxUsable(now) };
+}

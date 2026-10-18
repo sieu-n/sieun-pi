@@ -13,6 +13,7 @@ import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
 import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
+import type { Host } from "./hosts.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -794,6 +795,10 @@ export class Catalog {
 
   /** The other boxes' rows, live ones only from a box whose daemon answers now; empty without hosts.json. */
   remoteRows(): readonly SessionSummary[] { return this.hosts?.rows() ?? []; }
+  /** Each other host with its rows, for the watch line's per-host numbers. */
+  remoteHosts(): { host: Host; rows: SessionSummary[] }[] { return this.hosts?.hostRows() ?? []; }
+  /** This box's name in hosts.json; null without the file or when this box is not in it. */
+  selfHostName(): string | null { return this.hosts?.self?.name ?? null; }
 
   /** The daemon's rows from the last list as it sent them, live roster rows laid over; empty before the first full list. */
   daemonRows(): readonly SessionSummary[] {

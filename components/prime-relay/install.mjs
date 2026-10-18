@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs and host-stats.ts from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing,
+Copies relay.mjs, host-stats.ts and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -99,6 +99,8 @@ function main() {
   const show = file => execFileSync("git", ["-C", repo, "show", `${sha}:components/prime-relay/${file}`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 });
   const script = join(share, "relay.mjs");
   writeAtomic(join(share, "host-stats.ts"), show("host-stats.ts"), 0o644);
+  // POST /v1/watch runs sieun-pi's worker footprint helper on this box for the chat service on another box.
+  writeAtomic(join(share, "worker-footprint.py"), execFileSync("git", ["-C", repo, "show", `${sha}:components/user-history/src/worker-footprint.py`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 }), 0o644);
   writeAtomic(script, show("relay.mjs"), 0o644);
   writeAtomic(join(share, "release.json"), `${JSON.stringify({ sha, installedAt: new Date().toISOString() })}\n`, 0o644);
   if (!existsSync(tokenFile)) writeAtomic(tokenFile, `${randomBytes(32).toString("hex")}\n`, 0o600);

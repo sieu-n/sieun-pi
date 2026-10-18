@@ -249,6 +249,11 @@ export class HostCatalogs {
     }));
   }
 
+  /** Each other host with its rows as `rows` gives them, for the watch's per-host numbers. */
+  hostRows(): { host: Host; rows: SessionSummary[] }[] {
+    return [...this.remotes.values()].map(remote => ({ host: remote.host, rows: [...remote.rows.values()].map(row => remote.subscribed ? row : saved(row)) }));
+  }
+
   /** True when the host's daemon lists the session with a worker now. */
   isActive(id: string): boolean {
     for (const remote of this.remotes.values()) {

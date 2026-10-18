@@ -6,9 +6,9 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostStats } from "./host-stats.ts";
+import { hostStats, usableRaw } from "./host-stats.ts";
 
 const VERSION = 1;
 const UPGRADE = "prime-daemon";
@@ -79,6 +79,41 @@ async function serveFile(request, response, url, roots) {
   createReadStream(real, { start, end: info.size - 1 }).pipe(response);
 }
 
+/** sieun-pi's worker footprint helper, installed beside the relay (install.mjs), so the chat service on another box can measure this box's workers. */
+const FOOTPRINT_HELPER = join(dirname(fileURLToPath(import.meta.url)), "worker-footprint.py");
+/** Worker pids are small integers; a body past this is no pid list. */
+const WATCH_BODY_BYTES = 64 * 1024;
+
+function readBody(request, limit) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", chunk => { body += chunk; if (body.length > limit) { reject(new Error("body too large")); request.destroy(); } });
+    request.once("end", () => resolve(body));
+    request.once("error", reject);
+  });
+}
+
+/** The footprint helper's answer for `pids`, as the chat service's own watch runs it (src/mac-usable-watch.ts runHelper). */
+function footprints(pids) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/python3", ["-B", FOOTPRINT_HELPER], { stdio: ["pipe", "pipe", "ignore"] });
+    let out = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.stdout.setEncoding("utf8").on("data", chunk => { out += chunk; });
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", code => { clearTimeout(timer); if (code !== 0) return reject(new Error(`footprint helper exited ${code}`)); try { resolve(JSON.parse(out)); } catch (error) { reject(error); } });
+    child.stdin.end(pids.join("\n") + "\n");
+  });
+}
+
+/** POST /v1/watch: the body lists worker pids, one per line; the answer is this box's usability reading and those workers' footprints. */
+async function serveWatch(request, response) {
+  const pids = (await readBody(request, WATCH_BODY_BYTES)).split("\n").map(line => line.trim()).filter(line => /^\d+$/.test(line)).map(Number);
+  const [usable, measured] = await Promise.all([usableRaw(), footprints(pids)]);
+  send(response, 200, { usable, footprints: measured });
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
@@ -93,6 +128,7 @@ export function createRelay(config, log = () => {}) {
       if (request.method === "GET" && url.pathname === "/v1/health") return send(response, 200, { ok: true, daemon: await daemonAnswers(config.daemonSocket) ? "answering" : "down", version: VERSION });
       if (request.method === "GET" && url.pathname === "/v1/host") return send(response, 200, await hostStats());
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/file") return await serveFile(request, response, url, config.roots);
+      if (request.method === "POST" && url.pathname === "/v1/watch") return await serveWatch(request, response);
       send(response, 404, { error: "unknown route" });
     } catch (error) {
       if (!response.headersSent) send(response, 500, { error: error instanceof Error ? error.message : String(error) });

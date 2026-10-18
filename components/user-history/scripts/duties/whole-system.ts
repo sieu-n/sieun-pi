@@ -9,23 +9,40 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { type HostUsable, isLinuxReading, readWatch, type SleepingLine, unusable, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 
+/** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
+export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; sleeping?: SleepingLine; error?: string }
+/** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
+export const UNNAMED_HOST = "mac";
+
+/** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
+export function hostViews(line: WatchLine): HostView[] {
+  return [
+    { name: line.host ?? UNNAMED_HOST, usable: line.usable ?? null, workers: line.workers, workerGb: line.workerGb, top: line.top,
+      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.sleeping ? { sleeping: line.sleeping } : {} },
+    ...(line.hosts ?? []).map(host => ({ name: host.name, usable: host.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
+      ...host.sleeping ? { sleeping: host.sleeping } : {}, ...host.error ? { error: host.error } : {} })),
+  ];
+}
+
+const feedGroups = (usable: HostUsable | null): Partial<Record<MemoryGroupId, number>> | undefined => usable && !isLinuxReading(usable) ? usable.groups : undefined;
+
 /**
- * An unusable minute is the harness's when agent sessions hold the largest share of the Mac's memory that minute, or of its growth since the
- * line before, by the groups the pressure feed sums every owner into (`groups`); a line with no groups, written before 10-18 01:40Z, is never
- * the harness's, since this duty reads only the last 30 minutes. Agent sessions take
+ * An unusable minute is the harness's when agent sessions hold the largest share of the box's memory that minute, or of its growth since the
+ * line before, by the groups the Mac's pressure feed sums every owner into (`groups`); a reading with no groups (a Linux box, or a Mac line
+ * written before 10-18 01:40Z) is never the harness's. Agent sessions take
  * at least the Prime workers' footprint the watch measures itself plus the chat service, since each chat tree is its own feed owner and most
- * fall below the 8 largest. Whether a minute is unusable at all comes only from the feed (`USABLE`). A fixed 16 GB line, and before it a
+ * fall below the 8 largest. Whether a minute is unusable at all comes only from the box's reading (`unusable`). A fixed 16 GB line, and before it a
  * 14-turn line, sent minutes with 22 to 26 job turns at work to the apps' side (01:10Z and 01:24Z on 10-18).
  */
-export function memoryShares(line: WatchLine): Map<MemoryGroupId, number> {
+export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
   const shares = new Map<MemoryGroupId, number>();
-  if (line.usable?.groups) for (const [id, gb] of Object.entries(line.usable.groups)) shares.set(id as MemoryGroupId, gb);
-  shares.set("agents", Math.max(shares.get("agents") ?? 0, line.workerGb + (line.serviceGb ?? 0)));
+  for (const [id, gb] of Object.entries(feedGroups(view.usable) ?? {})) shares.set(id as MemoryGroupId, gb);
+  shares.set("agents", Math.max(shares.get("agents") ?? 0, view.workerGb + (view.serviceGb ?? 0)));
   return shares;
 }
 
@@ -35,30 +52,34 @@ const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
 };
 
 /**
- * Whether agent sessions hold the largest footprint of `line`, or the largest growth since `previous` when it is at most 2 minutes older. A line
- * whose feed gave no groups has no shares to compare and goes to the apps' or owner's side.
+ * Whether agent sessions hold the largest footprint of the box in `view`, or the largest growth since `previous` (the same box in the line
+ * before) when that line is at most 2 minutes older. A reading with no groups has no shares to compare and goes to the apps' or owner's side.
  */
-export function isHarnessMinute(line: WatchLine, previous?: WatchLine): boolean {
-  if (!line.usable?.groups) return false;
-  const now = memoryShares(line);
+export function isHarnessMinute(view: HostView, previous?: { view: HostView; gapMs: number }): boolean {
+  if (!feedGroups(view.usable)) return false;
+  const now = memoryShares(view);
   if (leads(now)) return true;
-  if (!previous?.usable?.groups || Date.parse(line.at) - Date.parse(previous.at) > 2 * MINUTE) return false;
-  const before = memoryShares(previous);
+  if (!previous || !feedGroups(previous.view.usable) || previous.gapMs > 2 * MINUTE) return false;
+  const before = memoryShares(previous.view);
   const growth = new Map([...now].map(([id, gb]) => [id, gb - (before.get(id) ?? 0)] as const));
   return (growth.get("agents") ?? 0) > 0 && leads(growth);
 }
 
-/** `isHarnessMinute` for lines of `lines`, each judged against the line before it there. */
-export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine) => boolean {
+/** `isHarnessMinute` for each box of a line of `lines`, judged against the same box in the line before it there. */
+export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => boolean {
   const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
-  return line => isHarnessMinute(line, previous.get(line));
+  return (line, view) => {
+    const before = previous.get(line);
+    const same = before && hostViews(before).find(candidate => candidate.name === view.name);
+    return isHarnessMinute(view, same ? { view: same, gapMs: Date.parse(line.at) - Date.parse(before.at) } : undefined);
+  };
 }
 
 /**
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, and every chat's duty
- * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read the Mac usable, no start, wake or parked
+ * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable, no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds and open steps nobody
  * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
@@ -195,14 +216,18 @@ const median = (values: readonly number[]): number | undefined => {
   return sorted.length ? sorted[Math.floor(sorted.length / 2)] : undefined;
 };
 
-/** The harness processes in the newest watch line over FAR_ABOVE times their kind's median in `day`: Prime workers by tree, and the chat service. */
+/** The harness processes in the newest watch line over FAR_ABOVE times their kind's median in `day` on the same box: Prime workers by tree, and the chat service. */
 export function oversized(latest: WatchLine | undefined, day: readonly WatchLine[]): string[] {
   if (!latest) return [];
   const found: string[] = [];
-  const worker = median(day.filter(line => line.workers > 0).map(line => line.workerGb / line.workers));
-  if (worker !== undefined) for (const line of latest.top) if (line.gb > FAR_ABOVE * worker) found.push(`Prime worker ${line.pid} (${line.tree || "no tree"}, ${line.sessions} sessions) holds ${line.gb} GB, over ${FAR_ABOVE}x the day's median worker of ${worker.toFixed(2)} GB`);
-  const service = median(day.flatMap(line => line.serviceGb === undefined ? [] : [line.serviceGb]));
-  if (service !== undefined && latest.serviceGb !== undefined && latest.serviceGb > FAR_ABOVE * service) found.push(`the chat service holds ${latest.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB`);
+  const dayViews = day.flatMap(hostViews);
+  for (const view of hostViews(latest)) {
+    const own = dayViews.filter(candidate => candidate.name === view.name);
+    const worker = median(own.filter(candidate => candidate.workers > 0).map(candidate => candidate.workerGb / candidate.workers));
+    if (worker !== undefined) for (const line of view.top) if (line.gb > FAR_ABOVE * worker) found.push(`${view.name}: Prime worker ${line.pid} (${line.tree || "no tree"}, ${line.sessions} sessions) holds ${line.gb} GB, over ${FAR_ABOVE}x the day's median worker there of ${worker.toFixed(2)} GB`);
+    const service = median(own.flatMap(candidate => candidate.serviceGb === undefined ? [] : [candidate.serviceGb]));
+    if (service !== undefined && view.serviceGb !== undefined && view.serviceGb > FAR_ABOVE * service) found.push(`${view.name}: the chat service holds ${view.serviceGb} GB, over ${FAR_ABOVE}x its day's median of ${service.toFixed(2)} GB`);
+  }
   return found;
 }
 
@@ -234,23 +259,38 @@ export function measure(input: Inputs): PrecheckOutput {
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   const cutHeld = (input.cut ?? []).filter(job => now - job.at > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, held = 0, freeSlot = 0, harness = 0, other = 0;
+  // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
+  // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
+  // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0;
   const isHarness = harnessSide(input.watch);
   const dirty: string[] = [];
+  const unknownLines: string[] = [];
+  const perHost = new Map<string, { usable: number; unusable: number; unknown: number }>();
+  const hostCount = (name: string) => { const known = perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0 }; perHost.set(name, known); return known; };
   for (let minute = 0; minute < 30; minute++) {
     const from = start + minute * MINUTE, to = from + MINUTE;
     const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < to; });
     const why: string[] = [];
-    if (!line) { unwatched++; why.push("no watch line"); }
-    else if (!line.usable) why.push("no pressure reading");
-    else {
-      fed++;
-      if (unusable(line.usable).length) { why.push(`Mac unusable (${unusable(line.usable).join(", ")})`); if (isHarness(line)) harness++; else other++; }
-      else usable++;
+    const unknown: string[] = [];
+    let harnessMinute = false, unusableMinute = false;
+    if (!line) { unwatched++; unknown.push("no watch line"); }
+    else for (const view of hostViews(line)) {
+      const count = hostCount(view.name);
+      if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
+      const miss = unusable(view.usable);
+      if (!miss.length) { count.usable++; continue; }
+      count.unusable++;
+      unusableMinute = true;
+      why.push(`${view.name} unusable (${miss.join(", ")})`);
+      if (isHarness(line, view)) harnessMinute = true;
     }
+    if (line && !unknown.length) { fed++; if (!unusableMinute) usable++; }
+    if (unusableMinute) { if (harnessMinute) harness++; else other++; }
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     if (line && queuedWithFreeSlots(line, input.okLimit)) { freeSlot++; why.push("a turn queued with free slots"); }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
+    else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
   }
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
@@ -276,14 +316,18 @@ export function measure(input: Inputs): PrecheckOutput {
     const live = Object.values(newest.fixes ?? {}).some(fix => fix.live);
     return live ? [] : [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, with no live fix job on its last run`];
   }));
-  const sleepingLines = input.watch.filter(line => Date.parse(line.at) > start && line.sleeping);
+  // Every box's sleeping sessions count: each line's total over its boxes, averaged over the lines that measured any.
+  const sleepingTotals = input.watch.filter(line => Date.parse(line.at) > start).flatMap(line => {
+    const measured = hostViews(line).filter(view => view.sleeping);
+    return measured.length ? [measured.reduce((sum, view) => sum + view.sleeping!.gb, 0)] : [];
+  });
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
-    sleeping_gb: Math.round(100 * (sleepingLines.reduce((sum, line) => sum + line.sleeping!.gb, 0) / (sleepingLines.length || 1))) / 100,
+    sleeping_gb: Math.round(100 * (sleepingTotals.reduce((sum, gb) => sum + gb, 0) / (sleepingTotals.length || 1))) / 100,
     oversized_procs: oversize.length,
     usable_min_30: usable,
     fed_min_30: fed,
@@ -292,17 +336,26 @@ export function measure(input: Inputs): PrecheckOutput {
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
     unwatched_min_30: unwatched,
+    unknown_min_30: unknownMin,
     stuck_duties: redDuties.length,
     cut_jobs_held: cutHeld.length,
   };
-  flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean. The Mac read usable in ${usable} of ${fed} minutes with a pressure reading ` +
+  for (const [name, count] of perHost) {
+    const key = name.replace(/[^A-Za-z0-9]+/g, "_");
+    metrics[`usable_min_30_${key}`] = count.usable;
+    metrics[`unusable_min_30_${key}`] = count.unusable;
+    metrics[`unknown_min_30_${key}`] = count.unknown;
+  }
+  const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
+  flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued with ${FREE_SLOTS} or more free slots in ${freeSlot}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
-  if (latest?.sleeping && latest.sleeping.gb > 0) {
-    const asleep = latest.sleeping;
-    flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes, ` +
-      `${asleep.gb} GB at ${clock(Date.parse(latest.at))} in ${asleep.workers} whole workers and ${asleep.kernels} kernels: ${asleep.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")}.` });
+  if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
+  const asleep = latest ? hostViews(latest).filter(view => view.sleeping && view.sleeping.gb > 0) : [];
+  if (latest && asleep.length) {
+    flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes. At ${clock(Date.parse(latest.at))}: ` +
+      asleep.map(view => `${view.name} ${view.sleeping!.gb} GB in ${view.sleeping!.workers} whole workers and ${view.sleeping!.kernels} kernels (${view.sleeping!.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")})`).join("; ") + "." });
   }
   for (const line of oversize) flagged.push({ kind: "oversized", excerpt: line });
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {

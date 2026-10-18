@@ -107,6 +107,21 @@ export async function hostToken(host: Host, configDir = CONFIG_DIR): Promise<str
   return (await readFile(isAbsolute(path) ? path : join(configDir, path), "utf8")).trim();
 }
 
+/**
+ * Another box's watch numbers through its relay (POST /v1/watch): its usability reading and the footprints of `pids`, its Prime workers. The
+ * relay runs the same footprint helper the watch runs here, which took under a second at 1,000 processes (src/worker-footprint.py), so the
+ * read waits up to the helper's own 30 s limit plus the relay read's 5 s.
+ */
+export async function relayWatch(host: Host, pids: readonly number[]): Promise<{ usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints }> {
+  const response = await fetch(`http://${host.address}:${host.relayPort}/v1/watch`, { method: "POST", body: pids.join("\n") + "\n",
+    headers: { authorization: `Bearer ${await hostToken(host)}`, "content-type": "text/plain" }, signal: AbortSignal.timeout(35_000) });
+  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to /v1/watch`);
+  const body = await response.json() as unknown;
+  if (typeof body !== "object" || body === null || typeof (body as { footprints?: unknown }).footprints !== "object" || (body as { footprints: unknown }).footprints === null ||
+    typeof ((body as { footprints: { workers?: unknown } }).footprints.workers) !== "object") throw new Error(`relay ${host.name} sent no footprints`);
+  return body as { usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints };
+}
+
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };
 
 async function relayRequest(host: Host, path: string, headers: Record<string, string> = {}, method = "GET", timeoutMs = 15_000): Promise<RelayResponse> {
