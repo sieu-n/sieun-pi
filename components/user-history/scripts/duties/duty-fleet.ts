@@ -7,7 +7,7 @@ import { DutyStore } from "../../src/chat-duty-store.ts";
 import { withWakes } from "../../src/checkin-load.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
-import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
@@ -29,7 +29,7 @@ export interface FleetDuty {
   misses: number;
   /** The metric the stuck line names: the headline when it missed, else the longest miss streak. */
   metric?: MetricStreak;
-  /** The plan step of a live fix job for a missed metric: the run's `fixes`, or a board step linked `<dutyId>/<metricKey>` whose job works now. */
+  /** The plan step of a live fix job for a missed metric, the lead metric's first: the run's live `fixes` while the step is open, else an open board step linked `<dutyId>/<metricKey>` whose job works now. */
   fix?: string;
   /** The duty's own job, at work now, that owns the misses of this run. */
   working?: string;
@@ -47,14 +47,16 @@ function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStre
   return streaks.find(streak => streak.key === headline?.key) ?? [...streaks].sort((a, b) => b.misses - a.misses)[0];
 }
 
-/** Open plan steps by their `duty` link (`<dutyId>/<metricKey>`). */
-function dutySteps(board: ChatBoard | null): Map<string, PlanItem[]> {
-  const steps = new Map<string, PlanItem[]>();
+/** The board's steps by id, and its open steps by their `duty` link (`<dutyId>/<metricKey>`). */
+function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; linked: Map<string, PlanItem[]> } {
+  const byId = new Map<string, PlanItem>();
+  const linked = new Map<string, PlanItem[]>();
   walk(board?.plan ?? [], item => {
+    byId.set(item.id, item);
     const link = (item as PlanItem & { duty?: unknown }).duty;
-    if (typeof link === "string" && OPEN.has(item.status)) steps.set(link, [...steps.get(link) ?? [], item]);
+    if (typeof link === "string" && OPEN.has(item.status)) linked.set(link, [...linked.get(link) ?? [], item]);
   });
-  return steps;
+  return { byId, linked };
 }
 
 export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] }): Promise<DutyFleet> {
@@ -85,34 +87,47 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const streaks = newest ? metricStreaks(own) : [];
       const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false };
       const metric = leadMetric(duty.metrics, streaks);
-      if (metric) entry.metric = metric;
-      if (!green && newest && streak >= CHANGE_APPROACH_MISSES) {
-        const missed = new Set(streaks.map(item => item.key));
-        let fix = Object.entries(newest.fixes ?? {}).find(([key, link]) => missed.has(key) && link.live)?.[1].step;
-        if (fix === undefined) {
-          board ??= await boards.read(id).catch(() => null);
-          const linked = dutySteps(board);
-          const candidates = [...missed].flatMap(key => linked.get(`${duty.id}/${key}`) ?? []);
-          if (candidates.length) {
-            // The check-in's working test (board-classes.ts): a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
-            live ??= (() => {
-              const all = roster();
-              const children = chatChildren(all, id);
-              const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
-                wakes, key => children.find(child => child.id === key)?.sessionId);
-              // The server's own test (`fixJobLive`) too: a fix job asleep on a board.wake is live though `prime-agent sessions` no longer lists it
-              // (loaded sessions only); on 10-15 at 23:55 KST SEO guy's d1 read stuck here while its fix job slept on a 01:10Z wake.
-              const rows = sessionRows(all);
-              return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep);
-            })();
-            fix = candidates.find(live)?.id;
+      if (metric) entry.metric = { ...metric };
+      if (!green && newest) {
+        board ??= await boards.read(id).catch(() => null);
+        const { byId, linked } = boardSteps(board);
+        // A run records its fixes when it runs, so the board says now whether a step closed since: a done or dropped step is never a fix.
+        const open = (step: string): boolean => { const item = byId.get(step); return item === undefined || OPEN.has(item.status); };
+        if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
+        if (streak >= CHANGE_APPROACH_MISSES) {
+          // The check-in's working test (board-classes.ts): a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
+          live ??= (() => {
+            const all = roster();
+            const children = chatChildren(all, id);
+            const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
+              wakes, key => children.find(child => child.id === key)?.sessionId);
+            // The server's own test (`fixJobLive`) too: a fix job asleep on a board.wake is live though `prime-agent sessions` no longer lists it
+            // (loaded sessions only); on 10-15 at 23:55 KST SEO guy's d1 read stuck here while its fix job slept on a 01:10Z wake.
+            const rows = sessionRows(all);
+            return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep);
+          })();
+          // The lead metric's fix first, then the other missed metrics': for each, the live fix the run recorded while its step stays open, else an
+          // open step linked to it whose job works now. On 10-18 at 00:46Z the AI harness chat's d7 missed clean_min_30, whose recorded fix p528
+          // was done while p559 worked on it, and this named p529, the fix of stuck_steps_all.
+          const fixOf = (key: string): FixLink | undefined => {
+            const recorded = newest.fixes?.[key];
+            if (recorded?.live && open(recorded.step)) return recorded;
+            const item = linked.get(`${duty.id}/${key}`)?.find(live);
+            return item && { step: item.id, ...item.job ? { job: item.job } : {}, live: true };
+          };
+          let fix: FixLink | undefined;
+          for (const key of new Set([...metric ? [metric.key] : [], ...streaks.map(item => item.key)])) {
+            fix = fixOf(key);
+            if (!fix) continue;
+            if (entry.metric?.key === key) entry.metric.fix = fix;
+            break;
           }
+          // The duty's own job still at work owns its misses this run: on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
+          const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
+          if (job && sessionRows(roster()).some(row => row.id === job.id && row.working)) entry.working = job.name;
+          else if (fix === undefined) entry.stuck = true;
+          else entry.fix = fix.step;
         }
-        // The duty's own job still at work owns its misses this run: on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
-        const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
-        if (job && sessionRows(roster()).some(row => row.id === job.id && row.working)) entry.working = job.name;
-        else if (fix === undefined) entry.stuck = true;
-        else entry.fix = fix;
       }
       duties.push(entry);
     }

@@ -126,3 +126,19 @@ test("duty fleet: a fix job that sleeps on a board.wake is live though the daemo
   assert.deepEqual([seo.stuck, seo.fix], [false, "p61"]);
   assert.equal(after.metrics.stuck_duties, before.metrics.stuck_duties - 1);
 });
+
+test("duty fleet: a red duty's fix is the open step at work on its lead metric, never a done one (AI harness d7, 10-18 00:46Z)", async () => {
+  // The real slice: d7's last 4 measured runs, its duty, and the board's three d7 steps. The newest run recorded clean_min_30's fix as p528,
+  // done since 00:09Z, and stuck_steps_all's as p529 with a live job; p559 "clean minutes 10-18 09:41" took clean_min_30 after that run.
+  const fixture = join(import.meta.dirname, "fixtures", "duty-fleet-1018");
+  const harness = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+  const now = Date.parse("2026-10-18T00:46:00Z");
+  const root = (id: string, name: string, activity: string): DaemonSession => ({ sessionId: id, sessionName: name, lifecycle: "live", activity, lastActivityAt: new Date(now - 60_000).toISOString() });
+  const read = async (clean: string) => (await dutyFleet({ dataDir: fixture, now, sessions: () => [root(harness, "AI harness developer environment VP", "idle"),
+    root("01a14c52-3069-70e5-b828-b110eb04603d", "checkin pushes goals", "working"), root("01a14c77-0eca-7383-8f3e-2f37e7c22f80", "clean minutes 10-18 09:41", clean)] }))
+    .duties.find(duty => duty.chat === harness && duty.duty === "d7")!;
+  const working = await read("working");
+  assert.deepEqual([working.stuck, working.fix, working.metric?.key, working.metric?.fix], [false, "p559", "clean_min_30", { step: "p559", job: "clean minutes 10-18 09:41", live: true }]);
+  const ended = await read("idle");
+  assert.deepEqual([ended.stuck, ended.fix, ended.metric?.fix], [false, "p529", undefined], "with p559's job ended the live fix of another missed metric holds, and done p528 is no fix");
+});
