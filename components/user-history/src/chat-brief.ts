@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
+import { cachedJsonFile, type JsonFile, transactJsonFile } from "./locked-json.ts";
 import { briefCorrections } from "./chat-corrections.ts";
 import { MERGE_RULE_SHORT } from "./shared/chat-board.ts";
 import { preApprovalText, releaseGo } from "./shared/release-go.ts";
@@ -206,7 +206,7 @@ export function loadRecord(path: string): LoadRecord {
     return { builds: stringMap(record.builds), briefs: stringMap(record.briefs), texts: Object.fromEntries(texts) };
   } };
   return {
-    async get(id) { return (await snapshotJsonFile(file)).builds[id]; },
+    async get(id) { return (await cachedJsonFile(file)).builds[id]; },
     async set(id, build, brief) {
       const { result } = await transactJsonFile(file, state => {
         state.builds[id] = build;
@@ -220,7 +220,7 @@ export function loadRecord(path: string): LoadRecord {
       });
       return result;
     },
-    async briefs() { return { ...(await snapshotJsonFile(file)).briefs }; },
+    async briefs() { return { ...(await cachedJsonFile(file)).briefs }; },
     async forget(id) { await transactJsonFile(file, state => { delete state.builds[id]; delete state.briefs[id]; pruneTexts(state); }); },
   };
 }

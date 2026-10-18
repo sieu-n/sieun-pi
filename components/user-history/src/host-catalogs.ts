@@ -35,6 +35,21 @@ type Remote = { host: Host; client: DaemonClient; peer: SessionPeer };
 export const copyPath = (name: string): string => join(MIRROR_DIR, `${name}.sessions.json`);
 
 /**
+ * Each other box's row with its session file named by its local copy's path (`mirrorPath`), kept while that box's copy holds the same row
+ * object, since a roster update replaces only the rows it changed. On 10-18 copying all 3,063 Mac rows and joining each path on every list
+ * took 7.7% of the box chat's main thread.
+ */
+export class MirroredRows {
+  private readonly copies = new WeakMap<SessionSummary, SessionSummary>();
+  row(host: Host, row: SessionSummary): SessionSummary {
+    if (!row.sessionFile) return row;
+    let copy = this.copies.get(row);
+    if (!copy) { copy = { ...row, sessionFile: mirrorPath(host, row.sessionFile) }; this.copies.set(row, copy); }
+    return copy;
+  }
+}
+
+/**
  * The daemons of the other hosts in hosts.json, each through its bridge socket: their session lists, tagged by host, and a client per host,
  * so the catalog merges every box into one sidebar and each command goes to the daemon that runs the session. The box this service runs on
  * stays the catalog's own client and is not in here. Each box's rows are a `SessionPeer` copy, which the catalog keeps for this box too.
@@ -81,9 +96,17 @@ export class HostCatalogs {
    * path here: on the Mac a /home path makes automountd look it up (1.5 lookups a second from 03:13Z on 10-18), and on the box a /Users path
    * resolves through the /Users/sieunpark link into the box's own sessions. A host whose daemon is not reachable keeps its last rows as saved.
    */
-  rows(): SessionSummary[] {
-    return [...this.remotes.values()].flatMap(remote => remote.peer.list().map(row => row.sessionFile ? { ...row, sessionFile: mirrorPath(remote.host, row.sessionFile) } : row));
+  rows(): readonly SessionSummary[] {
+    const version = [...this.remotes.values()].map(remote => remote.peer.version).join(",");
+    if (this.listed?.version !== version) {
+      this.listed = { version, rows: [...this.remotes.values()].flatMap(remote => remote.peer.list().map(row => this.mirroredRows.row(remote.host, row))) };
+    }
+    return this.listed.rows;
   }
+
+  /** The last `rows` answer and the box copies' versions it was built from: a box that is down lists fresh saved copies on every call. */
+  private listed: { version: string; rows: SessionSummary[] } | null = null;
+  private readonly mirroredRows = new MirroredRows();
 
   /** Each other host with its rows as `rows` gives them, for the watch's per-host numbers. */
   hostRows(): { host: Host; rows: SessionSummary[] }[] {

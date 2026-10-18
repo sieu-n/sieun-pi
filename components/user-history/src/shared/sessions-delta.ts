@@ -35,7 +35,26 @@ export function applySessionsDelta(rows: readonly SessionRow[], delta: SessionsD
   for (const patch of delta.patch) { const row = byId.get(patch.id); if (row) byId.set(patch.id, patchRow(row, patch)); }
   for (const row of delta.add) byId.set(row.id, row);
   if (delta.order) return delta.order.flatMap(id => byId.get(id) ?? []);
-  return [...byId.values()].sort(byActivity);
+  // Each row's time is read once: a comparator that parsed both dates ran Date.parse about 50,000 times a frame over 2,556 rows.
+  const keyed = [...byId.values()].map(row => ({ row, at: activity(row) }));
+  return keyed.sort((left, right) => right.at - left.at).map(entry => entry.row);
+}
+
+/**
+ * Whether a page that applies a delta without `order` ends with the rows in `next`'s order: true when `next` keeps the ids of `previous` in
+ * the same order and is already sorted newest first, since a stable sort leaves a sorted list as it is. A row with no time reads false, so
+ * the full check runs.
+ */
+function keepsOrder(previous: readonly SessionRow[], next: readonly SessionRow[]): boolean {
+  if (previous.length !== next.length) return false;
+  let before = Infinity;
+  for (const [index, row] of next.entries()) {
+    if (row.id !== previous[index]!.id) return false;
+    const at = activity(row);
+    if (!(at <= before)) return false;
+    before = at;
+  }
+  return true;
 }
 
 const json = (value: unknown): string | undefined => JSON.stringify(value);
@@ -96,8 +115,12 @@ export class SessionsDiff {
     }
     const remove = [...previous.json.keys()].filter(id => !rows.has(id));
     const delta: SessionsDelta = { type: "sessions-delta", add, patch, remove, tags: event.tags, daemon: event.daemon, ...(event.error !== undefined ? { error: event.error } : {}) };
-    const rebuilt = applySessionsDelta(previous.rows, delta);
-    if (rebuilt.length !== event.sessions.length || rebuilt.some((row, index) => row.id !== event.sessions[index]?.id)) delta.order = event.sessions.map(row => row.id);
+    // The common frame changes fields of rows that keep their places, which needs no rebuild; on 10-18 the rebuild per socket and frame
+    // was 4.4% of the box chat's main thread with three pages open.
+    if (!keepsOrder(previous.rows, event.sessions)) {
+      const rebuilt = applySessionsDelta(previous.rows, delta);
+      if (rebuilt.length !== event.sessions.length || rebuilt.some((row, index) => row.id !== event.sessions[index]?.id)) delta.order = event.sessions.map(row => row.id);
+    }
     if (!add.length && !patch.length && !remove.length && !delta.order && rest === previous.rest) return null;
     return delta;
   }

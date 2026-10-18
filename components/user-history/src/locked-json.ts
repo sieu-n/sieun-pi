@@ -70,6 +70,26 @@ export async function transactJsonFile<T, R = void>(file: JsonFile<T>, change: (
   } finally { await rm(temporary, { force: true }); await rm(lock, { recursive: true, force: true }); }
 }
 
+const parsed = new Map<string, { key: string; value: unknown }>();
+
+/**
+ * `snapshotJsonFile` for a file read on every catalog projection: it parses again only after the file's inode, size or change time moved, and
+ * `transactJsonFile` replaces the file by rename, so each write gets a new inode. On 10-18 a scratch copy of the box chat parsed
+ * chat-jobs.json (38 KB) 3,839 times and extension-loads.json (191 KB) 297 times in 80 s, 5.1 s of its main thread. Callers share the value
+ * and must not change it.
+ */
+export async function cachedJsonFile<T>(file: JsonFile<T>): Promise<T> {
+  let info;
+  try { info = await stat(file.path, { bigint: true }); }
+  catch (error) { if (!missing(error)) throw error; return snapshotJsonFile(file); }
+  const key = `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+  const hit = parsed.get(file.path);
+  if (hit?.key === key) return hit.value as T;
+  const value = await snapshotJsonFile(file);
+  parsed.set(file.path, { key, value });
+  return value;
+}
+
 export async function snapshotJsonFile<T>(file: JsonFile<T>): Promise<T> {
   try { return await readJsonFile(file); }
   catch (error) { if (!missing(error)) throw error; return (await transactJsonFile(file, () => {})).state; }

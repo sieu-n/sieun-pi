@@ -1,6 +1,6 @@
 import type { IdIndex } from "./id-index.ts";
 import { sessionHandles } from "./shared/created-sessions.ts";
-import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
+import { cachedJsonFile, type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 import type { Ledger } from "./chat-corrections.ts";
 import type { CheckInRecord } from "./chat-checkin.ts";
 import type { CheckInSettings } from "./checkin-settings.ts";
@@ -69,10 +69,10 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
         for (const name of names) state.jobs[name] = { chat, at, ...(chatId ? { chatId } : {}) };
       });
     },
-    async chatOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chat; },
-    async chatIdOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chatId; },
+    async chatOf(name) { return (await cachedJsonFile(file)).jobs[name]?.chat; },
+    async chatIdOf(name) { return (await cachedJsonFile(file)).jobs[name]?.chatId; },
     async rootsOf(chat) {
-      return Object.entries((await snapshotJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat) || (entry.chatId !== undefined && chat.includes(entry.chatId)))
+      return Object.entries((await cachedJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat) || (entry.chatId !== undefined && chat.includes(entry.chatId)))
         .map(([name]) => name);
     },
     async remove(names) { await transactJsonFile(file, state => { for (const name of names) delete state.jobs[name]; }); },
