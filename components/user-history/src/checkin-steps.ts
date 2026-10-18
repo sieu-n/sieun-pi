@@ -1,5 +1,5 @@
 import { bridgeHolds } from "./alert-bridge.ts";
-import { coversStep, planJob } from "./shared/chat-board.ts";
+import { coversStep, firstClause, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
@@ -393,8 +393,7 @@ export function namesWhole(text: string, name: string): boolean {
 }
 /** A job name shorter than this never counts as named in a step's free text, as in `waitTarget`: "dev" would hit "sieun/dev". */
 export const JOB_NAME_MIN = 6;
-/** The first clause of a wait: what it waits on before "then". */
-export const firstClause = (text: string): string => text.split(/;|,? then |\. /i)[0]!;
+export { firstClause };
 /**
  * The working job of this chat that the first clause of a wait names (`namesWhole`, a name of JOB_NAME_MIN characters or more, or its child id),
  * the longest name first. A thread is left out: a wait on another thread is a chase. VP of CI 10-15: p200 waited for "ci train lands the d2 and

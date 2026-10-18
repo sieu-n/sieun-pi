@@ -1,5 +1,5 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
-import { coversStep } from "./shared/chat-board.ts";
+import { coversStep, OWNER_WAIT } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import type { WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
@@ -22,8 +22,6 @@ export type EndState = "moving" | "foryou" | "parked" | "owner_no_todo" | "relea
 export const OK_STATES: ReadonlySet<EndState> = new Set(["moving", "foryou", "parked"]);
 export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "ci", "thread", "event", "time", "job_ended", "no_owner"];
 
-/** A wait on the owner: its first clause names his answer, go, ok, login, review or merge. */
-const OWNER_WAIT = /\b(?:owner|sieun|you)(?:'s|r)?\b.*\b(?:go|ok|approval|answer|decision|choice|login|sign[ -]?in|review|reply|merge|says|decides|confirms|approves|picks)\b/i;
 const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redeploys?|cut|train|fable|slot|cas)\b/i;
 const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:es|ed)?)\b|\bci\//i;
 

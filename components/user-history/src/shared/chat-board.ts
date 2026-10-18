@@ -677,6 +677,48 @@ export function linkStepSessions(board: ChatBoard, links: ReadonlyMap<string, { 
   return plan === board.plan ? null : { ...board, plan, rev: board.rev + 1, updatedAt: now };
 }
 
+/** A wait on the owner: its first clause names his answer, go, ok, login, review or merge. */
+export const OWNER_WAIT = /\b(?:owner|sieun|you)(?:'s|r)?\b.*\b(?:go|ok|approval|answer|decision|choice|login|sign[ -]?in|review|reply|merge|says|decides|confirms|approves|picks)\b/i;
+/** The first clause of a wait: what it waits on before "then". */
+export const firstClause = (text: string): string => text.split(/;|,? then |\. /i)[0]!;
+
+/**
+ * The board after a batch with every open step that still waits on a For you todo the batch closed (checked or removed) handed back to the chat:
+ * its wait is cleared, a blocked step reads todo, a step with no owner gets the chat's session id, and its note names the todo, so a go link
+ * by id holds. Null when no step waits on a closed todo. A step waits on a todo when its waitFor names the todo's id, or the todo links it and
+ * its wait is on the owner or it has none. On 10-18 frontend bro checked off t28 and t25 after the owner approved in the chat at 07:31Z, and
+ * p115 and p129 stayed blocked on them until a nudge at 07:41Z, so the 07:38Z whole-system run counted both as stuck.
+ */
+export function releaseClosedAsks(before: ChatBoard, after: ChatBoard, chatId: string, now: string): { board: ChatBoard; summaries: string[] } | null {
+  const closed = before.todos.filter(todo => !todo.done && todo.id !== undefined).flatMap(todo => {
+    const next = after.todos.find(entry => entry.id === todo.id);
+    return next === undefined ? [todo] : next.done ? [next] : [];
+  });
+  if (!closed.length) return null;
+  const summaries: string[] = [];
+  const clock = now.slice(11, 16) + "Z";
+  const release = (item: PlanItem): PlanItem => {
+    const children = item.children.map(release);
+    const same = children.every((child, index) => child === item.children[index]);
+    const todo = OPEN_STATUSES.has(item.status) ? closed.find(entry => {
+      const named = new RegExp(`(?<![\\w-])${entry.id}(?![\\w-])`).test(item.waitFor ?? "");
+      return named || linksStep(entry, item.id) && (item.waitFor === undefined || OWNER_WAIT.test(firstClause(item.waitFor)));
+    }) : undefined;
+    const owner = item.job !== undefined || item.sessionId !== undefined;
+    if (!todo || (item.waitFor === undefined && item.status !== "blocked" && owner)) return same ? item : { ...item, children };
+    const answer = todo.reply ? `the owner answered ${quote(todo.reply)}` : "with no answer";
+    const next: PlanItem = { ...item, status: item.status === "blocked" ? "todo" : item.status, ...(owner ? {} : { sessionId: chatId }),
+      note: `${todo.id} closed at ${clock} ${answer}, so this step waits on nothing and is the chat's to move.${item.note ? " " + item.note : ""}`, children };
+    delete next.waitFor;
+    summaries.push(`${item.id} ${quote(item.text)} waited on ${todo.id}, which closed ${answer}: it waits on nothing now and is ${owner ? "its owner's" : "the chat's"}; ` +
+      "give it its next state (a job, a new For you todo, or done)");
+    return next;
+  };
+  const plan = after.plan.map(release);
+  if (!summaries.length) return null;
+  return { board: { ...after, plan, rev: after.rev + 1, updatedAt: now }, summaries };
+}
+
 /** What the reducer says when the agent writes a todo's answer. */
 export const AGENT_REPLY_ERROR = "Only the owner answers a todo; the agent cannot write or clear an answer. Ask with a todo and let the owner answer it on the board.";
 

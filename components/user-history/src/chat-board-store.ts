@@ -2,7 +2,7 @@ import { watch as watchDir, type FSWatcher } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { applyBoardOp, emptyBoard, linkStepSessions, nextIds, parseBoard } from "./shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, linkStepSessions, nextIds, parseBoard, releaseClosedAsks } from "./shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "./shared/types.ts";
 
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -56,6 +56,8 @@ export class BoardStore {
         board = next.board;
         summaries.push(next.summary);
       }
+      const released = releaseClosedAsks(state, board, id, now);
+      if (released) { board = released.board; summaries.push(...released.summaries); }
       Object.assign(state, board);
       return summaries;
     });
