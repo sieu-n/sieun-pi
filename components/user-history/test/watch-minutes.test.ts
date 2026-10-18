@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
+import type { ChatBoard } from "../src/shared/types.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
 import { type Footprints, hostWatchLine, nextSampleAt, parseUsableRaw, type QueueReading, unusable, type UsableReading, type WatchLine, watchLine } from "../src/mac-usable-watch.ts";
 
@@ -142,4 +143,25 @@ test("a turn whose tree has free slots and waits while the machine has free slot
   assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /a turn of VP of CI queued 167 s with free slots \(12 of 16 in use, its tree at 4 of 8\)/);
   const full: QueueReading = { ...open, working: [...open.working, ...slots("api", 3)] };
   assert.equal(measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(full, minute)), log: { holds: [] }, chats: [] }).metrics.clean_min_30, 30);
+});
+
+// Guards the 04:48Z d7 run on 10-18: it took chat-057a's 3 stuck steps from its 04:32Z check-in, taken before the chat moved to us-metal02,
+// while its live board had moved on with every open step owned by a box job that was working. The live board decides.
+test("d7 reads a check-in snapshot older than the board's last write against the live board's owners", () => {
+  const checkIn = Date.parse("2026-10-18T04:32:00Z");
+  const now = Date.parse("2026-10-18T04:48:00Z");
+  const chat = "01a1057a-0000-7000-8000-000000000000";
+  const slice = (item: string) => ({ chat, at: checkIn, kind: "stuck_steps", excerpt: `${item} is stuck (no_owner)`, item });
+  const runs = [{ duty: "checkin", at: checkIn, trigger: "schedule" as const, ms: 1, verdict: "missed" as const, summary: "",
+    metrics: { stuck_steps: { value: 3, target: 0, op: "<=" as const, met: false } }, flagged: ["p4", "p5", "p6"].map(slice) }];
+  const step = (id: string, status: "doing" | "done", sessionId?: string) => ({ id, text: id, status, children: [], ...(sessionId ? { sessionId } : {}) });
+  const board = (updatedAt: string): ChatBoard => ({ v: 2, rev: 217, todos: [], updatedAt,
+    plan: [{ ...step("p1", "doing"), children: [step("p4", "doing", "box-job-a"), step("p5", "done"), step("p6", "doing", "box-job-b")] }] });
+  const read = (b: ChatBoard, activity: Record<string, number>) => measure({ now, watch: [], log: { holds: [] },
+    chats: [{ id: chat, name: "chat-057a", duties: [], runs, everyMs: 30 * 60_000 }], boards: new Map([[chat, b]]),
+    ownerActivity: new Map(Object.entries(activity)) }).metrics.stuck_steps_all;
+  const wrote = Date.parse("2026-10-18T04:40:00Z");
+  assert.equal(read(board("2026-10-18T04:41:00Z"), { "box-job-a": wrote, "box-job-b": wrote }), 0);
+  assert.equal(read(board("2026-10-18T04:41:00Z"), { "box-job-a": wrote }), 1, "p6's owner has not written since the snapshot");
+  assert.equal(read(board("2026-10-18T04:31:00Z"), { "box-job-a": wrote, "box-job-b": wrote }), 3, "a snapshot newer than the board counts as read");
 });

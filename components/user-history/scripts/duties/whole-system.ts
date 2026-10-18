@@ -260,6 +260,30 @@ export interface Inputs {
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
   cut?: readonly CutJob[];
+  /** Each chat's live board, for a check-in whose snapshot is older than the board's last write (`liveStuck`). */
+  boards?: ReadonlyMap<string, ChatBoard | null>;
+  /** When each session that owns an open step last wrote its transcript, ms. */
+  ownerActivity?: ReadonlyMap<string, number>;
+}
+
+/**
+ * The stuck steps of a check-in snapshot still stuck on the live board. A snapshot taken before the board's last write is out of date: at 04:48Z
+ * on 10-18 d7 counted chat-057a's steps from its 04:32Z check-in, taken before the chat moved to us-metal02, while its board had moved on to rev
+ * 217 with every open step owned by a live box job. A flagged step counts only while it is still open on the live board and its owner session
+ * has not written since the snapshot; a step the chat closed, removed, or gave to a job that is working drops out. An up-to-date snapshot counts as read.
+ */
+export function liveStuck(value: number, at: number, flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined,
+  activity: ReadonlyMap<string, number>): number {
+  if (!board || Date.parse(board.updatedAt) <= at) return value;
+  const open = new Map<string, { sessionId?: string }>();
+  walk(board.plan, item => { if (OPEN.has(item.status)) open.set(item.id, item); });
+  const items = new Set((flagged ?? []).filter(slice => slice.kind === "stuck_steps" && slice.item).map(slice => slice.item!));
+  return [...items].filter(id => {
+    const step = open.get(id);
+    if (!step) return false;
+    const wrote = step.sessionId ? activity.get(step.sessionId) : undefined;
+    return wrote === undefined || wrote <= at;
+  }).length;
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
@@ -328,7 +352,8 @@ export function measure(input: Inputs): PrecheckOutput {
     const after = run?.after?.metrics?.stuck_steps;
     const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
     const fresh = at !== undefined && (chat.everyMs === undefined || now - at <= chat.everyMs);
-    return { chat, value: fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0, at };
+    const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
+    return { chat, value: read > 0 ? liveStuck(read, at!, run!.flagged, input.boards?.get(chat.id), input.ownerActivity ?? new Map()) : 0, at };
   }).filter(entry => entry.value > 0);
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
@@ -517,6 +542,24 @@ async function daemonStops(logs: string): Promise<DaemonStops> {
   return { restarts: all.flatMap(stops => stops.restarts), sigterms: all.flatMap(stops => stops.sigterms) };
 }
 
+/** When each session that owns an open step last wrote its transcript: a root's under sessions, a job's under its chat's session-artifacts. */
+async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const mtime = async (file: string) => (await stat(file).catch(() => null))?.mtimeMs;
+  for (const [chat, board] of boards) {
+    const owners = new Set<string>();
+    walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && item.sessionId) owners.add(item.sessionId); });
+    if (owners.size === 0) continue;
+    const subs = (await readdir(join(agentDir, "session-artifacts", chat)).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
+    for (const session of owners) {
+      const times = await Promise.all([join(agentDir, "sessions", `${session}.jsonl`), ...subs.map(sub => join(agentDir, "session-artifacts", chat, sub, `${session}.jsonl`))].map(mtime));
+      const newest = Math.max(...times.filter((time): time is number => time !== undefined));
+      if (Number.isFinite(newest)) out.set(session, newest);
+    }
+  }
+  return out;
+}
+
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
 async function main(): Promise<void> {
@@ -551,6 +594,8 @@ async function main(): Promise<void> {
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
+    boards,
+    ownerActivity: await ownerActivity(join(dataDir, ".."), boards),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
