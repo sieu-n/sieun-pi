@@ -1,0 +1,542 @@
+"""prime-agent frozen-session watchdog (host-side).
+
+Detects live 'working' sessions that stopped making progress and recovers them
+with the verified procedure: `prime-agent stop <id>` then `prime-agent send <id> <msg>`.
+The process readings live in wd_procs, the daemon and UI drivers in wd_daemon, the heartbeat
+re-arm in wd_heartbeats and the model probe in wd_probe.
+"""
+import datetime as dt
+import json
+import os
+import time
+
+from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, log, pa
+from wd_daemon import daemon_call, ui_retry, unwedge
+from wd_heartbeats import heartbeat_rearm
+from wd_probe import probe_model, probe_verdict
+from wd_procs import (_children, _descendants, _fd1_is_pipe, _ps_table, _tls_confirmed, _tls_count, kill_stuck_cell,
+                      parked_shells, pressure, shell_belongs_to, stuck_cell_procs, unblock)
+
+SELF_SESSION = '01a01846-1bcc-732d-b587-dcfccf752d68'   # this watchdog session; never touch
+
+# thresholds (minutes)
+OK_MIN = 12          # below this: healthy
+TURN_FREEZE = 25     # no tool running, no assistant turn produced
+TOOL_FREEZE = 35     # tool "running" but no process burning CPU
+BUSY_TOOL_MAX = 120  # a genuinely running tool this long is still a wedge
+CHILD_EXTRA = 15     # subagents get a longer leash
+
+# resume pressure limits: after a reboot every session wakes at once and swap fills (2026-10-09)
+MAX_RESUMES_PER_CYCLE = 5
+SWAP_CAP_GIB = 16.0  # ops guy 2026-10-10: the Mac target; at 8 nothing woke for hours
+LOAD_CAP = 30.0
+LAST_COUNTS = {}     # resumed/skipped counts of the latest cycle, read by cron_cycle.py
+
+# Notes Prime writes when it loads a session (each chat service start resumes chats), not input to answer: on 10-18 at 00:11Z a
+# harness_digest from the 23:40Z resume read as a dropped turn and woke the paused chats SEO guy and spec and monitoring system.
+RESUME_NOTES = ('harness_digest', 'ipython_state_restored')
+
+
+def snapshot():
+    """One reading of every session + process/journal evidence."""
+    sessions = json.loads(pa('list', '--all', '--json').stdout)['sessions']
+    now = dt.datetime.now(dt.timezone.utc)
+    recs, table = [], None
+    for s in sessions:
+        f = s.get('sessionFile')
+        evs = _tail_events(f) if f and os.path.exists(f) else []
+        last_msg = next((e for e in reversed(evs) if e.get('type') == 'message'), None)
+        # A model turn only counts if the assistant actually emitted text/thinking/a tool call:
+        # empty assistant records and delivered-input events both bump messageCount without progress.
+        last_asst, last_input = None, None
+        for e in evs:
+            t, m = e.get('type'), (e.get('message') or {})
+            role, cs = m.get('role'), m.get('content')
+            ts = _ts(e.get('timestamp'))
+            if t == 'message' and role == 'assistant':
+                real = any((c.get('type') == 'toolCall') or (c.get('text') or '').strip()
+                           or (c.get('thinking') or '').strip()
+                           for c in (cs if isinstance(cs, list) else []))
+                if real:
+                    last_asst = ts
+            elif (t == 'message' and role in ('user', 'toolResult')) or (t == 'custom_message' and e.get('customType') not in RESUME_NOTES):
+                last_input = ts
+        awaiting = round((now - last_input).total_seconds() / 60, 1) \
+            if (last_input and (not last_asst or last_input > last_asst)) else None
+        last_asst_min = round((now - last_asst).total_seconds() / 60, 1) if last_asst else None
+        # A pending cell that deliberately sleeps/polls (pipeline watching, log tailing) looks
+        # identical to a wedge from the outside: read the code before calling it frozen.
+        sleepy = False
+        for e in reversed(evs):
+            m = (e.get('message') or {})
+            if e.get('type') == 'message' and m.get('role') == 'assistant':
+                code = ' '.join(json.dumps(c.get('arguments', {})) for c in (m.get('content') or [])
+                                if isinstance(c, dict) and c.get('type') == 'toolCall')
+                sleepy = any(k in code for k in ('time.sleep(', 'sleep ', 'tail -f', '--follow',
+                                                 'watch ', 'asyncio.sleep('))
+                break
+        cand = [t for t in ((_ts(evs[-1].get('timestamp')) if evs else None),
+                            (dt.datetime.fromtimestamp(os.path.getmtime(f), dt.timezone.utc)
+                             if f and os.path.exists(f) else None),
+                            _ts(s.get('lastActivityAt')), _ts(s.get('modified'))) if t]
+        last_any = max(cand) if cand else None
+        busy, tls = [], None
+        if s['lifecycle'] == 'live' and s['activity'] == 'working':
+            table = _ps_table() if table is None else table
+            busy = [d for d in _descendants(s.get('workerPid'), table=table) if d[1].startswith('R') or d[3] > 5.0]
+            # An open TLS socket means a provider request is genuinely in flight: a slow turn,
+            # not a wedged one. Never interrupt those.
+            tls = _tls_count(s.get('workerPid'))
+        recs.append(dict(
+            id=s['id'], sid=s.get('sessionId'), name=(s.get('sessionName') or '').strip(),
+            life=s['lifecycle'], act=s['activity'], depth=s.get('rlmDepth', 0), kind=s.get('runtimeKind'),
+            model=(s.get('model') or {}).get('id'), msgs=s.get('messageCount'),
+            clients=s.get('attachedClients'), tools=bool(s.get('isRunningTools')),
+            bash=bool(s.get('isBashRunning')), compact=bool(s.get('isCompacting')),
+            kids=bool(s.get('hasRunningRlmChildren')), unfinished=s.get('unfinishedActionCount'),
+            streaming=bool(s.get('isStreaming')), queued=(s.get('sessionActions') or {}).get('queuedCount', 0),
+            parent_sid=s.get('parentSessionId'), pid=s.get('workerPid'), wstate=s.get('workerState'),
+            file=f, last_role=(last_msg or {}).get('message', {}).get('role'),
+            last_type=(evs[-1].get('type') if evs else None),
+            stale_min=round((now - last_any).total_seconds() / 60, 1) if last_any else None,
+            awaiting_min=awaiting,
+            last_asst_min=last_asst_min,
+            sleepy=sleepy,
+            busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
+            tls=tls,
+        ))
+    # Attribute a parked shell to a session: a deliberate wait sleeps INSIDE the kernel, so a
+    # shell child alive for as long as the session has been silent is that session's wedge.
+    cache = {}
+    for r in recs:
+        r['stuck_cell'] = []
+        if r['life'] != 'live' or r['act'] != 'working' or not (r['tools'] or r['bash']):
+            continue
+        st = r['stale_min'] or 0
+        if st < 10:
+            continue
+        if 'all' not in cache:
+            cache['all'] = parked_shells(min_age_min=10)
+        # attribution: the shell has been parked exactly as long as this session has been silent
+        r['stuck_cell'] = [c for c in cache['all']
+                           if abs(c['age_min'] - st) <= 5 and shell_belongs_to(c['pid'], r['pid'])]
+    return now, recs
+
+
+def recent_recoveries(hours=3):
+    """session-uuid -> count of watchdog recoveries in the last `hours`."""
+    if not LOG_F.exists():
+        return {}
+    cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    out = {}
+    for ln in LOG_F.read_text().splitlines():
+        try:
+            e = json.loads(ln)
+        except Exception:
+            continue
+        t = _ts(e.get('at'))
+        if t and t >= cut and e.get('sid') and not e.get('skip'):
+            out[e['sid']] = out.get(e['sid'], 0) + 1
+    return out
+
+
+REPEAT_FREEZE = 12   # a session the watchdog already unstuck gets a shorter leash
+
+
+HOLD = set()   # sessions under manual diagnosis: the watchdog must not touch them
+
+
+
+def _is_self(r):
+    """Only a real, matching session id is 'me'.
+
+    A caller that overrides SELF_SESSION (the out-of-process runner does, so it can heal this
+    session) must not be able to wave through records that merely have no sid.
+    """
+    return bool(SELF_SESSION) and isinstance(r.get('sid'), str) and r['sid'] == SELF_SESSION
+
+
+def classify(r, prev, repeats=None):
+    if _is_self(r):
+        return 'SELF', 'watchdog session'
+    if r['sid'] in HOLD:
+        return 'HELD', 'under manual diagnosis, watchdog hands off'
+    """-> (verdict, reason). Verdicts: SELF, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
+        # Idle with input that never got an answer = a turn dropped (machine sleep, worker
+        # restart). A session genuinely waiting on its user ends with an ASSISTANT message,
+        # so awaiting_min is None for those and they are never touched.
+        return 'DROPPED_TURN', (f"idle with input delivered {r['awaiting_min']}m ago and no answer "
+                                f"(turn lost, not waiting on its user)")
+    if r['life'] != 'live' or r['act'] != 'working':
+        return 'OK', f"{r['life']}/{r['act']}"
+    st = r['stale_min'] or 0
+    leash = CHILD_EXTRA if r['depth'] > 0 else 0
+    if r['compact']:
+        # a hung /compact looks 'busy' forever: no TLS socket + no events is the tell
+        if not r.get('tls') and st >= 20:
+            return 'FROZEN_TURN', f'compaction stuck {st}m with no open provider request'
+        return 'OK', 'compacting'
+    if st < OK_MIN + leash and (r.get('awaiting_min') is None or r['awaiting_min'] < OK_MIN + leash):
+        # staleness alone lies: agent_status/session_state housekeeping keeps ticking while a
+        # turn stays unanswered, which is how a 37h dropped turn once looked "active 0.4m ago".
+        return 'OK', f'active {st}m ago'
+    if r['busy_procs'] and r['depth'] == 0:
+        if st > BUSY_TOOL_MAX:
+            return 'STUCK_TOOL', f"tool burning CPU for {st}m: {r['busy_procs'][0]}"
+        return 'BUSY_TOOL', f"tool running: {r['busy_procs'][0]}"
+    p = (prev or {}).get(r['id'])
+    same = bool(p) and p.get('msgs') == r['msgs']
+    aw = r.get('awaiting_min')
+    rep = (repeats or {}).get(r['sid'], 0)
+    # TLS/CPU signals are read from the worker process, which a subagent SHARES with its
+    # parent and siblings: only trust them for a top-level session.
+    if r.get('tls') and r['depth'] == 0 and st <= 45:
+        # One lsof read is racy: a closing socket from the previous attempt looks like an
+        # in-flight request and buys a wedged session another 45 minutes of immunity.
+        # Silence outranks the socket: a session that has said nothing for 20+ minutes is never
+        # excused by lsof, however many sockets the worker holds (peer session d0721779446f saw
+        # tls=1 on a session silent 71.9m whose worker had zero :443 sockets 90s later).
+        if (r.get('last_asst_min') is None or r['last_asst_min'] < 20) and \
+                (st < OK_MIN or _tls_confirmed(r['pid'])):
+            return 'IN_FLIGHT', f'provider request open across samples, silent only {st}m'
+    # Phantom turn: the runtime still says "streaming" but no request is open, no tool is
+    # running and nothing has been written for a long time. Every later message queues behind
+    # it forever. Fixed in place by daemon abort + resume_queue, at any depth.
+    if (r.get('streaming') and not (r['tools'] or r['bash']) and not r.get('tls')
+            and (r.get('last_asst_min') is None or r['last_asst_min'] >= 20)
+            and (r.get('awaiting_min') is None or r['awaiting_min'] >= 10)):
+        return 'PHANTOM_TURN', (f"runtime says streaming but no request is open and nothing written for "
+                                f"{r.get('last_asst_min')}m; {r.get('queued', 0)} message(s) queued behind it")
+    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= 45 and not stuck_cell_procs(r['pid'], 20):
+        return 'CHILD_WEDGED', (f'subagent silent {r.get("last_asst_min")}m with no shell to kill -- '
+                                f'its parent owns the fix (cancel/respawn the child)')
+    if aw is not None and not (r['tools'] or r['bash']):
+        if aw >= TURN_FREEZE + leash:
+            return 'FROZEN_TURN', f'input delivered {aw}m ago, no model turn since'
+        if rep and aw >= REPEAT_FREEZE + leash:
+            return 'FROZEN_TURN', f'froze again {aw}m ago after {rep} recovery/ies in the last 3h'
+    if r['tools'] or r['bash']:
+        if r.get('stuck_cell') and st >= 15:
+            c = r['stuck_cell'][0]
+            return 'FROZEN_TOOL', (f"shell parked under the kernel {c['age_min']}m (matches this session's "
+                                   f"silence): {', '.join(c['child_cmds'])[:90]}")
+        if r.get('sleepy') and st < 90:
+            return 'BUSY_TOOL', f'pending cell sleeps/polls on purpose ({st}m in)'
+        if st >= TOOL_FREEZE + leash:
+            return 'FROZEN_TOOL', f'tool marked running {st}m with no live process'
+        return 'SUSPECT', f'tool running {st}m, no CPU (prev-cycle msgs {"unchanged" if same else "changed"})'
+    if st >= TURN_FREEZE + leash:
+        return 'FROZEN_TURN', f'input delivered, no model turn for {st}m (last={r["last_role"]})'
+    return 'SUSPECT', f'quiet {st}m (prev-cycle msgs {"unchanged" if same else "changed"})'
+
+
+NUDGE = (
+    "[watchdog] This session was wedged for {mins} minutes: {why}. I stopped the stuck worker "
+    "and restarted you. Your conversation history is intact; only the unanswered turn was lost "
+    "(IPython kernel variables may need rebuilding). Do this now: 1) scroll back and answer any "
+    "user message that never got a reply; 2) re-check the state of your last step before trusting "
+    "it -- a tool result may be missing or stale; 3) continue the task to completion and commit "
+    "your work per AGENTS.md. If a shell or HTTP call hung, re-run it with an explicit timeout, "
+    "and never background a process with `&` under subprocess capture_output -- the shell keeps "
+    "the pipe open and the call blocks forever (use start_new_session/DEVNULL or `setsid ... </dev/null >log 2>&1 &`)."
+)
+
+
+def nudge(r, why, shared_worker=False, repeats=0, dry_run=False):
+    """Recover one wedged session.
+
+    Own worker  -> `prime-agent stop <runtime-id>` then `prime-agent send <session-uuid>`
+                   (after stop the runtime id is gone; the UUID resumes the archived session).
+    Shared worker (subagents run inside their parent's worker) -> never stop: that would kill
+                   the healthy parent and siblings. Kill the orphaned shell wedging the tool
+                   call, else steer the child session.
+    """
+    mins = int(r['stale_min'] or 0)
+    msg = NUDGE.format(mins=mins, why=why)
+    out = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'depth': r['depth'],
+           'stale_min': r['stale_min'], 'why': why, 'shared_worker': shared_worker,
+           'at': dt.datetime.now(dt.timezone.utc).isoformat()}
+    if dry_run:
+        out['dry_run'] = True
+        return out
+    if repeats >= 1 and not (r['tools'] or r['bash']) and not shared_worker:
+        # stop+send already failed on this session: drive the real UI instead
+        out['method'] = 'ui-retry (attach + ESC + retype)'
+        out.update(ui_retry(r['id'], 'continue: ' + (r['name'] or 'your task') +
+                            ' -- state your current step in one line, then finish the task and commit.'))
+        with open(LOG_F, 'a') as f:
+            f.write(json.dumps(out) + '\n')
+        return out
+    if r.get('stuck_cell'):
+        out['method'] = 'kill-attributed-cell'
+        out['killed'] = []
+        for c in r['stuck_cell']:
+            # Kill ONLY processes that still hold the blocking pipe: the parked shell and any
+            # pipeline filter reading/writing it. A child the agent backgrounded on purpose
+            # (a dev server, an API) writes to a file or /dev/null -- killing it destroys work.
+            targets = [c['pid']]
+            for k in c['children']:
+                if _fd1_is_pipe(k):
+                    targets.append(k)
+                    for g in _children(k, _ps_table()):
+                        if _fd1_is_pipe(g):
+                            targets.append(g)
+            out['spared'] = [k for k in c['children'] if k not in targets]
+            _run('kill', *targets)
+            out['killed'].append({'shell': c['pid'], 'age_min': c['age_min'], 'cmds': c['child_cmds']})
+        with open(LOG_F, 'a') as f:
+            f.write(json.dumps(out) + '\n')
+        return out
+    if shared_worker and r.get('streaming') and not (r['tools'] or r['bash']):
+        out['method'] = 'daemon abort + resume_queue (subagent, worker untouched)'
+        out.update(unwedge(r['id'], msg))
+        with open(LOG_F, 'a') as f:
+            f.write(json.dumps(out, default=str) + '\n')
+        return out
+    if shared_worker:
+        cands, killed = unblock(r['pid'])
+        out['method'] = 'unblock-pipe-holder'
+        out['blockers'] = cands
+        out['killed'] = [c['pid'] + ' ' + c['cmd'][:60] for c in killed]
+        if not killed:
+            # second shape: the cell's shell is still parked under the kernel with a
+            # never-exiting streamer (convex logs / vite dev / tail -f) in its pipeline
+            cell = kill_stuck_cell(r['pid'], min_age_min=20)
+            if cell:
+                out['method'] = 'kill-stuck-cell'
+                out['killed'] = cell
+                killed = cell
+        if not killed:
+            st = pa('send', '--steer', r['sid'] or r['id'], msg)
+            out['method'] = 'steer'
+            out['send_rc'] = st.returncode
+            out['send_out'] = (st.stdout or st.stderr).strip()[:200]
+    else:
+        # First: clear a phantom turn in place. This is what actually works, and unlike
+        # stop+send it loses nothing -- no worker restart, no kernel state rebuild.
+        if r.get('streaming') and not (r['tools'] or r['bash']):
+            out['method'] = 'daemon abort + resume_queue'
+            out.update(unwedge(r['id'], msg))
+            with open(LOG_F, 'a') as f:
+                f.write(json.dumps(out, default=str) + '\n')
+            return out
+        stop = pa('stop', r['id'], timeout=45)
+        import time as _t
+        _t.sleep(3)
+        if stop.returncode != 0 and r['pid']:
+            # `stop` times out when the worker is wedged mid-request; kill it directly, but only
+            # when this session is the sole tenant of that worker (subagents share their parent's).
+            tenants = [z for z in json.loads(pa('list', '--all', '--json').stdout)['sessions']
+                       if z.get('workerPid') == r['pid'] and z.get('sessionId') != r['sid']]
+            # safe to kill when nobody else is using this worker, or only this session's idle children
+            sole = all(z.get('activity') == 'idle' for z in tenants)
+            if sole:
+                _run('kill', str(r['pid']))
+                out['killed_worker'] = r['pid']
+                _t.sleep(10)
+        send = pa('send', r['sid'] or r['id'], msg)
+        if send.returncode != 0:
+            _t.sleep(5)
+            send = pa('send', r['sid'] or r['id'], msg)
+        out['method'] = 'stop+send'
+        out['stop_rc'] = stop.returncode
+        out['stop_out'] = (stop.stdout or stop.stderr).strip()[:200]
+        out['send_rc'] = send.returncode
+        out['send_out'] = (send.stdout or send.stderr).strip()[:200]
+    with open(LOG_F, 'a') as f:
+        f.write(json.dumps(out) + '\n')
+    return out
+
+
+LOCK_F = WATCH / 'cycle.lock'
+
+
+
+def cycle(dry_run=False, verbose=True):
+    """Take the same exclusive lock the launchd runner uses, so two runners can never act at once."""
+    import fcntl
+    fh = open(LOCK_F, 'a+')
+    deadline = time.time() + 90     # a runner cycle takes well under this; wait it out, don't skip
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() >= deadline:
+                if verbose:
+                    print('== watchdog: cycle.lock held for 90s by the out-of-process runner; skipping')
+                fh.close()
+                return [], []
+            time.sleep(3)
+    try:
+        return _cycle(dry_run=dry_run, verbose=verbose)
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
+def _cycle(dry_run=False, verbose=True):
+    prev = {}
+    if STATE_F.exists():
+        try:
+            prev = json.load(open(STATE_F)).get('by_id', {})
+        except Exception:
+            prev = {}
+    now, recs = snapshot()
+    repeats = recent_recoveries()
+    swap, load = pressure()
+    blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
+        ('load', load, LOAD_CAP) if load > LOAD_CAP else None
+    counts = {'resumed': 0, 'skipped_budget': 0, 'skipped_pressure': 0, 'swap_gib': swap, 'load_1m': load}
+    LAST_COUNTS.clear()
+    LAST_COUNTS.update(counts)
+
+    def admit(r, verdict):
+        """Spend one wake from this cycle's budget, or log why the session waits for a later cycle."""
+        if not blocked and counts['resumed'] < MAX_RESUMES_PER_CYCLE:
+            counts['resumed'] += 1
+            return True
+        reason, value, cap = blocked or ('budget', counts['resumed'], MAX_RESUMES_PER_CYCLE)
+        counts['skipped_budget' if reason == 'budget' else 'skipped_pressure'] += 1
+        with open(LOG_F, 'a') as f:
+            f.write(json.dumps({'skip': reason, 'value': value, 'cap': cap, 'id': r['id'], 'sid': r['sid'],
+                                'name': r['name'], 'verdict': verdict, 'stale_min': r['stale_min'],
+                                'dry_run': dry_run, 'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
+        return False
+    # A whole model cohort going silent at once is a provider stall, not a per-session wedge:
+    # stopping/steering those sessions only burns their turns, so report and leave them alone.
+    live_working = [x for x in recs if x['life'] == 'live' and x['activity_working']] \
+        if recs and 'activity_working' in recs[0] else [x for x in recs if x['life'] == 'live' and x['act'] == 'working']
+    probes = {}
+    for m in sorted({x['model'] for x in live_working}, key=str):
+        cohort = [x for x in live_working if x['model'] == m]
+        silent = [x for x in cohort if (x.get('last_asst_min') is None or x['last_asst_min'] >= 15)]
+        # One probe per suspect model per cycle decides it: a throwaway session that cannot get a
+        # word out of the model proves the sessions are fine and the provider is not.
+        if silent:
+            probes[m] = probe_model(m)
+            if not dry_run:
+                log({'kind': 'model_probe', **probes[m]})
+    LAST_COUNTS['probes'] = {m: p['outcome'] for m, p in probes.items()}
+    verdicts, actions = [], []
+    for r in sorted(recs, key=lambda x: x['stale_min'] if x['stale_min'] is not None else float('inf')):
+        v, why = probe_verdict(*classify(r, prev, repeats), r['model'], probes)
+        r['verdict'], r['why'] = v, why
+        verdicts.append(r)
+        if v in ('DROPPED_TURN', 'PHANTOM_TURN', 'FROZEN_TURN', 'FROZEN_TOOL', 'STUCK_TOOL') and not admit(r, v):
+            continue
+        if v == 'DROPPED_TURN' and not dry_run:
+            daemon_call({'type': 'resume_queue', 'activeSessionId': r['id']})
+            m = (f"[watchdog] Your last turn was dropped {r.get('awaiting_min')} minutes ago (machine sleep or "
+                 f"worker restart) and the input was never answered. Nothing in your history was lost. "
+                 f"Re-check the state of your last step before trusting it, then continue the task and commit.")
+            sd = pa('send', r['sid'], m)
+            act = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'method': 'resume_queue + send',
+                   'why': why, 'send_rc': sd.returncode, 'send_out': (sd.stdout or sd.stderr).strip()[:120],
+                   'at': dt.datetime.now(dt.timezone.utc).isoformat()}
+            actions.append(act)
+            with open(LOG_F, 'a') as f:
+                f.write(json.dumps(act, default=str) + '\n')
+        if v == 'PHANTOM_TURN' and not dry_run:
+            m = (f"[watchdog] Your session was wedged in a phantom streaming turn for "
+                 f"{r.get('last_asst_min')} minutes: nothing dispatched and every message queued behind it. "
+                 f"I cleared it in place -- history and kernel state are intact. State your current step in "
+                 f"one line, then continue the task and commit.")
+            act = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'depth': r['depth'],
+                   'method': 'daemon abort + resume_queue', 'why': why,
+                   'at': dt.datetime.now(dt.timezone.utc).isoformat()}
+            act.update(unwedge(r['id'], m))
+            actions.append(act)
+            with open(LOG_F, 'a') as f:
+                f.write(json.dumps(act, default=str) + '\n')
+        elif v == 'PHANTOM_TURN':
+            actions.append({'id': r['id'], 'name': r['name'], 'would_unwedge': why, 'dry_run': True})
+        if v in ('FROZEN_TURN', 'FROZEN_TOOL', 'STUCK_TOOL'):
+            # A parent that owns the worker may be restarted when its only co-tenants are its own
+            # idle children; a subagent never may, and a parent with a working child never may.
+            co = [x for x in recs if x['pid'] and x['pid'] == r['pid'] and x['life'] == 'live'
+                  and x['id'] != r['id']]
+            shared = bool(co) and not (r['depth'] == 0 and all(
+                c['parent_sid'] == r['sid'] and c['act'] == 'idle' for c in co))
+            actions.append(nudge(r, why, shared_worker=shared,
+                                 repeats=repeats.get(r['sid'], 0), dry_run=dry_run))
+    # Wedged children: notify the PARENT once (it owns cancel/respawn). When several children of
+    # one live parent are stuck together the parent is usually monopolising the worker's turn slot,
+    # so send one grouped note per parent per hour instead of one per child per cycle.
+    if not dry_run:
+        cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
+        noted = set()
+        if LOG_F.exists():
+            for ln in LOG_F.read_text().splitlines():
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                t = _ts(e.get('at'))
+                if e.get('method') == 'notify-parent' and t and t >= cut:
+                    noted.add(e.get('parent_sid'))
+        groups = {}
+        for r in verdicts:
+            if r['verdict'] == 'CHILD_WEDGED':
+                groups.setdefault(r['parent_sid'], []).append(r)
+        for psid, kids in sorted(groups.items(), key=lambda g: next(
+                (x['stale_min'] or 0 for x in recs if x['sid'] == g[0]), float('inf'))):
+            par = next((x for x in recs if x['sid'] == psid), None)
+            if not par or par['life'] != 'live' or psid in noted or not admit(par, 'CHILD_WEDGED'):
+                continue
+            names = ', '.join(f"{k['name']} ({k.get('last_asst_min')}m)" for k in kids)
+            if len(kids) >= 2:
+                m = (f"[watchdog] {len(kids)} of your subagents have produced nothing for 40+ minutes while you "
+                     f"kept turning: {names}. Either they are wedged or they are queued behind your own turns on "
+                     f"the shared worker. Check in on them (agent_message), and cancel + respawn any that cannot "
+                     f"tell you their current step.")
+            else:
+                k = kids[0]
+                m = (f"[watchdog] Your subagent '{k['name']}' has produced nothing for {k.get('last_asst_min')} "
+                     f"minutes: its turn never dispatched and there is no shell process left to unblock. Cancel "
+                     f"that child (rlm.delete_subagent) and either redo its slice yourself or respawn it with a "
+                     f"narrower task and explicit timeouts on every network call.")
+            sm = pa('send', psid, m)
+            if sm.returncode != 0:
+                import time as _t
+                _t.sleep(5)
+                sm = pa('send', psid, m)
+            act = {'method': 'notify-parent', 'parent': par['name'], 'parent_sid': psid,
+                   'children': [k['name'] for k in kids], 'send_rc': sm.returncode,
+                   'send_out': (sm.stdout or sm.stderr).strip()[:160],
+                   'at': dt.datetime.now(dt.timezone.utc).isoformat()}
+            actions.append(act)
+            with open(LOG_F, 'a') as f:
+                f.write(json.dumps(act) + '\n')
+
+    # Restarts cancel rlm heartbeats silently: snapshot them and re-create them once when they vanish.
+    try:
+        actions.extend(heartbeat_rearm(recs, admit, now, dry_run=dry_run))
+    except Exception as e:  # the heartbeat check must never stop a recovery cycle
+        with open(LOG_F, 'a') as f:
+            f.write(json.dumps({'kind': 'heartbeats_error', 'error': f'{type(e).__name__}: {e}'[:300],
+                                'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
+
+    LAST_COUNTS.update(counts)
+    json.dump({'at': now.isoformat(),
+               'by_id': {r['id']: {'msgs': r['msgs'], 'stale_min': r['stale_min'],
+                                   'verdict': r['verdict'], 'sid': r['sid']} for r in recs}},
+              open(STATE_F, 'w'), indent=1)
+    if verbose:
+        print(f'== watchdog {now.isoformat(timespec="seconds")}')
+        order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
+                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
+                 'HELD': 2, 'OK': 3, 'SELF': 4}
+        for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
+                        key=lambda x: (order[x['verdict']], -(x['stale_min'] or 0))):
+            print(f"  {r['verdict']:<12} d{r['depth']} {r['id']} {str(r['stale_min']):>6}m msgs={r['msgs']:<5} "
+                  f"{r['model']} {r['name'][:45]!r} :: {r['why'][:90]}")
+        live = [x for x in verdicts if x['life'] == 'live' and x['act'] == 'working']
+        print(f"  live working: {len(live)} | healthy: {sum(1 for x in live if x['verdict'] in ('OK','SELF'))} "
+              f"| busy tool: {sum(1 for x in live if x['verdict']=='BUSY_TOOL')} "
+              f"| suspect: {sum(1 for x in live if x['verdict']=='SUSPECT')} "
+              f"| recovered: {len([a for a in actions if not a.get('dry_run')])}")
+        for a in actions:
+            print('  ACTION', json.dumps({k: v for k, v in a.items() if k != 'blockers'})[:400])
+    return verdicts, actions
