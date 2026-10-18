@@ -64,11 +64,13 @@ export interface Route { crawler: string; group: string; portal: string[]; byDes
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string }
-export interface ParityState { verdicts: Record<string, Verdict> }
+/** `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. */
+export interface ParityState { verdicts: Record<string, Verdict>; ms?: Record<string, number> }
 /** The saved state, or undefined for none. The duty runner seeds STATE_FILE with "{}" before the first run, which has no verdicts. */
 export function parseState(text: string): ParityState | undefined {
   const state = JSON.parse(text) as Partial<ParityState> | null;
-  return state && typeof state.verdicts === "object" && state.verdicts !== null ? { verdicts: state.verdicts } : undefined;
+  if (!state || typeof state.verdicts !== "object" || state.verdicts === null) return undefined;
+  return typeof state.ms === "object" && state.ms !== null ? { verdicts: state.verdicts, ms: state.ms } : { verdicts: state.verdicts };
 }
 
 /** Every operation in an openapi document as "METHOD /path". */
@@ -259,6 +261,8 @@ export function parityMetrics(input: {
   if (input.prodCostUsd !== undefined) metrics.prod_cost_usd = Math.round(input.prodCostUsd * 10_000) / 10_000;
   const state: ParityState = { verdicts: { ...input.previous?.verdicts } };
   for (const env of ENVS) for (const probe of input.probes[env]) if (probe.verdict !== "skipped" && probe.verdict !== "unprobed") state.verdicts[`${env} ${probe.op}`] = probe.verdict;
+  state.ms = { ...input.previous?.ms };
+  for (const env of ENVS) for (const probe of input.probes[env]) if (probe.ms > 0) state.ms[`${env} ${probe.op}`] = probe.ms;
   return { output: { metrics, flagged }, state };
 }
 
@@ -323,7 +327,7 @@ async function cancelJob(base: string, extra: Record<string, string>, org: Org, 
     .then(response => response.body?.cancel()).catch(() => undefined);
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; perMinute?: number; budget?: { capUsd: number; spent: number } }
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; perMinute?: number; budget?: { capUsd: number; spent: number }; lastMs?: Record<string, number> | undefined }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
@@ -350,6 +354,11 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const ops = [...all].filter(([op]) => !isDm(op));
   const later: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
+  // With perMinute, the calls past the first minute's quota start at the next clock minute, which left them 10 to 24 s before the page-1
+  // cut: on 2026-10-18 from us-metal02, 10 prod searches and crawls were cut at 14 s. The calls slowest at the last run go first, and a call
+  // with no time on record counts as slowest.
+  const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
+  first.sort(([a], [b]) => lastMs(b) - lastMs(a));
   const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB)))];
   // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
   // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
@@ -371,7 +380,9 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   })();
   // Page 2 starts as soon as its own page 1 answers. Waiting for the slowest page 1 left page 2 as little as 30 s on 10-17, and a
   // staging page 2 that answers in 1.5 s alone took over 30 s under the run's own load.
+  // The chained calls wait for page 1 only: on 2026-10-18 they waited for page-2 calls that ran to the 100 s cut and got 4 to 10 ms.
   const pageTwo = new Map<string, ProbeResult & { body: unknown }>();
+  const pageTwoRuns: Promise<void>[] = [];
   const phase1Run = Promise.all(first.map(async ([op, operation], index) => {
     if (skip.has(op)) return skipped(op);
     const request = buildRequest(op, operation);
@@ -379,7 +390,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     const org = orgs[index % orgs.length]!;
     const result = await call(org, op, request, start + PHASE1_MS, "docs example");
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
-    if (next) pageTwo.set(op, await call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, start + PHASE2_MS, `page 2 with its own ${next.param}`));
+    if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, start + PHASE2_MS, `page 2 with its own ${next.param}`)
+      .then(second => { pageTwo.set(op, second); }));
     return result;
   }));
   const [jobs, phase1] = await Promise.all([jobsRun, phase1Run]);
@@ -393,6 +405,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     const name = CHAINED.exec(op)![1]!;
     return call(orgs[sources[chained[name]!.from]!.org]!, op, request, start + PHASE2_MS, "id from this run, same test org");
   }));
+  await Promise.all(pageTwoRuns);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
   for (const result of [...phase1, ...jobs, ...phase2]) {
@@ -461,9 +474,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map() }, routes, start)
+      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes, start)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, perMinute: PROD_PER_MINUTE, ...(budget ? { budget } : {}) }, routes, start)
+      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, perMinute: PROD_PER_MINUTE, ...(budget ? { budget } : {}), lastMs: previous?.ms }, routes, start)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
