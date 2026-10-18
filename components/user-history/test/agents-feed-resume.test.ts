@@ -1,4 +1,5 @@
 // Guards the 10-18 Mac reconnects on release-322de20: a reconnect pulled 0.5 to 0.72 MB and was current in 1.0 to 1.2 s, 428 KB of it agents lists, because the agents feed sent each chat's whole list on subscribe and on every change (01a1164b: 252 agents, 229 not working, 84 KB a frame, 73 frames a minute) and went out beside the thread's lines.
+// On release-1bfb0bc the page held the agents subscribe until the thread had drawn, and a Mac reconnect was current in 1.07 to 2.07 s, median 1.43 s.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import WebSocket from "ws";
@@ -70,7 +71,7 @@ test("the server sends a thread's first lines before an agents list asked for in
   assert.deepEqual(frames, ["1:thread", "2:agents"]);
 });
 
-test("the page subscribes its agents feeds after the open thread's first page, on a cold load and after a reconnect, naming what it holds", async t => {
+test("the page subscribes the thread and its agents in the same tick, the thread first, on a cold load and after a reconnect, naming what it holds", async t => {
   type Fake = { sent: Array<Record<string, unknown>>; readyState: number; onopen?: () => void; onclose?: () => void; onmessage?: (message: { data: unknown }) => void };
   const sockets: Fake[] = [];
   class FakeSocket implements Fake {
@@ -85,27 +86,24 @@ test("the page subscribes its agents feeds after the open thread's first page, o
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const { subscribeFeed } = await import("../src/client/feeds.ts");
   const { api } = await import("../src/client/api.ts");
-  const { AgentFeeds } = await import("../src/client/agent-feeds.ts");
-  const feeds = (socket: Fake) => socket.sent.map(message => message.feed);
+  const feeds = (socket: Fake) => socket.sent.map(message => `${String(message.feed)}:${String(message.id)}`);
 
+  // An unfolded sidebar chat's agents feed started before the open thread's.
+  api.agentsStream("chat2", () => {});
   subscribeFeed({ feed: "thread", id: "chat1" }, () => {});
-  const agents = new AgentFeeds(api.agentsStream, () => {}, () => true);
-  agents.show(["chat1"]);
+  let shown: AgentsView | null = null;
+  api.agentsStream("chat1", next => { shown = next; });
   const first = sockets[0]!;
   first.readyState = 1; first.onopen?.();
-  assert.deepEqual(feeds(first), ["thread"], "a cold load asks for the thread alone");
-  agents.open();
-  assert.deepEqual(feeds(first), ["thread", "agents"]);
-  const sub = first.sent[1]!.sub;
+  assert.deepEqual(feeds(first), ["thread:chat1", "agents:chat2", "agents:chat1"], "one open sends all three, the thread first");
+  const sub = first.sent[2]!.sub;
   first.onmessage?.({ data: JSON.stringify({ sub, event: "agents", data: view(list) }) });
-  assert.equal(agents.byChat().get("chat1")?.length, 252);
+  assert.equal(shown!.agents.length, 252);
 
   first.readyState = 3; first.onclose?.();
   t.mock.timers.tick(1000);
   const second = sockets[1]!;
   second.readyState = 1; second.onopen?.();
-  assert.deepEqual(feeds(second), ["thread"], "a reconnect asks for the thread alone");
-  assert.equal(agents.byChat().get("chat1")?.length, 252, "the page keeps showing the agents it has");
-  agents.open();
-  assert.deepEqual(second.sent[1], { type: "subscribe", sub: second.sent[1]!.sub, feed: "agents", id: "chat1", delta: true, have: agentsHave(list) });
+  assert.deepEqual(feeds(second), ["thread:chat1", "agents:chat2", "agents:chat1"]);
+  assert.deepEqual(second.sent[2], { type: "subscribe", sub, feed: "agents", id: "chat1", delta: true, have: agentsHave(list) });
 });

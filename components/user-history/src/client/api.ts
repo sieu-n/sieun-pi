@@ -66,20 +66,19 @@ export const api = {
   },
   /**
    * The agents of a chat, or of the chat a job's session belongs to, while a page shows them; the sessions feed leaves them out. The feed
-   * sends the agents that changed, and a page that holds a view (`held`, or the last one this feed brought) names it (`agentsHave`), so a
-   * resubscribe gets only what changed since.
+   * sends the agents that changed, and a reconnect names the agents this feed holds (`agentsHave`), so it gets only what changed since.
    */
-  agentsStream(id: string, held: AgentsView | null, onView: (view: AgentsView) => void, onError: () => void): () => void {
-    let view = held;
+  agentsStream(id: string, onView: (view: AgentsView) => void): () => void {
+    let view: AgentsView | null = null;
     return subscribeFeed(() => { const have = view ? agentsHave(view.agents) : undefined; return { feed: "agents", id, delta: true, ...(have ? { have } : {}) }; }, (event, data) => {
       if (event !== "agents") return;
       view = applyAgentsFrame(view, data as AgentsView | AgentsDelta);
       onView(view);
-    }, onError);
+    });
   },
   /** `onSide` gets the feed's `side` frames: what the view shows beside the messages, pushed after the snapshot (shared/thread-side.ts). */
   threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void, onSide: (side: ThreadSide) => void = () => {}, have: () => ThreadHave | undefined = () => undefined): () => void {
-    const stop = subscribeFeed(() => { const held = have(); return { feed: "thread", id, ...(held ? { have: held } : {}) }; }, (event, data) => {
+    const stop = subscribeFeed(() => { const held = have(); return { feed: "thread", id, delta: true, ...(held ? { have: held } : {}) }; }, (event, data) => {
       if (event === "side") { onSide(data as ThreadSide); return; }
       if (event !== "thread") return;
       const parsed = data as ThreadEvent;
@@ -173,6 +172,7 @@ export const api = {
     post<{ status: string; error?: string }>("api/threads/" + encodeURIComponent(id) + "/queue", input),
   labels: (action: LabelAction) => post<{ ok: true; tagId?: string }>("api/labels", action),
   read: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/read", {}),
+  boardNow: (id: string) => get<{ board: ChatBoard | null }>("api/threads/" + encodeURIComponent(id) + "/board").then(body => body.board),
   board: (id: string, ops: BoardOp[]) => post<ChatBoard>("api/threads/" + encodeURIComponent(id) + "/board", { ops }),
   /** A text file on this Mac, for a `file:` artifact link (readLocalText: any UTF-8 text under the allowed folders), with how to show it. */
   localFile: (path: string) => get<LocalFile>("api/local-file?path=" + encodeURIComponent(path)),

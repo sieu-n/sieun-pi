@@ -3,6 +3,7 @@ import { saveDrafts } from "./drafts.ts";
 import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
 import { primeThread, retryFeeds } from "./feeds.ts";
 import { applyThreadEvent, boardKey, threadStateFromSnapshot } from "../shared/thread-state.ts";
+import { BoardFollower } from "../shared/board-delta.ts";
 import { formatCursor, messageKey } from "../shared/message-key.ts";
 import { rememberAccounts } from "./accounts.ts";
 import { dutiesFeed } from "./duties.svelte.ts";
@@ -15,7 +16,7 @@ import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionR
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
-import { AgentFeeds } from "./agent-feeds.ts";
+import type { AgentsView } from "../shared/sessions-delta.ts";
 import type { PromptTarget } from "../shared/prompt-view.ts";
 import type { SettingsSection } from "./settings-sections.ts";
 
@@ -113,15 +114,28 @@ class Store {
 
   /** The sessions feed's rows as they came, before `withAgents`. */
   private listed: SessionRow[] = [];
-  /** The agents feeds of the open thread and each chat whose sidebar row is unfolded; they start after the open thread's first page. */
-  private readonly agents = new AgentFeeds(api.agentsStream, () => { this.sessions = this.withAgents(this.listed); }, () => this.selectedId !== null);
+  /**
+   * The agents feeds this page holds, by the id it asked for: the open thread and each chat whose sidebar row is unfolded. They subscribe at
+   * once, beside the thread; the server holds their frames until the thread's first frame is out (chat-socket.ts).
+   */
+  private agentFeeds = new Map<string, () => void>();
+  private agentViews = new Map<string, AgentsView>();
   /** The rows with each shown chat's agents laid in, so every reader of `row.agents` works as before the feed left them out. */
   private withAgents(rows: SessionRow[]): SessionRow[] {
-    const byChat = this.agents.byChat();
+    const byChat = new Map([...this.agentViews.values()].flatMap(view => view.chat ? [[view.chat, view.agents] as const] : []));
     return byChat.size ? rows.map(row => { const agents = row.chat ? byChat.get(row.id) : undefined; return agents ? { ...row, agents } : row; }) : rows;
   }
-  /** Starts the agents feeds for `ids` and stops the others (`AgentFeeds.show`). */
-  showAgents(ids: readonly string[]): void { this.agents.show(ids); }
+  /** Starts the agents feeds for `ids` and stops the others. */
+  showAgents(ids: readonly string[]): void {
+    const wanted = new Set(ids);
+    let dropped = false;
+    for (const [id, stop] of this.agentFeeds) if (!wanted.has(id)) { stop(); this.agentFeeds.delete(id); dropped = this.agentViews.delete(id) || dropped; }
+    if (dropped) this.sessions = this.withAgents(this.listed);
+    for (const id of wanted) {
+      if (this.agentFeeds.has(id)) continue;
+      this.agentFeeds.set(id, api.agentsStream(id, view => { this.agentViews.set(id, view); this.sessions = this.withAgents(this.listed); }));
+    }
+  }
 
   private subscribeSessions(): void {
     this.sessionsStop = api.sessionsStream(this.archivedWanted, event => {
@@ -207,7 +221,6 @@ class Store {
     if (id && id !== this.selectedId) { performance.clearMarks("thread-switch:" + id); performance.mark("thread-switch:" + id); }
     if (id) this.open(id);
     this.selectedId = id;
-    if (!id) this.agents.open();
     this.checkArchived();
   }
 
@@ -281,15 +294,12 @@ class Store {
     }, () => {
       this.dropSide(id);
       const current = this.entries[id];
-      if (current && !current.state) {
-        this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
-        if (id === this.selectedId) this.agents.open();
-      }
+      if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
     }, side => this.side(id, side), () => {
       // A reconnect names the newest message and the board this page holds, and gets only what came after them.
       const state = this.threads[id]?.state;
       if (!state?.messages.length) return undefined;
-      return { last: formatCursor({ kind: "message", key: messageKey(state.messages, state.messages.length - 1) }), ...(state.board ? { board: boardKey(state.board) } : {}) };
+      return { last: formatCursor({ kind: "message", key: messageKey(state.messages, state.messages.length - 1) }), ...(state.board ? { board: this.boards.get(id)?.key ?? boardKey(state.board) } : {}) };
     });
     const apply = (event: ThreadEvent) => {
       const current = this.entries[id];
@@ -301,19 +311,28 @@ class Store {
         if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
         const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
         this.patch(id, { state: keepOlder(current.state, page), newest: event.snapshot.after !== undefined ? current.newest : newestPage(page), loading: false, error: null });
-        // The agents feeds wait for the open thread's lines to draw on a cold load and after a reconnect, then start.
-        if (id === this.selectedId) afterPaint(() => setTimeout(() => this.agents.open(), 0));
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) {
-        if (id === this.selectedId) this.agents.open();
         this.dropSide(id);
         this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
       }
+      else if (event.type === "board" || event.type === "board-delta") this.boardFollower(id).take(event);
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
       if (event.type === "outbox") void this.outbox.server(event.outbox);
     };
     this.expectSide(id);
     this.patch(id, { close });
+  }
+
+  /** The board each thread's feed brought, which board deltas follow; the owner's own change shows before it comes back (`boardOps`). */
+  private boards = new Map<string, BoardFollower>();
+  private boardFollower(id: string): BoardFollower {
+    let follower = this.boards.get(id);
+    if (!follower) {
+      follower = new BoardFollower(() => api.boardNow(id), board => { const current = this.entries[id]; if (current?.state) this.patch(id, { state: { ...current.state, board } }); });
+      this.boards.set(id, follower);
+    }
+    return follower;
   }
 
   /** What the feed pushes beside a thread's messages after a new subscription: job costs, a chat's duties and the account chip's view. */

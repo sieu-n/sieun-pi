@@ -5,7 +5,7 @@ import type { ThreadHave } from "../shared/types.ts";
  * The socket opens on the first subscription, reconnects with backoff while any feed is subscribed, and subscribes again
  * after each reconnect. The server answers a new subscription with a fresh snapshot, so nothing is lost across a reconnect.
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string; delta?: true; have?: string };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; delta?: true; have?: ThreadHave } | { feed: "agents"; id: string; delta?: true; have?: string };
 /** A feed given as a function is read again at each subscribe, so a reconnect names what the page holds by then (chat-socket.ts `have`). */
 type FeedSource = Feed | (() => Feed);
 type Listener = { feed: FeedSource; onEvent: (event: string, data: unknown) => void; onError: () => void };
@@ -120,7 +120,9 @@ class FeedSocket {
     socket.onopen = () => {
       this.openedAt = Date.now();
       this.listen();
-      for (const [sub, listener] of this.listeners) if (!this.serverSubs.has(sub)) this.send({ type: "subscribe", sub, ...feedOf(listener.feed) });
+      // Thread feeds first: the server holds an agents feed's frames until every thread feed asked for before it sent its first frame.
+      const feeds = [...this.listeners].filter(([sub]) => !this.serverSubs.has(sub)).map(([sub, listener]) => ({ sub, feed: feedOf(listener.feed) }));
+      for (const { sub, feed } of [...feeds.filter(entry => entry.feed.feed === "thread"), ...feeds.filter(entry => entry.feed.feed !== "thread")]) this.send({ type: "subscribe", sub, ...feed });
       for (const sub of this.serverSubs) if (!this.listeners.has(sub) && !this.bootFrames.has(sub)) { this.serverSubs.delete(sub); this.send({ type: "unsubscribe", sub }); }
     };
     socket.onmessage = message => this.receive(message.data);
