@@ -1,8 +1,9 @@
-import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
+import { applySessionsDelta } from "../shared/sessions-delta.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
 
@@ -45,9 +46,14 @@ const wikiPages = new Map<string, { at: number; page: Promise<WikiPage> }>();
 
 export const api = {
   sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void, onBuild: (version: string) => void): () => void {
-    return subscribeFeed({ feed: "sessions" }, (event, data) => {
-      if (event === "build") onBuild((data as { version: string }).version);
-      else if (event === "sessions") onEvent(data as SessionsEvent);
+    /** The list this subscription holds; a reconnect subscribes again and starts from the server's full list. */
+    let rows: SessionRow[] = [];
+    return subscribeFeed({ feed: "sessions", delta: true }, (event, data) => {
+      if (event === "build") { onBuild((data as { version: string }).version); return; }
+      if (event !== "sessions") return;
+      const frame = data as SessionsEvent | SessionsDelta;
+      rows = frame.type === "sessions" ? frame.sessions : applySessionsDelta(rows, frame);
+      onEvent({ type: "sessions", sessions: rows, tags: frame.tags, daemon: frame.daemon, ...(frame.error !== undefined ? { error: frame.error } : {}) });
     }, onError);
   },
   threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void): () => void {

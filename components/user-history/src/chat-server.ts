@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
@@ -20,6 +21,7 @@ import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, rende
 import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
+import { SessionsDiff } from "./shared/sessions-delta.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -385,7 +387,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   const feeds = new FeedSockets(async (feed, send) => {
     if (feed.feed === "sessions") {
       sendBuild(version => send("build", { version }));
-      return backend.catalog.subscribe(event => send("sessions", event));
+      if (!feed.delta) return backend.catalog.subscribe(event => send("sessions", event));
+      const diff = new SessionsDiff();
+      return backend.catalog.subscribe(event => { const frame = diff.frame(event); if (frame) send("sessions", frame); });
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
     if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));
@@ -401,13 +405,33 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   });
   server.on("upgrade", (req, socket, head) => { upgrade(req, socket, head); });
 
+  /**
+   * JSON over 8 KB and the page's assets go out gzipped when the browser takes it. The Mac in Korea reads this box at about 370 KB/s, and on
+   * 10-18 app.js (651 KB), app.css (172 KB) and api/models (255 KB) went out raw, so each reload after a release spent about 2 s on app.js.
+   */
+  const gzips = (req: IncomingMessage | undefined) => /\bgzip\b/.test(String(req?.headers["accept-encoding"] ?? ""));
   function json(res: ServerResponse, status: number, value: unknown) {
+    const body = JSON.stringify(value);
+    if (body.length > 8192 && gzips(res.req)) {
+      const packed = gzipSync(body, { level: 1 });
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Encoding": "gzip", Vary: "Accept-Encoding", "Content-Length": packed.length });
+      res.end(packed);
+      return;
+    }
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(value));
+    res.end(body);
   }
+  const packedAssets = new WeakMap<Asset, Buffer>();
   function serveAsset(req: IncomingMessage, res: ServerResponse, asset: Asset) {
-    if (req.headers["if-none-match"] === asset.etag) { res.writeHead(304, { ETag: asset.etag, "Cache-Control": "no-cache" }); res.end(); return; }
-    res.writeHead(200, { "Content-Type": asset.contentType, ETag: asset.etag, "Cache-Control": "no-cache", "Content-Length": asset.body.length });
+    if (req.headers["if-none-match"] === asset.etag) { res.writeHead(304, { ETag: asset.etag, "Cache-Control": "no-cache", Vary: "Accept-Encoding" }); res.end(); return; }
+    if (asset.body.length > 1024 && gzips(req)) {
+      let packed = packedAssets.get(asset);
+      if (!packed) { packed = gzipSync(asset.body, { level: 9 }); packedAssets.set(asset, packed); }
+      res.writeHead(200, { "Content-Type": asset.contentType, "Content-Encoding": "gzip", Vary: "Accept-Encoding", ETag: asset.etag, "Cache-Control": "no-cache", "Content-Length": packed.length });
+      res.end(packed);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": asset.contentType, ETag: asset.etag, "Cache-Control": "no-cache", Vary: "Accept-Encoding", "Content-Length": asset.body.length });
     res.end(asset.body);
   }
   function close(): Promise<void> {
