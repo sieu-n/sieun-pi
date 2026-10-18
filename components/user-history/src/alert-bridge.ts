@@ -353,15 +353,6 @@ export function changeOps(board: ChatBoard, change: ChatChange): { ops: BoardOp[
   return { ops, steps };
 }
 
-export function resolveOps(board: ChatBoard, resolve: Resolve): BoardOp[] {
-  if (resolve.step === null) return [];
-  const item = findItem(board.plan, resolve.step)?.item;
-  if (!item || item.note?.includes(RESOLVED)) return [];
-  const line = `${RESOLVED} ${resolve.at}, when the alert bridge saw it leave Grafana's firing list.`;
-  const note = item.note ? `${item.note}\n${line}` : line;
-  return [{ op: "plan_update", id: resolve.step, note }];
-}
-
 export function escalationText(steps: readonly (StepLine & { chat: string })[]): string {
   const sets = (step: StepLine) => step.sets && step.sets > 1 ? `, ${step.sets} label sets` : "";
   const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z${sets(step)})`;

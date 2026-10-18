@@ -61,24 +61,3 @@ export function parseChatImages(value: unknown): ChatImage[] {
   }
   return images;
 }
-
-export function sanitizeNativeImages(message: unknown): ChatImage[] {
-  if (!isRecord(message) || message.role !== "user" || !Array.isArray(message.content)) return [];
-  const images: ChatImage[] = [];
-  let totalBytes = 0;
-  for (const candidate of message.content) {
-    if (!isRecord(candidate) || candidate.type !== "image") continue;
-    try {
-      const { image, byteLength } = parseImage(candidate, MAX_CHAT_TOTAL_IMAGE_BYTES - totalBytes);
-      images.push(image);
-      totalBytes += byteLength;
-    } catch {
-      continue;
-    }
-  }
-  return images;
-}
-
-export function chatImageDataUrl(image: ChatImage): string {
-  return `data:${image.mimeType};base64,${image.data}`;
-}

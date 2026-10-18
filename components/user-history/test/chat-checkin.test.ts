@@ -388,9 +388,9 @@ test("check-in pause by another agent: recorded with its session, the chat's own
   assert.deepEqual(changeCheckIn({ everyMs: 60_000, pausedUntil: "forever", pausedBy: "agent", setter: lead.setter }, { pause: null }, now, OWNER_UI), { setting: { everyMs: 60_000 } });
 });
 
-test("check-in settings file: an owner pause with no setter stays the owner's, an older chat pause reads as an agent's, an unknown author counts as the owner's", async () => {
+test("check-in settings file: an owner pause with no setter stays the owner's, an agent pause stays an agent's, an unknown author counts as the owner's", async () => {
   const path = join(await mkdtemp(join(tmpdir(), "check-in-")), "check-in-settings.json");
-  await writeFile(path, JSON.stringify({ old: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "owner" }, mine: { everyMs: 900_000, pausedUntil: 1_900_000_000_000, pausedBy: "chat" },
+  await writeFile(path, JSON.stringify({ old: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "owner" }, mine: { everyMs: 900_000, pausedUntil: 1_900_000_000_000, pausedBy: "agent" },
     none: { everyMs: 900_000, pausedUntil: "forever" } }));
   const settings = checkInSettings(path);
   const now = new Date(2026, 9, 12, 12, 0).getTime();

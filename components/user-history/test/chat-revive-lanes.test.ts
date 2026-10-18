@@ -103,17 +103,6 @@ test("chat revive: the chat's own pause stops the check-in, not the failed-turn 
   owner.chats.close();
 });
 
-test("chat check-in: a daemon pause the removed daemon gate left in the settings file reads as no pause, so the check-in runs at once (10-17: no check-in from 00:05Z to 19:36Z)", async () => {
-  const runs: string[] = [];
-  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); }, async lastCheckIn() { return undefined; } };
-  const left = await setup(sink);
-  await writeFile(left.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
-  await left.run(1);
-  assert.deepEqual(runs, ["c1"]);
-  assert.equal(left.logs.filter(line => line.includes("held while")).length, 0);
-  left.chats.close();
-});
-
 const at = (iso: string): number => Date.parse(iso);
 
 test("chat revive: a turn that streams with no session event for HUNG_TURN_MS (45 min) is stopped and restarted; replay of 1180e 10-11 22:04Z, hung 252.7 min", async () => {

@@ -14,9 +14,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 /**
  * A chat's check-in choices: its interval, and a pause until a time or until resumed, with who paused it (`pausedBy`) and which one (`setter`).
- * An older file's `chat` reads as `agent`; an `owner` pause with no setter stays the owner's. A `daemon` pause, left by the daemon gate that
- * paused every check-in while the daemon's list timed out, reads as no pause: on 10-17 the gate flapped every 1 to 3 min and no chat ran a
- * check-in from 00:05Z to 19:36Z.
+ * An `owner` pause with no setter stays the owner's.
  */
 export type CheckInPausedUntil = number | "forever";
 export type CheckInBy = "owner" | "agent";
@@ -147,9 +145,8 @@ export interface CheckInSettings {
 function parseSetting(value: unknown): CheckInSetting | undefined {
   if (!isRecord(value) || !validCheckInEvery(value.everyMs)) return undefined;
   const until = value.pausedUntil;
-  const pausedUntil = value.pausedBy === "daemon" ? undefined : until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
-  const by = value.pausedBy === "chat" ? "agent" : value.pausedBy;
-  const pausedBy = by === "owner" || by === "agent" ? by : undefined;
+  const pausedUntil = until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
+  const pausedBy = value.pausedBy === "owner" || value.pausedBy === "agent" ? value.pausedBy : undefined;
   const setter = typeof value.setter === "string" && value.setter !== "" ? value.setter : undefined;
   const startAt = typeof value.startAt === "number" && Number.isFinite(value.startAt) ? value.startAt : undefined;
   return { everyMs: value.everyMs, ...(pausedUntil !== undefined ? { pausedUntil, ...(pausedBy ? { pausedBy } : {}), ...(setter ? { setter } : {}) } : {}),

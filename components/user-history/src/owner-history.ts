@@ -1,18 +1,13 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { missing } from "./locked-json.ts";
-import { type OwnerMessage, ownerMessages, ownerTexts } from "./shared/brief-check.ts";
+import { ownerTexts } from "./shared/brief-check.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 
 /**
- * Every owner message in a session file, oldest first, read line by line; empty for a missing file. A thread's state holds only the file's
- * tail (session-tail.ts, TAIL_MESSAGES), so an owner message from days back is only in the file.
+ * Every word the owner wrote in a session file (`ownerTexts`): his messages and his board answers, read line by line; empty for a missing
+ * file. A thread's state holds only the file's tail (session-tail.ts, TAIL_MESSAGES), so an owner message from days back is only in the file.
  */
-export async function fileOwnerMessages(file: string): Promise<OwnerMessage[]> {
-  return ownerMessages(await userMessages(file));
-}
-
-/** Every word the owner wrote in a session file (`ownerTexts`): his messages and his board answers. */
 export async function fileOwnerTexts(file: string): Promise<string[]> {
   return ownerTexts(await userMessages(file));
 }

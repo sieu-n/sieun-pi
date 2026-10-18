@@ -42,7 +42,6 @@ export interface AgentSources {
   now: number;
 }
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RECEIPT = /'source': 'agent_message', 'target': \{[^}]*?'sessionId': '([^']+)'/g;
 const messageText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.flatMap((part: unknown) => typeof part === "object" && part !== null && "text" in part ? [String((part as { text: unknown }).text)] : []).join("\n") : "";

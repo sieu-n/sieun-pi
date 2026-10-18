@@ -8,7 +8,7 @@ import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
-import { CHANGE_APPROACH_MISSES, type MetricStreak } from "./shared/duty-streak.ts";
+import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /**

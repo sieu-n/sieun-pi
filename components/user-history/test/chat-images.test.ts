@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DaemonAgentConnection } from "prime-agent";
-import {
-  chatImageDataUrl, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES,
-  parseChatImages, sanitizeNativeImages, type ChatImage,
-} from "../src/chat-images.ts";
+import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, parseChatImages, type ChatImage } from "../src/chat-images.ts";
 
 const png = {
   type: "image", mimeType: "image/png",
@@ -21,10 +18,6 @@ function sizedPng(byteLength: number): ChatImage {
   const bytes = Buffer.alloc(byteLength);
   Buffer.from(png.data, "base64").copy(bytes);
   return { ...png, data: bytes.toString("base64") };
-}
-
-function nativeUser(content: unknown[]): unknown {
-  return { role: "user", content, timestamp: 1 };
 }
 
 test("image parser returns native prompt images without a second representation", () => {
@@ -94,35 +87,4 @@ test("image parser enforces decoded per-image bytes and total bytes at exact bou
   const remainder = MAX_CHAT_TOTAL_IMAGE_BYTES - 2 * MAX_CHAT_IMAGE_BYTES;
   assert.equal(parseChatImages([largest, largest, sizedPng(remainder)]).length, 3);
   assert.throws(() => parseChatImages([largest, largest, sizedPng(remainder + 1)]), /total 8 MiB/);
-});
-
-test("native image projection keeps only safe user images and does not mutate messages", () => {
-  const content = [Object.freeze({ type: "text", text: "Look at this" }),
-    Object.freeze({ ...png, name: "<img onerror=alert(1)>", path: "/etc/passwd", url: "https://example.test" }),
-    Object.freeze({ type: "image", mimeType: "image/svg+xml", data: "not an image" }), null,
-    Object.freeze({ ...png, mimeType: "image/jpeg" }), Object.freeze(gif)];
-  const message = Object.freeze({ role: "user", content: Object.freeze(content), timestamp: 1 });
-  assert.deepEqual(sanitizeNativeImages(message), [png, gif]);
-  assert.equal(content.length, 6);
-  assert.deepEqual(parseChatImages([content[1]]), [png]);
-  for (const role of ["assistant", "toolResult", "custom", undefined]) {
-    assert.deepEqual(sanitizeNativeImages({ role, content: [png] }), []);
-  }
-  for (const value of [null, undefined, [], {}, { role: "user", content: "text" }]) {
-    assert.deepEqual(sanitizeNativeImages(value), []);
-  }
-});
-
-test("native image projection skips invalid and over-limit blocks without hiding later small images", () => {
-  assert.equal(sanitizeNativeImages(nativeUser(Array.from({ length: 12 }, () => png))).length, 12, "no count cap");
-  assert.deepEqual(sanitizeNativeImages(nativeUser([sizedPng(MAX_CHAT_IMAGE_BYTES + 1), png])), [png]);
-  const largest = sizedPng(MAX_CHAT_IMAGE_BYTES);
-  assert.deepEqual(sanitizeNativeImages(nativeUser([largest, largest, largest, png])), [largest, largest, png]);
-});
-
-test("display URLs are data URLs built from validated native image bytes", () => {
-  for (const image of parseChatImages([png, gif, webp])) {
-    assert.equal(chatImageDataUrl(image), `data:${image.mimeType};base64,${image.data}`);
-    assert.match(chatImageDataUrl(image), /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/);
-  }
 });
