@@ -40,6 +40,13 @@ export const TASKS: Record<string, { message: string; counts: RegExp; section: R
     section: /\b(user-history|pi-pool|global-rules|skills|scripts|docs|tests|deploy|config)\b/i,
     drop: /\b(the|top|all) 10\b|\b10 (biggest )?commits\b|\b5 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
   },
+  "sieun-pi commit report": {
+    message: "how many commits landed on sieun-pi main in the last 4 days, and which component got the most of them? then find the 10 biggest " +
+      "commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
+    counts: /\b\d[\d,]*\s+(commits?|changes?|files?|lines?)\b/gi,
+    section: /\b(user-history|pi-pool|global-rules|skills|scripts|docs|tests|deploy|config)\b/i,
+    drop: /\b(the|top|all) 10\b|\b10 (biggest )?commits\b|\b4 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
+  },
   "dev branch commits": {
     message: "how many commits landed on auto-sns-agent's sieun/dev in the last 7 days, and which app got the most of them? then find the 10 " +
       "biggest commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
