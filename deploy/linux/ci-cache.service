@@ -1,12 +1,15 @@
 [Unit]
-Description=ci-cache: the one GitHub Actions poller for sieu-n/auto-sns-agent (scripts/dev/ci-cache.mjs poll), writing ~/.cache/virev/ci-runs.json for ci-run-status, the gh shim and board.wake(run=)
+Description=ci-cache: the one GitHub Actions poller for sieu-n/auto-sns-agent (scripts/dev/ci-cache.mjs poll, run from origin/sieun/dev through run-from-head.mjs --follow-head), writing ~/.cache/virev/ci-runs.json for ci-run-status, the gh shim and board.wake(run=)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/node/bin/node %h/.local/share/ci-cache/scripts/dev/ci-cache.mjs poll
+Environment=CI_CACHE_REAL_GH=%h/.local/opt/gh-2.89.0/bin/gh
+Environment=CI_CACHE_QUOTA_PROM=%h/box-ops/obs/textfile/devbox-github-quota.prom
+WorkingDirectory=%h/.cache/virev/head-export
+ExecStart=%h/.local/node/bin/node %h/.cache/virev/head-export/current/scripts/dev/run-from-head.mjs --follow-head %h/Documents/Github/auto-sns-agent scripts/dev/ci-cache.mjs poll
 Restart=always
 RestartSec=30
 Nice=10

@@ -1,0 +1,11 @@
+[Unit]
+Description=ci-head-fetch: fetch origin's sieun/dev into refs/remotes/origin/sieun/dev of the box checkout, so run-from-head.mjs (ci-cache.service, ci-monitor.service) follows the pushed head. It writes that one ref and never sieun/dev, the working tree or .git/index.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/git -C %h/Documents/Github/auto-sns-agent -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --no-write-fetch-head --no-recurse-submodules --quiet origin +refs/heads/sieun/dev:refs/remotes/origin/sieun/dev
+Nice=10
+TimeoutStartSec=2min
