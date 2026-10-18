@@ -13,12 +13,12 @@ A clean-room chat gets a real, ordinary task and never learns it is a test. Its 
 1. Write the criteria first in `~/.prime/agent/clean-room/<change>/criteria.md`, before any run starts. Each line says what a person would see when the change works and can be checked from session files, the board, the duty runs or the Prompt view captures. Add a line that nobody stepped in.
 2. Add a scenario file next to `checkin-real-task.ts` with the first message and an evaluator that reads each criterion, and register it in `SCENARIOS` in `clean-room.ts`.
 3. From `components/user-history`, run `node --import tsx scripts/clean-room/clean-room.ts setup --scenario <name> --criteria <criteria.md> --cwd <repo the task belongs to> --name "<plain chat name>" --every-min <n> --run <run folder>`.
-4. Start `clean-room.ts collect --run <run folder> --until <ISO time>` detached with `nohup`, set `board.wake(at=...)` for the end of the window, and end your turn.
+4. Start `clean-room.ts collect --run <run folder> --until <ISO time>` detached with `nohup`, set `board.wake(at=...)` for the end of the window, and end your turn. When the window ends, collect runs evaluate itself.
 5. Leave the chat, its jobs and its board alone until the window ends, and never trigger a run by hand.
-6. Run `clean-room.ts evaluate --run <run folder>`, which writes `<run>.pass.md`, `<run>.fail.md`, `<run>.void.md` or `<run>.open.md` next to the run folder. An open run has not reached a state a criterion needs, so it gets more check-ins.
+6. Run `clean-room.ts evaluate --run <run folder>`, or read the verdict collect left, which is `<run>.pass.md`, `<run>.fail.md`, `<run>.void.md` or `<run>.open.md` next to the run folder. An open run has not reached a state a criterion needs: evaluated before the window ends it keeps running, and one still open at the end needs a new run with a longer window.
 7. On a fail, send the failing criteria with their evidence quotes to the job that owns the change. After its next release, run setup again with a new run folder.
 8. Run a void run again as it is, because someone stepped in and the system did not run alone.
-9. After the pass, run `clean-room.ts teardown --run <run folder>`, which removes the chat's todos so the owner's For you does not count them, archives the chat and every job it had through the chat server's archive route, and drops their wakes.
+9. Evaluate tears down every run with a pass, fail or void verdict and every run whose window ended, so nothing is left in the owner's chat list, For you, agents panel or boxes: it stops the run's processes, archives the chat and its jobs, removes their todos and wakes, and deletes the run folder but keeps the verdict file (owner 10-18: "btw when blind test done always clean up").
 
 ## Keep it real and safe
 

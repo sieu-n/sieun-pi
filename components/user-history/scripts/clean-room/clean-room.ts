@@ -3,7 +3,8 @@
  * The clean-room check for a harness, skill or tool change (skills/board/references/clean-room.md). It makes a throwaway test chat on the live
  * chat service through the server's own routes, seeds its board from a copy of a real board, sets its check-in interval, and then only watches:
  * the server runs the chat on its own clock, `collect` saves the evidence, `evaluate` judges it against the criteria written before the run,
- * and `teardown` archives the chat and its jobs.
+ * and `teardown` archives the chat and its jobs. Evaluate tears the run down on a pass, fail or void, and collect evaluates when its window ends,
+ * so every run is torn down (owner 10-18: "btw when blind test done always clean up").
  *
  *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir> [--chat <id>]
  *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
@@ -17,10 +18,11 @@
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts baseline --scenario checkin-goal-push --before <dir> --out <file>
  */
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { chatService, throughRestart } from "../../src/chat-host.ts";
 import { jobRegistry } from "../../src/chat-sources.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
@@ -275,13 +277,19 @@ async function collect(flags: Record<string, string>): Promise<void> {
   const everyMs = Number(flags["every-s"] ?? 60) * 1000;
   const srv = await server();
   const offset = { at: 0 };
+  writeJson(join(run, "run.json"), { ...readJson<RunState>(join(run, "run.json")), until });
   log(run, `collect until ${new Date(until).toISOString()}`);
   while (Date.now() < until) {
+    if (!existsSync(join(run, "run.json"))) return;
     const state = readJson<RunState>(join(run, "run.json"));
     try { await collectOnce(run, state, srv, offset); } catch (error) { log(run, `collect: ${error instanceof Error ? error.message : String(error)}`); }
-    await new Promise(resolve => setTimeout(resolve, everyMs));
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(everyMs, until - Date.now()))));
   }
-  log(run, "collect done");
+  if (!existsSync(join(run, "run.json"))) return;
+  // A later collect that moved the window on owns the end of the run.
+  if ((readJson<RunState>(join(run, "run.json")).until ?? 0) > Date.now()) { log(run, "collect done; a later collect holds the window"); return; }
+  log(run, "collect done; the window ended, so the run is judged and torn down");
+  await evaluate({ run });
 }
 
 /** The owner's next message in a scenario that has one, sent through the composer's route and recorded as a seed, so the judge counts it as his. */
@@ -333,6 +341,7 @@ async function archive(flags: Record<string, string>): Promise<void> {
 
 async function evaluate(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
+  if (!existsSync(join(run, "run.json"))) { process.stdout.write(`${run} is already torn down; its verdict file sits next to where it was\n`); return; }
   const state = readJson<RunState>(join(run, "run.json"));
   const scenario = SCENARIOS[state.scenario]!;
   const srv = await server().catch(() => null);
@@ -341,6 +350,7 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
   const out = join(dirname(run), `${basename(run)}.${verdict}.md`);
   writeFileSync(out, text);
   log(run, `verdict ${verdict}: ${out}`);
+  if (verdict !== "open" || (state.until !== undefined && state.until <= Date.now())) await teardown({ run });
 }
 
 /**
@@ -370,32 +380,69 @@ async function ownSessions(run: string, state: RunState): Promise<string[]> {
   return own;
 }
 
+/**
+ * The processes whose command line names the run folder: its collect, kill-worker and kill-hooks, and any scratch serve or sampler a job started
+ * with its data in the run. This process and its parents are left out, since collect and evaluate tear the run down themselves.
+ */
+function runProcesses(run: string): number[] {
+  let rows: string;
+  try { rows = execFileSync("ps", ["-ww", "-ax", "-o", "pid=,ppid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); } catch { return []; }
+  const path = resolve(run).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const named = new RegExp(`${path}(?=$|[/\\s"'])`);
+  const parents = new Map<number, number>();
+  const hits: number[] = [];
+  for (const row of rows.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(row);
+    if (!match) continue;
+    parents.set(Number(match[1]), Number(match[2]));
+    if (named.test(match[3]!)) hits.push(Number(match[1]));
+  }
+  const self = new Set<number>();
+  for (let pid = process.pid; pid > 1 && !self.has(pid); pid = parents.get(pid) ?? 0) self.add(pid);
+  return hits.filter(pid => !self.has(pid));
+}
+
+/**
+ * Ends a run whatever its verdict: stops its processes, archives the chat and every job it had through the archive route, removes its todos,
+ * corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
+ * command can run again; a run already torn down is left as it is.
+ */
 async function teardown(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
+  if (!existsSync(join(run, "run.json"))) { process.stdout.write(`${run} is already torn down\n`); return; }
   const state = readJson<RunState>(join(run, "run.json"));
+  for (const pid of runProcesses(run)) {
+    try { process.kill(pid, "SIGTERM"); log(run, `stopped process ${pid}`); } catch (error) { log(run, `stop ${pid}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   const srv = await server();
   await collectOnce(run, state, srv, { at: 0 }).catch(() => {});
   const jobs = await ownSessions(run, state);
-  for (const id of jobs) {
-    await call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived job ${id}`), error => log(run, `archive ${id}: ${error instanceof Error ? error.message : String(error)}`));
-  }
-  for (const id of [state.chat.id, ...(state.control ? [state.control.id] : [])]) {
+  const chats = [state.chat.id, ...(state.control ? [state.control.id] : [])];
+  const failed: string[] = [];
+  const archive = (id: string, what: string) => call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived ${what} ${id}`), (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/: 404 /.test(message)) { log(run, `${what} ${id} is gone already`); return; }
+    failed.push(id);
+    log(run, `archive ${id}: ${message}`);
+  });
+  for (const id of jobs) await archive(id, "job");
+  for (const id of chats) {
     const boardFile = join(DATA, "boards", `${id}.json`);
     if (!existsSync(boardFile)) continue;
     await transactJsonFile({ path: boardFile, label: "Chat board", parse: parseBoard, initial: () => { throw new Error("no board"); } }, board => { board.todos = []; });
     log(run, `removed the todos of ${id}, so the owner's For you does not count them`);
   }
-  for (const id of [state.chat.id, ...(state.control ? [state.control.id] : [])]) {
-    await call(srv, "POST", `api/threads/${id}/archive`, {});
-    log(run, `archived chat ${id}`);
-  }
+  for (const id of chats) await archive(id, "chat");
   await transactJsonFile({ path: join(DATA, CLEAN_ROOM_CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) },
-    ledger => { ledger.corrections = ledger.corrections.filter(entry => entry.chat.id !== state.chat.id); });
+    ledger => { ledger.corrections = ledger.corrections.filter(entry => !chats.includes(entry.chat.id)); });
   await jobRegistry(join(DATA, "chat-jobs.json")).remove(Object.keys(state.fixtures).concat(Object.values(state.fixtures)));
   const wakes = join(DATA, "wakes");
   for (const file of existsSync(wakes) ? readdirSync(wakes) : []) {
-    if ([state.chat.id, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
+    if ([...chats, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
   }
+  if (failed.length) throw new Error(`kept ${run}, because ${failed.length} archives failed; run teardown again`);
+  rmSync(run, { recursive: true, force: true });
+  process.stdout.write(`${new Date().toISOString()} deleted the run folder ${run}\n`);
 }
 
 async function main(): Promise<void> {

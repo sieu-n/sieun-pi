@@ -7,6 +7,8 @@ import type { ChatBoard } from "../../src/shared/types.ts";
 export interface RunState {
   scenario: string; chat: { id: string; name: string }; fixtures: Record<string, string>; sandbox: string; everyMs: number; release: string;
   board: string; seeds: string[]; setupAt: number; windowStart: number;
+  /** When the measured window ends, set by `collect --until`; evaluate tears an open run down once it has passed. */
+  until?: number;
   /** A second chat opened at the same time with its check-in paused, to compare against. */
   control?: { id: string; name: string };
 }
