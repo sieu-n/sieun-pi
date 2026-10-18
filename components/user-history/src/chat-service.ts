@@ -151,6 +151,8 @@ async function running(service: Service): Promise<Instance | null> {
   catch (error) { if (hasCode(error, "ENOENT")) return null; throw error; }
   if (!isRecord(value) || value.service !== "sieun-pi-chat" || value.instanceId !== record.instanceId || value.pid !== record.pid ||
     value.socketPath !== service.config.socketPath || record.url !== service.url) {
+    // A restart keeps the last serve's record until the new serve rewrites it; that record of a dead process counts as no record.
+    if (!alive(record.pid)) return null;
     throw new Error(`Port ${service.config.port} does not match the private chat instance. Refusing to attach or stop it.`);
   }
   return record;
@@ -365,16 +367,18 @@ async function serve(options: Options): Promise<void> {
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
   let closing: Promise<void> | undefined;
-  async function close(): Promise<void> {
+  // Only chat stop removes instance.json, so a supervised start after it stays idle. A restart (SIGTERM from a release or systemd) keeps it,
+  // and the next serve rewrites it in place.
+  async function close(removeInstance = true): Promise<void> {
     if (closing) return closing;
     closing = (async () => {
-      try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
+      try { if (removeInstance && instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
       finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }
-  const stop = () => { void close().catch(error => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
+  const stop = () => { void close(false).catch(error => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
   let publishIdentity: () => void = () => {};
   const identityReady = new Promise<void>(resolve => { publishIdentity = resolve; });
   const remote = new RemoteAccess({ port: service.config.port, capability: service.config.capability, mode: service.config.remoteAccess, origin: service.config.publicOrigin,

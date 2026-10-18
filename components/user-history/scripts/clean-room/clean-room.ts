@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { chatService, throughRestart } from "../../src/chat-host.ts";
 import { jobRegistry } from "../../src/chat-sources.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
@@ -71,21 +72,23 @@ const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) 
 const writeJson = (path: string, value: unknown): void => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value, null, 1)); };
 const log = (run: string, line: string): void => { const text = `${new Date().toISOString()} ${line}\n`; appendFileSync(join(run, "clean-room.log"), text); process.stdout.write(text); };
 
-/** The live chat server: its base URL from instance.json and the write token its shell page carries. */
+/** The live chat server (src/chat-host.ts chatService): its base URL and write token. */
 export interface Server { base: string; origin: string; token: string }
 export async function server(): Promise<Server> {
-  const { url } = readJson<{ url: string }>(join(DATA, "instance.json"));
-  const html = await (await fetch(url)).text();
-  const token = /data-chat-token="([a-f0-9]+)"/.exec(html)?.[1];
-  if (!token) throw new Error(`no write token on ${url}`);
-  return { base: url, origin: new URL(url).origin, token };
+  const service = await chatService(DATA);
+  if (!service) throw new Error(`no chat service is set up in ${DATA} or in hosts.json`);
+  return { base: service.base, origin: service.origin, token: service.token };
 }
 async function call(srv: Server, method: "GET" | "POST", route: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(srv.base + route, { method, headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
-    ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(180_000) });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text.slice(0, 300)}`);
+  const text = await throughRestart(async () => {
+    const response = await fetch(srv.base + route, { method, headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
+      ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(180_000) });
+    const answer = await response.text();
+    if (response.status >= 502 && response.status <= 504) throw new Error(`Chat service answered ${response.status}`);
+    if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${answer.slice(0, 300)}`);
+    return answer;
+  });
   return text ? JSON.parse(text) : null;
 }
 const requestId = (): string => randomBytes(12).toString("hex");

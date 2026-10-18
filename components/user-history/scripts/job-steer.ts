@@ -5,9 +5,9 @@
  *
  *   node --import tsx scripts/job-steer.ts <chat session id> <job name or session id> <message>
  */
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { chatService, throughRestart } from "../src/chat-host.ts";
 
 const [chat, job, ...words] = process.argv.slice(2);
 const message = words.join(" ").trim();
@@ -16,12 +16,15 @@ if (!chat || !job || !message) {
   process.exit(2);
 }
 const data = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
-const { url } = JSON.parse(readFileSync(join(data, "instance.json"), "utf8")) as { url: string };
-const token = /data-chat-token="([a-f0-9]+)"/.exec(await (await fetch(url, { signal: AbortSignal.timeout(30_000) })).text())?.[1];
-if (!token) throw new Error(`no write token on ${url}`);
-const response = await fetch(`${url}api/threads/${encodeURIComponent(chat)}/job-steer`, {
-  method: "POST", body: JSON.stringify({ job, message }), signal: AbortSignal.timeout(180_000),
-  headers: { "content-type": "application/json", "x-chat-token": token, origin: new URL(url).origin } });
+const service = await chatService(data);
+if (!service) { console.error(`job-steer: no chat service is set up in ${data} or in hosts.json`); process.exit(1); }
+const response = await throughRestart(async () => {
+  const answer = await fetch(`${service.base}api/threads/${encodeURIComponent(chat)}/job-steer`, {
+    method: "POST", body: JSON.stringify({ job, message }), signal: AbortSignal.timeout(180_000),
+    headers: { "content-type": "application/json", "x-chat-token": service.token, origin: service.origin } });
+  if (answer.status >= 502 && answer.status <= 504) throw new Error(`Chat service answered ${answer.status}`);
+  return answer;
+});
 const text = await response.text();
 if (!response.ok) { console.error(`job-steer: ${response.status} ${text}`); process.exit(1); }
 const { act, session } = JSON.parse(text) as { act: string; session: string };

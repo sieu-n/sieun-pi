@@ -28,16 +28,48 @@ export async function remoteChatService(hostsFile = process.env.SIEUN_PI_HOSTS ?
   return { base: `${origin}/${access.capability}/`, token: access.csrfToken, origin, remote: true };
 }
 
-/** The chat service for `dataDir`: the remote chat host first, else this box's own from instance.json; null when neither is set up. */
+/**
+ * The chat service for `dataDir`: the chat host of hosts.json when it is another box, else this box's own. Its address comes from
+ * configuration.json (port and capability, the same URL the service publishes in instance.json), because the service is away from
+ * instance.json while it restarts and job-steer.ts failed with ENOENT on us-metal02 then (10-18). instance.json is read only for a
+ * configuration without a port. Null when neither is set up.
+ */
 export async function chatService(dataDir: string): Promise<ChatService | null> {
   const remote = await remoteChatService();
   if (remote) return remote;
   try {
-    const instance = JSON.parse(await readFile(join(dataDir, "instance.json"), "utf8")) as { url?: unknown };
-    const config = JSON.parse(await readFile(join(dataDir, "configuration.json"), "utf8")) as { csrfToken?: unknown };
-    if (typeof instance.url !== "string" || typeof config.csrfToken !== "string") return null;
-    return { base: instance.url, token: config.csrfToken, origin: new URL(instance.url).origin, remote: false };
+    const config = JSON.parse(await readFile(join(dataDir, "configuration.json"), "utf8")) as { csrfToken?: unknown; port?: unknown; capability?: unknown };
+    if (typeof config.csrfToken !== "string") return null;
+    let base: string;
+    if (typeof config.port === "number" && typeof config.capability === "string") base = `http://127.0.0.1:${config.port}/${config.capability}/`;
+    else {
+      const instance = JSON.parse(await readFile(join(dataDir, "instance.json"), "utf8")) as { url?: unknown };
+      if (typeof instance.url !== "string") return null;
+      base = instance.url;
+    }
+    return { base, token: config.csrfToken, origin: new URL(base).origin, remote: false };
   } catch { return null; }
+}
+
+/**
+ * How long a call waits through a chat service restart: the cross-host routes were down or incomplete for about 23 s after a restart on
+ * us-metal02 (10-18: stop 05:14:32Z, start 05:14:37Z, Mac listed 05:14:55Z), and releases restart the service every few minutes.
+ */
+export const RESTART_WAIT_MS = 60_000;
+const RESTARTING = /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|Chat service answered 50[234]/;
+const errorText = (error: unknown): string =>
+  error instanceof Error ? `${error.message} ${error.cause instanceof Error ? error.cause.message : String(error.cause ?? "")}` : String(error);
+
+/** `attempt`'s answer, run again every `stepMs` while it fails the way a restarting chat service fails, for up to `waitMs`. */
+export async function throughRestart<T>(attempt: () => Promise<T>, waitMs = RESTART_WAIT_MS, stepMs = 2_000): Promise<T> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try { return await attempt(); }
+    catch (error) {
+      if (!RESTARTING.test(errorText(error)) || Date.now() + stepMs > deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, stepMs));
+    }
+  }
 }
 
 /** One call to the chat service: a GET, or a POST of `body` with the write token. Null for a 404; other answers throw with the service's error. */

@@ -126,8 +126,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
     } catch { /* no capture this call */ }
     return undefined;
   });
-  // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL,
-  // recorded in <data dir>/instance.json. No server, no section.
+  // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL
+  // (chatService). No server, no section.
   const chatAgentsOf = async (sessionId: string): Promise<ChatAgent[]> => {
     try {
       const service = await chatService(dataDir());

@@ -195,8 +195,7 @@ def own_root():
 
 RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet|No chat service is set up")
 # A chat service restart leaves the cross-host routes down or without the other boxes' roots for about 23 s (10-18: stop 05:14:32Z, start
-# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s. On the
-# chat host the service removes instance.json while it restarts, so the helper answers "No chat service is set up" then (VP of CI, 10-18).
+# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s.
 RESTART_WAIT = 60
 RESTART_STEP = 5
 

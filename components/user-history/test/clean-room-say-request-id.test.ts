@@ -29,9 +29,10 @@ test("clean-room say logs the same request id on its sending and sent lines", as
     const data = join(root, "data"), run = join(root, "run");
     mkdirSync(data); mkdirSync(run);
     writeFileSync(join(data, "instance.json"), JSON.stringify({ url: `http://127.0.0.1:${(srv.address() as AddressInfo).port}/base/` }));
+    writeFileSync(join(data, "configuration.json"), JSON.stringify({ csrfToken: "abc123" }));
     writeFileSync(join(run, "run.json"), JSON.stringify({ chat: { id: "chat-1", name: "a chat" }, seeds: [] }));
     await promisify(execFile)(process.execPath, ["--import", "tsx", join(import.meta.dirname, "../scripts/clean-room/clean-room.ts"), "say", "--run", run, "--message", "thanks, do the next one"],
-      { env: { ...process.env, AGENT_CHAT_DATA_DIR: data, CLEAN_ROOM_SESSION: "" }, timeout: 60_000 });
+      { env: { ...process.env, AGENT_CHAT_DATA_DIR: data, CLEAN_ROOM_SESSION: "", SIEUN_PI_HOSTS: join(root, "no-hosts.json") }, timeout: 60_000 });
     assert.equal(prompts.length, 1);
     const prompt = prompts[0]!;
     assert.equal(prompt.method, "POST");
