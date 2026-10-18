@@ -156,7 +156,11 @@ export class SlackSocket implements SocketMode {
 
 /** What the bridge needs from the chat service. The service wires it to the backend; tests pass a fake. */
 export interface SlackChats {
-  /** The session ids that are chats now. */
+  /**
+   * The session ids that are chats now: this box's chats plus every unarchived session of the other hosts.json boxes, since a channel may link a
+   * chat that runs on the Mac before the chat cutover (Slack moved to us-metal02 on 10-18). Rejects until every other box listed once, so a Mac
+   * asleep at service start does not read as its chats archived.
+   */
   ids(): Promise<ReadonlySet<string>>;
   name(id: string): Promise<string | undefined>;
   /** The thread's committed messages as the browser sees them; undefined while the thread is not open. */
@@ -275,7 +279,11 @@ export function runsSlack(primary: boolean, env: NodeJS.ProcessEnv = process.env
 /** The backend as the bridge sees it. */
 export function slackChats(backend: ChatBackend): SlackChats {
   return {
-    ids: () => backend.chats.ids(),
+    ids: async () => {
+      if (!backend.catalog.hostsListed()) throw new Error("another box has not listed its sessions yet");
+      const remote = backend.catalog.remoteRows().filter(row => row.lifecycle !== "archived").map(row => row.sessionId);
+      return new Set([...await backend.chats.ids(), ...remote]);
+    },
     name: async id => (await backend.catalog.summary(id))?.sessionName,
     messages: id => backend.threads.state(id)?.messages,
     subscribe: (id, listener) => backend.threads.subscribe(id, listener, true),
