@@ -5,15 +5,13 @@
   import Icon from "./Icon.svelte";
   import TagChip from "./TagChip.svelte";
   import PriorityBars from "./PriorityBars.svelte";
-  import ProgressSteps from "./ProgressSteps.svelte";
   import PriorityPicker from "./PriorityPicker.svelte";
-  import ProgressPicker from "./ProgressPicker.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
   import { labels, threadTags } from "./labels.ts";
-  import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
+  import { PRIORITY_LABEL } from "./organize.ts";
 
-  /** The header's left half, shared by the thread and chat views: the name (click to rename), the workspace, tags, priority and progress. */
+  /** The header's left half, shared by the thread and chat views: the name (click to rename), the workspace, tags and priority. */
   let { id }: { id: string } = $props();
 
   const thread = $derived(store.thread(id)?.state ?? null);
@@ -22,8 +20,8 @@
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
   const rowTags = $derived((row?.tags ?? []).flatMap(tagId => store.tags.filter(tag => tag.id === tagId)));
 
-  let labelPicker = $state<{ field: "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
-  function pick(event: MouseEvent, field: "tags" | "priority" | "progress"): void {
+  let labelPicker = $state<{ field: "tags" | "priority"; anchor: HTMLElement } | null>(null);
+  function pick(event: MouseEvent, field: "tags" | "priority"): void {
     const anchor = event.currentTarget as HTMLElement;
     labelPicker = labelPicker?.field === field ? null : { field, anchor };
   }
@@ -63,9 +61,6 @@
   </span>
   <button type="button" class="label-button" class:set={row.priority > 0} aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
     <PriorityBars level={row.priority} /><span class="label-text">{row.priority ? PRIORITY_LABEL[row.priority] : "Priority"}</span>
-  </button>
-  <button type="button" class="label-button" class:set={row.progress !== "none"} aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
-    <ProgressSteps progress={row.progress} /><span class="label-text">{row.progress !== "none" ? PROGRESS_LABEL[row.progress] : "Progress"}</span>
   </button>{/if}
 </div>
 {#if labelPicker?.field === "tags"}
@@ -74,11 +69,6 @@
   <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority" onclose={closePicker}>
     <div class="menu-heading">Priority</div>
     <PriorityPicker value={row.priority} autofocus onchange={level => { closePicker(); void labels.setPriority([id], level); }} />
-  </Floating>
-{:else if labelPicker?.field === "progress" && row}
-  <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Progress" onclose={closePicker}>
-    <div class="menu-heading">Progress</div>
-    <ProgressPicker value={row.progress} autofocus onchange={step => { closePicker(); void labels.setProgress([id], step); }} />
   </Floating>
 {/if}
 

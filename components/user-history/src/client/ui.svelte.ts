@@ -1,5 +1,3 @@
-import { emptyRowFilter, ROW_FILTER_KEYS, type RowFilter, type SidebarSort, type SidebarView } from "./organize.ts";
-
 export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 480;
 /** Dragging the sidebar edge narrower than this collapses the sidebar. */
@@ -10,18 +8,6 @@ function stored(key: string): string | null {
 }
 function store(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* Private mode keeps the choice for this tab only. */ }
-}
-function storedFilter(): RowFilter {
-  const filter = emptyRowFilter();
-  try {
-    const saved: unknown = JSON.parse(stored("chat.sidebarFilter") ?? "null");
-    if (typeof saved !== "object" || saved === null) return filter;
-    for (const key of ROW_FILTER_KEYS) {
-      const value = (saved as Record<string, unknown>)[key];
-      if (key === "priority" ? [0, 1, 2, 3, "any"].includes(value as number) : typeof value === "string") Object.assign(filter, { [key]: value });
-    }
-  } catch { /* A broken saved filter starts empty. */ }
-  return filter;
 }
 function storedColumns(key = "chat.agentsColumns"): Record<string, boolean> {
   try {
@@ -45,9 +31,6 @@ export const clampBoardWidth = (width: number): number => Math.round(Math.min(bo
 
 class Ui {
   sidebarWidth = $state(clampWidth(Number(stored("chat.sidebarWidth")) || 260));
-  sidebarFilter = $state<RowFilter>(storedFilter());
-  sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
-  sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
   /** Optional Agents view columns the person turned on or off; Status and Title always show. */
   agentsColumns = $state<Record<string, boolean>>(storedColumns());
@@ -90,9 +73,6 @@ class Ui {
   }
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);
-  setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }
-  setSidebarSort(sort: SidebarSort): void { this.sidebarSort = sort; store("chat.sidebarSort", sort); }
-  setSidebarView(view: SidebarView): void { this.sidebarView = view; store("chat.sidebarView", view); }
   setSidebarWidth(width: number, persist: boolean): void {
     this.sidebarWidth = clampWidth(width);
     if (persist) store("chat.sidebarWidth", String(this.sidebarWidth));

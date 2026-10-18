@@ -4,19 +4,17 @@
   import { labels, threadTags } from "./labels.ts";
   import { shortPath, relativeTime } from "./format.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, nextRun, ORIGIN_LABEL, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type Origin, type SortKey } from "./organize.ts";
+  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, nextRun, ORIGIN_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type Origin, type SortKey } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import PriorityBars from "./PriorityBars.svelte";
-  import ProgressSteps from "./ProgressSteps.svelte";
   import TagChip from "./TagChip.svelte";
   import ThreadMenu from "./ThreadMenu.svelte";
   import StatusMark from "./StatusMark.svelte";
   import FilterSelects from "./FilterSelects.svelte";
   import PriorityPicker from "./PriorityPicker.svelte";
-  import ProgressPicker from "./ProgressPicker.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import Select, { type SelectOption } from "./ui/Select.svelte";
   import DateRange from "./ui/DateRange.svelte";
@@ -31,7 +29,6 @@
     { key: "name", label: "Title", firstDescending: false },
     { key: "tags", label: "Tags", firstDescending: false, shown: true },
     { key: "priority", label: "Priority", firstDescending: true, shown: true },
-    { key: "progress", label: "Progress", firstDescending: true, shown: true },
     { key: "cwd", label: "Workspace", firstDescending: false, shown: false },
     { key: "model", label: "Model", firstDescending: false, shown: true },
     { key: "cost", label: "Cost", firstDescending: true, shown: true },
@@ -41,7 +38,7 @@
   const on = (key: SortKey): boolean => { const column = COLUMNS.find(entry => entry.key === key); return column?.shown === undefined || (ui.agentsColumns[key] ?? column.shown); };
   const shownColumns = $derived(COLUMNS.filter(column => on(column.key)));
   let columnsAnchor = $state<HTMLElement | null>(null);
-  type Field = "tags" | "priority" | "progress";
+  type Field = "tags" | "priority";
 
   let filter = $state<AgentFilter>(emptyFilter());
   let sort = $state<{ key: SortKey; descending: boolean }>({ key: "status", descending: false });
@@ -75,8 +72,6 @@
   const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
   const bulkPriority = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.priority === rows.find(entry => selected.has(entry.id))!.priority)
     ? rows.find(row => selected.has(row.id))!.priority : null);
-  const bulkProgress = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.progress === rows.find(entry => selected.has(entry.id))!.progress)
-    ? rows.find(row => selected.has(row.id))!.progress : null);
   const editRow = $derived(editing ? store.session(editing.id) : undefined);
 
   $effect(() => { search?.focus(); });
@@ -165,7 +160,6 @@
         <span class="picked">{selectedIds.length} selected</span>
         <button type="button" class="button small" aria-haspopup="dialog" aria-expanded={tagAnchor !== null} onclick={event => { tagAnchor = event.currentTarget as HTMLElement; }}><Icon name="tag" size={13} />Tags</button>
         <span class="bulk-picker"><PriorityPicker value={bulkPriority} onchange={level => void labels.setPriority(selectedIds, level)} /></span>
-        <span class="bulk-picker"><ProgressPicker value={bulkProgress} onchange={step => void labels.setProgress(selectedIds, step)} /></span>
         <button type="button" class="button small" onclick={archiveSelected}><Icon name="archive" size={13} />Archive</button>
         <button type="button" class="clear" onclick={() => { selected = new Set(); }}>Clear selection</button>
       </div>
@@ -221,12 +215,6 @@
                   {#if row.priority > 0}<PriorityBars level={row.priority} />{:else}<span class="set-hint">Set</span>{/if}
                 </button>
               </td>{/if}
-              {#if on("progress")}<td class="progress">
-                <button type="button" class="cell-edit" tabindex="-1" aria-label="Progress for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "progress"}
-                  onclick={event => edit(event, row, "progress")} ondblclick={event => event.stopPropagation()}>
-                  {#if row.progress !== "none"}<ProgressSteps progress={row.progress} /><span class="progress-label">{PROGRESS_LABEL[row.progress]}</span>{:else}<span class="set-hint">Set</span>{/if}
-                </button>
-              </td>{/if}
               {#if on("cwd")}<td class="cwd" title={row.cwd}>{shortPath(row.cwd)}</td>{/if}
               {#if on("model")}<td class="model">{modelShort(row.model)}</td>{/if}
               {#if on("cost")}<td class="cost" class:unknown={row.cost === undefined}>{money(row.cost)}</td>{/if}
@@ -259,15 +247,10 @@
     {@const id = editing.id}
     {#if editing.field === "tags"}
       <Floating anchor={editing.anchor} width={260} maxHeight={360} label="Tags for {editRow.name}" onclose={closeEdit}><TagPicker selection={threadTags([id])} /></Floating>
-    {:else if editing.field === "priority"}
+    {:else}
       <Floating anchor={editing.anchor} width={210} maxHeight={120} label="Priority for {editRow.name}" onclose={closeEdit}>
         <div class="menu-heading">Priority</div>
         <PriorityPicker value={editRow.priority} autofocus onchange={level => { void labels.setPriority([id], level); closeEdit(); }} />
-      </Floating>
-    {:else}
-      <Floating anchor={editing.anchor} width={300} maxHeight={120} label="Progress for {editRow.name}" onclose={closeEdit}>
-        <div class="menu-heading">Progress</div>
-        <ProgressPicker value={editRow.progress} autofocus onchange={step => { void labels.setProgress([id], step); closeEdit(); }} />
       </Floating>
     {/if}
   {/if}
@@ -305,7 +288,6 @@
   th.status, td.status { width: 132px; }
   th.tags, td.tags { width: 160px; }
   th.priority, td.priority { width: 70px; }
-  th.progress, td.progress { width: 150px; }
   th.cwd, td.cwd { width: 150px; }
   th.model, td.model { width: 96px; }
   th.cost, td.cost { width: 70px; text-align: right; }
@@ -315,10 +297,9 @@
   td.cwd, td.model, td.created, td.activity, td.cost { color: var(--text-muted); font-variant-numeric: tabular-nums; }
   td.cwd { font-family: var(--mono); font-size: 11.5px; }
   td.cost.unknown { color: var(--text-faint); }
-  td.tags, td.priority, td.progress { padding: 0 4px; }
+  td.tags, td.priority { padding: 0 4px; }
   .cell-edit { display: flex; align-items: center; gap: 3px; width: 100%; height: 26px; padding: 0 4px; overflow: hidden; border-radius: var(--radius-small); color: var(--text-muted); text-align: left; transition: background-color 0.12s, box-shadow 0.12s; }
   .cell-edit:hover, .cell-edit[aria-expanded="true"] { background: var(--bg-elevated); box-shadow: inset 0 0 0 1px var(--border-strong); }
-  .progress-label { margin-left: 3px; overflow: hidden; text-overflow: ellipsis; }
   .set-hint { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; color: var(--text-faint); opacity: 0; transition: opacity 0.12s; }
   tr:hover .set-hint, tr.active .set-hint, .cell-edit:focus-visible .set-hint { opacity: 1; }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }

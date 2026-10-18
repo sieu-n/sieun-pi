@@ -4,8 +4,8 @@
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import { labels, type TagSelection } from "./labels.ts";
-  import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
-  import type { HostCard, ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import { PRIORITY_LABEL } from "./organize.ts";
+  import type { HostCard, ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { defaultHost, hostGlance } from "./hosts.ts";
   import { relativeTime, shortPath } from "./format.ts";
   import { startMessage } from "../shared/start-skill.ts";
@@ -19,9 +19,7 @@
   import TagPicker from "./ui/TagPicker.svelte";
   import TagChip from "./TagChip.svelte";
   import PriorityBars from "./PriorityBars.svelte";
-  import ProgressSteps from "./ProgressSteps.svelte";
   import PriorityPicker from "./PriorityPicker.svelte";
-  import ProgressPicker from "./ProgressPicker.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
   import SlackLogo from "./SlackLogo.svelte";
   import SlackChannelDialog, { type SlackConnectInput } from "./SlackChannelDialog.svelte";
@@ -68,12 +66,8 @@
 
   /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
   let draftTags = $state<string[]>([]);
-  /** The tag the sidebar is filtered by starts selected, so a new thread stays in the list you are looking at. */
-  const filterTags = (): string[] => { const tag = ui.sidebarFilter.tag; return tag !== "any" && tag !== "none" ? [tag] : []; };
-  $effect(() => { draftTags = filterTags(); });
   let draftPriority = $state<Priority>(0);
-  let draftProgress = $state<Progress>("none");
-  let labelPicker = $state<{ field: "name" | "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
+  let labelPicker = $state<{ field: "name" | "tags" | "priority"; anchor: HTMLElement } | null>(null);
   const shownTags = $derived(store.tags.filter(tag => draftTags.includes(tag.id)));
   const draftSelection: TagSelection = {
     label: "Tags for the new thread",
@@ -81,7 +75,7 @@
     set: async (tagId, on) => { draftTags = on ? [...draftTags.filter(entry => entry !== tagId), tagId] : draftTags.filter(entry => entry !== tagId); },
     create: async name => { const tagId = await labels.create(name, []); if (tagId && !draftTags.includes(tagId)) draftTags = [...draftTags, tagId]; },
   };
-  function pick(event: MouseEvent, field: "name" | "tags" | "priority" | "progress"): void {
+  function pick(event: MouseEvent, field: "name" | "tags" | "priority"): void {
     const anchor = event.currentTarget as HTMLElement;
     labelPicker = labelPicker?.field === field ? null : { field, anchor };
   }
@@ -151,7 +145,6 @@
     if (!cwd) { store.toast("Choose a workspace first."); return false; }
     const tags = shownTags.map(tag => tag.id);
     const priority = draftPriority;
-    const progress = draftProgress;
     const chosen = activeModel;
     const name = threadName.trim();
     const message = startMessage(text, useStartSkill ? startSkill : null);
@@ -161,13 +154,11 @@
     threadName = "";
     useStartSkill = true;
     slack = null;
-    draftTags = filterTags();
+    draftTags = [];
     draftPriority = 0;
-    draftProgress = "none";
     await Promise.all([
       ...tags.map(tagId => labels.setTag([id], tagId, true)),
       priority ? labels.setPriority([id], priority) : null,
-      progress !== "none" ? labels.setProgress([id], progress) : null,
     ]);
     return true;
   }
@@ -272,9 +263,6 @@
             <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
               <PriorityBars level={draftPriority} /><span>{draftPriority ? PRIORITY_LABEL[draftPriority] : "Priority"}</span>
             </button>
-            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
-              <ProgressSteps progress={draftProgress} /><span>{draftProgress !== "none" ? PROGRESS_LABEL[draftProgress] : "Progress"}</span>
-            </button>
           </div>
         </div>
       {/if}
@@ -299,15 +287,10 @@
     </Floating>
   {:else if labelPicker.field === "tags"}
     <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags for the new thread" onclose={() => { labelPicker = null; }}><TagPicker selection={draftSelection} /></Floating>
-  {:else if labelPicker.field === "priority"}
+  {:else}
     <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority for the new thread" onclose={() => { labelPicker = null; }}>
       <div class="menu-heading">Priority</div>
       <PriorityPicker value={draftPriority} autofocus onchange={level => { draftPriority = level; labelPicker = null; }} />
-    </Floating>
-  {:else}
-    <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Progress for the new thread" onclose={() => { labelPicker = null; }}>
-      <div class="menu-heading">Progress</div>
-      <ProgressPicker value={draftProgress} autofocus onchange={step => { draftProgress = step; labelPicker = null; }} />
     </Floating>
   {/if}
 {/if}

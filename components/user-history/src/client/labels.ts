@@ -1,7 +1,7 @@
 import { api } from "./api.ts";
 import { store } from "./store.svelte.ts";
 import { ui } from "./ui.svelte.ts";
-import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
+import type { Priority, SessionRow, Tag } from "../shared/types.ts";
 
 function patchRows(ids: readonly string[], change: (row: SessionRow) => SessionRow): void {
   const selected = new Set(ids);
@@ -18,11 +18,6 @@ export const labels = {
     if (!ids.length) return;
     patchRows(ids, row => ({ ...row, priority }));
     await store.run(api.labels({ op: "priority", ids: [...ids], priority }));
-  },
-  async setProgress(ids: readonly string[], progress: Progress): Promise<void> {
-    if (!ids.length) return;
-    patchRows(ids, row => ({ ...row, progress }));
-    await store.run(api.labels({ op: "progress", ids: [...ids], progress }));
   },
   /**
    * One click, like Ctrl+X in the terminal agents view: the rows leave the list at once, an open one hands the view to the next thread in the

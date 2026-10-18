@@ -1,4 +1,4 @@
-import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
+import type { Priority, SessionRow, Tag } from "../shared/types.ts";
 import { readPulse, type PulseReading } from "../shared/pulse.ts";
 
 export type Bucket = "needs" | "working" | "idle";
@@ -9,7 +9,6 @@ export const BUCKETS: readonly Bucket[] = ["needs", "working", "idle"];
 export const BUCKET_LABEL: Record<Bucket, string> = { needs: "Needs response", working: "Working", idle: "Idle" };
 export const STATUS_LABEL: Record<RowStatus, string> = { needs: "Needs response", working: "Working", stalled: "Stalled", idle: "Idle", saved: "Saved" };
 export const PRIORITY_LABEL: Record<Priority, string> = { 0: "No priority", 1: "Low", 2: "Medium", 3: "High" };
-export const PROGRESS_LABEL: Record<Progress, string> = { none: "No progress", plan: "Plan", implementation: "Implementation", qa: "QA" };
 
 /** A short model name for dense rows: "opus-5.5", "fable-5.1", "astra-6", else the model id without its vendor prefix. */
 export function modelShort(model: string | undefined): string {
@@ -59,15 +58,8 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
   return words.every(word => haystack.includes(word));
 }
 
-export type SidebarSort = "grouped" | "recent";
-export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, idle", recent: "Chronological" };
-/** How much a sidebar card shows under its title. Current: age, working time, cost, model, tags, progress and priority. Tags: only the tag chips. */
-export type SidebarView = "current" | "tags";
-export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Show details", tags: "Show tags only" };
-
-/** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
-export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {
-  if (sort === "recent") return rows.length ? [{ bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
+/** Sidebar sections: Needs response, Working, then the rest. */
+export function groupRows(rows: readonly SessionRow[]): { bucket: Bucket; rows: SessionRow[] }[] {
   const sorted = [...rows].sort(compareRows);
   return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ bucket, rows: items }] : []; });
 }
@@ -108,25 +100,23 @@ export function nextRun(value: string | undefined, now = Date.now()): string {
   return ms <= now ? "due now" : "next in " + elapsed(ms - now);
 }
 
-export type SortKey = "status" | "name" | "priority" | "progress" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
-/** The label filters the Agents view and the sidebar share. "any" means unset; tag also takes "none" for threads without tags. */
-export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; progress: Progress | "any"; cwd: string; model: string }
+export type SortKey = "status" | "name" | "priority" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
+/** The label filters of the Agents view. "any" means unset; tag also takes "none" for threads without tags. */
+export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; cwd: string; model: string }
 export interface AgentFilter extends RowFilter { query: string; from: string; to: string; kind: Tab | "any"; origin: Origin | "any"; archived: boolean }
-export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", progress: "any", cwd: "any", model: "any" });
+export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", cwd: "any", model: "any" });
 export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "", from: "", to: "", kind: "any", origin: "any", archived: false });
-export const ROW_FILTER_KEYS = ["status", "tag", "priority", "progress", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
+export const ROW_FILTER_KEYS = ["status", "tag", "priority", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
 export const activeFilters = (filter: RowFilter): number => ROW_FILTER_KEYS.filter(key => filter[key] !== "any").length;
 
 export function matchesRowFilter(row: SessionRow, filter: RowFilter, now = Date.now()): boolean {
   if (filter.status !== "any" && statusOf(row, now) !== filter.status) return false;
   if (filter.tag === "none" ? row.tags.length > 0 : filter.tag !== "any" && !row.tags.includes(filter.tag)) return false;
   if (filter.priority !== "any" && row.priority !== filter.priority) return false;
-  if (filter.progress !== "any" && row.progress !== filter.progress) return false;
   if (filter.cwd !== "any" && row.cwd !== filter.cwd) return false;
   if (filter.model !== "any" && (row.model ?? "") !== filter.model) return false;
   return true;
 }
-const PROGRESS_ORDER: Record<Progress, number> = { none: 0, plan: 1, implementation: 2, qa: 3 };
 
 const dayStart = (value: string): number => { const ms = Date.parse(value + "T00:00:00"); return Number.isFinite(ms) ? ms : NaN; };
 
@@ -150,7 +140,6 @@ export function sortBy(rows: readonly SessionRow[], key: SortKey, descending: bo
     switch (key) {
       case "status": return compareRows(left, right);
       case "priority": return left.priority - right.priority || activityOf(left) - activityOf(right);
-      case "progress": return PROGRESS_ORDER[left.progress] - PROGRESS_ORDER[right.progress] || activityOf(left) - activityOf(right);
       case "cost": return (left.cost ?? -1) - (right.cost ?? -1);
       case "created": return createdOf(left) - createdOf(right);
       case "activity": return activityOf(left) - activityOf(right);

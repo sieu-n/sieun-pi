@@ -38,11 +38,9 @@
   const selectedRow = $derived(store.session(store.selectedId));
   const isChat = $derived(selectedRow?.chat === true);
 
-  /** The tab names the sidebar's tag filter, else the open thread's own tags, then the thread, so several chat tabs stay apart in the tab strip. */
+  /** The tab names the open thread's tags, then the thread, so several chat tabs stay apart in the tab strip. */
   $effect(() => {
-    const filterTag = ui.sidebarFilter.tag;
-    const tagIds = filterTag !== "any" && filterTag !== "none" ? [filterTag] : (selectedRow?.tags ?? []);
-    const names = tagIds.flatMap(id => store.tags.find(tag => tag.id === id)?.name ?? []);
+    const names = (selectedRow?.tags ?? []).flatMap(id => store.tags.find(tag => tag.id === id)?.name ?? []);
     const id = store.selectedId;
     document.title = pageTitle(names, id ? (selectedRow?.name ?? store.thread(id)?.state?.info.name ?? "Prime Agent chat") : null);
   });
