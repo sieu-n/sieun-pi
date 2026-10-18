@@ -296,7 +296,7 @@ async function say(flags: Record<string, string>): Promise<void> {
     log(run, `send failed (request ${id}): ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
-  log(run, `sent the owner's message: ${message}`);
+  log(run, `sent the owner's message (request ${id}): ${message}`);
 }
 
 /**
