@@ -37,6 +37,12 @@ export const DROP_BASE_DAYS = 14;
 export const DROP_MIN_DAILY = 5;
 export const DROP_SHARE = 0.2;
 /**
+ * A page whose first day with impressions falls inside the base leaves its first DROP_LAUNCH_DAYS days out of the base, because Google shows
+ * a new URL widely for a day or two before it settles: /blog/will-ai-kill-us-all had 1,248 and 263 impressions on 10-08 and 10-09, then 4 to
+ * 56 a day, and on 10-18 read as a drop (273 to 21) while it sat at its usual level.
+ */
+export const DROP_LAUNCH_DAYS = 2;
+/**
  * unshipped_blog_changes: a commit under apps/blog on the sieun/dev tip that is not on GitHub's sieun/dev UNSHIPPED_AFTER_MS after its commit
  * time. On 10-16 and 10-17 35 creator pages waited about 25 h unpushed, and on 10-18 five blog changes waited 7 h.
  */
@@ -111,18 +117,15 @@ export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
 /** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first. */
 export function droppedPages(daily: PagesDaily): DroppedPage[] {
   const { base, recent } = dropWindows(daily.end);
-  const pages = new Map<string, { first: string; base: number; recent: number }>();
-  for (const { page, date, impressions } of daily.rows) {
-    if (date < base.start || date > recent.end) continue;
-    const entry = pages.get(page) ?? { first: date, base: 0, recent: 0 };
-    if (date < entry.first) entry.first = date;
-    if (date <= base.end) entry.base += impressions; else entry.recent += impressions;
-    pages.set(page, entry);
-  }
-  return [...pages].flatMap(([page, entry]) => {
-    if (entry.first > base.end) return [];
-    const baseDaily = entry.base / (daysBetween(entry.first, base.end) + 1);
-    const recentDaily = entry.recent / DROP_RECENT_DAYS;
+  const pages = new Map<string, { date: string; impressions: number }[]>();
+  for (const row of daily.rows) if (row.date >= base.start && row.date <= recent.end) pages.set(row.page, [...pages.get(row.page) ?? [], row]);
+  return [...pages].flatMap(([page, rows]) => {
+    const first = rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end);
+    const from = first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : first;
+    if (from > base.end) return [];
+    const sum = (start: string, end: string): number => rows.reduce((total, row) => (row.date >= start && row.date <= end ? total + row.impressions : total), 0);
+    const baseDaily = sum(from, base.end) / (daysBetween(from, base.end) + 1);
+    const recentDaily = sum(recent.start, recent.end) / DROP_RECENT_DAYS;
     return baseDaily >= DROP_MIN_DAILY && recentDaily < DROP_SHARE * baseDaily ? [{ page, baseDaily: round(baseDaily, 1), recentDaily: round(recentDaily, 1) }] : [];
   }).sort((a, b) => b.baseDaily - a.baseDaily);
 }
