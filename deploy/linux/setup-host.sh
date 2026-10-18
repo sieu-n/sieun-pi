@@ -3,14 +3,15 @@
 # Split agreed with VP of CI on 2026-10-15: CI gets 24 of the 40 cores and 60% of RAM and disk,
 # dev gets 16 cores and about 100 GB of RAM in dev.slice. Dev takes the last 16 cores of NUMA node 1
 # with their hyperthread siblings, so CI keeps all of node 0 plus 4 cores of node 1.
-# dev.slice (docker and containerd) gets MemoryMax 70G and the dev user's slice 40G. Both may only
-# allocate on node 1 (121.9 GiB), so the two caps together (110 GiB) fit inside it.
+# dev.slice (docker and containerd) gets MemoryMax 58G and the dev user's slice 52G. Both may only
+# allocate on node 1 (121.9 GiB), so the two caps together (110 GiB) fit inside it. On 10-18 05:55Z the
+# user slice hit a 40G cap with 59k memory.max events and swapped 9 GB in 30 s while dev.slice peaked at 40.4G.
 set -euo pipefail
 DEV_USER=${DEV_USER:-sieun}
 NODE=${DEV_NODE:-1}
 DEV_CORES=${DEV_CORES:-16}
-DEV_MEMORY_MAX=${DEV_MEMORY_MAX:-70G}
-USER_MEMORY_MAX=${USER_MEMORY_MAX:-40G}
+DEV_MEMORY_MAX=${DEV_MEMORY_MAX:-58G}
+USER_MEMORY_MAX=${USER_MEMORY_MAX:-52G}
 MAC_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMpr4avzF8JvlVt6La1Bn6mcas7cMvoUnLtFGXMyHJMr claude-code-langfuse-migration-2026-05-08'
 
 # One line per physical core of the node: its sibling list, such as "20,60". Keep the last DEV_CORES of them.
