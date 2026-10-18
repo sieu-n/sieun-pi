@@ -40,7 +40,10 @@ function wikiPath(path: string): string | null {
   return clean;
 }
 function decode(text: string): string { try { return decodeURIComponent(text); } catch { return ""; } }
+/** Only an http or https URL gets `new URL`: the catalog calls this for every plan step's job name, and a throwing parse per name took 13% of the chat server's CPU on 10-18. */
 function webUrl(text: string): URL | null {
+  const scheme = text.replace(/[\t\n\r]/g, "").replace(/^[\x00-\x20]+/, "").slice(0, 6).toLowerCase();
+  if (!scheme.startsWith("http:") && !scheme.startsWith("https:")) return null;
   try { const url = new URL(text); return url.protocol === "https:" || url.protocol === "http:" ? url : null; } catch { return null; }
 }
 
