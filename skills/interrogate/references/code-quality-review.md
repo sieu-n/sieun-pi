@@ -5,12 +5,12 @@ Hold the change to a strict bar on structure. Look first for a restructuring tha
 ## Checks
 
 - Flag code that could be simpler without losing correctness, per `principle-laziness-protocol`.
-- Flag a change that reads as bolted on, where code written with the requirement known from day one would look different, per `principle-redesign-from-first-principles`.
+- Flag a change that reads as bolted on, where code written with the requirement known from day one would look different.
 - Flag new ad-hoc conditionals or special cases inside unrelated flows, and push the logic into a helper, state machine, or module.
 - Flag a change that pushes a file from under 1,000 lines to over 1,000 without a strong structural reason.
 - Flag thin wrappers, pass-through helpers, and abstractions with one call site.
 - Flag options and parameters for cases that do not exist yet, and flag dead code, unused imports, and unused parameters.
-- Flag a new API that keeps the old one alive with no external consumers, per `principle-migrate-callers-then-delete-legacy-apis`.
+- Flag a new API that keeps the old one alive with no external consumers.
 - Flag validation scattered through business logic instead of at the boundary, per `principle-boundary-discipline`.
 - Flag needless optionality, `unknown`, `any`, casts, or silent fallbacks where a typed model would make the invariant explicit.
 - Flag data structures that do not match how the code reads them.

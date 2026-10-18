@@ -56,7 +56,7 @@ Surface every deviation from the sketch. If a function needs a parameter the ske
 
 ## Phase E: Scrap when the architecture is wrong
 
-If the code keeps producing friction the sketch cannot absorb, throw the sketch out, per `principle-redesign-from-first-principles` and `principle-fix-root-causes`.
+If the code keeps producing friction the sketch cannot absorb, throw the sketch out, per the redesign-from-day-one rule in poteto-mode's Principles and `principle-fix-root-causes`.
 
 The trigger is repeated friction of the same shape. These are the tells:
 

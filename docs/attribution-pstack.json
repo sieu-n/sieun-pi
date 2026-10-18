@@ -475,38 +475,10 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/principle-exhaust-the-design-space/SKILL.md",
-      "upstream_path": "pstack/skills/principle-exhaust-the-design-space/SKILL.md",
-      "upstream_sha256": "8583310d7297b7823d75494faa57b003564d436807febecdecbd8321abe5cf6e",
-      "import_sha256": "8583310d7297b7823d75494faa57b003564d436807febecdecbd8321abe5cf6e",
-      "unchanged_at_comparison": true
-    },
-    {
-      "path": "skills/principle-experience-first/SKILL.md",
-      "upstream_path": "pstack/skills/principle-experience-first/SKILL.md",
-      "upstream_sha256": "58903529d733b1c1a7c9ccf127d45ef3c7d0d9f0b81164a4dc6b80efe6f2912b",
-      "import_sha256": "f8d643ddf2f6aa91d9607d1bb340fd2baf227d702e9738848b85312a312bb971",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/principle-fix-root-causes/SKILL.md",
       "upstream_path": "pstack/skills/principle-fix-root-causes/SKILL.md",
       "upstream_sha256": "ba4cd38da1dcc8fe5432feb64457cba95594736a9b21b2ebf8f8c52aee068707",
       "import_sha256": "cfae13b5a3e27bc88d069092cae97b3e95246879d5bf14f0e9a4db719c781952",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/principle-foundational-thinking/SKILL.md",
-      "upstream_path": "pstack/skills/principle-foundational-thinking/SKILL.md",
-      "upstream_sha256": "864b827e8199d946ce58beca0f89c4ed4099ed6e426fb698a3aaa45de2a9eea2",
-      "import_sha256": "a522488c9d4481e8bfcbe35cbf3838169c8e3801ee0738ae2859067684144579",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/principle-guard-the-context-window/SKILL.md",
-      "upstream_path": "pstack/skills/principle-guard-the-context-window/SKILL.md",
-      "upstream_sha256": "9f60e2c79b35f865cb103462f9128c6760b70f603475d1e535e5930f61840f66",
-      "import_sha256": "291d0125125eabbc2109c880b1c1083aa95826187119a648b26c1c8ea6367179",
       "unchanged_at_comparison": false
     },
     {
@@ -524,13 +496,6 @@
       "unchanged_at_comparison": true
     },
     {
-      "path": "skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
-      "upstream_path": "pstack/skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
-      "upstream_sha256": "09978915a4a11990cf0a9a02d9c08cc59e0b7a04c5c24b83aa560fbe4146f75b",
-      "import_sha256": "e29b6b6534a23dcaf8c7e16fc25d6484000d7b6e289c48eb0a32a97280633c5d",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/principle-minimize-reader-load/SKILL.md",
       "upstream_path": "pstack/skills/principle-minimize-reader-load/SKILL.md",
       "upstream_sha256": "42551c5dc74cd578163c148da552db3ff67d29b78600ef216bfd311fb828fe69",
@@ -545,31 +510,10 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/principle-never-block-on-the-human/SKILL.md",
-      "upstream_path": "pstack/skills/principle-never-block-on-the-human/SKILL.md",
-      "upstream_sha256": "d82bce9ab9193249d1ec0d514202d89602f0fd3d312174d622c2dd222bae5a2e",
-      "import_sha256": "f656f3b7581df55e79f53cc47df93905c3a940b822c25071ba95f40e530d102a",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/principle-outcome-oriented-execution/SKILL.md",
-      "upstream_path": "pstack/skills/principle-outcome-oriented-execution/SKILL.md",
-      "upstream_sha256": "beedcaed75572a6a1662d47f16da203c2bd2c9dbffbbd678d4ba187d67b7e670",
-      "import_sha256": "beedcaed75572a6a1662d47f16da203c2bd2c9dbffbbd678d4ba187d67b7e670",
-      "unchanged_at_comparison": true
-    },
-    {
       "path": "skills/principle-prove-it-works/SKILL.md",
       "upstream_path": "pstack/skills/principle-prove-it-works/SKILL.md",
       "upstream_sha256": "ae13d287984a5864312b6286899d4ee2b60f8272b5e5e8fcc586a7c3ea51020b",
       "import_sha256": "9bbe6138505be34d81e9395d95d3639b384f71d71d65cc1903075126e1da1508",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/principle-redesign-from-first-principles/SKILL.md",
-      "upstream_path": "pstack/skills/principle-redesign-from-first-principles/SKILL.md",
-      "upstream_sha256": "a1c7fd0a96b40e12a74bceb0e6bb20a9666dd844dcabfb624acb27da23b929fe",
-      "import_sha256": "9ae97b35d6338cc9e34c7023c995a39cb7afdaf4bfd41e1d3d665da04d7515d5",
       "unchanged_at_comparison": false
     },
     {
@@ -584,13 +528,6 @@
       "upstream_path": "pstack/skills/principle-sequence-verifiable-units/SKILL.md",
       "upstream_sha256": "761390804ee36c32f5338d8db47ec54463d40ff96dbb296dfafabcd5f2593eec",
       "import_sha256": "7478f8160ba5701ca40c742a81e90aff12d45f53ac9191e80ad79b9763e4489f",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/principle-subtract-before-you-add/SKILL.md",
-      "upstream_path": "pstack/skills/principle-subtract-before-you-add/SKILL.md",
-      "upstream_sha256": "a983a50e732c1ed315eba7aaf47a61329e31c4794eb1ab9d25d9945265b31e03",
-      "import_sha256": "3999888dc21ced33b86054c2ffde1a3cb438e16bed1213f5dab2b5c000446292",
       "unchanged_at_comparison": false
     },
     {

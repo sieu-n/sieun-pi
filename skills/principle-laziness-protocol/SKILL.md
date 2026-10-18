@@ -15,5 +15,7 @@ Writing code costs you little, so you over-build. Write code as if you had to ma
 - Make the smallest change that solves the problem, even if a longer version looks cleaner.
 - If a task asks you to thread a new signal through types, schemas, or pipelines, stop and look for a direct path.
 - Remove small pass-throughs, representation leaks, and duplicated choices when you see them.
+- Do the removals before the new construction, and leave the design with the same or fewer entry points.
+- Design for the usage you have seen, and add no validator, guard or feature the spec does not ask for.
 
 If a human developer would find the code tiring to maintain, pick a smaller solution.

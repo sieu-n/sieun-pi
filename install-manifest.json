@@ -90,25 +90,11 @@
       "target": ".prime/agent/skills/principle-encode-lessons-in-structure"
     },
     {
-      "id": "skill:principle-experience-first",
-      "kind": "link",
-      "source": "skills/principle-experience-first",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-experience-first"
-    },
-    {
       "id": "skill:principle-fix-root-causes",
       "kind": "link",
       "source": "skills/principle-fix-root-causes",
       "scope": "home",
       "target": ".prime/agent/skills/principle-fix-root-causes"
-    },
-    {
-      "id": "skill:principle-guard-the-context-window",
-      "kind": "link",
-      "source": "skills/principle-guard-the-context-window",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-guard-the-context-window"
     },
     {
       "id": "skill:principle-laziness-protocol",
@@ -125,13 +111,6 @@
       "target": ".prime/agent/skills/principle-make-operations-idempotent"
     },
     {
-      "id": "skill:principle-migrate-callers-then-delete-legacy-apis",
-      "kind": "link",
-      "source": "skills/principle-migrate-callers-then-delete-legacy-apis",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-migrate-callers-then-delete-legacy-apis"
-    },
-    {
       "id": "skill:principle-model-the-domain",
       "kind": "link",
       "source": "skills/principle-model-the-domain",
@@ -144,13 +123,6 @@
       "source": "skills/principle-prove-it-works",
       "scope": "home",
       "target": ".prime/agent/skills/principle-prove-it-works"
-    },
-    {
-      "id": "skill:principle-redesign-from-first-principles",
-      "kind": "link",
-      "source": "skills/principle-redesign-from-first-principles",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-redesign-from-first-principles"
     },
     {
       "id": "skill:principle-separate-before-serializing-shared-state",

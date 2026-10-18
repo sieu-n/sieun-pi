@@ -48,7 +48,7 @@ Pick the candidate a future maintainer can extend without breaking its invariant
 
 ## Phase E: Graft
 
-Walk each other candidate once more and find the one or two ideas worth porting. Fold each one into the base by hand per **principle-redesign-from-first-principles**, so the result keeps one mental model.
+Walk each other candidate once more and find the one or two ideas worth porting. Fold each one into the base by hand as if it had been in the design from day one, so the result keeps one mental model.
 
 If the candidates converge on one shape, ship it and record the convergence. If they diverge widely, Phase A was under-specified, so reframe and re-run instead of averaging.
 

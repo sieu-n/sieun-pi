@@ -51,20 +51,23 @@ Read the leaf skill in full for any principle you apply.
 | Principle skill | Apply when |
 |---|---|
 | principle-laziness-protocol | You size a diff or want to add a layer. Prefer deletion and the smallest change that works. |
-| principle-redesign-from-first-principles | A new requirement lands on an old design. Design as if it had been there from day one. |
-| principle-experience-first | You weigh product, UX, or scope. Pick what the user sees over what is easy to build. |
 | principle-build-the-lever | Work is non-trivial. Build the script, codemod, or generator that does or proves it. |
 | principle-model-the-domain | Logic holds state or branches a lot. Encode it in a state machine, typed model, table, or reducer. |
 | principle-boundary-discipline | You wire validation, errors, or adapters. Guard at system edges and trust internal types. |
 | principle-type-system-discipline | You design types or a signature. Make illegal states unrepresentable and parse external data at edges. |
 | principle-make-operations-idempotent | A command or loop runs through crashes and retries. Make it converge to one end state. |
-| principle-migrate-callers-then-delete-legacy-apis | A new API replaces an old one. Move every caller and delete the old API in one wave. |
 | principle-separate-before-serializing-shared-state | Concurrent actors may write the same file, branch, or key. Remove the sharing first. |
 | principle-prove-it-works | You are about to call a task done. Check the real artifact, not a proxy. |
 | principle-fix-root-causes | You debug. Reproduce first and trace each symptom to its cause. |
 | principle-sequence-verifiable-units | Work has many steps. Cut it into small units that each end in a check. |
-| principle-guard-the-context-window | Output, files, or fan-out planning are large. Send bulk to subagents and keep summaries here. |
 | principle-encode-lessons-in-structure | You write the same instruction twice. Turn it into a lint, check, flag, or script. |
+
+These rules have no leaf skill, because one line holds each of them.
+
+- When a new requirement lands on an old design, build what you would have built had it been there from day one, and carry the change through every type, doc and example.
+- When you weigh product, UX or scope, pick what the user sees over what is easy to build, and ship a few polished features before many rough ones.
+- When a new internal API replaces an old one, move every caller and delete the old API in the same change, and in a phased rewrite go straight to the target without throwaway compatibility code between phases.
+- Let only tokens that change a decision into the context, so send bulk output, screenshots and large files to a subagent and keep its summary.
 
 ## Autonomy
 

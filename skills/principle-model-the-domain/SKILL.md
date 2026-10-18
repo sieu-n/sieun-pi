@@ -18,6 +18,8 @@ Reach for the structure that matches the domain:
 - Use a queue, cache, index, tree, or normalized collection when the data access pattern calls for it.
 - If none of these fits, list what the code must never allow and how the data gets read, then pick the structure that encodes that.
 
+Define the core types before the logic that uses them, and trace each access pattern to pick the structure. Build shared scaffold, such as CI, test infrastructure and shared types, before features.
+
 Keep plain code when its shape is already clear, local, and unlikely to grow. Reject an abstraction that adds indirection without removing branches, duplicated rules, invalid states, or lifecycle risk.
 
 You skipped this rule when a new feature adds one more branch to an existing if/else chain, adds a second boolean that must stay in sync with the first, or repeats the same domain rule in several phase-named modules.
