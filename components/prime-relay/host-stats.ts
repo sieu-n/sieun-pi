@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
@@ -291,10 +292,16 @@ export function runnablePerCore(before: ReadonlyMap<number, number>, after: Read
   return counted ? ns / (ms * 1e6 * cores.length) : null;
 }
 let lastSwap: { at: number; pages: number } | null = null;
-let lastSched: { at: number; times: Map<number, number> } | null = null;
+const loadSchedstat = (): { at: number; times: Map<number, number> } | null => {
+  try {
+    const times = parseSchedstat(readFileSync("/proc/schedstat", "utf8"));
+    return times ? { at: Date.now(), times } : null;
+  } catch { return null; }
+};
+let lastSched = process.platform === "linux" ? loadSchedstat() : null;
 /**
- * The box's LinuxUsable now. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be
- * read, and on the first call, which has no earlier schedstat reading to take a window from.
+ * The box's LinuxUsable now. The first call's window starts when this module loaded, so the watch line a chat restart writes carries a
+ * reading. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be read.
  */
 export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null> {
   const [memory, cpu, vmstat, schedstat, status] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat", "/proc/schedstat", "/proc/self/status"]

@@ -68,11 +68,14 @@ test("a relay answer without runnablePerCore and allowedCpus, from a relay befor
     { kind: "linux", memSomeAvg10: 0, memFullAvg10: 0, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore: 0.45, allowedCpus: 32 });
 });
 
-test("on a Linux box the first reading is unknown and the next one counts this process's CPUs", { skip: process.platform !== "linux" }, async () => {
-  const start = Date.now();
-  assert.equal(await linuxUsable(start), null);
+// Restart lines at 05:38:44Z and 05:53:34Z on 10-18 read usable null, since the first call had no earlier schedstat reading, and each was the
+// last line of its minute, so those minutes read unknown.
+test("on a Linux box the first reading after a restart counts from the module's load, and the next one from the reading before", { skip: process.platform !== "linux" }, async () => {
+  for (let spin = Date.now(); Date.now() - spin < 20;);
+  const first = await linuxUsable(Date.now());
+  assert.equal(first?.allowedCpus, availableParallelism());
   for (let spin = Date.now(); Date.now() - spin < 50;);
-  const reading = await linuxUsable(Math.max(Date.now(), start + 1));
-  assert.equal(reading?.allowedCpus, availableParallelism());
-  assert.ok(reading && reading.runnablePerCore > 0);
+  const next = await linuxUsable(Date.now());
+  assert.equal(next?.allowedCpus, availableParallelism());
+  assert.ok(next && next.runnablePerCore > 0);
 });
