@@ -18,13 +18,15 @@ function gated() {
   return { runs, calls, gates };
 }
 
-test("checks that land during a slow dry run share it, and later checks answer at once with the last report", async () => {
+test("checks that land during a slow dry run share it and answer at once, and later checks answer with the last report", async () => {
   const { runs, calls, gates } = gated();
-  const first = [runs.check(), runs.check(), runs.check()];
+  // Before the first run ends a check holds no request open: on 10-18 each page load waited 90 to 120 s on it.
+  for (const each of await Promise.all([runs.check(), runs.check(), runs.check()])) assert.deepEqual(each, report(""));
   await tick();
   assert.equal(calls.length, 1);
   gates[0]!(report("1"));
-  for (const each of await Promise.all(first)) assert.equal(each.checked_at, "1");
+  await tick();
+  assert.equal((await runs.check()).checked_at, "1");
 
   const realNow = Date.now;
   try {
@@ -40,14 +42,14 @@ test("checks that land during a slow dry run share it, and later checks answer a
   } finally { Date.now = realNow; }
 });
 
-test("a check after a resume waits for a run that starts after the resume", async () => {
+test("a check after a resume never answers the report from before it, and the next check gets a run that started after it", async () => {
   const { runs, calls, gates } = gated();
   const before = runs.check();
   await tick();
   gates[0]!(report("1"));
   await before;
   const resumed = runs.resume(async () => {}, async () => {});
-  const after = runs.check();
+  assert.equal((await runs.check()).checked_at, "", "the report from before the resume is gone");
   await tick();
   gates[1]!(report("plan"));
   await tick();
@@ -55,6 +57,7 @@ test("a check after a resume waits for a run that starts after the resume", asyn
   await resumed;
   await tick();
   gates[3]!(report("3"));
-  assert.equal((await after).checked_at, "3");
+  await tick();
+  assert.equal((await runs.check()).checked_at, "3");
   assert.deepEqual(calls, [["--dry-run"], ["--dry-run"], [], ["--dry-run"]]);
 });

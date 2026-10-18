@@ -32,6 +32,7 @@ import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
+import type { ThreadSide } from "./shared/thread-side.ts";
 import { hostsView, thisBox } from "./chat-hosts.ts";
 import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
@@ -386,6 +387,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   server.headersTimeout = 10000;
   server.maxHeadersCount = 30;
   server.on("clientError", (_error, socket) => { socket.destroy(); });
+  /** A thread feed's `side` frames (src/shared/thread-side.ts): job costs at once, then the chat's duties and the accounts list as each is read. */
+  const pushSide = (id: string, send: (side: ThreadSide) => void) => {
+    const fail = (what: string) => (error: unknown) => { process.stderr.write(`side ${id.slice(0, 8)} ${what}: ${error instanceof Error ? error.message : String(error)}\n`); };
+    try { send({ childUsage: backend.catalog.childUsage(id) }); } catch (error) { fail("job costs")(error); }
+    const duties = backend.duties;
+    if (duties) void backend.chats.ids().then(async chats => { if (chats.has(id)) send({ duties: await duties.view(id) }); }).catch(fail("duties"));
+    const model = backend.threads.state(id)?.info.model?.id ?? null;
+    void listAccounts(id, model).then(view => send({ accounts: { model, view } }), fail("accounts"));
+  };
   const feeds = new FeedSockets(async (feed, send) => {
     if (feed.feed === "sessions") {
       sendBuild(version => send("build", { version }));
@@ -399,8 +409,12 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       if (!backend.usage) throw new Error("Usage analytics is off in this chat.");
       return backend.usage.subscribe(summary => send("usage", summary));
     }
-    try { return await backend.threads.subscribe(threadId(feed.id), event => send("thread", event)); }
-    catch (error) {
+    try {
+      const id = threadId(feed.id);
+      const stop = await backend.threads.subscribe(id, event => send("thread", event));
+      pushSide(id, side => send("side", side));
+      return stop;
+    } catch (error) {
       send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
       return () => {};
     }
@@ -1009,7 +1023,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const summary = await backend.catalog.summary(id);
           const activity = Date.parse(summary?.lastActivityAt ?? summary?.modified ?? "");
           await backend.readState.mark(id, { entryId: String(summary?.messageCount ?? 0), timestamp: Math.max(Date.now(), Number.isFinite(activity) ? activity : 0) });
-          await backend.catalog.notify();
+          // The sessions feed carries the new unread count; the answer does not wait for that projection, which took 10 to 27 s on 10-18.
+          void backend.catalog.notify().catch(() => {});
           break;
         }
         default: throw new RequestError(404, "Not found.");

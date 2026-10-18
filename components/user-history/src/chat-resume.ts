@@ -24,7 +24,8 @@ function runScript(args: readonly string[]): Promise<InterruptedReport> {
  * Runs one check at a time for every open tab, and never next to a resume, so two clicks or two tabs cannot send "continue" to the same
  * head twice. A check answers with the last finished report and starts a new run once that report is 15 s old. On 10-18 on us-metal02 the
  * dry run took 45 to 58 s and a new run queued every 15 s behind the last one, so the script ran back to back and every page check
- * waited past its 90 s abort.
+ * waited past its 90 s abort. Before the first run ends (after a service start or a resume) a check answers an empty report at once, and the
+ * page's next check (each minute and on focus) gets the run's: a page load held a request open for that run for 90 to 120 s on 10-18.
  */
 export class InterruptedRuns {
   private last: { at: number; report: InterruptedReport } | null = null;
@@ -41,7 +42,7 @@ export class InterruptedRuns {
       pending.then(report => { if (this.epoch === epoch) this.last = { at: Date.now(), report }; }, () => {})
         .finally(() => { if (this.pending === pending) this.pending = null; });
     }
-    return this.last ? Promise.resolve(this.last.report) : this.pending!;
+    return Promise.resolve(this.last?.report ?? { paused: [], heads: [], checked_at: "" });
   }
 
   /** A resume changes what is paused, so the next check waits for a run that starts after it. */
