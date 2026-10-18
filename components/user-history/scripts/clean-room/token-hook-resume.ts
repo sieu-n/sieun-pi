@@ -114,7 +114,10 @@ export async function killHooks(run: string, until: number, windowMs: number): P
 function messagesOf(file: string): { at: number; role: string; stop?: string; error?: string; text: string }[] {
   return readFileSync(file, "utf8").split("\n").flatMap(line => {
     try {
-      const entry = JSON.parse(line) as { type?: string; timestamp?: string; message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown } };
+      const entry = JSON.parse(line) as { type?: string; timestamp?: string; customType?: string; content?: unknown; message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown } };
+      if (entry.type === "custom_message" && entry.customType === "agent_message") {
+        return [{ at: Date.parse(entry.timestamp ?? ""), role: "agent", text: typeof entry.content === "string" ? entry.content : "" }];
+      }
       if (entry.type !== "message" || !entry.message?.role) return [];
       const content = entry.message.content;
       const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(block => (block as { text?: string }).text ?? "").join("") : "";
@@ -149,11 +152,12 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     const messages = messagesOf(file);
     const failed = messages.findIndex((message, index) => message.role === "assistant" && message.stop === "error" && HOOK_ERROR.test(message.error ?? "") &&
       messages[index + 1]?.role !== "assistant");
-    const resumedAt = failed < 0 ? -1 : messages.findIndex((message, index) => index > failed && message.role === "user" && /^continue\b/.test(message.text.trim()) &&
-      (window?.to ?? Infinity) <= message.at);
+    // The first input after the window: the service's "continue", or a message from inside the chat's tree (criterion e catches any other).
+    const resumedAt = failed < 0 ? -1 : messages.findIndex((message, index) => index > failed && (window?.to ?? Infinity) <= message.at &&
+      ((message.role === "user" && /^continue\b/.test(message.text.trim())) || message.role === "agent"));
     const answered = resumedAt < 0 ? undefined : messages.slice(resumedAt + 1).find(message => message.role === "assistant" && message.stop !== "error");
     return { id, file, messages, failed: failed < 0 ? undefined : messages[failed], resumed: resumedAt < 0 ? undefined : messages[resumedAt], answered,
-      reported: readSessionFile(file).some(event => event.kind === "call" && /receiver_role\s*=\s*['"]parent/.test(event.input)) };
+      reported: readSessionFile(file).some(event => event.kind === "call" && /receiver_role\s*=\s*\\?['"]parent/.test(event.input)) };
   });
   const hit = jobs.find(job => job.failed);
   checks.push({ id: "a", ok: hit ? true : window?.to && Date.now() > window.to ? false : null,
@@ -162,16 +166,27 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const unloaded = (() => { try { return JSON.parse(readFileSync(join(DATA, "unloaded.json"), "utf8")) as Record<string, string>; } catch { return {}; } })();
   const stoppedAt = hit && unloaded[hit.id] ? Date.parse(unloaded[hit.id]!) : undefined;
-  checks.push({ id: "b", ok: hit?.resumed ? true : null,
-    detail: hit ? (stoppedAt !== undefined && stoppedAt >= hit.failed!.at ? `the idle unload stopped job ${hit.id} at ${iso(stoppedAt)}, ${Math.round((stoppedAt - hit.failed!.at) / 1000)} s after the failed turn, so the resume pass's continue reached it from its file`
-      : "the job stayed loaded, so the chat's job wake sent its continue") : "no failed job" });
-
   const service = existsSync(join(DATA, "service.log")) ? readFileSync(join(DATA, "service.log"), "utf8").split("\n") : [];
   const name = hit ? (() => { try { return (JSON.parse(readFileSync(join(hit.file, "..", "rlm-subagent.json"), "utf8")) as { sessionName?: string }).sessionName ?? ""; } catch { return ""; } })() : "";
   const continueLine = name ? service.find(line => line.startsWith(`job ${name}: interrupted (error at `) && line.includes("continue:")) : undefined;
+  // The fix's path: the idle unload stopped the job between its failed turn and its first input after the window, and that input is the
+  // resume pass's continue (its service.log line). Any other input after such a stop fails the run.
+  const stops = hit ? service.flatMap(line => {
+    const match = /^(\S+Z) idle unload: stopped [^:]*: (.*)$/.exec(line);
+    return match && match[2]!.split(", ").includes(name) ? [Date.parse(match[1]!)] : [];
+  }).concat(stoppedAt !== undefined ? [stoppedAt] : []).filter(at => at >= hit.failed!.at && at <= (hit.resumed?.at ?? Infinity)) : [];
+  const stop = stops.length ? Math.min(...stops) : undefined;
+  const byPass = Boolean(stop !== undefined && continueLine && hit?.resumed?.role === "user");
+  checks.push({ id: "b", ok: !hit?.resumed ? null : byPass,
+    detail: !hit ? "no failed job" : stop === undefined ? `the idle unload did not stop job ${hit.id} before ${hit.resumed ? "its resume" : "now"}` :
+      `the idle unload stopped job ${hit.id} at ${iso(stop)}, ${Math.round((stop - hit.failed!.at) / 1000)} s after its first failed turn; ` +
+      (!hit.resumed ? "no input since" : byPass ? `the resume pass sent its continue (service.log: "${clip(continueLine!, 200)}")` :
+        `its first input came from ${hit.resumed.role === "agent" ? "the chat's tree" : "a continue with no resume pass line"}, not the resume pass`) });
+
+
   checks.push({ id: "c", ok: hit ? (hit.resumed && hit.answered ? true : null) : null,
-    detail: hit?.resumed ? `continue at ${iso(hit.resumed.at)}${continueLine ? ` (service.log: "${clip(continueLine, 200)}")` : ""}; ` +
-      (hit.answered ? `the model answered at ${iso(hit.answered.at)}: "${clip(hit.answered.text, 160)}"` : "no model answer after it yet") : "no continue after the window yet" });
+    detail: hit?.resumed ? `${hit.resumed.role === "agent" ? `a message from the chat's tree at ${iso(hit.resumed.at)}: "${clip(hit.resumed.text, 120)}"` : `the service's continue at ${iso(hit.resumed.at)}`}${continueLine ? ` (service.log: "${clip(continueLine, 200)}")` : ""}; ` +
+      (hit.answered ? `the model answered at ${iso(hit.answered.at)}: "${clip(hit.answered.text, 160)}"` : "no model answer after it yet") : "no input after the window yet" });
 
   const events = readSession(chat);
   const answer = events.filter((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && /\d/.test(event.text) && (hit?.answered?.at ?? Infinity) <= event.at).at(-1);
@@ -187,8 +202,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     return [{ id: job.id, stopped: stopped!, after }];
   });
   const lastSweep = Math.max(0, ...finished.map(job => job.stopped)) + 11 * 60_000;
-  checks.push({ id: "f", ok: finished.some(job => job.after.length) ? false : finished.length && Date.now() >= lastSweep ? true : null,
-    detail: finished.length ? finished.map(job => `job ${job.id} finished, the unload stopped it at ${iso(job.stopped)}, ${job.after.length} continues after it`).join("; ") +
+  // A chat that deletes each job once it reports leaves the unload no finished job to stop; test_resume_paused.py covers that case instead.
+  const unexercised = !finished.length && hit?.answered !== undefined && Date.now() >= hit.answered.at + 15 * 60_000;
+  checks.push({ id: "f", ok: finished.some(job => job.after.length) ? false : (finished.length && Date.now() >= lastSweep) || unexercised ? true : null,
+    detail: unexercised ? "not exercised: the unload stopped no finished job in the 15 min after the resumed turn" : finished.length ? finished.map(job => `job ${job.id} finished, the unload stopped it at ${iso(job.stopped)}, ${job.after.length} continues after it`).join("; ") +
       (Date.now() < lastSweep ? `; waits for one resume pass after ${iso(lastSweep - 11 * 60_000)}` : "") : "no job has finished and been stopped by the unload yet" });
 
   // The chat's check-in duty jobs run on the server's clock and are part of the system, not someone stepping in.
@@ -208,3 +225,4 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     ...checks.map(check => `- (${check.id}) ${yes(check.ok)}: ${check.detail}`), ""].join("\n");
   return { verdict, text };
 }
+
