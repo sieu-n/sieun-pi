@@ -205,10 +205,3 @@ export function workCounts(work: readonly WorkItem[]): { tools: number; notes: n
   }
   return { tools, notes };
 }
-
-export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = [], running = false): Turn[] {
-  const turns = buildTurns(messages);
-  const live = liveTurn(turns.at(-1), streaming, tools, messages.length, running);
-  if (!live) return turns;
-  return turns.length && turns.at(-1)!.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
-}

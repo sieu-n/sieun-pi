@@ -4,7 +4,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
-import { allTurns, buildTurns, currentRun, exchangesOf, liveTurn, ownRun, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
+import { buildTurns, currentRun, exchangesOf, liveTurn, ownRun, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
 import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
 import { matchCommands } from "../src/client/command-match.ts";
 import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
@@ -89,10 +89,6 @@ test("turns fold thinking and tool calls of one reply into one work row and keep
   assert.equal(live.live, true);
   assert.equal(live.reply?.live, true);
   assert.equal(liveTurn(turns.at(-1), null, [], messages.length), null);
-  const all = allTurns(messages, streaming, []);
-  assert.equal(all.length, 2);
-  assert.equal(all[1]?.live, true);
-  assert.equal(all[1]?.work.length, 0);
 });
 
 test("projection trims payloads, keeps native names, and marks truncation", () => {

@@ -12,7 +12,7 @@ import { jobRegistry } from "../src/chat-sources.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_GOING, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
+import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, type Duty,
   type DutyRunRecord } from "../src/shared/chat-duties.ts";
 
 const run = promisify(execFile);
@@ -116,9 +116,6 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 `);
   assert.doesNotMatch(brief, /verifier per goal|start at least these subagents/i, "no fixed split");
   const record = (verdict: DutyRunRecord["verdict"], metrics: DutyRunRecord["metrics"] = {}): DutyRunRecord => ({ duty: "d1", at: 1, trigger: "schedule", ms: 1, verdict, metrics, summary: "" });
-  const miss = record("missed", { orphans: { value: 4, target: 0, op: "<=", met: false }, long_replies: { value: 1, target: 10, op: "<=", met: true } });
-  assert.deepEqual(repeatMisses(miss, miss), ["orphans"]);
-  assert.deepEqual(repeatMisses(miss, record("met")), []);
   assert.equal(errorStreak([record("error"), record("skipped"), record("error"), record("met"), record("error")]), 2);
   assert.ok(CHECK_IN_FOCUS[0]!.startsWith("Your number is goal_gaps"), "owner 10-15: the check-in job is judged on the goals first");
   assert.ok(CHECK_IN_FOCUS[1]!.includes("add one push step") && CHECK_IN_FOCUS[1]!.includes("never start a second"), "one owner job per goal, steered when alive");

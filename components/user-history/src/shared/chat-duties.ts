@@ -226,12 +226,6 @@ export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }
 
-/** The metrics that missed in this run and in the run before it. */
-export function repeatMisses(record: DutyRunRecord, previous: DutyRunRecord | undefined): string[] {
-  if (!previous || previous.verdict !== "missed") return [];
-  return Object.entries(record.metrics).filter(([key, result]) => !result.met && previous.metrics[key]?.met === false).map(([key]) => key);
-}
-
 /** How many runs in a row, newest first, ended in error. */
 export function errorStreak(runs: readonly DutyRunRecord[]): number {
   let count = 0;

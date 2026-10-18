@@ -258,14 +258,6 @@ export function targetRatio(target: GoalTarget): number {
   if (targetOp(target) === "<=") return current <= target.target ? 1 : target.target / current;
   return target.target === 0 ? 1 : current / target.target;
 }
-/** A goal's progress toward its target: not measured yet, or its last measurement as a whole percent of the target (`ratio` unrounded) and whether that is stale. */
-export type TargetState = { kind: "unmeasured" } | { kind: "measured"; ratio: number; percent: number; measuredAt: number; stale: boolean };
-export function targetState(target: GoalTarget, everyMs: number, now: number): TargetState {
-  const at = Date.parse(target.measuredAt ?? "");
-  if (target.current === undefined || !Number.isFinite(at)) return { kind: "unmeasured" };
-  const ratio = targetRatio(target);
-  return { kind: "measured", ratio, percent: Math.round(ratio * 100), measuredAt: at, stale: now - at > targetStaleMs(target, everyMs) };
-}
 const amountText = (n: number): string => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const unitText = (unit: string): string => unit === "%" ? unit : ` ${unit}`;
 /** "8 / 200 Mbps (4%)", or "target 200 Mbps, not measured". */

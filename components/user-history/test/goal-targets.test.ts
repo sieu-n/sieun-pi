@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
 import { goalPushes } from "../src/checkin-goals.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
-import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetRatio, targetState, targetText } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetRatio, targetStaleMs, targetText } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, GoalTarget, PlanItem } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");
@@ -96,7 +96,7 @@ test("goal pushes: the memo gives the trend; a goal that moved fast enough with 
 });
 
 test("goal pushes: staleness is 2 check-in intervals, or 24 h for a daily metric", () => {
-  const stale = (target: GoalTarget, everyMs: number) => { const state = targetState(target, everyMs, NOW); return state.kind === "measured" && state.stale; };
+  const stale = (target: GoalTarget, everyMs: number) => NOW - Date.parse(target.measuredAt!) > targetStaleMs(target, everyMs);
   const target: GoalTarget = { ...PROXY, measuredAt: iso(NOW - 3 * HOUR) };
   assert.equal(stale(target, HOUR), true);
   assert.equal(stale(target, 2 * HOUR), false);

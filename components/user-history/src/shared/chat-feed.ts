@@ -267,19 +267,6 @@ export function turnStarter(messages: readonly ThreadMessage[]): TurnStarter {
   return starter;
 }
 
-/** The message that started the turn the thread was on at `at` (ms), and who started it; undefined when no message is that old. */
-export function turnAt(messages: readonly ThreadMessage[], at: number): { starter: TurnStarter; message: ThreadMessage } | undefined {
-  const track = turnTracker();
-  let turn = 0;
-  let start: { starter: TurnStarter; message: ThreadMessage } | undefined;
-  for (const message of messages) {
-    if (message.timestamp > at) break;
-    const now = track(message);
-    if (now.turn !== turn) { turn = now.turn; start = { starter: now.starter, message }; }
-  }
-  return start;
-}
-
 const isUpdate = (line: ChatLine): line is Update => line.kind === "job" || line.kind === "notes";
 
 /** The lines with every run of quiet ones (job messages, the chat's notes) folded into one updates item, keyed by its first line. */
