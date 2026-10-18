@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
+import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { withWakes } from "../../src/checkin-load.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
@@ -16,7 +17,10 @@ import { chatChildren, daemonSessions, parseLooseJson, sessionRows, subagentsByP
 
 /**
  * The duty fleet: every active duty of every chat in `<dataDir>/chats.json`, the built-in check-in included unless its chat's check-in is paused,
- * judged by its newest measured run (`effectiveRun`, so a run whose own job fixed the miss counts green). The Chat system duty leads with
+ * judged by its newest measured run (`effectiveRun`, so a run whose own job fixed the miss counts green). An archived chat and a clean-room test
+ * chat (`clean-room-chats.json`) are not the owner's, so they are left out, and a duty with no measured run yet is pending, outside the share: at
+ * 01:00Z on 10-18 the share fell from 44.4% to 27.2% on two new duties of the clean-room chats "skill references" (archived by its teardown) and
+ * "LinkedIn index gaps". The Chat system duty leads with
  * `duties_green_pct` and chases `stuck_duties` chat by chat: a duty that missed CHANGE_APPROACH_MISSES measured runs in a row with no live fix job.
  * `node --import tsx scripts/duties/duty-fleet.ts [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints the result as JSON.
  */
@@ -25,6 +29,8 @@ export interface FleetDuty {
   chat: string; duty: string; name: string;
   /** The newest measured run met every target. */
   green: boolean;
+  /** No measured run yet: neither green nor red, and outside `duties_green_pct`. */
+  pending?: true;
   /** Measured runs in a row, newest first, whose verdict is missed. */
   misses: number;
   /** The metric the stuck line names: the headline when it missed, else the longest miss streak. */
@@ -61,8 +67,12 @@ function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; lin
 
 export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] }): Promise<DutyFleet> {
   const { dataDir, now } = options;
-  const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8").catch(() => "{}")) as { ids?: unknown };
-  const ids = (Array.isArray(listed.ids) ? listed.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
+  const listOf = async (file: string): Promise<string[]> => {
+    const value = JSON.parse(await readFile(join(dataDir, file), "utf8").catch(() => "{}")) as { ids?: unknown };
+    return (Array.isArray(value.ids) ? value.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
+  };
+  const notOwners = new Set([...await listOf("archived-chats.json"), ...await listOf(CLEAN_ROOM_CHATS_FILE)]);
+  const ids = (await listOf("chats.json")).filter(id => !notOwners.has(id));
   const store = new DutyStore(dataDir);
   const boards = new BoardStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
@@ -85,7 +95,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const green = newest !== undefined && effectiveRun(newest).verdict === "met";
       const streak = missStreak(own);
       const streaks = newest ? metricStreaks(own) : [];
-      const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false };
+      const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false, ...newest ? {} : { pending: true as const } };
       const metric = leadMetric(duty.metrics, streaks);
       if (metric) entry.metric = { ...metric };
       if (!green && newest) {
@@ -134,10 +144,11 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
     }
   }
   const stuck = duties.filter(duty => duty.stuck);
+  const judged = duties.filter(duty => !duty.pending);
   const names = stuck.length ? new Map(sessionRows(roster()).map(row => [row.id, row.name])) : new Map<string, string>();
   return {
     // Floored to a tenth, so one red duty reads under 100.
-    metrics: { duties_green_pct: duties.length ? Math.floor(1000 * duties.filter(duty => duty.green).length / duties.length) / 10 : 100, stuck_duties: stuck.length },
+    metrics: { duties_green_pct: judged.length ? Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10 : 100, stuck_duties: stuck.length },
     flagged: stuck.map(duty => ({ chat: duty.chat, kind: "stuck_duty", item: duty.duty,
       excerpt: `${names.get(duty.chat) ?? duty.chat}: ${duty.name} missed ${duty.misses} runs, ${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${bound(duty.metric)}` : "no metric value"}, no live fix job` })),
     duties,

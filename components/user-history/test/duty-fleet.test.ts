@@ -104,7 +104,8 @@ test("duty fleet: the daemon is not asked when no duty is red long enough", asyn
   const dir = await mkdtemp(join(tmpdir(), "duty-fleet-empty-"));
   await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["c1"] }));
   const fleet = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => { throw new Error("no daemon"); } });
-  assert.deepEqual(fleet.metrics, { duties_green_pct: 0, stuck_duties: 0 }, "a chat's check-in with no measured run is red");
+  assert.deepEqual(fleet.metrics, { duties_green_pct: 100, stuck_duties: 0 }, "a chat's check-in with no measured run is pending, outside the share");
+  assert.deepEqual(fleet.duties.map(duty => [duty.duty, duty.pending]), [["checkin", true]]);
 });
 
 test("duty fleet: a fix job that sleeps on a board.wake is live though the daemon no longer lists it, as the server reads it (SEO d1, 10-15 23:55 KST)", async () => {
@@ -141,4 +142,23 @@ test("duty fleet: a red duty's fix is the open step at work on its lead metric, 
   assert.deepEqual([working.stuck, working.fix, working.metric?.key, working.metric?.fix], [false, "p559", "clean_min_30", { step: "p559", job: "clean minutes 10-18 09:41", live: true }]);
   const ended = await read("idle");
   assert.deepEqual([ended.stuck, ended.fix, ended.metric?.fix], [false, "p529", undefined], "with p559's job ended the live fix of another missed metric holds, and done p528 is no fix");
+});
+
+test("duty fleet: archived and clean-room chats are not the owner's, and a duty with no measured run is pending, outside the share (10-18 01:00Z)", async () => {
+  const dir = await copy();
+  const before = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => SESSIONS });
+  // "skill references" was archived by its teardown and "LinkedIn index gaps" is a clean-room chat; here Slack and SEO play them.
+  await writeFile(join(dir, "clean-room-chats.json"), JSON.stringify({ ids: [SLACK] }));
+  await writeFile(join(dir, "archived-chats.json"), JSON.stringify({ ids: [SEO] }));
+  const file = join(dir, "duties", `${FRONTEND}.json`);
+  const duties = JSON.parse(await readFile(file, "utf8")) as { duties: { id: string; name: string }[] };
+  duties.duties.push({ ...duties.duties[0]!, id: "d9", name: "A duty added a minute ago" });
+  await writeFile(file, JSON.stringify(duties));
+  const fleet = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => SESSIONS });
+  assert.ok(!fleet.duties.some(duty => duty.chat === SLACK || duty.chat === SEO));
+  const added = fleet.duties.find(duty => duty.chat === FRONTEND && duty.duty === "d9")!;
+  assert.deepEqual([added.pending, added.green, added.stuck], [true, false, false]);
+  const judged = fleet.duties.filter(duty => !duty.pending);
+  assert.equal(fleet.metrics.duties_green_pct, Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10);
+  assert.notEqual(fleet.metrics.duties_green_pct, before.metrics.duties_green_pct);
 });

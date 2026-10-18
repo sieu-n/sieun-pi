@@ -106,8 +106,8 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 0, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
-      "3 chats' check-ins with no measured run are not green");
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
+      "3 chats' check-ins with no measured run are pending, outside the green share");
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 4).map(slice => [slice.chat, slice.excerpt]), [["chat-a", API_KEY_ERROR], ["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]],
       "a judged metric's lines (sieun_pi_breaks) come before the context ones");
