@@ -9,7 +9,7 @@ import { loadHosts, roleUrl } from "../../src/hosts.ts";
 /**
  * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 dev services gave no
  * 200 within 5 s, and pm2 restarts of search since the last run. Each service's answer and time goes into the flagged items as run detail.
- * No model call. The wiki is the one server at the wiki host of hosts.json (llm-wiki.service under systemd, not pm2).
+ * No model call. The wiki is the one server at the wiki host of hosts.json (the llm-wiki app of the pm2 dev stack).
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  */

@@ -9,7 +9,8 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `prime-agent-daemon.service` | The Prime Agent daemon on `/tmp/prime-agent-<uid>/daemon.sock`, with the agent workers under it. |
 | `sieun-pi-chat.service` | The chat from `~/.local/share/sieun-pi-chat/current`, the release folder that `scripts/release-chat.mjs` builds. |
 | `prime-agent-watchdog.timer` | One cycle of `~/.prime/agent/watchdog/cron_cycle.py` every 10 minutes, as `com.sieun.prime-agent-watchdog` does on the Mac. |
-| `llm-wiki.service` | `pnpm run dev` of `apps/llm-wiki` in `~/Documents/Github/auto-sns-agent`, only on the host with the `wiki` role in `hosts.json`. |
+| `auto-sns-dev-pm2.service` | The auto-sns-agent pm2 daemon (`PM2_HOME=.cache/pm2-dev`) with every dev server in `scripts/dev/dev-apps.cjs`, llm-wiki included, as launchd `mac-pm2-boot` and `mac-pm2-keep` keep it on the Mac. |
+| `box-devserver-heal.service`, `box-pm2-keep.timer` | Box copies of the Mac's `mac-devserver-heal` and `mac-pm2-keep` in `~/.local/share/box-devserver-heal`: restart a hung dev server, refill an empty daemon, and `pm2 save` when the app list changes. |
 | `wiki-box-commit.timer` | `wiki-box-commit.mjs` every 5 minutes on the wiki host, which pushes the wiki pages written there to a `ci/wiki-box-<stamp>` object. |
 | `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
 | `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
@@ -65,9 +66,9 @@ systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.service p
 
 The main chat adds itself to Tailscale Serve at `https://<host>.<tailnet>.ts.net/`.
 
-One wiki serves every box. On the host with the `wiki` role, which is us-metal02, run `systemctl --user enable --now llm-wiki.service` and `tailscale serve --bg --https=5176 http://127.0.0.1:5176`, so the wiki answers at the role's url, `https://us-metal02-dev.tail0c093d.ts.net:5176`.
+One wiki serves every box. On the host with the `wiki` role, which is us-metal02, the wiki is the `llm-wiki` app of the pm2 dev stack under `auto-sns-dev-pm2.service`; run `tailscale serve --bg --https=5176 http://127.0.0.1:5176`, so the wiki answers at the role's url, `https://us-metal02-dev.tail0c093d.ts.net:5176`.
 Its pages are committed from that checkout: `wiki-box-commit.timer` runs `scripts/repo/agent/wiki-box-commit.mjs` from auto-sns-agent every 5 minutes, installed as a copy in `~/.local/share/wiki-box-commit` with `doc-only-paths.mjs`, the way the Mac installs devserver-heal. It pushes every wiki page that differs from `origin/sieun/dev` as a `ci/wiki-box-<stamp>` object, and the Mac's `ai.virev.wiki-land` lands the newest one on its `sieun/dev` with `land-wiki-objects.mjs`. One run reads `git status` of the whole content folder in about 16 s (measured 10-18).
-The wiki serves the content folder of that checkout. Its `apps/llm-wiki` is not in the pm2 dev stack (`scripts/dev/dev-apps.cjs`), so `pnpm dev` never starts a second wiki on 5176.
+The wiki serves the content folder of that checkout. Its `apps/llm-wiki` is in the pm2 dev stack (`scripts/dev/dev-apps.cjs`), so `pnpm dev` and `pnpm dev:status` cover it, as on the Mac.
 Check with `ss -tlnp` that 5182 and 5176 listen on 127.0.0.1 only.
 
 The watchdog code is not in this repository. Copy `watchdog.py`, `cron_cycle.py`, `repl_guard.py` and `repl-guard.patch` from the Mac's `~/.prime/agent/watchdog`, without its state and logs. The timer gives it the Linux daemon socket through `PRIME_AGENT_DAEMON_SOCK`.
