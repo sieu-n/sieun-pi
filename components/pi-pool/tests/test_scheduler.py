@@ -463,6 +463,9 @@ class Cli(unittest.TestCase):
         ls = json.loads(out)
         self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 300)}))
         self.assertNotIn("force", ls["rows"][0])
+        rc, out, _ = self.run_cli(state, accounts, ["ls"])
+        self.assertEqual(rc, 0)
+        self.assertIn("priority low  waits for y", out)
 
     def test_use_force_is_gone(self):
         state = empty_state()

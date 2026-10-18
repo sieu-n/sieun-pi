@@ -65,8 +65,6 @@ def cmd_ls(rest):
             flags.append("pinned")
         if r["current"]:
             flags.append("current")
-        if r["live"]:
-            flags.append("live")
         if r["reason"]:
             flags.append(r["reason"])
         print(f"{r['label']:{width}s} {r['usage']:>9}  {' '.join(flags) or 'available'}")
