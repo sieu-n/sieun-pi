@@ -390,10 +390,16 @@ export const watchFile = (dataDir: string, at: number): string => {
   return join(dataDir, "mac-usable", `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}.jsonl`);
 };
 
-/** Every watch line from `since` to `now`, oldest first, from the day files that cover the span; a missing file or a bad line is skipped. */
+/**
+ * Every watch line from `since` to `now`, oldest first, from the day files that cover the span; a missing file or a bad line is skipped. The
+ * files also take the day before and after, since the writer names each by its own local day: on 10-18 the chat ran with TZ=Asia/Seoul, so
+ * from 15:00Z its lines went to 2026-10-19.jsonl, and a precheck run from a UTC shell at 16:46Z read only 2026-10-18.jsonl and found 30
+ * minutes with no watch line.
+ */
 export async function readWatch(dataDir: string, since: number, now: number): Promise<WatchLine[]> {
   const files = new Set<string>();
-  for (let at = since; at < now + 24 * 60 * MINUTE; at += 24 * 60 * MINUTE) files.add(watchFile(dataDir, Math.min(at, now)));
+  const day = 24 * 60 * MINUTE;
+  for (let at = since - day; at < now + 2 * day; at += day) files.add(watchFile(dataDir, Math.min(at, now + day)));
   const lines: WatchLine[] = [];
   for (const file of files) {
     const text = await readFile(file, "utf8").catch(() => "");
