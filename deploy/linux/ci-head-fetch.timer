@@ -1,13 +1,9 @@
 [Unit]
-Description=Run ci-head-fetch every 5 minutes, so ci-cache.service and ci-monitor.service follow origin/sieun/dev
+Description=Run ci-head-fetch every 5 minutes, so the box's origin/sieun/dev follows the pushed head
 
 [Timer]
 OnBootSec=1min
-# 5 min, from measurements on 10-18. One fetch takes 0.45 s and spends no REST quota (/usr/bin/time, 06:2xZ).
-# Each head move restarts the poller, and a restart costs about 172 extra calls on the 5,000/h token while its ETags
-# warm up (ci-cache.log, 10 cycles after the 05:32:47Z restart). The Mac's origin/sieun/dev reflog has 393 pushes from
-# 10-01 to 10-18, median gap 7.2 min, p25 1.9 min. A 5 min fetch folds 110 of them into a shared restart (283 restarts),
-# while 1 min folds 27 (366). So a fix reaches the poller in at most about 6 min (5 min fetch plus the 60 s head check).
+# 5 min, from measurements on 10-18: one fetch takes 0.45 s and spends no REST quota (/usr/bin/time, 06:2xZ).
 OnUnitActiveSec=5min
 AccuracySec=30s
 

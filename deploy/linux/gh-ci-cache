@@ -1,9 +1,9 @@
 #!/bin/bash
 # ci-cache gh shim (box copy of the Mac's ai.virev.ci-cache wrapper): answers gh run view|list|watch and gh api .../actions/runs/<id>
 # from /home/sieun/.cache/virev/ci-runs.json, which ci-cache.service writes. Anything else runs the real gh.
-# It runs the shim code from the head export (origin/sieun/dev), as ci-cache.service does.
+# It runs the shim code from the tip export (the box's sieun/dev), as ci-cache.service does.
 export CI_CACHE_REAL_GH=/home/sieun/.local/opt/gh-2.89.0/bin/gh
-HEAD_EXPORT=/home/sieun/.cache/virev/head-export/current/scripts/dev
+HEAD_EXPORT=/home/sieun/.cache/virev/tip-export/current/scripts/dev
 case "$1" in
 run|api)
 	if [ "$1" = run ] && [ "$2" = watch ]; then

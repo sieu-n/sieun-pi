@@ -1,2 +1,2 @@
 #!/bin/sh
-NODE="/home/sieun/.local/node/bin/node" exec /bin/sh "/home/sieun/.cache/virev/head-export/current/scripts/dev/ci-run-status.sh" "$@"
+NODE="/home/sieun/.local/node/bin/node" exec /bin/sh "/home/sieun/.cache/virev/tip-export/current/scripts/dev/ci-run-status.sh" "$@"

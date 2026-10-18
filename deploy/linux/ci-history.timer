@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ci-history every 10 minutes, after each ci-monitor run has written history.jsonl
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

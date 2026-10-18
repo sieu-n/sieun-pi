@@ -1,5 +1,5 @@
 [Unit]
-Description=ci-monitor: the CI access monitor (scripts/dev/ci-monitor.mjs run from origin/sieun/dev through run-from-head.mjs), writing snapshot.md, history.jsonl, state.json and dashboard/ for the wiki's /playground/ci (box copy of the Mac's launchd ai.virev.ci-monitor)
+Description=ci-monitor: the CI access monitor (scripts/dev/ci-monitor.mjs run from the box's sieun/dev tip through run-from-head.mjs --tip), writing snapshot.md, history.jsonl, state.json and dashboard/ for the wiki's /playground/ci (box copy of the Mac's launchd ai.virev.ci-monitor)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,12 +7,8 @@ Wants=network-online.target
 Type=oneshot
 # ~/.local/bin comes first for gh (the ci-cache shim, which passes `gh auth token` to the real gh) and rg.
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=%h/.cache/virev/head-export
-ExecStart=%h/.local/node/bin/node %h/.cache/virev/head-export/current/scripts/dev/run-from-head.mjs %h/Documents/Github/auto-sns-agent scripts/dev/ci-monitor.mjs run --output-dir %h/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/08/0624-ci-access-monitor/logs --interval-seconds 600
+WorkingDirectory=%h/.cache/virev/tip-export
+ExecStart=%h/.local/node/bin/node %h/.cache/virev/tip-export/current/scripts/dev/run-from-head.mjs --tip %h/Documents/Github/auto-sns-agent scripts/dev/ci-monitor.mjs run --output-dir %h/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/08/0624-ci-access-monitor/logs --interval-seconds 600
 TimeoutStartSec=15min
-# Until auto-sns-agent 95b09baa50 lands (dashboard limit 60 s to 180 s), the monitor's own chart step times out on this box,
-# so this step draws the charts after each run. Remove it once the tip has that commit.
-# ci-dashboard.mjs runs its main only when argv[1] is its real path, so the path goes through readlink -f past the current link.
-ExecStartPost=-/bin/sh -c 'exec %h/.local/node/bin/node "$(readlink -f %h/.cache/virev/head-export/current)/scripts/dev/ci-dashboard.mjs" --output-dir %h/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/08/0624-ci-access-monitor/logs'
 StandardOutput=null
 StandardError=append:%h/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/08/0624-ci-access-monitor/logs/launchd.log

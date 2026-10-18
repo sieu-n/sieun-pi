@@ -1,0 +1,12 @@
+[Unit]
+Description=ci-history: fold ci-runs.json and the CI monitor's store.json and history.jsonl into the CI history store (apps/llm-wiki/content/.wiki/ci-history) that /playground/ci reads, run from the box's sieun/dev tip through run-from-head.mjs --tip like ci-monitor.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.cache/virev/tip-export
+ExecStart=%h/.local/node/bin/node %h/.cache/virev/tip-export/current/scripts/dev/run-from-head.mjs --tip %h/Documents/Github/auto-sns-agent scripts/dev/ci-history.mjs collect
+StandardOutput=append:%h/.local/state/virev/ci-history.log
+StandardError=append:%h/.local/state/virev/ci-history.log

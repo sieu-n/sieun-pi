@@ -1,5 +1,5 @@
 [Unit]
-Description=ci-head-fetch: fetch origin's sieun/dev into refs/remotes/origin/sieun/dev of the box checkout, so run-from-head.mjs (ci-cache.service, ci-monitor.service) follows the pushed head. It writes that one ref and never sieun/dev, the working tree or .git/index.
+Description=ci-head-fetch: fetch origin's sieun/dev into refs/remotes/origin/sieun/dev of the box checkout, so pins and lands on the box see the pushed head. It writes that one ref and never sieun/dev, the working tree or .git/index.
 After=network-online.target
 Wants=network-online.target
 
