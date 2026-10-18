@@ -52,6 +52,16 @@ test("local dev uptime: a non-200, a network error and repeated restarts are fla
   assert.match(output.flagged!.find(item => item.kind === "mac")!.excerpt, /^Mac at the probe: load \{ 31\.2 25\.0 21\.0 \} total = 22528\.00M/);
 });
 
+test("local dev uptime: the wiki's 403 from Vite's allowedHosts at its public URL is down, with the body's first line", async () => {
+  const run = deps({ jlist: jlist(0) });
+  const blocked = 'Blocked request. This host ("us-metal02-dev.tail0c093d.ts.net") is not allowed.\nTo allow this host, add it to `server.allowedHosts` in vite.config.js.';
+  const fetcher = (async (url: string, init?: RequestInit) => url === WIKI + "/" ? new Response(blocked, { status: 403 }) : run.fetch(url, init)) as unknown as typeof fetch;
+  const { output } = await measureUptime({ ...run, fetch: fetcher }, undefined);
+  assert.equal(output.metrics.servers_not_answering, 1);
+  assert.equal(output.flagged!.find(item => item.kind === "down")!.excerpt,
+    `wiki: GET ${WIKI}/ gave HTTP 403 after 0 ms: Blocked request. This host ("us-metal02-dev.tail0c093d.ts.net") is not allowed.`);
+});
+
 test("local dev uptime: a 200 slower than 5 s counts as not answering", async () => {
   let clock = NOW;
   const run = deps({ jlist: jlist(0) });

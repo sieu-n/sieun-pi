@@ -35,13 +35,18 @@ export interface UptimeDeps { fetch: typeof fetch; exec: Exec; now: () => number
 export interface UptimeState { restarts: Record<string, { restartTime: number; at: number }> }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { restart_time?: number; status?: string } }
 
-/** Whether the page answers 200, and how long it took; a timeout or a network error is no answer. */
-export async function probe(deps: Pick<UptimeDeps, "fetch" | "now">, url: string): Promise<{ status: number; ms: number; error?: string }> {
+/**
+ * Whether the page answers 200, how long it took, and the first line of any other answer's body; a timeout or a network error is no answer.
+ * The wiki is probed at its public URL, so the request carries the tailnet Host header that Vite's server.allowedHosts checks
+ * (from 02:42Z on 10-18 it answered 403 "Blocked request. This host ... is not allowed" there while 127.0.0.1:5176 answered 200).
+ */
+export async function probe(deps: Pick<UptimeDeps, "fetch" | "now">, url: string): Promise<{ status: number; ms: number; error?: string; body?: string }> {
   const start = deps.now();
   try {
     const response = await deps.fetch(url, { signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS), redirect: "manual" });
-    await response.arrayBuffer();
-    return { status: response.status, ms: deps.now() - start };
+    const text = await response.text();
+    if (response.status === 200) return { status: 200, ms: deps.now() - start };
+    return { status: response.status, ms: deps.now() - start, body: text.trim().split("\n")[0]!.slice(0, 200) };
   } catch (error) {
     return { status: 0, ms: deps.now() - start, error: error instanceof Error ? error.message : String(error) };
   }
@@ -84,7 +89,8 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     if ("error" in where) return { at, kind: "down", excerpt: `${service.key}: ${where.error}` };
     const answer = await probe(deps, where.url);
     if (answer.status === 200) return { at, kind: "answer", excerpt: `${service.key}: GET ${where.url} gave 200 in ${answer.ms} ms` };
-    return { at, kind: "down", excerpt: `${service.key}: GET ${where.url} gave ${answer.error ?? `HTTP ${answer.status}`} after ${answer.ms} ms` };
+    const body = answer.body ? `: ${answer.body}` : "";
+    return { at, kind: "down", excerpt: `${service.key}: GET ${where.url} gave ${answer.error ?? `HTTP ${answer.status}`} after ${answer.ms} ms${body}` };
   }));
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
