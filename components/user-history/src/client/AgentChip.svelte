@@ -29,8 +29,8 @@
 </script>
 
 {#if chip}
-  <button type="button" class="link-chip agent-chip" title={stepAgentTitle(chip, name, queued)} data-preview-chat={chat} data-preview-job={preview} onclick={open}>
-    {#if queued}<span class="dot waiting"></span>{:else if chip.state === "working"}<span class="spinner tiny"></span>{:else}<span class="dot {chip.state ?? ""}"></span>{/if}<span class="chip-label">{name}</span></button>
+  <button type="button" class="link-chip agent-chip" title={stepAgentTitle(chip, name, queued || chip.agent?.wait || "")} data-preview-chat={chat} data-preview-job={preview} onclick={open}>
+    {#if queued || chip.agent?.wait}<span class="dot waiting"></span>{:else if chip.state === "working"}<span class="spinner tiny"></span>{:else}<span class="dot {chip.state ?? ""}"></span>{/if}<span class="chip-label">{name}</span></button>
 {/if}
 
 <style>

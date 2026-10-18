@@ -3,15 +3,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { withWaits } from "../src/chat-agents.ts";
+import { agentLines, withWaits } from "../src/chat-agents.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
 import { jobPushes } from "../src/checkin-jobs.ts";
 import { withWakes } from "../src/checkin-load.ts";
 import { checkInSettings, clockTime } from "../src/checkin-settings.ts";
-import type { JobFact } from "../src/checkin-steps.ts";
-import { Chats, NO_REPORT_BUSY_TRIES } from "../src/chats.ts";
+import { type JobFact, jobFacts } from "../src/checkin-steps.ts";
+import { Chats, NO_REPORT_BUSY_TRIES, withLiveRoster } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { JOB_NOTICE_PREFIX } from "../src/shared/chat-feed.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem } from "../src/shared/types.ts";
@@ -189,4 +189,40 @@ test("open-steps notice: a new job the hub lists with no session id, whose sessi
   await flush();
   assert.deepEqual(prompts.filter(line => line.includes("open step")), []);
   chats.close();
+});
+
+test("check-in: subagents the hub's attach lacks after the idle unload and a restart, asleep on run and time wakes, are live owners, not 'not found' (Crawler VP 10-18 03:00Z, p252, p596, crawler ops train)", () => {
+  const CRAWLER = OPS;
+  const CANARY = { id: "sub-f061e03d", name: "census canary run", session: "01a12faa-591f-751e-b070-756c5697072e" };
+  const QUERY = { id: "sub-d52d31b0", name: "query mcp build", session: "01a1421b-29e4-719a-b3e3-aa4768b0aa35" };
+  const TRAIN = { id: "sub-96f41d6b", name: "crawler ops train", session: "01a13a74-4d1b-71b8-b9b4-3dc22a80a2e8" };
+  const OLD = { id: "sub-05ed6d9b", name: "media worker cpu", session: "01a14c6e-f3a6-77ca-b606-371322b111fa" };
+  const wakes = [
+    wake(CANARY.session, { kind: "time", at: 1792293660000 }),
+    wake(QUERY.session, { kind: "run", run: 39091572149 }), wake(QUERY.session, { kind: "time", at: 1792293000000 }),
+    wake(TRAIN.session, { kind: "run", run: 39091941522 }), wake(TRAIN.session, { kind: "time", at: 1792293300000 }),
+  ];
+  const attached = [child(ALERTS, "done")];
+  const roster = [child(CANARY, "done"), child(QUERY, "done"), child(TRAIN, "done"), child(OLD, "done"), child(ALERTS, "done")];
+  const children = withLiveRoster(attached, roster, wakes, () => []);
+  assert.deepEqual(children.map(each => each.label), [ALERTS.name, CANARY.name, QUERY.name, TRAIN.name], "the finished job with no wake stays out");
+  const board = { plan: [{ id: "p23", text: "Speed census up", status: "doing", children: [
+    step("p252", "Raise census crawl slots past 768", CANARY.name, { status: "doing", sessionId: CANARY.session }),
+    step("p596", "query MCP push", QUERY.name, { status: "doing", sessionId: QUERY.session, waitFor: "run 39076161060 green" }),
+    step("p368", "Prod YouTube job queue holds an entry stuck over a day", TRAIN.name),
+  ] }], todos: [] } as unknown as ChatBoard;
+  const sessions = new Map(children.map(each => [each.id, each.sessionId!]));
+  const facts = withWakes(jobFacts(children, board, [], CRAWLER), wakes, key => sessions.get(key));
+  const byName = new Map(facts.map(fact => [fact.name, fact]));
+  assert.deepEqual([CANARY, QUERY, TRAIN].map(job => [job.name, byName.get(job.name)?.state, byName.get(job.name)?.item?.id]), [
+    [CANARY.name, "working", "p252"], [QUERY.name, "working", "p596"], [TRAIN.name, "working", "p368"],
+  ]);
+  assert.equal(byName.get(QUERY.name)?.wake, "board.wakes on run 39091572149 and at 03:10Z");
+});
+
+test("agents API: an agent asleep on a board.wake reads working with its wait, not done (Crawler VP 10-18 03:05Z, query mcp build)", () => {
+  const agent: ChatAgent = { key: "child:sub-d52d31b0", sessionId: "01a1421b-29e4-719a-b3e3-aa4768b0aa35", childId: "sub-d52d31b0", name: "query mcp build", job: "query mcp build", sender: "query mcp build", link: "subagent", state: "done", steps: ["p596"] };
+  const [row] = withWaits([agent], [wake(agent.sessionId!, { kind: "run", run: 39091572149 })], () => []);
+  assert.deepEqual([row!.state, row!.wait], ["working", "waits for run 39091572149"]);
+  assert.deepEqual(agentLines([row!], NOW), ["Agents:", "- query mcp build: waits for run 39091572149 (p596)"]);
 });

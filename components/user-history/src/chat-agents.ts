@@ -345,7 +345,7 @@ const queuedWords = (place: QueuePlace, now: number): string => `queued ${place.
 /** The chat_board tool's "Agents:" section: one line per agent (name, state, age), every agent listed. Empty with no agent. */
 export function agentLines(agents: readonly ChatAgent[], now: number): string[] {
   if (!agents.length) return [];
-  return ["Agents:", ...agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : agent.state !== "working" && agent.wait ? agent.wait : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`)];
+  return ["Agents:", ...agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : agent.wait ?? STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`)];
 }
 
 /** The agents with their place in the Mac-wide turn queue attached, for the sessions `pi-pool queue --json` lists as queued. */
@@ -353,10 +353,17 @@ export function withQueue(agents: readonly ChatAgent[], places: ReadonlyMap<stri
   return agents.map(agent => { const queued = agent.sessionId ? places.get(agent.sessionId) : undefined; return queued ? { ...agent, queued } : agent; });
 }
 
-/** The agents with the pending board.wakes of their session and every session below it (`below`, `treeWakes`) in words (`wakeWait`). */
+/**
+ * The agents not at work whose session or a session below it (`below`, `treeWakes`) has a pending board.wake: state working, the check-in's rule
+ * for a job asleep on a wake (`withWakes`), with the wait in words (`wakeWait`). Crawler VP 10-18 03:00Z: the agents API gave query mcp build,
+ * census canary run and crawler ops train state "done" while each slept on its run and time wakes.
+ */
 export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], below: (session: string) => readonly string[]): ChatAgent[] {
   if (!wakes.length) return [...agents];
-  return agents.map(agent => { const owed = agent.sessionId ? treeWakes(agent.sessionId, below, wakes) : []; return owed.length ? { ...agent, wait: wakeWait(owed) } : agent; });
+  return agents.map(agent => {
+    const owed = agent.sessionId && agent.state !== "working" ? treeWakes(agent.sessionId, below, wakes) : [];
+    return owed.length ? { ...agent, state: "working", wait: wakeWait(owed) } : agent;
+  });
 }
 
 /** The agents with their output rates attached, for the session ids the usage store answered for. */

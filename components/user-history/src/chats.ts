@@ -7,7 +7,7 @@ import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, OPEN, walk } from "./checkin-steps.ts";
-import type { Wake } from "./wakes.ts";
+import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
@@ -93,6 +93,18 @@ export function withRoster(attached: readonly ChildAgent[], roster: readonly Chi
  */
 const settledLater = (child: ChildAgent, row: ChildAgent): boolean => (row.lastActivityAt ?? -Infinity) > (child.lastActivityAt ?? -Infinity) &&
   row.status !== "running" && !childWorking(child) && child.status !== "cancelled" && (row.status !== child.status || row.repliedSinceTask !== child.repliedSinceTask);
+
+/**
+ * The chat's children with each subagent the daemon lists under it that they lack and that is live: at work, or with a pending board.wake on its
+ * session or one below it (`treeWakes`). Crawler VP 10-18 03:00Z: the idle unload stopped census canary run, query mcp build and census seed
+ * order at 02:57:26Z, the service restarted at 02:58:56Z, and the check-in a minute later read p252 "(census canary run not found)" and about
+ * 70 steps "(crawler ops train not found)" while each slept on its run and time wakes.
+ */
+export function withLiveRoster(children: readonly ChildAgent[], roster: readonly ChildAgent[], wakes: readonly Wake[], below: (session: string) => readonly string[]): ChildAgent[] {
+  const known = new Set(children.map(child => child.id));
+  const live = roster.filter(row => !known.has(row.id) && (childWorking(row) || (row.sessionId !== undefined && treeWakes(row.sessionId, below, wakes).length > 0)));
+  return live.length ? [...children, ...live] : [...children];
+}
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
@@ -1144,9 +1156,9 @@ export class Chats {
     // one of its duty jobs (10-13 02:39: busy chat inbox ran under the 01:54 check-in job, and p334 read "(busy chat inbox not found)").
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
     const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
-    const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
     // A job that ended its turn on a board.wake the service still owes is at work until the wake is due (`withWakes`).
     const wakes = await this.source.wakes?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in wakes: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+    const children = withLiveRoster(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), this.subagents.get(id) ?? [], wakes, this.below);
     const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
