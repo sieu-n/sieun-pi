@@ -268,8 +268,6 @@ export interface CheckInSource {
   waking?: (session: string) => Promise<boolean>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
   wakes?: (now: number) => Promise<readonly Wake[]>;
-  /** Adds a message to the note of a session's soonest wake file (`addWakeNote`); false when it has none. Absent: a steer always goes out now. */
-  wakeNote?: (session: string, text: string) => Promise<boolean>;
   /**
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.

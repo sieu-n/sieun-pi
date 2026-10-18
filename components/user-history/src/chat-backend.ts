@@ -41,7 +41,7 @@ import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
-import { addWakeNote, pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { trainFile } from "./checkin-load.ts";
@@ -206,7 +206,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      wakeNote: (session, text) => addWakeNote(join(dataDir, "wakes"), session, text),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {
