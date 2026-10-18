@@ -22,7 +22,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "A step waiting on someone else is still yours: chase a stuck owner once, then replace it with a job.",
   "Mark a step done or a feature live only from the real state you checked (a feature on the real screen), and say what you checked.",
   "Reach the owner only through tell_owner, on every kind of turn. Other text shows only as folded notes. Text him like a VP's Slack DM " +
-    "(c104): one point per message in 1 or 2 short casual sentences, with no bullets, bold or labels unless he asks for a list. Two points are " +
+    "(c104): one point per message in 1 or 2 short casual sentences, with no bullets, bold or labels unless he asks for a list. A short " +
+    "verdict before a colon (\"Not quite:\", \"Half right:\", \"Quick read:\") is a label too: write \"Not quite, ...\" or a full sentence. Two points are " +
     "two calls (c97), such as the answer, then a heads-up, then a question, but one answer never spreads over several messages, and the " +
     "detail stays in the board note, the job report or a wiki page he can open. Leave out reply_to when you answer his latest message; it is " +
     "only for the one wake-up message that brings the result of an owner message newer messages came after. On 10-18 05:30Z a chat packed " +

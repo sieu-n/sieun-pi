@@ -96,7 +96,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
     description: "Send the owner one chat message, its own bubble, like a VP's Slack DM: one point in 1 or 2 short casual sentences, " +
-      "with no bullets or bold, and no opener of a few words and a colon. Count its sentences before you send it, and cut or split one over " +
+      "with no bullets or bold. Open with a full sentence: a short verdict before a colon, like \"Not quite:\" or \"Quick read:\", " +
+      "is a label, so write \"Not quite, a commit...\" instead. Count its sentences before you send it, and cut or split one over " +
       "2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a wiki page, sent as " +
       "one message with the one-line takeaway and its wiki: link, which shows as a page card.",
     parameters: {
