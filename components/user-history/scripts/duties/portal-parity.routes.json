@@ -568,21 +568,24 @@
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/live/profile"
-   ]
+   ],
+   "byDesign": "Douyin is a platform we have not integrated: the crawler has no Douyin proxy and pause.douyin_discovery is on, and the prod Douyin worker goes away (crawler board p672 under p670, s244, Crawler VP 2026-10-18); the portal answers 503 source_paused unbilled, and the route rejoins when the crawler re-enables Douyin"
   },
   {
    "crawler": "GET /api/live/douyin/posts",
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/live/profile/posts"
-   ]
+   ],
+   "byDesign": "Douyin is a platform we have not integrated: the crawler has no Douyin proxy and pause.douyin_discovery is on, and the prod Douyin worker goes away (crawler board p672 under p670, s244, Crawler VP 2026-10-18); the portal answers 503 source_paused unbilled, and the route rejoins when the crawler re-enables Douyin"
   },
   {
    "crawler": "GET /api/live/douyin/related",
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/live/post/related"
-   ]
+   ],
+   "byDesign": "Douyin is a platform we have not integrated: the crawler has no Douyin proxy and pause.douyin_discovery is on, and the prod Douyin worker goes away (crawler board p672 under p670, s244, Crawler VP 2026-10-18); the portal answers 503 source_paused unbilled, and the route rejoins when the crawler re-enables Douyin"
   },
   {
    "crawler": "GET /api/live/facebook/adlibrary/company/ads",
@@ -1074,14 +1077,16 @@
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/profile"
-   ]
+   ],
+   "byDesign": "Douyin is a platform we have not integrated: the crawler has no Douyin proxy and pause.douyin_discovery is on, and the prod Douyin worker goes away (crawler board p672 under p670, s244, Crawler VP 2026-10-18); the portal answers 503 source_paused unbilled, and the route rejoins when the crawler re-enables Douyin"
   },
   {
    "crawler": "GET /api/douyin/posts/{sec_uid}",
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/posts"
-   ]
+   ],
+   "byDesign": "Douyin is a platform we have not integrated: the crawler has no Douyin proxy and pause.douyin_discovery is on, and the prod Douyin worker goes away (crawler board p672 under p670, s244, Crawler VP 2026-10-18); the portal answers 503 source_paused unbilled, and the route rejoins when the crawler re-enables Douyin"
   },
   {
    "crawler": "POST /api/meta-ads/search",
