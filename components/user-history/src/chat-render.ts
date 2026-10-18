@@ -123,7 +123,7 @@ export function textKind(path: string): TextKind {
 const TEXT_PROBE_BYTES = 8 * 1024;
 export const isTextBytes = (bytes: Uint8Array): boolean => !bytes.subarray(0, TEXT_PROBE_BYTES).includes(0);
 /** Where a `file:` artifact link may point: job reports and session artifacts, chat data, and the repositories. */
-export const LOCAL_TEXT_ROOTS = ["~/.prime/agent/session-artifacts", "~/.prime/agent/browser-chat", "~/Documents/Github"];
+export const LOCAL_TEXT_ROOTS = ["~/.prime/agent/session-artifacts", "~/.prime/agent/browser-chat", "~/Documents/Github", "~/src/sieun-pi"];
 /** The chat service's own secrets (capability, write and stop tokens) live in browser-chat; the route never serves them. */
 const SECRET_FILES = new Set(["configuration.json"]);
 
