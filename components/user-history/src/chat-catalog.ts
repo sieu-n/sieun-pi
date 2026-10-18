@@ -485,14 +485,18 @@ export const PROJECTION_LOG_MS = 60_000;
 const rank = (sorted: readonly number[], share: number): number => sorted[Math.max(0, Math.ceil(share * sorted.length) - 1)]!;
 /**
  * One service.log line on the projections of the last PROJECTION_LOG_MS: their count and median, 90th percentile and longest wall time, so
- * the live number reads from the log without a profiler, which owner rule c106 keeps off the live service, and the share of the window the
- * main thread was busy (`busy`, 0 to 1), which tells a slow projection from one that waited behind other work. Null when none ran.
+ * the live number reads from the log without a profiler, which owner rule c106 keeps off the live service; the median and 90th percentile of
+ * the time their own code ran (`own`, the wall time without the awaits); and the share of the window the main thread was busy (`busy`, 0 to
+ * 1). Wall time far above own time is a projection waiting behind other work. Null when none ran.
  */
-export function projectionLine(ms: readonly number[], windowMs = PROJECTION_LOG_MS, busy?: number): string | null {
+export function projectionLine(ms: readonly number[], windowMs = PROJECTION_LOG_MS, busy?: number, own: readonly number[] = []): string | null {
   if (!ms.length) return null;
   const sorted = [...ms].sort((left, right) => left - right);
+  const ran = [...own].sort((left, right) => left - right);
   const round = (value: number) => Math.round(value);
-  return `catalog: ${sorted.length} projections in ${round(windowMs / 1000)} s, median ${round(rank(sorted, 0.5))} ms, p90 ${round(rank(sorted, 0.9))} ms, max ${round(sorted.at(-1)!)} ms${busy === undefined ? "" : `, main thread ${round(busy * 100)}% busy`}`;
+  return `catalog: ${sorted.length} projections in ${round(windowMs / 1000)} s, median ${round(rank(sorted, 0.5))} ms, p90 ${round(rank(sorted, 0.9))} ms, max ${round(sorted.at(-1)!)} ms`
+    + (ran.length ? `, own code median ${round(rank(ran, 0.5))} ms, p90 ${round(rank(ran, 0.9))} ms` : "")
+    + (busy === undefined ? "" : `, main thread ${round(busy * 100)}% busy`);
 }
 
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
@@ -557,14 +561,16 @@ export class Catalog {
   private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Wall ms of each projection since the last `projectionLine`. */
+  /** Wall ms of each projection since the last `projectionLine`, and the ms of each that its own code ran. */
   private projectionMs: number[] = [];
+  private projectionOwnMs: number[] = [];
   private loopUse = loopPerformance.eventLoopUtilization();
   private readonly projectionTimer = setInterval(() => {
     const use = loopPerformance.eventLoopUtilization(this.loopUse);
     this.loopUse = loopPerformance.eventLoopUtilization();
-    const line = projectionLine(this.projectionMs, PROJECTION_LOG_MS, use.utilization);
+    const line = projectionLine(this.projectionMs, PROJECTION_LOG_MS, use.utilization, this.projectionOwnMs);
     this.projectionMs = [];
+    this.projectionOwnMs = [];
     if (line) process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   }, PROJECTION_LOG_MS).unref();
   private closed = false;
@@ -723,9 +729,16 @@ export class Catalog {
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
-    const [state, labels, chats, checkIns, briefs, archivedByOwner] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
-      this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]);
-    const originOf = await this.origins.resolver(chats ?? new Set());
+    // The time this projection's own code holds the main thread: its wall time without the awaits (`projectionLine`).
+    let own = 0;
+    let ran = performance.now();
+    const wait = async <T>(promise: Promise<T>): Promise<T> => {
+      own += performance.now() - ran;
+      try { return await promise; } finally { ran = performance.now(); }
+    };
+    const [state, labels, chats, checkIns, briefs, archivedByOwner] = await wait(Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
+      this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]));
+    const originOf = await wait(this.origins.resolver(chats ?? new Set()));
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
     const selfName = this.hosts?.selfName ?? null;
@@ -772,7 +785,7 @@ export class Catalog {
     const now = Date.now();
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
-      const links = await this.chats.links(row.id).catch(() => null);
+      const links = await wait(this.chats.links(row.id).catch(() => null));
       row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
@@ -786,8 +799,8 @@ export class Catalog {
       }
     }
     const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
-    const queued = await this.queueSource();
-    const wakes = await this.wakesSource(now).catch(() => []);
+    const queued = await wait(this.queueSource());
+    const wakes = await wait(this.wakesSource(now).catch(() => []));
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
@@ -798,6 +811,7 @@ export class Catalog {
     }
     // A queued agent's place moves as the queue drains, so the rows go out again while one waits too.
     this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
+    this.projectionOwnMs.push(own + performance.now() - ran);
     return { rows, tags: labels?.tags ?? [] };
   }
 

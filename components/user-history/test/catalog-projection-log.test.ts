@@ -11,6 +11,7 @@ test("projectionLine gives the count, median, 90th percentile and longest wall t
   assert.equal(projectionLine([]), null);
   assert.equal(projectionLine([30, 10, 20, 40, 50, 60, 70, 80, 90, 210.4]), "catalog: 10 projections in 60 s, median 50 ms, p90 90 ms, max 210 ms");
   assert.equal(projectionLine([30], 60_000, 0.634), "catalog: 1 projections in 60 s, median 30 ms, p90 30 ms, max 30 ms, main thread 63% busy");
+  assert.equal(projectionLine([300, 100], 60_000, 0.25, [5, 12]), "catalog: 2 projections in 60 s, median 100 ms, p90 300 ms, max 300 ms, own code median 5 ms, p90 12 ms, main thread 25% busy");
 });
 
 test("the catalog logs one line a minute on the projections it ran", async (t: TestContext) => {
@@ -37,7 +38,35 @@ test("the catalog logs one line a minute on the projections it ran", async (t: T
   t.mock.timers.tick(PROJECTION_LOG_MS);
   const logged = lines.filter(line => line.includes("projections in"));
   assert.equal(logged.length, 1);
-  assert.match(logged[0]!, /catalog: [23] projections in 60 s, median \d+ ms, p90 \d+ ms, max \d+ ms, main thread \d+% busy\n$/);
+  assert.match(logged[0]!, /catalog: [23] projections in 60 s, median \d+ ms, p90 \d+ ms, max \d+ ms, own code median \d+ ms, p90 \d+ ms, main thread \d+% busy\n$/);
   t.mock.timers.tick(PROJECTION_LOG_MS);
   assert.equal(lines.filter(line => line.includes("projections in")).length, 1, "a minute with no projection logs nothing");
+});
+
+test("a projection that waits for a slow source logs its wall time and its own code's time apart", async (t: TestContext) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const reads = new ChatReadState("unused");
+  t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
+  const labels = new ChatLabels("unused");
+  t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
+  const slow = () => new Promise<void>(resolve => setTimeout(resolve, 300));
+  const chats = { ids: async () => new Set(["s1"]), checkIns: async () => new Map(), links: async () => { await slow(); return { children: [], board: null, roots: [], messages: [] }; } };
+  const catalog = new Catalog("unused", reads, labels, chats, new ThreadOrigins({ ids: async () => [] }));
+  t.after(() => catalog.close());
+  let connected = false;
+  t.mock.method(catalog.client, "reconnect", async () => { connected = true; });
+  t.mock.method(catalog.client, "waitForHello", async () => ({ appVersion: "0.9.8" }));
+  const box = [{ sessionId: "s1", activeSessionId: "a1", cwd: "/tmp", sessionName: "one", messageCount: 3 } as SessionSummary];
+  t.mock.method(catalog.client, "request", async (command: { type: string }) => command.type === "list" ? { success: true, data: { sessions: box } } : { success: true, data: { jobs: [] } });
+  Object.defineProperty(catalog.client as unknown as object, "isConnected", { get: () => connected });
+  await catalog.refresh();
+  await catalog.event();
+  await new Promise(resolve => setImmediate(resolve));
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (chunk: string) => { lines.push(String(chunk)); return true; });
+  t.mock.timers.tick(PROJECTION_LOG_MS);
+  const line = lines.find(entry => entry.includes("projections in")) ?? "";
+  const [, wall, own] = /max (\d+) ms, own code median \d+ ms, p90 (\d+) ms/.exec(line) ?? [];
+  assert.ok(Number(wall) >= 290, line);
+  assert.ok(Number(own) < 150, line);
 });
