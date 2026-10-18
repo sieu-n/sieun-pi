@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { alertStepLine, type StepLine } from "./alert-bridge.ts";
+import { type AlertLine, type RuleJob, ruleText } from "./alert-bridge.ts";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { clockTime, localTime } from "./checkin-settings.ts";
@@ -110,30 +110,30 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
 export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and a firing prod alert wakes the thread that owns it";
 
 /**
- * The brief of the job the alert bridge starts for a chat's alert steps that have no owner (`AlertBridge.own`). At 05:50:35Z on 10-18 the bridge
- * put 20 steps on ops guy's board with no owner, and they sat until the 06:49Z check-in started "alert 0549 datasource burst" for them.
+ * The brief of the triage job the alert bridge starts for one firing rule of a chat. The bridge files no plan step for it (owner 10-18: "stop
+ * being paranoid in plan under p45, p221"); the chat's duty counts the rules that fire, and this job holds the rule until it stops.
  */
-export function alertJobBrief(chat: DutyChat, job: string, at: number, steps: readonly StepLine[]): string {
+export function alertJobBrief(chat: DutyChat, job: string, at: number, line: AlertLine, previous?: RuleJob): string {
   const agentDir = dirname(dirname(dirname(chat.board)));
   return [
-    `# ${job}: alert steps on the chat "${chat.name}"`,
+    `# ${job}: a firing alert of the chat "${chat.name}"`,
     `Owner's words (verbatim):\n\n> ${ALERT_OWNER_WORDS}`,
-    `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge. The chat's board is ` +
-      `${chat.board}, and its conversation is ${join(agentDir, "sessions", `${chat.id}.jsonl`)}. The bridge put these alert steps on that board and gave them to you:`,
-    steps.map(line => `- ${alertStepLine(line)}`).join("\n"),
-    "Alerts that fire in the same minute are often one incident. Find the cause of each step from evidence: the Grafana rule and its query, the " +
-      "metrics and logs, and read-only reads on the box. Close each step with its cause in one or two plain sentences in its note, and one cause " +
-      "can close several steps. A fix in our code or alert rules goes through the repo's normal land path, and its step stays doing with its " +
-      "waitFor naming the run. Follow the chat's rules for any box or repo you touch, and send nothing outside (no email, ticket or vendor chat). " +
-      "The bridge may send you more alert steps of this chat by message while you work, so take those the same way.",
+    `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge, and its conversation is ` +
+      `${join(agentDir, "sessions", `${chat.id}.jsonl`)}. The bridge gave you this Grafana rule: ${ruleText(line)}.`,
+    [line.summary ? `Summary: ${line.summary}` : "", line.values ? `Values: ${line.values}.` : "", line.url ? `Grafana: ${line.url}` : ""].filter(Boolean).join("\n"),
+    previous ? `The bridge gave this rule to the job "${previous.name}" (session ${previous.id}) at ${localTime(previous.at)}, and that job has ended while the ` +
+      "rule still fires. Read its conversation first and start from what it found." : "",
+    "Find the cause from evidence: the Grafana rule and its query, the metrics and logs, and read-only reads on the box. Fix it at the root: a fix " +
+      "in our code or alert rules goes through the repo's normal land path, and a rule that fires on something that is not a fault gets fixed or " +
+      "deleted. Follow the chat's rules for any box or repo you touch, and send nothing outside (no email, ticket or vendor chat). Put no step on " +
+      "the chat's plan: the chat's duty counts the rules that fire, and you hold this one. If it fires again while you work, the bridge sends you " +
+      "the fire by message.",
     "## How to act",
     [
       `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,
-      `Apply board changes with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops are chat_board ops such as ` +
-        `[{"op":"plan_update","id":"${steps[0]?.step ?? "p1"}","status":"done","note":"<the cause and its evidence>"}].`,
-      `When every step is closed, or you are blocked, report in 3 short lines that lead with the cause, with \`${reportCall(chat)}\`.`,
+      `When the rule stops firing for a cause you fixed, or you are blocked, report in 3 short lines that lead with the cause, with \`${reportCall(chat)}\`.`,
     ].map(line => `- ${line}`).join("\n"),
-  ].join("\n\n") + "\n";
+  ].filter(Boolean).join("\n\n") + "\n";
 }
 
 const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;

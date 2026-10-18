@@ -1,4 +1,3 @@
-import { bridgeHolds } from "./alert-bridge.ts";
 import { coversStep, firstClause, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
@@ -360,8 +359,7 @@ export function ago(ms: number): string {
 
 /**
  * The class of one open leaf step at a tick; every chat converges to steps that are `live`, `foryou` or `waiting`. `live`: its owner is a job
- * at work, a thread active in the last STEP_STALE_MS, the chat itself on a step it changed in that time, or the alert bridge on a step it just
- * added (`bridgeHolds`). `foryou`: an open owner todo covers
+ * at work, a thread active in the last STEP_STALE_MS, or the chat itself on a step it changed in that time. `foryou`: an open owner todo covers
  * it (`todoForStep`). `waiting`: its `waitUntil` is ahead, or its `waitFor` (or thread owner) has seen progress within STEP_STALE_MS. The three
  * the chat must act on at once: `due` (its `waitUntil` passed and it has not changed since), `stale-chase` (it waits on another thread or an
  * event with no progress for STEP_STALE_MS), `orphan` (no live owner, no todo, no wait).
@@ -388,7 +386,7 @@ export function stepClass({ item, changedAt, mine, owner, openTodos, parked }: S
   if (Number.isFinite(until) && changedAt < until) return "due";
   if (mine && now - changedAt < STEP_STALE_MS) return "live";
   if (item.waitFor !== undefined || thread) return now - Math.max(changedAt, thread ? owner!.activityAt ?? 0 : 0) < STEP_STALE_MS ? "waiting" : "stale-chase";
-  return bridgeHolds(item, changedAt, now) ? "live" : "orphan";
+  return "orphan";
 }
 
 /**

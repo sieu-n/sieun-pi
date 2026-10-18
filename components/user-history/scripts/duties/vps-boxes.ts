@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FiringAlert, readGrafanaAlerts } from "../../src/alert-bridge.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { BRIDGE_FILE, alertsFiring } from "./prod-alerts.ts";
+import { readFiringRules } from "../../src/alert-bridge.ts";
 
 /**
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
  * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token).
  * root_disk_days is the days until us-metal01's root disk is full at the last 24 h rate, and air_runners_online counts the M1 Air's runners up,
- * both from the box Prometheus through Grafana ds/query. The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
+ * both from the box Prometheus through Grafana ds/query. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
+ * by its triage job (prod-alerts.ts). The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
 const DATA_DIR = join(homedir(), ".prime/agent/browser-chat");
@@ -94,6 +97,11 @@ async function main(): Promise<void> {
     result.flagged!.push(...counted.flagged);
     if (file.page) flag("page", `risk page: ${file.page}`);
   } catch (error) { flag("source_error", `risks_firing: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, CHAT), at);
+    result.metrics.alerts_firing = counted.count;
+    result.flagged!.push(...counted.flagged);
+  } catch (error) { flag("source_error", `alerts_firing: ${error instanceof Error ? error.message : String(error)}`); }
   for (const [key, expr] of [["root_disk_days", ROOT_DAYS_QUERY], ["air_runners_online", AIR_RUNNERS_QUERY]] as const) {
     try { result.metrics[key] = Math.round(await instant(expr) * 10) / 10; }
     catch (error) { flag("source_error", `${key}: ${error instanceof Error ? error.message : String(error)}`); }

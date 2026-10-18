@@ -3,56 +3,56 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ALERT_ROUTES, OPS_ROUTE, routeAlert } from "./alert-routes.ts";
-import type { BoardStore } from "./chat-board-store.ts";
 import { missing } from "./locked-json.ts";
-import { BOARD_LIMITS, findItem, nextIds, openGoals, titleDetail, walkItems } from "./shared/chat-board.ts";
-import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
 import { TICK_MS } from "./wakes.ts";
+
+/**
+ * The alert bridge: each Grafana alert rule that fires for a chat with a board gets one triage job of that chat, and a later fire of the same
+ * rule goes to that job by message while it still works. The bridge puts nothing on the plan. The owner, 10-18: "stop being paranoid in plan
+ * under p45, p221. these should be modeled separately, like in a doc tracking all the known vps infra risks and a duty that checks these."
+ * At 16:00Z that day the bridge's steps were 14 open under ops guy's "Firing prod alerts" and about 30 under Crawler VP's p146, and they
+ * came back after every cleanup. Each owning chat's duty reads its firing count from this state (`firingRules`, scripts/duties/prod-alerts.ts).
+ */
 
 export const ESCALATE_MS = 30 * 60_000;
 /**
- * How long a step the chat closed may sit closed while its rule still fires before reconcile reopens it. ops guy set 24 h on 10-18, after prod
- * backup alerts fired from 10-16 for over 3 days with no open step anywhere.
+ * How long a rule may still fire after the bridge gave it to a job that has since ended before the bridge starts a new job for it. ops guy
+ * set 24 h on 10-18, after prod backup alerts fired from 10-16 for over 3 days with nobody on them.
  */
 export const REOPEN_MS = 24 * 3_600_000;
 export const OWNERS_PATH = "ops/alert-relay/owners.json";
-export const ALERT_GOAL = "Firing prod alerts";
 export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?active=true";
-const RESOLVED = "The alert resolved at";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
 /** One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). */
 export interface Instance { startsAt: string; labels: Record<string, string>; resolvedAt?: number }
+/** A triage job the bridge started for a rule: its session id and name. */
+export interface AlertJob { id: string; name: string }
+/** The triage job that holds a rule, and when the bridge last gave the rule to it (started it, or sent it a fire). */
+export interface RuleJob extends AlertJob { at: number }
 /**
- * One alert rule firing in one owning chat, and its board step. `rule` is the rule uid, or the alertname when the uid label is missing. The
- * group resolves when every instance has resolved. `wokeAt` and `firstWokeAt` both hold the time the step was placed.
+ * One alert rule firing in one owning chat. `rule` is the rule uid, or the alertname when the uid label is missing. The rule resolves when
+ * every instance has resolved.
  */
-export interface Tracked { chat: string; step: string | null; rule: string; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number;
+export interface Tracked { chat: string; rule: string; alertname: string; startsAt: string;
+  /** When the rule last fired: first seen, back after it resolved, or still firing REOPEN_MS after its job ended. A job whose `at` is older owes this fire. */
+  wokeAt: number;
+  /** When this entry first fired; the boardless tells count from it (`dueTells`). */
+  firstWokeAt: number;
+  /** When the bridge last escalated the rule to ops guy, or first told a boardless owner past ESCALATE_MS. */
+  escalatedAt?: number;
   resolvedAt?: number; instances: Record<string, Instance>;
-  /** When reconcile first saw the rule's step closed (done or dropped) while the rule still fired. */
-  closedAt?: number;
   /** When the bridge last told the rule's owner, a session with no board, that it fires (`dueTells`). */
-  toldAt?: number }
-export interface BridgeState { v: 2; rules: Record<string, Tracked> }
-export interface StepView { text: string; open: boolean; owned: boolean }
+  toldAt?: number;
+  job?: RuleJob }
+export interface BridgeState { v: 3; rules: Record<string, Tracked> }
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
-export interface Resolve { key: string; chat: string; step: string | null; at: string }
-export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number; resolved?: boolean }
-/** A job the bridge started for a chat's alert steps (`AlertBridge.own`): its session id and name. */
-export interface AlertJob { id: string; name: string }
-export interface Merge { step: string | null; into: string }
-/**
- * One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away.
- * Reconcile adds `found`, the fresh rules it placed because no open step held them, and `reopen`, the rules whose closed step it reopens.
- */
-export interface ChatChange { chat: string; rules: Record<string, Tracked>; fresh: Map<string, FiringAlert>; touched: Set<string>; merged: Merge[];
-  found?: Set<string>; reopen?: Set<string> }
-/** What reconcile sees of an open rule's step: the owning chat has no board, the step is gone or never placed, or the step is open or closed. */
-export type StepLook = "no board" | "missing" | "open" | "closed";
+/** One firing rule as its triage job reads it. */
+export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; summary: string; url: string; values?: string }
 
-export const emptyState = (): BridgeState => ({ v: 2, rules: {} });
+export const emptyState = (): BridgeState => ({ v: 3, rules: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
 export const ruleOf = (alert: FiringAlert): string => alert.labels.__alert_rule_uid__ ?? alert.alertname;
 export const ruleKey = (chat: string, rule: string): string => `${chat}/${rule}`;
@@ -123,51 +123,53 @@ export function parseAlerts(value: unknown): FiringAlert[] {
   });
 }
 
+/**
+ * The saved state. A version 2 state (10-15 to 10-18) also held each rule's board step, which goes; a rule that a job held through its step
+ * carries that job as `job` (scripts/alert-bridge-unstep.ts wrote it before the release).
+ */
 export function parseState(value: unknown): BridgeState {
-  if (isRecord(value) && value.v === 2 && isRecord(value.rules)) return value as unknown as BridgeState;
-  if (!isRecord(value) || value.v !== 1 || !isRecord(value.alerts)) throw new Error("Alert bridge state file is malformed.");
-  const alerts = value.alerts as Record<string, { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt?: number;
-    escalatedAt?: number; resolvedAt?: number }>;
-  return { v: 2, rules: Object.fromEntries(Object.entries(alerts).map(([key, old]) => {
-    const { firstWokeAt, resolvedAt, ...rest } = old;
-    const instance: Instance = { startsAt: old.startsAt, labels: {}, ...(resolvedAt === undefined ? {} : { resolvedAt }) };
-    return [key, { ...rest, rule: old.alertname, firstWokeAt: firstWokeAt ?? old.wokeAt, ...(resolvedAt === undefined ? {} : { resolvedAt }), instances: { [key]: instance } }];
+  if (!isRecord(value) || (value.v !== 2 && value.v !== 3) || !isRecord(value.rules)) throw new Error("Alert bridge state file is malformed.");
+  if (value.v === 3) return value as unknown as BridgeState;
+  const rules = value.rules as Record<string, Tracked & { step?: unknown; closedAt?: unknown }>;
+  return { v: 3, rules: Object.fromEntries(Object.entries(rules).map(([key, old]) => {
+    const { step: _step, closedAt: _closed, ...rule } = old;
+    return [key, rule];
   })) };
 }
 
 const isResolved = (rule: Tracked): boolean => rule.resolvedAt !== undefined;
+const firingSets = (rule: Tracked): number => Object.values(rule.instances).filter(instance => instance.resolvedAt === undefined).length;
+
+/** The rules of `chat` that fire now: the count its duty reads. */
+export const firingRules = (state: BridgeState, chat: string): Tracked[] => Object.values(state.rules).filter(rule => rule.chat === chat && !isResolved(rule));
+
+/** Whether the rule's last fire still waits for a job: it has none, or the bridge gave it to its job before that fire. */
+export const owed = (rule: Tracked): boolean => !isResolved(rule) && (rule.job === undefined || rule.job.at < rule.wokeAt);
 
 /**
- * The state after this tick's firing list, as one change per chat whose rules moved. Each alert rule firing in an owning chat is one rule entry
- * and one step, and every label set of it (lane, env and so on) is an instance of that entry. On 10-18 one proxy rule firing in 6 lanes had
- * opened 6 steps on crawler ops' board, one per Grafana fingerprint, and the escalation counted 13 steps for 7 problems.
+ * The state after this tick's firing list, and the rules that fired: new, or back after they resolved. Each alert rule firing in an owning
+ * chat is one entry, and every label set of it (lane, env and so on) is an instance of that entry. On 10-18 one proxy rule firing in 6 lanes
+ * had opened 6 steps on crawler ops' board, one per Grafana fingerprint.
  *
- * 1. A firing whose instance key is already on a rule goes back to it, so a resolved rule whose same firing returns reopens on its old step.
- *    At 06:20:35Z on 10-15 one poll dropped 25 alerts at once and they came back with the same startsAt. Rules read from a version 1 state file
- *    learn their rule uid here.
- * 2. Any other firing joins the open rule of its chat and rule, or opens a new one, which replaces the chat's resolved entry of that rule.
+ * 1. A firing whose instance key is already on a rule goes back to it, so a resolved rule whose same firing returns fires again on its entry.
+ *    At 06:20:35Z on 10-15 one poll dropped 25 alerts at once and they came back with the same startsAt.
+ * 2. Any other firing joins the open rule of its chat and rule, or opens a new one, which replaces the chat's resolved entry of that rule and
+ *    keeps its job, so a live job gets the next fire.
  * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
- * 4. Two open entries of one chat and rule, which only version 1 state leaves, merge into the one placed first.
+ * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident.
  */
-export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; changes: ChatChange[] } {
+export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; fired: Set<string> } {
   const rules: Record<string, Tracked> = structuredClone(state.rules);
   const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
-  const fresh = new Map<string, FiringAlert>();
-  const touched = new Set<string>();
-  const merged = new Map<string, Merge[]>();
+  const fired = new Set<string>();
   const owner = new Map<string, string>();
   for (const [key, rule] of Object.entries(rules)) for (const instance of Object.keys(rule.instances)) owner.set(instance, key);
-  const add = (key: string, alert: FiringAlert) => {
-    const rule = rules[key]!;
-    for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
-    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels };
-  };
   const rest: FiringAlert[] = [];
   for (const [id, alert] of firing) {
     const key = owner.get(id);
     if (!key) { rest.push(alert); continue; }
     const rule = rules[key]!;
-    if (isResolved(rule) || rule.instances[id]!.resolvedAt !== undefined) touched.add(key);
+    if (isResolved(rule)) fired.add(key);
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
     rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels };
@@ -177,111 +179,35 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const name = ruleOf(alert);
     let key = Object.keys(rules).find(key => rules[key]!.chat === chat && rules[key]!.rule === name && !isResolved(rules[key]!));
     if (!key) {
-      for (const [old, rule] of Object.entries(rules)) if (rule.chat === chat && isResolved(rule) && (rule.rule === name || rule.rule === alert.alertname)) delete rules[old];
+      let job: RuleJob | undefined;
+      for (const [old, rule] of Object.entries(rules)) {
+        if (rule.chat !== chat || !isResolved(rule) || (rule.rule !== name && rule.rule !== alert.alertname)) continue;
+        job ??= rule.job;
+        delete rules[old];
+      }
       key = ruleKey(chat, name);
-      rules[key] = { chat, step: null, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {} };
-      fresh.set(key, alert);
+      rules[key] = { chat, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {}, ...job ? { job } : {} };
+      fired.add(key);
     }
-    if (fresh.has(key) && alert.startsAt < rules[key]!.startsAt) rules[key]!.startsAt = alert.startsAt;
-    add(key, alert);
-    touched.add(key);
+    const rule = rules[key]!;
+    for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels };
+    if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
   }
-  for (const [key, rule] of Object.entries(rules)) {
+  for (const rule of Object.values(rules)) {
     if (isResolved(rule)) continue;
-    for (const [id, instance] of Object.entries(rule.instances)) {
-      if (firing.has(id) || instance.resolvedAt !== undefined) continue;
-      rule.instances[id] = { ...instance, resolvedAt: now };
-      touched.add(key);
-    }
+    for (const [id, instance] of Object.entries(rule.instances)) if (!firing.has(id) && instance.resolvedAt === undefined) rule.instances[id] = { ...instance, resolvedAt: now };
     if (Object.values(rule.instances).every(instance => instance.resolvedAt !== undefined)) rule.resolvedAt = now;
   }
-  const open = new Map<string, string[]>();
-  for (const [key, rule] of Object.entries(rules)) if (!isResolved(rule)) open.set(`${rule.chat}\n${rule.rule}`, [...open.get(`${rule.chat}\n${rule.rule}`) ?? [], key]);
-  for (const keys of open.values()) {
-    if (keys.length < 2) continue;
-    keys.sort((a, b) => rules[a]!.firstWokeAt - rules[b]!.firstWokeAt || a.localeCompare(b));
-    const [first, ...others] = keys as [string, ...string[]];
-    const keeper = rules[first]!;
-    for (const key of others) {
-      const rule = rules[key]!;
-      Object.assign(keeper.instances, rule.instances);
-      if (rule.startsAt < keeper.startsAt) keeper.startsAt = rule.startsAt;
-      if (rule.escalatedAt !== undefined && (keeper.escalatedAt === undefined || rule.escalatedAt < keeper.escalatedAt)) keeper.escalatedAt = rule.escalatedAt;
-      if (keeper.step !== null) merged.set(rule.chat, [...merged.get(rule.chat) ?? [], { step: rule.step, into: keeper.step }]);
-      delete rules[key];
-      fresh.delete(key);
-      touched.delete(key);
-    }
-    touched.add(first);
-  }
-  return { state: { v: 2, rules }, changes: changesOf(state.rules, rules, { fresh, touched, merged }) };
-}
-
-/** One change per chat whose rules moved between `before` and `after`, each with its part of the tick's marks. */
-function changesOf(before: Record<string, Tracked>, after: Record<string, Tracked>, marks: { fresh: Map<string, FiringAlert>; touched: Set<string>;
-  merged?: Map<string, Merge[]>; found?: Set<string>; reopen?: Set<string> }): ChatChange[] {
-  const chats = new Set([...Object.values(before), ...Object.values(after)].map(rule => rule.chat));
-  return [...chats].flatMap((chat): ChatChange[] => {
-    const was = Object.fromEntries(Object.entries(before).filter(([, rule]) => rule.chat === chat));
-    const now = Object.fromEntries(Object.entries(after).filter(([, rule]) => rule.chat === chat));
-    if (JSON.stringify(was) === JSON.stringify(now) && !marks.merged?.has(chat)) return [];
-    const mine = (key: string) => key in now;
-    return [{ chat, rules: now, fresh: new Map([...marks.fresh].filter(([key]) => mine(key))), touched: new Set([...marks.touched].filter(mine)),
-      merged: marks.merged?.get(chat) ?? [], found: new Set([...marks.found ?? []].filter(mine)), reopen: new Set([...marks.reopen ?? []].filter(mine)) }];
-  });
-}
-
-/**
- * The state after checking every open rule against its step, and one change per chat that needs board ops. advance only places a step when a
- * rule first fires, so a rule whose step was never placed stayed silent: from 10-16 05:10Z (64726c5a0) a boardless owner's firing was only
- * recorded, and prod Postgres, ClickHouse and Redis backup alerts routed to metal box owner, a root session with no board, fired for over 3 days
- * with no step anywhere. A rule whose owner has no board is left to `dueTells`, which tells that session itself.
- *
- * 1. A rule whose step was never placed or is gone from the board gets a step, noted as found by reconcile.
- * 2. A rule whose step is closed records when reconcile first saw it closed, and the step reopens once it has been closed REOPEN_MS and the rule
- *    still fires.
- * 3. A placed or reopened step's 30 min escalation clock starts again from now.
- */
-export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, look: (key: string, rule: Tracked) => StepLook, now: number): { state: BridgeState; changes: ChatChange[] } {
-  const rules: Record<string, Tracked> = structuredClone(state.rules);
-  const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
-  const fresh = new Map<string, FiringAlert>();
-  const found = new Set<string>();
-  const reopen = new Set<string>();
-  const restart = (rule: Tracked): Tracked => {
-    const { escalatedAt: _escalated, closedAt: _closed, ...rest } = rule;
-    return { ...rest, wokeAt: now, firstWokeAt: now };
-  };
-  const firstFiring = (rule: Tracked): FiringAlert | undefined =>
-    Object.keys(rule.instances).map(id => firing.get(id)).filter(alert => alert !== undefined).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
-  for (const [key, rule] of Object.entries(state.rules)) {
-    if (isResolved(rule)) continue;
-    const alert = firstFiring(rule);
-    if (!alert) continue;
-    const seen = look(key, rule);
-    if (seen === "missing") {
-      rules[key] = restart(rule);
-      fresh.set(key, alert);
-      found.add(key);
-    } else if (seen === "closed") {
-      if (rule.closedAt === undefined) rules[key] = { ...rule, closedAt: now };
-      else if (now - rule.closedAt >= REOPEN_MS) {
-        rules[key] = restart(rule);
-        reopen.add(key);
-      }
-    } else if (seen === "open" && rule.closedAt !== undefined) {
-      const { closedAt: _closed, ...rest } = rule;
-      rules[key] = rest;
-    }
-  }
-  return { state: { v: 2, rules }, changes: changesOf(state.rules, rules, { fresh, touched: new Set(), found, reopen }) };
+  for (const key of fired) if (rules[key] && !isResolved(rules[key]!)) rules[key]!.wokeAt = now;
+  return { state: { v: 3, rules }, fired: new Set([...fired].filter(key => rules[key] && !isResolved(rules[key]!))) };
 }
 
 /**
  * The firing rules whose owner has no board (`boardless`) that the bridge tells that session now: once when it first sees the rule, again at
- * ESCALATE_MS, and every REOPEN_MS after while the rule still fires, the times a board step escalates and reopens. A tell that failed left
- * `toldAt` as it was, so it goes again next tick. On 10-18 ops guy moved standing infra alerts off its plan, and the metal rules that reconcile
- * had moved onto its board came back as p370 to p373.
+ * ESCALATE_MS, and every REOPEN_MS after while the rule still fires. A tell that failed left `toldAt` as it was, so it goes again next tick.
+ * On 10-18 prod Postgres, ClickHouse and Redis backup alerts routed to metal box owner, a root session with no board, had fired for over 3
+ * days with nobody told.
  */
 export function dueTells(state: BridgeState, boardless: ReadonlySet<string>, now: number): string[] {
   return Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && boardless.has(rule.chat) && (rule.toldAt === undefined ||
@@ -294,218 +220,58 @@ export const tellText = (rules: readonly Tracked[]): string =>
   `bridge tells you here: ${rules.map(rule => `${rule.rule} (${ruleIn(rule.rule, rule.alertname)}firing since ${rule.startsAt.slice(0, 16)}Z${firingSets(rule) > 1 ? `, ${firingSets(rule)} label sets` : ""})`).join("; ")}. ` +
   `Find the cause and fix it. The bridge tells you again in ${ESCALATE_MS / 60_000} min and then every ${REOPEN_MS / 3_600_000} h while ${rules.length === 1 ? "it fires" : "they fire"}.`;
 
-/** The state with `chat`'s rules replaced by `rules`, so a chat whose board write failed keeps its old entries for the next tick. */
-export function withChat(state: BridgeState, chat: string, rules: Record<string, Tracked>): BridgeState {
-  return { v: 2, rules: { ...Object.fromEntries(Object.entries(state.rules).filter(([, rule]) => rule.chat !== chat)), ...rules } };
-}
-
-/** Rules whose step is still open with no job ESCALATE_MS after the bridge placed it. One entry per rule, however many label sets fire. */
-export function dueEscalations(state: BridgeState, steps: ReadonlyMap<string, StepView>, now: number): string[] {
-  return Object.entries(state.rules).flatMap(([key, rule]) => {
-    const step = steps.get(key);
-    return !isResolved(rule) && step?.open && !step.owned && rule.escalatedAt === undefined && rule.chat !== OPS_ROUTE.session && now - rule.firstWokeAt >= ESCALATE_MS ? [key] : [];
-  });
-}
-
-const mark = (rule: Pick<Tracked, "rule" | "startsAt">): string => `Grafana alert rule ${rule.rule}, firing since ${rule.startsAt}.`;
-const MARK = /^Grafana alert (?:rule .+|[\w-]{1,64}), firing since \S+\.$/m;
+/**
+ * The rules that still fire REOPEN_MS after the bridge last gave them to a job, with a job at hand: `reopen` checks that job has ended. On
+ * 10-16 prod backup alerts fired for over 3 days while nobody worked them.
+ */
+export const dueReopens = (state: BridgeState, now: number): string[] =>
+  Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && rule.job && !owed(rule) && now - rule.job.at >= REOPEN_MS ? [key] : []);
 
 /**
- * Whether the bridge still holds a step it added: the note keeps its mark and no resolve line, the step has no job, thread or wait, and it last
- * changed within ESCALATE_MS. The bridge escalates such a step to ops guy at ESCALATE_MS, so nobody else needs to act in that window. On 10-15 the Crawler VP set a job 4.8 min (p350, p351) and 7.8 min (p360) after the bridge added
- * the step, and two check-ins in between counted those steps stuck with no owner.
+ * The rules of chats with a board whose fire no job took ESCALATE_MS after it, once per fire. ops guy's own rules never escalate, since the
+ * escalation goes to ops guy.
  */
-export function bridgeHolds(item: Pick<PlanItem, "job" | "sessionId" | "note" | "waitFor" | "waitUntil">, changedAt: number, now: number): boolean {
-  return !item.job && !item.sessionId && !item.waitFor && !item.waitUntil && MARK.test(item.note ?? "") && !item.note!.includes(RESOLVED) &&
-    now - changedAt < ESCALATE_MS;
+export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>, now: number): string[] {
+  return Object.entries(state.rules).flatMap(([key, rule]) => owed(rule) && boarded.has(rule.chat) && rule.chat !== OPS_ROUTE.session &&
+    now - rule.wokeAt >= ESCALATE_MS && !(rule.escalatedAt !== undefined && rule.escalatedAt >= rule.wokeAt) ? [key] : []);
 }
-
-const ENVS: readonly [RegExp, string][] = [[/^prod/i, "Production"], [/^stag/i, "Staging"]];
-const NAMES_ENV = /\b(prod|production|staging|stage|dev)\b/i;
-
-/**
- * The step title is the Grafana rule title (the alertname label), with the env in front when the title does not name one. The summary holds
- * metric values and stream names, such as "crawl_profile:youtube group crawl_profile:youtube holds an entry 68053.971 s old", and crawler ops
- * renamed 28 such steps by hand on 10-15, so it goes in the note (c61).
- */
-export function stepTitle(alert: FiringAlert): string {
-  const env = alert.labels.env ?? alert.labels.environment ?? alert.labels.world ?? "";
-  const prefix = ENVS.find(([pattern]) => pattern.test(env))?.[1];
-  const titled = (text: string) => prefix && !NAMES_ENV.test(text) ? `${prefix} ${text}` : text;
-  const rule = alert.labels.alertname ?? "";
-  return [titled(rule), prefix ? `A ${prefix.toLowerCase()} Grafana alert is firing` : ""].find(text => text.trim() && text.length <= BOARD_LIMITS.text && !titleDetail(text)) ??
-    "A Grafana alert is firing";
-}
-
-const SHARED = "Shared labels: ";
-const SETS = "Label sets of this rule";
-const minute = (iso: string): string => `${iso.slice(0, 16)}Z`;
-
-/** The note block that lists the rule's label sets: the labels every set shares, then one line per set with the labels that differ. */
-export function labelBlock(rule: Pick<Tracked, "instances">): string[] {
-  const sets = Object.entries(rule.instances).sort(([, a], [, b]) => a.startsAt.localeCompare(b.startsAt));
-  const names = [...new Set(sets.flatMap(([, set]) => Object.keys(set.labels)))].filter(name => name !== "alertname");
-  const shared = names.filter(name => sets.every(([, set]) => set.labels[name] !== undefined && set.labels[name] === sets[0]![1].labels[name]));
-  const firing = sets.filter(([, set]) => set.resolvedAt === undefined).length;
-  const line = ([id, set]: [string, Instance]) => {
-    const own = names.filter(name => !shared.includes(name) && set.labels[name] !== undefined).map(name => `${name}=${set.labels[name]}`);
-    const resolved = set.resolvedAt === undefined ? "" : `, resolved ${minute(new Date(set.resolvedAt).toISOString())}`;
-    return `- ${[...own, `since ${minute(set.startsAt)}${resolved}`].join(", ")} (${id.split("@")[0]})`;
-  };
-  return [`${SHARED}${shared.map(name => `${name}=${sets[0]![1].labels[name]}`).join(", ")}.`, `${SETS}, ${firing} of ${sets.length} firing:`, ...sets.map(line)];
-}
-
-const resolvedLine = (at: number): string => `${RESOLVED} ${new Date(at).toISOString()}, when the alert bridge saw every label set leave Grafana's firing list.`;
-
-/**
- * `note` with the bridge's label block rewritten in place, or added at the end when the chat removed it, and the resolve line at the end while
- * the rule is resolved. Lines the chat wrote stay.
- */
-export function ruleNote(note: string, rule: Pick<Tracked, "instances" | "resolvedAt">): string {
-  const lines = note ? note.split("\n").filter(line => !line.startsWith(RESOLVED)) : [];
-  let at = lines.findIndex(line => line.startsWith(SHARED) || line.startsWith(SETS));
-  if (at < 0) at = lines.length;
-  let end = at;
-  while (end < lines.length && (lines[end]!.startsWith(SHARED) || lines[end]!.startsWith(SETS) || lines[end]!.startsWith("- "))) end++;
-  const block = labelBlock(rule);
-  const tail = rule.resolvedAt === undefined ? [] : [resolvedLine(rule.resolvedAt)];
-  return [...lines.slice(0, at), ...block, ...lines.slice(end), ...tail].join("\n");
-}
-
-/** The note of a new step for `rule`, whose first firing is `alert`. */
-export function stepNote(alert: FiringAlert, rule: Pick<Tracked, "rule" | "startsAt" | "instances" | "resolvedAt"> =
-  { rule: ruleOf(alert), startsAt: alert.startsAt, instances: { [alertKey(alert)]: { startsAt: alert.startsAt, labels: alert.labels } } }): string {
-  const head = [mark(rule), `Alert: ${alert.alertname}.`, alert.summary ? `Summary: ${alert.summary}` : "", alert.values ? `Values: ${alert.values}.` : "",
-    alert.url ? `Grafana: ${alert.url}` : ""].filter(Boolean).join("\n");
-  return ruleNote(head, rule);
-}
-
-const foundLine = (rule: Pick<Tracked, "startsAt">, stamp: string): string => `Firing since ${rule.startsAt}, found by reconcile at ${stamp} with no open step on this board.`;
-const withLine = (note: string, line: string): string => !line || note.includes(line) ? note : `${note}\n${line}`;
 
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
+const minute = (at: string | number): string => `${new Date(at).toISOString().slice(0, 16)}Z`;
 
-function markedStep(plan: readonly PlanItem[], rule: Pick<Tracked, "rule" | "startsAt">): PlanItem | undefined {
-  let hit: PlanItem | undefined;
-  walkItems(plan, item => { if (!hit && item.note?.split("\n").includes(mark(rule))) hit = item; });
-  return hit;
+/** The rule as its job reads it, from its first firing label set in this tick's list. */
+export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>): AlertLine {
+  const alert = Object.keys(rule.instances).map(id => firing.get(id)).filter(alert => alert !== undefined).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
+  return { rule: rule.rule, alertname: rule.alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), summary: alert?.summary ?? "", url: alert?.url ?? "",
+    ...alert?.values ? { values: alert.values } : {} };
 }
 
-function alertGoal(plan: readonly PlanItem[], ops: BoardOp[], ids: (kind: "p") => string): string {
-  const open = openGoals(plan);
-  const room = open.length < BOARD_LIMITS.openGoals;
-  const named = plan.find(goal => goal.text === ALERT_GOAL && (open.includes(goal) || (goal.status === "done" && room)));
-  const chosen = named ?? open.find(goal => /^[\w -]{0,40}\bops:|\bprod alerts\b/i.test(goal.text));
-  if (chosen) return chosen.id;
-  if (!room) return open.at(-1)!.id;
-  const id = ids("p");
-  ops.push({ op: "plan_add", text: ALERT_GOAL });
-  return id;
+/** One rule in a line of text: its uid, its title when that differs, and since when it fires. */
+export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets">): string =>
+  `${line.rule} (${ruleIn(line.rule, line.alertname)}firing since ${minute(line.startsAt)}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
+
+/** The message that gives a working triage job the next fire of its rule. */
+export const firedAgainText = (line: AlertLine): string =>
+  `[alert] Your rule ${ruleText(line)} fired again at ${minute(line.firedAt)}.${line.summary ? ` Summary: ${line.summary}` : ""} It is the same rule you work on, so ` +
+  "take it into the same cause, and say in your report whether the fix you have covers it.";
+
+export function escalationText(lines: readonly (AlertLine & { chat: string })[]): string {
+  return `[alert-escalation] ${lines.length === 1 ? "A firing rule has" : `${lines.length} firing rules have`} no triage job ${ESCALATE_MS / 60_000} min after ` +
+    `${lines.length === 1 ? "it" : "they"} fired, because the alert bridge could not start one: ${lines.map(line => `${ruleText(line)} on ${line.chat}`).join("; ")}. ` +
+    "Find why the job start fails, and start a job for each or get that chat to.";
 }
-
-/**
- * The board ops for one chat's change: a step for each new rule (or the step a crash left with its mark), the label block and resolve line
- * rewritten on each rule whose sets moved, and a pointer on each step merged into another. Returns each rule's step id.
- */
-export function changeOps(board: ChatBoard, change: ChatChange, now = Date.now()): { ops: BoardOp[]; steps: Map<string, string> } {
-  const ids = nextIds(board);
-  const ops: BoardOp[] = [];
-  const steps = new Map<string, string>();
-  const notes = new Map<string, string>();
-  const noteOf = (id: string) => notes.get(id) ?? findItem(board.plan, id)?.item.note ?? "";
-  let goal: string | undefined;
-  const stamp = new Date(now).toISOString();
-  for (const [key, alert] of change.fresh) {
-    const rule = change.rules[key]!;
-    const line = change.found?.has(key) ? foundLine(rule, stamp) : "";
-    const marked = markedStep(board.plan, rule);
-    if (marked) {
-      steps.set(key, marked.id);
-      notes.set(marked.id, withLine(ruleNote(noteOf(marked.id), rule), line));
-      if (line && !OPEN.has(marked.status)) ops.push({ op: "plan_update", id: marked.id, status: "todo" });
-      continue;
-    }
-    goal ??= alertGoal(board.plan, ops, ids);
-    const id = ids("p");
-    ops.push({ op: "plan_add", parent: goal, text: stepTitle(alert) }, { op: "plan_update", id, note: withLine(stepNote(alert, rule), line) });
-    steps.set(key, id);
-  }
-  for (const key of change.reopen ?? []) {
-    const rule = change.rules[key]!;
-    const step = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
-    if (!step) continue;
-    ops.push({ op: "plan_update", id: step.id, status: "todo" });
-    notes.set(step.id, withLine(noteOf(step.id), `Reopened by reconcile at ${stamp}: this step was closed for over ${REOPEN_MS / 3_600_000} h and the rule still fires, firing since ${rule.startsAt}.`));
-  }
-  for (const key of change.touched) {
-    const step = change.rules[key]!.step;
-    if (change.fresh.has(key) || step === null || !findItem(board.plan, step)) continue;
-    notes.set(step, ruleNote(noteOf(step), change.rules[key]!));
-  }
-  for (const { step, into } of change.merged) {
-    if (step === null || !findItem(board.plan, step)) continue;
-    const line = `The alert bridge moved this rule's label sets to ${into}, which now lists every set.`;
-    const note = noteOf(step);
-    if (!note.includes(line)) notes.set(step, note ? `${note}\n${line}` : line);
-  }
-  for (const [id, note] of notes) if (note !== (findItem(board.plan, id)?.item.note ?? "")) ops.push({ op: "plan_update", id, note });
-  return { ops, steps };
-}
-
-export function escalationText(steps: readonly (StepLine & { chat: string })[]): string {
-  const sets = (step: StepLine) => step.sets && step.sets > 1 ? `, ${step.sets} label sets` : "";
-  const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z${sets(step)})`;
-  return `[alert-escalation] ${steps.length === 1 ? "An alert step is" : `${steps.length} alert steps are`} still open with no job ${ESCALATE_MS / 60_000} min after the alert bridge ` +
-    `put ${steps.length === 1 ? "it" : "them"} on the owning chat's board: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
-}
-
-/** One alert step as a job reads it: its id, title, rule, start, and whether it still fires. */
-export const alertStepLine = (line: StepLine): string =>
-  `${line.step} "${line.title}" (${ruleIn(line.title, line.alertname)}${line.resolved ? "fired from" : "firing since"} ${line.startsAt.slice(0, 16)}Z${line.resolved ? ", now resolved" : ""})`;
-
-/**
- * The open steps of the bridge's rules on `board` that nobody owns: no job, thread or wait. The bridge gives them to a job at once
- * (`AlertBridge.own`). At 05:50:35Z on 10-18 it put 20 steps on ops guy's board when the staging Prometheus on us-metal01 was recreated and
- * every rule on that datasource failed; they resolved by 05:54Z and sat with no owner until the 06:49Z check-in started a job, so d7 read 27
- * stuck steps. Ops guy's own steps never escalate (`dueEscalations`), so only a check-in could reach them.
- */
-export function unownedSteps(board: ChatBoard, rules: readonly Tracked[]): StepLine[] {
-  const lines = new Map<string, StepLine>();
-  for (const rule of rules) {
-    const item = rule.step === null ? undefined : findItem(board.plan, rule.step)?.item;
-    if (!item || lines.has(item.id) || !OPEN.has(item.status) || item.job || item.sessionId || item.waitFor || item.waitUntil) continue;
-    lines.set(item.id, { step: item.id, title: item.text, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule), resolved: isResolved(rule) });
-  }
-  return [...lines.values()];
-}
-
-/** The board ops that give `job` each of `steps` still open with no owner. */
-export function ownOps(board: ChatBoard, steps: readonly string[], job: AlertJob): BoardOp[] {
-  return steps.flatMap((id): BoardOp[] => {
-    const item = findItem(board.plan, id)?.item;
-    return item && OPEN.has(item.status) && !item.job && !item.sessionId ? [{ op: "plan_update", id, job: job.name, sessionId: job.id }] : [];
-  });
-}
-
-/** The message that gives a working alert job more steps of its chat. */
-export const moreStepsText = (steps: readonly StepLine[]): string =>
-  `[alert] The alert bridge put ${steps.length === 1 ? "one more alert step" : `${steps.length} more alert steps`} on this chat's board and gave ` +
-  `${steps.length === 1 ? "it" : "them"} to you: ${steps.map(alertStepLine).join("; ")}. Find the cause and close ${steps.length === 1 ? "it" : "them"} the same way.`;
 
 const chatName = (session: string): string => ALERT_ROUTES.find(route => route.session === session)?.chat ?? session;
-
-const OPEN = new Set(["todo", "doing", "blocked"]);
 
 export interface AlertBridgeDeps {
   file: string;
   alerts: () => Promise<FiringAlert[] | null>;
-  boards: Pick<BoardStore, "read" | "apply">;
   /** Hands the session the text on disk (src/agent-outbox.ts); `root` is started when the daemon does not find the session. */
   deliver: (session: string, text: string, root?: string) => Promise<void>;
   owners?: () => Promise<OwnerMap | null>;
   hasBoard?: (session: string) => Promise<boolean>;
-  /** Starts a job of `chat` for `steps`, its alert steps with no owner. Absent, those steps wait for the chat's check-in. */
-  startJob?: (chat: string, steps: readonly StepLine[]) => Promise<AlertJob>;
+  /** Starts a triage job of `chat` for one firing rule; `previous` is the rule's last job, which has ended. Absent, fires escalate to ops guy. */
+  startJob?: (chat: string, line: AlertLine, previous?: RuleJob) => Promise<AlertJob>;
   /** Whether a job the bridge started still works its turn. */
   jobWorking?: (job: AlertJob) => Promise<boolean>;
   now?: () => number;
@@ -513,71 +279,77 @@ export interface AlertBridgeDeps {
 }
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
-const firingSets = (rule: Tracked): number => Object.values(rule.instances).filter(instance => instance.resolvedAt === undefined).length;
 
 export class AlertBridge {
   private readonly now: () => number;
-  /** The job the bridge last started for each chat (`jobFor`). */
-  private readonly jobs = new Map<string, AlertJob>();
   constructor(private readonly deps: AlertBridgeDeps) { this.now = deps.now ?? Date.now; }
 
   async tick(): Promise<void> {
     const alerts = await this.deps.alerts();
     if (!alerts) return;
-    const map = await this.ownerMap();
-    const route = routerFor(map);
+    const route = routerFor(await this.ownerMap());
     const now = this.now();
     const before = await this.read();
-    let state = await this.apply(before, advance(alerts, before, route, now).changes, now);
-    const checked = reconcile(alerts, state, await this.looks(state), now);
-    const found = checked.changes.flatMap(change => [...change.found ?? []].map(key => `${key} (${change.rules[key]!.alertname}, firing since ${change.rules[key]!.startsAt})`));
-    const reopened = checked.changes.flatMap(change => [...change.reopen ?? []]);
-    if (found.length || reopened.length) this.deps.log(`alerts: reconcile found ${found.length} firing rules with no open step: ${found.join("; ") || "none"}; reopened ${reopened.join(", ") || "none"}`);
-    state = await this.apply(state, checked.changes, now);
-    if (this.deps.startJob) await this.own(state);
-    state = await this.tell(state, now);
-    const steps = await this.steps(state);
-    const escalate = dueEscalations(state, steps, now);
-    if (!escalate.length) return;
-    try {
-      const lines = escalate.map(key => {
-        const rule = state.rules[key]!;
-        return { chat: chatName(rule.chat), step: rule.step ?? "", title: steps.get(key)?.text ?? rule.alertname, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule) };
-      });
-      await this.deps.deliver(OPS_ROUTE.session, escalationText(lines), OPS_ROUTE.session);
-      const rules = { ...state.rules };
-      for (const key of escalate) rules[key] = { ...rules[key]!, escalatedAt: now };
-      state = { ...state, rules };
-      await this.write(state);
-      this.deps.log(`alerts: escalated ${escalate.length} unowned rule steps to ops guy`);
-    } catch (error) { this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`); }
+    const advanced = advance(alerts, before, route, now);
+    let state = advanced.state;
+    if (JSON.stringify(state) !== JSON.stringify(before)) await this.write(state);
+    if (advanced.fired.size) this.deps.log(`alerts: fired ${[...advanced.fired].map(key => state.rules[key]!.rule).join(", ")}`);
+    const boarded = new Set<string>();
+    const boardless = new Set<string>();
+    for (const chat of new Set(Object.values(state.rules).filter(rule => !isResolved(rule)).map(rule => rule.chat))) {
+      (await this.deps.hasBoard?.(chat) ?? true ? boarded : boardless).add(chat);
+    }
+    state = await this.reopen(state, boarded, now);
+    if (this.deps.startJob) state = await this.dispatch(state, boarded, new Map(alerts.map(alert => [alertKey(alert), alert])), now);
+    state = await this.tell(state, boardless, now);
+    await this.escalate(state, boarded, alerts, now);
+  }
+
+  /** Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. */
+  private async reopen(state: BridgeState, boarded: ReadonlySet<string>, now: number): Promise<BridgeState> {
+    const due = dueReopens(state, now).filter(key => boarded.has(state.rules[key]!.chat));
+    if (!due.length) return state;
+    const rules = { ...state.rules };
+    for (const key of due) {
+      if (await (this.deps.jobWorking?.(rules[key]!.job!) ?? Promise.resolve(false)).catch(() => true)) continue;
+      rules[key] = { ...rules[key]!, wokeAt: now };
+      this.deps.log(`alerts: ${rules[key]!.rule} still fires ${REOPEN_MS / 3_600_000} h after job ${rules[key]!.job!.name} took it, and that job ended`);
+    }
+    state = { ...state, rules };
+    await this.write(state);
+    return state;
   }
 
   /**
-   * Gives each chat's alert steps that have no owner (`unownedSteps`) to a job: the job the bridge last started for that chat while it still
-   * works, by message, or else a new one. A chat whose start fails keeps its steps unowned and is tried again next tick.
+   * Gives each owed fire (`owed`) to its rule's triage job: by message while that job still works, or else to a new job. A start or message
+   * that fails leaves the fire owed, so it goes again next tick and escalates at ESCALATE_MS.
    */
-  private async own(state: BridgeState): Promise<void> {
-    const byChat = new Map<string, Tracked[]>();
-    for (const rule of Object.values(state.rules)) if (rule.step !== null) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], rule]);
-    for (const [chat, rules] of byChat) {
+  private async dispatch(state: BridgeState, boarded: ReadonlySet<string>, firing: ReadonlyMap<string, FiringAlert>, now: number): Promise<BridgeState> {
+    const due = Object.keys(state.rules).filter(key => owed(state.rules[key]!) && boarded.has(state.rules[key]!.chat));
+    if (!due.length) return state;
+    const rules = { ...state.rules };
+    for (const key of due) {
+      const rule = rules[key]!;
+      const line = alertLine(rule, firing);
       try {
-        const board = await this.deps.boards.read(chat);
-        const lines = board ? unownedSteps(board, rules) : [];
-        if (!lines.length) continue;
-        const job = await this.jobFor(chat, lines);
-        await this.deps.boards.apply(chat, board => ownOps(board, lines.map(line => line.step), job), "agent");
-        this.deps.log(`alerts: ${chat.slice(0, 8)}: gave ${lines.map(line => line.step).join(", ")} to job ${job.name} (${job.id.slice(0, 8)})`);
-      } catch (error) { this.deps.log(`alerts: owner for ${chat.slice(0, 8)}: ${message(error)}; tried again next tick`); }
+        if (rule.job && await this.deps.jobWorking?.(rule.job)) {
+          await this.deps.deliver(rule.job.id, firedAgainText(line));
+          rules[key] = { ...rule, job: { ...rule.job, at: now } };
+          this.deps.log(`alerts: ${rule.chat.slice(0, 8)}: sent the fire of ${rule.rule} to job ${rule.job.name} (${rule.job.id.slice(0, 8)})`);
+        } else {
+          const job = await this.deps.startJob!(rule.chat, line, rule.job);
+          rules[key] = { ...rule, job: { id: job.id, name: job.name, at: now } };
+          this.deps.log(`alerts: ${rule.chat.slice(0, 8)}: started job ${job.name} (${job.id.slice(0, 8)}) for ${rule.rule}`);
+        }
+      } catch (error) { this.deps.log(`alerts: job for ${rule.rule} on ${rule.chat.slice(0, 8)}: ${message(error)}; tried again next tick`); }
     }
+    state = { ...state, rules };
+    await this.write(state);
+    return state;
   }
 
   /** Tells each boardless owner its rules that `dueTells` names, and records when, so a tell that fails goes again next tick. */
-  private async tell(state: BridgeState, now: number): Promise<BridgeState> {
-    const boardless = new Set<string>();
-    for (const chat of new Set(Object.values(state.rules).filter(rule => !isResolved(rule)).map(rule => rule.chat))) {
-      if (!(await this.deps.hasBoard?.(chat) ?? true)) boardless.add(chat);
-    }
+  private async tell(state: BridgeState, boardless: ReadonlySet<string>, now: number): Promise<BridgeState> {
     const due = dueTells(state, boardless, now);
     if (!due.length) return state;
     const rules = { ...state.rules };
@@ -598,66 +370,17 @@ export class AlertBridge {
     return state;
   }
 
-  private async jobFor(chat: string, lines: readonly StepLine[]): Promise<AlertJob> {
-    const last = this.jobs.get(chat);
-    if (last && await this.deps.jobWorking?.(last)) { await this.deps.deliver(last.id, moreStepsText(lines)); return last; }
-    const job = await this.deps.startJob!(chat, lines);
-    this.jobs.set(chat, job);
-    return job;
-  }
-
-  /** Places each chat's change and writes the state after each one, so a chat whose board write fails keeps its old entries for the next tick. */
-  private async apply(state: BridgeState, changes: readonly ChatChange[], now: number): Promise<BridgeState> {
-    for (const change of changes) {
-      try {
-        state = withChat(state, change.chat, await this.place(change, now));
-        await this.write(state);
-      } catch (error) {
-        state = await this.read().catch(() => state);
-        this.deps.log(`alerts: steps for ${change.chat.slice(0, 8)}: ${message(error)}; tried again next tick`);
-      }
-    }
-    return state;
-  }
-
-  /** What reconcile sees of each open rule's step on its chat's board. */
-  private async looks(state: BridgeState): Promise<(key: string, rule: Tracked) => StepLook> {
-    const boarded = new Map<string, boolean>();
-    const boards = new Map<string, ChatBoard | null>();
-    for (const rule of Object.values(state.rules)) {
-      if (isResolved(rule) || boarded.has(rule.chat)) continue;
-      boarded.set(rule.chat, await this.deps.hasBoard?.(rule.chat) ?? true);
-      if (boarded.get(rule.chat)) boards.set(rule.chat, await this.deps.boards.read(rule.chat));
-    }
-    return (_key, rule) => {
-      if (!boarded.get(rule.chat)) return "no board";
-      const item = rule.step === null ? undefined : findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
-      return !item ? "missing" : OPEN.has(item.status) ? "open" : "closed";
-    };
-  }
-
-  /** Writes one chat's change on its board and returns the chat's rules with their step ids. A chat with no board gets nothing here; `tell` tells it. */
-  private async place(change: ChatChange, now: number): Promise<Record<string, Tracked>> {
-    const rules = change.rules;
-    if (!(await this.deps.hasBoard?.(change.chat) ?? true)) {
-      return rules;
-    }
-    if (!change.fresh.size && !change.touched.size && !change.merged.length && !change.reopen?.size) return rules;
-    let steps = new Map<string, string>();
-    let count = 0;
-    await this.deps.boards.apply(change.chat, board => {
-      const plan = changeOps(board, change, now);
-      steps = plan.steps;
-      count = plan.ops.length;
-      return plan.ops;
-    }, "agent");
-    for (const [key, step] of steps) rules[key] = { ...rules[key]!, step };
-    if (count) {
-      const sets = (rule: Tracked) => `${rule.step ?? "no step"} (${rule.rule}, ${firingSets(rule)} of ${Object.keys(rule.instances).length} sets firing${rule.resolvedAt === undefined ? "" : ", resolved"})`;
-      const moved = [...change.touched].map(key => sets(rules[key]!));
-      this.deps.log(`alerts: ${change.chat.slice(0, 8)}: ${steps.size} new rule steps, ${change.merged.length} merged; ${moved.join("; ")}`);
-    }
-    return rules;
+  private async escalate(state: BridgeState, boarded: ReadonlySet<string>, alerts: readonly FiringAlert[], now: number): Promise<void> {
+    const due = dueEscalations(state, boarded, now);
+    if (!due.length) return;
+    const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
+    try {
+      await this.deps.deliver(OPS_ROUTE.session, escalationText(due.map(key => ({ ...alertLine(state.rules[key]!, firing), chat: chatName(state.rules[key]!.chat) }))), OPS_ROUTE.session);
+      const rules = { ...state.rules };
+      for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };
+      await this.write({ ...state, rules });
+      this.deps.log(`alerts: escalated ${due.length} rules with no triage job to ops guy`);
+    } catch (error) { this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`); }
   }
 
   private async ownerMap(): Promise<OwnerMap | null> {
@@ -666,18 +389,6 @@ export class AlertBridge {
       this.deps.log(`alerts: owners.json: ${message(error)}; routed by keywords`);
       return null;
     }
-  }
-
-  private async steps(state: BridgeState): Promise<Map<string, StepView>> {
-    const boards = new Map<string, ChatBoard | null>();
-    const views = new Map<string, StepView>();
-    for (const [key, rule] of Object.entries(state.rules)) {
-      if (rule.step === null || rule.resolvedAt !== undefined) continue;
-      if (!boards.has(rule.chat)) boards.set(rule.chat, await this.deps.boards.read(rule.chat));
-      const item = findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
-      if (item) views.set(key, { text: item.text, open: OPEN.has(item.status), owned: Boolean(item.job || item.sessionId) });
-    }
-    return views;
   }
 
   private async read(): Promise<BridgeState> {
@@ -694,6 +405,12 @@ export class AlertBridge {
     await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
     await rename(temporary, this.deps.file);
   }
+}
+
+/** The firing rules of `chat` in the state file, for a duty's precheck; a missing file means none fire. */
+export async function readFiringRules(file: string, chat: string): Promise<Tracked[]> {
+  const text = await readFile(file, "utf8").catch((error: unknown) => { if (missing(error)) return null; throw error; });
+  return text === null ? [] : firingRules(parseState(JSON.parse(text)), chat);
 }
 
 export class GrafanaError extends Error {

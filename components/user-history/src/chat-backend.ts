@@ -301,15 +301,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => pollHealth.poll(() => withHookAlert(readGrafanaAlerts(grafanaConfig), hookWatch)),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
-    startJob: async (chatId, steps) => {
+    startJob: async (chatId, line, previous) => {
       const chat = await dutyJobs.chat(chatId);
       if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
       const at = Date.now();
-      const name = dutyJobName("alert", chat.name, at);
-      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, steps), false, at);
+      const name = dutyJobName(`alert ${line.rule.slice(0, 40)}`, chat.name, at);
+      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, line, previous), false, at);
     },
     jobWorking: job => dutyJobs.working(job),
-    boards, log: dutyLog, ...agentMessage });
+    log: dutyLog, ...agentMessage });
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
