@@ -31,7 +31,7 @@ import { wikiOrigin } from "../../src/chat-wiki.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
-import { parseBoard } from "../../src/shared/chat-board.ts";
+import { emptyBoard, parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { checkinJobSteer } from "./checkin-job-steer.ts";
@@ -49,6 +49,7 @@ import { kernelRevive } from "./kernel-revive.ts";
 import { killWorker, lostBrief } from "./lost-brief.ts";
 import { ordinaryHour } from "./ordinary-hour.ts";
 import { ownerAsks } from "./owner-asks.ts";
+import { planAndDuties } from "./plan-and-duties.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 import { softCaps } from "./soft-caps.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
@@ -58,7 +59,7 @@ import { wakeLive } from "./wake-live.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -122,6 +123,9 @@ async function seedBoard(chat: string, board: ChatBoard): Promise<void> {
   if (written.rev !== board.rev || written.plan.length !== board.plan.length) throw new Error(`the seeded board reads rev ${written.rev} with ${written.plan.length} goals`);
 }
 
+/** The board a scenario starts from: the `--board` copy, or an empty board for a scenario that writes its own. */
+const copyOf = (path: string): ChatBoard => path ? parseBoard(readJson(path)) : emptyBoard(new Date().toISOString());
+
 const liveRelease = (): string => { try { return readlinkSync(join(RELEASES, "current")); } catch { return "unknown"; } };
 
 async function setup(flags: Record<string, string>): Promise<void> {
@@ -169,10 +173,10 @@ async function setup(flags: Record<string, string>): Promise<void> {
       fixtureBriefs.push(brief);
       log(run, `created fixture ${id} "${fixture.name}", filed under the chat in chat-jobs.json`);
     }
-    const seeded = scenario.board(parseBoard(readJson(need(flags, "board"))), { fixtures, sandbox });
+    const seeded = scenario.board(copyOf(flags.board ?? ""), { fixtures, sandbox });
     changes = seeded.changes;
     await seedBoard(chat, seeded.board);
-    log(run, `seeded board rev ${seeded.board.rev} from ${flags.board}`);
+    log(run, `seeded board rev ${seeded.board.rev} from ${flags.board ?? "the scenario"}`);
     state.seeds.push(...fixtureBriefs);
   }
   writeJson(join(run, "run.json"), state);
@@ -191,7 +195,7 @@ async function reseed(flags: Record<string, string>): Promise<void> {
   const srv = await server();
   await setCheckIn(srv, state.chat.id, { pause: "forever" });
   if (!scenario.board) throw new Error(`${state.scenario} seeds no board`);
-  const { board } = scenario.board(parseBoard(readJson(state.board)), { fixtures: state.fixtures, sandbox: state.sandbox });
+  const { board } = scenario.board(copyOf(state.board), { fixtures: state.fixtures, sandbox: state.sandbox });
   await seedBoard(state.chat.id, board);
   log(run, `seeded board rev ${board.rev} again from ${state.board}`);
   await setCheckIn(srv, state.chat.id, { everyMs: state.everyMs, pause: null });
