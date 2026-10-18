@@ -42,7 +42,7 @@ test("the Linux precheck reads dev_tree_mb with no source error", async () => {
   };
   const { metrics, flagged } = await measureSandbox(deps);
   assert.equal(metrics.dev_tree_mb, 904);
-  assert.equal(metrics.source_errors, 0, JSON.stringify(flagged.filter(slice => slice.kind === "source")));
+  assert.equal(metrics.source_errors, 0, JSON.stringify(flagged?.filter(slice => slice.kind === "source")));
 });
 
 test("the uptime load line reads /proc on Linux and sysctl on a Mac", async () => {
