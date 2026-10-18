@@ -36,7 +36,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 15
+VERSION = 16
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -188,8 +188,27 @@ def own_root():
     return name if UUID.match(name) else None
 
 
+RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet")
+# A chat service restart leaves the cross-host routes down or without the other boxes' roots for about 23 s (10-18: stop 05:14:32Z, start
+# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s.
+RESTART_WAIT = 60
+RESTART_STEP = 5
+
+
 async def cross_host(op, body):
-    """The chat service's answer to one cross-host op, through cross-host-message.ts; raises with the service's error."""
+    """The chat service's answer to one cross-host op, through cross-host-message.ts; raises with the service's error, after retrying through
+    a restart of the chat service (RESTARTING) for up to RESTART_WAIT s."""
+    deadline = time.time() + RESTART_WAIT
+    while True:
+        try:
+            return await cross_host_once(op, body)
+        except RuntimeError as error:
+            if not RESTARTING.search(str(error)) or time.time() + RESTART_STEP > deadline:
+                raise
+            await asyncio.sleep(RESTART_STEP)
+
+
+async def cross_host_once(op, body):
     # tsx, since chat-host.ts imports hosts.ts, whose parameter properties node's own type stripping refuses.
     proc = await asyncio.create_subprocess_exec("node", "--import", "tsx", CROSS_HOST, op, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE, cwd=os.path.dirname(os.path.dirname(CROSS_HOST)))

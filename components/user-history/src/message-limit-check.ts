@@ -14,14 +14,21 @@ const FILE = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "messag
 /** The file's VERSION: a kernel that installed an older one runs the new file at its next cell. */
 const VERSION = Number(/^VERSION = (\d+)$/m.exec(readFileSync(FILE, "utf8"))?.[1] ?? 0);
 
+// The version is read from the file at each cell, so a session that loaded this prelude picks up a newer file without a reload: until 10-18
+// the prelude held the VERSION of its load, and Mac roots loaded before 3a7e058 (VERSION 15) never got its cross-host sends.
 const preludeSource = (dataDir: string | null): string => `
 import sys
 sys.user_history_data_dir = ${dataDir === null ? "None" : JSON.stringify(dataDir)}
-if getattr(sys, "user_history_message_check", None) != ${VERSION}:
+try:
+    import re as _re
+    _v = int(_re.search(r"^VERSION = (\\d+)$", open(${JSON.stringify(FILE)}).read(), _re.M).group(1))
+except Exception:
+    _v = ${VERSION}
+if getattr(sys, "user_history_message_check", None) != _v:
     try:
         exec(compile(open(${JSON.stringify(FILE)}).read(), ${JSON.stringify(FILE)}, "exec"), {"__name__": "user_history_message_check", "__file__": ${JSON.stringify(FILE)}, "DATA_DIR": ${dataDir === null ? "None" : JSON.stringify(dataDir)}})
     except Exception as error:
-        sys.user_history_message_check = ${VERSION}
+        sys.user_history_message_check = _v
         print(f"user-history: the agent message check did not load: {error}", file=sys.stderr)
 `;
 

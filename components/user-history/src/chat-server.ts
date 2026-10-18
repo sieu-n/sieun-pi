@@ -500,6 +500,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, board); return;
         }
         if (route === "api/agent/siblings") {
+          if (!backend.catalog.hostsListed()) throw new RequestError(503, "Another box has not listed its sessions yet; try again shortly.");
           const roots = await otherBoxRoots(rootDirectory(backend), text(url.searchParams.get("session"), "session", 128)).catch(error => { throw new RequestError(404, (error as Error).message); });
           json(res, 200, { agents: roots.map(siblingRow) }); return;
         }
@@ -634,6 +635,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       const body = record(await jsonBody(req));
       // agent_message.send from a root to a root on another box, which the sender's daemon does not run (src/cross-host-message.ts).
       if (route === "api/agent/message") {
+        // Right after a restart the other boxes' roots are not listed yet (10-18 05:14:37Z start, Mac listed 05:14:55Z), and a send then read
+        // 'No sibling matches ... on any box either' for Fable and the release owner; 503 tells the sender's kernel to try again.
+        if (!backend.catalog.hostsListed()) throw new RequestError(503, "Another box has not listed its sessions yet; try again shortly.");
         const receipt = await sendCrossHost(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256), text(body.message, "message"))
           .catch(error => { throw new RequestError(409, (error as Error).message); });
         json(res, 200, receipt); return;
