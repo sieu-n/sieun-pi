@@ -10,8 +10,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
 import { KeepRunning, loginItemCli } from "./chat-autostart.ts";
 import { LoginWindow } from "./chat-login-window.ts";
+import { remoteChatService } from "./chat-host.ts";
 import { openChat } from "./chat-open.ts";
-import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
+import { RemoteAccess, tailnetOwner, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
@@ -405,7 +406,7 @@ async function serve(options: Options): Promise<void> {
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
   const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
-    identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close }).catch(error => {
+    identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close, tailnetOwner: () => tailnetOwner() }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;
     });
@@ -452,11 +453,12 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (options.adopt && command !== "start" && command !== "serve") throw new Error("Use --no-adopt or --adopt-live with chat start or serve.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
   if (command === "open") {
-    const record = await ensureChatService(options);
-    const opened = await openChat(record.url);
+    // When hosts.json puts the chat role on another box, the app is that box's chat; nothing starts here.
+    const url = (await remoteChatService())?.base ?? (await ensureChatService(options)).url;
+    const opened = await openChat(url);
     process.stdout.write(opened?.opened === "app" ? `Opened the installed app ${opened.target}.\n`
-      : opened ? `Opened ${record.url} in the default browser. Install it as an app from the browser menu (Install page as app, or Open in app) for a Dock icon.\n`
-      : record.url + "\n");
+      : opened ? `Opened ${url} in the default browser. Install it as an app from the browser menu (Install page as app, or Open in app) for a Dock icon.\n`
+      : url + "\n");
     return;
   }
   if (command === "serve") { await serve(options); process.exit(process.exitCode ?? 0); }

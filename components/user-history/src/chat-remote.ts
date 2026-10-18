@@ -23,6 +23,21 @@ export const runCommand: Runner = (file, args, timeoutMs) => new Promise(resolve
 
 const TAILSCALE_PATHS = ["/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/bin/tailscale"];
 
+/**
+ * The login of the tailnet user who owns this machine, from `tailscale status --json`; null without Tailscale or on a tagged machine.
+ * tailscale serve puts the visitor's login in Tailscale-User-Login and drops any value the client sent, so a match is the owner's own device.
+ */
+export async function tailnetOwner(run: Runner = runCommand): Promise<string | null> {
+  const cli = await findTailscale();
+  if (!cli) return null;
+  const result = await run(cli, ["status", "--json"], 10_000);
+  if (result.code !== 0) return null;
+  try {
+    const status = JSON.parse(result.stdout) as { Self?: { UserID?: number }; User?: Record<string, { LoginName?: string }> };
+    return status.User?.[String(status.Self?.UserID)]?.LoginName ?? null;
+  } catch { return null; }
+}
+
 /** launchd starts jobs with a minimal PATH, so the CLI is looked up at its install locations. */
 export async function findTailscale(): Promise<string | null> {
   const override = process.env.SIEUN_PI_TAILSCALE;

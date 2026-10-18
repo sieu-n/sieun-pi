@@ -345,7 +345,7 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage, tailnetOwner = async () => null }: {
   backend: ChatBackend; bundle: ClientBundle | Promise<ClientBundle>; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
@@ -357,8 +357,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
   /** How `api/wiki-page` reads a page; a probe points it at its own wiki and content folder. */
   wikiPage?: (path: string) => Promise<WikiPageView>;
+  /** The tailnet login whose devices may open the chat from the bare tailnet URL (`tailnetOwner` in chat-remote.ts); null turns that off. */
+  tailnetOwner?: () => Promise<string | null>;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
+  let owner: Promise<string | null> | undefined;
+  const ownerLogin = () => owner ??= tailnetOwner().catch(() => null);
   /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
   const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
@@ -453,6 +457,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       // navigations the person started, so a link or script on another site still gets 404 and never learns the path.
       if (origin === `http://${host}` && url.pathname === "/" && req.method === "GET" && req.headers["sec-fetch-site"] === "none" &&
         req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document") {
+        res.writeHead(302, { Location: base }); res.end(); return;
+      }
+      // https://<machine>.<tailnet>.ts.net/ opens the chat on the owner's own tailnet devices, also after the http://<machine>/ short-name
+      // redirect, which arrives cross-site. tailscale serve sets Tailscale-User-Login and drops a client's own, and funnel visitors get none.
+      const login = req.headers["tailscale-user-login"];
+      if (origin !== `http://${host}` && url.pathname === "/" && req.method === "GET" && typeof login === "string" &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && login === await ownerLogin()) {
         res.writeHead(302, { Location: base }); res.end(); return;
       }
       if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
