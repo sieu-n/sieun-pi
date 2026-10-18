@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { UsageCall, UsageIngest } from "../shared/usage.ts";
 import { databaseVersion, readDatabase } from "./databases.ts";
 import type { ParserState } from "./parsers.ts";
@@ -38,6 +38,8 @@ export class Ingest {
   private readonly checkpoints = new Map<string, FileRow>();
   private readonly dirty = new Set<string>();
   private readonly watchers: FSWatcher[] = [];
+  /** The Linux folder watches by path (`watchFolder`). */
+  private readonly folders = new Map<string, FSWatcher>();
   private calls = new Map<bigint, StoredCall>();
   private files = new Map<string, FileRow>();
   private lastFlush = Date.now();
@@ -78,6 +80,8 @@ export class Ingest {
   close(): void {
     this.closed = true;
     for (const watcher of this.watchers) watcher.close();
+    for (const watcher of this.folders.values()) watcher.close();
+    this.folders.clear();
     if (this.passTimer) clearTimeout(this.passTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.priceTimer) clearInterval(this.priceTimer);
@@ -95,16 +99,50 @@ export class Ingest {
     });
   }
 
+  /**
+   * macOS watches each root recursively through FSEvents. Node's recursive watch on Linux adds an inotify watch for every file and folder in
+   * the tree, so on us-metal02 on 10-18 the usage worker held 167,548 watches over session-artifacts' 154k artifact files and spent about
+   * 0.7 of a core on their events. On Linux each folder that can hold transcripts (`enters`) gets its own watch instead, which reports every
+   * file in it, and a folder made later gets one when its parent reports it.
+   */
   private watchRoot(root: FileRoot): void {
+    if (process.platform !== "linux") {
+      try {
+        const watcher = watch(root.root, { recursive: true, persistent: false }, (_event, name) => {
+          if (name === null) { this.queue(() => this.sweep(false)); return; }
+          const path = join(root.root, name.toString());
+          if (root.accepts(path)) this.markDirty(path);
+        });
+        watcher.on("error", () => { /* the sweep covers a root that went away */ });
+        this.watchers.push(watcher);
+      } catch { /* the root does not exist yet: the sweep picks it up when it appears */ }
+      return;
+    }
+    void this.watchFolder(root, root.root, false);
+  }
+
+  /** One non-recursive watch on `dir` and on each folder under it that `enters` keeps; `added` marks the transcripts already in a folder made after the start. */
+  private async watchFolder(root: FileRoot, dir: string, added: boolean): Promise<void> {
+    if (this.closed || this.folders.has(dir)) return;
+    let watcher: FSWatcher;
     try {
-      const watcher = watch(root.root, { recursive: true, persistent: false }, (_event, name) => {
+      watcher = watch(dir, { persistent: false }, (_event, name) => {
         if (name === null) { this.queue(() => this.sweep(false)); return; }
-        const path = join(root.root, name.toString());
+        const path = join(dir, name.toString());
         if (root.accepts(path)) this.markDirty(path);
+        else if (name.toString() === basename(dir)) void stat(dir).catch(() => { watcher.close(); this.folders.delete(dir); });
+        else if (!this.folders.has(path) && enters(root, path)) void stat(path).then(info => { if (info.isDirectory()) void this.watchFolder(root, path, true); }, () => {});
       });
-      watcher.on("error", () => { /* the sweep covers a root that went away */ });
-      this.watchers.push(watcher);
-    } catch { /* the root does not exist yet: the sweep picks it up when it appears */ }
+    } catch { return; /* the folder is gone or not made yet: the sweep picks up its transcripts */ }
+    watcher.on("error", () => { watcher.close(); this.folders.delete(dir); });
+    this.folders.set(dir, watcher);
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { watcher.close(); this.folders.delete(dir); return; }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory() && enters(root, path)) await this.watchFolder(root, path, added);
+      else if (added && entry.isFile() && root.accepts(path)) this.markDirty(path);
+    }
   }
 
   private watchDatabase(db: DatabaseSource): void {
@@ -270,6 +308,13 @@ export class Ingest {
 }
 
 /** Every transcript under a root. Directories are pruned by asking `accepts` about a probe file inside them. */
+/** Whether a directory under `root` can hold transcripts: only if one a level or two below it could be accepted, and never node_modules or a dot folder. */
+export function enters(root: FileRoot, dir: string): boolean {
+  const name = basename(dir);
+  if (name === "node_modules" || name.startsWith(".")) return false;
+  return ["x.jsonl", "rollout-x.jsonl", join("sub-x", "x.jsonl")].some(probe => root.accepts(join(dir, probe)));
+}
+
 export async function listFiles(root: FileRoot): Promise<string[]> {
   const out: string[] = [];
   const walk = async (dir: string): Promise<void> => {
@@ -278,9 +323,7 @@ export async function listFiles(root: FileRoot): Promise<string[]> {
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-        // A directory is worth entering only if a transcript one or two levels below it could be accepted.
-        if (["x.jsonl", "rollout-x.jsonl", join("sub-x", "x.jsonl")].some(probe => root.accepts(join(path, probe)))) await walk(path);
+        if (enters(root, path)) await walk(path);
       } else if (entry.isFile() && root.accepts(path)) out.push(path);
     }
   };
