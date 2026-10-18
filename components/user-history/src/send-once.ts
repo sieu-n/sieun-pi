@@ -116,8 +116,11 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
   return null;
 }
 
-/** A target's worker as get_state reads it: its queued texts and whether it runs a turn, a tool or unfinished actions. */
-export interface TargetState { queued: string[]; busy: boolean }
+/**
+ * A target's worker as get_state reads it: its queued texts, whether it runs a turn, a tool or unfinished actions, and the count of those
+ * actions the daemon holds against its pending message limit (absent when the daemon gave none).
+ */
+export interface TargetState { queued: string[]; busy: boolean; unfinished?: number }
 
 /**
  * `node send-once.ts` reads {sessionId, texts, since, agentDir} on stdin and prints {"landedAt": number | null}, for the agent_message

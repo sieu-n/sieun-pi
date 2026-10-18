@@ -27,10 +27,11 @@ async function slowDaemon(agentDir?: string) {
   await mkdir(join(agentDir, "sessions"), { recursive: true });
   await writeFile(file, other(NOW - 3_600_000));
   let now = NOW;
-  const state = { mode: "lands" as "lands" | "closes" | "queues" | "loses" | "refuses" | "hangs" | "ok", queue: [] as string[], queueReadable: true, busy: false, sends: 0, looks: 0, waits: 0 };
+  const state = { mode: "lands" as "lands" | "closes" | "queues" | "loses" | "refuses" | "hangs" | "ok", queue: [] as string[], queueReadable: true, busy: false, unfinished: 0, sends: 0, looks: 0, waits: 0 };
   const copies = async (): Promise<number> => (await readFile(file, "utf8")).split("\n").filter(line => line.includes('"agent_message"')).length;
   let release: (error: Error) => void = () => {};
-  const open = () => new AgentOutbox(join(agentDir, "agent-outbox"), { now: () => now, log: () => {},
+  const lines: string[] = [];
+  const open = () => new AgentOutbox(join(agentDir, "agent-outbox"), { now: () => now, log: line => { lines.push(line); },
     sleep: () => { state.waits++; now += 1_000; return new Promise(done => setImmediate(done)); },
     send: async (_session, text) => {
       state.sends++;
@@ -45,10 +46,10 @@ async function slowDaemon(agentDir?: string) {
       if (state.mode === "queues") state.queue.push("Agent message received: " + text);
       throw new Error(TIMEOUT);
     },
-    target: async () => { state.looks++; return state.queueReadable ? { queued: state.queue, busy: state.busy } : null; },
+    target: async () => { state.looks++; return state.queueReadable ? { queued: state.queue, busy: state.busy, unfinished: state.unfinished } : null; },
     fileOf: session => sessionFileOf(session, agentDir) });
   const drain = async () => { for (const item of state.queue.splice(0)) await appendFile(file, entry(item.replace("Agent message received: ", ""), now)); };
-  return { agentDir, file, open, state, copies, drain, release: (error: Error) => release(error), now: () => now };
+  return { agentDir, file, open, state, copies, drain, lines, release: (error: Error) => release(error), now: () => now };
 }
 
 async function until(check: () => boolean | Promise<boolean>) { while (!await check()) await new Promise(done => setImmediate(done)); }
@@ -161,7 +162,7 @@ test("send once: a send cut off by a service restart is looked for by the next s
   assert.equal(await daemon.copies(), 1);
 });
 
-test("send once: a send the daemon refuses outright is sent again with no look", async t => {
+test("send once: a send the daemon refuses outright is sent again with no look for its copy", async t => {
   const daemon = await slowDaemon();
   const messages = daemon.open();
   t.after(() => messages.outbox.close());
@@ -171,7 +172,27 @@ test("send once: a send the daemon refuses outright is sent again with no look",
   await until(() => daemon.state.sends >= 3);
   daemon.state.mode = "ok";
   await messages.outbox.idle();
-  assert.equal(daemon.state.looks, 0, "a refusal cannot have landed, so the busy target is not asked");
+  assert.equal(daemon.state.looks, daemon.state.sends - 1, "a refusal cannot have landed, so each resend reads only the target's room, not where a copy is");
+  assert.equal(await daemon.copies(), 1);
+});
+
+// 10-18 11:16 to 11:42Z: Mac chat 01a0cc5e held 19 queued messages behind a turn that waited 3.2 h on a 429's retry-after, and the outbox sent
+// m-732d81ab again every 30 s; each of its 52 tries got "too many pending messages" and made that minute of the Whole system precheck dirty.
+test("send once: a target the daemon refused as full gets no send until get_state reads room, and the wait logs one line", async t => {
+  const daemon = await slowDaemon();
+  const messages = daemon.open();
+  t.after(() => messages.outbox.close());
+  daemon.state.mode = "refuses";
+  daemon.state.unfinished = 20;
+  await messages.deliver(SESSION, "[cross-host message from babysitter] land 38 is green");
+  await until(() => daemon.state.looks >= 10 || daemon.state.sends >= 3);
+  assert.equal(daemon.state.sends, 1, "no send while the target holds 20 unfinished messages");
+  assert.equal(daemon.lines.filter(line => /too many pending messages/.test(line)).length, 1);
+  assert.equal(daemon.lines.filter(line => /try \d+/.test(line)).length, 1, "the waits write no try line");
+  daemon.state.mode = "ok";
+  daemon.state.unfinished = 19;
+  await messages.outbox.idle();
+  assert.equal(daemon.state.sends, 2);
   assert.equal(await daemon.copies(), 1);
 });
 

@@ -41,6 +41,8 @@ export interface OutboxDeps {
   final(error: unknown): string | null;
   /** Whether a send that failed this way may still have reached the daemon, so it is looked for before a resend; absent means always. */
   uncertain?: (error: unknown) => boolean;
+  /** Whether a failure is a wait the deps already logged, so each try of it writes no line; absent means none is. */
+  quiet?: (error: unknown) => boolean;
   /** The thread's queued, sending and failed entries changed; `left` is the one that was just delivered. */
   changed(threadId: string, outbox: OutboxEntry[], left?: OutboxEntry): void;
   log(line: string): void;
@@ -169,7 +171,7 @@ export class Outbox {
       const final = this.deps.final(error);
       if (final !== null) return this.finish(current, "failed", final);
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
-      this.deps.log(`outbox ${current.threadId.slice(0, 8)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
+      if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${current.threadId.slice(0, 8)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
       current = this.update(current, { state: "queued" });
       if (!this.closed) await this.sleep(backoff(current.attempts));
     }

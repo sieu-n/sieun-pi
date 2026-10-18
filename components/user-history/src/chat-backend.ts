@@ -269,8 +269,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
         isRunningTools?: unknown; unfinishedActionCount?: unknown };
       const actions = data.sessionActions;
+      const unfinished = typeof data.unfinishedActionCount === "number" ? data.unfinishedActionCount : undefined;
       return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
-        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (typeof data.unfinishedActionCount === "number" && data.unfinishedActionCount > 0) };
+        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
     },
     fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir),
     startRoot: async root => {
