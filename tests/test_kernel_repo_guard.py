@@ -87,6 +87,32 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assertIn("names the directory src", out["refused"])
         self.assertEqual(self.fake_runs(), [])
 
+    def test_a_kernel_started_before_a_guard_change_judges_its_bash_with_the_new_guard(self):
+        # 10-18: 'search flows end to end' ran await bash('npx vitest run ...') at 11:44Z under a guard cached before c84c6c646e.
+        # Each kernel check starts a fresh node, so a kernel that is already running follows the guard files on disk.
+        old = subprocess.run(["/usr/bin/git", "-C", str(SOURCE.parents[3]), "archive", "b9a88ff4d7^", "scripts/repo/agent/guards"],
+                             capture_output=True, check=False)
+        if old.returncode != 0:
+            self.skipTest("no b9a88ff4d7 in the auto-sns-agent checkout")
+        guards = self.checkout / "scripts/repo/agent/guards"
+        shutil.rmtree(guards)
+        subprocess.run(["tar", "-x", "-C", str(self.checkout)], input=old.stdout, check=True)
+        app = self.checkout / "apps/crawler-v3"
+        (app / "src").mkdir(parents=True)
+        (app / "src/a.py").write_text("x = 1\n")
+        ruff = self.bin / "ruff"
+        ruff.write_text(FAKE_TOOL)
+        ruff.chmod(0o755)
+        run = f"os.chdir({str(app)!r})\ntry:\n    await bash('ruff check src/a.py')\n    RESULT.append('ran')\nexcept Exception as error:\n    RESULT.append(str(error))\n"
+        swap = f"import shutil\nshutil.rmtree({str(guards)!r})\nshutil.copytree({str(SOURCE)!r}, {str(guards)!r}, ignore=shutil.ignore_patterns('*.test.mjs'))\n"
+        env = {"RLM_SESSION_DIR": CRAWLER_OPS, "GLOBAL_RULES_AUTO_SNS_AGENT": str(self.checkout), "REPO_GUARD_LOG": str(self.repo_log)}
+        out = self.run_cells("import os\nRESULT = []\n", run, swap, run, env=env)
+        self.assert_passed(out)
+        before, after = out["result"]
+        self.assertRegex(before, r"repo guard \(local-check\)")
+        self.assertEqual(after, "ran")
+        self.assertEqual(self.fake_runs(), ["ruff check src/a.py"])
+
     def test_a_git_write_in_another_repo_runs(self):
         other = self.tmp / "other"
         other.mkdir()
