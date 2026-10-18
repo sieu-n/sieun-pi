@@ -6,7 +6,7 @@ Prime and the chat read only local files, so prime-sync writes those files in pl
 
 ## What one run does
 
-1. It fast-forwards the sieun-pi checkout to GitHub `main` when the checkout is on `main` and behind it. It never pushes, merges or rebases, so commits still reach GitHub the usual way.
+1. It moves the sieun-pi checkout to GitHub `main` when the checkout is on `main` and behind it. Local commits that GitHub lacks are replayed on top in the object store with `git merge-tree`, the way a rebase would, and they still reach GitHub the usual way, since prime-sync never pushes the checkout. A dirty file on a path the move changes goes into a stash for the move and comes back on top. A conflicting commit or dirty file, an untracked file in the way, or a commit made during the run leaves the checkout as it was, puts a `skipped:` line in `sync.log`, and the next run tries again.
 2. It points every home link in `install-manifest.json` at the checkout, which covers the skills (the board skill among them), `~/.prime/agent/AGENTS.md`, `pstack-models.json` and the two extensions. A copied folder or file in a link's place is deleted, and a skill link into the checkout that the manifest no longer lists is removed.
 3. It sets each key of `config/settings.shared.json` in `~/.prime/agent/settings.json`, which keeps the default model, thinking level and retry policy equal. MCP servers and the skills list stay per box.
 4. It merges the global harness entries in `~/.prime/agent/harness/harness_state.json` and the corrections ledger in `~/.prime/agent/browser-chat/corrections.json` with the private repo `sieu-n/prime-shared-state`, writes the result locally and pushes it.

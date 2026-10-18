@@ -142,6 +142,71 @@ class PrimeSyncTests(unittest.TestCase):
         self.sync(box)
         self.assertEqual(sorted(self.memories(box)), ["a", "b"])
 
+    def local_commit(self, checkout, path, text):
+        (checkout / path).write_text(text)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "-C", str(checkout), "commit", "-q", "-am", f"local {path}")
+
+    def test_local_commits_rebase_onto_main_and_keep_dirty_and_untracked_files(self):
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        self.local_commit(checkout, "config/AGENTS.md", "rules\nlocal rule\n")
+        (self.seed / "skills/unslop/SKILL.md").write_text("v2\nmore\n")
+        self.commit(self.seed, "upstream")
+        (checkout / "skills/unslop/SKILL.md").write_text("v1 dirty\n")
+        (checkout / "config/settings.shared.json").write_text(json.dumps({"defaultThinkingLevel": "high", "x": 1}))
+        git("-C", str(checkout), "add", "config/settings.shared.json")
+        (checkout / "notes.txt").write_text("untracked\n")
+        report = self.sync(box)
+        self.assertIn("conflict", report["code"])
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v1 dirty\n")
+        self.assertEqual(git("-C", str(checkout), "stash", "list"), "")
+
+        (checkout / "skills/unslop/SKILL.md").write_text("v1\n")
+        report = self.sync(box)
+        self.assertTrue(report["code"].startswith("rebased 1 local commits"), report["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD^"), git("-C", str(self.seed), "rev-parse", "HEAD"))
+        self.assertEqual((checkout / "config/AGENTS.md").read_text(), "rules\nlocal rule\n")
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v2\nmore\n")
+        self.assertEqual((checkout / "notes.txt").read_text(), "untracked\n")
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M  config/settings.shared.json\n?? notes.txt")
+        self.assertNotEqual(git("-C", str(checkout), "rev-parse", "HEAD"), git("-C", str(checkout), "rev-parse", "origin/main"))
+        self.assertTrue(git("-C", str(checkout), "status", "-sb").startswith("## main...origin/main [ahead 1]"))
+        self.assertIn("rebased", (box / ".local/share/prime-sync/sync.log").read_text())
+
+    def test_a_dirty_file_the_pull_changes_rides_along(self):
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        (self.seed / "config/AGENTS.md").write_text("rules\nupstream\n")
+        self.commit(self.seed, "upstream")
+        (checkout / "config/AGENTS.md").write_text("local\nrules\n")
+        self.assertIn("pulled", self.sync(box)["code"])
+        self.assertEqual((checkout / "config/AGENTS.md").read_text(), "local\nrules\nupstream\n")
+        self.assertEqual(git("-C", str(checkout), "stash", "list"), "")
+
+    def test_a_conflicting_local_commit_is_left_alone_and_logged(self):
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        self.local_commit(checkout, "config/AGENTS.md", "box rules\n")
+        head = git("-C", str(checkout), "rev-parse", "HEAD")
+        (self.seed / "config/AGENTS.md").write_text("mac rules\n")
+        self.commit(self.seed, "upstream")
+        report = self.sync(box)
+        self.assertIn("skipped: diverged", report["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "")
+        self.assertIn("conflicts", (box / ".local/share/prime-sync/sync.log").read_text())
+
+    def test_an_untracked_file_in_the_way_stops_the_move_and_survives(self):
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        head = git("-C", str(checkout), "rev-parse", "HEAD")
+        (self.seed / "new.txt").write_text("upstream\n")
+        self.commit(self.seed, "upstream")
+        (checkout / "new.txt").write_text("mine\n")
+        self.assertIn("could not move", self.sync(box)["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
+        self.assertEqual((checkout / "new.txt").read_text(), "mine\n")
+
 
 if __name__ == "__main__":
     unittest.main()
