@@ -9,7 +9,8 @@ the kernel process's own bytes (`own`) and its largest non-Prime descendant (`ke
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
-prints a process's start time.
+prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), which the
+service stops before it deletes a /tmp tree a gone job made.
 """
 import ctypes
 import json
@@ -279,6 +280,58 @@ def strays(table, sessions):
     return [entry for entry in found if entry]
 
 
+def held_paths(pid):
+    """(executable, cwd and open files) of a process from Linux /proc; (None, []) on macOS, where only its arguments and environment are read."""
+    if sys.platform == "darwin":
+        return None, []
+    def link(name):
+        try:
+            return os.readlink(f"{PROC}/{pid}/{name}")
+        except OSError:
+            return None
+    try:
+        fds = os.listdir(f"{PROC}/{pid}/fd")
+    except OSError:
+        fds = []
+    held = [link("cwd")] + [link(f"fd/{fd}") for fd in fds]
+    return link("exe"), [path for path in held if path]
+
+
+def inside(table, dirs):
+    """Each process that runs in or holds one of `dirs`: its executable, cwd or an open file lies there, or an argument or environment value names
+    a path there (a rig's `HOME=/tmp/p8iso-X/home`, `iso-run.py --root /tmp/p8iso-X`). Each carries the dir, the session its RLM_HARNESS_STATE_DIR
+    names (none for a process of the rig itself), whether it is a Prime process outside the rig (a kernel, a worker, the real daemon) and whether
+    it is a shared service. One pass over each process's paths, so 1,000 dirs cost what one does."""
+    wanted = set(dirs)
+    parents = sorted({os.path.dirname(path) for path in wanted}, key=len, reverse=True)
+    named = re.compile(r"(?:^|[=:\s,\"'])(" + "|".join(re.escape(parent) for parent in parents) + r")/([^/\s:,\"']+)") if parents else None
+
+    def dir_of(path):
+        """The dir of `dirs` a path lies in, or None."""
+        for parent in parents:
+            if path and path.startswith(parent + "/"):
+                top = parent + "/" + path[len(parent) + 1:].split("/", 1)[0]
+                return top if top in wanted else None
+        return None
+
+    found = []
+    for pid, (_, _, _, args) in table.items():
+        if pid == os.getpid() or not args or named is None:
+            continue
+        exe, held = held_paths(pid)
+        env = dict(entry.split("=", 1) for entry in args[1] if "=" in entry)
+        # A process of the rig itself: it runs from the dir, or its home or harness state lies there (an isolated Prime and its kernels).
+        own = {dir_of(exe), dir_of(args[0][0] if args[0] else None), dir_of(env.get("HOME")), dir_of(env.get("RLM_HARNESS_STATE_DIR"))} - {None}
+        hits = own | {dir_of(path) for path in held} | {match.group(1) + "/" + match.group(2) for text in args[0] + list(env.values()) for match in named.finditer(text)}
+        for path in sorted(hits & wanted):
+            rig = path in own
+            entry = process(table, pid, {"dir": path, "session": None if rig else (harness(args[1]) or (None, None))[1],
+                                         "prime": bool(PRIME.search(" ".join(args[0]))) and not rig, "shared": shared(table, pid)})
+            if entry:
+                found.append(entry)
+    return found
+
+
 def cpu():
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return round(usage.ru_utime + usage.ru_stime, 3)
@@ -287,6 +340,9 @@ def cpu():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--started":
         print(json.dumps(started(int(sys.argv[2]))))
+        sys.exit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--inside":
+        print(json.dumps({"inside": inside(scan(), [line.strip() for line in sys.stdin if line.strip().startswith("/")]), "cpu_s": cpu()}))
         sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"strays": strays(scan(), set(sys.argv[2].split(","))), "cpu_s": cpu()}))

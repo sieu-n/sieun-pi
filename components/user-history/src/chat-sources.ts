@@ -259,8 +259,8 @@ export interface CheckInSource {
   deletedJobs?: DeletedJobRecord;
   /**
    * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
-   * they opened, under its session folder `dir`, and the repo copies in the wiki session folders it opened, once the cleanup deleted or archived
-   * it. Absent: nothing is stopped.
+   * they opened, under its session folder `dir`, the repo copies in the wiki session folders it opened, and the /tmp trees it made with the
+   * processes in them, once the cleanup deleted or archived it. Absent: nothing is stopped.
    */
   leftovers?: (dir: string, session?: string) => Promise<Leftovers>;
   /** Stops what the subagents the daemon marked deleted under a chat left (`deletedFolders`, `endLeftovers`). Absent: no sweep. */
