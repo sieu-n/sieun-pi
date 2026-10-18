@@ -1,5 +1,4 @@
-"""Usage math, accounts and session keys, account index loading, and state.json load
-and migration."""
+"""Usage math, accounts and session keys, account index loading, and state.json load."""
 import collections, dataclasses, json, os, re, time
 
 from . import base
@@ -359,60 +358,21 @@ def with_pool_state(accounts, state, provider):
     return out
 
 
-def migrate(raw, by_email, now, pin_ttl=base.DEFAULTS["pin_ttl_sec"]):
-    """v1 -> v2, pure and idempotent.
-
-    v1 keyed assignments by "<pid>:<lstart>", which no session id can be
-    recovered from, so they are dropped: they were a display cache and a vend
-    counter, and the next request of each live session rebuilds them. The v1
-    pin holds an email; it is resolved to an account id here, the one boundary
-    that has the index in hand.
-
-    A v2 file loses what no rule reads any more: the shared seat (ended
-    2026-10-08), the lost 10-11 recovery pool's `recovery_batches` and the pins it
-    wrote (`by: recovery:...`), a pin the owner set more than pin_ttl ago, and the
-    `force` flag.
-    """
-    if raw.get("version") == 2:
-        for provider in base.PROVIDERS:
-            prov = raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
-            prov.setdefault("limits", {})
-            prov.setdefault("admissions", {})
-            prov.pop("seat", None)
-            prov.pop("recovery_batches", None)
-        for rec in raw.setdefault("sessions", {}).values():
-            pins = rec.get("pins") or {}
-            for provider, pin in list(pins.items()):
-                if (not pin or str(pin.get("by") or "").startswith("recovery:")
-                        or now - (pin.get("at") or 0) > pin_ttl):
-                    del pins[provider]
-                else:
-                    pin.pop("force", None)
-        return raw
-    anthropic = empty_provider_state()
-    if raw.get("pin"):
-        hit = by_email.get(raw["pin"])
-        if hit:
-            anthropic["pin"] = hit
-        else:
-            base.log("migrate_pin_dropped", email=raw["pin"])
-    anthropic["cooldowns"] = {u: t for u, t in (raw.get("cooldowns") or {}).items() if t > now}
-    out = {"version": 2, "providers": {"anthropic": anthropic,
-                                       "openai-codex": empty_provider_state()}, "sessions": {}}
-    base.log("migrated", dropped_assignments=len(raw.get("assignments") or {}))
-    return out
+def normalize(raw, now, pin_ttl=base.DEFAULTS["pin_ttl_sec"]):
+    """A v2 state with every provider, without the pins the owner set more than pin_ttl ago.
+    Anything that is not a v2 file starts empty. Pure and idempotent."""
+    if raw.get("version") != 2:
+        raw = {"version": 2, "providers": {}, "sessions": {}}
+    for provider in base.PROVIDERS:
+        raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
+    for rec in raw.setdefault("sessions", {}).values():
+        pins = rec.get("pins") or {}
+        for provider, pin in list(pins.items()):
+            if not pin or now - (pin.get("at") or 0) > pin_ttl:
+                del pins[provider]
+    return raw
 
 
 def load_state():
-    """Read state.json, migrate a v1 file, and back a v1 file up before the
-    first v2 write. Call under the pool flock."""
-    raw = base.load_json(base.STATE, {}) or {}
-    by_email = {}
-    if raw and raw.get("version") != 2:
-        os.makedirs(os.path.join(base.POOL, "backups"), exist_ok=True)
-        base.save_json(os.path.join(base.POOL, "backups", f"state.json.{int(time.time())}"), raw)
-        try:
-            by_email = {a.email: a.id for a in load_index("anthropic")}
-        except Exception:
-            by_email = {}
-    return migrate(raw, by_email, time.time(), base.config()["pin_ttl_sec"])
+    """Read state.json. Call under the pool flock."""
+    return normalize(base.load_json(base.STATE, {}) or {}, time.time(), base.config()["pin_ttl_sec"])

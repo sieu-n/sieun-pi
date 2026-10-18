@@ -70,10 +70,7 @@ def cmd_config(rest=()):
 
 
 def setter():
-    """Who runs `pi-pool set` when it has no --by: the Prime session folder of an agent, else the parent pid."""
-    folder = os.environ.get("RLM_SESSION_DIR")
-    if folder:
-        return "agent " + os.path.relpath(folder, os.path.expanduser("~/.prime/agent/session-artifacts"))
+    """Who runs `pi-pool set` when it has no --by: the Prime session that runs it, else the parent pid."""
     if os.environ.get(base.SESSION_ENV):
         return "Prime session " + os.environ[base.SESSION_ENV]
     return f"a shell outside Prime (parent pid {os.getppid()})"
@@ -146,10 +143,6 @@ def write_key(f, state):
 def cmd_use(rest):
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
-    if f["force"]:
-        print("--force is gone: a pin applies only when its account can take the session "
-              f"(5h under {base.config()['admit_5h_max_pct']}%), on the next request")
-        return 2
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         known = status_view.session_key_for(f["session"], state)

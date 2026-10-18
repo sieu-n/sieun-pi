@@ -197,11 +197,6 @@ class UseIdempotence(unittest.TestCase):
         self.assertEqual((rc, out), (0, "already on a@x"))
         self.assertEqual(self.saves, [])
 
-    def test_force_is_refused_and_writes_nothing(self):
-        rc, out = self._use("a@x", "--force")
-        self.assertEqual(rc, 2)
-        self.assertEqual(self.saves, [])
-
     def test_follow_with_nothing_pinned_does_not_write(self):
         rc, out = self._use("--follow")
         self.assertEqual((rc, out), (0, "already following the pool"))

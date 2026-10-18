@@ -6,7 +6,7 @@ from . import base, registry, sched
 
 # ------------------------------------------------------------------------ CLI
 def parse_flags(rest, provider_default="anthropic"):
-    provider, session, as_json, force, follow, new_session, positional = provider_default, None, False, False, False, False, []
+    provider, session, as_json, follow, new_session, positional = provider_default, None, False, False, False, []
     model, source, clear, until, since = None, None, False, None, None
     i = 0
     while i < len(rest):
@@ -19,8 +19,6 @@ def parse_flags(rest, provider_default="anthropic"):
             session = rest[i]
         elif tok == "--json":
             as_json = True
-        elif tok == "--force":
-            force = True
         elif tok == "--follow":
             follow = True
         elif tok == "--new-session":
@@ -43,7 +41,7 @@ def parse_flags(rest, provider_default="anthropic"):
             positional.append(tok)
         i += 1
     return {"provider": provider, "session": session, "json": as_json,
-            "force": force, "follow": follow, "new_session": new_session, "positional": positional,
+            "follow": follow, "new_session": new_session, "positional": positional,
             "model": model, "source": source, "clear": clear, "until": until, "since": since}
 
 

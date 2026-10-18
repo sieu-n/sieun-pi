@@ -383,19 +383,15 @@ class Pins(unittest.TestCase):
 
 
 class StateCleanup(unittest.TestCase):
-    def test_recovery_pins_old_pins_and_recovery_batches_are_dropped_on_load(self):
+    def test_pins_older_than_pin_ttl_are_dropped_on_load(self):
         raw = empty_state()
-        raw["providers"][P]["recovery_batches"] = [{"id": 1}]
         raw["sessions"] = {
-            "r": {"pins": {P: {"account_id": "a", "at": NOW, "by": "recovery:b3:2"}}, "last_seen": NOW},
             "o": {"pins": {P: {"account_id": "a", "at": NOW - 8 * 86400, "by": "cli"}}, "last_seen": NOW},
-            "k": {"pins": {P: {"account_id": "a", "at": NOW - 3600, "by": "cli", "force": True}}, "last_seen": NOW}}
-        out = registry.migrate(raw, {}, NOW, CFG["pin_ttl_sec"])
-        self.assertNotIn("recovery_batches", out["providers"][P])
-        self.assertEqual(out["sessions"]["r"]["pins"], {})
+            "k": {"pins": {P: {"account_id": "a", "at": NOW - 3600, "by": "cli"}}, "last_seen": NOW}}
+        out = registry.normalize(raw, NOW, CFG["pin_ttl_sec"])
         self.assertEqual(out["sessions"]["o"]["pins"], {})
         self.assertEqual(out["sessions"]["k"]["pins"][P], {"account_id": "a", "at": NOW - 3600, "by": "cli"})
-        self.assertEqual(registry.migrate(json.loads(json.dumps(out)), {}, NOW, CFG["pin_ttl_sec"]), out)
+        self.assertEqual(registry.normalize(json.loads(json.dumps(out)), NOW, CFG["pin_ttl_sec"]), out)
 
     def test_prune_drops_old_admissions_moves_and_stale_waits(self):
         state = empty_state()
@@ -466,12 +462,6 @@ class Cli(unittest.TestCase):
         rc, out, _ = self.run_cli(state, accounts, ["ls"])
         self.assertEqual(rc, 0)
         self.assertIn("priority low  waits for y", out)
-
-    def test_use_force_is_gone(self):
-        state = empty_state()
-        put(state, KEY, on="x")
-        rc, out, saved = self.run_cli(state, [acct("x"), acct("y")], ["use", "y@x", "--force"])
-        self.assertEqual((rc, saved["sessions"][KEY.key]["pins"]), (2, {}))
 
     def test_switch_writes_a_leave_for_this_session_only(self):
         state = empty_state()

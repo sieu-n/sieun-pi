@@ -1,4 +1,4 @@
-"""Unit tests for the pure core of pi-pool: migrate, resolve, prune, codex
+"""Unit tests for the pure core of pi-pool: normalize, resolve, prune, codex
 index parsing, JWT claim decoding, and ls row building. test_commands.py holds
 the command tests that share these fixtures.
 
@@ -252,12 +252,6 @@ class LimitedByThe429(unittest.TestCase):
         row = status_view.build_rows(limited({"a": NOW + 600}, [A]), sched.Tree(), sched.Book(), {}, CFG, NOW)[0]
         self.assertEqual((row["usable"], row["reason"], row["limited_until"]), (False, "limited 10m", NOW + 600))
 
-    def test_a_v2_state_without_limits_gains_an_empty_map(self):
-        raw = {"version": 2, "providers": {"anthropic": {"pin": None, "seat": None, "cooldowns": {}}}, "sessions": {}}
-        out = registry.migrate(raw, {}, NOW)
-        self.assertEqual((out["providers"]["anthropic"]["limits"], out["providers"]["openai-codex"]["limits"]), ({}, {}))
-        self.assertNotIn("seat", out["providers"]["anthropic"])
-
 
 class Fallbacks(unittest.TestCase):
     def test_a_cooling_current_account_moves(self):
@@ -277,36 +271,15 @@ class Fallbacks(unittest.TestCase):
         self.assertIsNone(r)
 
 
-class Migration(unittest.TestCase):
-    V1 = {"assignments": {"31813:Sun Sep  6 14:33:51 2026": {"uuid": "a", "email": "a@x", "vends": 65}},
-          "cooldowns": {"c": NOW + 60, "d": NOW - 60},
-          "seat": {"uuid": "b", "email": "b@x", "assigned_at": NOW - 10},
-          "pin": "a@x"}
+class Normalize(unittest.TestCase):
+    def test_a_file_that_is_not_v2_starts_empty_with_both_providers(self):
+        out = registry.normalize({"pin": "a@x", "cooldowns": {"c": NOW + 60}}, NOW)
+        self.assertEqual((out["sessions"], sorted(out["providers"])), ({}, ["anthropic", "openai-codex"]))
+        self.assertEqual(out["providers"]["anthropic"], registry.empty_provider_state())
 
-    def migrated(self):
-        return registry.migrate(dict(self.V1), {a.email: a.id for a in ALL}, NOW)
-
-    def test_the_v1_pin_email_becomes_an_account_id(self):
-        self.assertEqual(self.migrated()["providers"]["anthropic"]["pin"], "a")
-
-    def test_the_seat_is_dropped_and_live_cooldowns_carry_over(self):
-        out = self.migrated()
-        self.assertNotIn("seat", out["providers"]["anthropic"])
-        self.assertEqual(out["providers"]["anthropic"]["cooldowns"], {"c": NOW + 60})
-
-    def test_pid_keyed_assignments_are_dropped(self):
-        self.assertEqual(self.migrated()["sessions"], {})
-
-    def test_an_unknown_pin_email_is_dropped(self):
-        out = registry.migrate({"pin": "nobody@x"}, {a.email: a.id for a in ALL}, NOW)
-        self.assertIsNone(out["providers"]["anthropic"]["pin"])
-
-    def test_migrating_twice_changes_nothing(self):
-        once = self.migrated()
-        self.assertEqual(registry.migrate(once, {}, NOW), once)
-
-    def test_both_providers_exist_after_migration(self):
-        self.assertEqual(sorted(self.migrated()["providers"]), ["anthropic", "openai-codex"])
+    def test_normalizing_twice_changes_nothing(self):
+        once = registry.normalize({}, NOW)
+        self.assertEqual(registry.normalize(json.loads(json.dumps(once)), NOW), once)
 
 
 class Writers(unittest.TestCase):
@@ -675,7 +648,6 @@ class LsRowBuilding(unittest.TestCase):
         self.assertEqual(by_id["b"]["seat"], False)
         self.assertEqual(by_id["b"]["current"], True)
         self.assertEqual(by_id["c"]["pinned"], True)
-        self.assertNotIn("force", by_id["c"])
         self.assertEqual((by_id["d"]["usable"], by_id["d"]["serves"]), (False, True))
         self.assertEqual(by_id["d"]["reason"], "depleted")
         self.assertIsNone(by_id["d"]["score"])

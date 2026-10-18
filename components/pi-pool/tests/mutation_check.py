@@ -33,8 +33,7 @@ MUTATIONS = {
     "pin applies once": ("    pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at",
                          "    pending = tree.pin and tree.pin != tree.current"),
     "jobs: a child session keys by its root": ("    key = uuid or active\n", "    key = active or uuid\n"),
-    "stale pins dropped": ("                if (not pin or str(pin.get(\"by\") or \"\").startswith(\"recovery:\")\n                        or now - (pin.get(\"at\") or 0) > pin_ttl):",
-                           "                if not pin:"),
+    "stale pins dropped": ("            if not pin or now - (pin.get(\"at\") or 0) > pin_ttl:", "            if not pin:"),
 }
 # The file each rule lives in; every other rule is in pool/sched.py.
 RULE_FILES = {"jobs: a child session keys by its root": "pool/registry.py", "stale pins dropped": "pool/registry.py"}
