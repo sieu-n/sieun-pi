@@ -131,7 +131,8 @@ export interface WaitingTree { tree: string; oldestWaitS: number; slots: number 
 /**
  * Another box's numbers in a watch line, read through its relay (POST /v1/watch): its usability reading, its Prime workers and what its idle
  * sessions hold. From 04:20Z on 10-18 the chat ran on us-metal02, and its lines measured only the box, so the Mac's workers left d7's numbers.
- * `error` names a box whose relay did not answer; its numbers are then unknown, not zero.
+ * `error` names a box whose relay did not answer, or whose footprint helper failed while `usable` still holds its reading; its worker numbers are
+ * then unknown, not zero.
  */
 export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
   sleeping?: SleepingLine; swapGb: number | null; error?: string }
@@ -423,16 +424,22 @@ export interface WatchSource {
   /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
   remotes?: () => readonly RemoteWatch[];
 }
-export interface RemoteWatch { name: string; rows: readonly unknown[]; read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints }> }
+/** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
+export interface RemoteWatch { name: string; rows: readonly unknown[];
+  read: (pids: readonly number[]) => Promise<{ usable: unknown; footprints: Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string }> }
 
 /** The pids of the workers that host the rows' sessions. */
 const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
 
-/** One other box's numbers from its relay, judged with this box's chat ids, titles and idle window; a failed read keeps the box with its error. */
+/**
+ * One other box's numbers from its relay, judged with this box's chat ids, titles and idle window. A failed read keeps the box with its error;
+ * a read with a reading and no footprints keeps the reading, and its worker numbers are unknown.
+ */
 export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleMs?: number | null }): Promise<HostWatchLine> {
   try {
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
+    if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
       ...input.idleMs === undefined ? {} : { idleMs: input.idleMs } });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working,

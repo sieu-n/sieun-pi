@@ -110,19 +110,33 @@ export async function hostToken(host: Host, configDir = CONFIG_DIR): Promise<str
   return (await readFile(isAbsolute(path) ? path : join(configDir, path), "utf8")).trim();
 }
 
+/** A relay's watch answer: the box's usability reading, and its workers' footprints or why they are missing. */
+export type RelayWatch = { usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints; error?: undefined } | { usable: unknown; footprints: null; error: string };
+
+async function relayJson(host: Host, path: string, init: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<unknown> {
+  const response = await fetch(`http://${host.address}:${host.relayPort}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${await hostToken(host)}` },
+    signal: AbortSignal.timeout(35_000) });
+  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to ${path}`);
+  return await response.json() as unknown;
+}
+
 /**
- * Another box's watch numbers through its relay (POST /v1/watch): its usability reading and the footprints of `pids`, its Prime workers. The
- * relay runs the same footprint helper the watch runs here, which took under a second at 1,000 processes (src/worker-footprint.py), so the
- * read waits up to the helper's own 30 s limit plus the relay read's 5 s.
+ * Another box's watch numbers through its relay: its usability reading (GET /v1/usable, a file read on macOS) and the footprints of `pids`, its
+ * Prime workers (POST /v1/watch, which runs src/worker-footprint.py with a 30 s kill). The two reads run side by side, so a slow or failed helper
+ * leaves the reading: at load 440 on the Mac on 10-18 the helper passed its 30 s kill in each of 4 reads from 11:14Z, and the watch answered in
+ * 34 to 37 s, while /v1/health answered in 2 to 9 s. A relay from before /v1/usable answers 404 there, and its reading then comes from the watch.
  */
-export async function relayWatch(host: Host, pids: readonly number[]): Promise<{ usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints }> {
-  const response = await fetch(`http://${host.address}:${host.relayPort}/v1/watch`, { method: "POST", body: pids.join("\n") + "\n",
-    headers: { authorization: `Bearer ${await hostToken(host)}`, "content-type": "text/plain" }, signal: AbortSignal.timeout(35_000) });
-  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to /v1/watch`);
-  const body = await response.json() as unknown;
-  if (typeof body !== "object" || body === null || typeof (body as { footprints?: unknown }).footprints !== "object" || (body as { footprints: unknown }).footprints === null ||
-    typeof ((body as { footprints: { workers?: unknown } }).footprints.workers) !== "object") throw new Error(`relay ${host.name} sent no footprints`);
-  return body as { usable: unknown; footprints: import("./mac-usable-watch.ts").Footprints };
+export async function relayWatch(host: Host, pids: readonly number[]): Promise<RelayWatch> {
+  const [reading, watch] = await Promise.allSettled([relayJson(host, "/v1/usable"),
+    relayJson(host, "/v1/watch", { method: "POST", body: pids.join("\n") + "\n", headers: { "content-type": "text/plain" } })]);
+  const answer = watch.status === "fulfilled" && isRecord(watch.value) ? watch.value : null;
+  const usable = reading.status === "fulfilled" ? reading.value : answer?.usable;
+  if (usable === undefined) throw watch.status === "rejected" ? watch.reason : new Error(`relay ${host.name} sent no reading`);
+  const footprints = answer?.footprints;
+  if (isRecord(footprints) && isRecord(footprints.workers)) return { usable, footprints: footprints as unknown as import("./mac-usable-watch.ts").Footprints };
+  const error = watch.status === "rejected" ? (watch.reason instanceof Error ? watch.reason.message : String(watch.reason))
+    : typeof answer?.footprintsError === "string" ? `relay ${host.name} footprints: ${answer.footprintsError}` : `relay ${host.name} sent no footprints`;
+  return { usable, footprints: null, error };
 }
 
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };

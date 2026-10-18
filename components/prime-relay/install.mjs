@@ -80,6 +80,11 @@ WantedBy=default.target
 `;
 }
 
+/**
+ * The launchd job runs as Interactive: with no ProcessType, launchd clamps a job's CPU, and on 10-18 at load 440 the relay ran at priority 20
+ * against 31 for an ssh shell. The footprint helper it starts then took 22.8 s and 39.5 s under `taskpolicy -c utility` against 2.9 s and 14.6 s
+ * unclamped, past the relay's 30 s kill in each of 4 watch reads from 11:14Z.
+ */
 function launchdPlist(node, script) {
   const log = join(share, "relay.log");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -91,6 +96,7 @@ function launchdPlist(node, script) {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>${log}</string>
   <key>StandardErrorPath</key><string>${log}</string>
 </dict>

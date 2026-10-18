@@ -104,16 +104,25 @@ function footprints(pids) {
     const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
     child.stdout.setEncoding("utf8").on("data", chunk => { out += chunk; });
     child.once("error", error => { clearTimeout(timer); reject(error); });
-    child.once("close", code => { clearTimeout(timer); if (code !== 0) return reject(new Error(`footprint helper exited ${code}`)); try { resolve(JSON.parse(out)); } catch (error) { reject(error); } });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(code === null ? `footprint helper was killed by ${signal}` : `footprint helper exited ${code}`));
+      try { resolve(JSON.parse(out)); } catch (error) { reject(error); }
+    });
     child.stdin.end(pids.join("\n") + "\n");
   });
 }
 
-/** POST /v1/watch: the body lists worker pids, one per line; the answer is this box's usability reading and those workers' footprints. */
+/**
+ * POST /v1/watch: the body lists worker pids, one per line; the answer is this box's usability reading and those workers' footprints. A failed
+ * helper leaves `footprints` null with its error and keeps the reading: from 10:45Z on 10-18, at load 440 on the Mac, the helper passed its 30 s
+ * kill in every read, and each 500 lost the Mac's reading with it.
+ */
 async function serveWatch(request, response) {
   const pids = (await readBody(request, WATCH_BODY_BYTES)).split("\n").map(line => line.trim()).filter(line => /^\d+$/.test(line)).map(Number);
-  const [usable, measured] = await Promise.all([usableRaw(), footprints(pids)]);
-  send(response, 200, { usable, footprints: measured });
+  const [usable, measured] = await Promise.all([usableRaw(), footprints(pids).then(value => ({ footprints: value }),
+    error => ({ footprints: null, footprintsError: error instanceof Error ? error.message : String(error) }))]);
+  send(response, 200, { usable, ...measured });
 }
 
 function send(response, status, body) {
@@ -129,6 +138,7 @@ export function createRelay(config, log = () => {}) {
       const url = new URL(request.url ?? "/", "http://relay");
       if (request.method === "GET" && url.pathname === "/v1/health") return send(response, 200, { ok: true, daemon: await daemonAnswers(config.daemonSocket) ? "answering" : "down", version: VERSION });
       if (request.method === "GET" && url.pathname === "/v1/host") return send(response, 200, await hostStats());
+      if (request.method === "GET" && url.pathname === "/v1/usable") return send(response, 200, await usableRaw());
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/file") return await serveFile(request, response, url, config.roots);
       if (request.method === "POST" && url.pathname === "/v1/watch") return await serveWatch(request, response);
       send(response, 404, { error: "unknown route" });
