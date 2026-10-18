@@ -236,6 +236,7 @@ class Hookd(unittest.TestCase):
         [killed] = [e for e in rows if e["event"] == "hook_killed"]
         self.assertEqual((killed["provider"], killed["session"]), ("openai-codex", "fixture-hookd"))
 
+    @unittest.skipUnless(sys.platform == "linux", "PR_SET_PDEATHSIG is Linux only, and the Mac's /bin/sh execs a lone hook command, so the timeout SIGTERM reaches the hook itself")
     def test_the_shells_timeout_reaches_the_run(self):
         self.held_lock()
         hook = subprocess.Popen(["/bin/sh", "-c", f"{os.path.join(self.link, 'bin', 'pi-pool-token')} --provider openai-codex; true"],

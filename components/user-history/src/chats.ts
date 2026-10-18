@@ -135,6 +135,11 @@ interface Gathered {
  * reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list, so a restart
  * re-adopts what it finds, and a scan of the session files brings back a chat the index lost.
  */
+/** The log's note of the repo copies a gone job left in its wiki session folders and the service deleted. */
+function copiesNote(left: Leftovers): string {
+  return left.copies.length ? `, deleted ${left.copies.length} repo copies (${left.copies.join(", ")})` : "";
+}
+
 export class Chats {
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
@@ -833,7 +838,7 @@ export class Chats {
           report: jobReport(messages, agent.sender), endedAt: now });
         await this.threads.archive(id);
         const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
-        this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs`);
+        this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
       } catch (error) {
         this.rootsEnded.delete(id);
         this.log(`chat ${row.id.slice(0, 8)}: archive idle root ${agent.name}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
@@ -891,7 +896,7 @@ export class Chats {
 
   /** Stops what a gone job left (`CheckInSource.leftovers`) once per session; nothing when the stop fails, which is logged. */
   private async leftovers(chat: string, dir: string, session?: string): Promise<Leftovers> {
-    const none = { stopped: [], tabs: 0 };
+    const none = { stopped: [], tabs: 0, copies: [] };
     if (!this.source.leftovers || (session !== undefined && this.leftoversEnded.has(session))) return none;
     if (session !== undefined) this.leftoversEnded.add(session);
     return this.source.leftovers(dir, session).catch(error => {
@@ -903,8 +908,8 @@ export class Chats {
   /** Stops what a gone job left and logs it. */
   private async endLeftovers(chat: string, name: string, dir: string, session: string | undefined, what: string): Promise<void> {
     const left = await this.leftovers(chat, dir, session);
-    if (!left.stopped.length && !left.tabs) return;
-    this.log(`chat ${chat.slice(0, 8)}: job ${name} ${what.replace(/\.$/, "")}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs`);
+    if (!left.stopped.length && !left.tabs && !left.copies.length) return;
+    this.log(`chat ${chat.slice(0, 8)}: job ${name} ${what.replace(/\.$/, "")}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
   }
 
   /**
@@ -916,9 +921,9 @@ export class Chats {
     for (const id of this.chatIds) {
       const left = await this.source.deletedLeftovers(id).catch(error => {
         this.log(`chat ${id.slice(0, 8)}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
-        return { stopped: [], tabs: 0 };
+        return { stopped: [], tabs: 0, copies: [] };
       });
-      if (left.stopped.length || left.tabs) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs`);
+      if (left.stopped.length || left.tabs || left.copies.length) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
     }
   }
 

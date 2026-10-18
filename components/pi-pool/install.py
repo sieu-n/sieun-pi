@@ -139,12 +139,26 @@ def borrow(home, holder):
     return {"remote_changed": changed, "enable": enabled}
 
 
-def compile_pool(release):
+COMPILE = """import importlib.util, pathlib, py_compile, sys
+staging, final = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+for source in sorted((staging / "pool").rglob("*.py")):
+    loaded = final / source.relative_to(staging)
+    cache = pathlib.Path(importlib.util.cache_from_source(str(loaded)))
+    if final in cache.parents:
+        cache = staging / cache.relative_to(final)
+    py_compile.compile(str(source), cfile=str(cache), dfile=str(loaded), doraise=True)
+"""
+
+
+def compile_pool(staging, release):
     """Bytecode for pool/, written once before the release turns read-only. Every run uses -B and writes
-    none, and the token hook loads these modules on every provider request, so without it each call compiles them."""
-    if not (release / "pool").is_dir():
+    none, and the token hook loads these modules on every provider request, so without it each call compiles them.
+    The hook's Python looks for it by the path it loads from, the resolved releases/<id>, which on the Mac's Apple 3.9.6
+    is under its sys.pycache_prefix (~/Library/Caches/com.apple.python) and not in the staged folder."""
+    if not (staging / "pool").is_dir():
         return
-    done = subprocess.run(["/usr/bin/python3", "-m", "compileall", "-q", str(release / "pool")], capture_output=True, text=True)
+    final = os.path.join(os.path.realpath(release.parent), release.name)
+    done = subprocess.run(["/usr/bin/python3", "-c", COMPILE, str(staging), final], capture_output=True, text=True)
     if done.returncode:
         raise InstallError("could not compile pool/ in the staged release:\n" + (done.stdout + done.stderr)[-4000:])
 
@@ -324,7 +338,7 @@ def install(home, ref, holder=None):
             export(commit, staging)
             tests = run_tests(staging)
             client = build_client(staging)
-            compile_pool(staging)
+            compile_pool(staging, release)
             (staging / "RELEASE.json").write_text(json.dumps(
                 {"id": release_id, "commit": commit, "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "tests": tests,
                  "client": client}, indent=2) + "\n")
