@@ -267,6 +267,46 @@ def mcp(name):
         child.kill()
 
 
+def git_bytes(args, data=None):
+    done = subprocess.run(["git", "-C", REPO] + args, input=data, capture_output=True, timeout=TIMEOUT_S, env=ENV)
+    if done.returncode != 0:
+        raise RuntimeError("git %s: %s" % (args[0], brief(done.stderr.decode("utf-8", "replace"))))
+    return done.stdout
+
+
+def path_key(path, blob):
+    return hashlib.sha1((path + "\0" + blob).encode()).hexdigest()[:12]
+
+
+def commits(host):
+    """The last sieun/dev commits as "commits:<json>", so the precheck counts a Mac commit as on the box under another hash.
+
+    Each commit gives its 10-character hash, the `git patch-id --stable` of its diff without context lines (a merge diffs against its first
+    parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
+    sends its last 100 as one list entry each; the box sends the hashes, patch-ids and path keys of its last 2000 as three flat lists.
+    """
+    count = "100" if host == "mac" else "2000"
+    diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", "sieun/dev"]
+    try:
+        raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H"] + diff).decode("utf-8", "replace")
+        patches = git_bytes(["patch-id", "--stable"], git_bytes(["log", "-p", "-U0", "--format=commit %H"] + diff)).decode()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        return "fail: " + brief(str(error))
+    order, wrote = [], {}
+    for line in raw.splitlines():
+        if line.startswith("@"):
+            order.append(line[1:])
+            wrote[line[1:]] = []
+        elif line.startswith(":") and order:
+            meta, path = line.split("\t", 1)
+            wrote[order[-1]].append((path, meta.split()[3]))
+    patch_of = {sha: pid for pid, sha in (line.split() for line in patches.splitlines() if line.strip())}
+    if host == "box":
+        return "commits:" + json.dumps({"ids": [sha[:10] for sha in order], "patches": sorted(set(pid[:16] for pid in patch_of.values())),
+                                        "bytes": sorted(set(path_key(path, blob) for files in wrote.values() for path, blob in files))})
+    return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]]] for sha in order])
+
+
 def probe(spec, host, tip):
     kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "intended", "shared"))
     if host == "mac" and kind not in READS:
@@ -276,10 +316,7 @@ def probe(spec, host, tip):
     if kind == "panel":
         return "panel"
     if kind == "tip":
-        done, text = run(["git", "-C", REPO, "rev-list", "-n", "100" if host == "mac" else "2000", "sieun/dev"])
-        if done is None or done.returncode != 0:
-            return "fail: git rev-list sieun/dev: " + brief(text)
-        return names(sha[:10] for sha in done.stdout.split())
+        return commits(host)
     if kind == "path":
         return "ok" if os.path.exists(expand(spec["path"])) else "absent"
     if kind == "which":

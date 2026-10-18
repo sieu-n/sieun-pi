@@ -51,6 +51,7 @@ const failing = (value: string | undefined): boolean => value === undefined || v
 export function shortfall(mac: string | undefined, box: string | undefined): string | null {
   if (failing(mac)) return null;
   if (box === undefined) return "the box gave no value";
+  if (mac!.startsWith("commits:")) return commitShortfall(mac!, box);
   const macSet = setOf(mac!);
   if (macSet) {
     const boxSet = setOf(box);
@@ -60,6 +61,26 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   }
   if (mac!.startsWith("v:") && box.startsWith("v:") && compareVersions(box.slice(2), mac!.slice(2)) >= 0) return null;
   return mac === box ? null : `Mac ${mac!.slice(0, 80)}, box ${box.slice(0, 160)}`;
+}
+
+type MacCommit = [id: string, patch: string, paths: string[]];
+interface BoxCommits { ids: string[]; patches: string[]; bytes: string[] }
+
+/**
+ * Which of the Mac's last sieun/dev commits the box lacks, from the probe's `commits:` values. A Mac commit is on the box when the box has its hash,
+ * a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every path it touched, a commit
+ * that wrote the same bytes there, which covers a wiki page batch the box wrote again in other commits.
+ */
+export function commitShortfall(mac: string, box: string): string | null {
+  if (!box.startsWith("commits:")) return `the Mac gave its commits, box ${box.slice(0, 160)}`;
+  const macCommits = JSON.parse(mac.slice(8)) as MacCommit[];
+  const boxCommits = JSON.parse(box.slice(8)) as BoxCommits;
+  const ids = new Set(boxCommits.ids);
+  const patches = new Set(boxCommits.patches);
+  const bytes = new Set(boxCommits.bytes);
+  const missing = macCommits.filter(([id, patch, paths]) => !ids.has(id) && !(patch && patches.has(patch)) && !paths.every(key => bytes.has(key)))
+    .map(([id]) => id);
+  return missing.length ? `box lacks ${missing.length} of the Mac's ${macCommits.length}: ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", ..." : ""}` : null;
 }
 
 /** Orders two probe versions such as "8.1.1" or "3.6a": number by number, then the letter suffix, so "3.6" < "3.6a" < "3.7". */

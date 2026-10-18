@@ -20,6 +20,19 @@ test("shortfall takes the Mac as the standard and lets a box set hold more", () 
   assert.equal(shortfall("ok", undefined), "the box gave no value");
 });
 
+test("shortfall counts a Mac commit as on the box under another hash by patch-id or written bytes, and keeps a real miss off", () => {
+  const mac = `commits:${JSON.stringify([
+    ["aaaaaaaaaa", "p-same-hash", ["k1"]],
+    ["bbbbbbbbbb", "p-rebased", ["k-other-base"]],
+    ["cccccccccc", "", ["k-page-1", "k-page-2"]],
+    ["dddddddddd", "p-mac-only", ["k-page-1", "k-mac-only"]],
+  ])}`;
+  const box = `commits:${JSON.stringify({ ids: ["aaaaaaaaaa", "eeeeeeeeee"], patches: ["p-rebased"], bytes: ["k1", "k-page-1", "k-page-2"] })}`;
+  assert.equal(shortfall(mac, box), "box lacks 1 of the Mac's 4: dddddddddd");
+  assert.equal(shortfall(mac, `commits:${JSON.stringify({ ids: [], patches: ["p-rebased", "p-mac-only"], bytes: ["k-page-1", "k-page-2"] })}`), "box lacks 1 of the Mac's 4: aaaaaaaaaa");
+  assert.equal(shortfall(mac, "fail: git log: bad"), "the Mac gave its commits, box fail: git log: bad");
+});
+
 test("shortfall lets a box CLI version be newer than the Mac's and keeps an older one off", () => {
   assert.equal(shortfall("v:1.7.1", "v:1.8.1"), null);
   assert.equal(shortfall("v:18.3", "v:18.6"), null);
