@@ -12,11 +12,20 @@ import { flagHits, names, reportShape, stepIdLists } from "./text-checks.ts";
  */
 const gapsTask = (platform: string): string => `research which of our ${platform} index gaps matter most and keep a page with the top 10 updated. ` +
   "measure each gap's size from real data, i want all 10 measured by tomorrow";
+/**
+ * A code-reading task with no prod reads: in r3e on 10-18 both gaps chats ran full scans on prod Postgres and ClickHouse while the crawl push
+ * needed the box, and Crawler VP and fix4-research-queries messaged them to stop, which voided the run. Its 15 items take several rounds, so a
+ * job that writes a batch and goes quiet leaves the number short without a push (k).
+ */
+const failuresTask = (platform: string): string => `go through our ${platform} crawler code and keep a page of every way it breaks when ${platform} changes ` +
+  "something, each with the file that handles it and what we'd see. just read the code, no prod queries. i want 15 of them written up by tomorrow";
 /** One task per chat name, so a rerun gets new chats and a platform no earlier run left a top 10 page for (r3 left Instagram's at 10 of 10). */
 export const TASKS: Record<string, string> = { "Instagram index gaps": gapsTask("instagram"), "TikTok Shop index gaps": gapsTask("tiktok shop"),
   "YouTube index gaps": gapsTask("youtube"), "TikTok index gaps": gapsTask("tiktok"), "LinkedIn index gaps": gapsTask("linkedin"),
   "Facebook index gaps": gapsTask("facebook"), "Xiaohongshu index gaps": gapsTask("xiaohongshu"), "Douyin index gaps": gapsTask("douyin"), "Threads index gaps": gapsTask("threads"), "Pinterest index gaps": gapsTask("pinterest"),
-  "Reddit index gaps": gapsTask("reddit"), "Bluesky index gaps": gapsTask("bluesky"), "Snapchat index gaps": gapsTask("snapchat"), "Twitch index gaps": gapsTask("twitch") };
+  "Reddit index gaps": gapsTask("reddit"), "Bluesky index gaps": gapsTask("bluesky"), "Snapchat index gaps": gapsTask("snapchat"), "Twitch index gaps": gapsTask("twitch"),
+  "YouTube crawler failures": failuresTask("youtube"), "TikTok crawler failures": failuresTask("tiktok"), "Instagram crawler failures": failuresTask("instagram"),
+  "LinkedIn crawler failures": failuresTask("linkedin") };
 export const taskOf = (name: string): string => {
   const task = TASKS[name];
   if (!task) throw new Error(`no checkin-push-control task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`);
@@ -114,20 +123,30 @@ function agentsOf(dir: string, chat: { id: string; name: string }): { jobs: Map<
   }
   return { jobs, duty, first };
 }
-function firstReply(events: readonly SessionEvent[], since: number): Check {
+/**
+ * (i): the first reply names a measured number and does not open by putting the answer off. A date, a clock time, "top N" and the task's own
+ * numbers are no measurement. A put-off word counts before the first measured number, or anywhere when the reply has none: a reply that gives
+ * its number and then names the job it started answers first (r3e's Reddit reply read "all 7 Reddit crawl operations are blocked live" before
+ * "I started the job", and the unit list read no number in it).
+ */
+export function firstReply(events: readonly SessionEvent[], since: number, task = ""): Check {
   const reply = events.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= since)?.text ?? "";
-  const measured = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|shops?|products?|channels?|videos?|days?|h|hours?)\b/gi) ?? [];
-  const defers = reply.match(/nothing is measured yet|i started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
-  return { id: "i", ok: reply ? measured.length > 0 && defers.length === 0 : false, detail: reply
-    ? `numbers ${measured.join(", ") || "none"}; put-off words ${defers.map(word => `"${word}"`).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
+  const own = new Set(task.match(/\d+/g) ?? []);
+  const plain = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2})?Z?\b|\btop \d+\b|\b\d+ of \d+\b(?= gaps| failures| (?:written|measured))/gi, " ");
+  const numbers = [...plain.matchAll(/(?<![\w.])\d[\d,.]*%?(?![\w])/g)].filter(match => !own.has(match[0]!.replace(/[,.%]+$/, "")));
+  const firstAt = numbers[0]?.index ?? plain.length;
+  const defers = plain.slice(0, firstAt).match(/nothing is measured yet|i started|i've started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
+  return { id: "i", ok: reply ? numbers.length > 0 && defers.length === 0 : false, detail: reply
+    ? `numbers ${numbers.map(match => match[0]).join(", ") || "none"}; put-off words before the first number ${defers.map(word => `"${word}"`).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
 }
+const taskText = (name: string): string => TASKS[name] ?? "";
 
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
   const roots = [state.chat.id, ...(state.control ? [state.control.id] : [])];
   const read = (id: string): SessionEvent[] => readSession(id, roots);
   const end = Date.now();
   const runs = existsSync(join(run, "runs.jsonl")) ? readFileSync(join(run, "runs.jsonl"), "utf8").split("\n").filter(Boolean)
-    .map(line => JSON.parse(line) as { at: number; trigger: string; duty: string; summary?: string }).filter(entry => entry.duty === "checkin" && entry.at >= state.windowStart) : [];
+    .map(line => JSON.parse(line) as { at: number; trigger: string; duty: string; summary?: string; job?: { id?: string } }).filter(entry => entry.duty === "checkin" && entry.at >= state.windowStart) : [];
   const slots = runs.filter(entry => entry.trigger === "schedule");
   const boards = snapshots(join(run, "boards"));
   const controlBoards = snapshots(join(run, "control", "boards"));
@@ -142,7 +161,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   let pushOk = slots.length > 0; let coordOk = true; let reportOk: boolean | null = null;
   slots.forEach((slot, index) => {
     const next = slots[index + 1]?.at ?? end;
-    const dutyId = [...duty].find(([, name]) => name.endsWith(` ${clock(slot.at)}`))?.[0];
+    // The run record names its duty job; the name's HH:MM is the server's clock, which moved from UTC to KST in r3e's window (06:40Z read
+    // "check-in Reddit index gaps 15:40"), so the name is only the fallback.
+    const dutyId = (slot.job?.id && duty.has(slot.job.id) ? slot.job.id : undefined) ?? [...duty].find(([, name]) => name.endsWith(` ${clock(slot.at)}`))?.[0];
     const events = dutyId ? read(dutyId) : [];
     const started = events[0]?.at;
     if (!dutyId || started === undefined || started - slot.at > SLOT_START_MS) {
@@ -199,9 +220,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   });
   checks.push({ id: "1", ok: pushOk, detail: [...slotLines, ...pushLines].join("\n    ") || "no slot in the window" });
   checks.push({ id: "2", ok: coordOk, detail: coordLines.join("\n    ") || "no job of the chat was quiet or dead at a slot" });
-  checks.push({ ...firstReply(head, state.windowStart), detail: `${state.chat.name}: ${firstReply(head, state.windowStart).detail}` });
+  checks.push({ ...firstReply(head, state.windowStart, taskText(state.chat.name)), detail: `${state.chat.name}: ${firstReply(head, state.windowStart, taskText(state.chat.name)).detail}` });
   if (state.control) {
-    const reply = firstReply(read(state.control.id), state.windowStart);
+    const reply = firstReply(read(state.control.id), state.windowStart, taskText(state.control.name));
     const own = checks.find(check => check.id === "i")!;
     own.ok = !!own.ok && !!reply.ok;
     own.detail += `\n    ${state.control.name}: ${reply.detail}`;

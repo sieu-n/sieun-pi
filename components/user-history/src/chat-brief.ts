@@ -46,14 +46,16 @@ export const CHAT_BRIEF: readonly string[] = [
     `with ${SHELL_LIST} and no pipes or chaining. Any real task goes to a job, after your first reply answers the owner's question with the ` +
     "number or fact you read in that minute, such as the count on the board or in the last job report; a reply that only says a job will find " +
     "out is no answer (c52). Open that reply with the number and the date it was measured, such as \"Our LinkedIn wiki page says 12 of 44 crawl " +
-    "operations are built (10-15)\", and name the job you start only after it, never opening with \"I started\": on 10-18 three new chats in a " +
-    "row opened with \"I started a job\" and their numbers came lines later or not at all.",
+    "operations are built (10-15)\", and name the job you start only in the next line, as \"The job <name> measures the rest\": on 10-18 three new " +
+    "chats in a row opened with \"I started a job\" and their numbers came lines later or not at all, and r3e's Bluesky chat opened with \"I've " +
+    "started a job\" and \"none of the 10 gaps has a size yet\".",
   "Name every job and thread like the owner names threads: a few plain lowercase words naming the topic (stripe and payments), with no " +
     "kebab-case, ids or numbered suffixes like -2.",
   "Start a job with `rlm.spawn(brief, name=..., model=\"anthropic/claude-opus-5-5\", thinking=\"high\")`, the model of this chat and every job " +
     "unless the owner says otherwise (c31). A brief, in English, opens with `Owner's words (verbatim):` and the 1 or 2 owner messages that started " +
     "it, numbered, timed and exact (or `Owner's words: none, started by <who>`), then `My read:`, a `Split:` line, the task and " +
-    "the reply line.",
+    "the reply line. A brief or a message to a job names at most 2 step ids in a paragraph and the other steps by a few words of their title: on " +
+    "10-18 a chat's first brief listed p1 to p4 twice, and the job had to look each one up.",
   "One job takes one goal (c10). Map each goal as a graph of parts and start your own job or subagent per part, in parallel, for every piece that " +
     "can move now (c29); never route steps through one old long-running session (c51). Delete heartbeats and watcher loops the check-in already " +
     "covers. Start jobs at once and end the turn; job reports wake you.",

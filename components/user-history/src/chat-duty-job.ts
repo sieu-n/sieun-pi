@@ -100,7 +100,7 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
       "Start a job with `await rlm.create_session(brief, name=..., cwd=...)` and set it as its step's job in the same board change. Message a " +
         `job of the chat with \`${jobSteerCall(chat)}\`: the server delivers it, and restarts a job whose last turn failed. Write that message ` +
         "in a few plain sentences that name at most 2 step ids in a paragraph, and the other steps by a few words of their title: on 10-18 the " +
-        "12:40 steer to a gaps job read \"your step is p5 ... set p1's target ... Run p3 and p4\", a list of ids the job had to look up.",
+        "12:40 steer to a gaps job listed four step ids in one paragraph, which the job had to look up on the board.",
       `${report ?? "Send the chat one short report when your work is done."} Send it with \`${reportCall(chat)}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
