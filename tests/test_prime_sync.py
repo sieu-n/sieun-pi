@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -77,8 +78,8 @@ class PrimeSyncTests(unittest.TestCase):
     def ledger(self, home):
         return [c["id"] for c in json.loads((home / ".prime/agent/browser-chat/corrections.json").read_text())["corrections"]]
 
-    def sync(self, home, code=0):
-        env = {**ENV, "HOME": str(home), "PRIME_SYNC_SETTLE": "0"}
+    def sync(self, home, code=0, env=None):
+        env = {**ENV, "HOME": str(home), "PRIME_SYNC_SETTLE": "0", **(env or {})}
         result = subprocess.run(["python3", "-B", str(SYNC)], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         return json.loads(result.stdout)
@@ -157,21 +158,38 @@ class PrimeSyncTests(unittest.TestCase):
         git("-C", str(checkout), "add", "config/settings.shared.json")
         (checkout / "notes.txt").write_text("untracked\n")
         report = self.sync(box)
-        self.assertIn("conflict", report["code"])
-        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v1 dirty\n")
-        self.assertEqual(git("-C", str(checkout), "stash", "list"), "")
-
-        (checkout / "skills/unslop/SKILL.md").write_text("v1\n")
-        report = self.sync(box)
         self.assertTrue(report["code"].startswith("rebased 1 local commits"), report["code"])
+        self.assertIn("carried skills/unslop/SKILL.md", report["code"])
         self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD^"), git("-C", str(self.seed), "rev-parse", "HEAD"))
         self.assertEqual((checkout / "config/AGENTS.md").read_text(), "rules\nlocal rule\n")
-        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v2\nmore\n")
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v1 dirty\n")
+        self.assertEqual(git("-C", str(checkout), "show", "HEAD:skills/unslop/SKILL.md"), "v2\nmore")
+        self.assertEqual(self.saved(box, "skills/unslop/SKILL.md"), "v1 dirty\n")
         self.assertEqual((checkout / "notes.txt").read_text(), "untracked\n")
-        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M  config/settings.shared.json\n?? notes.txt")
-        self.assertNotEqual(git("-C", str(checkout), "rev-parse", "HEAD"), git("-C", str(checkout), "rev-parse", "origin/main"))
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M  config/settings.shared.json\n M skills/unslop/SKILL.md\n?? notes.txt")
+        self.assertEqual(git("-C", str(checkout), "stash", "list"), "")
         self.assertTrue(git("-C", str(checkout), "status", "-sb").startswith("## main...origin/main [ahead 1]"))
         self.assertIn("rebased", (box / ".local/share/prime-sync/sync.log").read_text())
+
+    def saved(self, box, rel):
+        found = list((box / ".local/share/prime-sync/carried").glob(f"*/{rel}"))
+        self.assertEqual(len(found), 1, found)
+        return found[0].read_text()
+
+    def test_a_draft_older_than_the_commit_that_landed_it_takes_the_tip(self):
+        # 10-18: drafts written before their own commits landed held asa-mac-sync's box checkout from 08:13Z.
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        (checkout / "skills/unslop/SKILL.md").write_text("draft\n")
+        old = time.time() - 600
+        os.utime(checkout / "skills/unslop/SKILL.md", (old, old))
+        (self.seed / "skills/unslop/SKILL.md").write_text("landed\n")
+        self.commit(self.seed, "land the draft")
+        report = self.sync(box)
+        self.assertIn("took the tip for superseded skills/unslop/SKILL.md", report["code"])
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "landed\n")
+        self.assertEqual(self.saved(box, "skills/unslop/SKILL.md"), "draft\n")
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "")
 
     def test_a_dirty_file_the_pull_changes_rides_along(self):
         box = self.box("box", [], [])
@@ -196,16 +214,53 @@ class PrimeSyncTests(unittest.TestCase):
         self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "")
         self.assertIn("conflicts", (box / ".local/share/prime-sync/sync.log").read_text())
 
-    def test_an_untracked_file_in_the_way_stops_the_move_and_survives(self):
+    def test_an_untracked_file_in_the_way_stays_as_a_local_edit(self):
         box = self.box("box", [], [])
         checkout = box / "src/sieun-pi"
-        head = git("-C", str(checkout), "rev-parse", "HEAD")
         (self.seed / "new.txt").write_text("upstream\n")
         self.commit(self.seed, "upstream")
         (checkout / "new.txt").write_text("mine\n")
-        self.assertIn("could not move", self.sync(box)["code"])
-        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
+        report = self.sync(box)
+        self.assertIn("kept local new.txt", report["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), git("-C", str(self.seed), "rev-parse", "HEAD"))
         self.assertEqual((checkout / "new.txt").read_text(), "mine\n")
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M new.txt")
+
+    def test_a_blocked_checkout_tells_its_writer_and_then_the_chat(self):
+        # 10-18: the Mac's checkout sat at 461986e from 08:26Z to 10:45Z with nobody told.
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        head = git("-C", str(checkout), "rev-parse", "HEAD")
+        (self.seed / "config/AGENTS.md").write_text("rules\nupstream\n")
+        self.commit(self.seed, "upstream")
+        (checkout / "config/AGENTS.md").write_text("rules\nstaged\n")
+        git("-C", str(checkout), "add", "config/AGENTS.md")
+        (checkout / "config/AGENTS.md").write_text("rules\nstaged then edited\n")
+        session = "01a1aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+        transcript = box / ".prime/agent/sessions/x" / f"{session}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        call = {"type": "toolCall", "name": "ipython", "arguments": {"code": f"open('{checkout}/config/AGENTS.md', 'w').write('x')"}}
+        transcript.write_text(json.dumps({"timestamp": "2026-10-18T00:00:00Z", "message": {"content": [call]}}) + "\n")
+        calls = self.root / "calls.txt"
+        stub = self.root / "stub.sh"
+        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {calls}\necho 'Added a todo t7'\n")
+        stub.chmod(0o755)
+        env = {"PRIME_SYNC_BLOCK_ALERT_S": "0", "PRIME_SYNC_FORYOU_S": "0", "PRIME_SYNC_PRIME_BIN": str(stub), "PRIME_SYNC_BOARD_APPLY": str(stub)}
+        report = self.sync(box, env=env)
+        self.assertIn("staged changes or folders on config/AGENTS.md", report["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
+        self.assertEqual((checkout / "config/AGENTS.md").read_text(), "rules\nstaged then edited\n")
+        sent = calls.read_text()
+        self.assertIn(f"send {session} [prime-sync] box's sieun-pi checkout", sent)
+        self.assertIn("todo_add", sent)
+        self.assertEqual(json.loads((box / ".local/share/prime-sync/blocked.json").read_text())["todo"], "t7")
+        self.sync(box, env=env)
+        self.assertEqual(calls.read_text(), sent)
+
+        git("-C", str(checkout), "reset", "-q", "--", "config/AGENTS.md")
+        self.assertIn("carried config/AGENTS.md", self.sync(box, env=env)["code"])
+        self.assertIn('"todo_update", "id": "t7", "done": true', calls.read_text())
+        self.assertEqual(json.loads((box / ".local/share/prime-sync/blocked.json").read_text()), {})
 
     def test_a_main_that_drops_the_tree_is_refused_with_an_alert(self):
         # 5557c587a on 10-18: a private index built from an empty tree kept one new file and deleted the other 712.
