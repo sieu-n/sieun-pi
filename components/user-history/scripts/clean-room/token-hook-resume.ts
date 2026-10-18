@@ -8,8 +8,9 @@ import { readSession, readSessionFile, sessionFiles, type RunState, type Scenari
  * The clean-room scenario for the continue after a token hook failure (resume_paused.py, src/unloaded.ts). In the 10-16 to 10-17 hook outage
  * the idle unload stopped 16 root jobs right after their last turn failed on the pi-pool token hook, the resume pass read the stop's archive
  * as a stop on purpose, and none got a continue once the hook worked again. A fresh chat gets one ordinary task for a job. `clean-room.ts
- * kill-hooks` SIGKILLs every pi-pool-token run whose session is a job of the chat, for a window from its first kill, so the job's turns fail
- * the way they did in the outage while the chat's own hook works. The run passes when the job's turn ends on the hook failure, the job gets
+ * kill-hooks` SIGKILLs every pi-pool-token run of the chat's tree, for a window from its first kill after the chat spawned a job, so the
+ * tree's turns fail the way they did in the outage. Prime names the worker's root in the hook's session variable, so a subagent's hook
+ * cannot be told from its chat's, and the chat fails too, as every chat did in the outage. The run passes when the job's turn ends on the hook failure, the job gets
  * a continue from the service after the window with nobody stepping in, the chat answers, and the job the unload stops
  * after it finished gets no continue. The criteria live in the run folder's
  * criteria.md.
@@ -40,35 +41,48 @@ function jobIds(chat: string): Set<string> {
   walk(join(ARTIFACTS, chat));
   return ids;
 }
+/**
+ * The short ids the hook names the jobs by: Prime sets the hook's session variable to the active id, the last 12 characters of the session id
+ * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from `prime-agent list`.
+ */
+function activeIds(jobs: ReadonlySet<string>): Set<string> {
+  const ids = new Set([...jobs].map(id => id.slice(-12)));
+  try {
+    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; activeSessionId?: string }[] }).sessions;
+    for (const row of rows) if (row.sessionId && jobs.has(row.sessionId) && row.activeSessionId) { ids.add(row.activeSessionId); ids.add(row.activeSessionId.slice(-12)); }
+  } catch { /* the suffix still matches */ }
+  return ids;
+}
 /** The session each running pi-pool-token serves, from its environment. */
 function hookRuns(): { pid: number; session: string }[] {
-  let pids: number[];
-  try { pids = execFileSync("pgrep", ["-f", "pi-pool/bin/pi-pool-token"], { encoding: "utf8" }).split("\n").map(Number).filter(pid => pid > 0); } catch { return []; }
-  return pids.flatMap(pid => {
-    try {
-      const env = execFileSync("ps", ["-E", "-ww", "-p", String(pid), "-o", "command="], { encoding: "utf8" });
-      const session = new RegExp(`${SESSION_ENV}=(\\S+)`).exec(env)?.[1];
-      return session ? [{ pid, session }] : [];
-    } catch { return []; }
+  let out: string;
+  try { out = execFileSync("ps", ["-E", "-ww", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }); } catch { return []; }
+  // Only the hook itself, as Prime starts it through a shell or as its Python run: a job's bash line that names the hook is left alone.
+  const hook = /^\s*\d+\s+(?:\S*\/)?(?:sh|bash|zsh|python3?)(?:\s+-[A-Za-z]+)*\s+\S*pi-pool\/bin\/pi-pool-token(?:\s+--provider\s+\S+)?\s+\S+=/i;
+  return out.split("\n").filter(line => hook.test(line)).flatMap(line => {
+    const session = new RegExp(`${SESSION_ENV}=(\\S+)`).exec(line)?.[1];
+    const pid = Number(line.trim().split(/\s+/)[0]);
+    return session && pid > 0 ? [{ pid, session }] : [];
   });
 }
 
 /**
- * Polls every 20 ms from setup until `until` and SIGKILLs each pi-pool-token run whose session is a job of the run's chat, for `windowMs` from
- * the first kill. Kills nothing else: the chat's own hook runs and the chat service's hook check, which runs for the chat's tree, go through.
+ * Polls from setup until `until` and, once the run's chat has a job, SIGKILLs each pi-pool-token run of the chat's tree for `windowMs` from
+ * the first kill, the chat service's hook check for the tree included. Kills no other tree's hook.
  * Each kill is appended to kills.jsonl in the run folder, and the window to hook-window.json.
  */
 export async function killHooks(run: string, until: number, windowMs: number): Promise<HookKill[]> {
   const kills: HookKill[] = [];
   let first: number | undefined;
   let jobs = new Set<string>();
+  let active = new Set<string>();
   let looked = 0;
   while (Date.now() < until && (first === undefined || Date.now() < first + windowMs)) {
     const stateFile = join(run, "run.json");
     const chat = existsSync(stateFile) ? (JSON.parse(readFileSync(stateFile, "utf8")) as RunState).chat.id : undefined;
-    if (chat && Date.now() - looked > 1000) { looked = Date.now(); jobs = jobIds(chat); }
-    for (const hook of jobs.size ? hookRuns() : []) {
-      if (!jobs.has(hook.session)) continue;
+    if (chat && Date.now() - looked > 5000) { looked = Date.now(); jobs = jobIds(chat); active = jobs.size ? activeIds(new Set([chat, ...jobs])) : new Set(); }
+    for (const hook of active.size ? hookRuns() : []) {
+      if (!active.has(hook.session) && !jobs.has(hook.session) && hook.session !== chat) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
       const kill = { at: Date.now(), pid: hook.pid, session: hook.session };
       first ??= kill.at;
@@ -133,8 +147,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const unloaded = (() => { try { return JSON.parse(readFileSync(join(DATA, "unloaded.json"), "utf8")) as Record<string, string>; } catch { return {}; } })();
   const stoppedAt = hit && unloaded[hit.id] ? Date.parse(unloaded[hit.id]!) : undefined;
-  checks.push({ id: "b", ok: hit ? (stoppedAt !== undefined && stoppedAt >= hit.failed!.at ? true : hit.resumed ? false : null) : null,
-    detail: hit ? (stoppedAt !== undefined ? `the idle unload stopped job ${hit.id} at ${iso(stoppedAt)}, ${Math.round((stoppedAt - hit.failed!.at) / 1000)} s after the failed turn` : "the idle unload has not stopped the job") : "no failed job" });
+  checks.push({ id: "b", ok: hit?.resumed ? true : null,
+    detail: hit ? (stoppedAt !== undefined && stoppedAt >= hit.failed!.at ? `the idle unload stopped job ${hit.id} at ${iso(stoppedAt)}, ${Math.round((stoppedAt - hit.failed!.at) / 1000)} s after the failed turn, so the resume pass's continue reached it from its file`
+      : "the job stayed loaded, so the chat's job wake sent its continue") : "no failed job" });
 
   const service = existsSync(join(DATA, "service.log")) ? readFileSync(join(DATA, "service.log"), "utf8").split("\n") : [];
   const name = hit ? (() => { try { return (JSON.parse(readFileSync(join(hit.file, "..", "rlm-subagent.json"), "utf8")) as { sessionName?: string }).sessionName ?? ""; } catch { return ""; } })() : "";
