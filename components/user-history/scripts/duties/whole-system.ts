@@ -233,16 +233,21 @@ export function measure(input: Inputs): PrecheckOutput {
     if (why.length) dirty.push(`${clock(to)} ${why.join(", ")}`);
     else clean++;
   }
-  // Each chat's newest measured check-in, as its run measured it, and only while it is under one check-in interval old. On 10-17 the count read
-  // VP of CI's after-job value, 1, while its 19:36Z run measured 26, and took counts 20 h old as current after no check-in ran from 00:05Z on.
+  // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
+  // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
+  // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
+  // On 10-18 d7 at 02:13Z counted frontend bro's p197, whose job had ended, though that chat's check-in job had set a live job on it. A count
+  // older than the interval is left out: after no check-in ran from 00:05Z on 10-17, 20 h old counts read as current.
   // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
   // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
   const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
     // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
     // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
-    const fresh = run !== undefined && (chat.everyMs === undefined || now - run.at <= chat.everyMs);
-    return { chat, value: fresh ? run.metrics.stuck_steps?.value ?? 0 : 0, at: run?.at };
+    const after = run?.after?.metrics?.stuck_steps;
+    const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
+    const fresh = at !== undefined && (chat.everyMs === undefined || now - at <= chat.everyMs);
+    return { chat, value: fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0, at };
   }).filter(entry => entry.value > 0);
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);

@@ -56,7 +56,7 @@ test("stuck steps add up each chat's newest measured check-in, a run skipped beh
   assert.equal(output.metrics.stuck_steps_all, 3, "ops guy's skip measured nothing, so its 3 stands; frontend bro's newer skip read 0");
 });
 
-test("stuck steps count each chat's check-in as its run measured it, and drop a count older than one check-in interval (VP of CI 10-17)", () => {
+test("stuck steps count each chat's check-in after its job when that job finished, and drop a count older than one check-in interval (VP of CI 10-17, frontend bro p197 10-18)", () => {
   const run = (minutesAgo: number, stuck: number, after?: number) => ({ duty: "checkin", at: NOW - minutesAgo * 60_000, slot: 0, trigger: "schedule", ms: 1, verdict: "missed",
     metrics: { stuck_steps: { value: stuck, target: 0, op: "<=", met: false } }, summary: "",
     ...(after === undefined ? {} : { after: { at: NOW - (minutesAgo - 5) * 60_000, verdict: "missed", metrics: { stuck_steps: { value: after, target: 0, op: "<=", met: false } } } }) }) as unknown as Inputs["chats"][number]["runs"][number];
@@ -65,9 +65,13 @@ test("stuck steps count each chat's check-in as its run measured it, and drop a 
     chat("VP of CI", 30 * 60_000, [run(20, 26, 1)]),
     chat("ops guy", 30 * 60_000, [run(20 * 60, 7)]),
     chat("Crawler VP", 60 * 60_000, [run(50, 2)]),
+    // frontend bro: its run read p197 stuck, and its job gave p197 a live owner before it ended.
+    chat("frontend bro", 30 * 60_000, [run(10, 1, 0)]),
   ] }));
-  assert.equal(output.metrics.stuck_steps_all, 28, "26 as VP of CI's run measured it, not its after-job 1; ops guy's 20 h old 7 is dropped");
+  assert.equal(output.metrics.stuck_steps_all, 3, "VP of CI's 1 after its job, not the run's 26; frontend bro's 0 after its job; ops guy's 20 h old 7 is dropped");
   assert.deepEqual(output.flagged?.filter(slice => slice.kind === "stuck_steps").map(slice => slice.item), ["VP of CI", "Crawler VP"]);
+  const running = measure(inputs({ chats: [chat("VP of CI", 30 * 60_000, [run(20, 26)])] }));
+  assert.equal(running.metrics.stuck_steps_all, 26, "a run whose job has not finished counts as it measured");
 });
 
 test("a chat whose check-in is paused adds no stuck steps, though its last run is under one interval old (slack green guy 10-18 00:09Z)", () => {
