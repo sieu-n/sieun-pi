@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lockedPrimeVersion } from "../utils/prime-version.mjs";
@@ -20,6 +21,10 @@ try {
     run(process.execPath, [resolve(root, "components/user-history/src/chat-service-cli.mjs"), ...(command === "open" ? ["open"] : []), ...args], process.cwd());
   } else if (command === "hosts") {
     run(process.execPath, [resolve(root, "components/user-history/src/hosts-cli.mjs"), ...args], process.cwd());
+  } else if (command === "sync") {
+    const installed = resolve(homedir(), ".local/share/prime-sync/sync.py");
+    if (args[0] === "install") run(process.env.SIEUN_PI_PYTHON || "/usr/bin/python3", ["-B", resolve(root, "components/prime-sync/install.py"), ...args.slice(1)]);
+    else run(process.env.SIEUN_PI_PYTHON || "/usr/bin/python3", ["-B", installed, ...args]);
   } else if (command === "source") {
     process.stdout.write(`${root}\n`);
   } else if (command === "sync-prime-agent") {
@@ -34,7 +39,7 @@ try {
     run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/user-history"));
     run("git", ["config", "core.hooksPath", "scripts/git-hooks"]);
   } else {
-    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, hosts, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
+    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, hosts, sync, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
     if (command && command !== "--help" && command !== "-h") process.exitCode = 1;
   }
 } catch (error) {

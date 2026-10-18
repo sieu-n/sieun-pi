@@ -6,6 +6,8 @@ Use the root build, check and apply commands. Do not change the live setup from 
 
 The pool runs from an installed copy, not from this checkout. A change under `components/pi-pool` is live only after you commit it and run `/usr/bin/python3 -B components/pi-pool/install.py`; `install.py rollback` undoes the last install. Never edit files under `~/.config/pi-pool` or `~/.local/share/pi-pool`.
 
+Every box runs `components/prime-sync` each minute, which fast-forwards its checkout to GitHub `main` and links skills and `config/AGENTS.md` from it, so a skill or rule edit reaches the other boxes about a minute after it is pushed. Harness entries and the corrections ledger sync through the private repo `sieu-n/prime-shared-state` without a commit here. Install a prime-sync change with `python3 -B components/prime-sync/install.py --ref <sha>` on each box.
+
 Workers own disjoint directories. Do not change another worker's files. Do not commit or push until the coordinator has reviewed the source and secret scan. A push to `main` needs no owner go until the proper launch (c74, 2026-10-15), and a push to `staging` needs no ok (c50).
 
 The live chat on :5182 runs from `~/.local/share/sieun-pi-chat/current`. Release a commit to it only with `node scripts/release-chat.mjs <sha>`, which builds the release folder, takes a lock, refuses a commit older than the live one unless you pass `--rollback`, flips `current` and kickstarts `com.sieun.agent-chat`. `skills/board/references/git.md` has the flags.

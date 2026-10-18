@@ -12,6 +12,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `llm-wiki.service` | `pnpm run dev` of `apps/llm-wiki` in `~/src/auto-sns-agent`. |
 | `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
 | `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
+| `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
 The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
@@ -51,6 +52,7 @@ cd ~/src/sieun-pi && npm run develop
 node scripts/cli.mjs plan --out .work/plan.json && node scripts/cli.mjs apply --plan .work/plan.json && node scripts/cli.mjs verify
 /usr/bin/python3 -B components/pi-pool/install.py --ref "$(git rev-parse HEAD)"
 node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
+/usr/bin/python3 -B components/prime-sync/install.py --ref "$(git rev-parse HEAD)"   # needs gh auth login, and origin set to GitHub
 
 # Units
 mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/

@@ -34,13 +34,6 @@
       "target": ".prime/agent/skills/board"
     },
     {
-      "id": "skill:create-verification-skill",
-      "kind": "link",
-      "source": "skills/create-verification-skill",
-      "scope": "home",
-      "target": ".prime/agent/skills/create-verification-skill"
-    },
-    {
       "id": "skill:figure-it-out",
       "kind": "link",
       "source": "skills/figure-it-out",
@@ -53,20 +46,6 @@
       "source": "skills/how",
       "scope": "home",
       "target": ".prime/agent/skills/how"
-    },
-    {
-      "id": "skill:interrogate",
-      "kind": "link",
-      "source": "skills/interrogate",
-      "scope": "home",
-      "target": ".prime/agent/skills/interrogate"
-    },
-    {
-      "id": "skill:linear-ticket",
-      "kind": "link",
-      "source": "skills/linear-ticket",
-      "scope": "home",
-      "target": ".prime/agent/skills/linear-ticket"
     },
     {
       "id": "skill:no-comments",
@@ -111,13 +90,6 @@
       "target": ".prime/agent/skills/principle-encode-lessons-in-structure"
     },
     {
-      "id": "skill:principle-exhaust-the-design-space",
-      "kind": "link",
-      "source": "skills/principle-exhaust-the-design-space",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-exhaust-the-design-space"
-    },
-    {
       "id": "skill:principle-experience-first",
       "kind": "link",
       "source": "skills/principle-experience-first",
@@ -130,13 +102,6 @@
       "source": "skills/principle-fix-root-causes",
       "scope": "home",
       "target": ".prime/agent/skills/principle-fix-root-causes"
-    },
-    {
-      "id": "skill:principle-foundational-thinking",
-      "kind": "link",
-      "source": "skills/principle-foundational-thinking",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-foundational-thinking"
     },
     {
       "id": "skill:principle-guard-the-context-window",
@@ -167,32 +132,11 @@
       "target": ".prime/agent/skills/principle-migrate-callers-then-delete-legacy-apis"
     },
     {
-      "id": "skill:principle-minimize-reader-load",
-      "kind": "link",
-      "source": "skills/principle-minimize-reader-load",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-minimize-reader-load"
-    },
-    {
       "id": "skill:principle-model-the-domain",
       "kind": "link",
       "source": "skills/principle-model-the-domain",
       "scope": "home",
       "target": ".prime/agent/skills/principle-model-the-domain"
-    },
-    {
-      "id": "skill:principle-never-block-on-the-human",
-      "kind": "link",
-      "source": "skills/principle-never-block-on-the-human",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-never-block-on-the-human"
-    },
-    {
-      "id": "skill:principle-outcome-oriented-execution",
-      "kind": "link",
-      "source": "skills/principle-outcome-oriented-execution",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-outcome-oriented-execution"
     },
     {
       "id": "skill:principle-prove-it-works",
@@ -221,13 +165,6 @@
       "source": "skills/principle-sequence-verifiable-units",
       "scope": "home",
       "target": ".prime/agent/skills/principle-sequence-verifiable-units"
-    },
-    {
-      "id": "skill:principle-subtract-before-you-add",
-      "kind": "link",
-      "source": "skills/principle-subtract-before-you-add",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-subtract-before-you-add"
     },
     {
       "id": "skill:principle-type-system-discipline",
