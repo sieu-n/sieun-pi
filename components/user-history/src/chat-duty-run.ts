@@ -610,8 +610,10 @@ export class Duties {
 
   /**
    * Starts the job of each run whose start a restart cut off: a `<dutyId>.pending.json` left with no run of this process going. The job starts
-   * through the same turn-queue wait and is written into the run's record, while the run's slot is under one interval old; an older slot, or a
-   * record that already has its job or is gone, only clears the file.
+   * through the same turn-queue wait and is written into the run's record; a record that already has its job or is gone only clears the file.
+   * A newer run replaces the file and marks this one, so the file always names the duty's newest measure. A slot one interval old started no
+   * job until 10-18: 38 measured runs from 10-16 to 10-18 lost their job that way, since a start that waited in the turn queue past one
+   * interval was cut by a release, and the slots due meanwhile had been skipped behind it, so no fresh run took its place.
    */
   private async resume(chatId: string): Promise<void> {
     const names = await readdir(this.store.chatDir(chatId)).catch(() => [] as string[]);
@@ -624,11 +626,6 @@ export class Duties {
       const record = pending && (await this.store.runs(chatId)).find(run => run.duty === dutyId && run.at === pending.at);
       const duty = dutyId === CHECK_IN_DUTY_ID ? CHECK_IN_DUTY : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
       if (!pending || !record || !duty || record.job || record.verdict === "skipped" || record.summary.includes(NOT_STARTED)) { await rm(file, { force: true }); continue; }
-      if (this.now() - (record.slot ?? record.at) >= intervalMs(pending.schedule)) {
-        await this.store.updateRun(chatId, dutyId, record.at, stored => { stored.summary += `; ${NOT_STARTED}: the server restarted and its slot passed`; });
-        await rm(file, { force: true });
-        continue;
-      }
       this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the server restarted before the job of the run of ${new Date(record.at).toISOString()} started; starting it`);
       this.steps.set(key, { at: record.at, step: "starting its job" });
       const task = this.startJob(chatId, record, duty, { schedule: pending.schedule, measured: pending.measured, brief: pending.brief }, false)

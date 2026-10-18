@@ -252,7 +252,7 @@ export const datedName = (name: string, at: number): string => {
   const date = localTime(at).slice(5, 10);
   return /\d\d:\d\d$/.test(name) ? name.replace(/(\d\d:\d\d)$/, `${date} $1`) : `${name} ${date}`;
 };
-/** Creates per start: the first and one retry when the session never appeared. */
+/** Creates per start that fail for a reason other than a taken name: the first and one retry when the session never appeared. */
 const CREATE_TRIES = 2;
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -314,8 +314,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * An unregistered live session with the job's name in the chat's folder, made since `since`. An older one is a past job with the same clock
    * time: 10-12 13:24Z the 22:24 Local dev servers start adopted the 10-10 22:24 job, its brief failed, and that session stayed loaded.
    */
-  const find = async (chat: DutyChat, name: string, since: number): Promise<string | undefined> => {
-    for (const wait of waits) {
+  const find = async (chat: DutyChat, name: string, since: number, after: readonly number[]): Promise<string | undefined> => {
+    for (const wait of after) {
       if (wait > 0) await sleep(wait);
       await input.refresh?.().catch(() => {});
       for (const candidate of await input.rows().catch(() => [])) {
@@ -327,18 +327,25 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   };
   const createOrAdopt = async (chat: DutyChat, first: string, runAt?: number): Promise<{ id: string; name: string }> => {
     let cause = "";
-    let name = first;
     // A session made since the run started is its own. On 10-17 slack green guy's 22:11:50Z check-in run made "check-in slack green guy 07:11"
     // with a create that timed out, and each of the 3 service restarts after it counted only sessions made since its own attempt, found the name
     // taken, made the dated name, and then found that taken too: the run never got its job.
     const since = runAt ?? (input.now ?? Date.now)();
-    for (let tries = 1; tries <= CREATE_TRIES; tries++) {
+    // A taken name moves to the run's dated name, then to a numbered one, until the daemon takes one; a refusal is no failed create. On 10-18
+    // the 05:06 KST catch-up of the 10-17 07:29 slot of "portal stays up" was dated with the day it ran, "10-18 07:29", so the real 10-18 07:29
+    // run found both its names taken and started no job; "ci system" lost its 07:39 run the same way.
+    const dated = datedName(first, since);
+    let taken = 0;
+    for (let tries = 1; tries <= CREATE_TRIES;) {
+      const name = taken === 0 ? first : taken === 1 ? dated : `${dated} (${taken})`;
       try { return { id: (await input.threads.create({ cwd: chat.cwd, name })).id, name }; }
       catch (error) { cause = reason(error); }
-      const found = await find(chat, name, since);
+      const refused = NAME_TAKEN.test(cause);
+      const found = await find(chat, name, since, refused ? [0] : waits);
       if (found) { input.log?.(`duty job ${name}: the create failed (${cause}) but the session exists; adopting it`); return { id: found, name }; }
+      if (refused) { input.log?.(`duty job ${name}: the name is taken by another session; trying the next name`); taken++; continue; }
       input.log?.(`duty job ${name}: create ${tries} of ${CREATE_TRIES} failed and no session appeared: ${cause}`);
-      if (NAME_TAKEN.test(cause)) name = datedName(first, (input.now ?? Date.now)());
+      tries++;
     }
     throw new Error(`no session after ${CREATE_TRIES} creates: ${cause}`);
   };

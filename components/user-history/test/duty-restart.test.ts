@@ -76,7 +76,7 @@ test("restart: a Run now measured while its job waits for a working slot keeps i
   after.close();
 });
 
-test("restart: a check-in cut off in the turn-queue wait gets its job from the next server; one whose slot passed is marked and starts none", async () => {
+test("restart: a check-in cut off in the turn-queue wait gets its job from the next server, also once its slot is an interval old", async () => {
   const store = await storeWithDuty();
   const hung = hungAdmit();
   const now = { at: at(17, 9) };
@@ -110,7 +110,10 @@ test("restart: a check-in cut off in the turn-queue wait gets its job from the n
   const gone = new Duties(store, { isChat: async () => true, jobs: fourth.host, now: () => now.at, tickMs: 0, admit: async () => async () => {} });
   await gone.tick();
   await gone.settled();
-  assert.deepEqual(fourth.starts, [], "a slot one interval old starts no job");
-  assert.match((await store.runs("c1"))[0]!.summary, new RegExp(`${NOT_STARTED}: the server restarted and its slot passed`));
+  // 38 measured runs from 10-16 to 10-18 lost their job to "the server restarted and its slot passed".
+  assert.deepEqual(fourth.starts, ["check-in AI harness 17:20"], "a slot one interval old still gets its job");
+  const [resumed] = await store.runs("c1");
+  assert.equal(resumed?.job?.id, "s1");
+  assert.doesNotMatch(resumed!.summary, new RegExp(NOT_STARTED));
   gone.close();
 });
