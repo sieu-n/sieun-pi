@@ -25,10 +25,13 @@
     return /rate.?limit|429|usage limit/i.test(run.error) ? "rate limited" : /overloaded|529|50[234]|server error/i.test(run.error) ? "provider error" : "network error";
   }
 
+  let checking = false;
   async function check(): Promise<void> {
-    if (busy) return;
+    if (busy || checking) return;
+    checking = true;
     try { report = await get<InterruptedReport>("api/interrupted", 90_000); }
     catch { /* The next check retries; a failed check must not hide the chat behind toasts. */ }
+    finally { checking = false; }
   }
 
   async function resume(): Promise<void> {

@@ -21,22 +21,31 @@ function runScript(args: readonly string[]): Promise<InterruptedReport> {
 }
 
 /**
- * Runs the check at most once per 15 s for every open tab, and never next to a resume, so two clicks or two tabs cannot send
- * "continue" to the same head twice.
+ * Runs one check at a time for every open tab, and never next to a resume, so two clicks or two tabs cannot send "continue" to the same
+ * head twice. A check answers with the last finished report and starts a new run once that report is 15 s old. On 10-18 on us-metal02 the
+ * dry run took 45 to 58 s and a new run queued every 15 s behind the last one, so the script ran back to back and every page check
+ * waited past its 90 s abort.
  */
 export class InterruptedRuns {
-  private last: { at: number; report: Promise<InterruptedReport> } | null = null;
+  private last: { at: number; report: InterruptedReport } | null = null;
+  private pending: Promise<InterruptedReport> | null = null;
+  private epoch = 0;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly run: (args: readonly string[]) => Promise<InterruptedReport> = runScript) {}
 
   check(): Promise<InterruptedReport> {
-    if (this.last && Date.now() - this.last.at < CHECK_TTL_MS) return this.last.report;
-    const report = this.serial(() => this.run(["--dry-run"]));
-    this.last = { at: Date.now(), report };
-    report.catch(() => { if (this.last?.report === report) this.last = null; });
-    return report;
+    if (!this.pending && !(this.last && Date.now() - this.last.at < CHECK_TTL_MS)) {
+      const epoch = this.epoch;
+      const pending = this.pending = this.serial(() => this.run(["--dry-run"]));
+      pending.then(report => { if (this.epoch === epoch) this.last = { at: Date.now(), report }; }, () => {})
+        .finally(() => { if (this.pending === pending) this.pending = null; });
+    }
+    return this.last ? Promise.resolve(this.last.report) : this.pending!;
   }
+
+  /** A resume changes what is paused, so the next check waits for a run that starts after it. */
+  private forget(): void { this.last = null; this.pending = null; this.epoch++; }
 
   /**
    * A hung run (working, no activity for 30 min) cannot take a message, so `unstick` aborts it first; the script then counts the
@@ -61,7 +70,7 @@ export class InterruptedRuns {
       if (unstuck.length) await new Promise(resolve => setTimeout(resolve, 2000));
       return this.run(unstuck.length ? ["--unstuck", unstuck.join(",")] : []);
     });
-    this.last = null;
+    this.forget();
     return report;
   }
 
@@ -98,7 +107,7 @@ export class InterruptedRuns {
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
       return { ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) };
     });
-    this.last = null;
+    this.forget();
     return report;
   }
 
