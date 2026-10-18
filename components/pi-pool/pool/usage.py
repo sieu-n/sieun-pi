@@ -13,7 +13,7 @@ WEEK_SEC = 7 * 24 * 3600
 # An account is read again after SAMPLE_MIN_SEC when a window is nearly full, and
 # after up to SAMPLE_MAX_SEC as its headroom grows; a full window waits for its reset.
 # Both are the cadence this pool's usage was sampled at from 2026-09-23 to 2026-10-18
-# (26,807 reads without a rate limit problem).
+# (26,807 good reads and 2,672 failed ones in the old sampler's log).
 SAMPLE_MIN_SEC = 90
 SAMPLE_MAX_SEC = 15 * 60
 READERS = 4
