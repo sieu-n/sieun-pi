@@ -160,6 +160,13 @@ export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMes
  */
 type KeptRow = { key: readonly unknown[]; row: SessionRow };
 const sameKey = (left: readonly unknown[], right: readonly unknown[]): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
+/** A projected row's sort time, parsed once per row object: a kept row is the same object in each projection. */
+const sortTimes = new WeakMap<SessionRow, number>();
+function sortTime(row: SessionRow): number {
+  let at = sortTimes.get(row);
+  if (at === undefined) { at = Date.parse(row.lastActivityAt ?? row.created ?? ""); sortTimes.set(row, at); }
+  return at;
+}
 /** Each projected row's entry for `chatAgents`, so a kept row keeps its entry and its first task is not looked up again. */
 const agentRowOf = new WeakMap<SessionRow, AgentRow>();
 
@@ -688,40 +695,40 @@ export class Catalog {
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
-    // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
-    const listed = [...this.summaries.values()].filter(row => isListed(row, this.hostOf(row.sessionId) ? () => true : undefined));
     const selfName = this.hosts?.selfName ?? null;
     const kept = new Map<string, KeptRow>();
-    const rows = listed
-      .map(row => {
-        const schedule = this.schedules.get(row.sessionId);
-        const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
-        const subtree = subtreeOf(row, children);
-        const chat = chats?.has(row.sessionId) === true;
-        const working = isWorking(row, subtree);
-        const origin = originOf(row);
-        const host = this.hostOf(row.sessionId) ?? selfName;
-        const archived = archivedByOwner?.has(row.sessionId) === true;
-        const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
-          archived, this.heldLifecycle.get(row.sessionId)];
-        const before = this.keptRows.get(row.sessionId);
-        // A chat row gets its agents and counts written onto it below, and a working row's pulse follows its running subagents, so both are built again.
-        if (!chat && !working && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); return before.row; }
-        const checkIn = checkIns?.get(row.sessionId);
-        const brief = briefs?.get(row.sessionId);
-        const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
-          ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
-          ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
-        if (host) projected.host = host;
-        // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
-        if (archived) projected.archived = true;
-        if (!chat && !working) kept.set(row.sessionId, { key, row: projected });
-        return projected;
-      });
+    const rows: SessionRow[] = [];
+    for (const row of this.summaries.values()) {
+      const remote = this.hostOf(row.sessionId);
+      // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
+      if (!isListed(row, remote ? () => true : undefined)) continue;
+      const host = remote ?? selfName;
+      const schedule = this.schedules.get(row.sessionId);
+      const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
+      const subtree = subtreeOf(row, children);
+      const chat = chats?.has(row.sessionId) === true;
+      const working = isWorking(row, subtree);
+      const origin = originOf(row);
+      const archived = archivedByOwner?.has(row.sessionId) === true;
+      const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
+        archived, this.heldLifecycle.get(row.sessionId)];
+      const before = this.keptRows.get(row.sessionId);
+      // A chat row gets its agents and counts written onto it below, and a working row's pulse follows its running subagents, so both are built again.
+      if (!chat && !working && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
+      const checkIn = checkIns?.get(row.sessionId);
+      const brief = briefs?.get(row.sessionId);
+      const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
+        ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
+        ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
+        ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
+      if (host) projected.host = host;
+      // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
+      if (archived) projected.archived = true;
+      if (!chat && !working) kept.set(row.sessionId, { key, row: projected });
+      rows.push(projected);
+    }
     this.keptRows = kept;
-    const at = new Map(rows.map(row => [row, Date.parse(row.lastActivityAt ?? row.created ?? "")]));
-    rows.sort((left, right) => at.get(right)! - at.get(left)!);
+    rows.sort((left, right) => sortTime(right) - sortTime(left));
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
     const agentRows: AgentRow[] = rows.map(row => {
       let entry = agentRowOf.get(row);
