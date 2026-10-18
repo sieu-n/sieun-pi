@@ -84,4 +84,17 @@ mkdir -p "$W/mac/src/gone" && (cd "$W/mac" && printf 'g\n' > src/gone/rule.yaml 
 printf 'live rule\n' > "$W/box/src/gone/rule.yaml"; (cd "$W/mac" && git rm -q src/gone/rule.yaml && $G commit -qm "gone1")
 run >/dev/null; expect '"fast-forward"' "15 a live edit on a file the tip deletes does not hold the move (crawler-proxy-success-prod.yaml, 10-18 12:22Z)"
 [ "$(cat "$W/box/src/gone/rule.yaml")" = "live rule" ] && [ "$(cd "$W/box" && git status --porcelain -- src/gone)" = "?? src/gone/" ] && echo "PASS 15b the edit stays as an untracked file" || { echo "FAIL 15b $(cd "$W/box" && git status --porcelain -- src/gone)"; fail=1; }
+mkdir -p "$W/mac/apps/virev-demo"
+(cd "$W/mac" && printf 'base\n' > apps/virev-demo/app.css && printf 'v1\n' > apps/virev-demo/old.svelte && printf 'a\nb\nc\n' > src/ci.py \
+  && git add apps/virev-demo src/ci.py && $G commit -qm demo0 && printf 'v2\n' > apps/virev-demo/old.svelte && git add apps/virev-demo && $G commit -qm demo1 \
+  && git checkout -qb ci/demo-blue-sparingly && printf 'blue sparingly\n' > apps/virev-demo/app.css && printf 'a\nb\nc\nci\n' > src/ci.py \
+  && git add apps/virev-demo src/ci.py && $G commit -qm blue && git checkout -q sieun/dev); run >/dev/null
+(cd "$W/box" && git fetch -q "$W/mac" ci/demo-blue-sparingly:refs/remotes/origin/ci/demo-blue-sparingly \
+  && git show origin/ci/demo-blue-sparingly:apps/virev-demo/app.css > apps/virev-demo/app.css && git show origin/ci/demo-blue-sparingly:src/ci.py > src/ci.py \
+  && printf 'v1\n' > apps/virev-demo/old.svelte && touch -d '2 hours ago' apps/virev-demo/app.css apps/virev-demo/old.svelte)
+(cd "$W/mac" && printf 'base\ntip\n' > apps/virev-demo/app.css && printf 'A\nb\nc\n' > src/ci.py && git add apps/virev-demo src/ci.py && $G commit -qm demo2)
+run >/dev/null; expect '"carried": \["src/ci.py"\]' "16 bytes that only a ci/ branch holds are a live edit that rides on the move (205 demo edits on origin/ci/demo-blue-sparingly dropped at 12:28Z on 10-18)"
+expect '"kept_local": \["apps/virev-demo/app.css"\]' "16b a demo file the tip changes keeps its bytes"
+[ "$(cat "$W/box/apps/virev-demo/app.css")" = "blue sparingly" ] && [ "$(cat "$W/box/apps/virev-demo/old.svelte")" = v1 ] && [ "$(cat "$W/box/src/ci.py" | tr '\n' ' ')" = "A b c ci " ] \
+  && echo "PASS 16c both demo files keep their bytes, also one at an older tip state, and the ci/ edit merges onto the tip" || { echo "FAIL 16c $(tail -1 "$W/sync.log")"; fail=1; }
 exit $fail

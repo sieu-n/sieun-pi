@@ -18,7 +18,8 @@ reflog and HEAD, other than HEAD's. A land that moves sieun/dev without the inde
 the run sets a staged one back to HEAD's and gives such a file on disk the tip's bytes, saving the old ones in CARRY_DIR.
 Bytes no commit held there are live edits.
 A wiki page (apps/llm-wiki/content/) that the tip changes while this checkout holds other bytes keeps the local bytes,
-since the wiki host (us-metal02) is the one writer of wiki pages.
+since the wiki host (us-metal02) is the one writer of wiki pages. A file under a MIRROR dir that differs from HEAD keeps
+its bytes too, whatever commit they match, since virev-demo-sync owns those live demo edits.
 Outside the wiki, a live edit on a path the fast-forward writes rides on the move: it is merged onto the tip's bytes,
 a hunk both sides changed keeps the live side, and the old bytes are saved in CARRY_DIR. A file that cannot be merged
 as text (binary, symlink, added or deleted on one side) keeps its bytes as a local edit on the new HEAD. Until
@@ -61,6 +62,10 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 STALE_LOCK_S = int(os.environ.get("ASA_SYNC_STALE_LOCK_S") or 70)
 GIT = "/usr/bin/git"
 WIKI = "apps/llm-wiki/content/"
+# The dirs virev-demo-sync (sync.mjs DIRS) mirrors between the Mac and us-metal02. Their live edits are the owner's 5180 demo
+# work, uncommitted on purpose (c105). On 2026-10-18 at 12:28Z this script gave 205 of them the tip's bytes, because their
+# bytes matched commits on origin/ci/demo-blue-sparingly or older tip commits, and virev-demo-sync had to put them back.
+MIRROR = ("apps/virev-demo/", "packages/ui/", "packages/config/")
 READ_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0",
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=15"}
 for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
@@ -348,7 +353,7 @@ def refresh_left_behind(now, skip, saved):
     2026-10-18 would stay as reverts in the work tree. Returns the paths it wrote.
     """
     rels = [rel for rel in git("diff", "--name-only", "-z", "--no-renames", now).stdout.decode().split("\0")
-            if rel and rel not in skip and not rel.startswith(WIKI)]
+            if rel and rel not in skip and not rel.startswith((WIKI, *MIRROR))]
     disks, idx = disk_states(rels), index_map()
     entries = {rel: tip_entry(now, rel) for rel in rels}
     rels = [rel for rel in rels if disks[rel] != entries[rel] and idx.get(rel) == entries[rel]
@@ -442,30 +447,22 @@ def raw_states(*args, paths):
     return states
 
 
-def left_behind(head, wanted):
-    """The paths of wanted ({rel: entry or None}) whose entry is a state git already holds, so it is no live edit.
+def left_behind(head, wanted, tip=None):
+    """The paths of wanted ({rel: entry or None}) whose entry is a state sieun/dev already moved past, so it is no live edit.
 
-    A state counts when the path had it at a commit from the oldest commit in sieun/dev's reflog up to head, or, for bytes,
-    at a commit on a branch or remote branch since then. On 2026-10-18 the Mac's land-object.mjs runs moved sieun/dev from
-    10:44Z to 11:09Z and left the pre-land bytes of 50 paths staged and the index without 36 paths those lands added, and
-    files on disk held drafts whose commits sit on ci/ branches, so asa-tip-sync skipped on "the index stages changes" and
-    a carry would have merged those reverts onto the tip. refs/stash is left out, since lint-staged backs up live edits there.
+    A state counts only when the path had it at a commit from the oldest commit in sieun/dev's reflog up to head or tip.
+    On 2026-10-18 the Mac's land-object.mjs runs moved sieun/dev from 10:44Z to 11:09Z and left the pre-land bytes of 50
+    paths staged and the index without 36 paths those lands added, so asa-tip-sync skipped on "the index stages changes".
+    Bytes that only a ci/ or other branch holds are a live edit: until 2026-10-18 they counted too, and at 12:28Z the run
+    gave 205 demo edits whose restyle commit sits only on origin/ci/demo-blue-sparingly the tip's bytes.
     """
     if not wanted:
         return set()
     oldest = out("log", "-g", "--format=%H", BRANCH).splitlines()[-1:]
     if not oldest or git("merge-base", "--is-ancestor", oldest[0], head, check=False).returncode != 0:
         return set()
-    states = raw_states(f"{oldest[0]}..{head}", paths=wanted)
-    held = {rel for rel, entry in wanted.items() if entry == tip_entry(oldest[0], rel) or entry in states.get(rel, ())}
-    # Bytes never added to the object store are a live edit, so only stored blobs need the branch walk.
-    rest = [rel for rel, entry in wanted.items() if rel not in held and entry is not None]
-    known = git("cat-file", "--batch-check", inp="".join(wanted[rel][1] + "\n" for rel in rest).encode()).stdout.decode().splitlines()
-    rest = [rel for rel, row in zip(rest, known) if not row.endswith(" missing")]
-    if rest:
-        other = raw_states("--branches", "--remotes", f"^{oldest[0]}", paths=rest)
-        held |= {rel for rel in rest if wanted[rel] in other.get(rel, ())}
-    return held
+    states = raw_states(f"^{oldest[0]}", head, *([tip] if tip else []), paths=wanted)
+    return {rel for rel, entry in wanted.items() if entry == tip_entry(oldest[0], rel) or entry in states.get(rel, ())}
 
 
 def index_map():
@@ -572,7 +569,7 @@ def main():
     # sieun/dev and left the index behind. Either entry goes back to HEAD's, and the move below sets it again.
     idx = index_map()
     halfway = [rel for rel in staged if idx.get(rel) == tip_entry(tip, rel)]
-    held = left_behind(head, {rel: idx.get(rel) for rel in staged if rel not in halfway})
+    held = left_behind(head, {rel: idx.get(rel) for rel in staged if rel not in halfway}, tip)
     stale_index = [rel for rel in staged if rel in held]
     if "--dry-run" not in sys.argv:
         set_entries([(rel, tip_entry(head, rel)) for rel in halfway + stale_index])
@@ -584,7 +581,8 @@ def main():
     disks = disk_states([rel for rel, _old, _new in rows])
     # A file on disk at a state the branch moved past was left behind by a land, so it takes the tip's bytes
     # like a superseded draft. Carried as a live edit it would merge that land's revert onto the tip.
-    held = left_behind(head, {rel: disks[rel] for rel, old, new in rows if disks[rel] not in (old, new) and (disks[rel] or ("",))[0] != "dir"})
+    held = left_behind(head, {rel: disks[rel] for rel, old, new in rows if disks[rel] not in (old, new) and (disks[rel] or ("",))[0] != "dir"
+                              and not rel.startswith(MIRROR)}, tip)
     dirty, preapplied, kept, carried, overlap, stale = [], [], [], [], [], []
     for rel, old, new in rows:
         disk = disks[rel]
@@ -593,6 +591,9 @@ def main():
         if disk == new:
             preapplied.append((rel, old, new))
         elif rel.startswith(WIKI) and new is not None and disk is not None and disk[0] == new[0]:
+            preapplied.append((rel, old, new))
+            kept.append(rel)
+        elif rel.startswith(MIRROR) and new is not None and (disk is None or disk[0] != "dir"):
             preapplied.append((rel, old, new))
             kept.append(rel)
         elif rel in held and "120000" not in (disk and disk[0], new and new[0]) and (disk is None or disk[0] != "dir"):
