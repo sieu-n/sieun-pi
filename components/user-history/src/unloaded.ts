@@ -10,10 +10,25 @@ export const UNLOADED_FILE = "unloaded.json";
 /** Two days, past the resume pass's 24 h look-back. */
 const KEEP_MS = 48 * 60 * 60_000;
 
-/** Adds `sessions` stopped at `at` to UNLOADED_FILE and drops entries older than KEEP_MS, through a temp file. */
-export async function recordUnloaded(dataDir: string, sessions: readonly string[], at: number): Promise<void> {
-  if (!sessions.length) return;
+/** The write under way for each file, so concurrent stops in one process append in turn instead of racing on one temp file. */
+const writes = new Map<string, Promise<void>>();
+
+/**
+ * Adds `sessions` stopped at `at` to UNLOADED_FILE and drops entries older than KEEP_MS, through a temp file. Calls queue per file: since
+ * ed0ffc2 the idle unload stops a sweep's sessions at once, and on 10-18 from 04:05Z on the Mac 35 of its records failed with ENOENT on the
+ * shared temp file's rename, and each record that lost the race dropped its session from the file.
+ */
+export function recordUnloaded(dataDir: string, sessions: readonly string[], at: number): Promise<void> {
+  if (!sessions.length) return Promise.resolve();
   const file = join(dataDir, UNLOADED_FILE);
+  const next = (writes.get(file) ?? Promise.resolve()).catch(() => {}).then(() => write(file, sessions, at));
+  const tail = next.catch(() => {});
+  writes.set(file, tail);
+  void tail.then(() => { if (writes.get(file) === tail) writes.delete(file); });
+  return next;
+}
+
+async function write(file: string, sessions: readonly string[], at: number): Promise<void> {
   let kept: Record<string, string> = {};
   try {
     const read = JSON.parse(await readFile(file, "utf8")) as unknown;

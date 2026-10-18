@@ -4,7 +4,7 @@ import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry,
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
-import { childrenStirred, Dormancy, type IdleDetach, unsilent } from "./chat-dormancy.ts";
+import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
@@ -593,9 +593,9 @@ export class ThreadHub {
       switch (event.type) {
         case "session_event": {
           thread.lastEventAt = Date.now();
-          // A child's entry changes its chat's idle time only through `childrenChanged`: the daemon unloading an idle job or a deleted job's
-          // cancel is an rlm_child_update too, and it reset the clock of every VP chat, so none detached (10-14).
-          if (event.event.type !== "rlm_child_update") thread.activeAt = this.dormant.now();
+          // Only work moves the idle clock (`showsWork`). A child's entry changes it through `childrenChanged`: the daemon unloading an idle
+          // job or a deleted job's cancel is an rlm_child_update too, and it reset the clock of every VP chat, so none detached (10-14).
+          if (showsWork(event.event)) thread.activeAt = this.dormant.now();
           const projected = this.projector.event(event.event);
           if (projected) thread.coalesce(projected, UPDATE_COALESCE_MS);
           const native = event.event.type;

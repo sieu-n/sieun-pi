@@ -190,29 +190,37 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
-    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(live, byId, input.footprints, tree, input.now, input.idleMs) } : {},
+    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(rows, live, byId, input.footprints, tree, input.now, input.idleMs) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
 }
 
 /**
- * A session with a session at work below it waits on that work, and the idle unload keeps it (src/idle-unload.ts `busyAncestors`), so it is
- * not counted as sleeping: from 03:49Z on 10-18 'us-metal02 setup', quiet 13 to 17 min while its job metal02-ci-slice worked, read as 0.04 GB
- * of the sleeping total that the unload could not stop.
+ * Each session's tree clock: the latest activity of the session and of every session below it, stopped ones included, and Infinity for one
+ * with a session at work below it. The idle unload keeps a session with work below it (src/idle-unload.ts `busyAncestors`), and a chat rests
+ * its idle time from its jobs' last stir (chat-dormancy `childrenStirred`), so a session counts as sleeping only once its whole tree is quiet.
+ * On 10-18 'us-metal02 setup', quiet 13 to 17 min from 03:49Z while its job metal02-ci-slice worked, read as 0.04 GB that the unload could
+ * not stop, and the chat 'Douyin index gaps', quiet since 03:52Z, read as a whole 0.47 to 0.53 GB worker from 04:16Z while its job had
+ * worked until 04:12:45Z, so its idle window ran to about 04:23Z.
  */
-function waitingOnWork(live: readonly Row[], byId: ReadonlyMap<string, Row>): Set<string> {
-  const waiting = new Set<string>();
-  for (const row of live) {
-    if (!row.working && !row.active) continue;
-    for (let up = row.parent; up !== undefined && up !== row.id && !waiting.has(up); up = byId.get(up)?.parent) waiting.add(up);
+function treeClocks(rows: readonly Row[], byId: ReadonlyMap<string, Row>): Map<string, number> {
+  const clock = new Map<string, number>();
+  for (const row of rows) {
+    const at = row.working || row.active ? Infinity : row.lastAt;
+    if (Number.isNaN(at)) continue;
+    const seen = new Set<string>();
+    for (let id: string | undefined = row.id; id !== undefined && !seen.has(id); id = byId.get(id)?.parent) {
+      seen.add(id);
+      if ((clock.get(id) ?? -Infinity) < at) clock.set(id, at);
+    }
   }
-  return waiting;
+  return clock;
 }
 
-function sleepingLine(live: readonly Row[], byId: ReadonlyMap<string, Row>, footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
-  const waiting = waitingOnWork(live, byId);
-  const asleep = new Map(live.filter(row => !row.working && !waiting.has(row.id) && now - row.lastAt > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
+function sleepingLine(rows: readonly Row[], live: readonly Row[], byId: ReadonlyMap<string, Row>, footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
+  const clocks = treeClocks(rows, byId);
+  const asleep = new Map(live.filter(row => !row.working && now - (clocks.get(row.id) ?? row.lastAt) > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
   const trees = new Map<string, { root: string; tree: string; bytes: number }>();
   const add = (row: Row, bytes: number) => {
     const found = tree(row);

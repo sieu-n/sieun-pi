@@ -1,9 +1,13 @@
 // Guards the 10-15 21:22Z incident (25 idle workers held 20.77 GB of the 32 GB Mac) and the 10-17 21:29Z one (roots stopped and reloaded 4 times in 11 min), under c88.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
+import { showsWork } from "../src/chat-dormancy.ts";
+import { type Footprints, watchLine } from "../src/mac-usable-watch.ts";
+import { recordUnloaded, UNLOADED_FILE } from "../src/unloaded.ts";
 import { type DaemonAnswer, IdleUnloader, quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, unloadPlan } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; pool: string[]; rows: SessionSummary[] };
@@ -223,4 +227,41 @@ test("a stale row whose active session the daemon does not know is not asked aga
   await unloader.sweep();
   await unloader.settled();
   assert.equal(calls.length, 2, "a row that changed is planned again");
+});
+
+// d7 sleeping_gb on 10-18. The chat 'Douyin index gaps' was quiet from 03:52Z while its job worked until 04:12:45Z, and the Mac usable watch
+// read it as a whole sleeping worker from 04:16Z; 'us-metal02 setup' read as sleeping from 03:49Z while its job metal02-ci-slice worked.
+test("the watch counts a session as sleeping only once its whole tree has been quiet past the idle window", () => {
+  const GB = 1024 ** 3;
+  const at = (iso: string) => Date.parse(`2026-10-18T${iso}Z`);
+  const raw = (id: string, fields: Record<string, unknown>) => ({ sessionId: id, activeSessionId: id, lifecycle: "live", activity: "idle", isSessionActive: false, ...fields });
+  const rows = [
+    raw("douyin", { sessionName: "Douyin index gaps", workerPid: 22855, lastActivityAt: "2026-10-18T03:52:14.604Z" }),
+    { sessionId: "douyin-job", parentSessionId: "douyin", lifecycle: "archived", activity: "idle", lastActivityAt: "2026-10-18T04:12:45.036Z" },
+    raw("setup", { sessionName: "us-metal02 setup", workerPid: 6745, lastActivityAt: "2026-10-18T03:36:47.433Z" }),
+    raw("slice", { parentSessionId: "setup", workerPid: 6745, activity: "working", isSessionActive: true, lastActivityAt: "2026-10-18T04:14:00.000Z" }),
+  ];
+  const footprints: Footprints = { workers: { 22855: { pids: 3, bytes: 0.53 * GB }, 6745: { pids: 4, bytes: 0.6 * GB } },
+    kernels: [{ pid: 41, root: "setup", session: "setup", pids: 1, bytes: 0.04 * GB, biggest: null }], swap_used_bytes: null, pressure_level: null, cpu_s: 0 };
+  const line = (now: number) => watchLine({ now, rows, footprints, queue: null, chats: new Set(["douyin"]), title: () => null, cpuMs: 0, idleMs: TEN_MIN }).sleeping;
+  assert.deepEqual(line(at("04:17:06")), { gb: 0, workers: 0, kernels: 0, trees: [] }, "the 04:17Z line read 0.58 GB");
+  assert.equal(line(at("04:25:00"))!.gb, 0.53, "the chat counts once its job has been quiet past the window and the slack");
+});
+
+// From 04:05Z on 10-18 the Mac logged 35 'idle unload: record ... ENOENT' lines: the stops of one sweep ran at once and raced on one temp file.
+test("records of stops that end at once all land in unloaded.json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "unloaded-"));
+  const ids = Array.from({ length: 20 }, (_, at) => `session-${at}`);
+  const results = await Promise.allSettled(ids.map(id => recordUnloaded(dir, [id], Date.now())));
+  assert.deepEqual(results.filter(result => result.status === "rejected"), []);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dir, UNLOADED_FILE), "utf8"))).sort(), [...ids].sort());
+});
+
+test("only work moves a chat's idle clock, not a state notice or a message injected outside a turn", () => {
+  for (const type of ["agent_start", "agent_end", "turn_start", "message_update", "tool_execution_start", "bash_start", "compaction_start", "auto_retry_start"])
+    assert.equal(showsWork({ type }), true, type);
+  assert.equal(showsWork({ type: "message_end", message: { role: "user" } }), true);
+  for (const type of ["session_info_changed", "thinking_level_changed", "service_tier_changed", "session_action_update", "goal_update", "recap_update", "rlm_child_update", "rlm_progress_note", "auth_stale"])
+    assert.equal(showsWork({ type }), false, type);
+  assert.equal(showsWork({ type: "message_end", message: { role: "custom", customType: "harness_digest" } }), false, "launch main bro's 03:55:30Z harness_digest");
 });

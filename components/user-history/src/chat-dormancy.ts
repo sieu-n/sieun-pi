@@ -236,3 +236,26 @@ function readClocks(file: string): Record<string, number> {
     return {};
   }
 }
+
+/**
+ * Whether a session event shows work, so it moves a chat's idle clock: a turn, a message of the owner, the model or a tool, a tool or bash
+ * run, a compaction or a retry. A state notice does not (a name, thinking level, goal, recap, queue or child update, a progress note), nor a
+ * custom message injected outside a turn. On 10-18 '***launch main bro***' did no work from 03:30:01Z to its stop at 04:21Z (its session file
+ * holds only a harness_digest message injected at 03:55:30Z), yet the service detached it only at 04:14:03Z, and its worker counted as
+ * sleeping from 04:08Z.
+ */
+export function showsWork(event: { type: string; message?: unknown }): boolean {
+  switch (event.type) {
+    case "agent_start": case "agent_end": case "turn_start": case "turn_end": case "message_update":
+    case "tool_execution_start": case "tool_execution_update": case "tool_execution_end":
+    case "compaction_start": case "compaction_end": case "auto_retry_start": case "auto_retry_end":
+    case "bash_start": case "bash_output": case "bash_end": case "ipython_sent_agent_message":
+      return true;
+    case "message_start": case "message_end": {
+      const role = typeof event.message === "object" && event.message !== null ? (event.message as { role?: unknown }).role : undefined;
+      return role === "user" || role === "assistant" || role === "toolResult" || role === "bashExecution";
+    }
+    default:
+      return false;
+  }
+}
