@@ -52,11 +52,11 @@ export const api = {
    * The sessions list, without archived rows unless `archived` (src/shared/sessions-delta.ts `withoutArchived`). The event's `archived` counts
    * the archived rows either way.
    */
-  sessionsStream(archived: boolean, onEvent: (event: SessionsEvent & { archived: number }) => void, onError: () => void, onBuild: (version: string) => void): () => void {
+  sessionsStream(archived: boolean, onEvent: (event: SessionsEvent & { archived: number }) => void, onError: () => void, onBuild: (build: { version: string; assets?: string[] }) => void): () => void {
     /** The list this subscription holds; a reconnect subscribes again and starts from the server's full list. */
     let rows: SessionRow[] = [];
     return subscribeFeed({ feed: "sessions", delta: true, ...(archived ? { archived: true as const } : {}) }, (event, data) => {
-      if (event === "build") { onBuild((data as { version: string }).version); return; }
+      if (event === "build") { onBuild(data as { version: string; assets?: string[] }); return; }
       if (event !== "sessions") return;
       const frame = data as SessionsEvent | SessionsDelta;
       rows = frame.type === "sessions" ? frame.sessions : applySessionsDelta(rows, frame);

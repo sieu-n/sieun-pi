@@ -392,7 +392,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   let owner: Promise<string | null> | undefined;
   const ownerLogin = () => owner ??= tailnetOwner().catch(() => null);
   /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
-  const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
+  /**
+   * The build event names the build and its hashed asset names, so a page on older code fetches them into its cache before it reloads
+   * (client/build-reload.ts `warmAssets`) and the reload paints from cache instead of pulling app.js over the 185 ms link from Korea.
+   */
+  const sendBuild = (send: (build: { version: string; assets: string[] }) => void) => {
+    void Promise.resolve(bundle).then(built => send({ version: built.version, assets: [assetName("app", "js", built.js), assetName("app", "css", built.css)] }), () => {});
+  };
   const tools = toolChecks({ dutyStore: backend.duties?.store });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
@@ -416,7 +422,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   };
   const feeds = new FeedSockets(async (feed, send) => {
     if (feed.feed === "sessions") {
-      sendBuild(version => send("build", { version }));
+      sendBuild(build => send("build", build));
       if (!feed.delta) return backend.catalog.subscribe(event => send("sessions", event));
       const diff = new SessionsDiff();
       return backend.catalog.subscribe(event => { const frame = diff.frame(feed.archived ? event : withoutArchived(event)); if (frame) send("sessions", frame); });

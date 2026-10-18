@@ -15,6 +15,15 @@ export function buildReload(page: { hidden: boolean; focused: boolean; busy: boo
   return page.hidden || !page.focused ? "now" : "on-leave";
 }
 
+/**
+ * Fetches a new build's hashed assets (the build event's `assets`) into the browser's cache, so the reload onto it paints from cache. On 10-18
+ * a cold app.js (190 KB packed) took 11 to 22 s to reach the owner's Mac, and the chat restarted onto new client code dozens of times a day.
+ * Resolves once every fetch has ended, failed ones included: a failed fetch only means the reload pulls that file itself.
+ */
+export function warmAssets(assets: readonly string[], get: (url: string) => Promise<unknown> = url => fetch(url, { cache: "force-cache" }).then(response => response.arrayBuffer())): Promise<void> {
+  return Promise.allSettled(assets.map(name => get(new URL(name, document.baseURI).href))).then(() => {});
+}
+
 /** Runs `reload` once, the first time the page goes hidden or loses focus. */
 export function onLeave(reload: () => void): void {
   let done = false;

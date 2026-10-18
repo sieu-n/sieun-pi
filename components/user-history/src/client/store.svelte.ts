@@ -1,6 +1,6 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { saveDrafts } from "./drafts.ts";
-import { buildReload, onLeave } from "./build-reload.ts";
+import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import { messageKey } from "../shared/message-key.ts";
@@ -111,7 +111,7 @@ class Store {
       this.daemon = event.daemon;
       this.daemonError = event.error ?? null;
       this.checkArchived();
-    }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, version => this.onBuild(version));
+    }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, build => this.onBuild(build));
   }
 
   /** The sidebar's or the agents list's archived toggle, or an open thread the list lacks: the feed starts again with the archived rows. */
@@ -133,8 +133,11 @@ class Store {
   private reloadPlanned = false;
   /** Prompts outside the outbox whose POST has not answered; a reload now would drop them. */
   private posting = 0;
-  private onBuild(version: string): void {
-    if (!version || version === document.body.dataset.build) return;
+  /** The new build's app.js and app.css on their way into the browser's cache, so the reload paints from it. */
+  private warmed: Promise<void> | null = null;
+  private onBuild(build: { version: string; assets?: string[] }): void {
+    if (!build.version || build.version === document.body.dataset.build) return;
+    this.warmed ??= warmAssets(build.assets ?? []);
     this.newBuild = true;
     this.planReload();
   }
@@ -152,8 +155,10 @@ class Store {
   }
 
   private reloadNow(): void {
-    if (this.busy() || !saveDrafts()) { this.reloadPlanned = false; return; }
-    location.reload();
+    void (this.warmed ?? Promise.resolve()).then(() => {
+      if (this.busy() || !saveDrafts()) { this.reloadPlanned = false; return; }
+      location.reload();
+    });
   }
 
   private idle(): void { if (!this.busy()) this.planReload(); }
