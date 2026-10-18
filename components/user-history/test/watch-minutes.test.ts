@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
-import { type Footprints, hostWatchLine, nextSampleAt, parseUsableRaw, unusable, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
+import { type Footprints, hostWatchLine, nextSampleAt, parseUsableRaw, type QueueReading, unusable, type UsableReading, type WatchLine, watchLine } from "../src/mac-usable-watch.ts";
 
 // Every watch line stamp from 03:46Z to the d7 run at 04:17:08Z on 10-18, from mac-usable/2026-10-18.jsonl; the jumps after 03:55Z are chat restarts.
 const STAMPS = ["03:46:06.734", "03:47:06.735", "03:48:06.734", "03:49:06.921", "03:50:07.210", "03:51:07.469", "03:52:07.717", "03:53:08.347",
@@ -15,7 +15,7 @@ const STAMPS = ["03:46:06.734", "03:47:06.735", "03:48:06.734", "03:49:06.921", 
 const RUN = Date.parse("2026-10-18T04:17:08Z");
 const line = (clock: string): WatchLine => ({ at: `2026-10-18T${clock}Z`, usable: { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 10 },
   workers: 0, workerGb: 0, top: [], live: 0, working: 0, queue: null, mac: { swapGb: null, pressureLevel: 1 }, cpuMs: 0 });
-const run = (stamps: readonly string[]) => measure({ now: RUN, watch: stamps.map(line), log: { holds: [] }, okLimit: 15, chats: [] });
+const run = (stamps: readonly string[]) => measure({ now: RUN, watch: stamps.map(line), log: { holds: [] }, chats: [] });
 
 test("the 03:52:07.717Z and 03:53:08.347Z lines watch 03:53Z, so the 04:17:08Z run reads 30 clean minutes", () => {
   const { metrics } = run(STAMPS);
@@ -54,7 +54,7 @@ const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading |
 test("each box is judged on its own reading, a Linux box by memory stall and load a core, and a box with no reading is unknown", () => {
   const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, minute === 3 ? linux(72, 0.6) : minute === 4 ? linux(0, 1.2) : linux(0, 0.58),
     minute === 10 ? null : mac));
-  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, okLimit: 15, chats: [] });
+  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
   assert.equal(metrics.clean_min_30, 27);
   assert.equal(metrics.unknown_min_30, 1, "the minute the Mac's relay did not answer is neither clean nor dirty");
   assert.equal(metrics.usable_min_30_us_metal02, 28);
@@ -67,7 +67,7 @@ test("each box is judged on its own reading, a Linux box by memory stall and loa
 
 test("sleeping_gb sums every box's sleeping sessions, and the flag names each box", () => {
   const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, linux(0, 0.5), mac, 0.31));
-  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, okLimit: 15, chats: [] });
+  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
   assert.equal(metrics.sleeping_gb, 0.31);
   assert.match(flagged?.find(slice => slice.kind === "sleeping")?.excerpt ?? "", /mac 0.31 GB in 1 whole workers and 0 kernels \(launch main bro 0.31 GB\)/);
 });
@@ -88,4 +88,41 @@ test("another box's watch line comes from its relay's answer, and a relay that f
   assert.match(failed.error ?? "", /404/);
   const box = parseUsableRaw({ platform: "linux", reading: linux(0, 0.58) }, BOX_RUN);
   assert.deepEqual(box && unusable(box), []);
+});
+
+// At 04:30Z on 10-18 d7 read "a turn queued with free slots" while the box held 12 of 16 slots: the queued turns were metal-management's, whose tree
+// held 8 of tree_working_max 8, so pi-pool's own rule (admit_pass) had no slot it was allowed to give them. The old test compared only the machine
+// count with a working_max it read as 15 from a config.json the box did not have.
+const TREES: Record<string, string> = { mm: "metal-management", ci: "VP of CI", api: "api portal vp" };
+const turn = (session: string, tree: string, kind: "slot" | "borrow" = "slot") => ({ session, tree, parent: null, priority: "normal" as const, since: BOX_RUN - 600_000, kind });
+const waiter = (session: string, tree: string, waitS: number) => ({ session, tree, parent: null, priority: "normal" as const, since: BOX_RUN - waitS * 1000,
+  basePriority: "normal" as const, position: 1, total: 2, waitMs: waitS * 1000 });
+const queueAt = (reading: QueueReading, minute: number): WatchLine => {
+  const now = BOX_RUN - 10_000 - (30 - minute) * 60_000 + 30_000;
+  const footprints: Footprints = { workers: {}, kernels: [], swap_used_bytes: 0, pressure_level: null, cpu_s: 0 };
+  const shifted = { ...reading, queued: reading.queued.map(entry => ({ ...entry, since: entry.since - BOX_RUN + now })) };
+  return { ...watchLine({ now, rows: [], footprints, queue: shifted, chats: new Set(), title: id => TREES[id] ?? null, cpuMs: 0, usable: linux(0, 0.3) }), host: "us-metal02" };
+};
+const slots = (tree: string, count: number) => Array.from({ length: count }, (_, i) => turn(`${tree}${i}`, tree));
+
+test("the 04:30Z case reads clean: 12 of 16 slots in use and the oldest queued turn's tree at 8 of 8 is pi-pool's tree cap, not a free slot", () => {
+  const reading: QueueReading = { workingMax: 16, treeWorkingMax: 8, working: [...slots("mm", 8), ...slots("api", 4), turn("mm-child", "mm", "borrow")],
+    queued: [waiter("mm-a", "mm", 167), waiter("mm-b", "mm", 40)] };
+  const line = queueAt(reading, 0);
+  assert.equal(line.queue?.working, 13);
+  assert.equal(line.queue?.slots, 12);
+  assert.deepEqual(line.queue?.waiting, [{ tree: "metal-management", oldestWaitS: 167, slots: 8 }]);
+  const { metrics } = measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(reading, minute)), log: { holds: [] }, chats: [] });
+  assert.equal(metrics.queued_free_slot_min_30, 0);
+  assert.equal(metrics.clean_min_30, 30);
+});
+
+test("a turn whose tree has free slots and waits while the machine has free slots still reads dirty, and a full machine does not", () => {
+  const open: QueueReading = { workingMax: 16, treeWorkingMax: 8, working: [...slots("mm", 8), ...slots("ci", 4)], queued: [waiter("mm-a", "mm", 300), waiter("ci-a", "ci", 167)] };
+  const { metrics, flagged } = measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(open, minute)), log: { holds: [] }, chats: [] });
+  assert.equal(metrics.queued_free_slot_min_30, 30);
+  assert.equal(metrics.clean_min_30, 0);
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /a turn of VP of CI queued 167 s with free slots \(12 of 16 in use, its tree at 4 of 8\)/);
+  const full: QueueReading = { ...open, working: [...open.working, ...slots("api", 3)] };
+  assert.equal(measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(full, minute)), log: { holds: [] }, chats: [] }).metrics.clean_min_30, 30);
 });

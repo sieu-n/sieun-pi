@@ -1,5 +1,4 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
@@ -9,7 +8,7 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type HostUsable, isLinuxReading, readWatch, type SleepingLine, unusable, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type HostUsable, isLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
@@ -78,9 +77,9 @@ export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine, view
 /**
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
- * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, and every chat's duty
+ * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box usable, no start, wake or parked
- * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds and open steps nobody
+ * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`). Supporting: queue holds and open steps nobody
  * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
@@ -200,9 +199,19 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   return { holds, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
 }
 
-/** Whether a watch line shows a queued turn while pi-pool had FREE_SLOTS or more free slots. */
-export const queuedWithFreeSlots = (line: WatchLine, limit: number): boolean =>
-  !!line.queue && line.queue.queued > 0 && line.queue.oldestWaitS >= QUEUED_WAIT_S && line.queue.working <= limit - FREE_SLOTS;
+/**
+ * The tree of a turn queued QUEUED_WAIT_S or longer that pi-pool was allowed to admit and did not, by its own rule (`admit_pass` in
+ * pool/turns.py): the machine under working_max slots and the turn's tree under tree_working_max, each with FREE_SLOTS to spare, since a
+ * waiter takes a slot a release just freed on its next 1 s poll. A turn its tree's cap holds is pi-pool's limit at work: at 04:30Z on 10-18
+ * metal-management's turns waited 167 s at 8 of 8 while the box held 12 of 16 slots, and the old machine-only test called it a free slot.
+ * A line written before the watch recorded pi-pool's limits and slots is not judged.
+ */
+export function freeSlotWait(line: WatchLine): WaitingTree | undefined {
+  const queue = line.queue;
+  if (!queue?.waiting || queue.workingMax === undefined || queue.treeWorkingMax === undefined || queue.slots === undefined) return undefined;
+  if (queue.slots > queue.workingMax - FREE_SLOTS) return undefined;
+  return queue.waiting.find(tree => tree.oldestWaitS >= QUEUED_WAIT_S && tree.slots <= queue.treeWorkingMax! - FREE_SLOTS);
+}
 
 /**
  * A harness process is far above its normal size at FAR_ABOVE times its kind's median over the last day of watch lines: on 10-17 at 23:45Z
@@ -237,8 +246,6 @@ export interface Inputs {
   /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
   day?: readonly WatchLine[];
   log: LogFacts;
-  /** pi-pool's limit when the Mac reads ok (`working_max`). */
-  okLimit: number;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
@@ -288,7 +295,11 @@ export function measure(input: Inputs): PrecheckOutput {
     if (line && !unknown.length) { fed++; if (!unusableMinute) usable++; }
     if (unusableMinute) { if (harnessMinute) harness++; else other++; }
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
-    if (line && queuedWithFreeSlots(line, input.okLimit)) { freeSlot++; why.push("a turn queued with free slots"); }
+    const waited = line && freeSlotWait(line);
+    if (waited) {
+      freeSlot++;
+      why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
+    }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
@@ -349,7 +360,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
-    `10 min in ${held}; a turn sat queued with ${FREE_SLOTS} or more free slots in ${freeSlot}.` });
+    `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   const asleep = latest ? hostViews(latest).filter(view => view.sleeping && view.sleeping.gb > 0) : [];
@@ -367,7 +378,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const grants = (input.log.grants ?? []).filter(grant => grant.session === job.session && grant.at >= job.at);
     const admitted = grants.map(grant => {
       const watched = input.watch.findLast(entry => Date.parse(entry.at) <= grant.at)?.queue;
-      const slots = watched ? `, pi-pool then ran ${watched.working} of ${input.okLimit} slots with ${watched.queued} queued` : "";
+      const slots = watched?.workingMax === undefined ? "" : `, pi-pool then held ${watched.slots ?? watched.working} of ${watched.workingMax} slots with ${watched.queued} queued`;
       return `the fleet budget let its ${grant.kind} start at ${clock(grant.at)} after ${grant.waitS} s${slots}`;
     });
     flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was ${cutWords(job.cause)} at ` +
@@ -503,12 +514,10 @@ async function main(): Promise<void> {
   if (!output) { process.stderr.write("whole-system: OUTPUT_FILE is not set\n"); process.exit(2); }
   const now = Date.now();
   const dataDir = chatDataDir();
-  const poolDir = join(homedir(), ".config", "pi-pool");
   const day = await readWatch(dataDir, now - DAY_MS, now);
   const watch = day.filter(line => Date.parse(line.at) >= now - 2 * WINDOW_MS);
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
-  const config = await readJson(join(poolDir, "config.json")) as { working_max?: number } | null;
   // Only the owner's chats (`ownerChats`): an archived or clean-room test chat stays out of his counts and the job's messages.
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
@@ -530,7 +539,6 @@ async function main(): Promise<void> {
   const result = measure({
     now, watch, day,
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
-    okLimit: typeof config?.working_max === "number" ? config.working_max : 15,
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
   });

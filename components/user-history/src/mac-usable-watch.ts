@@ -103,7 +103,15 @@ export interface QueueLine {
   working: number; queued: number;
   /** How long the oldest queued turn has waited, and its chat tree. */
   oldestWaitS: number; oldestTree: string | null;
+  /**
+   * pi-pool's admission inputs, so d7 can tell a turn its tree's cap holds from one a free slot left waiting (`admit_pass` in pool/turns.py):
+   * both limits as pi-pool merges its defaults and config.json, the turns that hold a slot of their own (every one but a borrow), and each
+   * tree with a queued turn. Absent on lines written before 10-18 05:1xZ, when metal-management's turns at its 8 of 8 read as free-slot waits.
+   */
+  workingMax?: number; treeWorkingMax?: number; slots?: number; waiting?: WaitingTree[];
 }
+/** A chat tree with a queued turn: its longest wait and the slots its working turns hold against tree_working_max. */
+export interface WaitingTree { tree: string; oldestWaitS: number; slots: number }
 /**
  * Another box's numbers in a watch line, read through its relay (POST /v1/watch): its usability reading, its Prime workers and what its idle
  * sessions hold. From 04:20Z on 10-18 the chat ran on us-metal02, and its lines measured only the box, so the Mac's workers left d7's numbers.
@@ -308,11 +316,18 @@ function treeLines(footprints: Footprints, owner: (session: string, root: string
 }
 
 /** The queue reading the watch needs. */
-export type QueueReading = Pick<AgentQueueReading, "working" | "queued">;
+export type QueueReading = Pick<AgentQueueReading, "working" | "queued" | "workingMax" | "treeWorkingMax">;
 function queueLine(reading: QueueReading, now: number, treeName: (id: string) => string): QueueLine {
+  const waitS = (since: number): number => Math.max(0, Math.round((now - since) / 1000));
   const oldest = reading.queued.reduce<(typeof reading.queued)[number] | undefined>((first, entry) => !first || entry.since < first.since ? entry : first, undefined);
+  const held = reading.working.filter(entry => entry.kind !== "borrow");
+  const firstAsk = new Map<string, number>();
+  for (const entry of reading.queued) firstAsk.set(entry.tree, Math.min(firstAsk.get(entry.tree) ?? Infinity, entry.since));
+  const waiting = [...firstAsk].map(([tree, since]) => ({ tree: treeName(tree), oldestWaitS: waitS(since), slots: held.filter(entry => entry.tree === tree).length }))
+    .sort((a, b) => b.oldestWaitS - a.oldestWaitS);
   return { working: reading.working.length, queued: reading.queued.length,
-    oldestWaitS: oldest ? Math.max(0, Math.round((now - oldest.since) / 1000)) : 0, oldestTree: oldest ? treeName(oldest.tree) : null };
+    oldestWaitS: oldest ? waitS(oldest.since) : 0, oldestTree: oldest ? treeName(oldest.tree) : null,
+    workingMax: reading.workingMax, treeWorkingMax: reading.treeWorkingMax, slots: held.length, waiting };
 }
 
 const pad = (value: number): string => String(value).padStart(2, "0");
