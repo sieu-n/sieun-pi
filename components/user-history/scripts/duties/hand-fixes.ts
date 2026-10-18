@@ -31,7 +31,8 @@ const BOX = "root@64.34.205.243";
  * - faults_without_job, the headline: rule c63, every hand fix starts a design job, and the owner, 10-14, "자체적으로 고쳐질 수 있게 설계를
  *   바꾸는게 니 역할이야"; a fault with no live or done design is one nobody is making fix itself.
  * - undesigned_hand_fixes: a hand fix with no fault has no design.
- * - repeats_after_design: a hand fix for a fault whose design step is done means the design did not fix it.
+ * - repeats_after_design: a hand fix in the last 24 h for a fault whose design step is done means the design did not fix it. Both 24 h metrics
+ *   count the fixes since 24 h ago, as the duty labels say, while the read also reaches back to the last run's mark after a skipped day.
  * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
  *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
  *   promote 9's restart and the writer fell 66 min behind (s160); the one-off copy container's idle prod session held promote 9 (s154).
@@ -39,8 +40,14 @@ const BOX = "root@64.34.205.243";
  * The schedule, daily, is the owner's "daily check" in the audit brief. timeoutMs 120000 is the runner's cap, PRECHECK_TIMEOUT_MS.
  */
 
+/**
+ * How a config hand fix finds its fault, strongest evidence first. config_reason_tag is the writer's own label at the start of the reason
+ * ("watch_proxy abort: ...", "TikTok Shop prod watch --act: ..."), so it wins over the keys. config_reason_regex is a cause named anywhere in
+ * the prose and only decides when no key matches, because prose also names things that did not happen: audit 13533 on 10-16 raised census
+ * rates with the words "no box stop since 00:40Z" and read as a guard repeat of F2 instead of a lane rate change of F1.
+ */
 export interface FaultMatch {
-  config_key_prefixes?: string[]; config_reason_regex?: string;
+  config_key_prefixes?: string[]; config_reason_tag?: string; config_reason_regex?: string;
   engage_event?: { kind: string; outcomes: string[] }; mac_process_regex?: string; box_exec_regex?: string; box_container_regex?: string;
 }
 /**
@@ -49,8 +56,9 @@ export interface FaultMatch {
  */
 /** `done_at` is when the last design went live; a hand fix before it is not a repeat. */
 export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
+/** config_sources names a supervised writer by config_audit.source, for an actor such as metal that also writes by hand. */
 export interface Registry {
-  automatic_writers: { config_actors: string[] };
+  automatic_writers: { config_actors: string[]; config_sources?: string[] };
   exempt: { config_reason_regex: string; box_exec_regex?: string };
   faults: Fault[];
 }
@@ -91,31 +99,32 @@ export function parseRegistry(value: unknown): Registry {
     if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
     for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
     if (registry.exempt.box_exec_regex) new RegExp(registry.exempt.box_exec_regex);
-    for (const pattern of [fault.match.config_reason_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
+    for (const pattern of [fault.match.config_reason_tag, fault.match.config_reason_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
   return registry;
 }
 
-/** Config rows grouped into hand fixes: rows of one world, actor and reason written in the same minute are one change. */
-export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; keys: string[] })[] {
-  const groups = new Map<string, HandFix & { actor: string; keys: string[] }>();
+/** Config rows grouped into hand fixes: rows of one world, actor, source and reason written in the same minute are one change. */
+export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; writer: string; keys: string[] })[] {
+  const groups = new Map<string, HandFix & { actor: string; writer: string; keys: string[] }>();
   for (const row of rows) {
-    const id = `${row.actor}\u0000${row.reason}\u0000${Math.floor(row.ts / 60_000)}`;
+    const id = `${row.actor}\u0000${row.source}\u0000${row.reason}\u0000${Math.floor(row.ts / 60_000)}`;
     const group = groups.get(id);
     if (group) { if (!group.keys.includes(row.key)) group.keys.push(row.key); continue; }
-    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, keys: [row.key] });
+    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, writer: row.source, keys: [row.key] });
   }
   return [...groups.values()].map(group => ({ ...group, what: `${group.what} ${group.keys.join(",")}`.slice(0, 160) }));
 }
 
-export function classifyConfig(fix: { actor: string; keys: readonly string[]; text: string }, registry: Registry): Verdict {
-  if (registry.automatic_writers.config_actors.includes(fix.actor)) return { kind: "automatic" };
+export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string }, registry: Registry): Verdict {
+  const automatic = registry.automatic_writers;
+  if (automatic.config_actors.includes(fix.actor) || (fix.writer && automatic.config_sources?.includes(fix.writer))) return { kind: "automatic" };
   if (new RegExp(registry.exempt.config_reason_regex).test(fix.text)) return { kind: "exempt" };
-  const byReason = registry.faults.find(fault => fault.match.config_reason_regex && new RegExp(fault.match.config_reason_regex).test(fix.text));
-  if (byReason) return { kind: "fault", fault: byReason };
-  const byKey = registry.faults.find(fault => fault.match.config_key_prefixes?.some(prefix => fix.keys.some(key => key.startsWith(prefix))));
-  return byKey ? { kind: "fault", fault: byKey } : { kind: "undesigned" };
+  const fault = registry.faults.find(item => item.match.config_reason_tag && new RegExp(`^(?:${item.match.config_reason_tag})`).test(fix.text)) ??
+    registry.faults.find(item => item.match.config_key_prefixes?.some(prefix => fix.keys.some(key => key.startsWith(prefix)))) ??
+    registry.faults.find(item => item.match.config_reason_regex && new RegExp(item.match.config_reason_regex).test(fix.text));
+  return fault ? { kind: "fault", fault } : { kind: "undesigned" };
 }
 
 /** A status event is a hand fix only when a fault names its kind and outcome; other status writes (imports, parks) are the product's own. */
@@ -207,7 +216,9 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
         if (verdict) fixes.push({ verdict, fix: { source: `${world} engage`, at: event.at, what: `account ${event.accountId}`, text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}` } });
       }
     }
-    const counted = fixes.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
+    const recent = fixes.filter(item => item.fix.at >= at - DAY);
+    const older = fixes.length - recent.length;
+    const counted = recent.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned");
     const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done" &&
       !(item.verdict.fault.done_at && item.fix.at < Date.parse(item.verdict.fault.done_at)));
@@ -215,9 +226,9 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     metrics.repeats_after_design = repeats.length;
     const byFault = new Map<string, number>();
     for (const item of counted) if (item.verdict.kind === "fault") byFault.set(item.verdict.fault.id, (byFault.get(item.verdict.fault.id) ?? 0) + 1);
-    const skipped = fixes.length - counted.length;
-    flagged.push({ at, kind: "hand_fixes", excerpt: `${counted.length} hand fixes since the last run` + (byFault.size ? `: ${[...byFault.entries()].map(([id, count]) => `${id} ${count}`).join(", ")}` : "") +
-      `; ${undesigned.length} match no fault; ${skipped} automatic or exempt` });
+    const skipped = recent.length - counted.length;
+    flagged.push({ at, kind: "hand_fixes", excerpt: `${counted.length} hand fixes in 24 h` + (byFault.size ? `: ${[...byFault.entries()].map(([id, count]) => `${id} ${count}`).join(", ")}` : "") +
+      `; ${undesigned.length} match no fault; ${skipped} automatic or exempt` + (older ? `; ${older} older changes since the last run are outside the 24 h metrics` : "") });
     const line = (item: { fix: HandFix }) => `${item.fix.source} ${utc(item.fix.at)} ${item.fix.what}: ${item.fix.text}`.slice(0, 400);
     for (const item of undesigned) flagged.push({ at: item.fix.at, kind: "undesigned", excerpt: line(item) });
     for (const item of repeats) flagged.push({ at: item.fix.at, kind: "repeat", excerpt: `${item.verdict.kind === "fault" ? item.verdict.fault.id : ""} design step done, yet: ${line(item)}`.slice(0, 400),
@@ -246,7 +257,10 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   return { metrics: { ...metrics, ...detail }, flagged };
 }
 
-/** Where the last run stopped, per source; a source that failed keeps its old mark. The first run reads the last 24 h. */
+/**
+ * Where the last run stopped, per source; a source that failed keeps its old mark. Each run reads from that mark or from 24 h ago, whichever
+ * is earlier, so a second run in a day still counts the day's fixes and a run after a skipped day still lists the older ones.
+ */
 export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>> }
 
 export function nextState(state: HandState, data: HandData): HandState {
@@ -262,7 +276,7 @@ export function nextState(state: HandState, data: HandData): HandState {
 
 export const auditSql = (lastId: number | undefined, now: number): string =>
   `select id, ts, actor, key, coalesce(reason, '') as reason, coalesce(source, '') as source from config_audit where ` +
-  (lastId ? `id > ${Math.floor(lastId)}` : `ts >= to_timestamp(${Math.floor((now - DAY) / 1000)})`) + " order by id";
+  (lastId ? `(id > ${Math.floor(lastId)} or ` : "(") + `ts >= to_timestamp(${Math.floor((now - DAY) / 1000)})) order by id`;
 export const eventsSql = (after: number): string =>
   `select account_id, at, outcome, coalesce(error_code, '') as error_code from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
 
@@ -351,7 +365,7 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   }
   const audit = (world: World) => step(`${world} config`, async () => (await sqlRows(query!, PG[world], auditSql(deps.state.audit?.[world], deps.now))).map(row => ({
     id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? "") })));
-  const events = (world: World) => step(`${world} engage`, async () => (await sqlRows(query!, PG[world], eventsSql(deps.state.events?.[world] ?? deps.now - DAY))).map(row => ({
+  const events = (world: World) => step(`${world} engage`, async () => (await sqlRows(query!, PG[world], eventsSql(Math.min(deps.state.events?.[world] ?? deps.now, deps.now - DAY)))).map(row => ({
     accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? "") })));
   const [registry, board, box, mac, prodAudit, stagingAudit, prodEvents, stagingEvents] = await Promise.all([
     step("registry", async () => parseRegistry(await deps.registry())),

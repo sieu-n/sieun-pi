@@ -5,7 +5,10 @@
       "facebook-doc-ids-extract",
       "metal-deploy"
     ],
-    "note": "Writers that are part of the product. A lane controller or a supervised guard joins this list when its design ships."
+    "config_sources": [
+      "metal-box-stop-loop"
+    ],
+    "note": "Writers that are part of the product. A lane controller or a supervised guard joins this list when its design ships. config_sources names a writer by config_audit.source when its actor also writes by hand: metal-box-stop-loop is the box stop loop, which runs as the systemd unit virev-box-stop.service since Crawler VP p173 closed on 10-16 00:40Z, while actor metal also writes by hand from source metal-owner."
   },
   "faults": [
     {
@@ -44,7 +47,8 @@
       ],
       "owner": "metal (01a11d24) and each lane owner; the 10-14 20:19Z slice stop (s224) came from prod IO, which the census gauge Index Only Scan fix 98c14dbd1a removes",
       "match": {
-        "config_reason_regex": "^watch_proxy abort|watch --act|box stop|left on with no owner",
+        "config_reason_tag": "watch_proxy abort|metal box stop|[^:]{0,40}\\bwatch --act\\b",
+        "config_reason_regex": "left on with no owner",
         "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py"
       }
     },
@@ -161,7 +165,8 @@
       ],
       "owner": "Crawler ops",
       "match": {
-        "config_reason_regex": "^undo audit|by mistake|wrong (env|key)"
+        "config_reason_tag": "undo audit",
+        "config_reason_regex": "by mistake|wrong (env|key)"
       }
     },
     {
