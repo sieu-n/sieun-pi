@@ -349,9 +349,9 @@ def refresh_left_behind(now, skip, saved):
     """
     rels = [rel for rel in git("diff", "--name-only", "-z", "--no-renames", now).stdout.decode().split("\0")
             if rel and rel not in skip and not rel.startswith(WIKI)]
-    disks = {rel: disk_state(rel) for rel in rels}
+    disks, idx = disk_states(rels), index_map()
     entries = {rel: tip_entry(now, rel) for rel in rels}
-    rels = [rel for rel in rels if disks[rel] != entries[rel] and index_entry(rel) == entries[rel]
+    rels = [rel for rel in rels if disks[rel] != entries[rel] and idx.get(rel) == entries[rel]
             and "120000" not in ((disks[rel] or ("",))[0], (entries[rel] or ("",))[0]) and (disks[rel] or ("",))[0] != "dir"]
     held = left_behind(now, {rel: disks[rel] for rel in rels})
     done = []
@@ -456,15 +456,8 @@ def left_behind(head, wanted):
     oldest = out("log", "-g", "--format=%H", BRANCH).splitlines()[-1:]
     if not oldest or git("merge-base", "--is-ancestor", oldest[0], head, check=False).returncode != 0:
         return set()
-    at_oldest = {}
-    for row in git("ls-tree", "-r", "-z", "--full-tree", oldest[0]).stdout.decode().split("\0"):
-        if "\t" in row:
-            meta, rel = row.split("\t", 1)
-            if rel in wanted:
-                mode, _type, blob = meta.split(" ")
-                at_oldest[rel] = (mode, blob)
     states = raw_states(f"{oldest[0]}..{head}", paths=wanted)
-    held = {rel for rel, entry in wanted.items() if entry == at_oldest.get(rel) or entry in states.get(rel, ())}
+    held = {rel for rel, entry in wanted.items() if entry == tip_entry(oldest[0], rel) or entry in states.get(rel, ())}
     # Bytes never added to the object store are a live edit, so only stored blobs need the branch walk.
     rest = [rel for rel, entry in wanted.items() if rel not in held and entry is not None]
     known = git("cat-file", "--batch-check", inp="".join(wanted[rel][1] + "\n" for rel in rest).encode()).stdout.decode().splitlines()
@@ -475,20 +468,51 @@ def left_behind(head, wanted):
     return held
 
 
-def index_entry(rel):
-    row = out("ls-files", "-s", "--", rel)
-    if not row:
-        return None
-    mode, blob, _stage = row.split("\t")[0].split(" ")
-    return (mode, blob)
+def index_map():
+    """{rel: (mode, blob)} for every stage-0 entry of the index. One git call: on 2026-10-18 at load 166 the Mac's first
+    run spent minutes on one ls-files per path."""
+    rows = {}
+    for row in git("ls-files", "-s", "-z").stdout.decode().split("\0"):
+        if "\t" in row:
+            meta, rel = row.split("\t", 1)
+            mode, blob, stage = meta.split(" ")
+            if stage == "0":
+                rows[rel] = (mode, blob)
+    return rows
 
 
-def tip_entry(tip, rel):
-    row = git("ls-tree", "--full-tree", tip, "--", rel).stdout.decode().strip()
-    if not row:
-        return None
-    mode, _type, blob = row.split("\t")[0].split(" ")
-    return (mode, blob)
+TREES = {}
+
+
+def tip_entry(rev, rel):
+    if rev not in TREES:
+        TREES[rev] = {}
+        for row in git("ls-tree", "-r", "-z", "--full-tree", rev).stdout.decode().split("\0"):
+            if "\t" in row:
+                meta, path = row.split("\t", 1)
+                mode, _type, blob = meta.split(" ")
+                TREES[rev][path] = (mode, blob)
+    return TREES[rev].get(rel)
+
+
+def disk_states(rels):
+    """{rel: disk_state(rel)} with one git hash-object for every regular file."""
+    states, files = {}, []
+    for rel in rels:
+        try:
+            st = os.lstat(os.path.join(REPO, rel))
+        except FileNotFoundError:
+            states[rel] = None
+            continue
+        if stat.S_ISREG(st.st_mode):
+            files.append((rel, "100755" if st.st_mode & 0o111 else "100644"))
+        else:
+            states[rel] = disk_state(rel)
+    if files:
+        blobs = git("hash-object", "--stdin-paths", inp="".join(rel + "\n" for rel, _mode in files).encode()).stdout.decode().split()
+        for (rel, mode), blob in zip(files, blobs):
+            states[rel] = (mode, blob)
+    return states
 
 
 def main():
@@ -522,8 +546,9 @@ def main():
     # A path staged at the tip's bytes is a move half done (a sync that stopped after
     # setting the index). A path staged at a state the branch moved past is a land that moved
     # sieun/dev and left the index behind. Either entry goes back to HEAD's, and the move below sets it again.
-    halfway = [rel for rel in staged if index_entry(rel) == tip_entry(tip, rel)]
-    held = left_behind(head, {rel: index_entry(rel) for rel in staged if rel not in halfway})
+    idx = index_map()
+    halfway = [rel for rel in staged if idx.get(rel) == tip_entry(tip, rel)]
+    held = left_behind(head, {rel: idx.get(rel) for rel in staged if rel not in halfway})
     stale_index = [rel for rel in staged if rel in held]
     for rel in [] if "--dry-run" in sys.argv else halfway + stale_index:
         entry = tip_entry(head, rel)
@@ -536,7 +561,7 @@ def main():
         return log("skip", reason="the index stages changes", head=head[:10], tip=tip[:10], staged=staged[:20], staged_count=len(staged))
 
     rows = changed_paths(head, tip)
-    disks = {rel: disk_state(rel) for rel, _old, _new in rows}
+    disks = disk_states([rel for rel, _old, _new in rows])
     # A file on disk at a state the branch moved past was left behind by a land, so it takes the tip's bytes
     # like a superseded draft. Carried as a live edit it would merge that land's revert onto the tip.
     held = left_behind(head, {rel: disks[rel] for rel, old, new in rows if disks[rel] not in (old, new) and (disks[rel] or ("",))[0] != "dir"})
