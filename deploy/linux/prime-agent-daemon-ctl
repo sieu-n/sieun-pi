@@ -37,6 +37,11 @@ stopped and Restart= starts it again. The journal line then reads result=restore
 `restored N of M` from the coordinator's update-restarts record, so neither it nor prime-install.sh's <log>.result
 says ok, and Prime's own recovery handles the sessions the coordinator did not restore.
 
+When the daemon start launches exits before it answers, often with ELOCKED because a successor that Prime's
+coordinator started still holds the socket lock, start waits for that supervisor's hello and adopts it. It has no
+hard timeout: TimeoutStartSec=infinity also covers ExecReload, and the wait logs one line past
+SUCCESSOR_START_SECONDS. If the lock holder exits without a hello, start launches a daemon again.
+
 update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
 has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
 
@@ -84,6 +89,9 @@ RESTART_FAILED = 5
 # budget is a soft target that the wait loop reports once when a coordinator runs past it.
 COORDINATOR_FIXED_SECONDS = 355
 COORDINATOR_PER_SESSION_SECONDS = 360
+# The part of those deadlines that covers one successor from launch to hello: startup fence 60 s, daemon launch
+# 2 x 30 s, successor hello 60 s. start() logs once when a supervisor that holds the socket lock runs past it.
+SUCCESSOR_START_SECONDS = 180
 
 
 def alive(pid):
@@ -172,9 +180,29 @@ def write_pidfile(pidfile, pid):
     os.replace(tmp, pidfile)
 
 
+def socket_daemons(sock, exclude):
+    """PIDs of live `prime-agent --mode daemon --daemon-socket <sock>` processes other than exclude: the lock holders."""
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in exclude:
+            continue
+        try:
+            argv = [a.decode(errors="replace") for a in (entry / "cmdline").read_bytes().split(b"\0")]
+        except OSError:
+            continue
+        for at, arg in enumerate(argv[:-1]):
+            if arg == "--daemon-socket" and argv[at + 1] == sock and "--mode" in argv and argv[argv.index("--mode") + 1:argv.index("--mode") + 2] == ["daemon"]:
+                if alive(int(entry.name)):
+                    pids.append(int(entry.name))
+                break
+    return pids
+
+
 def start(prime_agent, sock, pidfile):
     child = None
     reported = False
+    holder_since = None
+    holder_reported = False
     while True:
         pid = supervisor_pid(sock)
         if pid:
@@ -194,8 +222,20 @@ def start(prime_agent, sock, pidfile):
             if not coordinator:
                 child = subprocess.Popen([prime_agent, "--mode", "daemon", "--daemon-socket", sock], stdin=subprocess.DEVNULL, start_new_session=True, env=target_env(sock))
         elif child.poll() is not None and not coordinator:
-            print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}", file=sys.stderr)
-            return child.returncode or FAILED
+            holders = socket_daemons(sock, {child.pid})
+            if holders and holder_since is None:
+                holder_since = time.time()
+                print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}, and supervisor {' '.join(map(str, holders))} still starts on it and holds its lock (ELOCKED); waiting for its hello", file=sys.stderr)
+            elif holders and not holder_reported and time.time() - holder_since > SUCCESSOR_START_SECONDS:
+                holder_reported = True
+                print(f"supervisor {' '.join(map(str, holders))} has held the {sock} lock for {int(time.time() - holder_since)} s without a hello, past the {SUCCESSOR_START_SECONDS} s Prime allows a successor from launch to hello; still waiting for it", file=sys.stderr)
+            elif not holders and holder_since is not None:
+                print(f"the supervisor that held the {sock} lock exited without a hello; starting a new one", file=sys.stderr)
+                child, holder_since, holder_reported = None, None, False
+                continue
+            elif not holders:
+                print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}", file=sys.stderr)
+                return child.returncode or FAILED
         time.sleep(POLL_SECONDS)
 
 

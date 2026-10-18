@@ -1,3 +1,7 @@
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import signal
@@ -8,6 +12,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,7 +62,7 @@ FAKE = textwrap.dedent(
         os.kill(old, 15)
         while os.path.exists(sock):
             time.sleep(0.01)
-        env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY="2" if mode == "slow-successor" else "0")
+        env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY=os.environ.get("FAKE_SUCCESSOR_DELAY", "2") if mode == "slow-successor" else "0")
         subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mode == "slow-successor":
             status("failed", message=f"Timed out waiting for daemon to start on {sock}.", counts={"total": 3, "restored": 0, "resumed": 0, "failed": 0})
@@ -364,6 +369,31 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertIn(f"result=restore-failed-successor-adopted restored 0 of 3; the coordinator failed, supervisor {new} owns {self.sock}; exit 0", result.stdout)
         self.assertNotIn("result=ok", result.stdout)
         self.assertNotIn("result=restart-failed", result.stdout)
+
+    def test_update_waits_for_a_successor_that_holds_the_lock_after_its_own_daemon_hits_elocked(self):
+        # A successor slower than the ctl's own daemon: that daemon exits with ELOCKED, and the reload used to fail
+        # and restart the unit, as on 10-18 06:47Z.
+        old = self.serve()
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_MODE="slow-successor", FAKE_SUCCESSOR_DELAY="3", FAKE_BEHAVIOR="exit1"))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        new = self.pid_in_file()
+        self.assertNotEqual(new, old.pid)
+        self.assertEqual(int(Path(self.env["FAKE_PIDS"]).read_text().split()[-1]), new)
+        self.assertIn(f"supervisor {new} still starts on it and holds its lock (ELOCKED); waiting for its hello", result.stdout)
+        self.assertIn(f"result=restore-failed-successor-adopted restored 0 of 3; the coordinator failed, supervisor {new} owns", result.stdout)
+
+    def test_start_logs_once_past_the_successor_deadline_and_keeps_waiting_for_the_lock_holder(self):
+        loader = importlib.machinery.SourceFileLoader("daemon_ctl", str(CTL))
+        ctl = importlib.util.module_from_spec(importlib.util.spec_from_loader("daemon_ctl", loader))
+        loader.exec_module(ctl)
+        ctl.SUCCESSOR_START_SECONDS = 0.5
+        holder = subprocess.Popen([str(self.fake), "--mode", "daemon", "--daemon-socket", self.sock], env=dict(self.env, FAKE_LISTEN_DELAY="2.5"))
+        self.procs.append(holder)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, dict(self.env, FAKE_BEHAVIOR="exit1"), clear=True), contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ctl.start(str(self.fake), self.sock, self.pidfile), ctl.OK)
+        self.assertEqual(self.pid_in_file(), holder.pid)
+        self.assertEqual(err.getvalue().count("past the 0.5 s Prime allows a successor from launch to hello; still waiting for it"), 1, err.getvalue())
 
     def test_update_reports_a_failed_update_after_tracking_the_supervisor(self):
         self.serve()
