@@ -8,7 +8,8 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  * The clean-room scenario for the board skill's Plan and duties fix (skills/board/references/plan-and-duties.md). The owner said on 10-18 that a
  * chat told "fix plan and duties based on THIS skill and persue completion of plans" should sort its plan out on its own. A fresh chat on a small
  * read-only area gets a messy board written here from scratch and the owner's one sentence as its first message. The criteria live in
- * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run.
+ * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run. The area is Rumble since run-3: runs 1 and 2 used
+ * Pinterest, and their pages and duty scripts stay in auto-sns-agent, so a new Pinterest chat would fold into them.
  */
 export const SENTENCE = "fix plan and duties based on the board skill and pursue completion of plans";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
@@ -24,17 +25,17 @@ const item = (id: string, text: string, status: PlanItem["status"], extra: Parti
 /** A plan the way a chat leaves it after a few days of drift: no done line, unowned steps, an upkeep step, a goal of standing risks, a done step left open. */
 export function messyBoard(now: string): ChatBoard {
   return { v: 2, rev: 37, updatedAt: now, todos: [], lastIds: { p: 8, t: 0 }, plan: [
-    item(SEED.work, "Pinterest index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
-      item(SEED.done, "Find where Pinterest data lands in the crawler", "doing", { note: "Found: apps/crawler-v3/alembic/versions/0044_pinterest_socialcrawl.py " +
-        "makes pinterest_accounts, pinterest_boards, pinterest_pins and pinterest_url_stat_observations, and apps/crawler-v3/src/index/sync/projectors/_shared.py " +
-        "lists pinterest in _SOCIAL_HOSTS." }),
-      item(SEED.research, "Research the Pinterest index gaps and measure each one's size from real data", "todo"),
+    item(SEED.work, "Rumble index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
+      item(SEED.done, "Find where Rumble data lands in the crawler", "doing", { note: "Found: apps/crawler-v3/alembic/versions/0045_rumble_socialcrawl.py " +
+        "makes rumble_accounts, rumble_content, rumble_comments and rumble_transcripts, and _SOCIAL_HOSTS in apps/crawler-v3/src/index/sync/projectors/_shared.py " +
+        "has no rumble entry." }),
+      item(SEED.research, "Research the Rumble index gaps and measure each one's size from real data", "todo"),
       item(SEED.page, "Write the top 10 page on the wiki, ranked by who each gap hurts", "todo"),
       item(SEED.upkeep, "Keep the page fresh every day", "todo"),
     ]),
     item(SEED.alerts, "Firing prod alerts", "doing", {}, [
       item(SEED.risks[0], "wiki box disk fills within 30 days", "todo"),
-      item(SEED.risks[1], "Pinterest rate limit hit on the crawler's reads", "todo"),
+      item(SEED.risks[1], "Rumble rate limit hit on the crawler's reads", "todo"),
     ]),
   ] };
 }
