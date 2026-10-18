@@ -15,6 +15,8 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
 | `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
 | `ci-cache.service`, `ci-head-fetch.timer` | The one GitHub Actions poller for auto-sns-agent, `scripts/dev/ci-cache.mjs poll` run from the head export of `origin/sieun/dev` through `run-from-head.mjs --follow-head`, which writes `~/.cache/virev/ci-runs.json` for `ci-run-status`, the gh shim and `board.wake(run=)`. The timer fetches `origin/sieun/dev` every 5 minutes so the poller follows the pushed head. |
+| `ci-monitor.timer` | `scripts/dev/ci-monitor.mjs run` every 10 minutes through `run-from-head.mjs`, which writes `snapshot.md`, `history.jsonl`, `state.json` and `dashboard/` in the wiki's `sessions/2026/10/08/0624-ci-access-monitor/logs` for `/playground/ci` and the VP of CI duties. It replaced the Mac's launchd `ai.virev.ci-monitor` on 2026-10-18 at 06:16Z. |
+| `secrets-watch.timer` | The secrets check every 15 minutes from the `sessions/2026/10/14/1121-secrets-self-heal/a/run` copy, with its state in `~/.cache/virev/secrets-watch`. It replaced the Mac's launchd `ai.virev.secrets-watch` on 2026-10-18 at 06:23Z. |
 | `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
 The daemon has its own unit, so a chat restart never stops a running agent, and the chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` so the chat never starts a daemon in its own cgroup.

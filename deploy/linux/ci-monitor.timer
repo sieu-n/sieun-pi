@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ci-monitor every 10 minutes, as StartInterval 600 and RunAtLoad do for ai.virev.ci-monitor on the Mac
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
