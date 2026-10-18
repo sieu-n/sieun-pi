@@ -331,14 +331,15 @@ done
 
 function run(command: string, args: string[], signal: AbortSignal, input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], signal });
+    // A command with no input gets no stdin pipe: on 10-18 a ps, lsof or git that exited before the empty write crashed the run with EPIPE.
+    const child = spawn(command, args, { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], signal });
     let out = "";
     let err = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.stderr.on("data", chunk => { err += chunk; });
+    child.stdout!.on("data", chunk => { out += chunk; });
+    child.stderr!.on("data", chunk => { err += chunk; });
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`${command} exit ${code}: ${(err || out).trim().slice(-300)}`)));
-    child.stdin.end(input ?? "");
+    if (child.stdin) { child.stdin.on("error", reject); child.stdin.end(input); }
   });
 }
 
