@@ -291,7 +291,9 @@ export const CHECKS: readonly Check[] = [
     const result = answer.result as { isError?: boolean; content?: { text?: string }[] } | undefined;
     const count = Number(/"count"\s*:\s*(\d+)/.exec(result?.content?.[0]?.text ?? "")?.[1] ?? NaN);
     if (!answer.error && result?.isError !== true && count >= 1) return PASS(`${count} tabs`);
-    return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(result?.content?.[0]?.text ?? "no text", 200)}`, "open Aside with `open -a Aside` and re-check");
+    return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(result?.content?.[0]?.text ?? "no text", 200)}`, deps.platform === "linux"
+      ? "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check"
+      : "open Aside with `open -a Aside` and re-check");
   } },
   { id: "aside_account", group: "browser", tool: "Aside account", run: async deps => {
     const result = await deps.exec("aside", ["account", "status"], { timeoutMs: 10_000 });
