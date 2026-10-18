@@ -753,6 +753,39 @@ class ResumePausedTests(unittest.TestCase):
         self.assertTrue(resume_paused.archived_by_restart([error, notice], window))
         self.assertFalse(resume_paused.archived_by_restart([notice, error], window))
 
+    # census writer speed (01a14d5d-b858, a Crawler VP job), 10-18: the idle unload archived it at 05:33:23Z, a wake reopened it, and Prime's
+    # update cut its tool call at 06:46:02Z. The daemon listed it archived, and the old unload archive hid it from every pass until 07:15Z.
+    CENSUS = "01a14d5d-b858-751f-81d4-4dde95370f8c"
+
+    def census_writer(self, *later):
+        entries = [{"type": "session_state", "timestamp": "2026-10-18T05:33:22.910Z", "state": {"status": "archived"}},
+                   {"type": "message", "timestamp": "2026-10-18T05:45:36.900Z", "message": {"role": "user", "content": [{"type": "text", "text": "wake"}]}},
+                   {"type": "message", "timestamp": "2026-10-18T05:46:13.122Z", "message": {"role": "assistant", "stopReason": "toolUse",
+                                                                                          "content": [{"type": "toolCall", "name": "ipython"}]}},
+                   {"type": "custom_message", "timestamp": "2026-10-18T06:46:02.957Z", "customType": "prime-agent.update_restart", "content": "updated"},
+                   {"type": "message", "timestamp": "2026-10-18T06:46:13.981Z", "message": {"role": "toolResult", "isError": True,
+                                                                                          "content": [{"type": "text", "text": "Request was aborted"}]}},
+                   {"type": "git_state", "timestamp": "2026-10-18T06:46:13.989Z"}, *later]
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        (sessions / f"{self.CENSUS}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        now = dt.datetime(2026, 10, 18, 6, 49, tzinfo=dt.timezone.utc)
+        with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.dict(resume_paused.UNLOADED, {self.CENSUS: resume_paused.parse_ts("2026-10-18T05:33:23.940Z")}, clear=True), \
+                patch.object(resume_paused, "OWNERS", {self.CENSUS}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.CENSUS}), {self.CENSUS})
+            return [(p["reason"], p["errored_at"]) for p in resume_paused.resume(rows, args, now)["paused"]]
+
+    def test_a_job_an_update_cut_after_an_older_unload_archive_is_resumed(self):
+        self.assertEqual(self.census_writer(), [("cut_off", "2026-10-18T06:46:13.981Z")])
+
+    def test_a_job_stopped_again_after_the_update_stays_stopped(self):
+        resumed = [{"type": "message", "timestamp": "2026-10-18T06:47:00.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}},
+                   {"type": "message", "timestamp": "2026-10-18T06:47:05.000Z", "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "toolCall"}]}},
+                   {"type": "message", "timestamp": "2026-10-18T06:47:30.000Z", "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}}]
+        self.assertEqual(self.census_writer(*resumed), [])
+
     def test_another_boxs_failed_worker_is_left_to_that_box(self):
         # After the chats moved to us-metal02 at 05:30Z on 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced.
         box = self.fake_relay({self.MAC_JOB: self.mac_job()})

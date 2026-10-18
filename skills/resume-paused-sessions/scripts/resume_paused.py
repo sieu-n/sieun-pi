@@ -703,6 +703,13 @@ def update_before(entries, last):
     return False
 
 
+def aborted_reply(entry):
+    """The reply a stopped worker writes to the turn it cut: an aborted assistant message or a "Request was aborted" tool result."""
+    msg = entry.get("message") or {}
+    return (msg.get("role") == "assistant" and msg.get("stopReason") == "aborted") or (msg.get("role") == "toolResult" and any(
+        isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or []))
+
+
 def in_restart(stamp, restarts):
     return bool(stamp) and any(start <= stamp <= end for start, end in restarts())
 
@@ -710,9 +717,17 @@ def in_restart(stamp, restarts):
 def archived_by_restart(entries, restarts):
     """The session's last archive came from a daemon restart, not from a person or a parent. A Prime update marks the sessions it stops with
     a prime-agent.update_restart notice and logs its restart window up to 40 s later (run-6's job: notice at 06:46:02Z, window 06:46:44 to
-    06:47:22Z on 10-18), so a notice that ends the file counts too."""
-    if entries and entries[-1].get("type") == "custom_message" and entries[-1].get("customType") == "prime-agent.update_restart":
-        return True
+    06:47:22Z on 10-18), so a notice with no archive and at most the cut turn's aborted reply after it counts too. census writer speed
+    (01a14d5d-b858) had the idle unload's 05:33Z archive in its file, worked again, and Prime's update cut its tool call at 06:46:02Z with the
+    abort 11 s later, so the old unload archive hid it and it got no continue for 29 min."""
+    notice = next((i for i in range(len(entries) - 1, -1, -1)
+                   if entries[i].get("type") == "custom_message" and entries[i].get("customType") == UPDATE_NOTICE), None)
+    if notice is not None:
+        after = entries[notice + 1:]
+        replies = [e for e in after if e.get("type") == "message"]
+        if not any(e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived" for e in after) \
+                and (not replies or (len(replies) == 1 and aborted_reply(replies[0]))):
+            return True
     archives = [e for e in entries if e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived"]
     return bool(archives) and in_restart(parse_ts(archives[-1].get("timestamp")), restarts)
 
@@ -906,7 +921,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if not verdict:
                 continue
             # The unload's stop counts only for a turn that failed on the token hook; any other run it stopped stays stopped.
-            hidden = archived_by_unload(entries_of(sid), unloaded_at) and (s.get("lifecycle") != "live" or stopped_on_purpose(entries_of(sid), last, restarts))
+            hidden = archived_by_unload(entries_of(sid), unloaded_at) and not archived_by_restart(entries_of(sid), restarts) \
+                and (s.get("lifecycle") != "live" or stopped_on_purpose(entries_of(sid), last, restarts))
             if hidden and not unstuck and not named and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1])):
                 continue
         if s.get("sessionFile") and deleted_on_purpose(s["sessionFile"]):
