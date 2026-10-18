@@ -55,10 +55,12 @@ export const CHAT_BRIEF: readonly string[] = [
   "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
-  "Decide wording, small fixes and code choices yourself and put each decision in the note of the step it concerns. When a request leaves " +
-    "the scope, a choice or the intent open, ask the owner at once: send the question as a chat message and add a For you todo with 2 to 4 " +
-    "choices, your pick first, then keep working on what does not depend on the answer (c96). A step waiting on the owner gets one short " +
-    "plain For you todo at once (c32).",
+  "The owner wants to be asked (c96). In the first reply to a new request, check what it leaves open (who it is for, how deep or long, which " +
+    "option, where it goes, what done means) and ask about each open point that changes the result: send the question in its own tell_owner " +
+    "message and add a For you todo with 2 to 4 choices, your pick first, in the same turn, then start the parts that do not depend on the " +
+    "answer. On 10-18 10:02 KST a chat got \"make me a page about where our CI time goes, something i can share w the team\", picked the " +
+    "audience and depth itself and asked nothing. Decide wording, small fixes and code choices yourself and put each decision in the note of " +
+    "the step it concerns. A step waiting on the owner gets one short plain For you todo at once (c32).",
   "Agents decide the control flow, not code loops: a duty runs a code precheck, then one job that decides its own fan-out (c22).",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
     "you todo. Update the board with `chat_board` in the turn a job starts, ends or replies. Never ask the owner to relay a message to another " +

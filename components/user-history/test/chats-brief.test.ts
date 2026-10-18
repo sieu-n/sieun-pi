@@ -25,7 +25,8 @@ test("brief: the core rules stay in the prompt in one short line each, and the b
   assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or a thread as `thread:<id>`\) and its next action, or is blocked with the exact thing that unblocks it\. A step waiting on someone else is still yours: chase a stuck owner once, then replace it with a job\./);
   assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn\./);
   assert.match(brief, /On a wake-up the owner did not start, message him when a goal finished, something is blocked or you need a decision; never write 'nothing needs you', 'already handled' or a relay line\./);
-  assert.match(brief, /When a request leaves the scope, a choice or the intent open, ask the owner at once: send the question as a chat message and add a For you todo with 2 to 4 choices, your pick first, then keep working on what does not depend on the answer \(c96\)\./);
+  assert.match(brief, /The owner wants to be asked \(c96\)\. In the first reply to a new request, check what it leaves open/);
+  assert.match(brief, /send the question in its own tell_owner message and add a For you todo with 2 to 4 choices, your pick first, in the same turn/);
   assert.doesNotMatch(brief, /ask the owner only about|at most 3 open/, "a clarifying question is welcome (c96)");
   assert.match(brief, /A brief, in English, opens with `Owner's words \(verbatim\):` and the 1 or 2 owner messages that started it, numbered, timed and exact \(or `Owner's words: none, started by <who>`\), then `My read:`, a `Split:` line/);
   assert.match(brief, /End state: every open step is done, moved by a live owner \(a job at work, or a thread active in the last 2 h\), or blocked only by an open For you todo\./);

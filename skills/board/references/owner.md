@@ -4,7 +4,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 
 ## Owner todos
 
-1. When a request leaves the scope, a choice or the intent open, ask the owner a clarifying question at once, because he wants to be asked (c96).
+1. In the first reply to a new request, check what it leaves open, such as who it is for, how deep it goes, which option, where it lands or what done means, and ask the owner about each open point that changes the result, because he wants to be asked (c96).
 2. An ask is a chat message with the question plus a For you todo with 2 to 4 choices, your pick first, and you keep working on what does not depend on the answer.
 3. Decide small wording, code and fix choices yourself, and put each decision in the note of the step it concerns.
 4. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
