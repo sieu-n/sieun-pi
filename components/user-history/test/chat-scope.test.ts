@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { boardClasses, type DaemonSession } from "../scripts/duties/board-classes.ts";
 import { fixArgs } from "../scripts/corrections-fix.ts";
 import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
 import { isHandoffTarget, matchTopic, scopeLine, scopeMisses } from "../src/checkin-findings.ts";
@@ -108,24 +107,6 @@ test("check-in precheck: a step on another thread's work is listed with its scop
   const other = checkInPrecheck(undefined, [], plan, NOW, { ...context, self: ["ops", OPS] });
   assert.deepEqual(other.scope, [], "not in the target chat");
   assert.deepEqual(checkInPrecheck(undefined, [], plan, NOW, { ...context, handoffs: [] }).scope, [], "without the handoff");
-});
-
-test("board classes: a step on another thread's work is a scope miss", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "scope-health-"));
-  try {
-    await mkdir(join(dir, "boards"), { recursive: true });
-    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["vp", "ops"] }));
-    const store = new CorrectionLedger(dir);
-    await store.apply(parseCorrectionCall({ words: "ops guy owns the Macs", rule: "Machine work goes to ops guy.", theme: "mac machine ops guy", enforcedBy: "code",
-      ref: "pending commit", handoff: { to: OPS, topics: TOPICS } }), VP);
-    await writeFile(join(dir, "boards", "vp.json"), JSON.stringify(board([step("p1", "Lower the Mac load", "todo"), step("p2", "Docs", "done")])));
-    await writeFile(join(dir, "boards", "ops.json"), JSON.stringify(board([step("p1", "Lower the Mac load", "todo")])));
-    const sessions: DaemonSession[] = [{ sessionId: "vp", sessionName: "dev VP" }, { sessionId: "ops", sessionName: OPS }];
-    const chats = await boardClasses({ dataDir: dir, now: NOW, sessions: () => sessions });
-    assert.deepEqual(chats.map(chat => [chat.id, chat.misses.scope_misses]), [["vp", 1], ["ops", 0]]);
-    assert.deepEqual(chats[0]!.flagged.filter(slice => slice.kind === "scope_misses").map(slice => slice.excerpt),
-      [`p1 "Lower the Mac load" belongs to ${OPS} (correction c1): hand it off with a message to that thread and remove it from this plan`]);
-  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("scope: only a step's own text names machine work; a note that names a machine as context never flags (VP of CI 10-09, Crawler VP 10-10)", () => {

@@ -3,8 +3,7 @@ import { appendFile, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { dutyFleet } from "../scripts/duties/duty-fleet.ts";
-import type { DaemonSession } from "../scripts/duties/board-classes.ts";
+import { type DaemonSession, dutyFleet } from "../scripts/duties/duty-fleet.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 

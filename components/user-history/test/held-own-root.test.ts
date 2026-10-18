@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
-import { boardClasses, type DaemonSession } from "../scripts/duties/board-classes.ts";
 import { checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
 import { heldElsewhere } from "../src/checkin-findings.ts";
 import { classifyBoard, jobFacts } from "../src/checkin-steps.ts";
@@ -70,16 +66,4 @@ test("launch main bro 10-14: a thread the chat did not start still holds its goa
   const chat = board([...PLAN, OTHER, ...WAITS]);
   const views = classifyBoard(chat, jobFacts([], chat, ROWS, CHAT), () => NOW, new Set([CHAT, NAME]), ROWS, NOW);
   assert.deepEqual(heldElsewhere(views, chat, ROWS, new Set([CHAT, NAME]), ["release driver"]).map(held => held.goal.id), ["p90", "p96"]);
-});
-
-test("launch main bro 10-14: the board-classes duty script reads the job registry and does not count p81 and p82 as held elsewhere", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "held-own-root-"));
-  await mkdir(join(dir, "boards"), { recursive: true });
-  await writeFile(join(dir, "boards", CHAT + ".json"), JSON.stringify(board([...PLAN, OTHER])));
-  await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: [CHAT] }));
-  await writeFile(join(dir, "chat-jobs.json"), JSON.stringify({ jobs: { "release driver": { chat: NAME, at: NOW - 3_600_000 } } }));
-  const sessions: DaemonSession[] = ROWS.map(entry => ({ sessionId: entry.id, sessionName: entry.name, lifecycle: "live", activity: entry.working ? "working" : "idle",
-    lastActivityAt: entry.lastActivityAt! }));
-  const [chat] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => sessions, home: dir });
-  assert.deepEqual(chat!.flagged.filter(slice => slice.kind === "held_elsewhere").map(slice => slice.item), ["p90"]);
 });

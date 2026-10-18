@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { chatChildren, type DaemonSession, sessionRows } from "../scripts/duties/board-classes.ts";
+import { chatChildren, type DaemonSession, sessionRows } from "../scripts/duties/duty-fleet.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";

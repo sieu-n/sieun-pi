@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,20 +11,91 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
-import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { pendingWakes } from "../../src/wakes.ts";
-import { chatChildren, daemonSessions, parseLooseJson, sessionRows, subagentsByParent, type DaemonSession } from "./board-classes.ts";
 
 /**
  * The duty fleet: every active duty of every chat in `<dataDir>/chats.json`, the built-in check-in included unless its chat's check-in is paused,
  * judged by its newest measured run (`effectiveRun`, so a run whose own job fixed the miss counts green). An archived chat and a clean-room test
  * chat (`clean-room-chats.json`) are not the owner's, so they are left out, and a duty with no measured run yet is pending, outside the share: at
  * 01:00Z on 10-18 the share fell from 44.4% to 27.2% on two new duties of the clean-room chats "skill references" (archived by its teardown) and
- * "LinkedIn index gaps". The Chat system duty leads with
- * `duties_green_pct` and chases `stuck_duties` chat by chat: a duty that missed CHANGE_APPROACH_MISSES measured runs in a row with no live fix job.
+ * "LinkedIn index gaps". It gives AI harness goal p453 its
+ * `duties_green_pct` and lists `stuck_duties` chat by chat: a duty that missed CHANGE_APPROACH_MISSES measured runs in a row with no live fix job.
  * `node --import tsx scripts/duties/duty-fleet.ts [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints the result as JSON.
  */
+
+/** The fields of one `prime-agent sessions --json` entry the fleet reads. */
+export interface DaemonSession {
+  sessionId: string; sessionName?: string; firstMessage?: string; lifecycle?: string; activity?: string; lastActivityAt?: string;
+  messageCount?: number; parentSessionId?: string; rlmChildId?: string;
+}
+/** JSON whose strings may hold raw control characters (session titles do): they are escaped before parsing. */
+export function parseLooseJson(text: string): unknown {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === "\\") { out += ch + (text[i + 1] ?? ""); i++; continue; }
+      if (ch === '"') inString = false;
+      const code = ch.charCodeAt(0);
+      out += code < 0x20 ? `\\u${code.toString(16).padStart(4, "0")}` : ch;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    out += ch;
+  }
+  return JSON.parse(out);
+}
+
+/** The daemon's session list through the project's own prime-agent CLI. */
+export function daemonSessions(): DaemonSession[] {
+  const bin = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "prime-agent");
+  const run = spawnSync(bin, ["sessions", "--json"], { encoding: "utf8", maxBuffer: 1 << 28, timeout: 60_000 });
+  if (run.status !== 0) throw new Error(`prime-agent sessions --json: exit ${run.status ?? run.signal}: ${String(run.stderr).trim().slice(0, 300)}`);
+  const parsed = parseLooseJson(run.stdout) as { sessions?: DaemonSession[] } | DaemonSession[];
+  return Array.isArray(parsed) ? parsed : parsed.sessions ?? [];
+}
+
+const ms = (iso: string | undefined): number | undefined => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : undefined; };
+/**
+ * The sessions at work: each working session and every session above it. A job whose own turn ended while its subagent runs is working, as the
+ * server's catalog counts it (`isWorking` with the subtree); 10-09 the job google serp idled at 14:02Z waiting on its exp-http-final subagent and
+ * the old board classes CLI called its step an orphan.
+ */
+export function workingSessions(sessions: readonly DaemonSession[]): Set<string> {
+  const parent = new Map(sessions.map(session => [session.sessionId, session.parentSessionId]));
+  const working = new Set<string>();
+  for (const session of sessions) {
+    if (session.activity !== "working" || session.lifecycle === "archived") continue;
+    for (let id: string | undefined = session.sessionId; id !== undefined && !working.has(id); id = parent.get(id)) working.add(id);
+  }
+  return working;
+}
+
+/** The catalog rows the check-in reads, from the daemon's sessions. */
+export function sessionRows(sessions: readonly DaemonSession[]): SessionRow[] {
+  const working = workingSessions(sessions);
+  return sessions.map(session => ({ id: session.sessionId, name: (session.sessionName || session.firstMessage || session.sessionId).trim(),
+    archived: session.lifecycle === "archived", working: working.has(session.sessionId), messageCount: session.messageCount ?? 0,
+    ...(session.lastActivityAt ? { lastActivityAt: session.lastActivityAt } : {}) }) as SessionRow);
+}
+/** A chat's direct subagents still listed (a deleted job is archived), as the server's child snapshots. */
+export function chatChildren(sessions: readonly DaemonSession[], chatId: string): ChildAgent[] {
+  const working = workingSessions(sessions);
+  return sessions.filter(session => session.parentSessionId === chatId && session.rlmChildId && session.lifecycle !== "archived").map(session => {
+    const at = ms(session.lastActivityAt);
+    return { id: session.rlmChildId!, label: session.sessionName ?? session.rlmChildId!, ...(session.sessionName ? { sessionName: session.sessionName } : {}),
+      sessionId: session.sessionId, status: working.has(session.sessionId) ? "running" : "done", ...(at !== undefined ? { lastActivityAt: at } : {}) } as ChildAgent;
+  });
+}
+/** Every listed subagent by its parent's session id, as the check-in's `liveJobs` reads the daemon's roster. */
+export function subagentsByParent(sessions: readonly DaemonSession[]): Map<string, ChildAgent[]> {
+  const byParent = new Map<string, ChildAgent[]>();
+  for (const session of sessions) if (session.parentSessionId) byParent.set(session.parentSessionId, [...byParent.get(session.parentSessionId) ?? [], ...chatChildren([session], session.parentSessionId)]);
+  return byParent;
+}
 
 export interface FleetDuty {
   chat: string; duty: string; name: string;
@@ -100,7 +172,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         const open = (step: string): boolean => { const item = byId.get(step); return item === undefined || OPEN.has(item.status); };
         if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
         if (streak >= CHANGE_APPROACH_MISSES) {
-          // The check-in's working test (board-classes.ts): a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
+          // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {
             const all = roster();
             const children = chatChildren(all, id);
