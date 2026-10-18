@@ -5,11 +5,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
+import { treeMb, treePids } from "./demo-sandbox.ts";
 
 /**
  * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 dev services gave no
- * 200 within 5 s, and pm2 restarts of search since the last run. Each service's answer and time goes into the flagged items as run detail.
- * No model call. The wiki is the one server at the wiki host of hosts.json (the llm-wiki app of the pm2 dev stack).
+ * 200 within 5 s, the wiki's real memory against its cap, and restarts of the wiki and search since the last run. Each service's answer and time
+ * goes into the flagged items as run detail. No model call. The wiki is the one server at the wiki host of hosts.json. On us-metal02 it runs as
+ * llm-wiki.service under systemd (deploy/linux/llm-wiki.service) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
+ * restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  */
@@ -17,6 +20,9 @@ import { loadHosts, roleUrl } from "../../src/hosts.ts";
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 /** The owner's 200 check: an answer slower than 5 s counts as no answer. */
 export const ANSWER_TIMEOUT_MS = 5000;
+/** The wiki's memory cap, the one dev-guard kills it over. */
+export const CAP_MB = 4096;
+export const WIKI_UNIT = "llm-wiki.service";
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
 export type Service = { key: string; url: string } | { key: string; envKey: string; path: string };
@@ -25,16 +31,16 @@ export const SERVICES: readonly Service[] = [
   { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
   { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
 ];
-/** pm2 processes whose restarts the duty counts. */
-export const PM2_NAMES = ["search"] as const;
+/** pm2 processes whose restarts the duty counts. The wiki counts here only where pm2 runs it. */
+export const PM2_NAMES = ["llm-wiki", "search"] as const;
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
 /** `platform` is the OS of the host whose pm2 and localhost services this run measures; `read` gives a file's text or throws. */
 export interface UptimeDeps { fetch: typeof fetch; exec: Exec; read: (path: string) => Promise<string>; platform: NodeJS.Platform; now: () => number;
   pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
-/** pm2's restart count per process name, kept between runs. */
-export interface UptimeState { restarts: Record<string, { restartTime: number; at: number }> }
+/** The restart count per pm2 process name or systemd unit, kept between runs; a unit also keeps its InvocationID, which changes at each start. */
+export interface UptimeState { restarts: Record<string, { restartTime: number; at: number; invocation?: string }> }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { restart_time?: number; status?: string } }
 
 /**
@@ -68,6 +74,30 @@ export function restartsSince(previous: { restartTime: number } | undefined, res
   return restartTime >= previous.restartTime ? restartTime - previous.restartTime : restartTime;
 }
 
+/** `systemctl show` output as a map: one `Key=value` per line. */
+export function parseShow(text: string): Record<string, string> {
+  return Object.fromEntries(text.split("\n").filter(line => line.includes("=")).map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+}
+
+/**
+ * Restarts of a systemd unit since the last run. NRestarts counts the automatic restarts and goes back to 0 at a manual start, and the
+ * InvocationID changes at every start, so a new InvocationID with no NRestarts rise is one manual restart.
+ */
+export function unitRestartsSince(previous: { restartTime: number; invocation?: string } | undefined, nRestarts: number, invocation: string): number {
+  if (!previous || previous.invocation === invocation) return 0;
+  return Math.max(1, nRestarts >= previous.restartTime ? nRestarts - previous.restartTime : nRestarts + 1);
+}
+
+/** The wiki's systemd unit when this host loads it: its pids from the unit's cgroup, its restart count and its InvocationID. */
+export async function wikiUnit(deps: Pick<UptimeDeps, "exec" | "read" | "platform">): Promise<{ pids: number[]; nRestarts: number; invocation: string; memoryCurrentMb: number } | undefined> {
+  if (deps.platform !== "linux") return undefined;
+  const show = parseShow(await deps.exec("systemctl", ["--user", "show", WIKI_UNIT, "-p", "LoadState,ActiveState,ControlGroup,NRestarts,InvocationID,MemoryCurrent"]));
+  if (show.LoadState !== "loaded") return undefined;
+  if (show.ActiveState !== "active" || !show.ControlGroup) throw new Error(`${WIKI_UNIT} is ${show.ActiveState}`);
+  const pids = (await deps.read(`/sys/fs/cgroup${show.ControlGroup}/cgroup.procs`)).split("\n").filter(Boolean).map(Number);
+  return { pids, nRestarts: Number(show.NRestarts), invocation: show.InvocationID ?? "", memoryCurrentMb: Math.round(Number(show.MemoryCurrent) / 1024 / 1024) };
+}
+
 /** KEY=value lines of a dotenv file; quotes and a trailing ` # comment` are dropped. */
 export function parseEnv(text: string): Record<string, string> {
   const env: Record<string, string> = {};
@@ -91,7 +121,7 @@ export function target(service: Service, env: Record<string, string>): { url: st
 
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
-  const metrics = { servers_not_answering: 0, restarts: 0 };
+  const metrics: { servers_not_answering: number; restarts: number; wiki_footprint_mb?: number } = { servers_not_answering: 0, restarts: 0 };
   const at = deps.now();
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
@@ -109,25 +139,52 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });
   }
 
+  const state: UptimeState = { restarts: {} };
+  const memory = (where: string, pids: readonly number[], mb: number, extra = "") => {
+    metrics.wiki_footprint_mb = mb;
+    flagged.push({ at, kind: mb > CAP_MB ? "memory" : "wiki_memory", excerpt: `wiki: ${where} (pids ${pids.join(", ")}) holds ${mb} MB of Pss and SwapPss${extra}${mb > CAP_MB ? `, over the ${CAP_MB} MB cap` : ""}`.slice(0, 300) });
+  };
+  const count = (name: string, restarts: number, before: { restartTime: number; at: number } | undefined, restartTime: number, what: string) => {
+    metrics.restarts += restarts;
+    if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: ${what} restart count ${restartTime} of ${name} saved as the baseline` });
+    else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `${what} restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
+  };
+  let unit: Awaited<ReturnType<typeof wikiUnit>>;
+  try {
+    unit = await wikiUnit(deps);
+    if (unit) {
+      memory(WIKI_UNIT, unit.pids, await treeMb(deps, unit.pids), `, memory.current ${unit.memoryCurrentMb} MB with page cache`);
+      const before = previous?.restarts[WIKI_UNIT];
+      count(WIKI_UNIT, unitRestartsSince(before, unit.nRestarts, unit.invocation), before, unit.nRestarts, "systemd");
+      state.restarts[WIKI_UNIT] = { restartTime: unit.nRestarts, at, invocation: unit.invocation };
+    }
+  } catch (error) {
+    flagged.push({ at, kind: "wiki_memory", excerpt: `${WIKI_UNIT}: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
+  }
+
   let list: Pm2Process[];
   try {
     const text = await deps.exec(deps.pm2.bin, ["jlist"], { PM2_HOME: deps.pm2.home });
     list = JSON.parse(text.slice(text.indexOf("["))) as Pm2Process[];
   } catch (error) {
     flagged.push({ at, kind: "pm2", excerpt: `pm2 (PM2_HOME ${deps.pm2.home}): pm2 jlist failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
-    return { output: { metrics, flagged } };
+    return { output: { metrics, flagged }, state };
   }
-  const state: UptimeState = { restarts: {} };
   for (const name of PM2_NAMES) {
+    if (name === "llm-wiki" && unit) continue;
     const proc = list.find(candidate => candidate.name === name);
     if (!proc?.pid) { flagged.push({ at, kind: "pm2", excerpt: `pm2 has no live ${name} process (status ${proc?.pm2_env?.status ?? "missing"})` }); continue; }
     const restartTime = proc.pm2_env?.restart_time ?? 0;
     const before = previous?.restarts[name];
-    const restarts = restartsSince(before, restartTime);
-    metrics.restarts += restarts;
+    count(name, restartsSince(before, restartTime), before, restartTime, "pm2");
     state.restarts[name] = { restartTime, at };
-    if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: pm2 restart count ${restartTime} of ${name} saved as the baseline` });
-    else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `pm2 restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
+    if (name !== "llm-wiki") continue;
+    try {
+      const pids = treePids(await deps.exec("ps", ["-axo", "pid=,ppid="]), proc.pid);
+      memory(`pm2 ${name}`, pids, await treeMb(deps, pids));
+    } catch (error) {
+      flagged.push({ at, kind: "wiki_memory", excerpt: `pm2 ${name}: memory read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
+    }
   }
   return { output: { metrics, flagged }, state };
 }

@@ -1,7 +1,7 @@
 {
   "name": "Local dev servers",
   "ownerWords": "A 200 check is a good duty too. Hand the 200 checks of the wiki, the frontend app, Convex and the crawler API in the local environment to the ops chat.",
-  "goal": "The wiki (the wiki url in hosts.json), the search app (localhost:5174), local Convex and the local crawler-v3 API each answer 200 within 5 s, and pm2 restarts search at most once a day. Tell the owner only when a server does not answer or search keeps restarting.",
+  "goal": "The wiki (the wiki url in hosts.json), the search app (localhost:5174), local Convex and the local crawler-v3 API each answer 200 within 5 s, the wiki's process tree stays under 4096 MB, and the wiki or search restarts at most once a day. Tell the owner only when a server does not answer, the wiki is over its cap, or a server keeps restarting.",
   "metrics": [
     {
       "key": "servers_not_answering",
@@ -11,8 +11,15 @@
       "headline": true
     },
     {
+      "key": "wiki_footprint_mb",
+      "label": "Real memory of the wiki's process tree (llm-wiki.service on us-metal02, pm2 elsewhere)",
+      "op": "<=",
+      "target": 4096,
+      "unit": " MB"
+    },
+    {
       "key": "restarts",
-      "label": "pm2 restarts of search since the last run",
+      "label": "Restarts of the wiki (systemd or pm2) or search (pm2) since the last run",
       "op": "<=",
       "target": 1
     }
@@ -31,6 +38,6 @@
     "cwd": "../..",
     "timeoutMs": 90000
   },
-  "onMiss": "Read the flagged items; each service's answer is there, and by_design means the search app uses a remote one. Wiki not answering: on us-metal02 in auto-sns-agent read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs llm-wiki --lines 200 --nostream`, find the cause, and restart it with that pm2 only if it still does not answer. Search not answering: in auto-sns-agent read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs search --lines 200 --nostream`, find the cause, and restart it with that pm2 only if it still does not answer. Convex or crawler: run `node scripts/dev/devstack.mjs status` and follow ops/runbooks/local-runtime.md. Restarting: find the root (dev-guard.mjs logs exits; `Stopping app` in .cache/pm2-dev/pm2.log is a restart command) and start one job that fixes it with `commit.mjs --object-only --push-ci ci/<name>`. Tell the owner what broke and whether it answers now. All on target: no message.",
+  "onMiss": "Read the flagged items; each service's answer is there, and by_design means the search app uses a remote one. Wiki not answering, over its cap or restarting: on us-metal02 read `journalctl --user -u llm-wiki.service -n 200 --no-pager`, find the cause, and run `systemctl --user restart llm-wiki.service` only if it still does not answer; where pm2 runs it, read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs llm-wiki --lines 200 --nostream` in auto-sns-agent instead. Search not answering: in auto-sns-agent read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs search --lines 200 --nostream`, find the cause, and restart it with that pm2 only if it still does not answer. Convex or crawler: run `node scripts/dev/devstack.mjs status` and follow ops/runbooks/local-runtime.md. Restarting: find the root (dev-guard.mjs logs exits; `Stopping app` in .cache/pm2-dev/pm2.log is a restart command) and start one job that fixes it with `commit.mjs --object-only --push-ci ci/<name>`. Tell the owner what broke and whether it answers now. All on target: no message.",
   "boardGoal": "p53"
 }
