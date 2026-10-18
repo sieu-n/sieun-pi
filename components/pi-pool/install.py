@@ -257,11 +257,12 @@ def check_hooks(home):
         try:
             done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
                                   env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
-            exit_code, chars = done.returncode, len(done.stdout.strip())
+            exit_code, chars, waits = done.returncode, len(done.stdout.strip()), "no token (slot_wait)" in done.stderr
         except (OSError, subprocess.TimeoutExpired) as e:
-            exit_code, chars = type(e).__name__, 0
-        results[args[1]] = {"ok": exit_code == 0 and chars > 20, "exit": exit_code, "token_chars": chars,
-                            "sec": round(time.monotonic() - started, 2)}
+            exit_code, chars, waits = type(e).__name__, 0, False
+        # A slot wait is the pool's own answer while every account is taken, so the hook, its modules and the holder all ran.
+        results[args[1]] = {"ok": exit_code == 0 and chars > 20 or exit_code == 1 and waits, "exit": exit_code, "token_chars": chars,
+                            **({"answer": "slot_wait"} if waits else {}), "sec": round(time.monotonic() - started, 2)}
     return results
 
 

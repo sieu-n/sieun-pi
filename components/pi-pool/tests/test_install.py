@@ -12,6 +12,7 @@ def setUpModule():
 
 INSTALLER = Path(__file__).resolve().parents[1] / "install.py"
 HOOK = """#!/bin/sh
+[ -e "$PI_POOL_DIR/hook-waits" ] && { echo "pi-pool-token: no token (slot_wait)" >&2; exit 1; }
 [ -e "$PI_POOL_DIR/hook-fails" ] && grep -q "$(cat "$PI_POOL_DIR/hook-fails")" "$(dirname "$0")/../vend.py" && exit 3
 printf 'fixture-token-%s' 0123456789abcdefghij
 """
@@ -204,6 +205,13 @@ class Install(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("hook check failed", err)
         self.assertEqual(self.current(), f"releases/{first}")
+
+    def test_a_hook_that_answers_with_a_slot_wait_passes_the_check(self):
+        (self.home / ".config/pi-pool/hook-waits").write_text("")
+        code, out = self.run_installer()
+        self.assertEqual(code, 0, out)
+        self.assertEqual({p: (h["ok"], h.get("answer")) for p, h in out["hooks"].items()},
+                         {"anthropic": (True, "slot_wait"), "openai-codex": (True, "slot_wait")})
 
     def test_a_first_install_whose_hook_fails_puts_the_old_links_back(self):
         (self.home / ".config/pi-pool").mkdir(parents=True, exist_ok=True)
