@@ -20,7 +20,8 @@ import { historyMessages } from "../src/session-tail.ts";
  * `node --import tsx scripts/session-compact.ts <session file or id>...` prints what it would remove. With `--apply` it waits until the
  * daemon lists the session idle and no process holds the file open for writing, backs the file up to `--backup-dir`, writes the new file
  * beside it, copies over every line the daemon appended meanwhile, renames it into place, and checks every line and the projected feed
- * against the backup. A second run finds nothing to do. `--socket none` skips the daemon check, for a copy no daemon runs. `--restore <manifest>` puts a backup back with the lines appended since.
+ * against the backup. A second run finds nothing to do. `--socket none` skips the daemon check, for a copy no daemon runs.
+ * `--keep-images` leaves images inline, for a box whose chat cannot serve moved ones yet; a later run without it moves them. `--restore <manifest>` puts a backup back with the lines appended since.
  */
 
 const TEXT_KEEP = 600;
@@ -121,7 +122,7 @@ function count(plan: Plan, kind: string, before: number, after: number): void {
 }
 
 /** What compaction would change in the complete lines of `bytes`: the new bytes of each changed line and the image files to write. */
-export function planCompaction(file: string, bytes: Buffer): Plan {
+export function planCompaction(file: string, bytes: Buffer, options = { images: true }): Plan {
   const lines = splitLines(bytes);
   const plan: Plan = { file, size: bytes.length, lines, cut: cutIndex(lines), changed: new Map(), images: [], counts: {} };
   const folder = artifactsDir(file);
@@ -129,7 +130,7 @@ export function planCompaction(file: string, bytes: Buffer): Plan {
     const line = lines[i]!;
     const board = line.includes('"toolName":"chat_board"');
     const digest = line.includes('"customType":"harness_digest"');
-    const image = line.includes('"type":"image"');
+    const image = options.images && line.includes('"type":"image"');
     if (!board && !digest && !image) continue;
     const entry = JSON.parse(line.toString("utf8")) as Entry;
     let kind: string | undefined;
@@ -267,7 +268,7 @@ function verify(file: string, backup: Buffer, plan: Plan): void {
   }
 }
 
-export async function apply(file: string, options: { backupDir: string; socket: string; waitMs: number }): Promise<string> {
+export async function apply(file: string, options: { backupDir: string; socket: string; waitMs: number; images?: boolean }): Promise<string> {
   const fd = openSync(file, "r");
   try {
     for (const started = Date.now(); ;) {
@@ -279,11 +280,11 @@ export async function apply(file: string, options: { backupDir: string; socket: 
     const info = fstatSync(fd);
     const read = readRange(fd, 0, info.size);
     let have = read.lastIndexOf(0x0a) + 1;
-    const plan = planCompaction(file, read.subarray(0, have));
+    const plan = planCompaction(file, read.subarray(0, have), { images: options.images ?? true });
     if (!plan.changed.size) return `${basename(file)}: nothing to remove`;
     mkdirSync(options.backupDir, { recursive: true });
-    const backupPath = join(options.backupDir, basename(file));
-    if (existsSync(backupPath)) throw new Error(`${backupPath} exists; a backup is never overwritten`);
+    let backupPath = join(options.backupDir, basename(file));
+    for (let n = 2; existsSync(backupPath); n++) backupPath = join(options.backupDir, `${basename(file, ".jsonl")}.${n}.jsonl`);
     const backupFd = openSync(backupPath, "wx", 0o600);
     writeAll(backupFd, read.subarray(0, have));
     for (const image of plan.images) writeImage(image);
@@ -358,14 +359,15 @@ async function main(argv: string[]): Promise<void> {
   const socket = flag("--socket") ?? join("/tmp", `prime-agent-${process.getuid?.() ?? 0}`, "daemon.sock");
   const waitMs = Number(flag("--wait-seconds") ?? "600") * 1000;
   const applyIt = argv.includes("--apply");
-  for (const arg of argv.filter(a => a !== "--apply")) {
+  const images = !argv.includes("--keep-images");
+  for (const arg of argv.filter(a => a !== "--apply" && a !== "--keep-images")) {
     const file = sessionPath(arg);
     if (!applyIt) {
       const bytes = readFileSync(file);
-      console.log(describe(planCompaction(file, bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1))));
+      console.log(describe(planCompaction(file, bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1), { images })));
       continue;
     }
-    console.log(await apply(file, { backupDir, socket, waitMs }));
+    console.log(await apply(file, { backupDir, socket, waitMs, images }));
   }
 }
 
