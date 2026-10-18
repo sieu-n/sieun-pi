@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
-import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, routerFor, stepNote, stepTitle, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
+import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, ruleKey, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, routerFor, stepNote, stepTitle, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES, routeAlert } from "../src/alert-routes.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { walkItems } from "../src/shared/chat-board.ts";
@@ -50,7 +50,7 @@ async function fixture(list: unknown[] = [], options: { owners?: OwnerMap; board
     return found;
   };
   return { dir, boards, bridge, sent, steps, set: (next: unknown[] | null) => { alerts = next; }, at: (ms: number) => { now = ms; },
-    state: async () => JSON.parse(await readFile(join(dir, "alert-bridge.json"), "utf8")) as { alerts: Record<string, { step: string; wokeAt: number; resolvedAt?: number }> } };
+    state: async () => JSON.parse(await readFile(join(dir, "alert-bridge.json"), "utf8")) as { v: 2; rules: Record<string, { step: string | null; wokeAt: number; resolvedAt?: number; escalatedAt?: number; instances: Record<string, { resolvedAt?: number }> }> } };
 }
 
 test("alert bridge: a new firing alert adds exactly one board step in the chat that owns it and sends no message", async () => {
@@ -61,7 +61,8 @@ test("alert bridge: a new firing alert adds exactly one board step in the chat t
   assert.equal(more.length, 0);
   assert.equal(step.text, "Production CI runner queue over 30 min");
   assert.equal(step.status, "todo");
-  assert.match(step.note!, /^Grafana alert aaaa000000000001, firing since 2026-10-14T01:00:00\.000Z\.$/m);
+  assert.match(step.note!, /^Grafana alert rule ci-queue-wait, firing since 2026-10-14T01:00:00\.000Z\.$/m);
+  assert.match(step.note!, /^- since 2026-10-14T01:00Z \(aaaa000000000001\)$/m);
   assert.match(step.note!, /__alert_rule_uid__=ci-queue-wait, environment=production/);
   assert.match(step.note!, /https:\/\/obs\.virev\.ai\/alerting\/grafana\/ci-queue-wait\/view/);
   const goal = (await f.boards.read(CI))!.plan.find(item => item.children.some(child => child.id === step.id))!;
@@ -86,7 +87,7 @@ test("alert bridge: a crash after the board write and before the state write ado
   await f.bridge.tick();
   const steps = await f.steps(CI);
   assert.equal(steps.length, 1);
-  assert.equal((await f.state()).alerts[alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:00:00.000Z" })]!.step, steps[0]!.id);
+  assert.equal((await f.state()).rules[ruleKey(CI, "ci-queue-wait")]!.step, steps[0]!.id);
 });
 
 test("alert bridge: replay of 10-15 12:41Z, the Crawler VP rewrites each note on every tick, and each firing stays one step", async () => {
@@ -113,7 +114,7 @@ test("alert bridge: replay of 10-15 12:41Z, the Crawler VP rewrites each note on
   walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (/health (snapshot failing|read over 2 s)/.test(item.text)) ids.push(item.id); });
   assert.equal(ids.length, 2);
   const state = await f.state();
-  assert.deepEqual(Object.values(state.alerts).map(tracked => tracked.step).sort(), [...ids].sort());
+  assert.deepEqual(Object.values(state.rules).map(tracked => tracked.step).sort(), [...ids].sort());
 });
 
 test("alert bridge: a step the chat closed, or one it dropped, gets no escalation while its alert keeps firing", async () => {
@@ -126,11 +127,11 @@ test("alert bridge: a step the chat closed, or one it dropped, gets no escalatio
   assert.equal(f.sent.length, 0);
 });
 
-test("alert bridge: alerts that start in one tick each get one step in the chat that owns them", async () => {
+test("alert bridge: label sets of one rule with no rule uid share one step by alertname, and each other rule gets its own step", async () => {
   const crawler = [1, 2, 3].map(n => raw(`bbbb00000000000${n}`, { alertname: "Production stream entry waiting over 1 hour", job: "crawler-v3", stream: `crawl_profile:${n}` }));
   const f = await fixture([...crawler, ciAlert]);
   await f.bridge.tick();
-  assert.equal((await f.steps(CRAWLER)).length, 3);
+  assert.equal((await f.steps(CRAWLER)).length, 1);
   assert.equal((await f.steps(CI)).length, 1);
   assert.equal(f.sent.length, 0);
 });
@@ -143,8 +144,8 @@ test("alert bridge: an alert that leaves the firing list gets one resolved line 
   await f.bridge.tick();
   const [step] = await f.steps(CI);
   assert.equal(step!.status, "todo");
-  assert.match(step!.note!, /\nThe alert resolved at 2026-10-14T01:37:00\.000Z, when the alert bridge saw it leave Grafana's firing list\.$/);
-  assert.equal((await f.state()).alerts[alertKey(ciAlert)]!.resolvedAt, NOW + 7 * MIN);
+  assert.match(step!.note!, /\nThe alert resolved at 2026-10-14T01:37:00\.000Z, when the alert bridge saw every label set leave Grafana's firing list\.$/);
+  assert.equal((await f.state()).rules[ruleKey(CI, "ci-queue-wait")]!.resolvedAt, NOW + 7 * MIN);
   f.at(NOW + 8 * MIN);
   await f.bridge.tick();
   assert.equal((await f.steps(CI))[0]!.note, step!.note);
@@ -161,7 +162,9 @@ test("alert bridge: the same fingerprint firing again after it resolved is a new
   f.at(NOW + 10 * MIN);
   await f.bridge.tick();
   assert.equal((await f.steps(CI)).length, 2);
-  assert.deepEqual(Object.keys((await f.state()).alerts), [alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:40:00.000Z" })]);
+  const { rules } = await f.state();
+  assert.deepEqual(Object.keys(rules), [ruleKey(CI, "ci-queue-wait")]);
+  assert.deepEqual(Object.keys(rules[ruleKey(CI, "ci-queue-wait")]!.instances), [alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:40:00.000Z" })]);
 });
 
 test("alert bridge: replay of 10-15 06:20Z, one poll drops a firing whose step the chat closed with a reason, and the same firing seen on 4 polls stays one step", async () => {
@@ -182,7 +185,7 @@ test("alert bridge: replay of 10-15 06:20Z, one poll drops a firing whose step t
   const ids: string[] = [];
   walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (item.text.includes("health read over 2 s")) ids.push(item.id); });
   assert.equal(ids.length, 1);
-  const tracked = (await f.state()).alerts[alertKey(snapshot)]!;
+  const tracked = (await f.state()).rules[ruleKey(CRAWLER, "crawler-prod-health-slow")]!;
   assert.equal(tracked.step, ids[0]);
   assert.equal(tracked.resolvedAt, undefined);
 });
@@ -249,9 +252,10 @@ test("alert bridge: a replay of crawler-prod-health-snapshot-down from 2026-10-1
   const [step] = await f.steps(CRAWLER);
   assert.equal(board.plan.find(goal => goal.text.startsWith("Crawler ops:"))!.children[0]!.id, step!.id);
   assert.equal(step!.text, "Production crawler health snapshot failing");
-  assert.match(step!.note!, /^Grafana alert 60a82f58f945d61a, firing since 2026-10-14T01:29:10\.000Z\.\nAlert: Production crawler health snapshot failing\./);
+  assert.match(step!.note!, /^Grafana alert rule crawler-prod-health-snapshot-down, firing since 2026-10-14T01:29:10\.000Z\.\nAlert: Production crawler health snapshot failing\./);
   assert.match(step!.note!, /snapshot=instagram_census/);
-  assert.match(step!.note!, /Grafana: https:\/\/obs\.virev\.ai\/alerting\/grafana\/crawler-prod-health-snapshot-down\/view$/);
+  assert.match(step!.note!, /^Grafana: https:\/\/obs\.virev\.ai\/alerting\/grafana\/crawler-prod-health-snapshot-down\/view$/m);
+  assert.match(step!.note!, /^- since 2026-10-14T01:29Z \(60a82f58f945d61a\)$/m);
   assert.equal(f.sent.length, 0);
   for (const other of ALERT_ROUTES.filter(route => route.session !== CRAWLER)) assert.equal(await f.boards.read(other.session), null);
 });
@@ -345,7 +349,7 @@ test("alert bridge: an owner with no board, such as metal box owner, gets no ste
   for (const at of [ESCALATE_MS, 2 * ESCALATE_MS]) { f.at(NOW + at); await f.bridge.tick(); }
   f.set([]);
   await f.bridge.tick();
-  assert.equal((await f.state()).alerts[alertKey(backup)]!.resolvedAt, NOW + 2 * ESCALATE_MS);
+  assert.equal((await f.state()).rules[ruleKey(METAL, "metal-backup-ch-redis-age")]!.resolvedAt, NOW + 2 * ESCALATE_MS);
   assert.equal(f.sent.length, 0);
 });
 
@@ -379,4 +383,99 @@ test("alert bridge: an alert labelled severity=test makes no step and no message
   await f.bridge.tick();
   assert.equal(await f.boards.read(CI), null);
   assert.equal(f.sent.length, 0);
+});
+
+const PROXY_RULE = "crawler-proxy-lane-success";
+const lane = (n: number, startsAt = "2026-10-18T00:10:30.000Z") => ({ ...raw(`ac0000000000000${n}`, { alertname: "Production proxy attempt success under 40% in a lane",
+  __alert_rule_uid__: PROXY_RULE, job: "crawler-v3", env: "production", lane: `lane-${n}` }), startsAt });
+
+test("alert bridge: 6 label sets of one rule, like the 6 proxy lanes on 10-18, open 1 step that lists every lane, and a 7th lane joins that step", async () => {
+  const lanes = [1, 2, 3, 4, 5, 6].map(n => lane(n));
+  const f = await fixture(lanes);
+  await f.bridge.tick();
+  const [step, ...more] = await f.steps(CRAWLER);
+  assert.equal(more.length, 0);
+  assert.equal(step!.text, "Production proxy attempt success under 40% in a lane");
+  assert.match(step!.note!, /^Shared labels: __alert_rule_uid__=crawler-proxy-lane-success, job=crawler-v3, env=production\.$/m);
+  assert.match(step!.note!, /^Label sets of this rule, 6 of 6 firing:$/m);
+  for (const n of [1, 2, 3, 4, 5, 6]) assert.match(step!.note!, new RegExp(`^- lane=lane-${n}, since 2026-10-18T00:10Z \\(ac0000000000000${n}\\)$`, "m"));
+  assert.deepEqual(Object.keys((await f.state()).rules), [ruleKey(CRAWLER, PROXY_RULE)]);
+  f.set([...lanes, lane(7, "2026-10-18T00:20:30.000Z")]);
+  f.at(NOW + MIN);
+  await f.bridge.tick();
+  const [same, ...extra] = await f.steps(CRAWLER);
+  assert.equal(extra.length, 0);
+  assert.equal(same!.id, step!.id);
+  assert.match(same!.note!, /^Label sets of this rule, 7 of 7 firing:$/m);
+  assert.match(same!.note!, /^- lane=lane-7, since 2026-10-18T00:20Z \(ac00000000000007\)$/m);
+  assert.equal(Object.keys((await f.state()).rules[ruleKey(CRAWLER, PROXY_RULE)]!.instances).length, 7);
+});
+
+test("alert bridge: one label set resolving keeps the rule's step open, and the step resolves only when every set has", async () => {
+  const lanes = [1, 2, 3, 4, 5, 6].map(n => lane(n));
+  const f = await fixture(lanes);
+  await f.bridge.tick();
+  f.set(lanes.slice(1));
+  f.at(NOW + 5 * MIN);
+  await f.bridge.tick();
+  const [step] = await f.steps(CRAWLER);
+  assert.doesNotMatch(step!.note!, /The alert resolved at/);
+  assert.match(step!.note!, /^Label sets of this rule, 5 of 6 firing:$/m);
+  assert.match(step!.note!, /^- lane=lane-1, since 2026-10-18T00:10Z, resolved 2026-10-14T01:35Z \(ac00000000000001\)$/m);
+  const open = (await f.state()).rules[ruleKey(CRAWLER, PROXY_RULE)]!;
+  assert.equal(open.resolvedAt, undefined);
+  assert.equal(open.step, step!.id);
+  f.set([]);
+  f.at(NOW + 9 * MIN);
+  await f.bridge.tick();
+  const [closed, ...more] = await f.steps(CRAWLER);
+  assert.equal(more.length, 0);
+  assert.equal(closed!.status, "todo");
+  assert.match(closed!.note!, /^Label sets of this rule, 0 of 6 firing:$/m);
+  assert.match(closed!.note!, /\nThe alert resolved at 2026-10-14T01:39:00\.000Z, when the alert bridge saw every label set leave Grafana's firing list\.$/);
+  assert.equal((await f.state()).rules[ruleKey(CRAWLER, PROXY_RULE)]!.resolvedAt, NOW + 9 * MIN);
+  f.set([lane(2)]);
+  f.at(NOW + 10 * MIN);
+  await f.bridge.tick();
+  const [back] = await f.steps(CRAWLER);
+  assert.equal((await f.steps(CRAWLER)).length, 1, "the same firing back in the list reopens its old step");
+  assert.doesNotMatch(back!.note!, /The alert resolved at/);
+  assert.match(back!.note!, /^Label sets of this rule, 1 of 6 firing:$/m);
+});
+
+test("alert bridge: the 30 min escalation counts rules, so 6 firing lanes and one other rule make one message about 2 steps", async () => {
+  const other = raw("ad00000000000001", { alertname: "Production crawler health snapshot failing", __alert_rule_uid__: "crawler-prod-health-snapshot-down", job: "crawler-v3", world: "prod" });
+  const f = await fixture([...[1, 2, 3, 4, 5, 6].map(n => lane(n)), other]);
+  await f.bridge.tick();
+  assert.equal((await f.steps(CRAWLER)).length, 2);
+  f.at(NOW + ESCALATE_MS);
+  await f.bridge.tick();
+  const escalations = f.sent.filter(({ text }) => text.startsWith("[alert-escalation]"));
+  assert.equal(escalations.length, 1);
+  assert.match(escalations[0]!.text, /^\[alert-escalation\] 2 alert steps are still open/);
+  assert.match(escalations[0]!.text, /firing since 2026-10-18T00:10Z, 6 label sets\)/);
+});
+
+test("alert bridge: a version 1 state with one step per lane merges the lanes onto the step placed first and points the other steps at it", async () => {
+  const lanes = [1, 2, 3].map(n => lane(n));
+  const f = await fixture(lanes);
+  await f.boards.apply(CRAWLER, [{ op: "plan_add", text: ALERT_GOAL }, ...[1, 2, 3].flatMap(n => [{ op: "plan_add" as const, parent: "p1", text: "Production proxy attempt success under 40% in a lane" },
+    { op: "plan_update" as const, id: `p${n + 1}`, note: `Grafana alert ac0000000000000${n}, firing since 2026-10-18T00:10:30.000Z.\nLabels: lane=lane-${n}.` }])], "agent");
+  const old = Object.fromEntries(lanes.map((alert, index) => [alertKey(alert), { chat: CRAWLER, step: `p${index + 2}`, alertname: "Production proxy attempt success under 40% in a lane",
+    startsAt: alert.startsAt, wokeAt: NOW - (10 - index) * MIN, firstWokeAt: NOW - (10 - index) * MIN, escalatedAt: index === 1 ? NOW - MIN : undefined }]));
+  await writeFile(join(f.dir, "alert-bridge.json"), JSON.stringify({ v: 1, alerts: old }));
+  await f.bridge.tick();
+  const state = await f.state();
+  assert.equal(state.v, 2);
+  assert.deepEqual(Object.values(state.rules).map(rule => rule.step), ["p2"]);
+  const rule = Object.values(state.rules)[0]!;
+  assert.equal(Object.keys(rule.instances).length, 3);
+  assert.equal(rule.escalatedAt, NOW - MIN, "a merged step that was escalated keeps the rule from a second escalation");
+  const board = (await f.boards.read(CRAWLER))!;
+  const note = (id: string) => board.plan[0]!.children.find(item => item.id === id)!.note!;
+  assert.match(note("p2"), /^Label sets of this rule, 3 of 3 firing:$/m);
+  for (const id of ["p3", "p4"]) assert.match(note(id), /The alert bridge moved this rule's label sets to p2, which now lists every set\.$/);
+  f.at(NOW + MIN);
+  await f.bridge.tick();
+  assert.equal((await f.boards.read(CRAWLER))!.plan[0]!.children.length, 3);
 });

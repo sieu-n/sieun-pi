@@ -16,18 +16,29 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts";
 const RESOLVED = "The alert resolved at";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
-export interface Tracked { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number; resolvedAt?: number }
-export interface BridgeState { v: 1; alerts: Record<string, Tracked> }
+/** One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). */
+export interface Instance { startsAt: string; labels: Record<string, string>; resolvedAt?: number }
+/**
+ * One alert rule firing in one owning chat, and its board step. `rule` is the rule uid, or the alertname when the uid label is missing. The
+ * group resolves when every instance has resolved. `wokeAt` and `firstWokeAt` both hold the time the step was placed.
+ */
+export interface Tracked { chat: string; step: string | null; rule: string; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number;
+  resolvedAt?: number; instances: Record<string, Instance> }
+export interface BridgeState { v: 2; rules: Record<string, Tracked> }
 export interface StepView { text: string; open: boolean; owned: boolean }
-export interface ChatNotice { chat: string; add: FiringAlert[] }
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
 export interface Resolve { key: string; chat: string; step: string | null; at: string }
-export interface StepLine { step: string; title: string; alertname: string; startsAt: string }
+export interface StepLine { step: string; title: string; alertname: string; startsAt: string; sets?: number }
+export interface Merge { step: string | null; into: string }
+/** One chat's part of a tick: its rules after the tick, the new rules that need a step, the rules whose note changes, and steps merged away. */
+export interface ChatChange { chat: string; rules: Record<string, Tracked>; fresh: Map<string, FiringAlert>; touched: Set<string>; merged: Merge[] }
 
-export const emptyState = (): BridgeState => ({ v: 1, alerts: {} });
+export const emptyState = (): BridgeState => ({ v: 2, rules: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
+export const ruleOf = (alert: FiringAlert): string => alert.labels.__alert_rule_uid__ ?? alert.alertname;
+export const ruleKey = (chat: string, rule: string): string => `${chat}/${rule}`;
 export const alertChat = (alert: FiringAlert): string => routeAlert([alert.alertname, ...Object.values(alert.labels)]).session;
 
 export function ownerRoute(labels: Record<string, string>, map: OwnerMap): { owner: string; session: string } | null {
@@ -96,84 +107,122 @@ export function parseAlerts(value: unknown): FiringAlert[] {
 }
 
 export function parseState(value: unknown): BridgeState {
+  if (isRecord(value) && value.v === 2 && isRecord(value.rules)) return value as unknown as BridgeState;
   if (!isRecord(value) || value.v !== 1 || !isRecord(value.alerts)) throw new Error("Alert bridge state file is malformed.");
-  const alerts = value.alerts as Record<string, Omit<Tracked, "firstWokeAt"> & { firstWokeAt?: number }>;
-  return { v: 1, alerts: Object.fromEntries(Object.entries(alerts).map(([key, tracked]) => [key, { ...tracked, firstWokeAt: tracked.firstWokeAt ?? tracked.wokeAt }])) };
+  const alerts = value.alerts as Record<string, { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt?: number;
+    escalatedAt?: number; resolvedAt?: number }>;
+  return { v: 2, rules: Object.fromEntries(Object.entries(alerts).map(([key, old]) => {
+    const { firstWokeAt, resolvedAt, ...rest } = old;
+    const instance: Instance = { startsAt: old.startsAt, labels: {}, ...(resolvedAt === undefined ? {} : { resolvedAt }) };
+    return [key, { ...rest, rule: old.alertname, firstWokeAt: firstWokeAt ?? old.wokeAt, ...(resolvedAt === undefined ? {} : { resolvedAt }), instances: { [key]: instance } }];
+  })) };
 }
 
-export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, steps: ReadonlyMap<string, StepView>, now: number, route: Router = alertChat):
-  { notices: ChatNotice[]; resolves: Resolve[]; escalate: string[] } {
+const isResolved = (rule: Tracked): boolean => rule.resolvedAt !== undefined;
+
+/**
+ * The state after this tick's firing list, as one change per chat whose rules moved. Each alert rule firing in an owning chat is one rule entry
+ * and one step, and every label set of it (lane, env and so on) is an instance of that entry. On 10-18 one proxy rule firing in 6 lanes had
+ * opened 6 steps on crawler ops' board, one per Grafana fingerprint, and the escalation counted 13 steps for 7 problems.
+ *
+ * 1. A firing whose instance key is already on a rule goes back to it, so a resolved rule whose same firing returns reopens on its old step.
+ *    At 06:20:35Z on 10-15 one poll dropped 25 alerts at once and they came back with the same startsAt. Rules read from a version 1 state file
+ *    learn their rule uid here.
+ * 2. Any other firing joins the open rule of its chat and rule, or opens a new one, which replaces the chat's resolved entry of that rule.
+ * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
+ * 4. Two open entries of one chat and rule, which only version 1 state leaves, merge into the one placed first.
+ */
+export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; changes: ChatChange[] } {
+  const rules: Record<string, Tracked> = structuredClone(state.rules);
   const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
-  const notices = new Map<string, ChatNotice>();
-  const notice = (chat: string): ChatNotice => {
-    const known = notices.get(chat);
-    if (known) return known;
-    const fresh: ChatNotice = { chat, add: [] };
-    notices.set(chat, fresh);
-    return fresh;
+  const fresh = new Map<string, FiringAlert>();
+  const touched = new Set<string>();
+  const merged = new Map<string, Merge[]>();
+  const owner = new Map<string, string>();
+  for (const [key, rule] of Object.entries(rules)) for (const instance of Object.keys(rule.instances)) owner.set(instance, key);
+  const add = (key: string, alert: FiringAlert) => {
+    const rule = rules[key]!;
+    for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels };
   };
-  for (const [key, alert] of firing) if (!state.alerts[key]) notice(route(alert)).add.push(alert);
-  const resolves: Resolve[] = [];
-  const escalate: string[] = [];
-  for (const [key, tracked] of Object.entries(state.alerts)) {
-    if (tracked.resolvedAt !== undefined) continue;
-    if (!firing.has(key)) { resolves.push({ key, chat: tracked.chat, step: tracked.step, at: new Date(now).toISOString() }); continue; }
-    const step = steps.get(key);
-    if (!step?.open || step.owned) continue;
-    if (tracked.escalatedAt === undefined && tracked.chat !== OPS_ROUTE.session && now - tracked.firstWokeAt >= ESCALATE_MS) escalate.push(key);
+  const rest: FiringAlert[] = [];
+  for (const [id, alert] of firing) {
+    const key = owner.get(id);
+    if (!key) { rest.push(alert); continue; }
+    const rule = rules[key]!;
+    if (isResolved(rule) || rule.instances[id]!.resolvedAt !== undefined) touched.add(key);
+    delete rule.resolvedAt;
+    rule.rule = ruleOf(alert);
+    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels };
   }
-  return { notices: [...notices.values()], resolves, escalate };
-}
-
-/**
- * The state after the bridge placed `notice`'s steps at `now`. The bridge writes it right after the board write, so the next tick never files the
- * same firing again. 10-15 12:41 to 13:46Z the state was written only after a send that timed out, and the Crawler VP had rewritten each step's
- * note without the bridge's mark, so every tick added a new step for each still-firing alert (p404 to p490, p500 to p502). `wokeAt` and
- * `firstWokeAt` keep their names so older state files still read; both hold the time the step was placed.
- */
-export function noticed(state: BridgeState, notice: ChatNotice, placed: ReadonlyMap<string, string | null>, now: number): BridgeState {
-  const alerts = { ...state.alerts };
-  for (const alert of notice.add) {
-    const step = placed.get(alertKey(alert));
-    if (step !== undefined) alerts[alertKey(alert)] = { chat: notice.chat, step, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now };
-  }
-  return { ...state, alerts };
-}
-
-export function escalated(state: BridgeState, keys: readonly string[], now: number): BridgeState {
-  const alerts = { ...state.alerts };
-  for (const key of keys) if (alerts[key]) alerts[key] = { ...alerts[key], escalatedAt: now };
-  return { ...state, alerts };
-}
-
-/**
- * Resolving keeps the entry with `resolvedAt`, so the same firing (same fingerprint and startsAt) coming back stays on its step. At 06:20:35Z on
- * 10-15 one poll dropped 25 alerts at once, they came back later with the same startsAt, and 8 of them got a second step (p326 to p336)
- * because the chat had rewritten the note the bridge's mark was in.
- */
-export function resolved(state: BridgeState, key: string, now: number): BridgeState {
-  return state.alerts[key] ? { ...state, alerts: { ...state.alerts, [key]: { ...state.alerts[key], resolvedAt: now } } } : state;
-}
-
-/** Puts a resolved firing that is back in the list on its old step, and drops a resolved entry once its fingerprint fires with a new startsAt. */
-export function refired(state: BridgeState, alerts: readonly FiringAlert[]): { state: BridgeState; back: string[] } {
-  const firing = new Map(alerts.map(alert => [alertKey(alert), alert.fingerprint]));
-  const fingerprints = new Set(firing.values());
-  const back: string[] = [];
-  const kept = Object.entries(state.alerts).flatMap(([key, tracked]): [string, Tracked][] => {
-    if (tracked.resolvedAt === undefined) return [[key, tracked]];
-    if (firing.has(key)) {
-      back.push(key);
-      const { resolvedAt: _resolvedAt, ...live } = tracked;
-      return [[key, live]];
+  for (const alert of rest) {
+    const chat = route(alert);
+    const name = ruleOf(alert);
+    let key = Object.keys(rules).find(key => rules[key]!.chat === chat && rules[key]!.rule === name && !isResolved(rules[key]!));
+    if (!key) {
+      for (const [old, rule] of Object.entries(rules)) if (rule.chat === chat && isResolved(rule) && (rule.rule === name || rule.rule === alert.alertname)) delete rules[old];
+      key = ruleKey(chat, name);
+      rules[key] = { chat, step: null, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {} };
+      fresh.set(key, alert);
     }
-    return fingerprints.has(key.split("@")[0]!) ? [] : [[key, tracked]];
+    if (fresh.has(key) && alert.startsAt < rules[key]!.startsAt) rules[key]!.startsAt = alert.startsAt;
+    add(key, alert);
+    touched.add(key);
+  }
+  for (const [key, rule] of Object.entries(rules)) {
+    if (isResolved(rule)) continue;
+    for (const [id, instance] of Object.entries(rule.instances)) {
+      if (firing.has(id) || instance.resolvedAt !== undefined) continue;
+      rule.instances[id] = { ...instance, resolvedAt: now };
+      touched.add(key);
+    }
+    if (Object.values(rule.instances).every(instance => instance.resolvedAt !== undefined)) rule.resolvedAt = now;
+  }
+  const open = new Map<string, string[]>();
+  for (const [key, rule] of Object.entries(rules)) if (!isResolved(rule)) open.set(`${rule.chat}\n${rule.rule}`, [...open.get(`${rule.chat}\n${rule.rule}`) ?? [], key]);
+  for (const keys of open.values()) {
+    if (keys.length < 2) continue;
+    keys.sort((a, b) => rules[a]!.firstWokeAt - rules[b]!.firstWokeAt || a.localeCompare(b));
+    const [first, ...others] = keys as [string, ...string[]];
+    const keeper = rules[first]!;
+    for (const key of others) {
+      const rule = rules[key]!;
+      Object.assign(keeper.instances, rule.instances);
+      if (rule.startsAt < keeper.startsAt) keeper.startsAt = rule.startsAt;
+      if (rule.escalatedAt !== undefined && (keeper.escalatedAt === undefined || rule.escalatedAt < keeper.escalatedAt)) keeper.escalatedAt = rule.escalatedAt;
+      if (keeper.step !== null) merged.set(rule.chat, [...merged.get(rule.chat) ?? [], { step: rule.step, into: keeper.step }]);
+      delete rules[key];
+      fresh.delete(key);
+      touched.delete(key);
+    }
+    touched.add(first);
+  }
+  const chats = new Set([...Object.values(state.rules), ...Object.values(rules)].map(rule => rule.chat));
+  const changes = [...chats].flatMap((chat): ChatChange[] => {
+    const before = Object.fromEntries(Object.entries(state.rules).filter(([, rule]) => rule.chat === chat));
+    const after = Object.fromEntries(Object.entries(rules).filter(([, rule]) => rule.chat === chat));
+    if (JSON.stringify(before) === JSON.stringify(after) && !merged.has(chat)) return [];
+    return [{ chat, rules: after, fresh: new Map([...fresh].filter(([key]) => key in after)), touched: new Set([...touched].filter(key => key in after)),
+      merged: merged.get(chat) ?? [] }];
   });
-  return { state: kept.length === Object.keys(state.alerts).length && !back.length ? state : { ...state, alerts: Object.fromEntries(kept) }, back };
+  return { state: { v: 2, rules }, changes };
 }
 
-const mark = (alert: FiringAlert): string => `Grafana alert ${alert.fingerprint}, firing since ${alert.startsAt}.`;
-const MARK = /^Grafana alert [\w-]{1,64}, firing since \S+\.$/m;
+/** The state with `chat`'s rules replaced by `rules`, so a chat whose board write failed keeps its old entries for the next tick. */
+export function withChat(state: BridgeState, chat: string, rules: Record<string, Tracked>): BridgeState {
+  return { v: 2, rules: { ...Object.fromEntries(Object.entries(state.rules).filter(([, rule]) => rule.chat !== chat)), ...rules } };
+}
+
+/** Rules whose step is still open with no job ESCALATE_MS after the bridge placed it. One entry per rule, however many label sets fire. */
+export function dueEscalations(state: BridgeState, steps: ReadonlyMap<string, StepView>, now: number): string[] {
+  return Object.entries(state.rules).flatMap(([key, rule]) => {
+    const step = steps.get(key);
+    return !isResolved(rule) && step?.open && !step.owned && rule.escalatedAt === undefined && rule.chat !== OPS_ROUTE.session && now - rule.firstWokeAt >= ESCALATE_MS ? [key] : [];
+  });
+}
+
+const mark = (rule: Pick<Tracked, "rule" | "startsAt">): string => `Grafana alert rule ${rule.rule}, firing since ${rule.startsAt}.`;
+const MARK = /^Grafana alert (?:rule .+|[\w-]{1,64}), firing since \S+\.$/m;
 
 /**
  * Whether the bridge still holds a step it added: the note keeps its mark and no resolve line, the step has no job, thread or wait, and it last
@@ -202,17 +251,59 @@ export function stepTitle(alert: FiringAlert): string {
     "A Grafana alert is firing";
 }
 
-export function stepNote(alert: FiringAlert): string {
-  const labels = Object.entries(alert.labels).filter(([name]) => name !== "alertname").map(([name, value]) => `${name}=${value}`).join(", ");
-  return [mark(alert), `Alert: ${alert.alertname}.`, alert.summary ? `Summary: ${alert.summary}` : "", alert.values ? `Values: ${alert.values}.` : "", `Labels: ${labels}.`,
-    alert.url ? `Grafana: ${alert.url}` : ""].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note);
+const SHARED = "Shared labels: ";
+const SETS = "Label sets of this rule";
+const minute = (iso: string): string => `${iso.slice(0, 16)}Z`;
+
+/** The note block that lists the rule's label sets: the labels every set shares, then one line per set with the labels that differ. */
+export function labelBlock(rule: Pick<Tracked, "instances">): string[] {
+  const sets = Object.entries(rule.instances).sort(([, a], [, b]) => a.startsAt.localeCompare(b.startsAt));
+  const names = [...new Set(sets.flatMap(([, set]) => Object.keys(set.labels)))].filter(name => name !== "alertname");
+  const shared = names.filter(name => sets.every(([, set]) => set.labels[name] !== undefined && set.labels[name] === sets[0]![1].labels[name]));
+  const firing = sets.filter(([, set]) => set.resolvedAt === undefined).length;
+  const line = ([id, set]: [string, Instance]) => {
+    const own = names.filter(name => !shared.includes(name) && set.labels[name] !== undefined).map(name => `${name}=${set.labels[name]}`);
+    const resolved = set.resolvedAt === undefined ? "" : `, resolved ${minute(new Date(set.resolvedAt).toISOString())}`;
+    return `- ${[...own, `since ${minute(set.startsAt)}${resolved}`].join(", ")} (${id.split("@")[0]})`;
+  };
+  return [`${SHARED}${shared.map(name => `${name}=${sets[0]![1].labels[name]}`).join(", ")}.`, `${SETS}, ${firing} of ${sets.length} firing:`, ...sets.map(line)];
+}
+
+const resolvedLine = (at: number): string => `${RESOLVED} ${new Date(at).toISOString()}, when the alert bridge saw every label set leave Grafana's firing list.`;
+
+/**
+ * `note` with the bridge's label block rewritten in place, or added at the end when the chat removed it, and the resolve line at the end while
+ * the rule is resolved. Lines the chat wrote stay. When the note runs over BOARD_LIMITS.note the block lists fewer sets.
+ */
+export function ruleNote(note: string, rule: Pick<Tracked, "instances" | "resolvedAt">): string {
+  const lines = note ? note.split("\n").filter(line => !line.startsWith(RESOLVED)) : [];
+  let at = lines.findIndex(line => line.startsWith(SHARED) || line.startsWith(SETS));
+  if (at < 0) at = lines.length;
+  let end = at;
+  while (end < lines.length && (lines[end]!.startsWith(SHARED) || lines[end]!.startsWith(SETS) || lines[end]!.startsWith("- "))) end++;
+  const block = labelBlock(rule);
+  const tail = rule.resolvedAt === undefined ? [] : [resolvedLine(rule.resolvedAt)];
+  const render = (sets: string[]) => [...lines.slice(0, at), ...sets, ...lines.slice(end), ...tail].join("\n");
+  for (let keep = block.length - 2; keep > 0; keep--) {
+    const shown = keep === block.length - 2 ? block : [...block.slice(0, 2 + keep), `- and ${block.length - 2 - keep} more label sets.`];
+    if (render(shown).length <= BOARD_LIMITS.note) return render(shown);
+  }
+  return render(block.slice(0, 3)).slice(0, BOARD_LIMITS.note);
+}
+
+/** The note of a new step for `rule`, whose first firing is `alert`. */
+export function stepNote(alert: FiringAlert, rule: Pick<Tracked, "rule" | "startsAt" | "instances" | "resolvedAt"> =
+  { rule: ruleOf(alert), startsAt: alert.startsAt, instances: { [alertKey(alert)]: { startsAt: alert.startsAt, labels: alert.labels } } }): string {
+  const head = [mark(rule), `Alert: ${alert.alertname}.`, alert.summary ? `Summary: ${alert.summary}` : "", alert.values ? `Values: ${alert.values}.` : "",
+    alert.url ? `Grafana: ${alert.url}` : ""].filter(Boolean).join("\n");
+  return ruleNote(head, rule);
 }
 
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
 
-function markedStep(plan: readonly PlanItem[], alert: FiringAlert): PlanItem | undefined {
+function markedStep(plan: readonly PlanItem[], rule: Pick<Tracked, "rule" | "startsAt">): PlanItem | undefined {
   let hit: PlanItem | undefined;
-  walkItems(plan, item => { if (!hit && item.note?.includes(mark(alert))) hit = item; });
+  walkItems(plan, item => { if (!hit && item.note?.split("\n").includes(mark(rule))) hit = item; });
   return hit;
 }
 
@@ -228,19 +319,42 @@ function alertGoal(plan: readonly PlanItem[], ops: BoardOp[], ids: (kind: "p") =
   return id;
 }
 
-export function placeSteps(board: ChatBoard, alerts: readonly FiringAlert[]): { ops: BoardOp[]; steps: Map<string, string> } {
+/**
+ * The board ops for one chat's change: a step for each new rule (or the step a crash left with its mark), the label block and resolve line
+ * rewritten on each rule whose sets moved, and a pointer on each step merged into another. Returns each rule's step id.
+ */
+export function changeOps(board: ChatBoard, change: ChatChange): { ops: BoardOp[]; steps: Map<string, string> } {
   const ids = nextIds(board);
   const ops: BoardOp[] = [];
   const steps = new Map<string, string>();
+  const notes = new Map<string, string>();
+  const noteOf = (id: string) => notes.get(id) ?? findItem(board.plan, id)?.item.note ?? "";
   let goal: string | undefined;
-  for (const alert of alerts) {
-    const found = markedStep(board.plan, alert);
-    if (found) { steps.set(alertKey(alert), found.id); continue; }
+  for (const [key, alert] of change.fresh) {
+    const rule = change.rules[key]!;
+    const found = markedStep(board.plan, rule);
+    if (found) {
+      steps.set(key, found.id);
+      notes.set(found.id, ruleNote(noteOf(found.id), rule));
+      continue;
+    }
     goal ??= alertGoal(board.plan, ops, ids);
     const id = ids("p");
-    ops.push({ op: "plan_add", parent: goal, text: stepTitle(alert) }, { op: "plan_update", id, note: stepNote(alert) });
-    steps.set(alertKey(alert), id);
+    ops.push({ op: "plan_add", parent: goal, text: stepTitle(alert) }, { op: "plan_update", id, note: stepNote(alert, rule) });
+    steps.set(key, id);
   }
+  for (const key of change.touched) {
+    const step = change.rules[key]!.step;
+    if (change.fresh.has(key) || step === null || !findItem(board.plan, step)) continue;
+    notes.set(step, ruleNote(noteOf(step), change.rules[key]!));
+  }
+  for (const { step, into } of change.merged) {
+    if (step === null || !findItem(board.plan, step)) continue;
+    const line = `The alert bridge moved this rule's label sets to ${into}, which now lists every set.`;
+    const note = noteOf(step);
+    if (!note.includes(line)) notes.set(step, note ? `${note.slice(0, BOARD_LIMITS.note - line.length - 1)}\n${line}` : line);
+  }
+  for (const [id, note] of notes) if (note !== (findItem(board.plan, id)?.item.note ?? "")) ops.push({ op: "plan_update", id, note });
   return { ops, steps };
 }
 
@@ -254,7 +368,8 @@ export function resolveOps(board: ChatBoard, resolve: Resolve): BoardOp[] {
 }
 
 export function escalationText(steps: readonly (StepLine & { chat: string })[]): string {
-  const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z)`;
+  const sets = (step: StepLine) => step.sets && step.sets > 1 ? `, ${step.sets} label sets` : "";
+  const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z${sets(step)})`;
   return `[alert-escalation] ${steps.length === 1 ? "An alert step is" : `${steps.length} alert steps are`} still open with no job ${ESCALATE_MS / 60_000} min after the alert bridge ` +
     `put ${steps.length === 1 ? "it" : "them"} on the owning chat's board: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
 }
@@ -275,6 +390,9 @@ export interface AlertBridgeDeps {
   log: (line: string) => void;
 }
 
+const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
+const firingSets = (rule: Tracked): number => Object.values(rule.instances).filter(instance => instance.resolvedAt === undefined).length;
+
 export class AlertBridge {
   private readonly now: () => number;
   constructor(private readonly deps: AlertBridgeDeps) { this.now = deps.now ?? Date.now; }
@@ -284,50 +402,61 @@ export class AlertBridge {
     if (!alerts) return;
     const route = routerFor(await this.ownerMap());
     const now = this.now();
-    const read = await this.read();
-    const { state: current, back } = refired(read, alerts);
-    let state = current;
-    if (state !== read) {
-      await this.write(state);
-      for (const key of back) this.deps.log(`alerts: ${key} is back in the firing list with the same start, kept on ${state.alerts[key]!.step ?? "no step"}`);
-    }
-    const steps = await this.steps(state);
-    const { notices, resolves, escalate } = reconcile(alerts, state, steps, now, route);
-    for (const notice of notices) {
+    let state = await this.read();
+    for (const change of advance(alerts, state, route, now).changes) {
       try {
-        state = await this.notify(notice, state, now);
+        state = withChat(state, change.chat, await this.place(change));
         await this.write(state);
       } catch (error) {
         state = await this.read().catch(() => state);
-        this.deps.log(`alerts: steps for ${notice.chat.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+        this.deps.log(`alerts: steps for ${change.chat.slice(0, 8)}: ${message(error)}; tried again next tick`);
       }
     }
-    if (escalate.length) {
-      try {
-        const lines = escalate.map(key => {
-          const tracked = state.alerts[key]!;
-          return { chat: chatName(tracked.chat), step: tracked.step ?? "", title: steps.get(key)?.text ?? tracked.alertname, alertname: tracked.alertname, startsAt: tracked.startsAt };
-        });
-        await this.send(OPS_ROUTE.session, escalationText(lines));
-        state = escalated(state, escalate, now);
-        await this.write(state);
-        this.deps.log(`alerts: escalated ${escalate.length} unowned steps to ops guy`);
-      } catch (error) { this.deps.log(`alerts: escalation: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
+    const steps = await this.steps(state);
+    const escalate = dueEscalations(state, steps, now);
+    if (!escalate.length) return;
+    try {
+      const lines = escalate.map(key => {
+        const rule = state.rules[key]!;
+        return { chat: chatName(rule.chat), step: rule.step ?? "", title: steps.get(key)?.text ?? rule.alertname, alertname: rule.alertname, startsAt: rule.startsAt, sets: firingSets(rule) };
+      });
+      await this.send(OPS_ROUTE.session, escalationText(lines));
+      const rules = { ...state.rules };
+      for (const key of escalate) rules[key] = { ...rules[key]!, escalatedAt: now };
+      state = { ...state, rules };
+      await this.write(state);
+      this.deps.log(`alerts: escalated ${escalate.length} unowned rule steps to ops guy`);
+    } catch (error) { this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`); }
+  }
+
+  /** Writes one chat's change on its board and returns the chat's rules with their step ids. A chat with no board gets nothing; its rules are only recorded. */
+  private async place(change: ChatChange): Promise<Record<string, Tracked>> {
+    const rules = change.rules;
+    if (!(await this.deps.hasBoard?.(change.chat) ?? true)) {
+      if (change.fresh.size) this.deps.log(`alerts: ${change.chat.slice(0, 8)} has no board, so ${change.fresh.size} new firing rules are only recorded`);
+      return rules;
     }
-    for (const resolve of resolves) {
-      try {
-        if (resolve.step !== null) await this.deps.boards.apply(resolve.chat, board => resolveOps(board, resolve), "agent");
-        state = resolved(state, resolve.key, now);
-        await this.write(state);
-        this.deps.log(`alerts: ${resolve.key} resolved${resolve.step === null ? "" : `, noted on ${resolve.step}`} in ${resolve.chat.slice(0, 8)}`);
-      } catch (error) { this.deps.log(`alerts: resolve ${resolve.key}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
+    let steps = new Map<string, string>();
+    let count = 0;
+    await this.deps.boards.apply(change.chat, board => {
+      const plan = changeOps(board, change);
+      steps = plan.steps;
+      count = plan.ops.length;
+      return plan.ops;
+    }, "agent");
+    for (const [key, step] of steps) rules[key] = { ...rules[key]!, step };
+    if (count) {
+      const sets = (rule: Tracked) => `${rule.step ?? "no step"} (${rule.rule}, ${firingSets(rule)} of ${Object.keys(rule.instances).length} sets firing${rule.resolvedAt === undefined ? "" : ", resolved"})`;
+      const moved = [...change.touched].map(key => sets(rules[key]!));
+      this.deps.log(`alerts: ${change.chat.slice(0, 8)}: ${steps.size} new rule steps, ${change.merged.length} merged; ${moved.join("; ")}`);
     }
+    return rules;
   }
 
   private async ownerMap(): Promise<OwnerMap | null> {
     try { return (await this.deps.owners?.()) ?? null; }
     catch (error) {
-      this.deps.log(`alerts: owners.json: ${error instanceof Error ? error.message : String(error)}; routed by keywords`);
+      this.deps.log(`alerts: owners.json: ${message(error)}; routed by keywords`);
       return null;
     }
   }
@@ -341,37 +470,25 @@ export class AlertBridge {
     return result;
   }
 
-  /** Puts each new firing on the owning chat's board as one step. A chat with no board gets nothing; the firing is only recorded. */
-  private async notify(notice: ChatNotice, state: BridgeState, now: number): Promise<BridgeState> {
-    if (!(await this.deps.hasBoard?.(notice.chat) ?? true)) {
-      this.deps.log(`alerts: ${notice.chat.slice(0, 8)} has no board, so ${notice.add.length} new alerts are only recorded`);
-      return noticed(state, notice, new Map(notice.add.map(alert => [alertKey(alert), null])), now);
-    }
-    let placed = new Map<string, string>();
-    await this.deps.boards.apply(notice.chat, board => {
-      const plan = placeSteps(board, notice.add);
-      placed = plan.steps;
-      return plan.ops;
-    }, "agent");
-    this.deps.log(`alerts: put ${placed.size} new firing steps on ${notice.chat.slice(0, 8)}'s board`);
-    return noticed(state, notice, placed, now);
-  }
-
   private async steps(state: BridgeState): Promise<Map<string, StepView>> {
     const boards = new Map<string, ChatBoard | null>();
     const views = new Map<string, StepView>();
-    for (const [key, tracked] of Object.entries(state.alerts)) {
-      if (tracked.step === null || tracked.resolvedAt !== undefined) continue;
-      if (!boards.has(tracked.chat)) boards.set(tracked.chat, await this.deps.boards.read(tracked.chat));
-      const item = findItem(boards.get(tracked.chat)?.plan ?? [], tracked.step)?.item;
+    for (const [key, rule] of Object.entries(state.rules)) {
+      if (rule.step === null || rule.resolvedAt !== undefined) continue;
+      if (!boards.has(rule.chat)) boards.set(rule.chat, await this.deps.boards.read(rule.chat));
+      const item = findItem(boards.get(rule.chat)?.plan ?? [], rule.step)?.item;
       if (item) views.set(key, { text: item.text, open: OPEN.has(item.status), owned: Boolean(item.job || item.sessionId) });
     }
     return views;
   }
 
   private async read(): Promise<BridgeState> {
-    try { return parseState(JSON.parse(await readFile(this.deps.file, "utf8"))); }
+    let value: unknown;
+    try { value = JSON.parse(await readFile(this.deps.file, "utf8")); }
     catch (error) { if (missing(error)) return emptyState(); throw error; }
+    const state = parseState(value);
+    if (isRecord(value) && value.v !== state.v) await this.write(state);
+    return state;
   }
 
   private async write(state: BridgeState): Promise<void> {
