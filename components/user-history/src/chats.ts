@@ -34,7 +34,7 @@ import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
-import { chatName, fileHasChatMarker, lastSessionStatus } from "./chat-guard.ts";
+import { chatName, fileHasChatMarker } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 
 export { TELL_OWNER_TOOL };
@@ -477,14 +477,13 @@ export class Chats {
   }
 
   /**
-   * Why the scan must not take a lost chat back, or null. The owner archived it, it is a clean-room test chat, or its session file's newest
-   * state is archived. Only the owner's unarchive or send (`restore`, `reopen`) takes such a chat back.
+   * Why the scan must not take a lost chat back, or null: the owner archived it, or it is a clean-room test chat. Only the owner's unarchive
+   * or send (`restore`, `reopen`) takes such a chat back. An archived session_state in the file is no reason: the daemon's eviction and the
+   * Mac copy write it too, and on 10-18 that rule kept the owner's chats Fable and the metal box owner out of the chat list.
    */
   private async adoptStop(id: string): Promise<string | null> {
     if ((await this.archivedIds()).has(id)) return "the owner archived it";
     if ((await this.source.cleanRoomChats?.ids() ?? []).includes(id)) return "it is a clean-room test chat";
-    const sessionFile = (await this.summary(id))?.sessionFile;
-    if (sessionFile && await lastSessionStatus(sessionFile) === "archived") return "its session file's newest state is archived";
     return null;
   }
 

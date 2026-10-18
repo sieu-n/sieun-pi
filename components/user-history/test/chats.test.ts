@@ -7,7 +7,7 @@ import { checkInRecord } from "../src/chat-checkin.ts";
 import { clockTime } from "../src/checkin-settings.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { Chats, OLD_CHECK_IN } from "../src/chats.ts";
-import { fileHasChatMarker, lastSessionStatus } from "../src/chat-guard.ts";
+import { fileHasChatMarker } from "../src/chat-guard.ts";
 import { Catalog } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
@@ -244,7 +244,7 @@ test("chats: adopt and the scheduler's scan bring back a recent unarchived threa
   chats.close();
 });
 
-test("chats: the scan never takes back a chat archived while it ran, a clean-room test chat, or a session whose file ends archived; the owner's unarchive still does", async () => {
+test("chats: the scan never takes back a chat archived while it ran or a clean-room test chat; a session whose file ends archived still comes back, and the owner's unarchive still does", async () => {
   // Plan-and-duties run-1 on 10-18: the scan read archived-chats.json, waited on slow session copies from the Mac, and at 14:29:52Z re-adopted
   // the chat the clean-room teardown had archived at 14:28:11Z, which dropped it from archived-chats.json.
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
@@ -278,30 +278,15 @@ test("chats: the scan never takes back a chat archived while it ran, a clean-roo
   await waiting;
   await chats.archive("run1");
   release();
-  assert.deepEqual(await scan, ["slow"]);
+  assert.deepEqual(await scan, ["slow", "ended"], "an archived session_state comes from the daemon's eviction or the Mac copy too, so it is no owner archive");
   assert.deepEqual(await archived.ids(), ["run1"], "the owner's archive stands");
-  assert.deepEqual((await index.ids()).sort(), ["slow"]);
-  for (const id of ["run1", "test", "ended"]) assert.equal(calls.some(call => call === `pin ${id}` || call.startsWith(`steering ${id}`)), false, `${id} is not pinned or steered`);
+  assert.deepEqual((await index.ids()).sort(), ["ended", "slow"]);
+  for (const id of ["run1", "test"]) assert.equal(calls.some(call => call === `pin ${id}` || call.startsWith(`steering ${id}`)), false, `${id} is not pinned or steered`);
   assert.match(lines.join("\n"), /chat run1: not re-adopted: the owner archived it/);
-  assert.match(lines.join("\n"), /chat ended: not re-adopted: its session file's newest state is archived/);
 
   assert.equal(await chats.restore("run1"), true, "the owner's unarchive takes it back");
   assert.deepEqual(await archived.ids(), []);
   chats.close();
-});
-
-test("chats: lastSessionStatus reads the newest session_state entry across 64 KiB chunks", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chats-"));
-  const file = join(dir, "s.jsonl");
-  const big = { type: "message", id: "m", message: { role: "user", content: "é".repeat(70_000) } };
-  const state = (status: string) => ({ type: "session_state", id: status, state: { status } });
-  await writeFile(file, [state("active"), state("archived"), big, big].map(entry => JSON.stringify(entry)).join("\n") + "\n");
-  assert.equal(await lastSessionStatus(file), "archived");
-  await writeFile(file, [state("archived"), big, state("active"), big].map(entry => JSON.stringify(entry)).join("\n"));
-  assert.equal(await lastSessionStatus(file), "active");
-  await writeFile(file, JSON.stringify(big));
-  assert.equal(await lastSessionStatus(file), null);
-  assert.equal(await lastSessionStatus(join(dir, "missing.jsonl")), null);
 });
 
 test("chats: a chat the owner archived may wake and answer an agent message but stays out of the chats and the sidebar, across a service restart; one the daemon archived still comes back", async t => {

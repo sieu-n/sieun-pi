@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { messageIdNote, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
@@ -40,39 +39,6 @@ export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
     return false;
   } catch { return false; }
   finally { lines.close(); }
-}
-
-/**
- * The status of the newest session_state entry of a session file ("active", "archived"), or null when it has none or cannot be read. The
- * file is read backward in 64 KiB chunks, since the entry sits near the end.
- */
-export async function lastSessionStatus(sessionFile: string): Promise<string | null> {
-  const handle = await open(sessionFile, "r").catch(() => null);
-  if (!handle) return null;
-  try {
-    let end = (await handle.stat()).size;
-    let rest = Buffer.alloc(0);
-    while (end > 0) {
-      const start = Math.max(0, end - 65_536);
-      const chunk = Buffer.alloc(end - start);
-      await handle.read(chunk, 0, chunk.length, start);
-      const joined = Buffer.concat([chunk, rest]);
-      const cut = start > 0 ? joined.indexOf(10) + 1 : 0;
-      if (start > 0 && cut === 0) { rest = joined; end = start; continue; }
-      const lines = joined.subarray(cut).toString("utf8").split("\n");
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i]!.includes('"session_state"')) continue;
-        try {
-          const entry = JSON.parse(lines[i]!) as { type?: string; state?: { status?: unknown } };
-          if (entry.type === "session_state") return typeof entry.state?.status === "string" ? entry.state.status : null;
-        } catch { continue; }
-      }
-      rest = joined.subarray(0, cut);
-      end = start;
-    }
-    return null;
-  } catch { return null; }
-  finally { await handle.close(); }
 }
 
 /** What the extension does at session_start: write the marker (flagged root, not marked yet) and whether the brief tool is active. */
