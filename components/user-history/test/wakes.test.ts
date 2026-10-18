@@ -11,7 +11,7 @@ import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { withWakes } from "../src/checkin-load.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
-import { parseWake, pendingWakes, RUN_LOOK_MS, type RunState, UNREADABLE_MS, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
+import { CI_CACHE_REPO, parseWake, pendingWakes, readRunState, RUN_LOOK_MS, type RunState, UNREADABLE_MS, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
 // 10-14 20:5xZ: 125 of 152 working sessions had ended their turn and waited on a bash handle in their Python kernel (82 on a CI run, 11 on a
@@ -273,4 +273,29 @@ test("wakes: a run that reads again after a failed read keeps waiting for its en
   assert.equal(await f.wakes.tick(), 0);
   assert.equal(f.sent.length, 0);
   assert.equal((await f.files()).length, 1);
+});
+
+// 10-18 00:24Z to 00:44Z: a GitHub token sat at 0 calls left and the CI cache poller backed off to a 10 min cycle, so run 39083318405, created at
+// 00:35:23Z, read "not in the cache" from 00:38Z to 00:44Z. Its wake counted as unreadable and would have gone out with an error while it was queued.
+test("readRunState reads a run the CI cache has not listed yet with gh run view in the cache's repo, and still fails on other errors", async () => {
+  const calls: string[][] = [];
+  const exec = (answer: Record<string, string | Error>) => async (command: string, args: string[]): Promise<string> => {
+    calls.push([command, ...args]);
+    const found = answer[command]!;
+    if (found instanceof Error) throw found;
+    return found;
+  };
+  const missing = new Error("ci-run-status: run 39083318405 is not in the cache (it holds runs created since 2026-10-17T22:54:46Z, live runs and runs asked for)");
+  const queued = await readRunState({ kind: "run", run: 39083318405 }, exec({ "ci-run-status": missing, gh: JSON.stringify({ status: "queued", conclusion: "" }) }));
+  assert.deepEqual(queued, { done: false }, "a queued run waits, with no unreadable clock");
+  assert.deepEqual(calls.at(-1)!.slice(0, 5), ["gh", "run", "view", "39083318405", "--repo"]);
+  assert.equal(calls.at(-1)![5], CI_CACHE_REPO);
+  const done = await readRunState({ kind: "run", run: 39083318405 }, exec({ "ci-run-status": missing,
+    gh: JSON.stringify({ status: "completed", conclusion: "success", url: "u", workflowName: "verify-dev", headBranch: "ci/x" }) }));
+  assert.deepEqual(done, { done: true, conclusion: "success", url: "u", label: "verify-dev on ci/x" });
+  calls.length = 0;
+  await assert.rejects(readRunState({ kind: "run", run: 1 }, exec({ "ci-run-status": new Error("ci-run-status: the cache has not moved"), gh: "{}" })), /has not moved/);
+  assert.deepEqual(calls.map(call => call[0]), ["ci-run-status"], "only a cache miss goes to gh");
+  const cached = await readRunState({ kind: "run", run: 2 }, exec({ "ci-run-status": JSON.stringify({ status: "in_progress" }), gh: "{}" }));
+  assert.deepEqual(cached, { done: false });
 });

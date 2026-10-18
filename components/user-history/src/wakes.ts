@@ -171,11 +171,24 @@ function run(command: string, args: string[]): Promise<string> {
   });
 }
 
-/** A run's state from the local CI cache (`ci-run-status <id>`, no GitHub call) or, for a run in another repo, from `gh run view`. */
-export async function readRunState(on: Extract<WakeOn, { kind: "run" }>): Promise<RunState> {
-  const raw = JSON.parse(on.repo
-    ? await run("gh", ["run", "view", String(on.run), "--repo", on.repo, "--json", "status,conclusion,url,workflowName,headBranch"])
-    : await run("ci-run-status", [String(on.run)])) as Record<string, unknown>;
+/** The repo the local CI cache polls (ci-cache.mjs SLUG). */
+export const CI_CACHE_REPO = "sieu-n/auto-sns-agent";
+/** ci-run-status's answer for a run the poller has not listed yet. */
+const NOT_CACHED = / is not in the cache /;
+
+/**
+ * A run's state from the local CI cache (`ci-run-status <id>`, no GitHub call) or, for a run in another repo, from `gh run view`. A run the
+ * cache has not listed yet is read with `gh run view` in the cache's repo: from 00:24Z to 00:44Z on 10-18 a GitHub token sat at 0 calls left,
+ * the poller backed off to a 10 min cycle, and run 39083318405, created at 00:35:23Z, read "not in the cache" from 00:38Z to 00:44Z, so its
+ * wake counted as unreadable and would have gone out with an error at UNREADABLE_MS while the run was still queued.
+ */
+export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run): Promise<RunState> {
+  const gh = (repo: string) => exec("gh", ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
+  const raw = JSON.parse(on.repo ? await gh(on.repo)
+    : await exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
+      if (error instanceof Error && NOT_CACHED.test(error.message)) return gh(CI_CACHE_REPO);
+      throw error;
+    })) as Record<string, unknown>;
   if (raw.status !== "completed") return { done: false };
   const workflow = typeof raw.workflow === "string" ? raw.workflow : typeof raw.workflowName === "string" ? raw.workflowName : "";
   const branch = typeof raw.headBranch === "string" ? raw.headBranch : "";
