@@ -62,7 +62,7 @@ test("a job's end stops the rig processes in its /tmp trees and deletes them, an
       proc(301, c, { prime: true }),
       proc(401, d, { shared: true }),
     ],
-    removeTmp: async dirs => { removed = dirs; return dirs; },
+    removeTmp: async dirs => { removed = dirs; return dirs; }, artifactCopies: async () => [], kernelStates: async () => [],
   };
   const base = mkdtempSync(join(tmpdir(), "job-tmp-tree-"));
   try {

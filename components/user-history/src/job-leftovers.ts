@@ -204,10 +204,11 @@ export async function madeTmpTrees(transcripts: readonly string[], dirs: readonl
 }
 
 /**
- * The paths of `made` that no session still live in the same chat names outside its tool results. The chat and the jobs above a gone job are
+ * The paths of `made` that no session still live in the same chat names (`needle` of the path) outside its tool results. The chat and the jobs above a gone job are
  * left out of that read, because they quote its report.
  */
-async function unnamedByLive(made: Set<string>, transcripts: readonly string[], dirs: readonly string[], artifacts: string): Promise<string[]> {
+async function unnamedByLive(made: Set<string>, transcripts: readonly string[], dirs: readonly string[], artifacts: string,
+  needle = (path: string): string => path): Promise<string[]> {
   if (!made.size) return [];
   const ended = new Set(transcripts);
   const above = (folder: string): boolean => dirs.some(dir => dir.startsWith(folder + "/"));
@@ -218,7 +219,7 @@ async function unnamedByLive(made: Set<string>, transcripts: readonly string[], 
     for (const file of live) {
       if (!made.size) break;
       const text = await ownLines(file);
-      for (const path of made) if (new RegExp(`${escaped(path)}(?![A-Za-z0-9._+@-])`).test(text)) made.delete(path);
+      for (const path of made) if (new RegExp(`${escaped(needle(path))}(?![A-Za-z0-9._+@-])`).test(text)) made.delete(path);
     }
   }
   return [...made];
@@ -243,7 +244,7 @@ export async function kernelStates(transcripts: readonly string[]): Promise<stri
 /**
  * The repo copies (`repoCopies`) gone sessions left in ~/.prime/agent/session-artifacts: those in the sessions' own folders, and those in a named
  * folder of session-artifacts that a transcript names outside its tool results and that were born while that session ran, minus a copy a live
- * session in the same chat names. On 10-18 between 02:30Z and 16:12Z session-artifacts grew 10.6 GB on us-metal02, 4.5 GB of it five
+ * session in the same chat names by its `.prime/agent/session-artifacts/` path, since transcripts write it from `~`, `/home/<user>` or `/Users/<user>`. On 10-18 between 02:30Z and 16:12Z session-artifacts grew 10.6 GB on us-metal02, 4.5 GB of it five
  * `git archive` trees in grafana-c that a grafana job exported to test merged trees.
  */
 export async function artifactCopies(transcripts: readonly string[], dirs: readonly string[], artifacts = ARTIFACTS): Promise<string[]> {
@@ -267,7 +268,8 @@ export async function artifactCopies(transcripts: readonly string[], dirs: reado
       }
     }
   }
-  for (const copy of await unnamedByLive(made, transcripts, dirs, artifacts)) found.add(copy);
+  const relative = (copy: string): string => `.prime/agent/session-artifacts/${copy.slice(artifacts.length + 1)}`;
+  for (const copy of await unnamedByLive(made, transcripts, dirs, artifacts, relative)) found.add(copy);
   return [...found];
 }
 
