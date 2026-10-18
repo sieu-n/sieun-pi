@@ -177,7 +177,7 @@ test("a due duty starts while another chat's push check waits on the daemon", as
     await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { clean_min_30: 2 } }));`);
     const store = new DutyStore(dir);
     const base = { ownerWords: "watch this", goal: "clean minutes", onMiss: "fix it", status: "active" as const,
-      metrics: [{ key: "clean_min_30", label: "Clean minutes", op: ">=" as const, target: 30, headline: true }],
+      metrics: [{ key: "clean_min_30", label: "Clean minutes", op: ">=" as const, target: 30, headline: true as const }],
       precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, createdAt: PUSH_NOW - 3 * 24 * 60 * MIN, updatedAt: PUSH_NOW - 3 * 24 * 60 * MIN, runCount: 1 };
     const daily = dailySlot("07:00", PUSH_NOW);
     await store.update(crawler, duties => { duties.push({ ...base, id: "d1", name: "Crawler pipeline", schedule: { kind: "daily", at: "07:00" }, lastSlotAt: daily, lastRunAt: daily }); });
