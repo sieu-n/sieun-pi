@@ -6,7 +6,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 
 | Unit | What it runs |
 | --- | --- |
-| `prime-agent-daemon.service` | The Prime Agent daemon on `/tmp/prime-agent-<uid>/daemon.sock`, with the agent workers under it. |
+| `prime-agent-daemon.service` | The Prime Agent daemon on `/tmp/prime-agent-<uid>/daemon.sock`, with the agent workers under it, started and updated through `prime-agent-daemon-ctl`. |
 | `sieun-pi-chat.service` | The chat from `~/.local/share/sieun-pi-chat/current`, the release folder that `scripts/release-chat.mjs` builds. |
 | `prime-agent-watchdog.timer` | One cycle of `~/.prime/agent/watchdog/cron_cycle.py` every 10 minutes, as `com.sieun.prime-agent-watchdog` does on the Mac. |
 | `auto-sns-dev-pm2.service` | The auto-sns-agent pm2 daemon (`PM2_HOME=.cache/pm2-dev`) with every dev server in `scripts/dev/dev-apps.cjs`, llm-wiki included, as launchd `mac-pm2-boot` and `mac-pm2-keep` keep it on the Mac. |
@@ -19,6 +19,16 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 
 The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
 The daemon unit sets `KillMode=process` too, so a daemon restart signals only the daemon and the new one adopts the running workers. On 10-18 at 03:38Z a restart under the default `control-group` mode sent SIGTERM to every worker and the new daemon failed to adopt 7 of them.
+
+The daemon unit is `Type=forking` with `PIDFile=%t/prime-agent-daemon.pid`, because the supervisor that owns the socket is often not the process the unit started.
+Prime's update restart coordinator starts the new supervisor itself, and session workers start a replacement when the supervisor goes away.
+`prime-agent-daemon-ctl start` adopts the supervisor that answers on the socket, or starts one, and writes its PID to the PIDFile. While an update restart coordinator is alive, it waits for that coordinator's supervisor instead of starting a second one.
+On 10-18 at 03:03Z the old `Type=simple` unit ran ExecStart again after the update stopped the old supervisor, that start failed with `ELOCKED` because the new supervisor held the socket lock, and the unit tracked none of them.
+
+Update Prime with `systemctl --user reload prime-agent-daemon.service`. ExecReload runs `prime-agent-daemon-ctl update`, which runs `prime-agent update` inside the unit's cgroup and writes the new supervisor's PID, and systemd reads the PIDFile when the reload ends, so MainPID moves to the new supervisor with no restart.
+From inside an agent session, add `--no-block`, because the update's prepare step waits for the session's own running command to finish, and a blocking reload holds that command open until prepare times out.
+Do not run `prime-agent update` under `systemd-run`. The new supervisor and the sessions it restores then live in the transient unit's cgroup, and systemd kills them when that unit ends; on 10-18 at 03:03Z that lost the 10 restored sessions.
+The updater reads its feed settings from the unit's environment. While the box serves a local feed, put them in `~/.config/sieun-pi/prime-update.env` (mode 0600), for example `PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS=1`.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
 
@@ -60,7 +70,7 @@ node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
 /usr/bin/python3 -B components/prime-sync/install.py --ref "$(git rev-parse HEAD)"   # needs gh auth login, and origin set to GitHub
 
 # Units
-mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.timer ~/.config/systemd/user/ && install -m 0755 deploy/linux/prime-agent-daemon-ctl ~/.local/bin/
 systemctl --user daemon-reload
 systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.service prime-agent-watchdog.timer
 ```

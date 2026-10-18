@@ -1,0 +1,128 @@
+#!/usr/bin/python3 -B
+"""Start and update the Prime Agent daemon for prime-agent-daemon.service.
+
+start   Adopt the supervisor that answers on the socket, or start one, and write its PID to the PIDFile.
+update  Run `prime-agent update` inside the unit, then do what start does for the successor.
+
+The unit is Type=forking with PIDFile=, and systemd reads the PIDFile after ExecStart and after a
+successful ExecReload, so MainPID names the supervisor that owns the socket. Prime's update restart
+coordinator starts the successor supervisor itself, and session workers start a replacement when the
+supervisor goes away, so the supervisor is often not the process the unit started.
+
+usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile> [update args...]
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+POLL_SECONDS = 0.1
+
+
+def alive(pid):
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state not in ("Z", "X")
+
+
+def supervisor_pid(sock):
+    """PID from the daemon_hello line the supervisor sends on connect, or None.
+
+    The 1 s connect and 2 s hello waits are the ones Prime's own client uses before an update restart.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(1)
+            conn.connect(sock)
+            conn.settimeout(2)
+            data = b""
+            while b"\n" not in data:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    return None
+                data += chunk
+        hello = json.loads(data.split(b"\n", 1)[0])
+    except (OSError, ValueError):
+        return None
+    pid = hello.get("supervisorPid") if isinstance(hello, dict) else None
+    if hello.get("type") != "daemon_hello" or not isinstance(pid, int) or pid <= 0:
+        return None
+    if os.path.realpath(str(hello.get("supervisorSocketPath"))) != os.path.realpath(sock):
+        return None
+    return pid if alive(pid) else None
+
+
+def update_restart_running(sock):
+    """True while a Prime update restart coordinator for this socket is alive; it starts the successor itself."""
+    registry = Path(sock).parent / "update-restart-coordinators"
+    for path in registry.glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("socketPath") != sock:
+            continue
+        pid = record.get("pid")
+        if isinstance(pid, int) and pid > 0 and alive(pid):
+            return True
+    return False
+
+
+def cgroup(pid):
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text().strip()
+    except OSError:
+        return ""
+
+
+def write_pidfile(pidfile, pid):
+    tmp = f"{pidfile}.tmp"
+    Path(tmp).write_text(f"{pid}\n")
+    os.replace(tmp, pidfile)
+
+
+def start(prime_agent, sock, pidfile):
+    child = None
+    while True:
+        pid = supervisor_pid(sock)
+        if pid:
+            if child and child.poll() is None and child.pid != pid:
+                child.terminate()
+                print(f"supervisor {pid} took the socket first; stopped the one this unit started ({child.pid})", file=sys.stderr)
+            write_pidfile(pidfile, pid)
+            if cgroup(pid) != cgroup(os.getpid()):
+                print(f"supervisor {pid} runs outside this unit ({cgroup(pid)}) and stops with that cgroup; run updates with systemctl --user reload", file=sys.stderr)
+            print(f"supervisor {pid} owns {sock}")
+            return 0
+        if child is None:
+            if not update_restart_running(sock):
+                child = subprocess.Popen([prime_agent, "--mode", "daemon", "--daemon-socket", sock], stdin=subprocess.DEVNULL, start_new_session=True)
+        elif child.poll() is not None and not update_restart_running(sock):
+            print(f"prime-agent daemon {child.pid} exited with {child.returncode} before it answered on {sock}", file=sys.stderr)
+            return child.returncode or 1
+        time.sleep(POLL_SECONDS)
+
+
+def update(prime_agent, sock, pidfile, args):
+    code = subprocess.call([prime_agent, "update", *args], stdin=subprocess.DEVNULL)
+    started = start(prime_agent, sock, pidfile)
+    return code or started
+
+
+def main(argv):
+    if len(argv) < 4 or argv[0] not in ("start", "update") or (argv[0] == "start" and len(argv) != 4):
+        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
+        return 2
+    command, prime_agent, sock, pidfile, *rest = argv
+    if command == "start":
+        return start(prime_agent, sock, pidfile)
+    return update(prime_agent, sock, pidfile, rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
