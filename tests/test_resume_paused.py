@@ -952,8 +952,37 @@ class ResumePausedTests(unittest.TestCase):
                 "errorMessage": 'Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token '
                                 "pi-pool: this session waits for its slot at 2026-10-18T10:45:00.000Z. Try again in 15 minutes."}}
         self.assertEqual(resume_paused.retry_wait([call, hold]), {})
+        # A provider 429 the extension gave a pool hold is marked: account_blocker's live `pi-pool who` decides whether the hold still stands.
         held = {**hold, "message": {**hold["message"], "errorMessage": "429 rate limit: this session waits for its slot at 2026-10-18T10:45:00Z"}}
-        self.assertEqual(resume_paused.retry_wait([call, held]), {})
+        self.assertIn("waits for its slot", resume_paused.retry_wait([call, held])["retry_error"])
+
+    def test_a_run_asleep_on_a_pool_hold_is_aborted_once_pi_pool_lets_its_tree_in(self):
+        # guard-fix (01a15032), 10-18: its 18:20:18Z wake met a 429 on claude12, and the extension gave each retry the tree's R5 backoff draw.
+        # The last one, at 19:48:50Z, said 85 min. claude7 served other trees from 20:00Z and this tree moved to it at 20:38Z, yet the run slept
+        # to 21:13:34Z. Its tail, from its session file:
+        wake = {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-18T18:20:20.100Z",
+                "content": "[agent-message from 4dd1b45991e7]\n\n[wake] It is 2026-10-18T18:20:18.902Z, the time you set with board.wake"}
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
+                   "[request_id: req_011CgAHHmXLz9jduu3ajAHGJ] pi-pool: claude12@slack.green is limited until 2026-10-24T01:00:00.000Z; "
+                   "this session waits for its slot at 2026-10-18T21:13:34.000Z. Try again in 85 minutes.")
+        tail = [wake] + [{"type": "message", "timestamp": stamp, "message": {"role": "assistant", "stopReason": "error", "content": [],
+                                                                              "provider": "anthropic", "errorMessage": limited}}
+                         for stamp in ("2026-10-18T18:20:20.500Z", "2026-10-18T19:10:38.200Z", "2026-10-18T19:48:50.300Z")]
+        self.assertIn("claude12", resume_paused.retry_wait(tail)["retry_error"])
+        now = dt.datetime(2026, 10, 18, 20, 40, tzinfo=dt.timezone.utc).timestamp()
+
+        def blocker(wait):
+            # `pi-pool who` for the tree: at 19:48:50Z a backoff on claude7 to 21:13:33Z; at 20:38Z the switch to claude7 and no wait.
+            def run(cmd, **kwargs):
+                body = {"rows": [{"id": "claude7", "usable": True}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": None if wait else "claude7", "wait": wait}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=now):
+                return resume_paused.account_blocker("01a1164b-4a2d-742d-b27a-82f086ed0200", "anthropic", {}, strict=True)
+
+        self.assertIn("holds the tree until", blocker({"account": "claude7", "slot_at": 1792358013}))
+        self.assertIsNone(blocker(None))
 
     def test_a_prime_update_notice_that_ends_the_file_counts_as_a_restart_archive(self):
         # run-6's job, 10-18: its last turn failed on the token hook at 06:45:54Z, Prime's update stopped it with this notice at 06:46:02Z,

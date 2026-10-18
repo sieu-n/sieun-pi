@@ -174,8 +174,6 @@ UNLOAD_MATCH_S = 60.0
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
 # The providers pi-pool vends tokens for; any other provider is not pooled and has no pool answer to read.
 POOLED_PROVIDERS = ("anthropic", "openai-codex")
-# pi-pool's queue hold as its hook or the extension words it: "this session waits for its slot at <time>".
-POOL_HOLD = re.compile(r"waits for its slot", re.IGNORECASE)
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
@@ -1159,15 +1157,18 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
 
 def retry_wait(entries):
     """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
-    provider retry, not waiting for a pi-pool slot, so an abort loses no queue place. After the account outage of 10-18 ssh tailnet only,
+    provider retry, and the abort waits for account_blocker to say pi-pool would let the tree in now, so it loses no queue place. After the account outage of 10-18 ssh tailnet only,
     admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
     last = entries[-1] if entries else {}
     msg = last.get("message") or {}
     error = str(msg.get("errorMessage") or "")
-    # A token hook answer is pi-pool's own hold (a slot wait, the 0 to 120 min depleted backoff) or a hook failure, never a stuck provider
-    # retry: the hold ends at its slot, and a hook failure has its own path once the hook gives the tree a token.
+    # A token hook answer is pi-pool's own hold or a hook failure, never a stuck provider retry: a hook failure has its own path once the
+    # hook gives the tree a token. A provider error the extension gave a pool hold (its "waits for its slot at", up to the 120 min backoff
+    # draw) is marked too: Prime sleeps that whole draw, while the pool lets the tree in as soon as an account takes its class again
+    # (032c394b). account_blocker asks `pi-pool who`, which decides live, so a hold the pool still keeps blocks the abort. On 10-18 guard-fix
+    # (01a15032) slept on a 429 from 19:48:50Z to 21:13:34Z while its tree moved to claude7 at 20:38Z and claude7 served from 20:00Z.
     if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
-            and INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error) and not POOL_HOLD.search(error):
+            and INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error):
         return {"retry_error": error}
     return {}
 
