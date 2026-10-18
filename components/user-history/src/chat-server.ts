@@ -633,14 +633,9 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             json(res, 200, await backend.threads.toolOutput(id, toolCallId)); return;
           }
           if (action === "part") {
-            const at = Number(url.searchParams.get("at")); const n = Number(url.searchParams.get("n") ?? 0); const part = Number(url.searchParams.get("part") ?? 0);
-            if (!Number.isSafeInteger(at) || at < 0 || !Number.isSafeInteger(n) || n < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
-            json(res, 200, await backend.threads.part(id, { at, n }, part)); return;
-          }
-          if (action === "older") {
-            const cursor = url.searchParams.get("cursor") ?? "";
-            if (!cursor || cursor.length > 256) throw new RequestError(400, "Choose where the earlier messages start.");
-            json(res, 200, await backend.threads.olderPage(id, cursor)); return;
+            const message = Number(url.searchParams.get("message")); const part = Number(url.searchParams.get("part") ?? 0);
+            if (!Number.isSafeInteger(message) || message < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
+            json(res, 200, await backend.threads.part(id, message, part)); return;
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
@@ -925,6 +920,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           await slack.chat(id, input).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
           json(res, 200, slack.view(origin === `http://${host}`)); return;
         }
+        case "older": await backend.threads.older(id); break;
         case "board": {
           // The owner's side of the chat board: todo ops. The chat then gets a steer that says in plain words what the owner did.
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
