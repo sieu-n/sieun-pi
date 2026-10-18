@@ -48,13 +48,16 @@ class HookWriter:
         entries = self._state["providers"][provider].setdefault("admissions", {}).setdefault(account_id, [])
         entries.append([now, key.key if key else None])
 
-    def set_wait(self, key, provider, account_id, slot_at, now):
-        """R5: the tree waits for its slot on `account_id`. Its wait start stays
-        the first one, so a tree keeps its place in the queue."""
+    def set_wait(self, key, provider, account_id, slot_at, now, backoff=False):
+        """R5: the tree waits for its slot on `account_id`, or with `backoff` until
+        its random draw. Its wait start stays the first one, so a tree keeps its
+        place in the queue."""
         rec = self._rec(key, now)
         waits = rec.setdefault("wait", {})
         since = (waits.get(provider) or {}).get("since", now)
         waits[provider] = {"account": account_id, "slot_at": slot_at, "since": since}
+        if backoff:
+            waits[provider]["backoff"] = True
 
     def set_cooldown(self, provider, account_id, until, reason=None):
         prov = self._state["providers"][provider]
@@ -582,10 +585,10 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         writer.set_wait(key, provider, d.account.id, now, now)
         return d, tree, True
     if isinstance(d, sched.Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
-        writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
+        writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now, d.backoff)
         base.log("wait", provider=provider, session=key.key, account=d.slot_account.label,
                  slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
-                 left=d.left and d.left[1])
+                 left=d.left and d.left[1], backoff=d.backoff)
         return d, tree, True
     return d, tree, False
 

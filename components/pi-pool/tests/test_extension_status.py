@@ -95,13 +95,15 @@ class WaitForASlot(unittest.TestCase):
         self.assertEqual((details["retryAfterMs"], details["kind"], details["status"]), (600_000, "rate_limit", 429))
         self.assertIn("Try again in 10 minutes.", message["errorMessage"])
 
-    def test_a_slot_far_away_is_rechecked_every_fifteen_minutes(self):
+    def test_a_backoff_two_hours_away_is_one_sleep(self):
+        """R5's backoff draw runs up to 2 h and the pool holds it until it passes, so a
+        recheck before it only adds another failed message to the session."""
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "limited",
-                     "reply": {"account": "x@x", "until": NOW_SEC + 9000, "next": None, "retry_at": NOW_SEC + 9000}},
+                     "reply": {"account": "x@x", "until": NOW_SEC + 9000, "next": None, "retry_at": NOW_SEC + 7000}},
                     {"op": "message", "name": "ui", "message": failure({"status": 429, "retryAfterMs": 9_000_000})})
         [details] = [d["details"] for d in run["messages"][0]["diagnostics"] if d["type"] == "provider_stream_failure"]
-        self.assertEqual(details["retryAfterMs"], 900_000)
+        self.assertEqual(details["retryAfterMs"], 7_000_000)
 
     def test_a_429_with_a_next_account_retries_at_once(self):
         run = drive({"op": "start", "name": "ui"},
@@ -121,6 +123,24 @@ class WaitForASlot(unittest.TestCase):
         [message] = run["messages"]
         self.assertEqual([d["type"] for d in message["diagnostics"]], ["provider_stream_failure"])
         self.assertEqual(message["diagnostics"][0]["details"]["retryAfterMs"], 300_000)
+
+    def test_the_mac_session_of_10_18_0831z_waits_its_whole_slot_in_one_wait(self):
+        """10-18 08:32:37Z: a new Mac session (01a14e22) got no token, its slot on the
+        holder was 08:55:30Z, and the 15-min cap made its wait end at 08:47:38Z with a
+        second error line. The wait now runs to the slot, with the time in its text."""
+        text = 'Failed to resolve API key for provider "anthropic" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token'
+        slot = NOW_SEC + (8 * 3600 + 55 * 60 + 30) - (8 * 3600 + 32 * 60 + 37)
+        run = drive({"op": "start", "name": "ui"},
+                    {"op": "reply", "verb": "who", "reply": {"providers": {"anthropic": {
+                        "current": None, "wait": {"account": "y", "slot_at": slot}}}}},
+                    {"op": "message", "name": "ui", "message": {
+                        "role": "assistant", "stopReason": "error", "provider": "anthropic", "errorMessage": text,
+                        "diagnostics": [{"type": "agent_lifecycle_failure"}]}})
+        [message] = run["messages"]
+        [details] = [d["details"] for d in message["diagnostics"] if d["type"] == "provider_stream_failure"]
+        self.assertEqual((details["retryAfterMs"], details["kind"]), (1_373_000, "rate_limit"))
+        self.assertIn("this session waits for its slot at 1970-01-01T00:39:33.000Z", message["errorMessage"])
+        self.assertIn("Try again in 23 minutes.", message["errorMessage"])
 
 
 if __name__ == "__main__":

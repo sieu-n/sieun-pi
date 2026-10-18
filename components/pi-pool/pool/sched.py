@@ -1,5 +1,5 @@
 """The admission scheduler: trees, the slot book, and decide() with rules R1-R7."""
-import dataclasses, time
+import dataclasses, random, time
 
 from . import base, registry
 
@@ -19,8 +19,11 @@ from . import base, registry
 #      to the next one, or tree_5h_pct_per_min of its tier before it has one.
 #   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
-#   R5 wait: nothing passes R2-R4, so the tree gets its own slot_at on the account
-#      that frees first, ordered by priority, then by wait start.
+#   R5 wait: an account passes R2 but R4 has no cell now, so the tree gets its own
+#      slot_at on it, ordered by priority, then by wait start. When no account
+#      passes R2 (the pool is depleted and waits for rotation), the tree backs off
+#      instead: a fresh uniform draw over depleted_backoff_max_sec, held until it
+#      passes, so trees that wait for one reset come back spread out.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
 #      waits for its own account; a high tree is refused only optional moves.
 #   R7 priority share: low trees enter only under low_admit_5h_max_pct; when one
@@ -55,6 +58,8 @@ class Tree:
     moves: tuple = ()
     # (account id, slot_at, since) while the tree waits for a slot.
     wait: "tuple | None" = None
+    # The wait is an R5 backoff: slot_at is a random draw, held until it passes.
+    backoff: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,6 +110,8 @@ class Wait:
     vend: "registry.Account | None" = None
     shadowed: "tuple | None" = None
     left: "tuple | None" = None
+    # slot_at is a backoff draw (R5), no cell on slot_account.
+    backoff: bool = False
 
 
 def admit_cap(cfg, priority):
@@ -324,10 +331,11 @@ def plan_tier(a):
     return PLAN_TIERS.get(a.plan, 0)
 
 
-def decide(tree, accounts, book, cooldowns, cfg, now):
+def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     """Stay, Admit or Wait for one request of one tree; None when no account can
-    ever serve it. Pure: the caller writes what it decides under the pool flock,
-    so trees that ask together see each other's admissions and waits."""
+    ever serve it. Pure but for `draw`, the R5 backoff's uniform number in [0, 1)
+    (random.random() when None): the caller writes what it decides under the pool
+    flock, so trees that ask together see each other's admissions and waits."""
     by_id = {a.id: a for a in accounts}
     p = tree.priority if tree.priority in PRIORITY_RANK else "normal"
     rank = tree_rank(tree, now)
@@ -364,6 +372,14 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     cur_why = "missing" if tree.current and cur is None else (serve_reason(cur, cooldowns, now) if cur else None)
     left = (tree.current, cur_why) if tree.current else None
     shadowed = None
+    own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
+    vend = cur if own_ok and cur_why is not None else None
+
+    # R5: a backoff holds until its draw passes, for every tree and every account,
+    # so a revived account is not met by every waiter at once.
+    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None
+    if held is not None:
+        return Wait(tree.wait[1], held, vend, None, left, backoff=True)
 
     pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at
     if pending:
@@ -398,7 +414,6 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     optional = cur is not None and cur_why is None
     moved = sum(1 for t in tree.moves if now - t < MOVE_WINDOW_SEC)
     budget = cfg["max_moves_per_day"].get(p, cfg["max_moves_per_day"].get("normal", 3))
-    own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
     stuck = own_ok and moved >= budget and (p != "high" or optional)
     # R6 holds only while the tree's own account frees within budget_wait_max_sec.
     # Past that the tree moves anyway: a stalled tree costs the owner the work, a
@@ -441,7 +456,10 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
     if slot_at == float("inf"):
         return None
-    vend = cur if own_ok and cur_why is not None else None
+    # An unsampled account is only a read away, so its waiters keep their short wait.
+    if not any(why_not(a) in (None, "unsampled") for a in accounts if allowed(a)):
+        u = random.random() if draw is None else draw
+        return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
     return Wait(slot_at, slot_account, vend, shadowed, left)
 
 
@@ -472,7 +490,8 @@ def tree_for(state, key, provider):
                 leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"),
                 priority=rec.get("priority") or "normal",
                 moves=tuple((rec.get("moves") or {}).get(provider) or ()),
-                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None)
+                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None,
+                backoff=bool(wait and wait.get("backoff")))
 
 
 def book_for(state, provider, key, cfg, now):
@@ -483,7 +502,8 @@ def book_for(state, provider, key, cfg, now):
     waiting = {}
     for k, rec in state["sessions"].items():
         wait = (rec.get("wait") or {}).get(provider)
-        if not wait or (key and k == key.key):
+        # A backoff draw holds no cell.
+        if not wait or wait.get("backoff") or (key and k == key.key):
             continue
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))

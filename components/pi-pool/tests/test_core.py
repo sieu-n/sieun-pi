@@ -235,8 +235,10 @@ class LimitedByThe429(unittest.TestCase):
 
     def test_with_everything_limited_the_tree_waits_for_the_first_reset(self):
         accounts = limited({"a": NOW + 7200, "b": NOW + 600, "c": NOW + 3600}, [A, B, C])
-        r = resolved(state_v2(current="a"), accounts)
-        self.assertEqual((type(r), r.slot_account.id, r.slot_at, r.vend.id), (sched.Wait, "b", NOW + 600, "a"))
+        with unittest.mock.patch.object(sched.random, "random", return_value=0.5):
+            r = resolved(state_v2(current="a"), accounts)
+        self.assertEqual((type(r), r.slot_account.id, r.slot_at, r.vend.id, r.backoff),
+                         (sched.Wait, "b", NOW + CFG["depleted_backoff_max_sec"] / 2, "a", True))
 
     def test_set_limit_keeps_the_latest_reset_and_prune_drops_it_when_it_passes(self):
         state = state_v2()

@@ -140,12 +140,14 @@ class LimitedSurvivesARestart(PoolFixture):
             {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
              "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]})
         until = time.time() + 3600
+        start = time.time()
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
         reply = json.loads(out)
-        self.assertEqual((reply["next"], reply["retry_at"]), (None, math.ceil(until)))
+        self.assertIsNone(reply["next"])
+        self.assertTrue(start <= reply["retry_at"] <= time.time() + base.DEFAULTS["depleted_backoff_max_sec"] + 1, reply)
         wait = self.state()["sessions"][self.SESSION]["wait"]["openai-codex"]
-        self.assertEqual((wait["account"], round(wait["slot_at"])), (self.C, round(until)))
+        self.assertEqual((wait["account"], math.ceil(wait["slot_at"]), wait["backoff"]), (self.C, reply["retry_at"], True))
 
     def test_a_session_with_no_vend_is_refused(self):
         code, out = self.cli("limited", "--provider", "anthropic", "--session", self.SESSION, "--until", str(time.time() + 60))

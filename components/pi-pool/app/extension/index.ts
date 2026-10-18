@@ -248,15 +248,13 @@ async function poolJson<T>(args: string[]): Promise<T | undefined> {
 }
 
 /**
- * Longest single wait the extension asks Prime for. A session whose slot is further
- * away wakes at this interval, and the pool hands it its slot again, so a session
- * also picks up an account that frees early or a new login.
+ * The retryAfterMs that makes Prime's usage wait sleep until `slotAt` (epoch sec), in one
+ * sleep. The pool holds a backoff draw (up to depleted_backoff_max_sec, 2 h) until it
+ * passes, so a wake before it only meets the same answer: on 10-18 08:32Z a 15-min cap
+ * put a second error line in a Mac session that waited 23 min for its slot.
  */
-const WAIT_RECHECK_MS = 15 * 60_000;
-
-/** The retryAfterMs that makes Prime's usage wait sleep until `slotAt` (epoch sec). */
 function waitMs(slotAt: number): number {
-	return Math.min(WAIT_RECHECK_MS, Math.max(1000, slotAt * 1000 - Date.now()));
+	return Math.max(1000, slotAt * 1000 - Date.now());
 }
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
@@ -280,8 +278,7 @@ function waitFailure(message: AssistantMessage, original: string, said: string, 
  * another account takes the session, return the message without the reset, so
  * Prime's usage wait pings after about 1s and that ping's hook call vends the
  * other account. When none does, the pool gives the session its own slot
- * (`retry_at`), and the message waits until then, at most WAIT_RECHECK_MS at a
- * time. On 2026-10-12 15:04 a session waited 1 h 45 min for its own account's
+ * (`retry_at`), and the message waits until then. On 2026-10-12 15:04 a session waited 1 h 45 min for its own account's
  * reset while another account came back at 15:30.
  *
  * A 400 or 403: the pool reads the error text. An account-level refusal (terms

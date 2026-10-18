@@ -313,23 +313,24 @@ flowchart TD
   B -- yes --> C{an account under the admit cap with a free slot?}
   B -- no --> W
   C -- yes --> A2[admit to the best score]
-  C -- no --> W[wait for the first slot]
+  C -- no --> W[wait for a cell, or back off 0-120 min when no account passes R2]
 ```
 
 | # | rule | effect |
 |---|---|---|
 | R1 stay | the tree's own account still serves: no 429 on file, every counting window under 100%, credential ok | it stays, warm or cold. No move because of a cutoff, a better account, a pin set earlier or another tree's move |
-| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old, with that sample projected to the next read | holds for new trees, moves after a 429, pins and `pi-pool switch`. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s. The projection is the read plus the account's own rate for each tree that sent a request there in the last 15 minutes over the 20 minutes from the read to the next one, plus the new tree from now to the next read The own rate is the 5h change between the last read and the newest read at least 20 minutes older in the same window, plus one point for rounding, divided by the spending tree-minutes between them. Until a window has two such reads, `tree_5h_pct_per_min` of the tier stands in (team 0.68, max 5x 0.92, max 20x 0.28, measured on 10-12 and 10-13; see `base.DEFAULTS`). A projection at the cap holds the tree until the next read has landed |
+| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old, with that sample projected to the next read | holds for new trees, moves after a 429, pins and `pi-pool switch`. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s. The projection is the read plus the account's own rate for each tree that sent a request there in the last 15 minutes over the 20 minutes from the read to the next one, plus the new tree from now to the next read The own rate is the 5h change between the last read and the newest read at least 20 minutes older in the same window, plus one point for rounding, divided by the spending tree-minutes between them. Until a window has two such reads, `tree_5h_pct_per_min` of the tier stands in (team 0.68, max 5x 0.92, max 20x 0.28, measured on 10-12 and 10-13; see `base.DEFAULTS`). A projection at the cap counts as no room, so with no other account the tree backs off (R5) |
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
-| R5 wait | nothing passes R2 to R4 for this tree | the tree gets its own `slot_at` on the account that frees first (429 end, 5h reset or its next free slot), ordered by priority, then by wait start |
+| R5 wait | an account passes R2 for this tree but R4 has no cell for it now | the tree gets its own `slot_at` on that account's next free cell, ordered by priority, then by wait start |
+| R5 backoff | no account passes R2 for this tree (the pool waits for rotation) | the tree waits a uniform random 0 to `depleted_backoff_max_sec` (7200 s), a fresh draw each time, and nothing admits it before the draw passes, owner turns included. The draw takes no cell. The `wait` record carries `backoff: true` and names the account that frees first |
 | R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account when that account frees within `budget_wait_max_sec` (3600); otherwise it moves anyway and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
 | R7 priority | low trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
 A tree that waits gets its own account from the hook while the provider refuses that
 account, so the request comes back as a 429 that writes no cache. `pi-pool limited` then
 prints `retry_at`, the tree's slot, and the extension sets the message's `retryAfterMs` to
-it, at most 15 minutes at a time. Prime 0.9.8's wait-for-usage reads `retryAfterMs` from the
+it, in one sleep. Prime 0.9.8's wait-for-usage reads `retryAfterMs` from the
 message's `provider_stream_failure` diagnostic first and sleeps exactly that long, bounded
 by `retry.provider.waitForUsage.maxWaitMs` and `maxAttempts`. When the tree's own account
 serves again before its slot, the hook gives no token, and the extension turns that hook
@@ -340,6 +341,19 @@ earlier wait start) may take a slot a later tree was promised; that tree finds i
 when it wakes and is given the next one. So a reset admits the waiting trees at slot pace,
 high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
 2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
+
+When every account is out, the trees back off instead (R5 backoff), because the owner
+asked for it on 2026-10-18: "prevent that with super long random backoff on depleted -
+waiting for rotation", then "make it random 0-120m", and "no don't" to letting his own turns
+skip it. Each tree comes back at its own random time, so accounts that revive minutes apart
+meet a trickle of trees, and R2 and R4 admit that trickle at a pace each account takes. A
+tree whose draw passes while every account is still out draws again. Before this, waiters
+were booked into 30-second cells on the one account left, and a tree that a higher one
+displaced woke every 30 s: on 2026-10-18 08:11-08:35Z 33 trees waited so, one tree took
+about 20 429s in 3 minutes, and the pool flock gave 1,875 `vend_lock_busy` lines.
+`tests/test_scheduler.py` `R5Backoff` drives 100 waiting trees against 8 accounts that
+revive 2 minutes apart: every tree gets a token, no account takes more than 3 trees in the
+minute after it revives, and none runs out within a minute of its revival.
 
 A pin is an owner intent applied once: the tree's next request moves to the pinned
 account if it passes R2 (a high tree skips R4). After that the pin steers the tree only
@@ -391,10 +405,11 @@ own 429 is the first sign that an account is used up. The extension handles it o
 3. When `next` names an account, the extension returns the message without `retryAfterMs`
    and without the "Try again in" phrase. Prime's usage wait then pings after about one
    second instead of sleeping until the reset, and that ping's hook call vends `next`.
-4. When `next` is null, `retry_at` is the tree's own slot. The extension sets the
-   message's `retryAfterMs` to `retry_at - now`, at most 15 minutes, with a matching "Try
-   again in N minutes" text, so Prime sleeps until the slot and not until the provider's
-   reset. On 2026-10-12 15:04 a tree slept 1 h 45 min for claude10's reset while claude7
+4. When `next` is null, `retry_at` is the tree's own slot or backoff time. The extension
+   sets the message's `retryAfterMs` to `retry_at - now`, with a matching "Try again in N
+   minutes" text, so Prime sleeps once until then and not until the provider's reset, and
+   then continues the turn itself. On 2026-10-18 at 08:32:37Z a 15-minute cap made a Mac
+   session that waited 23 minutes write its error line twice. On 2026-10-12 15:04 a tree slept 1 h 45 min for claude10's reset while claude7
    came back at 15:30.
 
 The limit lives in `state.json`, so a restarted worker or daemon still skips the account.
@@ -560,7 +575,7 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
-`admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
+`admit_per_unit`, `depleted_backoff_max_sec`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
 `working_max`, `tree_working_max`, `queue_aging_s`, `lease_s` and `prod_turns_on`. `pi-pool set` takes a JSON object for
