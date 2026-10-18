@@ -126,12 +126,16 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
 }
 
 /**
- * `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`). It still runs the
- * wakes and the brief keeper, since their files in its own data dir come only from sessions that write there.
+ * `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`).
+ * `scratch`: a serve on a copy of the live data dir, such as a CPU profile. Its wakes, spawn briefs, archive queue and duties are the live
+ * service's, so it starts none of the loops that send, prompt, reopen, archive or write the pool, and it acts only on its own chats. On 10-18 a
+ * profile serve on a copy woke 3 jobs and relayed 2 wakes through their parents at 08:25Z, which the live service also sent.
  * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
  * `copyFile`: where this box's session copy is kept across restarts (`SessionPeer`), so a restart serves the sidebar before any list.
  */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
+  const scratch = options.scratch === true;
+  const ownChatsOnly = options.ownChatsOnly === true || scratch;
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
@@ -161,7 +165,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
-  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
+  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...scratch ? { tickMs: 0 } : {} });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
   const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = sharedQueueRead();
@@ -173,7 +177,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit,
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...scratch ? { tickMs: 0 } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: async (id, item) => {
       const now = Date.now();
@@ -205,7 +209,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),
-      ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
+      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...scratch ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onSupervisorChange(() => {
@@ -214,7 +218,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   });
   const unwatchBoards = boards.watch((id, board) => {
     threads.setBoard(id, board);
-    void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    if (!scratch) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
@@ -223,13 +227,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = queued;
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
-  void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
+  if (!scratch) void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
-  const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
-  const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+  const stopWatch = ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
   // Every service send goes through one SendOnce: a send the daemon timed out on is looked for before it goes again (src/send-once.ts).
@@ -261,8 +265,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     },
   };
-  const stopWakes = startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
-  const stopBriefs = startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
+  const stopWakes = scratch ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const stopBriefs = scratch ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
       const chat = await dutyJobs.chat(record.root);
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
@@ -271,7 +275,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const pollHealth = new PollHealth();
   const hookWatch = new TokenHookWatch({ sessionsDir: join(agentDir, "sessions") });
-  const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
+  const stopAlerts = ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => pollHealth.poll(() => withHookAlert(readGrafanaAlerts(grafanaConfig), hookWatch)),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     startJob: async (chatId, steps) => {
@@ -283,8 +287,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     jobWorking: job => dutyJobs.working(job),
     boards, log: dutyLog, ...agentMessage });
-  const stopProdTurns = options.ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
-  const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
+  const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
+  const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a session that ended its task after ENDED_MS, since Prime's own
   // sweeps fail under load. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait
@@ -317,15 +321,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     now: () => Date.now(),
   });
   let unloading = false;
-  const unloader = options.ownChatsOnly ? undefined : setInterval(() => {
+  const unloader = ownChatsOnly ? undefined : setInterval(() => {
     if (unloading) return;
     unloading = true;
     void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
   }, 60_000);
   unloader?.unref();
-  const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
-  prioritySync.unref();
-  void poolPriorities.sync();
+  const prioritySync = scratch ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
+  prioritySync?.unref();
+  if (!scratch) void poolPriorities.sync();
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
