@@ -15,6 +15,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts stall-jobs --run <dir> --until <ISO time> [--after-min <n>]   (checkin-push-control: aborts each chat's first job once)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-hooks --run <dir> --until <ISO time> --window-min <n>   (token-hook-resume: start it before setup)
+ *   node --import tsx scripts/clean-room/clean-room.ts advance-release --run <dir> --until <ISO time>   (detached-report: moves the project's tools/current once)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
@@ -41,6 +42,7 @@ import { type ArchiveMark, chatEntries, chatToolsReopen, FOLLOW_UP } from "./cha
 import { reopenFirstMessage } from "./reopen-first-message.ts";
 import { boxTools } from "./box-tools.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
+import { advanceRelease, detachedReport } from "./detached-report.ts";
 import { correctionRefine } from "./correction-refine.ts";
 import { dmReplies } from "./dm-replies.ts";
 import { englishJobs } from "./english-jobs.ts";
@@ -60,7 +62,8 @@ import { wakeLive } from "./wake-live.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools,
+  "detached-report": detachedReport };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -137,7 +140,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
   if (existsSync(join(run, "run.json"))) throw new Error(`${run} already holds a run`);
   mkdirSync(run, { recursive: true });
   copyFileSync(criteria, join(run, "criteria.md"));
-  const sandbox = scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
+  const sandbox = scenario.prepare ? scenario.prepare(run) : scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
   if (scenario.agentsMd) { mkdirSync(sandbox, { recursive: true }); writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox)); }
   const everyMin = Number(need(flags, "every-min"));
   const name = need(flags, "name");
@@ -587,7 +590,8 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   if (!existsSync(join(run, "run.json"))) { process.stdout.write(`${run} is already torn down\n`); return; }
   const state = readJson<RunState>(join(run, "run.json"));
-  for (const pid of runProcesses(run)) {
+  const scenario = SCENARIOS[state.scenario];
+  for (const pid of [...runProcesses(run), ...(scenario?.prepare ? runProcesses(state.sandbox) : [])]) {
     try { process.kill(pid, "SIGTERM"); log(run, `stopped process ${pid}`); } catch (error) { log(run, `stop ${pid}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   const srv = await server();
@@ -640,6 +644,7 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     if ([...chats, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
   }
   if (failed.length) throw new Error(`kept ${run}, because ${failed.length} archives failed; run teardown again`);
+  if (scenario?.cleanup) { scenario.cleanup(state); log(run, `removed the project folder ${state.sandbox}`); }
   rmSync(run, { recursive: true, force: true });
   process.stdout.write(`${new Date().toISOString()} deleted the run folder ${run}\n`);
 }
@@ -668,6 +673,7 @@ async function main(): Promise<void> {
     log(run, `kill-hooks: killed ${kills.length} token hook runs of ${new Set(kills.map(kill => kill.session)).size} jobs of the chat`);
     return;
   }
+  if (command === "advance-release") return advanceRelease(need(flags, "run"), Date.parse(need(flags, "until")));
   if (command === "reseed") return reseed(flags);
   if (command === "evaluate") return evaluate(flags);
   if (command === "teardown") return teardown(flags);

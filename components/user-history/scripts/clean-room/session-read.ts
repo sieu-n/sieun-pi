@@ -17,6 +17,9 @@ export interface Scenario {
   name: string;
   /** The AGENTS.md of a sandbox folder the chat works in; absent: the chat works in `--cwd` like a chat the owner opens there. */
   agentsMd?(sandbox: string): string;
+  /** Builds the folder the chat works in outside the run folder and returns it, so the chat sees no run file; `cleanup` removes it at teardown. */
+  prepare?(run: string): string;
+  cleanup?(state: RunState): void;
   headMessage(chatName: string): string;
   /** A control chat with its own ordinary first message, opened with the chat and kept without a check-in. */
   control?: { name: string; message(name: string): string };
