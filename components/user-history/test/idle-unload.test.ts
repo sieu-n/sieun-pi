@@ -8,7 +8,7 @@ import type { SessionSummary } from "prime-agent";
 import { showsWork } from "../src/chat-dormancy.ts";
 import { type Footprints, watchLine } from "../src/mac-usable-watch.ts";
 import { recordUnloaded, UNLOADED_FILE } from "../src/unloaded.ts";
-import { type DaemonAnswer, IdleUnloader, quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, unloadPlan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, IdleUnloader, quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, type UnloadRow, unloadPlan } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; pool: string[]; rows: SessionSummary[] };
 const load = (name: string): Fixture => JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", name), "utf8")) as Fixture;
@@ -246,6 +246,46 @@ test("a stale row whose active session the daemon does not know is not asked aga
   await unloader.sweep();
   await unloader.settled();
   assert.equal(calls.length, 2, "a row that changed is planned again");
+});
+
+// Native run DU-fix at 17:51Z on 10-18 on the detached-bash fix build a59cdba2: a session that ran `nohup python3 -m http.server ... &` ended its
+// turn and its row read idle, isSessionActive false, taskState needs_input and holdsDetachedProcesses true. 138 s later the sweep planned it,
+// get_state read it idle, and the kill took the server from HTTP 200 to connection refused.
+const service = (holds: boolean): UnloadRow => ({ ...quietRoot("nohup-server", TEN_MIN + MIN), taskState: "needs_input", workerPid: 4242,
+  ...(holds ? { holdsDetachedProcesses: true } : {}) }) as UnloadRow;
+
+test("a session holding a process it started detached is never planned, and neither is the recycle of a worker it is on", () => {
+  const input = { attached: new Set<string>(), pool: new Set<string>(), now: at15, idleMs: TEN_MIN };
+  assert.deepEqual(unloadPlan([service(false)], input).map(row => row.sessionId), ["nohup-server"], "the same row without the flag is planned");
+  assert.deepEqual(unloadPlan([service(true)], input), []);
+  const workers = { chats: new Set<string>(), pool: new Set<string>(), now: at15 };
+  assert.deepEqual(quietWorkers([service(false)], workers).map(worker => worker.pid), [4242]);
+  assert.deepEqual(quietWorkers([service(true)], workers), []);
+  const child = { ...service(true), sessionId: "nohup-child", activeSessionId: "nohup-child", parentSessionId: "nohup-server", runtimeKind: "subagent" } as UnloadRow;
+  assert.deepEqual(unloadPlan([service(false), child], input), [], "a parent whose kill would close the child's service is not planned either");
+});
+
+test("a session whose get_state shows a detached process gets no kill", async () => {
+  const { unloader, calls, stopped } = harness([service(false)], { state: () => ({ success: true, data: { isSessionActive: false, isStreaming: false,
+    isCompacting: false, isBashRunning: false, holdsDetachedProcesses: true } }) });
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(calls.map(call => call.type), ["get_state"], "no kill was sent");
+  assert.deepEqual(stopped, []);
+});
+
+test("a session whose detached process exited is planned and stopped on the next sweep", async () => {
+  const rows: UnloadRow[] = [service(true)];
+  const { unloader, calls, stopped, clock } = harness(rows);
+  await unloader.sweep();
+  await unloader.settled();
+  assert.equal(calls.length, 0, "the row with the flag is not planned");
+  rows[0] = service(false);
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(calls.map(call => call.type), ["get_state", "kill"]);
+  assert.deepEqual(stopped, ["nohup-server"]);
 });
 
 // d7 sleeping_gb on 10-18. The chat 'Douyin index gaps' was quiet from 03:52Z while its job worked until 04:12:45Z, and the Mac usable watch

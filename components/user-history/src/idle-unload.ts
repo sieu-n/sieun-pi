@@ -21,9 +21,17 @@ import type { DaemonClient, SessionSummary } from "prime-agent";
  */
 const loaded = (row: SessionSummary): boolean => (row.lifecycle === "live" || row.lifecycle === "draft") && row.activeSessionId !== undefined;
 
-/** Nothing runs, waits or is scheduled in the session, and no client but the service's own attach (judged by the caller) holds it. */
-function still(row: SessionSummary, pool: ReadonlySet<string>): boolean {
-  return loaded(row) && row.workerState === "ready" &&
+/**
+ * A daemon row as a Prime newer than the pinned 0.9.8 lists it: `holdsDetachedProcesses` is true for a session whose bash() shell group still
+ * holds a process it started detached, such as `nohup svc > log 2>&1 &`. Such a row reads idle on the detached-bash fix build a59cdba2, and
+ * stopping it kills the service, because the kernel's shutdown killpg()s that group and the host reaper SIGKILLs it (native run DU-fix,
+ * 10-18 17:51Z: the plain nohup server went from 200 to connection refused 8 s after the idle unload's kill). mem.3 never sends the field.
+ */
+export type UnloadRow = SessionSummary & { holdsDetachedProcesses?: boolean };
+
+/** Nothing runs, waits or is scheduled in the session, no detached process of its own lives, and no client but the service's own attach (judged by the caller) holds it. */
+function still(row: UnloadRow, pool: ReadonlySet<string>): boolean {
+  return loaded(row) && row.workerState === "ready" && !row.holdsDetachedProcesses &&
     row.activity === "idle" && !row.isSessionActive && !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren &&
     !row.isRunningTools && !row.directAttachedClients && !row.unfinishedActionCount &&
     (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !pool.has(row.sessionId);
@@ -43,12 +51,12 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
  */
 export const ENDED_MS = 2 * 60_000;
 
-/** The sessions with a session below them, at any depth, that is not idle. */
-function busyAncestors(rows: readonly SessionSummary[]): Set<string> {
+/** The sessions with a session below them, at any depth, that is not idle or holds a detached process, which the daemon's guard would refuse to close. */
+function busyAncestors(rows: readonly UnloadRow[]): Set<string> {
   const parent = new Map(rows.flatMap(row => row.parentSessionId ? [[row.sessionId, row.parentSessionId] as const] : []));
   const busy = new Set<string>();
   for (const row of rows) {
-    if (row.activity === "idle" && !row.isSessionActive) continue;
+    if (row.activity === "idle" && !row.isSessionActive && !row.holdsDetachedProcesses) continue;
     for (let up = parent.get(row.sessionId); up !== undefined && !busy.has(up); up = parent.get(up)) busy.add(up);
   }
   return busy;
@@ -111,8 +119,11 @@ export function recyclePlan(quiet: readonly QuietWorker[], own: ReadonlyMap<numb
   return quiet.filter(worker => (own.get(worker.pid) ?? 0) >= recycleBytes);
 }
 
-/** A daemon's answer to one request, as `DaemonClient.request` resolves it. */
-export type DaemonAnswer = { success: true; data?: unknown } | { success: false; error: string };
+/**
+ * A daemon's answer to one request, as `DaemonClient.request` resolves it. `detachedHold` marks the idle kill a daemon with DETACHED_GUARD
+ * refused because the session or one below it holds detached processes.
+ */
+export type DaemonAnswer = { success: true; data?: unknown } | { success: false; error: string; detachedHold?: true };
 
 /**
  * The `daemon_hello` server capability of a Prime that takes `origin: "idle_unload"` on a kill and records the stop as an idle unload. That
@@ -127,6 +138,16 @@ export function idleKillCommand(activeSessionId: string, hello: { serverCapabili
 }
 
 const takesKillOrigin = (hello: { serverCapabilities?: readonly string[] }) => (hello.serverCapabilities ?? []).includes(KILL_ORIGIN);
+
+/**
+ * The `daemon_hello` server capability (protocol 7) of a Prime that refuses `{type: "kill", origin: "idle_unload"}` for a session that holds
+ * detached processes, or has one below it that does. The refusal is `success: false` with `errorInfo.code` DETACHED_REFUSAL and changes
+ * nothing, so the service keeps running (p8-metal/detached-guard-contract.md, 10-18). A Prime without it never lists such a session as idle.
+ */
+export const DETACHED_GUARD = "idle_unload_detached_guard";
+export const DETACHED_REFUSAL = "idle_unload_detached_processes";
+
+const guardsDetached = (hello: { serverCapabilities?: readonly string[] }) => (hello.serverCapabilities ?? []).includes(DETACHED_GUARD);
 
 export type UnloadClient = Pick<DaemonClient, "hello" | "waitForHello" | "request">;
 
@@ -150,7 +171,11 @@ export async function unloadRequest(client: UnloadClient, activeSessionId: strin
     const hello = client.hello;
     if (!hello) return { success: false, error: "The daemon connection closed before its hello; the kill was not sent." };
     if (!restorable && !takesKillOrigin(hello)) return { success: false, error: NO_BARE_KILL };
-    return await client.request(idleKillCommand(activeSessionId, hello), 30_000, { recoverable: false });
+    const answer = await client.request(idleKillCommand(activeSessionId, hello), 30_000, { recoverable: false });
+    if (answer.success) return answer;
+    const info: { code: string } | undefined = answer.errorInfo;
+    const held = info?.code === DETACHED_REFUSAL && guardsDetached(hello);
+    return held ? { success: false, error: answer.error, detachedHold: true } : answer;
   } catch (error) {
     return { success: false, error: String(error) };
   }
@@ -186,10 +211,10 @@ export interface UnloadSource {
   now(): number;
 }
 
-/** The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input or a background bash. */
+/** The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input, a background bash or a detached process it started. */
 function stateBusy(data: unknown): boolean {
-  const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
-  return state.isSessionActive !== false || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true;
+  const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<UnloadRow, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning" | "holdsDetachedProcesses">>;
+  return state.isSessionActive !== false || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true || state.holdsDetachedProcesses === true;
 }
 const skipUntilRowChanges = (error: string): boolean => /Unknown active session/.test(error) || error === NO_BARE_KILL;
 
@@ -287,6 +312,8 @@ export class IdleUnloader {
     if (!state.success) return failed(state);
     if (stateBusy(state.data)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
     const killed = await source.request(row, "kill");
+    // The daemon's guard kept a detached service. Only this sweep skips the session: once the service exits, the next sweep stops it.
+    if (!killed.success && killed.detachedHold) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, it holds detached processes`); return false; }
     if (!killed.success) return failed(killed);
     this.gone.add(goneKey(row));
     await source.stopped(row, chats.has(row.sessionId), since);

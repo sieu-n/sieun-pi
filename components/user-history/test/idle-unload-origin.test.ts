@@ -12,7 +12,7 @@ import { ChatReadState } from "../src/chat-read-state.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
-import { type DaemonAnswer, IdleUnloader, KILL_ORIGIN, NO_BARE_KILL, idleKillCommand, unloadRequest } from "../src/idle-unload.ts";
+import { type DaemonAnswer, DETACHED_GUARD, DETACHED_REFUSAL, IdleUnloader, KILL_ORIGIN, NO_BARE_KILL, idleKillCommand, unloadRequest } from "../src/idle-unload.ts";
 
 const MIN = 60_000;
 const OLD = ["attach_snapshot", "event_sequence", "delete_rlm_subagent", "abort_and_send_queued"];
@@ -20,7 +20,9 @@ const NEW = [...OLD, KILL_ORIGIN];
 
 type Sent = { type: string; activeSessionId?: string; origin?: unknown };
 
-async function fakeDaemon(path: string, capabilities: readonly string[], options: { holdHello?: boolean } = {}) {
+const REFUSAL = { error: "Idle unload skipped: the session holds detached processes", errorInfo: { code: DETACHED_REFUSAL, activeSessionId: "w1", holderActiveSessionIds: ["w1"] } };
+
+async function fakeDaemon(path: string, capabilities: readonly string[], options: { holdHello?: boolean; refuse?: boolean } = {}) {
   const sent: Sent[] = [];
   const sockets = new Set<Socket>();
   const hello = `${JSON.stringify({ type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 7 }, schemaRevision: 30, appVersion: "fixture", serverCapabilities: capabilities })}\n`;
@@ -38,7 +40,8 @@ async function fakeDaemon(path: string, capabilities: readonly string[], options
         if (command.type === "ack_result") continue;
         sent.push(command);
         const data = command.type === "get_state" ? { isSessionActive: false } : undefined;
-        socket.write(`${JSON.stringify({ type: "response", id: line.id, command: command.type, success: true, ...data ? { data } : {} })}\n`);
+        const refused = command.type === "kill" && command.origin === "idle_unload" && options.refuse;
+        socket.write(`${JSON.stringify({ type: "response", id: line.id, command: command.type, ...refused ? { success: false, ...REFUSAL } : { success: true, ...data ? { data } : {} } })}\n`);
       }
     });
   });
@@ -258,4 +261,49 @@ test("a kill_origin daemon still gets the idle kill for another box's session", 
     assert.equal(daemon.kills()[0]!.origin, "idle_unload");
     assert.equal(stopped.length, 1);
   } finally { client.close(); await daemon.close(); }
+});
+
+// p8-metal/detached-guard-contract.md (10-18): a daemon that lists idle_unload_detached_guard refuses the idle kill of a session holding detached
+// processes with errorInfo.code idle_unload_detached_processes and changes nothing. The sweep skips the session that time only.
+test("a guard daemon's refusal skips the session for that sweep only, and the next sweep stops it once the daemon lets it go", async t => {
+  const path = join(await privateDir(t), "daemon.sock");
+  const options = { refuse: true };
+  const daemon = await fakeDaemon(path, [...NEW, DETACHED_GUARD], options);
+  const client = await connected(path);
+  try {
+    const stopped: string[] = [];
+    const logs: string[] = [];
+    const unloader = unloaderOn(client, idleRow("w1"), stopped, true, logs);
+    await unloader.sweep();
+    await unloader.settled();
+    assert.deepEqual(daemon.sent.map(command => command.type), ["get_state", "kill"]);
+    assert.deepEqual(stopped, []);
+    assert.deepEqual(logs, ["idle unload: 01a14e20: kept, it holds detached processes"], "no error line and no skip until the row changes");
+    options.refuse = false;
+    await unloader.sweep();
+    await unloader.settled();
+    assert.deepEqual(daemon.sent.map(command => command.type), ["get_state", "kill", "get_state", "kill"], "the same row was asked again");
+    assert.equal(stopped.length, 1);
+  } finally {
+    client.close();
+    await daemon.close();
+  }
+});
+
+test("without idle_unload_detached_guard in the hello the same answer is logged as a failed kill, as before", async t => {
+  const path = join(await privateDir(t), "daemon.sock");
+  const daemon = await fakeDaemon(path, NEW, { refuse: true });
+  const client = await connected(path);
+  try {
+    const answer = await unloadRequest(client, "w1", "kill");
+    assert.deepEqual(answer.success ? null : { error: answer.error, detachedHold: answer.detachedHold }, { error: REFUSAL.error, detachedHold: undefined });
+    const logs: string[] = [];
+    const unloader = unloaderOn(client, idleRow("w1"), [], true, logs);
+    await unloader.sweep();
+    await unloader.settled();
+    assert.deepEqual(logs, [`idle unload: 01a14e20: ${REFUSAL.error}`]);
+  } finally {
+    client.close();
+    await daemon.close();
+  }
 });
