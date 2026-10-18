@@ -84,6 +84,9 @@ test("held_elsewhere never hands a goal to a thread whose step waits on an open 
   assert.deepEqual(held(boardOf([goal(T51)])), []);
   assert.deepEqual(held(boardOf([goal()], []), new Set([wiki])), []);
   assert.deepEqual(held(boardOf([goal()], [])), ["p200"]);
+  const asleep = { ...thread, state: "working" as const, wake: "run 39081582639" };
+  assert.deepEqual(checkInPrecheck(undefined, [asleep], boardOf([goal("verify-dev run 39081582639")], []), NOW,
+    { everyMs: EVERY, self: [CHAT], rows: [row(wiki, "fix wiki dream page pairs 10-18")] }).held.map(entry => entry.goal.id), [], "a thread asleep on its own CI run moves the step");
 });
 
 test("a goal reading older than the one on the board never replaces it, and a target given with no measurement keeps it (p453, 10-17 22:27Z)", () => {

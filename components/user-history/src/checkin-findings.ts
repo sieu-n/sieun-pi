@@ -71,10 +71,11 @@ export function heldElsewhere(views: readonly StepView[], board: ChatBoard | nul
   const other = (thread: { id: string; name: string } | undefined) => thread && !own.has(thread.id) && !own.has(thread.name) ? thread : undefined;
   // A step the owner holds is no other thread's to move, so the goal is never handed to that thread: an open For you todo links it, or the
   // thread's chat is paused by him (`paused`). At 00:00Z on 10-18 the AI harness check-in told p200's two wiki threads to finish p534 and p535,
-  // which both waited on t51 for his focus pause.
+  // which both waited on t51 for his focus pause. A thread asleep on a board.wake moves its step by itself: from 00:30Z p534 and p535 sat with
+  // threads asleep on their own CI runs 39081582639 and 39072950667, and p200 was flagged 13 more times.
   const todos = board?.todos ?? [];
   const holder = (view: StepView): { id: string; name: string } | undefined => {
-    if (view.mine || view.cls === "foryou" || heldByTodo(view.item, todos)) return undefined;
+    if (view.mine || view.cls === "foryou" || view.owner?.wake !== undefined || heldByTodo(view.item, todos)) return undefined;
     const thread = view.owner ? view.owner.key.startsWith("thread:") ? { id: view.owner.key.slice("thread:".length), name: view.owner.name } : undefined
       : waitTarget(view.item.waitFor, rows, self);
     return thread && !paused.has(thread.id) ? other(thread) : undefined;
