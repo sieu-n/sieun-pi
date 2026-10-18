@@ -105,6 +105,13 @@ class FeedSocket {
     };
   }
 
+  /** A prefetched first frame for a thread feed nobody holds yet: its first subscriber paints it before the socket answers. */
+  prime(id: string, frames: unknown[]): void {
+    const key = feedKey({ feed: "thread", id });
+    if ([...this.listeners.values()].some(listener => feedKey(listener.feed) === key)) return;
+    this.inline.set(key, frames);
+  }
+
   private send(message: unknown): void { this.socket?.send(JSON.stringify(message)); }
 
   private connect(): void {
@@ -211,6 +218,12 @@ export function releaseBootFeeds(): void {
 
 /** A Retry button: reconnect now instead of waiting out the backoff. */
 export function retryFeeds(): void { shared?.reconnectNow(); }
+
+/** See `FeedSocket.prime`. */
+export function primeThread(id: string, frames: unknown[]): void {
+  shared ??= new FeedSocket();
+  shared.prime(id, frames);
+}
 
 export function subscribeFeed(feed: Feed, onEvent: Listener["onEvent"], onError: Listener["onError"] = () => {}): () => void {
   shared ??= new FeedSocket();

@@ -59,10 +59,31 @@
   const tick = $derived(Math.floor(clock.now / 5000) * 5000);
 
   function warm(id: string): void {
+    store.prefetch([id], true);
     if (warmTimer) clearTimeout(warmTimer);
     warmTimer = setTimeout(() => store.warm(id), 150);
   }
   function cancelWarm(): void { if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; } }
+
+  /**
+   * The rows on screen get their first frames ahead of a click, a second after the list first shows and again once a scroll stops. A click from
+   * Korea waited one 185 ms round trip plus about 370 ms for the 37 KB first frame at 100 KB/s before it painted (scratch serve, 10-18).
+   */
+  let prefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  function prefetchSoon(delay: number): void {
+    if (prefetchTimer) clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(() => {
+      prefetchTimer = null;
+      if (!list) return;
+      const box = list.getBoundingClientRect();
+      const ids = [...list.querySelectorAll<HTMLElement>("a[data-row]")].filter(link => { const rect = link.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom; })
+        .flatMap(link => link.dataset.row ?? []);
+      store.prefetch(ids);
+    }, delay);
+  }
+  let prefetchedOnce = false;
+  $effect(() => { if (!prefetchedOnce && ui.sidebarOrder.length) { prefetchedOnce = true; prefetchSoon(1000); } });
+  $effect(() => () => { if (prefetchTimer) clearTimeout(prefetchTimer); });
 
   function startRename(row: SessionRow): void { renaming = { id: row.id, name: row.name }; }
   async function commitRename(): Promise<void> {
@@ -285,7 +306,7 @@
         {/each}
       </div>
     {/if}
-    <div class="list" bind:this={list}>
+    <div class="list" bind:this={list} onscroll={() => prefetchSoon(250)}>
       {#if chats.length}
         <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if forYouTotal}<span class="foryou-total" use:tooltip={"Open For you todos across all chats"}>{forYouTotal} for you</span>{/if}{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
         {#each chats as row (row.id)}{@render threadRow(row)}{/each}

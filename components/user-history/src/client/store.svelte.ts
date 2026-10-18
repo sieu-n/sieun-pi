@@ -1,7 +1,7 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { saveDrafts } from "./drafts.ts";
 import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
-import { retryFeeds } from "./feeds.ts";
+import { primeThread, retryFeeds } from "./feeds.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import { messageKey } from "../shared/message-key.ts";
 import { rememberAccounts } from "./accounts.ts";
@@ -56,6 +56,13 @@ class Store {
   daemonError = $state<string | null>(null);
   /** Read from the hash at once, so the first render on a thread URL never mounts the new-chat screen and its five requests. */
   selectedId = $state<string | null>(pageTarget()?.id ?? null);
+  /**
+   * Each thread's entry as the store last wrote it, and `threads` mirrors it for the views. An effect's teardown reads `$state` as it was
+   * before the change that tore it down, so a patch from one (Chat and Thread mark a thread read as it closes) spread the map from before the
+   * switch and dropped the entry of the thread just opened. That thread then subscribed again and kept both feeds: on 10-18 every cold switch
+   * away from a plain thread pulled the snapshot twice over the 185 ms link from Korea.
+   */
+  private entries: Record<string, ThreadEntry> = {};
   threads = $state.raw<Record<string, ThreadEntry>>({});
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
@@ -225,8 +232,9 @@ class Store {
   thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
 
   private patch(id: string, change: Partial<ThreadEntry>): void {
-    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
-    this.threads = { ...this.threads, [id]: { ...current, ...change } };
+    const current = this.entries[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
+    this.entries = { ...this.entries, [id]: { ...current, ...change } };
+    this.threads = this.entries;
   }
 
   /**
@@ -235,7 +243,7 @@ class Store {
    * only after the snapshot landed, three round trips from Korea before the view was whole.
    */
   open(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (entry?.close && !entry.error) return;
     // Retry after an error: drop the failed subscription and start a fresh one on a socket that reconnects now.
     entry?.close?.();
@@ -257,11 +265,11 @@ class Store {
       apply(event);
     }, () => {
       this.dropSide(id);
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
     }, side => this.side(id, side));
     const apply = (event: ThreadEvent) => {
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (!current) return;
       if (event.type === "snapshot") {
         // Each subscribe and socket reconnect brings one: the sends the server has not delivered go again with their ids.
@@ -310,7 +318,7 @@ class Store {
    * `resting`). Any other thread closes it, since a listener keeps a plain thread attached on the server (`sweep`).
    */
   release(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (!entry?.close || this.session(id)?.chat) return;
     entry.close();
     this.dropSide(id);
@@ -319,25 +327,25 @@ class Store {
 
   /** Part `part` of the message at `index` in the thread's loaded messages, whole: the snapshot clips long parts. */
   part(id: string, index: number, part: number): Promise<{ text: string }> {
-    const messages = this.threads[id]?.state?.messages;
+    const messages = this.entries[id]?.state?.messages;
     if (!messages?.[index]) return Promise.reject(new Error("That message is not loaded any more."));
     return api.part(id, messageKey(messages, index), part);
   }
 
   /** The page before the oldest loaded message, put in front of it; true when it was. A session file that changed under the cursor (409) opens the thread again. */
   async loadOlder(id: string): Promise<boolean> {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     const cursor = entry?.state?.older;
     if (!entry || cursor === undefined || entry.olderLoading) return false;
     this.patch(id, { olderLoading: true });
     try {
       const page = await api.olderPage(id, cursor);
-      const current = this.threads[id];
+      const current = this.entries[id];
       if (!current?.state || current.state.older !== cursor) return false;
       this.patch(id, { state: prependOlder(current.state, page) });
       return true;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) { this.threads[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
+      if (error instanceof ApiError && error.status === 409) { this.entries[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
       else this.toast(error instanceof Error ? error.message : String(error));
       return false;
     } finally { this.patch(id, { olderLoading: false }); }
@@ -349,20 +357,51 @@ class Store {
    */
   private trimHidden(): void {
     this.hides++;
-    let threads = this.threads;
+    let threads = this.entries;
     for (const [id, entry] of Object.entries(threads)) {
       if (id === this.selectedId || !entry.state || this.hides - (this.seenAt.get(id) ?? 0) < 2) continue;
       const state = trimToNewest(entry.state, entry.newest);
       if (state !== entry.state) threads = { ...threads, [id]: { ...entry, state } };
     }
-    if (threads !== this.threads) this.threads = threads;
+    if (threads !== this.entries) this.threads = this.entries = threads;
   }
   private hides = 0;
   /** The `hides` count when each thread was last open. */
   private seenAt = new Map<string, number>();
 
+  /** Each prefetched thread's row `lastActivityAt` when its first frame was fetched, so a row that moved since is fetched again. */
+  private prefetched = new Map<string, string>();
+  private prefetchQueue: string[] = [];
+  private prefetching = false;
+
+  /**
+   * Fetches the first frame of each thread that has no feed or state yet, one request at a time so a click never waits behind a burst, and
+   * primes its feed with it (`primeThread`): a click then paints at once and the feed's snapshot replaces it. `front` puts them first (a hover).
+   */
+  prefetch(ids: readonly string[], front = false): void {
+    const wanted = ids.filter(id => !this.entries[id] && this.prefetched.get(id) !== (this.session(id)?.lastActivityAt ?? ""));
+    if (!wanted.length) return;
+    const rest = this.prefetchQueue.filter(id => !wanted.includes(id));
+    this.prefetchQueue = front ? [...wanted, ...rest] : [...rest, ...wanted];
+    void this.drainPrefetch();
+  }
+
+  private async drainPrefetch(): Promise<void> {
+    if (this.prefetching) return;
+    this.prefetching = true;
+    try {
+      for (let id = this.prefetchQueue.shift(); id !== undefined; id = this.prefetchQueue.shift()) {
+        if (this.entries[id]) continue;
+        const activity = this.session(id)?.lastActivityAt ?? "";
+        const frames = await api.firstFrame(id).catch(() => null);
+        this.prefetched.set(id, activity);
+        if (frames && !this.entries[id]) primeThread(id, frames);
+      }
+    } finally { this.prefetching = false; }
+  }
+
   warm(id: string): void {
-    if (this.threads[id]?.state) return;
+    if (this.entries[id]?.state) return;
     void api.warm(id).catch(() => {});
   }
 
@@ -371,7 +410,7 @@ class Store {
    * arrives after you leave still counts as unread. Skipped only when nothing happened since this page last marked it.
    */
   markRead(id: string): void {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     const row = this.session(id);
     if (!entry?.state || !row) return;
     const activity = Date.parse(row.lastActivityAt ?? "") || 0;
@@ -428,13 +467,13 @@ class Store {
    * puts the previous board back and shows the error. The server's board event lands after and wins either way.
    */
   async boardOps(id: string, next: ChatBoard, ops: BoardOp[]): Promise<boolean> {
-    const entry = this.threads[id];
+    const entry = this.entries[id];
     if (!entry?.state) return false;
     const previous = entry.state.board ?? null;
     this.patch(id, { state: { ...entry.state, board: next } });
     const result = await this.run(api.board(id, ops));
     if (result) return true;
-    const current = this.threads[id];
+    const current = this.entries[id];
     if (current?.state && current.state.board === next) this.patch(id, { state: { ...current.state, board: previous } });
     return false;
   }

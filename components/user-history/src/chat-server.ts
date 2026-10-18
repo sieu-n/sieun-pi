@@ -457,8 +457,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
    * 10-18 app.js (651 KB), app.css (172 KB) and api/models (255 KB) went out raw, so each reload after a release spent about 2 s on app.js.
    */
   const gzips = (req: IncomingMessage | undefined) => /\bgzip\b/.test(String(req?.headers["accept-encoding"] ?? ""));
-  function json(res: ServerResponse, status: number, value: unknown) {
-    const body = JSON.stringify(value);
+  function json(res: ServerResponse, status: number, value: unknown) { jsonText(res, JSON.stringify(value), status); }
+  function jsonText(res: ServerResponse, body: string, status = 200) {
     if (body.length > 8192 && gzips(res.req)) {
       const packed = gzipSync(body, { level: 1 });
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Encoding": "gzip", Vary: "Accept-Encoding", "Content-Length": packed.length });
@@ -649,6 +649,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         if (route === "api/interrupted") { json(res, 200, await interruptedRuns.check()); return; }
         const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
         if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
+        const prefetch = /^api\/threads\/([^/]+)\/first-frame$/.exec(route);
+        if (prefetch) {
+          jsonText(res, await backend.threads.prefetchFrames(threadId(decodeURIComponent(prefetch[1]!)))); return;
+        }
         const labels = /^api\/threads\/([^/]+)\/child-labels$/.exec(route);
         if (labels) { json(res, 200, { labels: childLabels(backend.threads.state(threadId(decodeURIComponent(labels[1]!)))?.children ?? []) }); return; }
         if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }

@@ -123,8 +123,11 @@ export class FirstPages {
   private readonly writes = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly dir: string | null, private readonly writeDelayMs = 1000) {}
 
-  /** The held page, else the file's, while its session file still has the size it had; undefined otherwise. */
-  async get(id: string): Promise<string | undefined> {
+  /**
+   * The held page, else the file's, while its session file still has the size it had; undefined otherwise. With `stale`, the page whatever the
+   * file did since: a page prefetch paints it, and the thread feed's own snapshot replaces it a round trip later.
+   */
+  async get(id: string, stale = false): Promise<string | undefined> {
     let held = this.held.get(id);
     if (held === undefined && this.dir && fileId.test(id)) {
       try {
@@ -135,6 +138,7 @@ export class FirstPages {
         this.held.set(id, held);
       } catch { return undefined; }
     }
+    if (stale) return held?.text;
     if (!held?.file || held.size === null) return undefined;
     const size = await stat(held.file).then(found => found.size, () => null);
     return size === held.size ? held.text : undefined;

@@ -104,6 +104,8 @@ export const api = {
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   /** The whole label of each job the feed sent cut (`ChildAgent.labelMore`), by job id. */
+  /** A sidebar row's prefetched first frames (`primeThread`). */
+  firstFrame: async (id: string): Promise<unknown[]> => parse<unknown[]>(await fetch("api/threads/" + encodeURIComponent(id) + "/first-frame", { priority: "low", signal: AbortSignal.timeout(20000) })),
   childLabels: (id: string) => get<{ labels: Record<string, string> }>("api/threads/" + encodeURIComponent(id) + "/child-labels").then(body => body.labels),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
   promptView: (id: string, via: readonly string[] = []) =>

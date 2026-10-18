@@ -914,6 +914,21 @@ export class ThreadHub {
     return saved;
   }
 
+  /**
+   * The first frame a sidebar row's prefetch gets (`GET api/threads/<id>/first-frame`): the held thread's, else the last one made, even when the
+   * session file grew since, else one made from the session file. It holds and attaches nothing, so prefetching the rows on screen starts no
+   * session; the click's own feed does that.
+   */
+  async prefetchFrames(id: string): Promise<string> {
+    const held = this.threads.get(id);
+    if (held) return this.firstPage(held);
+    const saved = await this.firstPages.get(id, true);
+    if (saved !== undefined) return saved;
+    const summary = await this.summary(id);
+    const snapshot = await this.savedSnapshot(summary);
+    return this.firstPages.put(id, [wireEvent(new Thread(id, snapshot, () => {}).firstFrame())], summary.sessionFile ?? null);
+  }
+
   /** The thread's first frame as the shell inlines it, made once per state and kept in `firstPages`. */
   private firstPage(thread: Thread): string {
     if (thread.inlined?.state !== thread.state) thread.inlined = { state: thread.state, text: this.firstPages.put(thread.id, [wireEvent(thread.firstFrame())], thread.sessionFile ?? null) };
