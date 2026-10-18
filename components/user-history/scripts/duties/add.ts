@@ -1,6 +1,7 @@
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ChatLabels } from "../../src/chat-labels.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { chatPoolPriority } from "../../src/chat-pool-priority.ts";
@@ -9,7 +10,9 @@ import { morningTime, upsertDuty } from "../../src/shared/chat-duties.ts";
 /**
  * `node --import tsx scripts/duties/add.ts <chatId> <duty.json> [--data-dir <dir>]`: adds the duty to the chat, or updates the definition of the
  * chat's duty with the same name and keeps its run state, so running it twice changes nothing. The server picks it up at its next 30 s tick.
- * A relative `precheck.cwd` is resolved against the duty file's folder, so a checked-in duty names no home path.
+ * A relative `precheck.cwd` is resolved against the duty file's folder, so a checked-in duty names no home path. A relative duty file is
+ * read from the shell's `$PWD` when that names the same file, so a duty added from inside `~/.local/share/sieun-pi-chat/current` keeps
+ * `current` in its cwd instead of the release folder it pointed at, which a later release prunes. An absolute duty path is kept as given.
  * Name a duty by the system it looks after, in two to four plain words, like "Chat system", never "<something> health" (c38). Mark one headline
  * metric (`"headline": true`) and keep up to 3 supporting ones; a duty with more is saved, and its verdict counts every metric while its run
  * summary and card ask the chat to rework it (`shapeNote`).
@@ -34,7 +37,7 @@ if (!chatId || !file) {
 }
 const definition: unknown = JSON.parse(await readFile(file, "utf8"));
 const precheck = (definition as { precheck?: { cwd?: unknown } }).precheck;
-if (typeof precheck?.cwd === "string") precheck.cwd = resolve(dirname(resolve(file)), precheck.cwd);
+if (typeof precheck?.cwd === "string") precheck.cwd = resolve(dirname(shellPath(file)), precheck.cwd);
 const store = new DutyStore(dataDir);
 const priority = chatPoolPriority((await new ChatLabels(join(dataDir, "labels.json")).snapshot()).threads[chatId]?.priority ?? 0);
 const taken = new Set<string>();
@@ -50,3 +53,14 @@ const { result, schedule } = await store.update(chatId, duties => {
 });
 const when = schedule.kind === "daily" ? `daily ${schedule.at}` : `every ${schedule.minutes} min`;
 process.stdout.write(`${result} "${name}" in ${chatId} ${when}, priority ${priority}\n`);
+
+function shellPath(path: string): string {
+  const pwd = process.env.PWD;
+  if (isAbsolute(path) || !pwd || !isAbsolute(pwd)) return resolve(path);
+  const logical = resolve(pwd, path);
+  try {
+    return realpathSync(logical) === realpathSync(path) ? logical : resolve(path);
+  } catch {
+    return resolve(path);
+  }
+}
