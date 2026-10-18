@@ -167,3 +167,49 @@ test("no push run when the after-job measure is met, a fix job is live, the last
     assert.equal(started.length, 0, JSON.stringify(change));
   }
 });
+
+test("a due duty starts while another chat's push check waits on the daemon", async () => {
+  // 10-18 05:49Z: Whole system's slot never ran, since the scan awaited Crawler VP's push checks (jobs.working 37 s, fixLive 18 s and more) first.
+  const dir = await mkdtemp(join(tmpdir(), "duty-push-slow-"));
+  const crawler = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  try {
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { clean_min_30: 2 } }));`);
+    const store = new DutyStore(dir);
+    const base = { ownerWords: "watch this", goal: "clean minutes", onMiss: "fix it", status: "active" as const,
+      metrics: [{ key: "clean_min_30", label: "Clean minutes", op: ">=" as const, target: 30, headline: true }],
+      precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, createdAt: PUSH_NOW - 3 * 24 * 60 * MIN, updatedAt: PUSH_NOW - 3 * 24 * 60 * MIN, runCount: 1 };
+    const daily = dailySlot("07:00", PUSH_NOW);
+    await store.update(crawler, duties => { duties.push({ ...base, id: "d1", name: "Crawler pipeline", schedule: { kind: "daily", at: "07:00" }, lastSlotAt: daily, lastRunAt: daily }); });
+    await store.appendRun(crawler, { duty: "d1", at: PUSH_NOW - 180 * MIN, slot: PUSH_NOW - 180 * MIN, trigger: "schedule", ms: 1000, verdict: "missed", metrics: RED,
+      summary: "clean_min_30 2 < 30", job: { id: "job-0", name: "crawler pipeline 05:21" } });
+    await store.update(CHAT, duties => { duties.push({ ...base, id: "d7", name: "Whole system", schedule: { kind: "every", minutes: 30 }, lastRunAt: PUSH_NOW - 31 * MIN }); });
+    let answer!: (working: boolean) => void;
+    const daemon = new Promise<boolean>(done => { answer = done; });
+    const started: string[] = [];
+    let startedWhole!: () => void;
+    const whole = new Promise<void>(done => { startedWhole = done; });
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => PUSH_NOW, tickMs: 0, node: process.execPath,
+      jobs: {
+        chat: async id => ({ id, name: id === CHAT ? "AI harness" : "Crawler VP", cwd: dir, board: id }),
+        working: job => job.id === "job-0" ? daemon : Promise.resolve(false),
+        retire: async () => {},
+        start: async (_chat, name) => { started.push(name); if (name.startsWith("whole system")) startedWhole(); return { id: `job-${started.length}`, name }; },
+      },
+      checkIn: { view: async () => ({ everyMs: 120 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
+      board: async () => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [] }),
+      fixLive: async () => false,
+    });
+    const tick = duties.tick();
+    await Promise.race([whole, new Promise((_, fail) => setTimeout(() => fail(new Error(`Whole system did not start; started ${started.join(", ") || "nothing"}`)), 10_000))]);
+    answer(true);
+    await tick;
+    await duties.settled();
+    assert.ok(started.some(name => name.startsWith("whole system")));
+    assert.ok(!started.some(name => name.startsWith("crawler pipeline")));
+    duties.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -225,6 +225,8 @@ export class Duties {
   private readonly boards = new Map<string, ChatBoard>();
   /** Each ended last job's after-job measure and then its archive (`stopEnded`), kept off the tick so a slow precheck holds up no due duty. */
   private readonly ending = new Set<Promise<void>>();
+  /** The push check going per `<chatId>/<dutyId>`, kept off the scan so a slow daemon read holds up no due duty. */
+  private readonly pushes = new Map<string, Promise<void>>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -240,32 +242,53 @@ export class Duties {
 
   private log(line: string): void { this.host.log?.(line); }
 
-  /** One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. */
+  /**
+   * One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. Due duties start first for
+   * every chat, and the push checks run beside the scan (`pushes`), since a push check waits on the daemon: from the 3c50a84 release at 05:27Z
+   * on 10-18 the scan pushed Crawler VP's red duties one at a time first, jobs.working took 37 s and fixLive 18 s and more under load, the
+   * chat server restarted every 3 to 9 min for releases, and no scan reached Whole system's 05:49Z slot.
+   */
   tick(): Promise<void> {
     const scan = this.ticking ??= this.scan().catch(error => this.log(`duties: tick: ${message(error)}`)).finally(() => { this.ticking = undefined; });
-    return scan.then(async () => { await Promise.all([...this.ending]); });
+    return scan.then(async () => { await Promise.all([...this.ending, ...this.pushes.values()]); });
   }
 
   private async scan(): Promise<void> {
     const chats: string[] = [];
     const gone: string[] = [];
+    const idle: { chatId: string; duty: Duty }[] = [];
     for (const chatId of await this.store.chats()) {
       if (!(await this.host.isChat(chatId))) { gone.push(chatId); continue; }
       chats.push(chatId);
       await this.resume(chatId);
-      if (!this.boards.has(chatId)) {
-        const board = await this.host.board?.(chatId).catch(() => null);
-        if (board && !this.boards.has(chatId)) this.boards.set(chatId, board);
-      }
-      let context: Promise<PushContext> | undefined;
-      const pushContext = () => context ??= Promise.all([this.store.runs(chatId), this.host.checkIn?.view(chatId).catch(() => null)])
-        .then(([runs, checkIn]) => ({ runs, everyMs: checkIn?.everyMs ?? CHECK_IN_MS }));
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
         else if (due.kind === "run" && !this.start(chatId, duty.id, due.trigger, due.slot)) await this.skipBusy(chatId, duty, due.slot);
-        else if (due.kind === "no" && duty.status === "active") await this.push(chatId, duty, pushContext);
+        else if (due.kind === "no" && duty.status === "active") idle.push({ chatId, duty });
       }
+    }
+    for (const chatId of chats) {
+      if (this.boards.has(chatId)) continue;
+      const board = await this.host.board?.(chatId).catch(() => null);
+      if (board && !this.boards.has(chatId)) this.boards.set(chatId, board);
+    }
+    const contexts = new Map<string, Promise<PushContext>>();
+    for (const { chatId, duty } of idle) {
+      const key = `${chatId}/${duty.id}`;
+      if (this.pushes.has(key)) continue;
+      const pushContext = () => {
+        let context = contexts.get(chatId);
+        if (!context) {
+          context = Promise.all([this.store.runs(chatId), this.host.checkIn?.view(chatId).catch(() => null)])
+            .then(([runs, checkIn]) => ({ runs, everyMs: checkIn?.everyMs ?? CHECK_IN_MS }));
+          contexts.set(chatId, context);
+        }
+        return context;
+      };
+      const task = this.push(chatId, duty, pushContext).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: push check: ${message(error)}`))
+        .finally(() => { this.pushes.delete(key); });
+      this.pushes.set(key, task);
     }
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
