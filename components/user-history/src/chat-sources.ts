@@ -247,6 +247,8 @@ export interface CheckInSource {
   noReportGraceMs?: number;
   /** The pool's account availability, null when the pool cannot be read. */
   claude?: () => Promise<ClaudeState | null>;
+  /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`); absent or failing: it holds. */
+  poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /** The sessions the Mac-wide turn queue holds (`queueReader`), which the check-in reads as queued, not stalled; absent or failing: none. */
   queue?: () => Promise<ReadonlyMap<string, QueuePlace>>;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */

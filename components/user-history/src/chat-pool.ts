@@ -393,6 +393,36 @@ export function claudeStateOf(rows: readonly PoolAccount[], now: number): Claude
   return { serves: live.some(row => row.usable), freeAt: frees.length ? Math.min(...frees) : null };
 }
 
+/**
+ * Whether the pool would give the tree of `parts` (read with `--session <tree root>`) a `provider` account now, the rule of
+ * resume_paused.py account_blocker(strict=True): `who` names an account, holds no wait whose slot_at is still ahead, and `ls` lists that
+ * account usable. Anything that fails to read or parse is a hold.
+ */
+export function poolAdmitsNow(parts: Pick<ThreadParts, "who" | "ls">, provider: string, now: number): boolean {
+  if (!isPooled(provider)) return false;
+  try {
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
+    if (!isRecord(said)) return false;
+    const wait = isRecord(said.wait) ? said.wait : null;
+    if (wait && typeof wait.slot_at === "number" && wait.slot_at * 1000 > now) return false;
+    const account = text(said.account);
+    if (!account) return false;
+    const listing: unknown = JSON.parse(partOut(parts.ls[provider]));
+    const rows = isRecord(listing) && Array.isArray(listing.rows) ? listing.rows : [];
+    return rows.some(row => isRecord(row) && row.id === account && row.usable === true);
+  } catch { return false; }
+}
+
+/** `poolAdmitsNow` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
+export async function poolAdmits(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<boolean> {
+  const thread = { session: tree, model: null };
+  try {
+    const parts = (await read([thread], { maxAgeMs: 0 })).threads.get(threadKey(thread));
+    return parts ? poolAdmitsNow(parts, provider, now()) : false;
+  } catch { return false; }
+}
+
 const ANY_THREAD: PoolThread = { session: null, model: null };
 /** A reader of `claudeStateOf` over `pi-pool ls --json --provider anthropic` from the shared read, at most `ttlMs` old; null when the pool cannot be read. */
 export function claudeReader(ttlMs = 60_000, now: () => number = Date.now,

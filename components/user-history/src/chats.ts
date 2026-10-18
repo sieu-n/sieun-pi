@@ -1003,7 +1003,10 @@ export class Chats {
     this.stallSeen.set(id, seen);
     // After a sleep a transient failure starts its schedule over.
     const last = woke && failureCause(stall.error) === "transient" ? undefined : this.revivals.get(id);
-    const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now, woke });
+    // A chat is its tree's root, so the pool is asked about the chat's own id, and only for a hold with input waiting behind it.
+    const admits = stall.queued > 0 && stall.slotAt !== undefined && stall.slotAt > now && provider !== null && this.source.poolAdmits
+      ? await this.source.poolAdmits(id, provider).catch(() => false) : false;
+    const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now, woke, admits });
     if (action.kind !== "restart") { this.threads.setWait(id, action.kind === "wait" ? action.wait : null); return; }
     const attempts = (last?.attempts ?? 0) + 1;
     this.revivals.set(id, { attempts, at: now });

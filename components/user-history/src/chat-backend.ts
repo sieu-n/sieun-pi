@@ -14,7 +14,7 @@ import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { HostReach } from "./host-reach.ts";
@@ -218,7 +218,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
         }),
       held: now => readHeldTurns(dataDir, now),
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
-      settings, claude: claudeReader(), queue: queued,
+      settings, claude: claudeReader(), poolAdmits, queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => checkInDuties(duties.store, id, async other => (await chats.ids()).has(other)),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
