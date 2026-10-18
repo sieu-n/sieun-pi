@@ -88,7 +88,7 @@ async function handle(request: WorkerRequest): Promise<unknown> {
 port.on("message", (message: WorkerRequest | { close: true }) => {
   if ("close" in message) {
     ingest.close();
-    void ingest.idle().then(() => store.close()).finally(() => process.exit(0));
+    void store.close().then(() => ingest.idle()).finally(() => process.exit(0));
     return;
   }
   handle(message).then(value => port.postMessage({ id: message.id, value }),

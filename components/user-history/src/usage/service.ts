@@ -152,16 +152,13 @@ export class UsageService {
     this.listeners.clear();
     const worker = this.worker;
     if (!worker) return;
-    // Bounded: the chat's stop and its exit-75 restart never wait on DuckDB. A clean close takes well under a second;
-    // after 2 s the thread is terminated (DuckDB's WAL keeps the file consistent), and after 3 s close() returns anyway.
+    // The worker interrupts its DuckDB statement and exits by itself (UsageStore.close). It is never terminated: a worker
+    // that ends while a statement runs aborts the whole chat process, and the abort skips the closes after this one.
+    // Soft cap: a close past 2 s is logged and still awaited.
     const exited = new Promise<void>(resolve => worker.once("exit", () => resolve()));
     try { worker.postMessage({ close: true }); } catch { /* already gone */ }
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const deadline = new Promise<void>(resolve => {
-      timers.push(setTimeout(() => { void worker.terminate().catch(() => {}); }, closeMs));
-      timers.push(setTimeout(resolve, closeMs + 1000));
-    });
-    await Promise.race([exited, deadline]);
-    for (const timer of timers) clearTimeout(timer);
+    const slow = setTimeout(() => this.options.log?.(`usage worker: still closing after ${closeMs / 1000} s`), closeMs);
+    await exited;
+    clearTimeout(slow);
   }
 }

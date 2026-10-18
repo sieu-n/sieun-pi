@@ -336,11 +336,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopPublish();
       duties.close();
       archives.close();
-      await usage.close();
       chats.close();
       awake.close();
       await threads.close();
       await catalog.close();
+      await usage.close();
     },
   };
 }

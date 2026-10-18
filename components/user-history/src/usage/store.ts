@@ -85,15 +85,24 @@ export class UsageStore {
   }
 
   private queue: Promise<unknown> = Promise.resolve();
+  private closing = false;
   /** One statement or transaction at a time: the ingest, the price refresh and the queries share one connection. */
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(task, task);
+    const run = () => this.closing ? Promise.reject(new QueryError("The usage store is closing.")) : task();
+    const result = this.queue.then(run, run);
     this.queue = result.catch(() => {});
     return result;
   }
 
-  /** Waits for the statement in flight, then closes the connection and the database file. */
+  /**
+   * Interrupts the statement in flight and refuses the queued ones, then closes the connection and the database file.
+   * A worker thread that ends while a DuckDB statement runs aborts the whole process ("terminate called after throwing
+   * an instance of 'Napi::Error'"), as the chat did on its stop at 05:27:10Z on 10-18; the interrupt ends a statement in
+   * about 5 ms, so a close never waits on a long ingest pass. An interrupted write rolls back and is read again next start.
+   */
   async close(): Promise<void> {
+    this.closing = true;
+    this.db.interrupt();
     await this.queue;
     this.db.closeSync(); this.instance.closeSync();
   }
