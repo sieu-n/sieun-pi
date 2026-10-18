@@ -73,6 +73,7 @@ echo "after $NOW daemon pid $PID exe $RUNNING"
 case "$RESULT" in
   ok) case "$RUNNING" in *"$WANT"*) echo "daemon on new build";; *) echo "ctl reported ok but the daemon runs $RUNNING"; RC=1;; esac;;
   prepare-refused) echo "prepare refused, daemon still old. --force does not clear this. Reopen named sessions still meant to run that have their saved file, leave unknown ones untouched, stop only work marked finished, and do not update until it clears:"; grep -h -e "Cannot prepare" -e "could not restart" -e "Could not prepare" $LOG.update; RC=1;;
+  restore-failed-successor-adopted) echo "the coordinator's restore failed ($(grep -o 'result=restore-failed-successor-adopted restored [a-z0-9]* of [a-z0-9]*' $LOG.update | tail -1 | cut -d' ' -f2-)), and the unit adopted supervisor $PID, which runs $RUNNING. Prime's own recovery restores the rest; check the sessions before calling the update done."; RC=1;;
   busy-refused) echo "busy-session confirmation refused although PRIME_UPDATE_ARGS had --force; check that the unit loads $ENVF"; RC=1;;
   *) echo "update failed (${RESULT:-no ctl result}); see $LOG.update"; RC=1;;
 esac

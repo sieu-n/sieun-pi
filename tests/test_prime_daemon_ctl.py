@@ -60,7 +60,7 @@ FAKE = textwrap.dedent(
         env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY="2" if mode == "slow-successor" else "0")
         subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mode == "slow-successor":
-            status("failed", message=f"Timed out waiting for daemon to start on {sock}.")
+            status("failed", message=f"Timed out waiting for daemon to start on {sock}.", counts={"total": 3, "restored": 0, "resumed": 0, "failed": 0})
             sys.exit(1)
         status("complete")
         sys.exit(0)
@@ -340,7 +340,7 @@ class DaemonCtlTest(unittest.TestCase):
 
     def test_update_reports_a_busy_session_refusal_apart_from_a_prepare_refusal(self):
         # A restart failure whose successor start() adopts exits 0, so systemd keeps the unit active and reads the PIDFile.
-        cases = (("busy", 3, "result=busy-refused"), ("prepare", 4, "result=prepare-refused"), ("restart-failed", 0, "result=restart-failed"))
+        cases = (("busy", 3, "result=busy-refused"), ("prepare", 4, "result=prepare-refused"), ("restart-failed", 0, "result=restore-failed-successor-adopted restored 1 of 1"))
         for mode, code, line in cases:
             with self.subTest(mode=mode):
                 Path(self.env["FAKE_PIDS"]).unlink(missing_ok=True)
@@ -358,11 +358,12 @@ class DaemonCtlTest(unittest.TestCase):
         old = self.serve()
         result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_MODE="slow-successor", FAKE_BEHAVIOR="wait"))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("result=restart-failed", result.stdout)
         new = self.pid_in_file()
         self.assertNotEqual(new, old.pid)
         self.assertEqual(int(Path(self.env["FAKE_PIDS"]).read_text().split()[-1]), new)
-        self.assertIn(f"restart-failed, but supervisor {new} owns {self.sock}; exit 0", result.stdout)
+        self.assertIn(f"result=restore-failed-successor-adopted restored 0 of 3; the coordinator failed, supervisor {new} owns {self.sock}; exit 0", result.stdout)
+        self.assertNotIn("result=ok", result.stdout)
+        self.assertNotIn("result=restart-failed", result.stdout)
 
     def test_update_reports_a_failed_update_after_tracking_the_supervisor(self):
         self.serve()
@@ -409,7 +410,7 @@ FAKE_SYSTEMCTL = textwrap.dedent(
       *"-p ActiveState"*) [ -e $S/reloading ] && echo reloading || echo active;;
       *"reload --no-block"*)
         touch $S/reloading; cp ~/.config/sieun-pi/prime-update.env $S/env-at-reload
-        setsid -f bash -c "sleep $FAKE_RELOAD_SECONDS; echo 'prime-agent-daemon-ctl: result=ok updated' >> $S/journal; : > ~/.config/sieun-pi/prime-update.env; rm $S/reloading" < /dev/null > /dev/null 2>&1;;
+        setsid -f bash -c "sleep $FAKE_RELOAD_SECONDS; echo \\"${FAKE_RESULT_LINE:-prime-agent-daemon-ctl: result=ok updated}\\" >> $S/journal; : > ~/.config/sieun-pi/prime-update.env; rm $S/reloading" < /dev/null > /dev/null 2>&1;;
       *list-jobs*) ;;
       *is-active*) echo active;;
     esac
@@ -419,39 +420,53 @@ FAKE_SYSTEMCTL = textwrap.dedent(
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the script reads /proc and runs only on the Linux box")
 class InstallScriptTest(unittest.TestCase):
-    def test_a_run_survives_its_caller_being_killed_5_s_in_as_prime_prepare_does(self):
+    def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="pad-install-", dir="/tmp")
         self.addCleanup(tmp.cleanup)
-        home = Path(tmp.name) / "home"
-        state = Path(tmp.name) / "state"
-        feed = Path(tmp.name) / "feed"
-        for d in (home / ".local/bin", home / ".config/sieun-pi", state, feed):
+        self.home = Path(tmp.name) / "home"
+        self.state = Path(tmp.name) / "state"
+        self.feed = Path(tmp.name) / "feed"
+        for d in (self.home / ".local/bin", self.home / ".config/sieun-pi", self.state, self.feed):
             d.mkdir(parents=True)
-        fakes = {"systemctl": FAKE_SYSTEMCTL, "journalctl": f"#!/bin/bash\ncat {state}/journal 2>/dev/null\n", "prime-agent": "#!/bin/bash\necho fake-prime\n"}
+        fakes = {"systemctl": FAKE_SYSTEMCTL, "journalctl": f"#!/bin/bash\ncat {self.state}/journal 2>/dev/null\n", "prime-agent": "#!/bin/bash\necho fake-prime\n"}
         for name, text in fakes.items():
-            (home / ".local/bin" / name).write_text(text)
-            (home / ".local/bin" / name).chmod(0o755)
+            (self.home / ".local/bin" / name).write_text(text)
+            (self.home / ".local/bin" / name).chmod(0o755)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "FAKE_STATE": str(state), "FAKE_MAINPID": str(os.getpid()), "FAKE_RELOAD_SECONDS": "8", "PRIME_INSTALL_UNIT": "pad-fake", "PRIME_INSTALL_FEED_PORT": str(port)}
-        caller = subprocess.Popen(["bash", "-c", f"{INSTALL} {feed} python; sleep 60"], env=env, stdout=subprocess.PIPE, text=True, start_new_session=True)
+            self.port = probe.getsockname()[1]
+        self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FAKE_STATE": str(self.state), "FAKE_MAINPID": str(os.getpid()), "FAKE_RELOAD_SECONDS": "8", "PRIME_INSTALL_UNIT": "pad-fake", "PRIME_INSTALL_FEED_PORT": str(self.port)}
+
+    def wait_for_result(self, log):
+        result = Path(f"{log}.result")
+        deadline = time.time() + 30
+        while not result.exists() and time.time() < deadline:
+            time.sleep(0.2)
+        return result.read_text()
+
+    def test_a_run_survives_its_caller_being_killed_5_s_in_as_prime_prepare_does(self):
+        caller = subprocess.Popen(["bash", "-c", f"{INSTALL} {self.feed} python; sleep 60"], env=self.env, stdout=subprocess.PIPE, text=True, start_new_session=True)
         log = Path(caller.stdout.readline().strip())
         time.sleep(5)
         os.killpg(caller.pid, signal.SIGTERM)
         caller.wait(timeout=10)
         caller.stdout.close()
-        result = Path(f"{log}.result")
-        self.assertFalse(result.exists(), "the update must still be running when the caller dies")
-        self.assertIn("PRIME_UPDATE_ARGS=--force", (state / "env-at-reload").read_text())
-        deadline = time.time() + 30
-        while not result.exists() and time.time() < deadline:
-            time.sleep(0.2)
-        self.assertEqual(result.read_text(), "result=ok rc=0\n", log.read_text())
+        self.assertFalse(Path(f"{log}.result").exists(), "the update must still be running when the caller dies")
+        self.assertIn("PRIME_UPDATE_ARGS=--force", (self.state / "env-at-reload").read_text())
+        self.assertEqual(self.wait_for_result(log), "result=ok rc=0\n", log.read_text())
         self.assertIn("daemon on new build", log.read_text())
-        self.assertEqual((home / ".config/sieun-pi/prime-update.env").read_text(), "")
+        self.assertEqual((self.home / ".config/sieun-pi/prime-update.env").read_text(), "")
         with socket.socket() as probe:
-            self.assertNotEqual(probe.connect_ex(("127.0.0.1", port)), 0, "the feed server must stop with the run")
+            self.assertNotEqual(probe.connect_ex(("127.0.0.1", self.port)), 0, "the feed server must stop with the run")
+
+    def test_an_adopted_successor_after_a_failed_restore_is_never_reported_ok(self):
+        # chat-057a, 10-18: a healthy unit after the 06:47Z restore of 0 of 91 sessions is not a successful update.
+        line = "prime-agent-daemon-ctl: result=restore-failed-successor-adopted restored 0 of 91; the coordinator failed, supervisor 1 owns s"
+        env = dict(self.env, FAKE_RELOAD_SECONDS="1", FAKE_RESULT_LINE=line)
+        out = subprocess.run([str(INSTALL), str(self.feed), "python"], env=env, capture_output=True, text=True, timeout=30)
+        log = Path(out.stdout.splitlines()[0])
+        self.assertEqual(self.wait_for_result(log), "result=restore-failed-successor-adopted rc=1\n", log.read_text())
+        self.assertIn("the coordinator's restore failed (restored 0 of 91)", log.read_text())
 
 
 class ChatUnitTest(unittest.TestCase):

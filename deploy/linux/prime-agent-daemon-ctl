@@ -33,8 +33,9 @@ When Prime reports restart-failed, update still exits 0 once a supervisor owns t
 PIDFile. By then the coordinator has often stopped the predecessor and started a successor that came up after the
 coordinator stopped waiting (10-18 06:47Z: 33.5 s startup, timeout 2 s before it listened). systemd re-reads the
 PIDFile only after a successful ExecReload. After a failed one it finds the old MainPID dead, counts the unit as
-stopped and Restart= starts it again. The result=restart-failed line stays in the journal for prime-install.sh, and
-Prime's own recovery handles the sessions the coordinator did not restore.
+stopped and Restart= starts it again. The journal line then reads result=restore-failed-successor-adopted with
+`restored N of M` from the coordinator's update-restarts record, so neither it nor prime-install.sh's <log>.result
+says ok, and Prime's own recovery handles the sessions the coordinator did not restore.
 
 update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
 has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
@@ -255,7 +256,15 @@ def restart(prime_agent, sock):
     report = restart_report(status)
     sys.stdout.write(report)
     sys.stdout.flush()
-    return code, output + report
+    return code, output + report, status
+
+
+def restored(status):
+    """`restored N of M` from the coordinator's update-restarts record."""
+    counts = status.get("counts") if isinstance(status, dict) else None
+    if not isinstance(counts, dict) or not isinstance(counts.get("restored"), int) or not isinstance(counts.get("total"), int):
+        return "restored unknown of unknown"
+    return f"restored {counts['restored']} of {counts['total']}"
 
 
 def update(prime_agent, sock, pidfile, env_file=None):
@@ -273,19 +282,24 @@ def update(prime_agent, sock, pidfile, env_file=None):
         print(f"prime-agent-daemon-ctl: result=usage PRIME_UPDATE_ARGS takes only {' '.join(UPDATE_ARGS)}, got {' '.join(unknown)}", file=sys.stderr)
         return USAGE
     feed = {k: os.environ[k] for k in FEED if k in os.environ}
+    status = None
     code, output = run([prime_agent, "update", "--self", *args], target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock, **feed, **{INSTALL_ONLY: "1"}))
     if code == 0:
-        code, restart_output = restart(prime_agent, sock)
+        code, restart_output, status = restart(prime_agent, sock)
         output += restart_output
     code, message = classify(code, output)
     names = {OK: "ok", FAILED: "failed", BUSY_REFUSED: "busy-refused", PREPARE_REFUSED: "prepare-refused", RESTART_FAILED: "restart-failed"}
-    print(f"prime-agent-daemon-ctl: result={names[code]} {message}", file=sys.stderr if code else sys.stdout, flush=True)
+    if code != RESTART_FAILED:
+        print(f"prime-agent-daemon-ctl: result={names[code]} {message}", file=sys.stderr if code else sys.stdout, flush=True)
+        started = start(prime_agent, sock, pidfile)
+        return code or started
     started = start(prime_agent, sock, pidfile)
-    if code == RESTART_FAILED and started == OK:
-        pid = Path(pidfile).read_text().strip()
-        print(f"prime-agent-daemon-ctl: restart-failed, but supervisor {pid} owns {sock}; exit 0 so systemd keeps the unit active and reads the PIDFile, and Prime's own recovery restores the sessions", flush=True)
-        return OK
-    return code or started
+    if started != OK:
+        print(f"prime-agent-daemon-ctl: result=restart-failed {message}; {restored(status)}", file=sys.stderr, flush=True)
+        return RESTART_FAILED
+    pid = Path(pidfile).read_text().strip()
+    print(f"prime-agent-daemon-ctl: result=restore-failed-successor-adopted {restored(status)}; the coordinator failed, supervisor {pid} owns {sock}; exit 0 so systemd keeps the unit active and reads the PIDFile, and Prime's own recovery restores the sessions", file=sys.stderr, flush=True)
+    return OK
 
 
 def main(argv):
