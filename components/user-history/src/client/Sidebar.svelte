@@ -111,6 +111,8 @@
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
   /** A chat's agents under its row, as the server lists them (its subagents, the roots it started, step owners, threads it messaged). */
   const jobsOf = (row: SessionRow) => treeJobs(row);
+  /** A chat's agent count: its list while the page holds it, else the count the sessions feed sends in its place. */
+  const agentCount = (row: SessionRow): number => row.agents?.length ?? row.agentsTotal ?? 0;
   /** How long since the job last did anything, on the minute. */
   const jobAge = (at: number): string => at ? elapsed(Math.max(0, minute * 60_000 - at)) : "";
   const treeOpen = (row: SessionRow): boolean => ui.chatTreeOpen[row.id] === true;
@@ -195,7 +197,6 @@
         <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => { renaming = null; }} />
       {:else}
         {@const pulse = pulseOf(row, tick)}
-        {@const jobs = row.chat ? jobsOf(row) : []}
         <a class="link" class:tree={row.chat} data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
           <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
             <span class="title" class:strong={needsResponse(row) || (row.chat && row.unread)}>{row.name}</span>
@@ -212,7 +213,7 @@
           <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
           {:else}
           {#if row.chat}
-          {@const running = (row.agents ?? []).filter(agent => agent.state === "working").length}
+          {@const running = row.agents ? row.agents.filter(agent => agent.state === "working").length : row.agentsRunning ?? 0}
           <span class="line sub" title={[money(row.cost), row.model ? modelShort(row.model) : ""].filter(Boolean).join(", ")}>
             {#if row.host}<span class="meta host" use:tooltip={`Runs on ${row.host}`}>{row.host}</span>{/if}
             {#if row.forYou}<span class="meta foryou">{row.forYou} for you</span>{/if}
@@ -244,7 +245,7 @@
           {/if}
         </a>
         {#if row.chat}
-          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} agents of {row.name}" use:tooltip={jobs.length ? `${jobs.length} ${jobs.length === 1 ? "agent" : "agents"}` : "No agents yet"}
+          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} agents of {row.name}" use:tooltip={agentCount(row) ? `${agentCount(row)} ${agentCount(row) === 1 ? "agent" : "agents"}` : "No agents yet"}
             onclick={() => ui.setChatTreeOpen(row.id, !treeOpen(row))}><span class="chev" class:open={treeOpen(row)}><Icon name="chevronDown" size={11} /></span></button>
         {/if}
         <div class="actions">
@@ -271,7 +272,7 @@
             </button>
           </li>
         {/each}
-        {#if !jobsOf(row).length}<li class="tree-none">No agents yet</li>{/if}
+        {#if !row.agents && agentCount(row)}<li class="tree-none">Loading agents</li>{:else if !jobsOf(row).length}<li class="tree-none">No agents yet</li>{/if}
       </ul>
     {/if}
 {/snippet}

@@ -8,7 +8,8 @@ import type { ThreadHave } from "./shared/types.ts";
  * Chromium allows only six HTTP/1.1 connections per host, so three tabs used them all and every later request queued.
  *
  * The upgrade URL may name the first subscriptions (`parseUrlSubscriptions`), so a fresh page's first frames need no subscribe round trip.
- * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" | "refresh" | "usage" }` (sessions with `delta: true` for changed rows only, and archived rows only with `archived: true` too), `{ type: "subscribe", sub, feed: "thread", id }`
+ * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" | "refresh" | "usage" }` (sessions with `delta: true` for changed rows only, and archived rows only with `archived: true` too), `{ type: "subscribe", sub, feed: "thread", id }`,
+ * `{ type: "subscribe", sub, feed: "agents", id }` (the agents of a chat, or of the chat a job belongs to)
  * and `{ type: "unsubscribe", sub }`. `sub` is a number the page picks. Server to client: `{ sub, event, data }` for a feed
  * event, and `{ event: "ping" }` every `pingMs` so proxies keep the socket open and the page can tell a dead socket.
  */
@@ -16,7 +17,7 @@ import type { ThreadHave } from "./shared/types.ts";
  * A reconnect names what the page already holds, so the server sends only what changed: `have` on the sessions feed is `id:hash` per row
  * (shared/sessions-delta.ts `sessionsHave`), and on a thread feed its newest message key and the board's `rev|updatedAt` (`ThreadHave`).
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string };
 export type FeedSend = (event: string, data: unknown) => void;
 /** Starts one feed. A thread feed opens the thread first, so it may resolve later; the returned function stops it. */
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
@@ -52,6 +53,7 @@ function parseValue(value: unknown): { type: "subscribe"; sub: number; feed: Fee
       ...(typeof raw.board === "string" && raw.board.length <= 100 ? { board: raw.board } : {}) };
     return { type: "subscribe", sub, feed: { feed: "thread", id: message.id, ...(have.last || have.board ? { have } : {}) } };
   }
+  if (message.feed === "agents" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "agents", id: message.id } };
   return { type: "reject", sub, message: `Unknown feed: ${String(message.feed).slice(0, 40)}.` };
 }
 

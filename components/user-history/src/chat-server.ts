@@ -22,7 +22,7 @@ import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
-import { parseSessionsHave, SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
+import { agentsView, parseSessionsHave, SessionsDiff, withoutAgents, withoutArchived } from "./shared/sessions-delta.ts";
 import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
@@ -435,7 +435,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       const diff = new SessionsDiff();
       const held = feed.have ? parseSessionsHave(feed.have) : null;
       if (held) diff.resume(held);
-      return backend.catalog.subscribe(event => { const frame = diff.frame(feed.archived ? event : withoutArchived(event)); if (frame) send("sessions", frame); });
+      return backend.catalog.subscribe(event => { const frame = diff.frame(withoutAgents(feed.archived ? event : withoutArchived(event))); if (frame) send("sessions", frame); });
+    }
+    if (feed.feed === "agents") {
+      let sent = "";
+      return backend.catalog.watch(event => {
+        const view = agentsView(event.sessions, feed.id);
+        const text = JSON.stringify(view);
+        if (text !== sent) { sent = text; send("agents", view); }
+      });
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
     if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));

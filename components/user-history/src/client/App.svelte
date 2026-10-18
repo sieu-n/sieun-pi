@@ -43,6 +43,9 @@
   const isChat = $derived(selectedRow ? selectedRow.chat === true : store.selectedId !== null && shellChats.has(store.selectedId));
 
   /** The tab names the open thread's tags, then the thread, so several chat tabs stay apart in the tab strip. */
+  // The sessions feed leaves out every chat's agents; the open thread and each unfolded chat in the sidebar get theirs from an agents feed.
+  $effect(() => { store.showAgents([...(store.selectedId ? [store.selectedId] : []), ...Object.keys(ui.chatTreeOpen)]); });
+
   $effect(() => {
     const names = (selectedRow?.tags ?? []).flatMap(id => store.tags.find(tag => tag.id === id)?.name ?? []);
     const id = store.selectedId;

@@ -153,6 +153,44 @@ export function parseSessionsHave(text: string): Map<string, string> | null {
 }
 
 /**
+ * A chat row without its `agents`, with `agentsRunning` and `agentsTotal` in their place; any other row as it is. On 10-18 the agents lists were
+ * 385 KB of the 482 KB sessions frame from the Mac (1,074 agents, 423 of them done) while the page shows one chat's agents at a time. Kept per
+ * row object, so a row the catalog kept stays the same object here too.
+ */
+const slimRows = new WeakMap<SessionRow, SessionRow>();
+function slimRow(row: SessionRow): SessionRow {
+  if (!row.agents) return row;
+  let slim = slimRows.get(row);
+  if (!slim) {
+    const { agents, ...rest } = row;
+    slim = { ...rest, agentsRunning: agents.filter(agent => agent.state === "working").length, agentsTotal: agents.length };
+    slimRows.set(row, slim);
+  }
+  return slim;
+}
+const slimEvents = new WeakMap<SessionsEvent, SessionsEvent>();
+/** The event with every chat row's agents left out (`slimRow`); one view per event, shared by every socket. */
+export function withoutAgents(event: SessionsEvent): SessionsEvent {
+  let view = slimEvents.get(event);
+  if (!view) { view = { ...event, sessions: event.sessions.map(slimRow) }; slimEvents.set(event, view); }
+  return view;
+}
+
+/** One `agents` feed frame: the chat's agents, and for a job's session the chat whose agent it is and what `store.openJob` takes for it. */
+export interface AgentsView { chat: string | null; open?: string; agents: ChatAgent[] }
+/** The agents a page asks for with `{ feed: "agents", id }`: `id` is a chat, or a job's session that a chat lists as its subagent or root. */
+export function agentsView(rows: readonly SessionRow[], id: string): AgentsView {
+  const chat = rows.find(row => row.id === id && row.chat);
+  if (chat) return { chat: chat.id, agents: chat.agents ?? [] };
+  for (const row of rows) {
+    if (!row.chat) continue;
+    const agent = row.agents?.find(entry => entry.sessionId === id && (entry.link === "subagent" || entry.link === "root"));
+    if (agent) return { chat: row.id, open: agent.job, agents: row.agents ?? [] };
+  }
+  return { chat: null, agents: [] };
+}
+
+/**
  * One subscriber's view: the first event goes out whole, each later one as a delta against what this subscriber holds, or not at all when
  * nothing changed. A page that reconnects names the rows it holds (`resume`), and its first frame is a delta with only the rows that differ.
  */

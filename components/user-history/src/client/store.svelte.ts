@@ -15,6 +15,7 @@ import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionR
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
+import type { AgentsView } from "../shared/sessions-delta.ts";
 import type { PromptTarget } from "../shared/prompt-view.ts";
 import type { SettingsSection } from "./settings-sections.ts";
 
@@ -110,9 +111,32 @@ class Store {
     void this.outbox.resend();
   }
 
+  /** The sessions feed's rows as they came, before `withAgents`. */
+  private listed: SessionRow[] = [];
+  /** The agents feeds this page holds, by the id it asked for: the open thread and each chat whose sidebar row is unfolded. */
+  private agentFeeds = new Map<string, () => void>();
+  private agentViews = new Map<string, AgentsView>();
+  /** The rows with each shown chat's agents laid in, so every reader of `row.agents` works as before the feed left them out. */
+  private withAgents(rows: SessionRow[]): SessionRow[] {
+    const byChat = new Map([...this.agentViews.values()].flatMap(view => view.chat ? [[view.chat, view.agents] as const] : []));
+    return byChat.size ? rows.map(row => { const agents = row.chat ? byChat.get(row.id) : undefined; return agents ? { ...row, agents } : row; }) : rows;
+  }
+  /** Starts the agents feeds for `ids` and stops the others. */
+  showAgents(ids: readonly string[]): void {
+    const wanted = new Set(ids);
+    let dropped = false;
+    for (const [id, stop] of this.agentFeeds) if (!wanted.has(id)) { stop(); this.agentFeeds.delete(id); dropped = this.agentViews.delete(id) || dropped; }
+    if (dropped) this.sessions = this.withAgents(this.listed);
+    for (const id of wanted) {
+      if (this.agentFeeds.has(id)) continue;
+      this.agentFeeds.set(id, api.agentsStream(id, view => { this.agentViews.set(id, view); this.sessions = this.withAgents(this.listed); }));
+    }
+  }
+
   private subscribeSessions(): void {
     this.sessionsStop = api.sessionsStream(this.archivedWanted, event => {
-      this.sessions = event.sessions;
+      this.listed = event.sessions;
+      this.sessions = this.withAgents(event.sessions);
       this.archivedCount = event.archived;
       this.tags = event.tags;
       this.daemon = event.daemon;

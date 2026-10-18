@@ -6,7 +6,7 @@ import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
-import { applySessionsDelta, sessionsHave } from "../shared/sessions-delta.ts";
+import { applySessionsDelta, sessionsHave, type AgentsView } from "../shared/sessions-delta.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
 
@@ -63,6 +63,10 @@ export const api = {
       onEvent({ type: "sessions", sessions: rows, tags: frame.tags, daemon: frame.daemon, ...(frame.error !== undefined ? { error: frame.error } : {}),
         archived: frame.archived ?? rows.filter(row => row.archived).length });
     }, onError);
+  },
+  /** The agents of a chat, or of the chat a job's session belongs to, while a page shows them; the sessions feed leaves them out. */
+  agentsStream(id: string, onView: (view: AgentsView) => void): () => void {
+    return subscribeFeed({ feed: "agents", id }, (event, data) => { if (event === "agents") onView(data as AgentsView); });
   },
   /** `onSide` gets the feed's `side` frames: what the view shows beside the messages, pushed after the snapshot (shared/thread-side.ts). */
   threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void, onSide: (side: ThreadSide) => void = () => {}, have: () => ThreadHave | undefined = () => undefined): () => void {

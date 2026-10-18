@@ -278,6 +278,12 @@ export interface SessionRow {
   chat?: true;
   /** Chats only: every thread linked to it (`chatAgents`), running first, for the Agents card and the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
   agents?: ChatAgent[];
+  /**
+   * Chats only, in a page's sessions feed, which leaves `agents` out: how many agents work and how many are listed, for the collapsed sidebar row.
+   * The page reads a chat's agents from its own agents feed (`{ feed: "agents", id }`) while the chat is open or its row is unfolded.
+   */
+  agentsRunning?: number;
+  agentsTotal?: number;
   /** Chats only: plan steps done and in total (dropped ones left out), for the sidebar line; absent with no plan. */
   plan?: { done: number; total: number };
   /** Chats only: open For you todos on its board, the sidebar's "N for you"; absent at 0. */

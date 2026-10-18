@@ -5,7 +5,7 @@ import type { ThreadHave } from "../shared/types.ts";
  * The socket opens on the first subscription, reconnects with backoff while any feed is subscribed, and subscribes again
  * after each reconnect. The server answers a new subscription with a fresh snapshot, so nothing is lost across a reconnect.
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string };
 /** A feed given as a function is read again at each subscribe, so a reconnect names what the page holds by then (chat-socket.ts `have`). */
 type FeedSource = Feed | (() => Feed);
 type Listener = { feed: FeedSource; onEvent: (event: string, data: unknown) => void; onError: () => void };
@@ -15,7 +15,7 @@ type BootFeed = { socket: WebSocket; subs: Array<{ sub: number } & Feed>; frames
 declare global { interface Window { __bootFeed?: BootFeed } }
 
 /** One string per feed, so a subscribe finds the boot socket's subscription to the same feed. */
-const feedKey = (feed: Feed): string => feed.feed === "thread" ? "thread:" + feed.id : feed.feed === "sessions" && feed.delta ? "sessions:delta" + (feed.archived ? ":archived" : "") : feed.feed;
+const feedKey = (feed: Feed): string => feed.feed === "thread" ? "thread:" + feed.id : feed.feed === "agents" ? "agents:" + feed.id : feed.feed === "sessions" && feed.delta ? "sessions:delta" + (feed.archived ? ":archived" : "") : feed.feed;
 
 const token = document.body.dataset.chatToken ?? "";
 /** The server pings every 25 s; a socket silent this long is dead even if the browser has not noticed. */

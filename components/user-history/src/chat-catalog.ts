@@ -830,6 +830,14 @@ export class Catalog {
 
   notify(): Promise<void> { return this.emit(); }
 
+  /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
+  watch(listener: (event: SessionsEvent) => void): () => void {
+    this.listeners.add(listener);
+    if (this.lastEvent) listener(this.lastEvent);
+    else void this.event().then(listener, () => {});
+    return () => { this.listeners.delete(listener); };
+  }
+
   subscribe(listener: (event: SessionsEvent) => void): () => void {
     this.listeners.add(listener);
     // A page load gets the list as it was at the last frame at once, and the fresh one when the refresh's projection lands.
