@@ -95,20 +95,26 @@ export function sessionBornAt(id: string): number | null {
  * 10-15 13:49Z restart the server opened "fix portal matches crawler api portal vp" 7 times in 39 min, each while the one before waited for a
  * slot. A fix job is a root, not an agent of the chat, so its queue place shows only in pi-pool: after 8e2d2db the server still opened "fix
  * check-in launch main bro" at 16:09:25Z and again at 16:09:46Z, and "fix portal stays up api portal vp" at 15:28Z, 15:32Z and 16:08Z.
+ * Every agent the step names counts, by its steps, its session id or its job's name: at 07:13Z on 10-18 Crawler VP's p364 kept the session id of
+ * the stopped pre-move copy (renamed "census canary run before move") while the job "census canary run" it names slept on a board.wake, and
+ * the old first-match test read only the stopped copy and recorded no live fix.
  */
 export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>,
   waiting: ReadonlySet<string> = new Set(), now: number = Date.now()): boolean {
   const agents = rows.find(row => row.id === chatId)?.agents ?? [];
-  const agent = agents.find(entry => entry.steps.includes(item.id)) ??
-    agents.find(entry => (item.sessionId !== undefined && entry.sessionId === item.sessionId) || (item.job !== undefined && (entry.sender === item.job || entry.name === item.job)));
-  if (agent?.state === "working" || agent?.queued !== undefined) return true;
-  const session = agent?.sessionId ?? item.sessionId ?? rows.find(row => row.name === item.job && !row.archived)?.id;
-  if (session === undefined) return false;
-  if (asleep.has(session) || waiting.has(session)) return true;
-  const row = rows.find(candidate => candidate.id === session);
-  if (row === undefined) {
-    const born = sessionBornAt(session);
-    return born !== null && now - born < UNLISTED_LIVE_MS;
-  }
-  return !row.archived && row.working;
+  const owners = agents.filter(entry => entry.steps.includes(item.id) || (item.sessionId !== undefined && entry.sessionId === item.sessionId) ||
+    (item.job !== undefined && (entry.sender === item.job || entry.name === item.job)));
+  if (owners.some(agent => agent.state === "working" || agent.queued !== undefined)) return true;
+  const sessions = new Set([...owners.flatMap(agent => agent.sessionId ? [agent.sessionId] : []), ...item.sessionId ? [item.sessionId] : []]);
+  const named = sessions.size ? undefined : rows.find(row => row.name === item.job && !row.archived)?.id;
+  if (named) sessions.add(named);
+  return [...sessions].some(session => {
+    if (asleep.has(session) || waiting.has(session)) return true;
+    const row = rows.find(candidate => candidate.id === session);
+    if (row === undefined) {
+      const born = sessionBornAt(session);
+      return born !== null && now - born < UNLISTED_LIVE_MS;
+    }
+    return !row.archived && row.working;
+  });
 }

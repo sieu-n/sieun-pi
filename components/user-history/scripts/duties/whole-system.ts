@@ -14,6 +14,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
+import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
 export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; sleeping?: SleepingLine; error?: string }
@@ -312,6 +313,27 @@ export function liveStuck(value: number, at: number, flagged: readonly FlaggedSl
   }).length;
 }
 
+/**
+ * Whether a red duty has a live fix now: an open step on the chat's live board linked to one of the newest run's missed metrics
+ * (`<dutyId>/<metric>`), whose owner sleeps on a board.wake or wrote its transcript after that run was measured, as `liveStuck` reads a step owner.
+ * A run's `fixes[].live` is frozen when it ran: at 07:25Z on 10-18 d7 flagged launch main bro's d1 and d3 from 05:21Z runs while deep walks 99
+ * (p125), hand run lanes autoscale (p145) and undesigned hand writes cause (p146) slept on CI run wakes, and Crawler VP's d1 from its 07:13Z
+ * run while census canary run (p364) slept on one. With no board read, the run's own record is all there is.
+ */
+export function liveFix(run: DutyRunRecord, dutyId: string, board: ChatBoard | null | undefined, activity: ReadonlyMap<string, number>,
+  waking: ReadonlySet<string>): boolean {
+  if (!board) return Object.values(run.fixes ?? {}).some(fix => fix.live);
+  const missed = new Set(missedKeys(effectiveRun(run)));
+  const measuredAt = run.after?.at ?? run.at;
+  let live = false;
+  walk(board.plan, item => {
+    const link = item.duty ? parseDutyLink(item.duty) : null;
+    if (live || !link || link.duty !== dutyId || (missed.size > 0 && !missed.has(link.metric)) || !OPEN.has(item.status) || !item.sessionId) return;
+    live = waking.has(item.sessionId) || (activity.get(item.sessionId) ?? 0) > measuredAt;
+  });
+  return live;
+}
+
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 
@@ -390,8 +412,8 @@ export function measure(input: Inputs): PrecheckOutput {
     const own = chat.runs.filter(run => run.duty === duty.id);
     const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
     if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
-    const live = Object.values(newest.fixes ?? {}).some(fix => fix.live);
-    return live ? [] : [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, with no live fix job on its last run`];
+    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking ?? new Set())) return [];
+    return [`${chat.name}: ${duty.name} missed ${missStreak(own)} runs in a row, and no fix step on its board has a live owner now`];
   }));
   // Every box's sleeping sessions count: each line's total over its boxes, averaged over the lines that measured any.
   const sleepingTotals = input.watch.filter(line => Date.parse(line.at) > start).flatMap(line => {

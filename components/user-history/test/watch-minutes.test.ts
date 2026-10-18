@@ -240,3 +240,39 @@ test("d7 counts a step owner asleep on a board.wake as a live owner", () => {
   assert.equal(read(["deep-walks-99", "lanes-autoscale"]), 0);
   assert.equal(read(["deep-walks-99"]), 1, "p145's owner has no wake and wrote nothing since the snapshot");
 });
+
+// d7 at 07:25Z on 10-18 flagged three red duties from their runs' frozen fixes[].live, while each had a fix step whose owner slept on a board.wake:
+// launch main bro's d1 (05:21Z run, p125 recorded live:false, deep walks 99 asleep), its d3 (05:21Z run with no fixes, p145 and p146 added since,
+// both asleep), and Crawler VP's d1 (07:13Z run, p364 recorded live:false, census canary run asleep). stuck_duty reads the live board now.
+test("d7 reads a red duty's fix steps and their owners on the live board now, not the run's frozen fixes", () => {
+  const lmb = "01a11bd7-072f-7591-ad1d-f123c276cde5", crawler = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  const result = (value: number, met: boolean) => ({ value, target: 1, op: ">=" as const, met });
+  const runs = (duty: string, at: string, metrics: Record<string, boolean>, fixes?: DutyRunRecord["fixes"]): DutyRunRecord[] =>
+    [0, 1, 2].map(back => ({ duty, at: Date.parse(at) - back * 86_400_000, trigger: "schedule" as const, ms: 1, verdict: "missed" as const, summary: "",
+      metrics: Object.fromEntries(Object.entries(metrics).map(([key, met]) => [key, result(met ? 1 : 0, met)])), ...back === 0 && fixes ? { fixes } : {} }));
+  const fix = (id: string, duty: string, job: string, sessionId: string) => ({ id, text: id, status: "doing" as const, children: [], duty, job, sessionId });
+  const board = (plan: ChatBoard["plan"]): ChatBoard => ({ v: 2, rev: 1, todos: [], updatedAt: "2026-10-18T07:28:00Z", plan });
+  const boards = new Map<string, ChatBoard>([
+    [lmb, board([fix("p125", "d1/deep_walk_ok_pct", "deep walks 99", "deep-walks-99"), fix("p139", "d1/fleet_ig_killed_pct", "engage account checkpoints", "checkpoints"),
+      fix("p145", "d3/hand_run_processes", "hand run lanes autoscale", "lanes-autoscale"), fix("p146", "d3/undesigned_hand_fixes", "undesigned hand writes cause", "hand-writes")])],
+    [crawler, board([fix("p364", "d1/ig_reads_per_s", "census canary run", "census-canary-run")])],
+  ]);
+  const chats = [
+    { id: lmb, name: "launch main bro", duties: [{ id: "d1", name: "Engage reads scale safely" }, { id: "d3", name: "Hand fix designs" }],
+      runs: [...runs("d1", "2026-10-18T05:21:38Z", { deep_walk_ok_pct: false, fleet_ig_killed_pct: true }, { deep_walk_ok_pct: { step: "p125", live: false } }),
+        ...runs("d3", "2026-10-18T05:21:40Z", { hand_run_processes: false, undesigned_hand_fixes: false })] },
+    { id: crawler, name: "Crawler VP", duties: [{ id: "d1", name: "Crawler pipeline" }],
+      runs: runs("d1", "2026-10-18T07:13:07Z", { ig_reads_per_s: false }, { ig_reads_per_s: { step: "p364", job: "census canary run", live: false } }) },
+  ];
+  const read = (waking: string[], activity: [string, string][] = []) => measure({ now: Date.parse("2026-10-18T07:25:00Z"), watch: [], log: { holds: [] }, chats, boards,
+    ownerActivity: new Map(activity.map(([session, at]) => [session, Date.parse(at)])), waking: new Set(waking) });
+  assert.equal(read(["deep-walks-99", "lanes-autoscale", "hand-writes", "census-canary-run"]).metrics.stuck_duties, 0);
+  assert.equal(read(["lanes-autoscale", "census-canary-run"], [["checkpoints", "2026-10-18T07:20:00Z"]]).metrics.stuck_duties, 1,
+    "p139 fixes a metric d1 met, so only p125's owner can make d1 live");
+  assert.equal(read(["deep-walks-99", "lanes-autoscale"], [["census-canary-run", "2026-10-18T07:24:00Z"]]).metrics.stuck_duties, 0,
+    "an owner that wrote after the run is live");
+  assert.equal(read(["deep-walks-99", "lanes-autoscale"], [["census-canary-run", "2026-10-18T07:00:00Z"]]).metrics.stuck_duties, 1,
+    "census canary run wrote last before the 07:13Z run and has no wake");
+  const none = measure({ now: Date.parse("2026-10-18T07:25:00Z"), watch: [], log: { holds: [] }, chats }).metrics.stuck_duties;
+  assert.equal(none, 3, "with no board read, the runs' own records stand");
+});
