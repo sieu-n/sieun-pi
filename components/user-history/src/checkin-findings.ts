@@ -353,8 +353,8 @@ export function namesDuty(note: string, duties: readonly DutyRef[]): boolean {
   });
 }
 export const noDutyLine = (goals: readonly PlanItem[]): string =>
-  `${plural(goals.length, "open goal")} (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}) and no active duty: draft a duty for the chat's ` +
-  "standing work (the owner's words, a goal, metrics and a precheck) and ask the owner on For you whether to add it, unless For you already asks";
+  `${plural(goals.length, "open goal")} (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}) and no active duty: when the owner's ` +
+  "words ask for standing work, add a daily duty for it with scripts/duties/add.ts (the owner's words, a goal, metrics and a precheck) yourself";
 /** The board ops of a fold, in order: each move, then the goal's close with a note naming where its work lives now. A step in `left` moves first, by the check-in's own op. */
 export function foldOps({ goal, duty, moves }: FoldGoal): BoardOp[] {
   const where = duty ? `the duty ${duty.id} "${duty.name}" runs this goal's work` : "its open steps ride other goals' jobs";

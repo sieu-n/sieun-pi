@@ -130,8 +130,8 @@ test("board classes: a chat with an open goal and no active duty counts once in 
   const none = await classes();
   assert.equal(none.misses.goals_without_duty, 1, "c1 has the open goal p1, and its check-in runs are no duty");
   assert.deepEqual(none.flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => [slice.chat, slice.item, slice.excerpt]),
-    [["c1", "p1", '1 open goal (p1 "Goal") and no active duty: draft a duty for the chat\'s standing work (the owner\'s words, a goal, metrics and a ' +
-      "precheck) and ask the owner on For you whether to add it, unless For you already asks"]]);
+    [["c1", "p1", '1 open goal (p1 "Goal") and no active duty: when the owner\'s words ask for standing work, add a daily duty for it with ' +
+      "scripts/duties/add.ts (the owner's words, a goal, metrics and a precheck) yourself"]]);
   assert.match(classesReport([none], NOW), /\n  no duty: 1 open goal \(p1 "Goal"\)/);
   const duty = parseDutyInput({ name: "Dev loop", ownerWords: "keep the dev loop green", goal: "The dev loop stays green.", onMiss: "Fix it.",
     metrics: [{ key: "red_runs", label: "Red runs", op: "<=", target: 0 }], schedule: { kind: "daily", at: "09:00" }, precheck: { command: ["true"], cwd: "/" } }, "d1", NOW);
