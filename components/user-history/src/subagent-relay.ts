@@ -17,7 +17,7 @@ export interface StoppedSubagent {
 
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 
-/** The subagent whose file is `file` (`<artifacts>/<root>/sub-*/.../<id>.jsonl`), or null for a root's file or a folder with no spawn record. */
+/** The subagent whose file is `file`, `<id>.jsonl` in a `sub-` folder under `<artifacts>/<root>`, or null for a root's file or a folder with no spawn record. */
 export async function stoppedSubagent(file: string): Promise<StoppedSubagent | null> {
   let folder = dirname(file);
   if (!basename(folder).startsWith("sub-")) return null;
