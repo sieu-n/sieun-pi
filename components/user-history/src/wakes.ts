@@ -258,6 +258,21 @@ export function wakeWait(wakes: readonly Wake[]): string {
   return `waits for ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0] ?? "a board.wake"}`;
 }
 
+/**
+ * Adds `text` to the note of `session`'s soonest wake file in `dir`, so the wake carries it when it fires; false when the session has none. A
+ * check-in job's steer to a job asleep on a wake goes here instead of waking it (clean room 10-18 03:56Z: the check-in job steered "mac disk
+ * space check" 12 min before its 04:08Z wake with what to do after the reading).
+ */
+export async function addWakeNote(dir: string, session: string, text: string): Promise<boolean> {
+  const files = (await readdir(dir).catch(() => [] as string[])).filter(name => name.startsWith(`${session}-`) && name.endsWith(".json"));
+  const read = await Promise.all(files.map(async name => ({ name, wake: await readFile(join(dir, name), "utf8").then(body => parseWake(JSON.parse(body)), () => null) })));
+  const soonest = read.flatMap(entry => entry.wake ? [{ name: entry.name, wake: entry.wake }] : [])
+    .sort((a, b) => (a.wake.on.kind === "time" ? a.wake.on.at : Infinity) - (b.wake.on.kind === "time" ? b.wake.on.at : Infinity))[0];
+  if (!soonest) return false;
+  await writeFile(join(dir, soonest.name), JSON.stringify({ ...soonest.wake, note: [soonest.wake.note, text].filter(Boolean).join("\n") }));
+  return true;
+}
+
 /** Whether `session` has a wake file in `dir`. */
 export async function waking(dir: string, session: string): Promise<boolean> {
   return (await readdir(dir).catch(() => [] as string[])).some(name => name.startsWith(`${session}-`) && name.endsWith(".json"));

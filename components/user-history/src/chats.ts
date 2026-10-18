@@ -1080,9 +1080,10 @@ export class Chats {
    * The job is named by its name or its session id. A board step's stored session id names its job's session when the hub and the catalog do
    * not: on 10-16 at 07:5xZ the daemon's list timed out, the catalog had no rows, and "blog reader demo" got a 404 by name and by its session
    * id though step p146 held both. A job whose session the server cannot reach gets the message through its chat (`relay`). Null for a thread
-   * that is not a chat; `jobs` lists the chat's job names when none matches.
+   * that is not a chat; `jobs` lists the chat's job names when none matches. A job asleep on its own board.wake gets the message in that wake's
+   * note (`wakeNote`), so the wake delivers it and nothing wakes the job early.
    */
-  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | null> {
+  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" | "held" } | { jobs: string[] } | null> {
     await this.load();
     if (!this.chatIds.has(chat)) return null;
     // The daemon's list can time out for minutes after a restart (502 at 08:2xZ on 10-16), so the board alone then names the job's session.
@@ -1100,6 +1101,11 @@ export class Chats {
     if (!session) return { jobs: facts.map(candidate => candidate.name) };
     const act = fact && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();
+    // A job asleep on its own board.wake gets the message with the wake, not now: a steer would wake it early.
+    if (act === "steer" && fact?.wake !== undefined && await this.source.wakeNote?.(session, `Check-in message while you slept: ${message}`).catch(() => false)) {
+      this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${name} waits in its wake note (${fact.wake})`);
+      return { session, act: "held" };
+    }
     try {
       if (act === "restart") await this.threads.restart(session, CHECK_IN_PREFIX + message, true);
       else await this.threads.prompt(session, { message: CHECK_IN_PREFIX + message, images: [], mode: "steer" });

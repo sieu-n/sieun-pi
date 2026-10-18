@@ -26,4 +26,5 @@ const text = await response.text();
 if (!response.ok) { console.error(`job-steer: ${response.status} ${text}`); process.exit(1); }
 const { act, session } = JSON.parse(text) as { act: string; session: string };
 console.log(act === "relay" ? `sent ${job} the message through its chat (session ${session}), because the server cannot reach the job` :
+  act === "held" ? `${job} sleeps on a board.wake, so the message waits in that wake's note and reaches it when the wake fires (session ${session})` :
   `${act === "restart" ? "restarted" : "steered"} ${job} (session ${session})`);
