@@ -1,22 +1,10 @@
 <script module lang="ts">
-  import { drafts, type DraftAttachment } from "./drafts.ts";
-  let attachmentId = 0;
-
-  function readBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error ?? new Error("Could not read " + file.name));
-      reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
-      reader.readAsDataURL(file);
-    });
-  }
+  import { drafts, readImage, type DraftAttachment } from "./drafts.ts";
 </script>
 
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { store } from "./store.svelte.ts";
-  import { bytes } from "./format.ts";
-  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "../shared/limits.ts";
   import type { ImageInput } from "../shared/types.ts";
   import { replyText } from "./reply.ts";
   import Icon from "./Icon.svelte";
@@ -83,13 +71,8 @@
 
   async function addFiles(files: Iterable<File>): Promise<void> {
     for (const file of files) {
-      if (!(IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) { store.toast(`${file.name || "This file"} is not a PNG, JPEG, GIF or WebP image.`); continue; }
-      if (file.size > MAX_CHAT_IMAGE_BYTES) { store.toast(`${file.name || "This image"} is ${bytes(file.size)}. The limit is ${bytes(MAX_CHAT_IMAGE_BYTES)} per image.`); continue; }
-      if (totalBytes + file.size > MAX_CHAT_TOTAL_IMAGE_BYTES) { store.toast(`Images add up to more than ${bytes(MAX_CHAT_TOTAL_IMAGE_BYTES)}.`); continue; }
-      try {
-        const data = await readBase64(file);
-        images = [...images, { id: ++attachmentId, name: file.name || "image", mimeType: file.type, size: file.size, data, url: URL.createObjectURL(file) }];
-      } catch (error) { store.toast(error instanceof Error ? error.message : String(error)); }
+      const image = await readImage(file, totalBytes);
+      if (typeof image === "string") store.toast(image); else images = [...images, image];
     }
   }
   function removeImage(id: number): void {

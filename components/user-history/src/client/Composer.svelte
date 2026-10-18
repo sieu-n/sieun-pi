@@ -1,12 +1,11 @@
 <script module lang="ts">
   import { api } from "./api.ts";
   import type { Command, SendMode } from "../shared/types.ts";
-  import { drafts, type DraftAttachment } from "./drafts.ts";
+  import { drafts, readImage, type DraftAttachment } from "./drafts.ts";
   export type Attachment = DraftAttachment;
   const commandCache = new Map<string, Promise<Command[]>>();
   const NEW_CHAT = "";
   const BUSY_MODE_KEY = "chat.busySendMode";
-  let attachmentId = 0;
 
   function storedBusyMode(): SendMode {
     try { return localStorage.getItem(BUSY_MODE_KEY) === "followUp" ? "followUp" : "steer"; } catch { return "steer"; }
@@ -21,23 +20,12 @@
     }
     return pending;
   }
-
-  function readBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error ?? new Error("Could not read " + file.name));
-      reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
-      reader.readAsDataURL(file);
-    });
-  }
 </script>
 
 <script lang="ts">
   import { tick, untrack, type Snippet } from "svelte";
   import { store } from "./store.svelte.ts";
-  import { bytes } from "./format.ts";
   import { insertSlashCommand, matchCommands, slashTokenAt } from "./command-match.ts";
-  import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "../shared/limits.ts";
   import type { ImageInput } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
@@ -139,13 +127,8 @@
 
   async function addFiles(files: Iterable<File>): Promise<void> {
     for (const file of files) {
-      if (!(IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) { store.toast(`${file.name || "This file"} is not a PNG, JPEG, GIF or WebP image.`); continue; }
-      if (file.size > MAX_CHAT_IMAGE_BYTES) { store.toast(`${file.name || "This image"} is ${bytes(file.size)}. The limit is ${bytes(MAX_CHAT_IMAGE_BYTES)} per image.`); continue; }
-      if (totalBytes + file.size > MAX_CHAT_TOTAL_IMAGE_BYTES) { store.toast(`Images add up to more than ${bytes(MAX_CHAT_TOTAL_IMAGE_BYTES)}.`); continue; }
-      try {
-        const data = await readBase64(file);
-        images = [...images, { id: ++attachmentId, name: file.name || "image", mimeType: file.type, size: file.size, data, url: URL.createObjectURL(file) }];
-      } catch (error) { store.toast(error instanceof Error ? error.message : String(error)); }
+      const image = await readImage(file, totalBytes);
+      if (typeof image === "string") store.toast(image); else images = [...images, image];
     }
   }
 
