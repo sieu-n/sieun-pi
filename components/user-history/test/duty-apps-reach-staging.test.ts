@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Board, demoSteps, type Exec, LINE_FILE, lintJob, measureStaging, openReviews, openSteps, picks, reviewWait, type StagingDeps, type StagingLine, tabStatus } from "../scripts/duties/apps-reach-staging.ts";
+import { judge, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { type Board, branchRuns, type CiCache, demoSteps, type Exec, LINE_FILE, lintJob, measureStaging, openReviews, openSteps, picks, reviewWait, type StagingDeps, type StagingLine, tabStatus } from "../scripts/duties/apps-reach-staging.ts";
 
 const NOW = Date.parse("2026-10-13T00:30:00Z");
 const HOUR = 3_600_000;
@@ -25,7 +25,7 @@ const BOARD: Board = {
     { id: "t15", text: "Creators is next, from the owner", done: false, from: "owner", at: iso(1) },
   ],
 };
-const lintJobs = (id: number, conclusion: string) => ({ jobs: [{ databaseId: id, name: "checks / monorepo / lint", steps: [{ name: "js / lint + typecheck + unit", conclusion }] }] });
+const lintJobs = (id: number, conclusion: string) => [{ id, name: "checks / monorepo / lint", steps: [{ name: "js / lint + typecheck + unit", conclusion }] }];
 const receipts = (check: string, unit: string) => [
   `2026-10-15T00:01:28.2111850Z turbo task virev-demo#check: ${check}`,
   "2026-10-15T00:01:28.2112360Z turbo task virev-demo#i18n:compile: executed in this run, hash 0565f4203776366e, exit 0",
@@ -36,23 +36,27 @@ const CACHED = receipts("not executed in this run, cache hit replayed hash fd021
   "executed in this run, hash bb9a8545a569f436, exit 0");
 const FAILED = receipts("executed in this run, hash 67ca29013867254c, failed with exit 2", "not run, hash 28a619bb0661a8e4");
 const LEFT_OUT = "2026-10-15T00:01:28.2111850Z turbo task llm-wiki#check: executed in this run, hash 1, exit 0";
-type FakeRun = { id: number; status: string; jobs: unknown; log?: string };
+type FakeRun = { id: number; status: string; jobs?: ReturnType<typeof lintJobs>; log?: string; branch?: string; path?: string };
+const RATE_LIMIT = new Error("gh: API rate limit exceeded for user ID 48239275. (HTTP 403)");
+/** A CI cache with these runs, the first newest, each lint job id 10 times its run id. */
+const cacheOf = (runs: readonly FakeRun[]): CiCache => ({ fetchedAt: iso(0), runs: Object.fromEntries(runs.map((run, index) => [String(run.id), {
+  run: { id: run.id, path: run.path ?? ".github/workflows/verify-dev.yml", head_branch: run.branch ?? "sieun/dev", status: run.status, created_at: iso(index + 1) },
+  ...run.jobs ? { jobs: run.jobs } : {} }])) });
 
-function deps(options: { line?: StagingLine | Error; board?: Board | Error; runs?: FakeRun[] | Error }): StagingDeps & { calls: string[][] } {
+function deps(options: { line?: StagingLine | Error; board?: Board | Error; runs?: FakeRun[] | Error; logs?: Error }): StagingDeps & { calls: string[][] } {
   const calls: string[][] = [];
   const exec: Exec = async (file, args) => {
     calls.push([file, ...args]);
-    if (options.runs instanceof Error || !options.runs) throw options.runs ?? new Error("gh: not logged in");
-    if (args[1] === "list") return JSON.stringify(options.runs.map(run => ({ databaseId: run.id, status: run.status, conclusion: "", createdAt: iso(3) })));
-    if (args[0] === "api") return options.runs.find(run => args[1] === `repos/{owner}/{repo}/actions/jobs/${run.id * 10}/logs`)!.log!;
-    return JSON.stringify(options.runs.find(run => String(run.id) === args[2])!.jobs);
+    if (options.logs) throw options.logs;
+    const runs = options.runs instanceof Error ? [] : options.runs ?? [];
+    return runs.find(run => args[1] === `repos/{owner}/{repo}/actions/jobs/${run.id * 10}/logs`)!.log!;
   };
   const read = async (path: string) => {
-    const value = path.endsWith(LINE_FILE) ? options.line : options.board;
+    const value = path.endsWith(LINE_FILE) ? options.line : path === "/cache/ci-runs.json" ? (options.runs instanceof Error ? options.runs : cacheOf(options.runs ?? [])) : options.board;
     if (value === undefined || value instanceof Error) throw value ?? new Error(`ENOENT: ${path}`);
     return JSON.stringify(value);
   };
-  return { exec, now: () => NOW, read, repo: "/repo", board: "/boards/chat.json", calls };
+  return { exec, now: () => NOW, read, repo: "/repo", board: "/boards/chat.json", ciCache: "/cache/ci-runs.json", calls };
 }
 
 test("apps reach staging: any variant but shipped is a pick, and an app missing from the line counts as shipped", () => {
@@ -71,10 +75,10 @@ test("apps reach staging: the review wait is 0 with an open agent todo, else hou
 });
 
 test("apps reach staging: the CI check reads the virev-demo receipts of the lint job and skips a run that left virev-demo out", () => {
-  assert.equal(lintJob(lintJobs(10, "success").jobs), 10);
-  assert.equal(lintJob(lintJobs(10, "failure").jobs), 10);
-  assert.equal(lintJob(lintJobs(10, "skipped").jobs), null);
-  assert.equal(lintJob([{ databaseId: 11, name: "checks / monorepo / lint / macOS", steps: [{ name: "js / lint + typecheck + unit", conclusion: "success" }] }]), null);
+  assert.equal(lintJob(lintJobs(10, "success")), 10);
+  assert.equal(lintJob(lintJobs(10, "failure")), 10);
+  assert.equal(lintJob(lintJobs(10, "skipped")), null);
+  assert.equal(lintJob([{ id: 11, name: "checks / monorepo / lint / macOS", steps: [{ name: "js / lint + typecheck + unit", conclusion: "success" }] }]), null);
   assert.equal(demoSteps(LEFT_OUT), null);
   assert.equal(demoSteps(EXECUTED.split("\n").slice(0, 2).join("\n")), null, "one receipt alone is skipped");
   assert.deepEqual(demoSteps(EXECUTED + "\r\n"), {
@@ -106,12 +110,13 @@ test("apps reach staging: a tab's status counts its Staging pick as one step, an
 
 test("apps reach staging: measures picks, the oldest open review, each tab and the last demo CI result", async () => {
   const board: Board = { ...BOARD, todos: [...BOARD.todos!, { id: "t16", text: "Review the Creators set.", done: false, from: "agent", at: iso(20) }] };
-  const run = deps({ line: LINE, board, runs: [{ id: 4, status: "in_progress", jobs: {} }, { id: 3, status: "completed", jobs: lintJobs(30, "skipped") },
+  const run = deps({ line: LINE, board, runs: [{ id: 4, status: "in_progress" }, { id: 5, status: "completed", branch: "ci/x", jobs: lintJobs(50, "success") },
+    { id: 6, status: "completed", path: ".github/workflows/land.yml", jobs: lintJobs(60, "success") }, { id: 3, status: "completed", jobs: lintJobs(30, "skipped") },
     { id: 2, status: "completed", jobs: lintJobs(20, "success"), log: LEFT_OUT }, { id: 1, status: "completed", jobs: lintJobs(10, "success"), log: CACHED }] });
   const output = await measureStaging(run);
   assert.deepEqual(output.metrics, { apps_picked: 4, open_review_max_h: 20, demo_ci_ok: 1, source_errors: 0 });
-  assert.deepEqual(run.calls.filter(call => call[2] === "view").map(call => call[3]), ["3", "2", "1"]);
-  assert.deepEqual(run.calls.filter(call => call[1] === "api").map(call => call[2]), ["repos/{owner}/{repo}/actions/jobs/20/logs", "repos/{owner}/{repo}/actions/jobs/10/logs"]);
+  assert.deepEqual(run.calls.map(call => call.join(" ")), ["gh api repos/{owner}/{repo}/actions/jobs/20/logs", "gh api repos/{owner}/{repo}/actions/jobs/10/logs"],
+    "the runs and jobs come from the CI cache, and only the lint job logs are read from GitHub");
   assert.deepEqual(output.flagged?.filter(item => item.kind !== "tab_status").map(item => item.kind).sort(),
     ["demo_ci", "no_pick", "no_pick", "open_review", "picked", "picked", "picked", "picked"]);
   assert.deepEqual(output.tabs.map(tab => [tab.key, tab.pct]), [["home", 100], ["inbox", 100], ["watchlist", 100], ["email", 100], ["creators", 0], ["connections", 0]]);
@@ -122,13 +127,29 @@ test("apps reach staging: measures picks, the oldest open review, each tab and t
   assert.ok(failed.flagged?.some(item => item.kind === "demo_ci_failed" && item.excerpt?.includes("failed with exit 2")));
 });
 
-test("apps reach staging: an unread Staging line or board fails the run, and a failed CI read leaves demo_ci_ok at 0 as run detail", async () => {
+test("apps reach staging: an unread Staging line or board fails the run, and a failed CI read leaves demo_ci_ok not measured with a source flag", async () => {
   await assert.rejects(measureStaging(deps({ line: new Error("ENOENT"), board: BOARD })), /Staging line .*ENOENT/);
   await assert.rejects(measureStaging(deps({ line: LINE, board: new Error("bad json") })), /board .*bad json/);
-  const unread = await measureStaging(deps({ line: LINE, board: BOARD, runs: new Error("gh: not logged in") }));
-  assert.deepEqual([unread.metrics.demo_ci_ok, unread.metrics.source_errors], [0, 1]);
-  const leftOut = await measureStaging(deps({ line: LINE, board: BOARD, runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: LEFT_OUT }] }));
-  assert.deepEqual([leftOut.metrics.demo_ci_ok, leftOut.metrics.source_errors], [0, 1]);
+  const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "apps-reach-staging.duty.json"), "utf8")), "d", NOW);
+  const green = [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: EXECUTED }];
+  for (const options of [{ runs: new Error("ENOENT: ci-runs.json") }, { runs: green, logs: RATE_LIMIT },
+    { runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: LEFT_OUT }] }]) {
+    const output = await measureStaging(deps({ line: LINE, board: BOARD, ...options }));
+    assert.ok(!("demo_ci_ok" in output.metrics), "a failed read is not a miss");
+    assert.equal(output.metrics.source_errors, 1);
+    assert.ok(output.flagged?.some(item => item.kind === "source" && item.excerpt.endsWith("demo_ci_ok is not measured")));
+    const judged = judge(duty.metrics, output);
+    assert.deepEqual(Object.keys(judged.metrics).sort(), ["apps_picked", "open_review_max_h"], "the runner still judges the other metrics");
+    assert.match(judged.summary, /not measured: the precheck gave no value for demo_ci_ok$/);
+  }
+  const limited = await measureStaging(deps({ line: LINE, board: BOARD, runs: green, logs: RATE_LIMIT }));
+  assert.ok(limited.flagged?.some(item => item.kind === "source" && item.excerpt.includes("HTTP 403")));
+});
+
+test("apps reach staging: the cache's completed verify-dev runs on sieun/dev, newest first", () => {
+  const cache = cacheOf([{ id: 3, status: "completed" }, { id: 2, status: "in_progress" }, { id: 1, status: "completed", branch: "main" }, { id: 0, status: "completed" }]);
+  assert.deepEqual(branchRuns(cache).map(entry => entry.run?.id), [3, 0]);
+  assert.deepEqual(branchRuns({}), []);
 });
 
 test("apps reach staging duty file parses with one headline and at most 3 more, each a key the precheck writes", async () => {
@@ -137,7 +158,7 @@ test("apps reach staging duty file parses with one headline and at most 3 more, 
   assert.equal(duty.precheck.cwd, "../..");
   assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["apps_picked"]);
   assert.ok(duty.metrics.length <= 4);
-  const output = await measureStaging(deps({ line: LINE, board: BOARD }));
+  const output = await measureStaging(deps({ line: LINE, board: BOARD, runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: EXECUTED }] }));
   for (const metric of duty.metrics) assert.ok(metric.key in output.metrics, metric.key);
   assert.ok(!duty.metrics.some(metric => metric.key === "source_errors"), "source_errors is run detail");
 });

@@ -200,26 +200,32 @@ export function shapeNote(metrics: readonly Pick<DutyMetric, "key" | "headline">
 }
 
 /**
- * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) is on target, missed
- * otherwise, error when the output lacks one. Other numbers in the output never change it. The summary leads with the headline, names each
- * miss with its target or says all are on target, and ends with the `shapeNote` of a duty over the shape rule.
+ * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) it gives is on target,
+ * missed when one is off, error when it gives none. A counted metric it leaves out is not measured: it gets no result, so it is neither met
+ * nor missed, and the summary names it. Other numbers in the output never change it. The summary leads with the headline, names each miss
+ * with its target or says the measured ones are on target, and ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403
+ * left Apps reach staging without demo_ci_ok, and the run must still judge apps_picked and open_review_max_h.
  */
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
   const note = shapeNote(metrics);
   const counted = verdictMetrics(metrics);
   const results: Record<string, MetricResult> = {};
-  const end = (summary: string): string => note ? `${summary}; ${note}` : summary;
   const absent = counted.filter(metric => typeof output.metrics[metric.key] !== "number" || !Number.isFinite(output.metrics[metric.key]));
-  if (absent.length) return { verdict: "error", metrics: results, summary: end(`the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}`) };
+  const unmeasured = `the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}`;
+  const withNote = (parts: string[]): string => [...parts, ...note ? [note] : []].join("; ");
+  if (absent.length && absent.length === counted.length) return { verdict: "error", metrics: results, summary: withNote([unmeasured]) };
+  const end = (summary: string): string => withNote([summary, ...absent.length ? [`not measured: ${unmeasured}`] : []]);
+  const measured = counted.filter(metric => !absent.includes(metric));
   const misses: string[] = [];
-  const headline = headlineMetric(counted);
-  for (const metric of counted) {
+  const headline = headlineMetric(measured);
+  for (const metric of measured) {
     const value = output.metrics[metric.key]!;
     results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value) };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
-  if (!misses.length) return { verdict: "met", metrics: results, summary: end(lead ? `${lead}; all ${counted.length} on target` : `all ${counted.length} on target`) };
+  const all = `all ${measured.length}${absent.length ? " measured" : ""} on target`;
+  if (!misses.length) return { verdict: "met", metrics: results, summary: end(lead ? `${lead}; ${all}` : all) };
   return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }
 

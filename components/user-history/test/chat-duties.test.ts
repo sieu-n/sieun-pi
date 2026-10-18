@@ -43,14 +43,17 @@ test("dutyDue: a daily duty runs at its slot, catches up once within 6 h, skips 
   assert.equal(nextRunAt(every, at(8, 18, 10)), at(8, 18, 30));
 });
 
-test("judge: met when every metric is on target, missed names each miss with its target, error when a metric is absent", () => {
+test("judge: met when every metric is on target, missed names each miss with its target, a metric left out is not measured, error when all are", () => {
   const { metrics } = duty(0);
   assert.deepEqual(judge(metrics, { metrics: { orphans: 0, long_replies: 8 } }).verdict, "met");
   const missed = judge(metrics, { metrics: { orphans: 4, long_replies: 31.25 } });
   assert.equal(missed.verdict, "missed");
   assert.equal(missed.summary, "orphans 4 (target at most 0), long_replies 31.3% (target at most 10%)");
   assert.deepEqual(missed.metrics.orphans, { value: 4, target: 0, op: "<=", met: false });
-  assert.deepEqual(judge(metrics, { metrics: { orphans: 0 } }), { verdict: "error", metrics: {}, summary: "the precheck gave no value for long_replies" });
+  assert.deepEqual(judge(metrics, { metrics: { orphans: 0 } }), { verdict: "met", metrics: { orphans: { value: 0, target: 0, op: "<=", met: true } },
+    summary: "orphans 0 (on target); all 1 measured on target; not measured: the precheck gave no value for long_replies" });
+  assert.equal(judge(metrics, { metrics: { orphans: 3 } }).verdict, "missed", "a metric left out does not hide a miss");
+  assert.deepEqual(judge(metrics, { metrics: {} }), { verdict: "error", metrics: {}, summary: "the precheck gave no value for orphans, long_replies" });
 });
 
 test("duty job brief: the duty in the owner's words, the measure as information, the findings, and how a chat job works; no fixed list and no verdict", () => {
