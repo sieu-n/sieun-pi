@@ -224,6 +224,19 @@ const LINK_RANK: Record<AgentLink, number> = { subagent: 0, root: 1, step: 2, me
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const atOf = (value: string | number | undefined): number => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
 
+/**
+ * `stepOwner` per plan item, read again only when the item's job, session id or note changes. Every chat walked its whole plan on each catalog
+ * projection: 1.2 s of 100 s of a 10-18 scratch-serve profile.
+ */
+const stepOwners = new WeakMap<PlanItem, { job: string | undefined; sessionId: string | undefined; note: string | undefined; owner: string | undefined }>();
+function ownerName(item: PlanItem): string | undefined {
+  const known = stepOwners.get(item);
+  if (known && known.job === item.job && known.sessionId === item.sessionId && known.note === item.note) return known.owner;
+  const owner = stepOwner(item);
+  stepOwners.set(item, { job: item.job, sessionId: item.sessionId, note: item.note, owner });
+  return owner;
+}
+
 function walk(items: readonly PlanItem[], visit: (item: PlanItem) => void): void {
   for (const item of items) { visit(item); walk(item.children, visit); }
 }
@@ -318,7 +331,7 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
   // finds its thread first, so the step keeps its owner when its job is renamed or deleted; a deleted one gets an ended row of its own.
   const owned: PlanItem[] = [];
   const ownerOf = (item: PlanItem): Draft | undefined => {
-    const name = stepOwner(item);
+    const name = ownerName(item);
     return (item.sessionId ? bySession.get(item.sessionId) : undefined) ?? (name !== undefined ? find(name) : undefined);
   };
   const gone = (item: PlanItem, id: string): Draft | undefined => {
@@ -331,7 +344,7 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     return draft;
   };
   walk(input.board?.plan ?? [], item => {
-    const owners = [item.sessionId, stepOwner(item)].filter((who): who is string => who !== undefined);
+    const owners = [item.sessionId, ownerName(item)].filter((who): who is string => who !== undefined);
     if (!owners.length || owners.some(who => who === input.self.id || who === input.self.name)) return;
     owned.push(item);
     if (OPEN.has(item.status) && !ownerOf(item)) { const entry = owners.map(rowOf).find(Boolean); if (entry) thread(entry, "step"); }
