@@ -32,6 +32,12 @@ GIT_WRITE = re.compile(
     r"(?:^|[\s;&|`('\"/])git\s[\s\S]*\b(?:stash|reset|checkout|switch|restore|merge|rebase|pull|clean|worktree|push|add|commit|branch|filter-branch|replace)\b"
 )
 GIT_PUSH = re.compile(r"\bgit\s[\s\S]*\bpush\b")
+# A lint, type check or test run, as that guard's DANGEROUS reads one. The tool_call guard leaves one in a cell to this half,
+# because a cell often holds its files in an f-string or a computed list and runs it from the kernel's cwd.
+LOCAL_CHECK = re.compile(
+    r"\b(?:svelte-check|vitest|tsc|pytest|ruff|mypy|basedpyright|betterleaks|gitleaks|turbo|secrets-scan)\b"
+    r"|\bpnpm\s+(?:check|test|verify|lint|ci:)|(?:^|[\s;&|(/])ty\s"
+)
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
@@ -126,8 +132,8 @@ def shell_text(args) -> str:
 
 
 def touches_repo(text: str, cwd: str) -> bool:
-    """A git write that auto-sns-agent's repo guard should judge with the kernel's real cwd, which an os.chdir hides from the tool_call guard."""
-    if not GIT_WRITE.search(text):
+    """A git write or local check that auto-sns-agent's repo guard should judge with the kernel's real cwd, which an os.chdir hides from the tool_call guard."""
+    if not (GIT_WRITE.search(text) or LOCAL_CHECK.search(text)):
         return False
     return "auto-sns-agent" in text or "auto-sns-agent" in os.path.realpath(cwd) or bool(GIT_PUSH.search(text))
 

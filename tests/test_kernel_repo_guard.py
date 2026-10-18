@@ -65,6 +65,28 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assertIn("repo guard (git-hazard)", out["refused"] or "")
         self.assertEqual(self.fake_runs(), [])
 
+    def run_check_in_app(self, command):
+        app = self.checkout / "apps/crawler-v3"
+        (app / "src").mkdir(parents=True, exist_ok=True)
+        (app / "src/a.py").write_text("x = 1\n")
+        ruff = self.bin / "ruff"
+        ruff.write_text(FAKE_TOOL)
+        ruff.chmod(0o755)
+        cell = f"import os\nos.chdir({str(app)!r})\nfs = 'src/a.py'\nr = await bash({command})\n"
+        return self.run_cells(cell, env={"RLM_SESSION_DIR": CRAWLER_OPS, "GLOBAL_RULES_AUTO_SNS_AGENT": str(self.checkout), "REPO_GUARD_LOG": str(self.repo_log)})
+
+    def test_a_cell_check_on_files_in_an_f_string_runs_from_the_kernel_cwd(self):
+        # On 10-18 from 08:46Z the tool_call guard refused cells like this one, whose files it could not see.
+        out = self.run_check_in_app('f"ruff check {fs}"')
+        self.assert_passed(out)
+        self.assertEqual(self.fake_runs(), ["ruff check src/a.py"])
+
+    def test_a_cell_check_on_a_directory_is_refused_at_run_time(self):
+        out = self.run_check_in_app('f"ruff check {os.path.dirname(fs)}"')
+        self.assertIn("repo guard (local-check)", out["refused"] or "")
+        self.assertIn("names the directory src", out["refused"])
+        self.assertEqual(self.fake_runs(), [])
+
     def test_a_git_write_in_another_repo_runs(self):
         other = self.tmp / "other"
         other.mkdir()
