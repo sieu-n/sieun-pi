@@ -1,7 +1,7 @@
 {
   "name": "Search traffic",
   "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow\n\n(10-18) things are meant to be first written in plan -> achieved ->  cleared & written on duty for maintanence only -> and valiantly persued whenever not met. JUST DO IT",
-  "goal": "Pages that already get Google impressions keep them, every blog change on the Mac tip reaches GitHub sieun/dev within a day, and the PostHog, Search Console, Clerk and git reads keep working. The visits, clicks and sign-up numbers are detail lines that feed plan goals p56 and p71, and they never make this duty miss.",
+  "goal": "Pages that already get Google impressions keep them, every blog change on the local sieun/dev tip reaches GitHub sieun/dev within a day, and the PostHog, Search Console, Clerk and git reads keep working. The visits, clicks and sign-up numbers are detail lines that feed plan goals p56 and p71, and they never make this duty miss.",
   "metrics": [
     {
       "key": "dropped_pages",
@@ -13,7 +13,7 @@
     },
     {
       "key": "unshipped_blog_changes",
-      "label": "apps/blog commits on the Mac tip that are not on GitHub sieun/dev 24 h after their commit",
+      "label": "apps/blog commits on the local sieun/dev tip that are not on GitHub sieun/dev 24 h after their commit",
       "op": "<=",
       "target": 0,
       "unit": " commits"

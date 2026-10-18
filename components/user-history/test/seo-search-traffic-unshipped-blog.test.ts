@@ -1,4 +1,4 @@
-// Guards the 10-16 and 10-17 wait: 35 creator pages sat about 25 h on the Mac tip before anyone pushed them to GitHub, and on 10-18 five
+// Guards the 10-16 and 10-17 wait: 35 creator pages sat about 25 h on the sieun/dev tip before anyone pushed them to GitHub, and on 10-18 five
 // blog changes waited 7 h, with no duty reading the gap between the tip and origin/sieun/dev.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -10,11 +10,11 @@ const pages: TipCommit[] = Array.from({ length: 35 }, (_, index) => ({
 const fresh: TipCommit[] = Array.from({ length: 5 }, (_, index) => ({
   sha: `f${String(index).padStart(39, "0")}`, committedAt: NOW - 7 * 3_600_000, subject: `feat(blog): edition ${index}` }));
 
-test("unshipped_blog_changes counts the apps/blog commits on the tip that GitHub lacks after 24 h, and reads the Mac tip ref on a box", async () => {
+test("unshipped_blog_changes counts the apps/blog commits on the tip that GitHub lacks after 24 h, and reads the local sieun/dev tip, never the stale Mac ref", async () => {
   assert.equal(unshippedBlogChanges([...fresh, ...pages], NOW).length, 35);
-  const output = visitsOutput({ ship: { tipRef: "mac/sieun/dev", commits: [...fresh, ...pages] } }, NOW);
+  const output = visitsOutput({ ship: { tipRef: "sieun/dev", commits: [...fresh, ...pages] } }, NOW);
   assert.equal(output.metrics.unshipped_blog_changes, 35);
-  assert.match(output.flagged!.find(slice => slice.kind === "unshipped_blog_changes")!.excerpt, /^35 of 40 apps\/blog commits on mac\/sieun\/dev .* c0{9} 25 h/);
+  assert.match(output.flagged!.find(slice => slice.kind === "unshipped_blog_changes")!.excerpt, /^35 of 40 apps\/blog commits on sieun\/dev .* c0{9} 25 h/);
   assert.equal(visitsOutput({ ship: { error: "git fetch: timeout" } }, NOW).metrics.unshipped_blog_changes, 999_999);
 
   const calls: string[][] = [];
@@ -24,6 +24,7 @@ test("unshipped_blog_changes counts the apps/blog commits on the tip that GitHub
     return "";
   });
   assert.equal(calls[0]![0], "fetch");
-  assert.deepEqual(read, { tipRef: "mac/sieun/dev", commits: [pages[0]] });
-  assert.deepEqual(calls.at(-1)!.slice(1), ["--format=%H%x09%ct%x09%s", "refs/remotes/mac/sieun/dev", "^refs/remotes/origin/sieun/dev", "--", "apps/blog"]);
+  assert.deepEqual(read, { tipRef: "sieun/dev", commits: [pages[0]] });
+  assert.ok(calls.every(args => !args.some(arg => arg.includes("mac/"))));
+  assert.deepEqual(calls.at(-1)!.slice(1), ["--format=%H%x09%ct%x09%s", "refs/heads/sieun/dev", "^refs/remotes/origin/sieun/dev", "--", "apps/blog"]);
 });

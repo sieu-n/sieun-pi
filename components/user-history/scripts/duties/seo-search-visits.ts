@@ -7,7 +7,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The SEO guy's Search traffic precheck (`node --import tsx scripts/duties/seo-search-visits.ts`), an upkeep duty: the pages Google sends
- * people to keep their impressions, every blog change on the Mac tip reaches GitHub within a day, and every source reads. The owner's growth
+ * people to keep their impressions, every blog change on the sieun/dev tip reaches GitHub within a day, and every source reads. The owner's growth
  * goals (10,000 blog and tool visits a day, 300 sign-ups a day) live on the plan as goals p56 and p71 (owner 10-18: "plan -> achieved ->
  * cleared & written on duty for maintanence only"), so goal_visits_d7, google_clicks_d7 and signups_goal_d28 stay in the output and its
  * flagged lines for the run to write into those goals' targets, and the duty file counts none of them.
@@ -33,17 +33,16 @@ export const GSC_STALE_DAYS = 3;
 export const DROP_MIN_DAILY = 20;
 export const DROP_SHARE = 0.2;
 /**
- * unshipped_blog_changes: a commit under apps/blog on the Mac tip that is not on GitHub's sieun/dev UNSHIPPED_AFTER_MS after its commit
+ * unshipped_blog_changes: a commit under apps/blog on the sieun/dev tip that is not on GitHub's sieun/dev UNSHIPPED_AFTER_MS after its commit
  * time. On 10-16 and 10-17 35 creator pages waited about 25 h unpushed, and on 10-18 five blog changes waited 7 h.
  */
 export const UNSHIPPED_AFTER_MS = 24 * 3_600_000;
 export const BLOG_PATH = "apps/blog";
 /**
- * Where the Mac tip is in this checkout. On a box, asa-mac-sync (~/.local/share/asa-mac-sync) fetches the Mac's sieun/dev over ssh into
- * refs/remotes/mac/sieun/dev every minute and fast-forwards the local branch only when the checkout is clean enough, so the remote ref is the
- * tip. On the Mac the local branch is the tip and that ref is absent.
+ * The shared sieun/dev tip. Since 2026-10-18 11:24Z it lives in the us-metal02 checkout's local branch and the release owner pushes origin
+ * from there; the Mac copy (refs/remotes/mac/sieun/dev) went stale at that move.
  */
-export const TIP_REFS = ["refs/remotes/mac/sieun/dev", "refs/heads/sieun/dev"] as const;
+export const TIP_REF = "refs/heads/sieun/dev";
 export const SHIPPED_REF = "refs/remotes/origin/sieun/dev";
 /** Sections whose first-page sign-ups count toward the owner's 300 a day (goal p71), the same sections as goal_visits_d7. */
 export const GOAL_SECTIONS = ["blog", "tools"] as const;
@@ -152,18 +151,15 @@ const runGit = (repo: string): Git => args => new Promise((resolve, reject) => {
     (error, stdout, stderr) => error ? reject(new Error(`git ${args[0]}: ${`${error.message} ${stderr}`.trim().slice(0, 300)}`)) : resolve(stdout));
 });
 
-/** Fetches GitHub's sieun/dev, then lists the apps/blog commits on the Mac tip (`TIP_REFS`) that GitHub lacks. */
+/** Fetches GitHub's sieun/dev, then lists the apps/blog commits on the local sieun/dev tip (`TIP_REF`) that GitHub lacks. */
 export async function readShip(git: Git): Promise<ShipRead> {
   await git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/sieun/dev:${SHIPPED_REF}`]);
-  let tipRef: string | undefined;
-  for (const ref of TIP_REFS) if (!tipRef && await git(["rev-parse", "--verify", "--quiet", ref]).then(() => true, () => false)) tipRef = ref;
-  if (!tipRef) throw new Error(`none of ${TIP_REFS.join(", ")} exists`);
-  const log = await git(["log", "--format=%H%x09%ct%x09%s", tipRef, `^${SHIPPED_REF}`, "--", BLOG_PATH]);
+  const log = await git(["log", "--format=%H%x09%ct%x09%s", TIP_REF, `^${SHIPPED_REF}`, "--", BLOG_PATH]);
   const commits = log.split("\n").filter(Boolean).map(line => {
     const [sha, seconds, ...subject] = line.split("\t");
     return { sha: sha!, committedAt: Number(seconds) * 1000, subject: subject.join("\t") };
   });
-  return { tipRef: tipRef.replace(/^refs\/(remotes\/|heads\/)/, ""), commits };
+  return { tipRef: "sieun/dev", commits };
 }
 
 /** Runs the reads in auto-sns-agent's SEO CLI project and parses the one JSON line it prints. */
