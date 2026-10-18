@@ -20,7 +20,12 @@ its own reference. It does three things.
    its first prompt. Prime holds a new session's state in its worker's memory and writes the file late: at 23:43 to 00:04Z on 10-15/16 ten
    children showed no first prompt for 17 to 37 min and the supervisor restart at 00:20:13Z dropped them. The request itself goes out as
    it came, at once, and a failed write never fails the spawn.
+4. Cross-host siblings. Prime's daemon finds a sibling only among the roots it runs, so after the 10-18 move of the chats to us-metal02 a
+   send from a box chat to a root on the Mac failed with 'No sibling matches'. In a root's kernel such a send goes to the chat service,
+   which delivers it on the other box (src/cross-host-message.ts), and agent_observe.list_agents lists the other boxes' roots as siblings.
 """
+
+import asyncio
 
 import json
 import os
@@ -31,7 +36,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 14
+VERSION = 15
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -48,6 +53,9 @@ HELD_NOTE = (
 )
 # (receiver_role, receiver_name, key) -> {"since": epoch s, "texts": [...]} for each send the daemon timed out on.
 UNCONFIRMED = {}
+CROSS_HOST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cross-host-message.ts")
+NO_SIBLING = "No sibling matches"
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z")
 
 
@@ -174,6 +182,55 @@ def held(payload, earlier, state, at):
     }
 
 
+def own_root():
+    """This kernel's session id when it is a root, whose RLM_SESSION_DIR is named for it; None in a subagent, which has no sibling on another box."""
+    name = os.path.basename(os.environ.get("RLM_SESSION_DIR", "").rstrip(os.sep))
+    return name if UUID.match(name) else None
+
+
+async def cross_host(op, body):
+    """The chat service's answer to one cross-host op, through cross-host-message.ts; raises with the service's error."""
+    # tsx, since chat-host.ts imports hosts.ts, whose parameter properties node's own type stripping refuses.
+    proc = await asyncio.create_subprocess_exec("node", "--import", "tsx", CROSS_HOST, op, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE, cwd=os.path.dirname(os.path.dirname(CROSS_HOST)))
+    out, err = await proc.communicate(json.dumps({**body, "dataDir": data_dir()}).encode())
+    try:
+        answer = json.loads(out.decode().strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise RuntimeError(f"cross-host message helper failed: {err.decode()[-300:]}") from None
+    if isinstance(answer, dict) and "error" in answer:
+        raise RuntimeError(answer["error"])
+    return answer
+
+
+async def with_other_boxes(roster):
+    """A root's roster with the roots of the other boxes added as siblings; the roster as it came when the chat service does not answer."""
+    root = own_root()
+    if not root or not isinstance(roster, dict) or not isinstance(roster.get("agents"), list):
+        return roster
+    try:
+        extra = (await cross_host("siblings", {"session": root})).get("agents", [])
+    except Exception as error:
+        print(f"user-history: other boxes' roots not listed: {error}", file=sys.stderr)
+        return roster
+    known = {agent.get("sessionId") for agent in roster["agents"] if isinstance(agent, dict)}
+    return {**roster, "agents": roster["agents"] + [agent for agent in extra if agent.get("sessionId") not in known]}
+
+
+async def send_other_box(payload, error):
+    """A sibling send the local daemon found no sibling for, delivered by the chat service to a root on another box; else the daemon's error."""
+    root = own_root()
+    if not root or payload.get("receiver_role") != "sibling" or NO_SIBLING not in str(error):
+        raise error
+    try:
+        reply = await cross_host("send", {"from": root, "to": payload.get("receiver_name"), "message": payload.get("message")})
+    except RuntimeError as other:
+        if SEND_TIMEOUT in str(other) or CLIENT_CLOSED in str(other):
+            raise
+        raise RuntimeError(f"{error}; {other}") from None
+    return reply
+
+
 def plain_request():
     """Prime's own host_request: the one install saved, else rlm's when it is not this wrapper, else one built on rlm.repl."""
     rlm = sys.modules.get("rlm")
@@ -213,7 +270,14 @@ async def request(request_type, payload=None, *args, **kwargs):
         return with_note(await real(request_type, payload, *args, **kwargs), note)
     started = earlier["since"] if earlier else time.time()
     try:
-        reply = await real(request_type, payload, *args, **kwargs)
+        try:
+            reply = await real(request_type, payload, *args, **kwargs)
+        except Exception as error:
+            if not direct:
+                raise
+            reply = await send_other_box(payload, error)
+        if request_type == "agent_observe.list":
+            reply = await with_other_boxes(reply)
         if direct:
             UNCONFIRMED.pop(key, None)
         if request_type in ("rlm.run", "rlm.create_session") and isinstance(payload, dict):
@@ -251,10 +315,11 @@ def install() -> None:
     if not getattr(rlm.host_request, "limit_checked", False):
         rlm.unchecked_host_request = rlm.host_request
     request.__doc__ = getattr(getattr(rlm, "unchecked_host_request", None), "__doc__", None)
-    try:
-        __import__("agent_message")
-    except ImportError:
-        pass
+    for skill in ("agent_message", "agent_observe"):
+        try:
+            __import__(skill)
+        except ImportError:
+            pass
     for module in list(sys.modules.values()):
         found = getattr(module, "__dict__", {}).get("host_request")
         if getattr(found, "limit_checked", False) or name_of(found) == ("rlm", "host_request"):

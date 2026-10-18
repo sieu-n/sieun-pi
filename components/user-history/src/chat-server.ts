@@ -3,6 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
+import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
+import { otherBoxRoots, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
@@ -114,6 +116,28 @@ function requestId(value: unknown): string {
   if (typeof value !== "string" || !requestIdPattern.test(value)) throw new RequestError(400, "Expected a request ID.");
   return value;
 }
+/** Every box's live roots and the daemon send for the cross-host message routes, from the catalog that lists each box's daemon. */
+function rootDirectory(backend: ChatBackend): RootDirectory {
+  const catalog = backend.catalog;
+  return {
+    roots: () => {
+      const self = catalog.selfHost() ?? thisBox();
+      const seen = new Set<string>();
+      return [...catalog.daemonRows(), ...catalog.remoteRows()].filter(row => isTopLevel(row) && row.lifecycle !== "archived").flatMap(row => {
+        if (seen.has(row.sessionId)) return [];
+        seen.add(row.sessionId);
+        return [{ sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row),
+          host: catalog.hostOf(row.sessionId) ?? self, status: row.activity ?? row.lifecycle ?? "unknown" }];
+      });
+    },
+    send: async (sessionId, message) => {
+      const response = await (await catalog.daemonFor(sessionId)).request({ type: "send_message", targetActiveSessionId: sessionId, message }, 30_000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      return response.data as Record<string, unknown>;
+    },
+  };
+}
+
 function threadId(value: string): string {
   if (!idPattern.test(value)) throw new RequestError(400, "Invalid thread ID.");
   return value;
@@ -475,6 +499,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (!board) throw new RequestError(404, "No board for this chat.");
           json(res, 200, board); return;
         }
+        if (route === "api/agent/siblings") {
+          const roots = await otherBoxRoots(rootDirectory(backend), text(url.searchParams.get("session"), "session", 128)).catch(error => { throw new RequestError(404, (error as Error).message); });
+          json(res, 200, { agents: roots.map(siblingRow) }); return;
+        }
         if (route === "api/agent/jobs") {
           const text = await readFile(join(dirname(backend.boards.dir), "chat-jobs.json"), "utf8").catch(() => "{\"jobs\":{}}");
           res.writeHead(200, { "Content-Type": "application/json" }); res.end(text); return;
@@ -604,6 +632,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== origin) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
       const body = record(await jsonBody(req));
+      // agent_message.send from a root to a root on another box, which the sender's daemon does not run (src/cross-host-message.ts).
+      if (route === "api/agent/message") {
+        const receipt = await sendCrossHost(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256), text(body.message, "message"))
+          .catch(error => { throw new RequestError(409, (error as Error).message); });
+        json(res, 200, receipt); return;
+      }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
       if (route === "api/agent/check-in") {
         const chat = threadId(text(body.chat, "chat", 128));
