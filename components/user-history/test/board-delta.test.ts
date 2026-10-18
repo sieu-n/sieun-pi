@@ -20,6 +20,11 @@ function bigBoard(): ChatBoard {
   return { v: 2, rev: 7, updatedAt: "2026-10-18T10:00:07Z", plan, todos, lastIds: { p: 400, t: 30 } };
 }
 
+/** A board file as 01a1164b's was on 10-18: with the v1 `scratch` list, 92 KB that nothing reads, beside the fields `ChatBoard` names. */
+function withScratch(board: ChatBoard): ChatBoard {
+  return { ...board, scratch: Array.from({ length: 100 }, (_, index) => ({ id: `s${index}`, text: "z".repeat(800), links: [], children: [] })) } as ChatBoard;
+}
+
 /** `board` with plan item `id` changed by `change`, one rev on. */
 function changed(board: ChatBoard, id: string, change: Partial<PlanItem>): ChatBoard {
   const walk = (items: PlanItem[]): PlanItem[] => items.map(item => item.id === id ? { ...item, ...change } : { ...item, children: walk(item.children) });
@@ -41,17 +46,19 @@ const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const settle = () => new Promise(resolve => setTimeout(resolve, 60));
 
 test("a change to one board item sends that item only, and the page ends with the server's board", async () => {
-  const start = bigBoard();
+  const start = withScratch(bigBoard());
   const threads = await hub(async () => start);
   const events: ThreadEvent[] = [];
   await threads.subscribe(ID, event => events.push(event), false, undefined, true);
   await settle();
   assert.deepEqual(boards(events).map(event => event.type), ["board"], "the first board goes out whole");
-  let page = start;
+  assert.equal("scratch" in (boards(events)[0] as Extract<ThreadEvent, { type: "board" }>).board, false, "without the fields no page reads");
+  let page: ChatBoard | null = null;
   const follower = new BoardFollower(async () => assert.fail("no gap"), board => { page = board; });
   follower.take(boards(events)[0] as Extract<ThreadEvent, { type: "board" }>);
 
   const next = changed(start, "p53", { note: "done on release-1bfb0bc", status: "done" });
+  const { scratch: _scratch, ...shown } = next as ChatBoard & { scratch?: unknown };
   events.length = 0;
   threads.setBoard(ID, next);
   const [delta] = boards(events);
@@ -59,9 +66,9 @@ test("a change to one board item sends that item only, and the page ends with th
   assert.ok(delta?.type === "board-delta");
   assert.deepEqual(delta.plan.map(item => item.id), ["p53"]);
   assert.deepEqual([delta.todos, delta.roots, delta.todoIds], [[], undefined, undefined]);
-  assert.ok(bytes(delta) * 50 < bytes(next), `${bytes(delta)} B for one item of a ${bytes(next)} B board`);
+  assert.ok(bytes(delta) * 100 < bytes(next), `${bytes(delta)} B for one item of a ${bytes(next)} B board`);
   follower.take(delta);
-  assert.deepEqual(page, next);
+  assert.deepEqual(page, shown);
   await threads.close();
 });
 

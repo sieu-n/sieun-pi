@@ -3,6 +3,15 @@ import type { ChatBoard, OwnerTodo, PlanItem } from "./types.ts";
 /** A board's revision as a reconnecting page names it (`ThreadHave.board`), and the base a `BoardDelta` follows. */
 export const boardKey = (board: ChatBoard): string => `${board.rev}|${board.updatedAt}`;
 
+/**
+ * The board as a page gets it: the fields `ChatBoard` names. A board file can carry more, such as the `scratch` list v1 boards kept, which
+ * nothing reads; on 10-18 it was 92 KB of 01a1164b's 459 KB board, and a board delta carried it on every change.
+ */
+export function feedBoard(board: ChatBoard): ChatBoard {
+  const { v, rev, plan, todos, updatedAt, lastIds } = board;
+  return { v, rev, plan, todos, updatedAt, ...(lastIds ? { lastIds } : {}) };
+}
+
 /** A plan item with its children named by id, so a change to one item sends that item and not the subtree under it. */
 export type FlatPlanItem = Omit<PlanItem, "children"> & { children: string[] };
 

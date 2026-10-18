@@ -43,6 +43,7 @@ import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
+import { feedBoard } from "./shared/board-delta.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -740,7 +741,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           // A page that missed a board delta asks for the whole board once (shared/board-delta.ts BoardFollower).
-          if (action === "board") { json(res, 200, { board: backend.threads.state(id)?.board ?? await backend.boards.view(id) }); return; }
+          if (action === "board") { const board = backend.threads.state(id)?.board ?? await backend.boards.view(id); json(res, 200, { board: board && feedBoard(board) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
           if (action === "prompt") {
             const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);

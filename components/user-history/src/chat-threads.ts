@@ -21,7 +21,7 @@ import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
-import { boardDelta, boardStep, type BoardStep } from "./shared/board-delta.ts";
+import { boardDelta, boardStep, type BoardStep, feedBoard } from "./shared/board-delta.ts";
 import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
 import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
@@ -161,7 +161,7 @@ class Thread {
   }
   broadcast(event: ThreadEvent): void {
     const children = this.state.children;
-    if (event.type === "board") this.boardChanged(this.state.board, event.board);
+    if (event.type === "board") { event = { type: "board", board: feedBoard(event.board) }; this.boardChanged(this.state.board, event.board); }
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) {
       if (event.type === "snapshot") this.send(listener, false, this.state.children.length > 0 || children.length > 0);
