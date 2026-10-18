@@ -289,7 +289,12 @@ export const CHECKS: readonly Check[] = [
   { id: "websearch_query", group: "web search", tool: "Virev search API", run: async deps => {
     const skill = paths(deps).websearch;
     const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
-    const result = await deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
+    const search = () => deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
+    // Google on the Virev crawler drops for a few minutes at a time: 4 of 9 rechecks in
+    // skills-and-tools.rechecks.jsonl (10-17 to 10-18) got the DuckDuckGo note or a 502, and each passed
+    // again minutes later. One more query before failing keeps such a drop from flagging the box alone.
+    const first = await search();
+    const result = /NOTE: google is unavailable|Virev search error \((502|504)\)/.test(both(first)) ? await search() : first;
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
