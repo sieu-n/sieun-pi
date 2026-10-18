@@ -33,7 +33,8 @@ const BOX = "root@64.34.205.243";
  *   (filedAfter), one for each hand write kind no listed fault covers, from the run that first sees it until the registry lists a fault for it.
  * - undesigned_hand_fixes: a hand fix with no listed fault and no filed one has no design. A writer names its fault at the start of the reason
  *   (`F<n>: `, the ops write routes' `fault` field), which wins over the tag, the keys and the prose.
- * - repeats_after_design: a hand fix in the last 24 h for a fault whose design step is done means the design did not fix it. Both 24 h metrics
+ * - repeats_after_design: a hand fix in the last 24 h for a fault whose design shipped means the design did not fix it. Shipped is every board
+ *   step done, every `commit:` design in the release prod ran at the fix (afterDesign), and the fix not before done_at. Both 24 h metrics
  *   count the fixes since 24 h ago, as the duty labels say, while the read also reaches back to the last run's mark after a skipped day.
  * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
  *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
@@ -56,7 +57,10 @@ export interface FaultMatch {
  * A fault's design work, one ref each: `pN` (a step on this chat's board), `<chat id>/pN` (a step on another chat's board), `branch:<name>` or
  * `commit:<sha>` (in the auto-sns-agent checkout, for work no board tracks).
  */
-/** `done_at` is when the last design went live; a hand fix before it is not a repeat. */
+/**
+ * `done_at` is the floor of when the design went live; a hand fix before it is not a repeat. A fault with `commit:` refs also needs every one
+ * of them in the prod release that ran at the fix (Deploy, releaseHolds), and with neither readable its repeats are not measured.
+ */
 export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
 /** config_sources names a supervised writer by config_audit.source, for an actor such as metal that also writes by hand. */
 export interface Registry {
@@ -81,12 +85,20 @@ export interface MacProcess { pid: number; command: string; script: string | nul
  */
 export interface HostLoop { pid: number; command: string; text: string }
 
+/**
+ * A prod release going live: deploy.sh's `<time> prod deploy <sha12> ok` line in /srv/prod/releases/deploy.log on us-metal01. On 10-18 F18 read
+ * as shipped from the start because its board step was done, while its design e0d09f5a42 reached prod only at 12:31:13Z (43490e7e9f, promote 12).
+ */
+export interface Deploy { at: number; release: string }
+/** Whether a fault's `commit:` designs ran on prod at a time: `none` when it names no commit. */
+export type OnProd = "none" | "live" | "not_live" | "unknown";
+
 /** One hand fix: config rows written together (same world, actor and reason in one minute) count once. */
 export interface HandFix { source: string; at: number; what: string; text: string }
 export type Verdict = { kind: "automatic" } | { kind: "exempt" } | { kind: "fault"; fault: Fault } | { kind: "undesigned" };
 export type StepState = "none" | "live" | "done";
 
-export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | `${World} config` | `${World} engage`;
+export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | "prod deploys" | `${World} config` | `${World} engage`;
 const WORLDS: readonly World[] = ["prod", "staging"];
 const READS: readonly Source[] = ["registry", "prod config", "staging config", "prod engage", "staging engage"];
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
@@ -169,14 +181,39 @@ export function stepRefs(faults: readonly Fault[], boards: ReadonlyMap<string, R
   return refs;
 }
 
+/** The release prod ran at `at`: the last ok deploy at or before it, or undefined before the first logged one. */
+export const releaseAt = (deploys: readonly Deploy[], at: number): Deploy | undefined =>
+  deploys.reduce<Deploy | undefined>((last, deploy) => deploy.at <= at && (!last || deploy.at >= last.at) ? deploy : last, undefined);
+
+/** Whether every `commit:` design of the fault was in the release prod ran at `at`; `held` maps a checked release to the commit refs it holds. */
+export function designOnProd(fault: Fault, at: number, deploys: readonly Deploy[] | undefined, held: ReadonlyMap<string, ReadonlySet<string>>): OnProd {
+  const commits = fault.designs.filter(ref => ref.startsWith("commit:"));
+  if (!commits.length) return "none";
+  const release = deploys && releaseAt(deploys, at);
+  const holds = release && held.get(release.release);
+  if (!holds) return "unknown";
+  return commits.every(ref => holds.has(ref)) ? "live" : "not_live";
+}
+
+/** Whether a hand fix at `at` came after the fault's design shipped: its steps done, its commits on prod, and not before its done_at. */
+export function afterDesign(fault: Fault, at: number, refs: ReadonlyMap<string, RefState>, deploys: readonly Deploy[] | undefined,
+  held: ReadonlyMap<string, ReadonlySet<string>>): boolean | "unknown" {
+  if (stepState(fault, refs) !== "done") return false;
+  const floor = fault.done_at ? Date.parse(fault.done_at) : null;
+  const prod = designOnProd(fault, at, deploys, held);
+  if (prod === "unknown" && floor === null) return "unknown";
+  return prod !== "not_live" && (floor === null || at >= floor);
+}
+
 /**
  * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart` per container, `E<TAB>name<TAB><exec json>` per exec
- * session, and `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process.
+ * session, `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process, and `D<TAB>time<TAB>sha12` per ok prod deploy.
  */
-export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[]; hosts: HostLoop[] } {
+export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[]; hosts: HostLoop[]; deploys: Deploy[] } {
   const containers: BoxContainer[] = [];
   const execs: BoxExec[] = [];
   const hosts: HostLoop[] = [];
+  const deploys: Deploy[] = [];
   const service = new Map<string, string>();
   for (const line of text.split("\n")) {
     const [tag, name, rest] = line.split("\t");
@@ -186,6 +223,9 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
       const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
       containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}) });
       service.set(name, svc);
+    } else if (tag === "D") {
+      const at = Date.parse(name);
+      if (!Number.isNaN(at) && /^[0-9a-f]{12,40}$/.test(rest)) deploys.push({ at, release: rest });
     } else if (tag === "H") {
       const host = JSON.parse(Buffer.from(rest, "base64").toString("utf8")) as { command?: string; text?: string };
       hosts.push({ pid: Number(name), command: host.command ?? "", text: host.text ?? "" });
@@ -195,7 +235,7 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
         command: [exec.ProcessConfig?.entrypoint ?? "", ...(exec.ProcessConfig?.arguments ?? [])].join(" ").trim() });
     }
   }
-  return { containers, execs, hosts };
+  return { containers, execs, hosts, deploys };
 }
 
 /**
@@ -247,6 +287,8 @@ export interface HandData {
   errors: { source: Source; message: string }[];
   /** The faults earlier runs filed (HandState.filed). */
   filed?: Filed[];
+  /** The ok prod deploys from the box read, and for each release checked, the `commit:` design refs it holds (releaseHolds). */
+  deploys?: Deploy[]; held?: Map<string, Set<string>>;
 }
 /** A hand write kind with no listed fault, filed by this check: the config keys, when it first came, and its audit line. */
 export interface Filed { keys: string[]; at: number; text: string; line: string }
@@ -296,8 +338,16 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     const older = fixes.length - recent.length;
     const counted = recent.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned" && !filedFor(data.filed ?? [], item.fix));
-    const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done" &&
-      !(item.verdict.fault.done_at && item.fix.at < Date.parse(item.verdict.fault.done_at)));
+    const held = data.held ?? new Map<string, Set<string>>();
+    const after = (item: Fix) => item.verdict.kind === "fault" ? afterDesign(item.verdict.fault, item.fix.at, refs, data.deploys, held) : false;
+    const repeats = counted.filter(item => after(item) === true);
+    const unknown = [...new Set(counted.filter(item => after(item) === "unknown").map(item => item.verdict.kind === "fault" ? item.verdict.fault.id : ""))];
+    if (unknown.length) {
+      unmeasured.add("repeats_after_design");
+      flagged.push({ at, kind: "source_error", excerpt: `prod deploys: ${unknown.join(", ")} name a commit: design and no done_at, and which commits prod ran at their hand fixes could not be read (the box's deploy.log or the auto-sns-agent checkout)`.slice(0, 400) });
+    }
+    const pending = registry.faults.filter(fault => stepState(fault, refs) === "done" && designOnProd(fault, at, data.deploys, held) === "not_live");
+    if (pending.length) flagged.push({ at, kind: "design_not_on_prod", excerpt: `Design steps done, but a commit is in no prod release yet, so their hand fixes are not repeats: ${pending.map(fault => `${fault.id} ${fault.designs.filter(ref => ref.startsWith("commit:")).join(" ")}`).join("; ")}`.slice(0, 600) });
     metrics.undesigned_hand_fixes = undesigned.length;
     metrics.repeats_after_design = repeats.length;
     const byFault = new Map<string, number>();
@@ -307,7 +357,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
       `; ${undesigned.length} match no fault; ${skipped} automatic or exempt` + (older ? `; ${older} older changes since the last run are outside the 24 h metrics` : "") });
     const line = (item: { fix: HandFix }) => `${item.fix.source} ${utc(item.fix.at)} ${item.fix.what}: ${item.fix.text}`.slice(0, 400);
     for (const item of undesigned) flagged.push({ at: item.fix.at, kind: "undesigned", excerpt: line(item) });
-    for (const item of repeats) flagged.push({ at: item.fix.at, kind: "repeat", excerpt: `${item.verdict.kind === "fault" ? item.verdict.fault.id : ""} design step done, yet: ${line(item)}`.slice(0, 400),
+    for (const item of repeats) flagged.push({ at: item.fix.at, kind: "repeat", excerpt: `${item.verdict.kind === "fault" ? item.verdict.fault.id : ""} design shipped, yet: ${line(item)}`.slice(0, 400),
       ...(item.verdict.kind === "fault" && item.verdict.fault.designs[0] ? { item: item.verdict.fault.designs[0] } : {}) });
     const jobless = registry.faults.filter(fault => stepState(fault, refs) === "none");
     const filed = filedAfter(data.filed ?? [], fixes, registry);
@@ -363,8 +413,9 @@ export const auditSql = (lastId: number | undefined, now: number): string =>
 export const eventsSql = (after: number): string =>
   `select account_id, at, outcome, coalesce(error_code, '') as error_code from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
 
-/** The one read-only box read: every container's status, compose service and running exec sessions, and each exec's command. */
+/** The one read-only box read: every container's status, compose service and running exec sessions, each exec's command, and the ok prod deploys. */
 export const BOX_SCRIPT = `set -u
+awk '$2 == "prod" && $3 == "deploy" && $5 == "ok:" { printf "D\\t%s\\t%s\\n", $1, $4 }' /srv/prod/releases/deploy.log
 for c in $(docker ps -a --format '{{.Names}}'); do
   info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
@@ -441,6 +492,30 @@ export async function macProcesses(signal: AbortSignal): Promise<MacProcess[]> {
   return found;
 }
 
+/**
+ * Whether a prod release holds a commit, in the auto-sns-agent checkout. A land squashes its pinned sieun/dev tip into one staging commit with
+ * the same tree (land 38, 43490e7e9f, is d2119eae32's tree), so the commit counts when it is an ancestor of the release or of a commit with the
+ * release's tree, or when one of those holds a commit whose `Replayed-From` trailer names it (land-object.mjs replays an object onto the tip).
+ */
+export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (release: string, commit: string) => Promise<boolean> {
+  let trees: Promise<Map<string, string[]>> | undefined;
+  const byTree = () => trees ??= git(["log", "--all", "--format=%H %T"]).then(out => {
+    const map = new Map<string, string[]>();
+    for (const [sha, tree] of out.split("\n").map(line => line.split(" "))) if (sha && tree) map.set(tree, [...map.get(tree) ?? [], sha]);
+    return map;
+  });
+  return async (release, commit) => {
+    const sha = (await git(["rev-parse", "--verify", `${commit}^{commit}`])).trim();
+    const tip = (await git(["rev-parse", "--verify", `${release}^{commit}`])).trim();
+    const tree = (await git(["rev-parse", "--verify", `${tip}^{tree}`])).trim();
+    for (const head of new Set([tip, ...(await byTree()).get(tree) ?? []])) {
+      if (await git(["merge-base", "--is-ancestor", sha, head]).then(() => true, () => false)) return true;
+      if ((await git(["log", "-1", "--format=%H", "--fixed-strings", `--grep=Replayed-From: ${sha}`, head])).trim()) return true;
+    }
+    return false;
+  };
+}
+
 function flattenSteps(items: readonly { id: string; status?: string; job?: string; children?: unknown[] }[], into = new Map<string, BoardStep>()): Map<string, BoardStep> {
   for (const item of items) {
     into.set(item.id, { id: item.id, status: item.status ?? "todo", ...(item.job ? { job: item.job } : {}) });
@@ -456,6 +531,8 @@ export interface HandDeps {
   board: (chat: string) => Promise<{ plan?: unknown[] } | null>;
   /** Whether a `branch:<name>` or `commit:<sha>` ref exists in the auto-sns-agent checkout. */
   gitRef: (ref: string) => Promise<boolean>;
+  /** Whether a prod release (a sha from deploy.log) holds a commit; throws when either cannot be read. */
+  releaseHolds: (release: string, commit: string) => Promise<boolean>;
   box: () => Promise<string>; mac: () => Promise<MacProcess[]>;
 }
 
@@ -483,6 +560,7 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   ]);
   if (box && !box.containers.length) data.errors.push({ source: "box", message: "the ssh read listed no container" });
   else if (box) data.box = box;
+  if (box?.deploys.length) data.deploys = box.deploys;
   if (registry) data.registry = registry;
   if (registry && board) {
     const refs = await step("board", async () => {
@@ -501,7 +579,32 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   if (stagingAudit) data.audit.staging = stagingAudit;
   if (prodEvents) data.events.prod = prodEvents;
   if (stagingEvents) data.events.staging = stagingEvents;
+  if (registry && data.deploys) data.held = await heldBy(deps, data, registry);
   return data;
+}
+
+/** The `commit:` refs each needed release holds: the release prod ran at each listed fault's hand fix, and the one it runs now. */
+async function heldBy(deps: HandDeps, data: HandData, registry: Registry): Promise<Map<string, Set<string>>> {
+  const needed = new Map<string, Set<string>>();
+  const want = (fault: Fault, at: number) => {
+    const release = releaseAt(data.deploys!, at)?.release;
+    const commits = fault.designs.filter(ref => ref.startsWith("commit:"));
+    if (!release || !commits.length) return;
+    needed.set(release, new Set([...needed.get(release) ?? [], ...commits]));
+  };
+  for (const { fix, verdict } of handFixes(data, registry)) if (verdict.kind === "fault") want(verdict.fault, fix.at);
+  for (const fault of registry.faults) want(fault, data.now);
+  const held = new Map<string, Set<string>>();
+  for (const [release, commits] of needed) {
+    try {
+      const holds = new Set<string>();
+      for (const ref of commits) if (await deps.releaseHolds(release, ref.slice("commit:".length))) holds.add(ref);
+      held.set(release, holds);
+    } catch (error) {
+      data.errors.push({ source: "prod deploys", message: `release ${release}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
+    }
+  }
+  return held;
 }
 
 async function main(): Promise<void> {
@@ -519,6 +622,7 @@ async function main(): Promise<void> {
     registry: async () => JSON.parse(await readFile(REGISTRY_FILE, "utf8")),
     board: chat => new BoardStore(join(homedir(), ".prime/agent/browser-chat")).read(chat) as never,
     gitRef: ref => run("git", ["-C", REPO, "rev-parse", "--verify", "--quiet", ref.startsWith("branch:") ? `refs/heads/${ref.slice(7)}` : `${ref.slice(7)}^{commit}`], signal).then(() => true, () => false),
+    releaseHolds: gitReleaseHolds(args => run("git", ["-C", REPO, ...args], signal)),
     box: () => run("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], signal, BOX_SCRIPT),
     mac: () => macProcesses(signal) });
   const result = report(data, dutyMetrics);

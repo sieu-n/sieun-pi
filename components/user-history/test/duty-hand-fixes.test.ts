@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -15,7 +15,9 @@ const rows = (ts: number): AuditRow[] => [13533, 13534].map((id, index) => ({ id
 const registry = async () => parseRegistry(JSON.parse(await readFile(join(DIR, "hand-fixes.faults.json"), "utf8")));
 const refs = (): Map<string, RefState> => new Map([["01a115e2-9544-7204-b8db-8ce4d5319048/p173", { kind: "step", status: "done" }],
   ["01a115e2-9544-7204-b8db-8ce4d5319048/p170", { kind: "step", status: "doing" }]]);
-const data = async (now: number, prod: AuditRow[]): Promise<HandData> => ({ now, registry: await registry(), refs: refs(), audit: { prod, staging: [] }, events: {}, errors: [] });
+// Prod ran a8f85b420699 from 10-15 10:24:30Z, and it holds F2's box stop commit 98c14dbd1a (checked with gitReleaseHolds on 10-18).
+const data = async (now: number, prod: AuditRow[]): Promise<HandData> => ({ now, registry: await registry(), refs: refs(), audit: { prod, staging: [] }, events: {}, errors: [],
+  deploys: [{ at: Date.parse("2026-10-15T10:24:30Z"), release: "a8f85b420699" }], held: new Map([["a8f85b420699", new Set(["commit:98c14dbd1a"])]]) });
 const metrics = async (now: number) => parseDutyInput(JSON.parse(await readFile(join(DIR, "hand-fixes.duty.json"), "utf8")), "d", now).metrics;
 
 test("audit 13533 is a lane rate change of F1, since a guard named in the prose does not beat the keys", async () => {
@@ -148,4 +150,66 @@ test("a box process an ssh session left behind counts when its script writes, an
   ].join("\n"));
   assert.equal(hosts.length, 4);
   assert.deepEqual(hostWriters(hosts).map(host => host.pid), [433386, 3577784, 1589822]);
+});
+
+// Guards the d3 run of 10-18 17:18Z: F18 had no done_at, so its done step p146 dated the design from the start and audit 14032 (06:04Z, off
+// "until land 38 is on prod") read as a repeat, though e0d09f5a42 reached prod only at 12:31:13Z in 43490e7e9f (promote 12).
+const F18_REFS = (): Map<string, RefState> => new Map([["01a11bd7-072f-7591-ad1d-f123c276cde5/p146", { kind: "step", status: "done" }],
+  ["01a115e2-9544-7204-b8db-8ce4d5319048/p700", { kind: "step", status: "done" }], ["commit:e0d09f5a42", { kind: "git", exists: true }], ["commit:0123456789", { kind: "git", exists: true }]]);
+const DEPLOYS: Deploy[] = [{ at: Date.parse("2026-10-15T10:24:30Z"), release: "a8f85b420699" }, { at: Date.parse("2026-10-18T12:31:13Z"), release: "43490e7e9f94" }];
+const SUPPLY = [hand(14032, Date.parse("2026-10-18T06:04:20Z"), "supply_hold.enabled", "Crawler ops 06:0xZ (c72): Off until land 38 is on prod."),
+  hand(14098, Date.parse("2026-10-18T12:33:34Z"), "supply_hold.enabled", "Crawler ops 12:3xZ: land 38 on prod since 12:31:13Z. supply_hold.enabled false -> true.")];
+const f18 = async (change: Partial<Fault>, extra: Partial<HandData> = {}): Promise<HandData> => {
+  const reg = await registry();
+  const undated = ({ done_at: _, ...fault }: Fault): Fault => fault;
+  const faults = reg.faults.map(fault => fault.id === "F18" ? { ...undated(fault), ...change } : fault);
+  return { now: Date.parse("2026-10-18T17:18:11Z"), registry: { ...reg, faults }, refs: F18_REFS(), audit: { prod: SUPPLY, staging: [] }, events: {}, errors: [], ...extra };
+};
+const HELD = new Map([["a8f85b420699", new Set<string>()], ["43490e7e9f94", new Set(["commit:e0d09f5a42"])]]);
+
+test("a commit design ships when prod first runs a release that holds it: audit 14032 before it is no repeat, audit 14098 after it is one", async () => {
+  const data = await f18({ designs: ["01a11bd7-072f-7591-ad1d-f123c276cde5/p146", "commit:e0d09f5a42"] }, { deploys: DEPLOYS, held: HELD });
+  const output = report(data, await metrics(data.now));
+  assert.equal(output.metrics.repeats_after_design, 1);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "repeat").map(slice => /audit (\d+)/.exec(slice.excerpt)![1]), ["14098"]);
+  const fault = data.registry!.faults.find(item => item.id === "F18")!;
+  assert.equal(designOnProd(fault, SUPPLY[0]!.ts, DEPLOYS, HELD), "not_live");
+  assert.equal(designOnProd(fault, SUPPLY[1]!.ts, DEPLOYS, HELD), "live");
+  const restore = classifyConfig({ actor: "rate-controller", writer: "hold-expiry", keys: ["supply_hold.enabled"], text: "guard off ended: supply_hold.enabled" }, data.registry!);
+  assert.equal(restore.kind, "automatic");
+});
+
+test("a design commit that no prod release holds yet makes no repeat and is flagged as not on prod", async () => {
+  const data = await f18({ designs: ["01a11bd7-072f-7591-ad1d-f123c276cde5/p146", "commit:e0d09f5a42", "commit:0123456789"] }, { deploys: DEPLOYS, held: HELD });
+  const output = report(data, await metrics(data.now));
+  assert.equal(output.metrics.repeats_after_design, 0);
+  assert.match(output.flagged!.find(slice => slice.kind === "design_not_on_prod")!.excerpt, /F18 commit:e0d09f5a42 commit:0123456789/);
+});
+
+test("with no deploy read a commit design falls back to done_at, and with no done_at either repeats_after_design is a miss", async () => {
+  const designs = ["01a11bd7-072f-7591-ad1d-f123c276cde5/p146", "commit:e0d09f5a42"];
+  const blind = await f18({ designs });
+  const missed = report(blind, await metrics(blind.now));
+  assert.ok(missed.metrics.repeats_after_design! > 0 && missed.flagged!.some(slice => slice.kind === "unmeasured"));
+  assert.match(missed.flagged!.find(slice => slice.kind === "source_error")!.excerpt, /^prod deploys: F18 /);
+  const dated = await f18({ designs, done_at: "2026-10-18T12:31:13Z" });
+  assert.equal(report(dated, await metrics(dated.now)).metrics.repeats_after_design, 1);
+});
+
+test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip or a Replayed-From trailer", async () => {
+  const { deploys } = parseBox(["D\t2026-10-15T10:24:30Z\ta8f85b420699", "D\t2026-10-18T12:31:13Z\t43490e7e9f94", "D\tnot-a-time\tabc"].join("\n"));
+  assert.deepEqual(deploys, DEPLOYS);
+  assert.equal(releaseAt(DEPLOYS, Date.parse("2026-10-18T12:31:12Z"))!.release, "a8f85b420699");
+  const ancestors: Record<string, string[]> = { land38: ["land37"], pin: ["e0d09f5a42", "replay"] };
+  const git = async (args: string[]): Promise<string> => {
+    if (args[0] === "log" && args[1] === "--all") return "land38 T38\npin T38\nland37 T37\n";
+    if (args[0] === "rev-parse") { const [ref, kind] = args[2]!.split("^"); return `${kind === "{tree}" ? "T38" : ref}\n`; }
+    if (args[0] === "merge-base") { if (ancestors[args[3]!]?.includes(args[2]!)) return ""; throw new Error("exit 1"); }
+    if (args[0] === "log") return args.at(-1) === "pin" && args.includes("--grep=Replayed-From: object") ? "replay\n" : "";
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+  const holds = gitReleaseHolds(git);
+  assert.equal(await holds("land38", "e0d09f5a42"), true);
+  assert.equal(await holds("land38", "object"), true);
+  assert.equal(await holds("land38", "other"), false);
 });
