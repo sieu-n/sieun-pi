@@ -24,7 +24,9 @@ import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatal
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
-export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }
+export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void;
+  /** The session finished a Prime compaction; `file` is its session file on this box. */
+  compacted?(id: string, file: string | undefined): void }
 
 /** Native session-owned slash commands (prime-agent SESSION_SLASH_COMMAND_NAMES). The session runs them from prompt text; getCommands does not list them. */
 const SESSION_COMMANDS: Command[] = [
@@ -739,7 +741,7 @@ export class ThreadHub {
           const native = event.event.type;
           if (native === "agent_end") this.turnEnded(thread);
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
-          if (native === "compaction_end" && !event.event.aborted) await this.resnapshot(thread);
+          if (native === "compaction_end" && !event.event.aborted) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
           if (native === "agent_end" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;
         }

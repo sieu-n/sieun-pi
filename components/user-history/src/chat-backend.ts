@@ -8,6 +8,7 @@ import { ChatLabels } from "./chat-labels.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { FirstPages } from "./first-page.ts";
+import { SessionAutoCompact } from "./session-autocompact.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
@@ -235,6 +236,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     if (!scratch) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
+  // A chat over 100 MB is compacted after its Prime compaction, in a child process (src/session-autocompact.ts). Another box's chat is left to that box.
+  const autoCompact = new SessionAutoCompact({ socketPath, log: dutyLog });
+  const unobserveCompaction = scratch ? () => {} : threads.observe({ live: () => {}, children: () => {}, idle: () => {},
+    compacted: (id, file) => {
+      if (catalog.hostOf(id) !== null) return;
+      void chats.ids().then(ids => ids.has(id) ? autoCompact.compacted(id, file) : null).catch(error => dutyLog(`session compact ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    } });
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
@@ -373,6 +381,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopProdTurns();
       stopBridgeWatch();
       unwatchBoards();
+      unobserveCompaction();
       stopPublish();
       duties.close();
       archives.close();

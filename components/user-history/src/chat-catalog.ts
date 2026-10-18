@@ -780,21 +780,38 @@ export class Catalog {
     return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
-  private emitRun: Promise<void> | undefined;
+  private emitRun: { started: boolean; promise: Promise<void> } | undefined;
   private emitNext: Promise<void> | undefined;
+  private emittedAt = 0;
+  /** The last frame sent, which a new subscriber gets at once. */
+  private lastEvent: SessionsEvent | undefined;
   /**
-   * One projection at a time: an emit asked for while one runs waits for it, and every such ask shares one run after it, so each caller
-   * still gets a frame built after its change. On 10-18 the service's main thread was about 95% busy and project() took half of it, and
-   * frames went out in bursts of 4 identical lists within 140 ms from projections that overlapped.
+   * The least time between two projections for the frames, 1 s. Measured on 10-18: the live daemon sent 13.3 roster updates a second, the
+   * catalog made 4.45 projections a second from them, and the chat service's main thread was 77% busy at load 135, so a page shell waited
+   * p50 0.5 s and p90 1.5 s on the box itself. The sidebar now trails a change by at most a second.
+   */
+  emitGapMs = 1000;
+  /**
+   * One projection at a time, at most one per `emitGapMs`: an emit asked for while one waits joins it, and one asked for while one runs waits
+   * for it, and every such ask shares one run after it, so each caller still gets a frame built after its change. On 10-18 the service's main
+   * thread was about 95% busy and project() took half of it, and frames went out in bursts of 4 identical lists within 140 ms from projections
+   * that overlapped.
    */
   private emit(): Promise<void> {
     this.inputs++;
-    if (!this.emitRun) {
-      this.emitRun = this.emitOnce().finally(() => { this.emitRun = undefined; });
-      return this.emitRun;
+    const running = this.emitRun;
+    if (running && !running.started) return running.promise;
+    if (running) {
+      this.emitNext ??= running.promise.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
+      return this.emitNext;
     }
-    this.emitNext ??= this.emitRun.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
-    return this.emitNext;
+    const wait = this.emittedAt + this.emitGapMs - Date.now();
+    const run = { started: false, promise: Promise.resolve() };
+    const start = (): Promise<void> => { run.started = true; return this.emitOnce(); };
+    run.promise = (wait > 0 ? new Promise<void>(resolve => { setTimeout(resolve, wait).unref(); }).then(start) : start())
+      .finally(() => { if (this.emitRun === run) this.emitRun = undefined; });
+    this.emitRun = run;
+    return run.promise;
   }
 
   /**
@@ -803,7 +820,9 @@ export class Catalog {
    */
   private async emitOnce(): Promise<void> {
     if (this.listeners.size === 0 || (this.daemon === "up" && !this.peer.listed) || (this.daemon === "down" && !this.lastError)) return;
+    this.emittedAt = Date.now();
     const event = await this.event();
+    this.lastEvent = event;
     for (const listener of [...this.listeners]) listener(event);
   }
 
@@ -811,6 +830,8 @@ export class Catalog {
 
   subscribe(listener: (event: SessionsEvent) => void): () => void {
     this.listeners.add(listener);
+    // A page load gets the list as it was at the last frame at once, and the fresh one when the refresh's projection lands.
+    if (this.lastEvent) listener(this.lastEvent);
     void this.refresh().catch(async () => { listener(await this.event()); });
     return () => { this.listeners.delete(listener); };
   }
