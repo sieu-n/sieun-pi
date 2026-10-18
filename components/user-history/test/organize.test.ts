@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
@@ -46,9 +46,10 @@ test("labels: create reuses a tag by name, rename refuses a clash, delete strips
   assert.equal(Object.getPrototypeOf(state.threads), null, "thread ids never reach an object prototype");
 });
 
-test("labels file: private, atomic, and concurrent writers all land", async () => {
+test("labels file: private, atomic, and concurrent writers all land", async context => {
   await mkdir(artifacts(), { recursive: true });
   const directory = await mkdtemp(join(artifacts(), "labels-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "labels.json");
   const store = new ChatLabels(path);
   const { tagId } = await store.apply({ op: "create", name: "review", ids: [] });

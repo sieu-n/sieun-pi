@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -87,6 +87,7 @@ test("a chat that finds no daemon starts one through the installed launcher, onc
     daemon.close();
     // Last: a chat still running finds its daemon socket gone once the link is removed, and its keeper starts a daemon in a new /tmp folder.
     await unlink(temporary).catch(() => {});
+    await rm(root, { recursive: true, force: true });
   });
 
   assert.equal(await daemons(socket), 0, "no daemon before the chat starts");

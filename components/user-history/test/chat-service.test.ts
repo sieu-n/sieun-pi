@@ -182,9 +182,8 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
       await assert.rejects(run("start", flags), /occupied by an unverified service/);
       assert.equal(await (await fetch(url)).text(), "unrelated");
     } finally { await new Promise<void>(resolve => occupant.close(() => resolve())); }
-    await writeFile(join(directory, "result.json"), JSON.stringify({ passed: true, port, url, first, restarted }));
   } finally {
-    try { await run("stop"); } finally { await reaper.stop(); }
+    try { await run("stop"); } finally { await reaper.stop(); await rm(directory, { recursive: true, force: true }); }
   }
 });
 
@@ -237,7 +236,7 @@ test("a failed or hung chat start leaves no serve behind, and chat stop ends a s
     assert.doesNotMatch(await run("hang", "status"), /never answered/);
     assert.equal(await run("hang", "stop"), "Chat is stopped.");
   } finally {
-    assert.deepEqual(await reaper.stop(), [], "no serve was left for the reaper");
+    try { assert.deepEqual(await reaper.stop(), [], "no serve was left for the reaper"); } finally { await rm(directory, { recursive: true, force: true }); }
   }
 });
 

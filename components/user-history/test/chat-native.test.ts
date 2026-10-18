@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile, access, symlink, unlink } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile, access, symlink, unlink } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -148,7 +148,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
   const chatCli = async (command: string) => (await promisify(execFile)(node,
     [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(chatPort), "--socket", socket, "--data-dir", chatData], { env, timeout: 40000 })).stdout.trim();
   const reaper = reapServeOnExit(root);
-  context.after(async () => { await chatCli("stop").catch(() => {}); await reaper.stop(); });
+  context.after(async () => { await chatCli("stop").catch(() => {}); await reaper.stop(); await rm(root, { recursive: true, force: true }); });
   const chatUrl = await chatCli("start");
   const shell = await fetch(chatUrl);
   assert.equal(shell.status, 200);
@@ -405,19 +405,11 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     thread.close();
     savedThread.close();
     sessionsStream.close();
-    await writeFile(join(root, "result.json"), JSON.stringify({ passed: true, threadId, savedId: saved.sessionId, providerStarts: starts, events: thread.events.length }, null, 2));
   } finally {
-    await writeFile(join(root, "thread-events.json"), JSON.stringify(watchers.map(watcher => watcher.events), null, 1)).catch(() => {});
     await chatCli("stop").catch(() => {});
     await native.close();
     try { await stopChatNativeDaemon(daemon, socket); }
-    finally {
-      daemon.close();
-      const logs = native.logs();
-      await writeFile(join(root, "stdout.jsonl"), logs.stdout);
-      await writeFile(join(root, "stderr.txt"), logs.stderr);
-      process.stdout.write(`Native chat test artifacts: ${root}\n`);
-    }
+    finally { daemon.close(); }
   }
   await assert.rejects(access(socket), { code: "ENOENT" });
 });
