@@ -2,67 +2,107 @@
 
 A tool call returns its result only when the cell ends, so a note on a cell that loops on the Mac's load or free memory reached the agent only
 after the loop ended (on 10-13 such loops held 8 jobs 2 min to 1 h 51 min). load-wait.ts puts one prelude line in front of such a cell, which
-runs this file once per kernel and file version and then arms the cell. While the armed cell runs:
+runs this file once per kernel and file version and then arms the cell. A cell that only quotes a load wait in a string is armed too, so the
+wait ends only at the first sleep after a load read, and everything else runs as before. While the armed cell runs:
 
-1. Its first `time.sleep` or `asyncio.sleep` called from the cell's own code raises LoadWaitEnded, so the loop ends after its first check.
-   Sleeps inside library calls (rlm.delete_subagent waits with asyncio.sleep), in other threads and in tasks the cell did not await run as
-   before: a cell that only quotes a load wait in a string matches too, and its library calls must keep working.
-2. Each shell command it starts through bash() gets a shell `sleep` function that ends the shell with exit 75, and each Python process those
-   commands start gets the sitecustomize.py in load-wait-shim/, which ends the process at its first sleep the same way. That covers the
+1. A load read in it marks it: os.getloadavg, a child process that runs sysctl vm.loadavg, uptime or memory_pressure, or a bash() command
+   that names one. Its next `time.sleep` or `asyncio.sleep` called from the cell's own code ("<cell-N>") raises LoadWaitEnded, so the loop
+   ends after its first check. Sleeps inside library calls (rlm.delete_subagent waits with asyncio.sleep) and in other threads run as before.
+2. Each shell command it starts through bash() sources load-wait-shim/load-wait.sh, and each Python process those commands start gets
+   load-wait-shim/sitecustomize.py. Each ends at its own first sleep after a load read, with exit 75. That covers the
    `bash('python3 -u gate.py')` form and the shell `until ...; do sleep 60; done` form.
 
-When the cell ends, the environment it changed goes back, and later cells sleep as before. The cell's tool result carries LOAD_WAIT_NOTE.
+When the cell ends, the environment it changed goes back. The cell's tool result carries LOAD_WAIT_NOTE.
 """
 
 import asyncio
 import os
+import re
+import subprocess
 import sys
 import time
 
-VERSION = 2
+VERSION = 3
 SHIM = os.path.join(os.path.dirname(os.path.realpath(__file__)), "load-wait-shim")
+SHELL = ". '" + os.path.join(SHIM, "load-wait.sh").replace("'", "'\\''") + "'"
 MESSAGE = "the load wait ended after its first check (c47); run the check now"
-SHELL = "sleep() { printf '%s\\n' 'user-history: " + MESSAGE + "' >&2; exit 75; }"
 PREFIX = "PRIME_AGENT_BASH_COMMAND_PREFIX"
-# The kernel compiles each cell as "<cell-N>".
+LOAD = re.compile(r"\bvm\.loadavg\b|\bmemory_pressure\b|\buptime\b")
 CELL = "<cell"
 
 
 class LoadWaitEnded(BaseException):
-    """Raised at the armed cell's first sleep. A BaseException, so an `except Exception` around the check does not turn it into a hot loop."""
+    """Raised at the armed cell's first sleep after a load read. A BaseException, so an `except Exception` around the check cannot loop."""
 
 
 _armed = set()
+_read = set()
 
 
-def _in_armed_cell(caller):
-    if not caller.f_code.co_filename.startswith(CELL):
-        return False
+def _task():
     try:
-        task = asyncio.current_task()
+        return asyncio.current_task()
     except RuntimeError:
-        return False
-    return task is not None and task in _armed and not task.done()
+        return None
 
 
+def _mark():
+    task = _task()
+    if task in _armed:
+        _read.add(task)
+
+
+def _ends(caller):
+    return caller.f_code.co_filename.startswith(CELL) and _task() in _read
+
+
+_getloadavg = os.getloadavg
+_popen_init = subprocess.Popen.__init__
 _time_sleep = time.sleep
 _asyncio_sleep = asyncio.sleep
 
 
+def getloadavg():
+    _mark()
+    return _getloadavg()
+
+
+def popen_init(self, args, *rest, **options):
+    if LOAD.search(str(args)):
+        _mark()
+    _popen_init(self, args, *rest, **options)
+
+
 def sleep(seconds):
-    if _in_armed_cell(sys._getframe(1)):
+    if _ends(sys._getframe(1)):
         raise LoadWaitEnded(MESSAGE)
     return _time_sleep(seconds)
 
 
 async def asleep(delay, result=None):
-    if _in_armed_cell(sys._getframe(1)):
+    if _ends(sys._getframe(1)):
         raise LoadWaitEnded(MESSAGE)
     return await _asyncio_sleep(delay, result)
 
 
+os.getloadavg = getloadavg
+subprocess.Popen.__init__ = popen_init
 time.sleep = sleep
 asyncio.sleep = asleep
+
+try:
+    from rlm import bash as _rlm_bash
+
+    _handle_init = _rlm_bash.BashHandle.__init__
+
+    def handle_init(self, command, *rest, **options):
+        if isinstance(command, str) and LOAD.search(command):
+            _mark()
+        _handle_init(self, command, *rest, **options)
+
+    _rlm_bash.BashHandle.__init__ = handle_init
+except Exception:
+    pass
 
 
 def _set(changes):
@@ -83,7 +123,7 @@ def _set(changes):
 
 
 def arm():
-    task = asyncio.current_task()
+    task = _task()
     if task is None or task in _armed:
         return
     _armed.add(task)
@@ -94,8 +134,9 @@ def arm():
         "PYTHONPATH": f"{SHIM}{os.pathsep}{python_path}" if python_path else SHIM,
     })
 
-    def done(_task):
+    def done(_done):
         _armed.discard(task)
+        _read.discard(task)
         restore()
     task.add_done_callback(done)
 

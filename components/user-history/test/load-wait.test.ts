@@ -47,8 +47,10 @@ async def main():
             print(json.dumps({"ended": type(error).__name__, "text": str(error)}), flush=True)
 asyncio.run(main())
 `;
+// The test may itself run from an armed cell, whose prefix and shim path the runner must not inherit.
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "PRIME_AGENT_BASH_COMMAND_PREFIX" && key !== "PYTHONPATH"));
 const cells = (codes: string[]) => {
-  const run = spawnSync("python3", ["-c", RUNNER], { input: JSON.stringify(codes), encoding: "utf8", timeout: 60_000 });
+  const run = spawnSync("python3", ["-c", RUNNER], { input: JSON.stringify(codes), encoding: "utf8", timeout: 60_000, env });
   return run.stdout.split("\n").filter(Boolean);
 };
 const armed = (code: string) => (endLoadWait("ipython", { code }) as { code: string }).code;
@@ -62,22 +64,28 @@ test("endLoadWait: a load-wait call gets the prelude or the shell lines in front
   assert.equal(endLoadWait("edit", { code: wait }), undefined);
 });
 
-test("endLoadWait: a kernel wait loop ends after its first check, in the cell and in the Python and shell commands it starts; library sleeps run", () => {
+test("endLoadWait: a kernel wait loop ends after its first check, in the cell and in the Python and shell commands it starts; library sleeps and a quoting cell run", () => {
   const loop = "import os, time\nwhile os.getloadavg()[0] >= 0:\n    print('check', flush=True)\n    time.sleep(60)";
   const asyncLoop = "import asyncio, os\nwhile os.getloadavg()[0] >= 0:\n    print('check', flush=True)\n    await asyncio.sleep(60)";
   const child = "import os, subprocess, sys, threading, time\nt = threading.Thread(target=time.sleep, args=(0.01,)); t.start(); t.join()\n" +
-    "py = subprocess.run([sys.executable, '-c', 'import time\\nprint(1, flush=True)\\ntime.sleep(60)'], capture_output=True, text=True)\n" +
-    "sh = subprocess.run(['bash', '-c', os.environ['PRIME_AGENT_BASH_COMMAND_PREFIX'] + '\\nwhile true; do echo check; sleep 60; done'], capture_output=True, text=True)\n" +
+    "py = subprocess.run([sys.executable, '-c', 'import os, time\\nos.getloadavg()\\nprint(1, flush=True)\\ntime.sleep(60)'], capture_output=True, text=True)\n" +
+    "sh = subprocess.run(['bash', '-c', os.environ['PRIME_AGENT_BASH_COMMAND_PREFIX'] + '\\nwhile true; do uptime > /dev/null; echo check; sleep 60; done'], capture_output=True, text=True)\n" +
     "print(py.returncode, py.stdout.strip(), sh.returncode, sh.stdout.strip(), flush=True)\nwhile os.getloadavg()[0] >= 0: time.sleep(60)";
   const library = "import asyncio, os, time\nscope = {}\nexec(compile('import asyncio, time\\nasync def settle():\\n    await asyncio.sleep(0.01)\\n    time.sleep(0.01)\\n', '<global-rules rlm-delete>', 'exec'), scope)\n" +
     "await scope['settle']()\nprint('library sleeps ran', flush=True)\nwhile os.getloadavg()[0] >= 0: time.sleep(60)";
+  // A cell that only quotes a wait: its own sleeps, its Python children's and its shell commands' run, since none follows a load read.
+  const quoted = "import os, subprocess, sys, time\nquoted = 'while os.getloadavg()[0] > 20:\\n    time.sleep(60)'\ntime.sleep(0.01)\n" +
+    "py = subprocess.run([sys.executable, '-c', 'import time\\ntime.sleep(0.2)\\nprint(1)'], capture_output=True, text=True)\n" +
+    "sh = subprocess.run(['bash', '-c', os.environ['PRIME_AGENT_BASH_COMMAND_PREFIX'] + '\\nsleep 0.1; echo ok'], capture_output=True, text=True)\n" +
+    "print(py.returncode, py.stdout.strip(), py.stderr.strip(), sh.returncode, sh.stdout.strip(), flush=True)";
   const after = "import os, time\ntime.sleep(0.01)\nassert 'PRIME_AGENT_BASH_COMMAND_PREFIX' not in os.environ and 'load-wait-shim' not in os.environ.get('PYTHONPATH', '')";
-  const out = cells([armed(loop), armed(asyncLoop), armed(child), armed(library), after]);
+  const out = cells([armed(loop), armed(asyncLoop), armed(child), armed(library), armed(quoted), after]);
   assert.deepEqual(out, [
     "check", `{"ended": "LoadWaitEnded", "text": "the load wait ended after its first check (c47); run the check now"}`,
     "check", `{"ended": "LoadWaitEnded", "text": "the load wait ended after its first check (c47); run the check now"}`,
     "75 1 75 check", `{"ended": "LoadWaitEnded", "text": "the load wait ended after its first check (c47); run the check now"}`,
     "library sleeps ran", `{"ended": "LoadWaitEnded", "text": "the load wait ended after its first check (c47); run the check now"}`,
+    "0 1  0 ok", `{"ok": true}`,
     `{"ok": true}`,
   ]);
 });
@@ -86,10 +94,10 @@ test("endLoadWait: a bash command's shell loop and its Python gate script end af
   const dir = await mkdtemp(join(tmpdir(), "load-wait-"));
   try {
     await writeFile(join(dir, "gate-wait.py"), await fixture("gate-wait.py"));
-    const shell = spawnSync("bash", ["-c", SHELL_END + "while true; do echo check; sleep 60; done"], { encoding: "utf8", timeout: 60_000 });
+    const shell = spawnSync("bash", ["-c", SHELL_END + "while [ $(uptime | wc -c) -gt 0 ]; do echo check; sleep 60; done"], { encoding: "utf8", timeout: 60_000, env });
     assert.equal(shell.status, 75);
     assert.equal(shell.stdout, "check\n");
-    const gate = spawnSync("bash", ["-c", `${SHELL_END}python3 -u ${join(dir, "gate-wait.py")}`], { encoding: "utf8", timeout: 60_000 });
+    const gate = spawnSync("bash", ["-c", `${SHELL_END}python3 -u ${join(dir, "gate-wait.py")}`], { encoding: "utf8", timeout: 60_000, env });
     assert.equal(gate.status, 75);
     assert.match(gate.stdout, /^\d\d:\d\d:\d\d load [\d.]+ free \d+\n$/);
     assert.match(gate.stderr, /load wait ended after its first check/);
@@ -97,8 +105,13 @@ test("endLoadWait: a bash command's shell loop and its Python gate script end af
     const copy = join(dir, "load-wait-shim");
     await mkdir(copy);
     await writeFile(join(copy, "sitecustomize.py"), await readFile(join(import.meta.dirname, "..", "src", "load-wait-shim", "sitecustomize.py")));
-    const both = spawnSync("bash", ["-c", `${SHELL_END}PYTHONPATH=${copy}:$PYTHONPATH python3 -u ${join(dir, "gate-wait.py")}`], { encoding: "utf8", timeout: 60_000 });
+    const both = spawnSync("bash", ["-c", `${SHELL_END}PYTHONPATH=${copy}:$PYTHONPATH python3 -u ${join(dir, "gate-wait.py")}`], { encoding: "utf8", timeout: 60_000, env });
     assert.equal(both.status, 75);
     assert.doesNotMatch(both.stderr, /RecursionError|Error in sitecustomize/);
+    // The global-rules sitecustomize runs the next one on the path, which is the shim again (load wait probe 2, 10-18 02:20Z).
+    const rules = join(import.meta.dirname, "..", "..", "global-rules", "python-child");
+    const chained = spawnSync("bash", ["-c", `${SHELL_END}PYTHONPATH=$PYTHONPATH:${rules} python3 -c 'import time; time.sleep(0.01); print(1)'`], { encoding: "utf8", timeout: 60_000, env });
+    assert.equal(chained.status, 0, chained.stderr);
+    assert.equal(chained.stdout, "1\n");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

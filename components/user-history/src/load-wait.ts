@@ -4,7 +4,8 @@
  * "working" for 2 min to 1 h 51 min, waiting for load1 under 20 or 30 and free memory at 30% or 20%. load1 stayed 33 to 311 from 13:33Z, so none
  * ran its check, and each job kept its worker and Python kernel the whole time. Such code runs (owner 10-18: "all these should be modeled as a
  * soft cap"), and the chat extension adds LOAD_WAIT_NOTE to its tool result. A tool result reaches the agent only when the call ends, so the
- * call's wait also ends after its first check: an ipython cell gets the load-wait-end.py prelude and a bash command gets SHELL_END in front.
+ * call's wait also ends at its first sleep after a load read: an ipython cell gets the load-wait-end.py prelude and a bash command gets
+ * SHELL_END in front.
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,8 +26,8 @@ export function loadWaitLoop(code: string): boolean {
   return LOAD_READ.test(text) && LOOP.test(text) && SLEEP.test(text) && THRESHOLD.test(text) && EXIT.test(text);
 }
 
-export const LOAD_WAIT_NOTE = "Note (c47, c43): this code waits in a loop for the Mac's load or free memory to drop. It ran up to its first " +
-  "check, and its first sleep ended the wait, in the cell and in the shell and Python commands it started. No measurement backs that wait: on " +
+export const LOAD_WAIT_NOTE = "Note (c47, c43): this code waits in a loop for the Mac's load or free memory to drop. It ran, and its first " +
+  "sleep after a load read ended the wait, in the cell and in the shell and Python commands it started. No measurement backs that wait: on " +
   "10-12 load stayed above 30 for hours, and 8 such loops held jobs 2 min to 1 h 51 min without running their check. Run the check, build or " +
   "browser walk now. If it fails, report the failure with the load and memory you measured at that moment.";
 
@@ -45,8 +46,8 @@ except Exception as error:
     print(f"user-history: the load-wait end did not load: {error}", file=sys.stderr)
 `)}, "<user-history load wait>", "exec"), {})\n`;
 
-/** The shell lines in front of a bash command that loops on load: its `sleep` ends the shell, and its Python processes end at their first sleep. */
-export const SHELL_END = `sleep() { printf '%s\\n' 'user-history: the load wait ended after its first check (c47); run the check now' >&2; exit 75; }\n` +
+/** The shell lines in front of a bash command that loops on load: it and its Python processes end at their first sleep after a load read. */
+export const SHELL_END = `. ${JSON.stringify(join(SHIM, "load-wait.sh"))}\n` +
   `export PYTHONPATH=${JSON.stringify(SHIM)}\${PYTHONPATH:+:\$PYTHONPATH}\n`;
 
 const codeOf = (toolName: string, input: Record<string, unknown>): string | undefined => {
