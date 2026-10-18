@@ -1,4 +1,5 @@
 // Guards the 10-17 22:37Z clean-room run-4 failure: the owner's first message after an archive and reopen got a 502 before the worker attached.
+// Also guards 10-18 run-2: that message was answered, but the chat stayed in archived-chats.json and GET agents answered 404 "This thread is not a chat."
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,6 +13,10 @@ import { ThreadOrigins } from "../src/thread-origin.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { startChatServer } from "../src/chat-server.ts";
+import { loadRecord } from "../src/chat-brief.ts";
+import { Chats } from "../src/chats.ts";
+import { IdIndex } from "../src/id-index.ts";
+import { source } from "./chats-helpers.ts";
 
 function latch() {
   let resolve!: () => void;
@@ -22,6 +27,7 @@ function latch() {
 async function fixture(t: TestContext) {
   const dir = await mkdtemp(join(tmpdir(), "reopen-route-"));
   const manager = SessionManager.create(dir, dir);
+  manager.appendCustomEntry("chat_mode", { v: 1 });
   manager.appendMessage({ role: "user", content: "original history", timestamp: 1 });
   manager.appendSessionState({ status: "archived" });
   manager.flushNow();
@@ -32,10 +38,18 @@ async function fixture(t: TestContext) {
   const live: SessionSummary = { ...saved, id: "resumed-worker", activeSessionId: "resumed-worker", lifecycle: "live", workerState: "ready" };
   const creating = latch(), createReady = latch(), attaching = latch(), attachReady = latch(), accepted = latch(), replyReady = latch();
   const calls: { type: string; message?: string; streamingBehavior?: string; activeSessionId?: string }[] = [];
+  const steering = latch(), steeringReady = latch(), detached = latch();
+  let holdSteering = false, holdKill = false;
+  const killing = latch(), killReady = latch();
+  let killAnswer: { success: true } | { success: false; error: string } = { success: true };
   let responseData: unknown = live;
   let listed = saved;
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index"), archived = new IdIndex(join(dir, "archived-chats.json"), "Archived chat index");
+  await archived.add(id);
+  let chats!: Chats;
   const catalog = new Catalog("/isolated-reopen.sock", new ChatReadState(join(dir, "reads.json")), new ChatLabels(join(dir, "labels.json")),
-    { ids: async () => new Set([id]), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) }, new ThreadOrigins({ ids: async () => [] }));
+    { ids: () => chats.ids(), checkIns: async () => new Map(), archivedIds: () => chats.archivedIds(),
+      links: async () => ({ children: [], board: null, roots: [], messages: [] }) }, new ThreadOrigins({ ids: async () => [] }));
   t.mock.method(catalog, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "waitForHello", async () => ({}));
@@ -57,14 +71,18 @@ async function fixture(t: TestContext) {
       case "prompt":
         { const writer = SessionManager.open(file); writer.appendMessage({ role: "user", content: command.message!, timestamp: 2 }); writer.flushNow(); }
         accepted.resolve(); await replyReady.promise; return { success: true };
-      case "detach": case "kill": return { success: true };
+      case "set_steering_mode": if (holdSteering) { steering.resolve(); await steeringReady.promise; } return { success: true };
+      case "detach": detached.resolve(); return { success: true };
+      case "kill": if (holdKill) { killing.resolve(); await killReady.promise; } return killAnswer;
+      case "get_heartbeat": return { success: true, data: null };
       default: throw new Error(`Unexpected daemon command ${command.type}`);
     }
   });
   await catalog.refresh();
   const hub = new ThreadHub("/isolated-reopen.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
-  const backend = { chats: { ids: async () => new Set([id]) }, threads: hub, catalog,
-    close: async () => { await hub.close(); await catalog.close(); } } as unknown as ChatBackend;
+  chats = new Chats(index, hub, sessionId => catalog.summary(sessionId), "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir), archived });
+  const backend = { chats, threads: hub, catalog,
+    close: async () => { chats.close(); await hub.close(); await catalog.close(); } } as unknown as ChatBackend;
   const asset = { body: Buffer.from(""), etag: '"test"', contentType: "text/plain" };
   const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "test-token", stopToken: "test-stop",
     identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-reopen.sock" }, onStop: async () => {} });
@@ -72,9 +90,17 @@ async function fixture(t: TestContext) {
     method: "POST", headers: { "content-type": "application/json", origin: new URL(server.url).origin, "x-chat-token": "test-token" },
     body: JSON.stringify({ requestId, message, images: [], mode: "followUp" }), ...(signal ? { signal } : {}),
   });
-  return { id, file, hub, catalog, calls, creating, createReady, attaching, attachReady, accepted, replyReady, post,
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= (async () => { createReady.resolve(); attachReady.resolve(); replyReady.resolve(); steeringReady.resolve(); killReady.resolve(); await server.close(); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); })();
+  t.after(close);
+  const archive = () => fetch(server.url + `api/threads/${id}/archive`, {
+    method: "POST", headers: { "content-type": "application/json", origin: new URL(server.url).origin, "x-chat-token": "test-token" }, body: "{}" });
+  const agents = () => fetch(server.url + `api/threads/${id}/agents`, { headers: { origin: new URL(server.url).origin, "x-chat-token": "test-token" } });
+  const membership = async () => ({ chats: await index.ids(), archived: await archived.ids() });
+  return { id, file, hub, catalog, chats, calls, agents, membership, archive, steering, steeringReady, detached, holdSteering: () => { holdSteering = true; }, killing, killReady,
+    holdKill: () => { holdKill = true; }, failKill: (error: string) => { killAnswer = { success: false, error }; }, creating, createReady, attaching, attachReady, accepted, replyReady, post,
     publish: () => { listed = live; }, response: (data: unknown) => { responseData = data; },
-    close: async () => { createReady.resolve(); attachReady.resolve(); replyReady.resolve(); await server.close(); await rm(dir, { recursive: true, force: true }); } };
+    close };
 }
 
 test("the first owner POST waits for the resumed snapshot even while the catalog still lists the archived session", async t => {
@@ -99,6 +125,143 @@ test("the first owner POST waits for the resumed snapshot even while the catalog
     assert.equal(f.hub.state(f.id)?.info.sessionId, f.id);
     assert.equal(f.hub.state(f.id)?.messages.length, 1);
     assert.equal(SessionManager.open(f.file).getSessionState()?.status, "active");
+  } finally { await f.close(); }
+});
+
+test("the owner's first message to a chat he archived reopens it: same session and history, back in chats.json and the agents route", async t => {
+  const f = await fixture(t);
+  try {
+    assert.equal((await f.agents()).status, 404, "an archived chat is not a chat");
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    const res = await f.post();
+    assert.equal(res.status, 200);
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
+    assert.ok((await f.chats.ids()).has(f.id));
+    const agents = await f.agents();
+    assert.equal(agents.status, 200, await agents.clone().text());
+    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => [c.activeSessionId, c.message, c.streamingBehavior]),
+      [["resumed-worker", "first message after reopen", "steer"]]);
+    const users = SessionManager.open(f.file).getBranch().flatMap(e => e.type === "message" && e.message.role === "user" ? [e.message.content] : []);
+    assert.deepEqual(users, ["original history", "first message after reopen"]);
+    assert.equal(f.hub.state(f.id)?.info.sessionId, f.id);
+    assert.equal((await f.catalog.rows()).find(row => row.id === f.id)?.archived, false);
+    assert.equal((await f.post("reopen-owner-message-2", "second message")).status, 200, "a second send to the reopened chat");
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
+  } finally { await f.close(); }
+});
+
+test("concurrent owner sends with different request ids reopen the chat once and deliver both", async t => {
+  const f = await fixture(t);
+  try {
+    f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    const first = f.post("reopen-owner-message-a", "message a"), second = f.post("reopen-owner-message-b", "message b");
+    assert.deepEqual(await Promise.all([first, second].map(async res => { const done = await res; return `${done.status} ${await done.text()}`; })),
+      ["200 {\"accepted\":true}", "200 {\"accepted\":true}"]);
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
+    assert.equal(f.calls.filter(c => c.type === "create").length, 1);
+    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message).sort(), ["message a", "message b"]);
+  } finally { await f.close(); }
+});
+
+test("a message that resumes an archived chat outside the owner's send route leaves it archived", async t => {
+  const f = await fixture(t);
+  try {
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    await f.hub.prompt(f.id, { message: "a board.wake note", images: [], mode: "steer" }, "wake");
+    assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] });
+    assert.equal((await f.agents()).status, 404);
+  } finally { await f.close(); }
+});
+
+test("a sidebar update that fails after the reopen does not hold the first message back", async t => {
+  const f = await fixture(t);
+  try {
+    const errors: string[] = [];
+    t.mock.method(f.catalog, "notify", async () => { throw new Error("catalog notify failed"); });
+    const write = process.stderr.write.bind(process.stderr);
+    t.mock.method(process.stderr, "write", (chunk: string | Uint8Array, ...rest: never[]) => { errors.push(String(chunk)); return write(chunk, ...rest); });
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    assert.equal((await f.post()).status, 200);
+    await new Promise(done => setImmediate(done));
+    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message), ["first message after reopen"]);
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
+    assert.ok(errors.some(line => line.includes(`chat ${f.id.slice(0, 8)}: reopen: sidebar update: catalog notify failed`)), errors.join(""));
+  } finally { await f.close(); }
+});
+
+test("an archive that lands after the attach, while the reopen writes the chat list, stops the older send, also with a new thread open", async t => {
+  const f = await fixture(t);
+  try {
+    f.holdSteering(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    const send = f.post();
+    await f.steering.promise;
+    const archived = f.archive();
+    await f.detached.promise;
+    const replacement = await f.hub.open(f.id, false, false);
+    f.steeringReady.resolve();
+    const res = await send;
+    assert.equal(res.status, 409, await res.clone().text());
+    assert.deepEqual(await res.json(), { error: "The chat was archived before this message went." });
+    assert.equal((await archived).status, 200);
+    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
+    assert.equal(f.calls.filter(c => c.type === "create").length, 1, "no worker starts again for the archived chat");
+    assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] });
+    assert.equal(SessionManager.open(f.file).getSessionState()?.status, "archived");
+    assert.notEqual(f.hub.state(f.id), replacement.state, "the reopen archived the session again after the replacement opened");
+    assert.equal((await f.agents()).status, 404);
+  } finally { await f.close(); }
+});
+
+test("an archive through the route while the reopen resumes keeps the chat archived and sends nothing", async t => {
+  const f = await fixture(t);
+  try {
+    f.replyReady.resolve();
+    const send = f.post();
+    f.createReady.resolve();
+    await f.attaching.promise;
+    const archived = f.archive();
+    while (f.chats.archives(f.id) === 0) await new Promise(done => setTimeout(done, 5));
+    f.attachReady.resolve();
+    assert.equal((await send).status, 409);
+    assert.equal((await archived).status, 200);
+    assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
+    assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] });
+    assert.equal(SessionManager.open(f.file).getSessionState()?.status, "archived");
+  } finally { await f.close(); }
+});
+
+test("an owner send that comes in while an older archive still stops the worker is the last word: no stale archive write follows it", async t => {
+  const f = await fixture(t);
+  try {
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    assert.equal((await f.post("reopen-owner-message-first", "first")).status, 200);
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
+    f.holdKill();
+    const archived = f.archive();
+    await f.killing.promise;
+    const send = f.post("reopen-owner-message-after-archive", "sent after the archive");
+    await new Promise(done => setTimeout(done, 50));
+    f.killReady.resolve();
+    assert.equal((await archived).status, 200);
+    const res = await send;
+    assert.equal(res.status, 200, await res.clone().text());
+    await new Promise(done => setTimeout(done, 50));
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] }, "the newer send reopened the chat after the archive's writes");
+    assert.deepEqual(f.calls.filter(c => c.type === "prompt").map(c => c.message), ["first", "sent after the archive"]);
+    assert.equal((await f.agents()).status, 200);
+  } finally { await f.close(); }
+});
+
+test("a kill the daemon refuses fails the archive route and writes no archive into the chat list", async t => {
+  const f = await fixture(t);
+  try {
+    f.publish(); f.createReady.resolve(); f.attachReady.resolve(); f.replyReady.resolve();
+    assert.equal((await f.post("reopen-owner-message-first", "first")).status, 200);
+    f.failKill("worker refused the kill");
+    const archived = await f.archive();
+    assert.equal(archived.status, 502, await archived.clone().text());
+    assert.deepEqual(await archived.json(), { error: "worker refused the kill" });
+    assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
   } finally { await f.close(); }
 });
 
@@ -131,6 +294,8 @@ for (const data of [{}, { sessionId: "another-chat", activeSessionId: "wrong-wor
       assert.equal(res.status, 502);
       assert.deepEqual(await res.json(), { error: "Prime Agent returned no matching session for the resumed thread." });
       assert.equal(f.calls.filter(c => c.type === "attach" || c.type === "prompt").length, 0);
+      assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] }, "a failed resume leaves the chat archived");
+      assert.equal((await f.agents()).status, 404);
     } finally { await f.close(); }
   });
 }
@@ -150,5 +315,6 @@ for (const reopen of [false, true]) test(`archiving during resume cancels the ol
     assert.equal(f.calls.filter(c => c.type === "prompt").length, 0);
     assert.equal(f.hub.state(f.id), replacement?.state);
     assert.equal(f.calls.filter(c => c.type === "detach").length, 1);
+    assert.deepEqual(await f.membership(), { chats: [], archived: [f.id] }, "an archive during the resume keeps the chat archived");
   } finally { await f.close(); }
 });

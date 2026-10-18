@@ -35,6 +35,7 @@ export function fakeThreads(calls: string[]) {
     deleteAnswer: "deleted" as SubagentDelete,
     async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); return this.deleteAnswer; },
     async unarchive(id: string) { calls.push(`unarchive ${id}`); },
+    async resume(id: string) { calls.push(`open ${id}`); },
     async archive(id: string) { calls.push(`archive ${id}`); },
     catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },
     async models(_id: string) { return { ...this.catalog, current: null, thinkingLevel: null, availableThinkingLevels: [] }; },

@@ -185,6 +185,8 @@ export interface ChatThreads {
   sessionActive(id: string): Promise<boolean>;
   /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
   unarchive(id: string): Promise<void>;
+  /** Resumes the session and attaches it; throws when the daemon does not resume it. */
+  resume(id: string): Promise<unknown>;
   /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
   archive(id: string): Promise<void>;
   /** A transcript line that starts no turn; the feed shows it as a notice. */
@@ -300,7 +302,7 @@ export interface CheckInSource {
   /** The GitHub state of PRs by number, in the repo of a folder (`prStates`, src/pr-states.ts). Absent: no PR reads as merged. */
   prs?: (cwd: string, numbers: readonly string[]) => Promise<ReadonlyMap<string, PrState>>;
   /**
-   * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
+   * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`) or sends to it (`Chats.reopen`). The
    * scan never takes such a chat back and its sidebar row stays archived, while its session may still wake and answer an agent message. Absent
    * (tests): an owner archive is not remembered.
    */

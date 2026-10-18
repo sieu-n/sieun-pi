@@ -868,13 +868,20 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const rid = requestId(body.requestId);
           const message = text(body.message, "message");
           const images = parseImages(body.images);
-          const mode = (await backend.chats.ids()).has(id) ? "steer" : parseMode(body.mode);
+          const mode = (await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id) ? "steer" : parseMode(body.mode);
           if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
           let pending = sends.get(rid);
           if (pending && pending.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to a different message.");
           // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
-          if (!pending) { pending = { fingerprint, result: backend.threads.prompt(id, { message, images, mode, ready: backend.ownerTurn?.(id) }) }; sends.set(rid, pending); }
+          if (!pending) { const archives = backend.chats.archives(id); pending = { fingerprint, result: (async () => {
+            const ready = backend.ownerTurn?.(id);
+            if (await backend.chats.reopen(id, archives)) {
+              void backend.catalog.notify().catch(error => process.stderr.write(`${new Date().toISOString()} chat ${id.slice(0, 8)}: reopen: sidebar update: ${error instanceof Error ? error.message : String(error)}\n`));
+            }
+            if (backend.chats.archives(id) !== archives) throw new RequestError(409, "The chat was archived before this message went.");
+            await backend.threads.prompt(id, { message, images, mode, ready });
+          })() }; sends.set(rid, pending); }
           await pending.result;
           json(res, 200, { accepted: true }); return;
         }
@@ -888,7 +895,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const audit = archiveAudit(req, id);
           audit("started");
           try {
-            if ((await backend.chats.ids()).has(id)) {
+            if ((await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id)) {
               await backend.chats.archive(id);
               await backend.catalog.notify();
             } else await backend.threads.archive(id);

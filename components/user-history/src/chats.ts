@@ -208,6 +208,9 @@ export class Chats {
   private readonly plain = new Set<string>();
   /** Jobs whose brief was read for the brief check. */
   private readonly briefSeen = new Set<string>();
+  /** The owner's archives of each chat (`archives`), and the last chat-list write of each chat (`membership`). */
+  private readonly archiveCounts = new Map<string, number>();
+  private readonly membershipTail = new Map<string, Promise<void>>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -378,9 +381,50 @@ export class Chats {
    * respond, but not be in the Chats list").
    */
   async archive(id: string): Promise<void> {
-    await this.threads.archive(id);
-    await this.source.archived?.add(id);
-    await this.forget(id);
+    this.archiveCounts.set(id, this.archives(id) + 1);
+    const stop = this.threads.archive(id);
+    stop.catch(() => {});
+    await this.membership(id, async () => {
+      await stop;
+      await this.source.archived?.add(id);
+      await this.forget(id);
+    });
+  }
+
+  /** How many times the owner archived the chat since the service started; a send that began at another count stops before it goes. */
+  archives(id: string): number { return this.archiveCounts.get(id) ?? 0; }
+
+  /**
+   * The owner's send to a chat he archived reopens it, the same way his unarchive does (10-18 run-2: the send was answered while the chat stayed
+   * archived, and GET agents answered 404 "This thread is not a chat."). False when the owner did not archive it, or archived it again after the
+   * send began (`archives` is no longer `since`).
+   */
+  reopen(id: string, since: number): Promise<boolean> {
+    return this.membership(id, async () => {
+      if (this.archives(id) !== since || !(await this.archivedIds()).has(id)) return false;
+      const rearchivedSince = async (): Promise<boolean> => {
+        if (this.archives(id) === since) return false;
+        await this.threads.archive(id);
+        return true;
+      };
+      await this.threads.unarchive(id);
+      if (await rearchivedSince()) return false;
+      await this.threads.resume(id).catch((error: unknown) => { if (this.archives(id) === since) throw error; });
+      if (await rearchivedSince()) return false;
+      const restored = await this.restore(id);
+      return !(await rearchivedSince()) && restored;
+    });
+  }
+
+  /**
+   * Runs one chat's chat-list writes (archive, reopen) one at a time, in the order the owner's actions came in.
+   */
+  private membership<T>(id: string, task: () => Promise<T>): Promise<T> {
+    const run = (this.membershipTail.get(id) ?? Promise.resolve()).then(task, task);
+    const tail = run.then(() => {}, () => {});
+    this.membershipTail.set(id, tail);
+    void tail.then(() => { if (this.membershipTail.get(id) === tail) this.membershipTail.delete(id); });
+    return run;
   }
 
   /** The chats the owner archived, for the sidebar rows: such a row stays archived while an agent message keeps its session live. */
