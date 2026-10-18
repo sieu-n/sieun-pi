@@ -10,6 +10,8 @@ export const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
 const RECONNECT_MS = 5000;
 /** Roster updates come up to 116 a minute (10-12); the catalog lays them into one frame per this wait. */
 const CHANGE_DEBOUNCE_MS = 300;
+/** A copy brought up to date this recently is used as it is; a check-in tick asks for the same chat's file several times in a row. */
+const MIRROR_FRESH_MS = 2000;
 /** Updates the rows cannot place within this wait share one roster list. */
 const CATCH_UP_MS = 1000;
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
@@ -116,6 +118,7 @@ type Remote = {
 export class HostCatalogs {
   private readonly remotes = new Map<string, Remote>();
   private readonly mirrors = new Map<string, Promise<string>>();
+  private readonly mirroredAt = new Map<string, number>();
   private closed = false;
   /** Called after a host's rows changed or it went down, so the catalog lays them into its next frame. */
   onChange: () => void = () => {};
@@ -296,6 +299,7 @@ export class HostCatalogs {
     const key = `${host.name}:${path}`;
     const pending = this.mirrors.get(key);
     if (pending) return pending;
+    if (Date.now() - (this.mirroredAt.get(key) ?? 0) < MIRROR_FRESH_MS) return Promise.resolve(mirrorPath(host, path));
     const local = mirrorPath(host, path);
     const job = (async () => {
       await mkdir(dirname(local), { recursive: true, mode: 0o700 });
@@ -307,6 +311,7 @@ export class HostCatalogs {
         await rename(`${local}.tmp`, local);
       } else if (read.bytes.length) await appendFile(local, read.bytes, { mode: 0o600 });
       else if (!have) await writeFile(local, "", { mode: 0o600 });
+      this.mirroredAt.set(key, Date.now());
       return local;
     })().finally(() => { this.mirrors.delete(key); });
     this.mirrors.set(key, job);

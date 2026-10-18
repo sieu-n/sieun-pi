@@ -775,6 +775,10 @@ export class Catalog {
     if (!summary) { await this.refresh(); summary = this.find(sessionId); }
     // Until every other box listed once, a session this box lacks may run there: the service start's adopt would forget a chat on the Mac.
     if (!summary && this.hosts && !this.hosts.allListed()) throw new Error(`Session ${sessionId.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
+    // Another box's session file is read here from its local copy, so the copy is brought up to date for whoever asked (check-ins, briefs, history).
+    if (summary && this.hosts && this.hostOf(sessionId)) await this.localFile(summary).catch(error => {
+      process.stderr.write(`catalog: copy of ${sessionId.slice(0, 8)} from ${this.hostOf(sessionId)}: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
     if (!summary || this.heldLifecycle.get(sessionId) !== "archived") return summary;
     const { activeSessionId: _activeSessionId, ...saved } = summary;
     return { ...saved, lifecycle: "archived" };
