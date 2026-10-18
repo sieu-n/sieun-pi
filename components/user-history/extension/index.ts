@@ -99,7 +99,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       "with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" or \"Here's the diagram:\" " +
       "before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and cut or split one over " +
       "2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a wiki page, sent as " +
-      "one message with the one-line takeaway and its wiki: link, which shows as a page card.",
+      "one message with the one-line takeaway and its wiki: link, which shows as a page card. Your first reply to a new request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 record types (10-18). The job linkedin field map traces each one to its column.\"",
     parameters: {
       type: "object",
       properties: {

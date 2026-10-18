@@ -12,6 +12,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
+ *   node --import tsx scripts/clean-room/clean-room.ts stall-jobs --run <dir> --until <ISO time> [--after-min <n>]   (checkin-push-control: aborts each chat's first job once)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-hooks --run <dir> --until <ISO time> --window-min <n>   (token-hook-resume: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
@@ -405,6 +406,41 @@ function runProcesses(run: string): number[] {
 }
 
 /**
+ * The stall for the check-in push control (owner 10-16: a parent's check-in "nudges a job idle one interval and restarts it after two"): in the
+ * chat and in the control, the first job of the chat that makes progress, a goal number above 0 on the board or `afterMs` of its own work,
+ * gets its turn aborted once through the abort route. A native abort holds the session's input until the next prompt, so the job sits idle with
+ * its readers' reports queued, which is the stall a check-in has to push and the control has nobody to push. r3g on 10-18 could not judge (k)
+ * because both jobs finished in 20 min.
+ */
+async function stallJobs(run: string, until: number, afterMs: number): Promise<void> {
+  const srv = await server();
+  const state = readJson<RunState>(join(run, "run.json"));
+  const chats = [state.chat, ...(state.control ? [state.control] : [])];
+  const stalled = new Map<string, string>();
+  const seen = new Map<string, number>();
+  while (Date.now() < until && stalled.size < chats.length) {
+    for (const chat of chats) {
+      if (stalled.has(chat.id)) continue;
+      const boardFile = join(DATA, "boards", `${chat.id}.json`);
+      const board = existsSync(boardFile) ? readJson<ChatBoard>(boardFile) : undefined;
+      const moved = (board?.plan ?? []).some(goal => (goal.target?.current ?? 0) > 0);
+      const { agents } = await call(srv, "GET", `api/threads/${chat.id}/agents`).catch(() => ({ agents: [] })) as { agents: { sessionId?: string; key?: string; name?: string; state?: string }[] };
+      const job = agents.find(agent => agent.sessionId && agent.key?.startsWith("child:") && !/^check-in /.test(agent.name ?? ""));
+      if (!job?.sessionId) continue;
+      if (!seen.has(job.sessionId)) seen.set(job.sessionId, Date.now());
+      if (!moved && Date.now() - seen.get(job.sessionId)! < afterMs) continue;
+      try {
+        await call(srv, "POST", `api/threads/${job.sessionId}/abort`, {});
+        stalled.set(chat.id, job.sessionId);
+        log(run, `stalled job ${job.name} (${job.sessionId}) of ${chat.name}: aborted its turn ${moved ? "after the goal's first move" : `after ${Math.round(afterMs / 60_000)} min of work`}`);
+      } catch (error) { log(run, `stall ${job.sessionId}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    await new Promise(resolve => setTimeout(resolve, 15_000));
+  }
+  writeJson(join(run, "stalls.json"), Object.fromEntries(stalled));
+}
+
+/**
  * Ends a run whatever its verdict: stops its processes, archives the chat and every job it had through the archive route, marks the wiki
  * pages the chat made as test output (wiki-pages.ts), removes its todos, corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
  * command can run again; a run already torn down is left as it is.
@@ -470,6 +506,11 @@ async function main(): Promise<void> {
     const run = need(flags, "run");
     const kill = await killWorker(run, Date.parse(need(flags, "until")), flags.name);
     log(run, kill ? `killed worker ${kill.workerId} (pid ${kill.pid}) of the chat after job ${kill.record.name} was spawned` : "kill-worker: no spawn of the chat before --until");
+    return;
+  }
+  if (command === "stall-jobs") {
+    const run = need(flags, "run");
+    await stallJobs(run, Date.parse(need(flags, "until")), Number(flags["after-min"] ?? "8") * 60_000);
     return;
   }
   if (command === "kill-hooks") {

@@ -86,6 +86,8 @@ export const CHAT_BRIEF: readonly string[] = [
   `Read on demand from \`${BOARD_SKILL}/\`: SKILL.md before a board write; references/jobs.md for jobs; references/check-ins.md for check-ins ` +
     "and duties; references/git.md before a sieun-pi commit, release, merge or push; references/owner.md for todos, review asks, " +
     "logins and reply links or images; references/corrections.md when corrected.",
+  "Your first reply to a new request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 record types (10-18). The job linkedin field map traces each one to its column.\" " +
+    "Six test chats in a row on 10-18 opened with what they started, and their numbers came lines later.",
 ];
 /** The corrections the brief holds in full. */
 export const BRIEF_CORRECTIONS = briefCorrections(CHAT_BRIEF);

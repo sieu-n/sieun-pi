@@ -33,7 +33,8 @@ export const TASKS: Record<string, string> = { "Instagram index gaps": gapsTask(
   "Reddit index gaps": gapsTask("reddit"), "Bluesky index gaps": gapsTask("bluesky"), "Snapchat index gaps": gapsTask("snapchat"), "Twitch index gaps": gapsTask("twitch"),
   "YouTube crawler failures": failuresTask("youtube"), "TikTok crawler failures": failuresTask("tiktok"), "Instagram crawler failures": failuresTask("instagram"),
   "LinkedIn crawler failures": failuresTask("linkedin"), "LinkedIn crawler fields": fieldsTask("linkedin"), "Facebook crawler fields": fieldsTask("facebook"),
-  "Instagram crawler fields": fieldsTask("instagram"), "TikTok crawler fields": fieldsTask("tiktok") };
+  "Instagram crawler fields": fieldsTask("instagram"), "TikTok crawler fields": fieldsTask("tiktok"), "YouTube crawler fields": fieldsTask("youtube"),
+  "X crawler fields": fieldsTask("x") };
 export const taskOf = (name: string): string => {
   const task = TASKS[name];
   if (!task) throw new Error(`no checkin-push-control task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`);
