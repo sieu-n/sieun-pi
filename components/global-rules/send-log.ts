@@ -5,9 +5,8 @@ import { dirname, join, sep } from "node:path";
 /*
  * The record of outside sends (c37). Every guard layer that judges a send writes one JSON line here: the tool_call guard
  * (guard.ts), the kernel's run-time check (send-check.ts), the cua-driver proxy (cua-guard.ts) and the aside-browser skill.
- * A line says who (chat, session), when, what (target), the guard's decision and the OWNER_OK token. The backfill in
- * components/user-history/src/send-log.ts adds the sends it finds in older session transcripts. Chats read it with
- * board.sends() or `node --import tsx components/user-history/src/send-log.ts`, so "did an agent send anything" has one answer.
+ * A line says who (chat, session), when, what (target), the guard's decision and the OWNER_OK token. A backfill on 10-13
+ * added the sends it found in older session transcripts. Chats read it with board.sends(), so "did an agent send anything" has one answer.
  */
 
 /** "allowed": the guard let a send run with an approved OWNER_OK. "refused": the guard stopped it. "ran" and "failed": a transcript shows a send call that ran unchecked, or errored. */
@@ -87,25 +86,4 @@ export function readSends(path: string = sendLogPath()): SendEntry[] {
 		}
 	}
 	return out.sort((a, b) => a.at.localeCompare(b.at));
-}
-
-export interface SendQuery {
-	since?: string;
-	until?: string;
-	/** A case-insensitive substring of the target, the reason or the OWNER_OK token, such as "iwebfusion". */
-	match?: string;
-	chat?: string;
-	decision?: SendDecision;
-}
-
-export function findSends(entries: SendEntry[], query: SendQuery = {}): SendEntry[] {
-	const needle = query.match?.toLowerCase();
-	return entries.filter(
-		(e) =>
-			(!query.since || e.at >= query.since) &&
-			(!query.until || e.at < query.until) &&
-			(!query.chat || e.chat === query.chat || (e.session ?? "").includes(query.chat)) &&
-			(!query.decision || e.decision === query.decision) &&
-			(!needle || `${e.target}\n${e.reason}\n${e.ownerOk ?? ""}`.toLowerCase().includes(needle)),
-	);
 }

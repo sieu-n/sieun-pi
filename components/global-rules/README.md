@@ -49,7 +49,7 @@ Calls made inside the aside_browser skill are left to that skill's page check.
 Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.
 A line holds the time, the decision (`allowed` or `refused`), the layer, the chat and session, the target, the guard's reason and the OWNER_OK token.
 The tool_call guard logs an allowed ipython cell only when it runs, through the kernel check, so one send makes one allowed line.
-`components/user-history/src/send-log.ts backfill` adds the sends that older transcripts show as `ran` lines, up to the first live line, and the same file reads the log (`--match`, `--since`, `--chat`). Chats read it with `board.sends(...)`.
+A backfill on 10-13 added the sends that older transcripts show as `ran` lines, up to the first live line. Chats read the log with `board.sends(...)`.
 `GLOBAL_RULES_SEND_LOG` moves the file; without it, `AGENT_CHAT_DATA_DIR` or the folder of `GLOBAL_RULES_LOG` does, so a suite that moves the guard log moves this one too.
 
 `auto-sns-agent.ts` loads auto-sns-agent's repo guard for every session, whatever its cwd. The rules and their tests stay in that repo's `scripts/repo/agent/guards/`, and its Claude Code hook calls the same rules.

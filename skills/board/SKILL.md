@@ -22,7 +22,7 @@ board.corrections("c12")   # one correction with the owner's words and what enfo
 board.sends("iwebfusion")  # every email, ticket reply or message an agent sent or tried to send there (c37)
 ```
 
-Answer "did an agent send X anything" from `board.sends(...)`, never from the wiki or Aside memory. The send guards write one line to `~/.prime/agent/browser-chat/sends.jsonl` for each send they allow or refuse, with the session, time, target and OWNER_OK token. A backfill of the session transcripts adds the sends from 10-08 on. A `ran` line is a backfilled send that went out unchecked and that the guard would refuse today. From a shell in the sieun-pi checkout, read the same log with `node --import tsx components/user-history/src/send-log.ts --match <text>`, which also takes `--since`, `--chat` and `--decision ran`.
+Answer "did an agent send X anything" from `board.sends(...)`, never from the wiki or Aside memory. The send guards write one line to `~/.prime/agent/browser-chat/sends.jsonl` for each send they allow or refuse, with the session, time, target and OWNER_OK token. A backfill of the session transcripts adds the sends from 10-08 on. A `ran` line is a backfilled send that went out unchecked and that the guard would refuse today.
 
 ## Wait without a kernel
 
