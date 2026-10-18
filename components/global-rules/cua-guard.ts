@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Verdict } from "./guard.ts";
 import { enabled } from "./log.ts";
@@ -35,8 +35,8 @@ export interface ScreenWindow { pid: number; window_id: number; title: string; a
 /** What a desktop call lands on: screenshot pixels per screen point, and the on-screen windows. */
 export interface Desktop { scale: number; windows: ScreenWindow[] }
 
-const MAIL_APPS = /^(?:com\.apple\.mail|com\.microsoft\.Outlook|com\.readdle\.smartemail-Mac|it\.bloop\.airmail2|org\.mozilla\.thunderbird|com\.mimestream\.Mimestream|com\.superhuman\.electron|com\.hey\.app\.desktop|io\.canarymail\.mac|com\.postbox-inc\.postbox)$/i;
-const MESSAGE_APPS = /^(?:com\.apple\.MobileSMS|com\.tinyspeck\.slackmacgap|com\.kakao\.KakaoTalkMac|ru\.keepcoder\.Telegram|org\.telegram\.desktop|net\.whatsapp\.WhatsApp|desktop\.WhatsApp|com\.hnc\.Discord|com\.microsoft\.teams2?|jp\.naver\.line\.mac|org\.whispersystems\.signal-desktop|com\.facebook\.archon(?:\.developerID)?)$/i;
+const MAIL_APPS = /^(?:com\.apple\.mail|com\.microsoft\.Outlook|com\.readdle\.smartemail-Mac|it\.bloop\.airmail2|org\.mozilla\.thunderbird|com\.mimestream\.Mimestream|com\.superhuman\.electron|com\.hey\.app\.desktop|io\.canarymail\.mac|com\.postbox-inc\.postbox|thunderbird|betterbird|evolution|geary|mailspring)$/i;
+const MESSAGE_APPS = /^(?:com\.apple\.MobileSMS|com\.tinyspeck\.slackmacgap|com\.kakao\.KakaoTalkMac|ru\.keepcoder\.Telegram|org\.telegram\.desktop|net\.whatsapp\.WhatsApp|desktop\.WhatsApp|com\.hnc\.Discord|com\.microsoft\.teams2?|jp\.naver\.line\.mac|org\.whispersystems\.signal-desktop|com\.facebook\.archon(?:\.developerID)?|slack|discord|telegram-desktop|signal-desktop|whatsapp-for-linux|teams-for-linux|element-desktop)$/i;
 const MAIL_TITLE = /\bGmail\b|\bOutlook\b|\bInbox\b|\bCompose\b|\bNew Message\b|\bTickets?\b|\bSupport\b|Zendesk|Freshdesk|Help ?desk|viewticket|Client Area|Intercom|Help Scout|\bContact\b|Submit a request|Help Center|\/ X\b|\bTwitter\b|\bLinkedIn\b|\bMessenger\b|\bDiscord\b|\bWhatsApp\b|\bTelegram\b/i;
 const SEND_LABEL = /^(?:send(?!\s+(?:to|backward|backwards|feedback|to back)\b)\b|submit\b|post(?: reply| all)?$|tweet(?: all)?$|add reply|update ticket|reply and submit|보내기|전송|送信|게시)/i;
 const STRICT_SEND_LABEL = /^(?:send(?!\s+(?:to|backward|backwards|feedback|to back)\b)\b|보내기|전송|送信)/i;
@@ -120,9 +120,16 @@ export function decide(tool: string, args: Record<string, unknown>, ctx: CuaCont
 	return why === null ? null : `cua-driver send guard: refused, because ${reason}, and owner_ok=${token} does not count: ${why.replace(/\.$/, "")}. ${OWNER_OK_HELP}`;
 }
 
-/** The bundle id of a running pid, through lsappinfo; undefined when it cannot tell. */
+/** The bundle id of a running pid, through lsappinfo, or its executable name on Linux; undefined when it cannot tell. */
 export function bundleOf(pid: unknown): string | undefined {
 	if (typeof pid !== "number") return undefined;
+	if (process.platform === "linux") {
+		try {
+			return basename(readlinkSync(`/proc/${pid}/exe`));
+		} catch {
+			return undefined;
+		}
+	}
 	try {
 		return execFileSync("lsappinfo", ["info", "-only", "bundleid", String(pid)], { encoding: "utf8", timeout: 3000 }).match(/bundleID="([^"]+)"/)?.[1];
 	} catch {

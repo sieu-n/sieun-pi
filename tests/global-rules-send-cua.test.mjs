@@ -234,3 +234,11 @@ test("the MCP proxy refuses a Send click before it reaches cua-driver and lets a
     p.close();
   }
 });
+
+test("on Linux a mail or chat app is known by its executable name", () => {
+  for (const bundle of ["thunderbird", "slack", "signal-desktop", "telegram-desktop"]) {
+    assert.match(decide("hotkey", { pid: 1, keys: ["ctrl", "return"] }, { bundle, titles: [] }) ?? "", /cua-driver send guard: refused/, bundle);
+  }
+  assert.equal(decide("hotkey", { pid: 1, keys: ["ctrl", "return"] }, { bundle: "xterm", titles: ["shell"] }), null);
+  if (process.platform === "linux") assert.equal(cua.bundleOf(process.pid), "node");
+});
