@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, oneOffs, parseBox, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -134,4 +134,18 @@ test("a copy-oneoff.sh one-off with a restart policy before its expires_at is no
   ].join("\n"));
   assert.deepEqual(containers[0], { name: "virev-prod-copy-oneoff", status: "running", service: "", oneoff: { expiresAt: 1792348746, restart: "on-failure" } });
   assert.deepEqual(oneOffs(containers, now).map(container => container.name), ["virev-prod-old-oneoff", "virev-prod-norestart-oneoff", "posts-backfill-handrun"]);
+});
+
+// The d3 run at 17:2xZ on 10-18 read 18 while us-metal01 also ran 7 loops that ssh sessions had left behind, which the docker exec read never
+// saw: the census, Meta Ads and TikTok Shop watchers that start the /tmp writers again after a restart, and two Meta Ads walk UPDATE loops.
+test("a box process an ssh session left behind counts when its script writes, and a read-only probe does not", () => {
+  const line = (pid: number, command: string, text: string) => `H\t${pid}\t${Buffer.from(JSON.stringify({ command, text })).toString("base64")}`;
+  const { hosts } = parseBox([
+    line(433386, "/bin/bash /root/meta-ads-ops/defer_future_windows_loop.sh", "psql -c \"UPDATE meta_ads_walks SET next_run_at = now()\""),
+    line(3577784, "/bin/bash /root/census-writer-ops/census_writers_watch.sh", "docker exec -d -w /app virev-prod-crawler-worker sh -c python /tmp/cw_extra_writer.py"),
+    line(1589822, "bash /root/ig-census-bio-seed-20261018.sh", "urllib.request.Request(\"http://127.0.0.1:8787/ops/census/instagram/seed\")"),
+    line(1636679, "bash apiprobe.sh 60", "curl -s http://127.0.0.1:8787/health"),
+  ].join("\n"));
+  assert.equal(hosts.length, 4);
+  assert.deepEqual(hostWriters(hosts).map(host => host.pid), [433386, 3577784, 1589822]);
 });

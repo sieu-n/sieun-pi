@@ -75,6 +75,11 @@ export type RefState = { kind: "step"; status: string | null } | { kind: "git"; 
 export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string } }
 export interface BoxExec { container: string; service: string; running: boolean; command: string }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
+/**
+ * A process on the box that an ssh session left running on its own, with its script's text: parent pid 1 in a session-*.scope (nohup,
+ * setsid), or the main process of a transient systemd-run unit, which no file in the repo declares and a reboot drops.
+ */
+export interface HostLoop { pid: number; command: string; text: string }
 
 /** One hand fix: config rows written together (same world, actor and reason in one minute) count once. */
 export interface HandFix { source: string; at: number; what: string; text: string }
@@ -164,10 +169,14 @@ export function stepRefs(faults: readonly Fault[], boards: ReadonlyMap<string, R
   return refs;
 }
 
-/** The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart` per container and `E<TAB>name<TAB><exec json>` per exec session. */
-export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[] } {
+/**
+ * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart` per container, `E<TAB>name<TAB><exec json>` per exec
+ * session, and `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process.
+ */
+export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[]; hosts: HostLoop[] } {
   const containers: BoxContainer[] = [];
   const execs: BoxExec[] = [];
+  const hosts: HostLoop[] = [];
   const service = new Map<string, string>();
   for (const line of text.split("\n")) {
     const [tag, name, rest] = line.split("\t");
@@ -177,14 +186,27 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
       const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
       containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}) });
       service.set(name, svc);
+    } else if (tag === "H") {
+      const host = JSON.parse(Buffer.from(rest, "base64").toString("utf8")) as { command?: string; text?: string };
+      hosts.push({ pid: Number(name), command: host.command ?? "", text: host.text ?? "" });
     } else if (tag === "E") {
       const exec = JSON.parse(rest) as { Running?: boolean; ProcessConfig?: { entrypoint?: string; arguments?: string[] } };
       execs.push({ container: name, service: service.get(name) ?? "", running: exec.Running === true,
         command: [exec.ProcessConfig?.entrypoint ?? "", ...(exec.ProcessConfig?.arguments ?? [])].join(" ").trim() });
     }
   }
-  return { containers, execs };
+  return { containers, execs, hosts };
 }
+
+/**
+ * What a box script writes to prod or staging: WRITES, an SQL write, an /ops/ call, a detached docker exec (a hand-started worker), a
+ * docker cp into a container or pg_repack. On 10-18 at 17:2xZ us-metal01 ran 7 such loops that ssh sessions left behind, which the
+ * docker exec read never saw: the census, Meta Ads and TikTok Shop watchers that start the /tmp writers again after a restart, two Meta
+ * Ads walk UPDATE loops and a census bio seed.
+ */
+export const HOST_WRITES = new RegExp(`${WRITES.source}|\\b(?:UPDATE\\s+\\w+(?:\\s+\\w+)?\\s+SET|INSERT\\s+INTO|DELETE\\s+FROM)\\b|/ops/|docker\\s+exec\\s+-d\\b|docker\\s+cp\\b|pg_repack|pkill\\b`, "i");
+/** Detached session processes on the box whose script writes; read-only probes and monitors do not count. */
+export const hostWriters = (hosts: readonly HostLoop[]): HostLoop[] => hosts.filter(host => HOST_WRITES.test(host.text));
 
 /**
  * A one-off that runs itself: scripts/copy-oneoff.sh started it with a restart policy, so docker starts it again after a failure and an
@@ -221,7 +243,7 @@ export interface HandData {
   now: number;
   registry?: Registry; refs?: Map<string, RefState>;
   audit: Partial<Record<World, AuditRow[]>>; events: Partial<Record<World, StatusEvent[]>>;
-  box?: { containers: BoxContainer[]; execs: BoxExec[] }; mac?: MacProcess[];
+  box?: { containers: BoxContainer[]; execs: BoxExec[]; hosts?: HostLoop[] }; mac?: MacProcess[];
   errors: { source: Source; message: string }[];
   /** The faults earlier runs filed (HandState.filed). */
   filed?: Filed[];
@@ -302,7 +324,9 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     const execs = handExecs(data.box.execs, registry?.exempt.box_exec_regex);
     const left = oneOffs(data.box.containers, at);
     const kept = data.box.containers.filter(container => !container.service && container.status === "running" && keptOneOff(container, at));
-    metrics.unsupervised_box_processes = execs.length + left.length;
+    const loops = hostWriters(data.box.hosts ?? []);
+    metrics.unsupervised_box_processes = execs.length + left.length + loops.length;
+    for (const loop of loops) flagged.push({ at, kind: "box_host_loop", excerpt: `us-metal01 process started by hand over ssh, pid ${loop.pid}, gone at the next reboot: ${loop.command}`.slice(0, 400) });
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
     if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status})`).join(", ")}` });
     if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker and deploy.sh start again, not counted: ${kept.map(container => `${container.name} (until ${utc(container.oneoff!.expiresAt! * 1000)})`).join(", ")}` });
@@ -348,6 +372,28 @@ for c in $(docker ps -a --format '{{.Names}}'); do
     printf 'E\\t%s\\t%s\\n' "$c" "$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")"
   done
 done
+python3 - <<'PY'
+import base64, json, os, re
+for pid in filter(str.isdigit, os.listdir('/proc')):
+    try:
+        cg = open(f'/proc/{pid}/cgroup').read()
+        ppid = open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[1]
+        argv = [a for a in open(f'/proc/{pid}/cmdline', 'rb').read().decode(errors='replace').split('\\0') if a]
+        cwd = os.readlink(f'/proc/{pid}/cwd')
+    except OSError:
+        continue
+    unit = re.search(r'/system\\.slice/([^/\\s]+\\.service)$', cg.strip())
+    transient = bool(unit) and os.path.exists('/run/systemd/transient/' + unit.group(1))
+    if ppid != '1' or not (re.search(r'session-\\d+\\.scope', cg) or transient) or not argv or argv[0].startswith('sshd'):
+        continue
+    text = ' '.join(argv)
+    for a in argv[1:]:
+        if re.search(r'\\.(?:sh|py)$', a):
+            try: text += '\\n' + open(os.path.join(cwd, a), errors='replace').read(65536)
+            except OSError: pass
+            break
+    print('H\\t%s\\t%s' % (pid, base64.b64encode(json.dumps({'command': ' '.join(argv)[:300], 'text': text}).encode()).decode()))
+PY
 `;
 
 function run(command: string, args: string[], signal: AbortSignal, input?: string): Promise<string> {
