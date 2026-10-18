@@ -162,8 +162,24 @@ function assistantLines(message: AssistantMessage, id: string, shown: "reply" | 
     lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp, told: true, ...(quote ? { replyTo: quote } : {}) });
   });
   if (message.stopReason === "aborted") lines.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
-  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: "Error: " + (message.errorMessage?.trim() || "the model returned an error"), at: message.timestamp });
+  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: failureText(message.errorMessage), at: message.timestamp });
   return lines;
+}
+
+/** The note pi-pool's extension adds to a failure it turned into a wait for the session's own slot or backoff time (`waitFailure`). */
+const POOL_SLOT = / pi-pool: [\s\S]*?this session waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+/** The slot (epoch ms) the pool gave the session in a failure's text, or null when the text carries none. */
+export function poolSlot(error: string): number | null {
+  const at = Date.parse(POOL_SLOT.exec(error)?.[1] ?? "");
+  return Number.isFinite(at) ? at : null;
+}
+/**
+ * How a failed assistant message reads. A pool wait is no failure: Prime sleeps until the slot and continues the turn itself, so it reads
+ * as a wait with its time. On 10-18 at 08:32Z a Mac session waiting 23 min for its slot showed "Error: Failed to resolve API key".
+ */
+export function failureText(error: string | undefined): string {
+  const slot = poolSlot(error ?? "");
+  return slot === null ? "Error: " + (error?.trim() || "the model returned an error") : `Waiting for a Claude account until ${clock(slot)}.`;
 }
 
 function customLines(message: CustomMessage, id: string, index: number, nameOf: NameOf): ChatLine[] {

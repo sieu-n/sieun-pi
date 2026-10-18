@@ -1,6 +1,6 @@
 import { clockTime } from "./checkin-settings.ts";
 import { RETRY_BACKOFF_MS } from "./chat-checkin.ts";
-import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, serverNote, turnStarter } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, poolSlot, serverNote, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ChatWait, ThreadMessage } from "./shared/types.ts";
 import type { CheckInSetting } from "./checkin-settings.ts";
@@ -72,15 +72,8 @@ export interface TurnView { messages: readonly ThreadMessage[]; running: boolean
  */
 export interface Stall { error: string; at: number; owner: string | null; aborted: boolean; retrying: boolean; queued: number; slotAt?: number }
 
-/** The pool's note on a failure it turned into a wait for the session's own slot (pi-pool's extension, `waitFailure`). */
-const POOL_SLOT = / pi-pool: [\s\S]*?this session waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
-/** The slot (epoch ms) the pool gave the session in a failure's text, or null when the text carries none. */
-export function poolSlot(error: string): number | null {
-  const at = Date.parse(POOL_SLOT.exec(error)?.[1] ?? "");
-  return Number.isFinite(at) ? at : null;
-}
 /**
- * Whether the pool holds the stall until its slot: Prime sleeps until then (at most 15 min at a time) and the slot's request goes to an account that
+ * Whether the pool holds the stall until its slot: Prime sleeps until then in one wait and the slot's request goes to an account that
  * takes it, so a restart before then only aborts that wait and meets the same refusal. 10-13: 54 check-in restarts of pool waits, each a new 429.
  */
 const poolHolds = (stall: Pick<Stall, "slotAt">, now: number): boolean => stall.slotAt !== undefined && now < stall.slotAt;
