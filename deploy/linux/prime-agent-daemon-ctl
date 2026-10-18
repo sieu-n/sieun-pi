@@ -2,8 +2,8 @@
 """Start and update the Prime Agent daemon for prime-agent-daemon.service.
 
 start   Adopt the supervisor that answers on the socket, or start one, and write its PID to the PIDFile.
-update  Run `prime-agent update $PRIME_UPDATE_ARGS` inside the unit, aimed at the socket, then do what start does
-        for the successor.
+update  Install with `prime-agent update $PRIME_UPDATE_ARGS` inside the unit, run Prime's update restart
+        coordinator for the socket with the unit's clean environment, then do what start does for the successor.
 
 The unit is Type=forking with PIDFile=, and systemd reads the PIDFile after ExecStart and after a
 successful ExecReload, so MainPID names the supervisor that owns the socket. Prime's update restart
@@ -14,15 +14,36 @@ Every prime-agent process this script starts targets the socket argument and not
 picks its daemon from PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET, then $TMPDIR/prime-agent-<uid>/daemon.sock
 (the public command refuses --daemon-socket), and Prime keeps its coordinator registry under
 $TMPDIR/prime-agent-<uid>. So the script sets TMPDIR to the directory above the socket's prime-agent-<uid>
-directory, drops the inherited PRIME_AGENT_INTERNAL_* worker variables and PRIME_AGENT_INTERACTIVE_SELF_UPDATE,
-which would make `prime-agent update` skip the daemon restart, and sets PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET
-to the socket for the update only. The daemon it starts gets --daemon-socket instead.
+directory, drops the inherited PRIME_AGENT_INTERNAL_* worker variables, and sets
+PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET to the socket for the install only. The coordinator and the daemon it
+starts get --daemon-socket instead.
+
+The update runs in two steps, because Prime's coordinator copies the environment of `prime-agent update` into the
+successor supervisor, and every worker and agent shell inherits it. On 10-18 the 06:46Z successor and its 20 workers
+kept the test feed's PRIME_AGENT_DOWNLOAD_BASE_URL and PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS after the update.
+1. `prime-agent update --self` with PRIME_AGENT_INTERACTIVE_SELF_UPDATE=1 and the feed variables installs the release
+   and exits without a restart. That variable makes Prime skip its public argument rewrite, so the ctl passes the
+   --self target that the rewrite adds. It still asks the busy-session confirmation that --force answers.
+2. `prime-agent update --internal-update-restart-coordinator --daemon-socket <socket>
+   --internal-update-restart-status <agent dir>/update-restarts/<file>` without the feed variables runs the same
+   coordinator that `prime-agent update` launches after an install, so the successor gets the unit's environment.
+   The ctl reads the coordinator's status file and prints Prime's own report lines for it.
+
+When Prime reports restart-failed, update still exits 0 once a supervisor owns the socket, with its PID in the
+PIDFile. By then the coordinator has often stopped the predecessor and started a successor that came up after the
+coordinator stopped waiting (10-18 06:47Z: 33.5 s startup, timeout 2 s before it listened). systemd re-reads the
+PIDFile only after a successful ExecReload. After a failed one it finds the old MainPID dead, counts the unit as
+stopped and Restart= starts it again. The result=restart-failed line stays in the journal for prime-install.sh, and
+Prime's own recovery handles the sessions the coordinator did not restore.
+
+update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
+has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
 
 PRIME_UPDATE_ARGS takes --force and --rollback. --force answers Prime's busy-session confirmation, which refuses
 without a TTY; it does not override a prepare refusal, where the running daemon declines the restart because a
 worker is failed, disconnected or not ready.
 
-usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile>
+usage: prime-agent-daemon-ctl start|update <prime-agent> <socket> <pidfile> [<update env file>]
 """
 import json
 import os
@@ -37,7 +58,14 @@ from pathlib import Path
 POLL_SECONDS = 0.1
 UPDATE_ARGS = ("--force", "--rollback")
 KEEP_INTERNAL = ("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR",)
-DROP = ("PRIME_AGENT_INTERACTIVE_SELF_UPDATE", "PRIME_UPDATE_ARGS")
+FEED = ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS")
+INSTALL_ONLY = "PRIME_AGENT_INTERACTIVE_SELF_UPDATE"
+DROP = (INSTALL_ONLY, "PRIME_UPDATE_ARGS", *FEED)
+COORDINATOR_FLAG = "--internal-update-restart-coordinator"
+STATUS_FLAG = "--internal-update-restart-status"
+# Prime's exit code for an install-only update that installed nothing: no newer release, a refused downgrade or an
+# unreachable feed.
+NOT_ATTEMPTED = 75
 
 # Exit codes for update, one per outcome, so prime-install.sh and the journal tell them apart.
 OK = 0
@@ -171,11 +199,14 @@ def start(prime_agent, sock, pidfile):
 
 
 def classify(code, output):
-    """Name the outcome of `prime-agent update` from its exit code and output.
+    """Name the outcome of the install and restart from the last exit code and their joined output.
 
-    Prime exits 1 when the busy-session confirmation refuses without a TTY, and exits 0 with a warning when the
-    package installed but the restart coordinator failed, including when the running daemon refused to prepare.
+    The install exits 1 when the busy-session confirmation refuses without a TTY and 75 when it installed nothing.
+    The coordinator exits 1 when it fails, and restart_report then names the failure in Prime's words, including a
+    prepare refusal, where the running daemon declined the restart.
     """
+    if code == NOT_ATTEMPTED:
+        return FAILED, "prime-agent update installed nothing: no newer release, a refused downgrade or an unreachable feed"
     if "Could not prepare daemon sessions for automatic resume" in output:
         return PREPARE_REFUSED, "prepare refused: the running daemon declined the restart and still runs the previous version; --force does not override this, fix the cause Prime names first"
     if code != 0 and "Re-run with --force to proceed." in output and ("busy session" in output or "Running agents could not be listed" in output):
@@ -187,7 +218,52 @@ def classify(code, output):
     return OK, "updated"
 
 
-def update(prime_agent, sock, pidfile):
+def run(argv, env):
+    """Run one prime-agent command, copy its output to the journal, and return its exit code and output."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
+    lines = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        lines.append(line)
+    return proc.wait(), "".join(lines)
+
+
+def restart_report(status):
+    """The warning `prime-agent update` prints for a failed coordinator, in Prime's wording, so classify reads it as before.
+
+    The coordinator prints its own restore counts.
+    """
+    if not isinstance(status, dict) or status.get("phase") not in ("complete", "skipped", "failed"):
+        return "Warning: Updated, but could not restart the daemon (the coordinator left no final status).\n"
+    if status["phase"] == "failed":
+        return f"Warning: Updated, but could not restart the daemon ({status.get('message') or 'unknown error'}).\n"
+    return ""
+
+
+def restart(prime_agent, sock):
+    agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or "~/.prime/agent").expanduser()
+    restarts = agent_dir / "update-restarts"
+    restarts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    status_path = restarts / f"ctl-{os.getpid()}-{int(time.time())}.json"
+    env = target_env(sock, PRIME_AGENT_CODING_AGENT_DIR=str(agent_dir))
+    code, output = run([prime_agent, "update", COORDINATOR_FLAG, "--daemon-socket", sock, STATUS_FLAG, str(status_path)], env)
+    try:
+        status = json.loads(status_path.read_text())
+    except (OSError, ValueError):
+        status = None
+    report = restart_report(status)
+    sys.stdout.write(report)
+    sys.stdout.flush()
+    return code, output + report
+
+
+def update(prime_agent, sock, pidfile, env_file=None):
+    if env_file:
+        try:
+            os.truncate(env_file, 0)
+        except FileNotFoundError:
+            pass
     try:
         args = shlex.split(os.environ.get("PRIME_UPDATE_ARGS", ""))
     except ValueError as error:
@@ -196,31 +272,33 @@ def update(prime_agent, sock, pidfile):
     if unknown:
         print(f"prime-agent-daemon-ctl: result=usage PRIME_UPDATE_ARGS takes only {' '.join(UPDATE_ARGS)}, got {' '.join(unknown)}", file=sys.stderr)
         return USAGE
-    env = target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock)
-    proc = subprocess.Popen([prime_agent, "update", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
-    lines = []
-    for line in proc.stdout:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        lines.append(line)
-    code, message = classify(proc.wait(), "".join(lines))
+    feed = {k: os.environ[k] for k in FEED if k in os.environ}
+    code, output = run([prime_agent, "update", "--self", *args], target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock, **feed, **{INSTALL_ONLY: "1"}))
+    if code == 0:
+        code, restart_output = restart(prime_agent, sock)
+        output += restart_output
+    code, message = classify(code, output)
     names = {OK: "ok", FAILED: "failed", BUSY_REFUSED: "busy-refused", PREPARE_REFUSED: "prepare-refused", RESTART_FAILED: "restart-failed"}
     print(f"prime-agent-daemon-ctl: result={names[code]} {message}", file=sys.stderr if code else sys.stdout, flush=True)
     started = start(prime_agent, sock, pidfile)
+    if code == RESTART_FAILED and started == OK:
+        pid = Path(pidfile).read_text().strip()
+        print(f"prime-agent-daemon-ctl: restart-failed, but supervisor {pid} owns {sock}; exit 0 so systemd keeps the unit active and reads the PIDFile, and Prime's own recovery restores the sessions", flush=True)
+        return OK
     return code or started
 
 
 def main(argv):
-    if len(argv) != 4 or argv[0] not in ("start", "update"):
+    if not (len(argv) == 4 and argv[0] == "start" or len(argv) in (4, 5) and argv[0] == "update"):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return USAGE
-    command, prime_agent, sock, pidfile = argv
+    command, prime_agent, sock, pidfile, *env_file = argv
     if Path(sock).parent.name != f"prime-agent-{os.getuid()}":
         print(f"{sock} is not in a prime-agent-{os.getuid()} directory, so TMPDIR cannot point Prime's default socket and coordinator registry at it", file=sys.stderr)
         return USAGE
     if command == "start":
         return start(prime_agent, sock, pidfile)
-    return update(prime_agent, sock, pidfile)
+    return update(prime_agent, sock, pidfile, *env_file)
 
 
 if __name__ == "__main__":

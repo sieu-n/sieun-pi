@@ -29,13 +29,19 @@ Prime's update restart coordinator starts the new supervisor itself, and session
 `prime-agent-daemon-ctl start` adopts the supervisor that answers on the socket, or starts one, and writes its PID to the PIDFile. While an update restart coordinator is alive, it waits for that coordinator's supervisor instead of starting a second one.
 On 10-18 at 03:03Z the old `Type=simple` unit ran ExecStart again after the update stopped the old supervisor, that start failed with `ELOCKED` because the new supervisor held the socket lock, and the unit tracked none of them.
 
-Update Prime with `systemctl --user reload prime-agent-daemon.service`. ExecReload runs `prime-agent-daemon-ctl update`, which runs `prime-agent update` inside the unit's cgroup and writes the new supervisor's PID, and systemd reads the PIDFile when the reload ends, so MainPID moves to the new supervisor with no restart.
-From inside an agent session, add `--no-block`, because the update's prepare step waits for the session's own running command to finish, and a blocking reload holds that command open until prepare times out.
+Update Prime from a local feed with `deploy/linux/prime-install.sh <feed-dir> <expect-version> [--rollback]`, installed as `~/setup-logs/prime-install.sh`.
+The script re-runs itself detached with `setsid` and `nohup`, prints its log path and returns at once, because Prime's update prepare aborts a busy agent bash command after 5 s. On 10-18 that abort killed an attached run mid-wait and skipped its post-checks.
+The detached run serves the feed, writes `~/.config/sieun-pi/prime-update.env`, runs `systemctl --user reload --no-block prime-agent-daemon.service`, waits for the reload, checks that the daemon runs the expected build, and writes `<log>.result` with `result=<ctl result> rc=<0|1>`.
+ExecReload runs `prime-agent-daemon-ctl update`, and systemd reads the PIDFile when the reload ends, so MainPID moves to the new supervisor with no restart.
+A plain `systemctl --user reload prime-agent-daemon.service` runs the same update with whatever the env file holds. From inside an agent session, add `--no-block`, because the update's prepare step waits for the session's own running command to finish.
 Do not run `prime-agent update` under `systemd-run`. The new supervisor and the sessions it restores then live in the transient unit's cgroup, and systemd kills them when that unit ends; on 10-18 at 03:03Z that lost the 10 restored sessions.
-The updater reads its feed settings from the unit's environment. While the box serves a local feed, put them in `~/.config/sieun-pi/prime-update.env` (mode 0600), for example `PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS=1`.
-`PRIME_UPDATE_ARGS` in the same file passes `--force` or `--rollback --force` to `prime-agent update`; set it only for a controlled run and empty the file after, as `~/setup-logs/prime-install.sh` does.
+The env file holds the feed settings `PRIME_AGENT_DOWNLOAD_BASE_URL` and `PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS` and `PRIME_UPDATE_ARGS`, which passes `--force` or `--rollback --force`. The ctl empties it as soon as the reload starts, because systemd has already loaded it, so a later start or reload never picks up the same run.
+The ctl updates in two steps, because Prime's restart coordinator copies the updater's environment into the new supervisor and every worker under it. After the 06:46Z update on 10-18 the new supervisor and all 20 workers carried the test feed's URL and insecure-HTTP flag.
+1. `prime-agent update --self` with `PRIME_AGENT_INTERACTIVE_SELF_UPDATE=1` and the feed settings installs the release without a restart.
+2. `prime-agent update --internal-update-restart-coordinator --daemon-socket <socket> --internal-update-restart-status <file>` runs the coordinator that Prime itself launches after an install, with the feed settings dropped, so the new supervisor gets the unit's environment.
+
 `--force` answers Prime's busy-session confirmation, which refuses without a TTY, and Prime then checkpoints the busy sessions and restores them on the new daemon. It does not override a prepare refusal, where the running daemon declines the restart because a worker is failed, disconnected or not ready.
-The ctl prints one `prime-agent-daemon-ctl: result=` line and exits 0 for `ok`, 3 for `busy-refused`, 4 for `prepare-refused`, 5 for `restart-failed` and 1 for any other failure.
+The ctl prints one `prime-agent-daemon-ctl: result=` line and exits 0 for `ok`, 3 for `busy-refused`, 4 for `prepare-refused`, 5 for `restart-failed` and 1 for any other failure, including an install that installed nothing.
 It aims the update at its socket argument through `PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET` and a matching `TMPDIR`, because the public `prime-agent update` refuses `--daemon-socket` and otherwise follows whatever the environment names.
 The unit sets `TimeoutStartSec=infinity`, because systemd times ExecReload with it and a timeout kills the ctl mid-update. On 10-18 an isolated reload whose prepare hit Prime's own worker deadline took 97 s, past the old 90 s default.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
@@ -79,7 +85,7 @@ node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
 /usr/bin/python3 -B components/prime-sync/install.py --ref "$(git rev-parse HEAD)"   # needs gh auth login, and origin set to GitHub
 
 # Units
-mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.socket deploy/linux/*.timer ~/.config/systemd/user/ && install -m 0755 deploy/linux/prime-agent-daemon-ctl ~/.local/bin/
+mkdir -p ~/.config/systemd/user && mkdir -p -m 0700 ~/.prime/agent/browser-chat && install -m 0644 deploy/linux/*.service deploy/linux/*.socket deploy/linux/*.timer ~/.config/systemd/user/ && install -m 0755 deploy/linux/prime-agent-daemon-ctl ~/.local/bin/ && mkdir -p ~/setup-logs && install -m 0755 deploy/linux/prime-install.sh ~/setup-logs/
 systemctl --user daemon-reload
 systemctl --user enable --now prime-agent-daemon.service sieun-pi-chat.socket sieun-pi-chat.service prime-agent-watchdog.timer
 ```
