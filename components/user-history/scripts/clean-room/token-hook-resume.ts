@@ -55,6 +55,21 @@ function activeIds(jobs: ReadonlySet<string>): Set<string> {
 }
 /** The session each running pi-pool-token serves, from its environment. */
 function hookRuns(): { pid: number; session: string }[] {
+  return process.platform === "linux" ? linuxHookRuns() : macHookRuns();
+}
+/** On Linux, from /proc: each process whose argv runs pi-pool-token itself, and its session variable. */
+function linuxHookRuns(): { pid: number; session: string }[] {
+  return readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+    try {
+      const argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0");
+      const at = argv.findIndex(arg => arg.endsWith("pi-pool/bin/pi-pool-token"));
+      if (at < 0 || at > 2 || argv.includes("--cli") || !/(?:^|\/)(?:sh|bash|zsh|python3?(?:\.\d+)?|pi-pool-token)$/.test(argv[0] ?? "")) return [];
+      const session = readFileSync(`/proc/${name}/environ`, "utf8").split("\0").find(entry => entry.startsWith(`${SESSION_ENV}=`))?.slice(SESSION_ENV.length + 1);
+      return session ? [{ pid: Number(name), session }] : [];
+    } catch { return []; }
+  });
+}
+function macHookRuns(): { pid: number; session: string }[] {
   let out: string;
   try { out = execFileSync("ps", ["-E", "-ww", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }); } catch { return []; }
   // Only the hook itself, as Prime starts it through a shell or as its Python run: a job's bash line that names the hook is left alone.

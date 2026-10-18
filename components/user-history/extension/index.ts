@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -6,7 +5,8 @@ import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withMessageIds } from "../src/chat-guard.ts";
-import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
+import { registerPrintedRoots } from "../src/chat-sources.ts";
+import { chatService, hostJobRegistry, remoteChatService, serviceCall } from "../src/chat-host.ts";
 import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
@@ -64,12 +64,23 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
       // The live chat service runs the gates for a write (agentOpsViaService), so this session's loaded copy judges only while no service answers.
-      const { board, summaries } = (writes ? await agentOpsViaService(dataDir(), sessionId, raw, signal) : null) ?? await applyAgentOps(dataDir(), sessionId, raw);
-      const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
+      // On a box whose chat host is another box, reads and check-in changes go there too, since its files are the only live ones (src/chat-host.ts).
+      const service = await chatService(dataDir());
+      const remote = service?.remote ? service : null;
+      const { board, summaries } = (writes || remote ? await agentOpsViaService(dataDir(), sessionId, raw, signal) : null) ?? await applyAgentOps(dataDir(), sessionId, raw);
       const now = Date.now();
-      const changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
+      let changed: string[];
+      let checkIn: string;
+      if (remote) {
+        const answer = await serviceCall<{ changed: string[]; line: string }>(remote, "api/agent/check-in", { chat: sessionId, ...(change ? { change: input.check_in } : {}) });
+        changed = answer?.changed ?? [];
+        checkIn = answer?.line ?? "";
+      } else {
+        const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
+        changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
+        checkIn = checkInLine(await settings.get(sessionId), now);
+      }
       if (writes && board) return { content: [{ type: "text", text: [...changed, ...summaries, boardRevLine(board)].join("\n") }], details: undefined };
-      const checkIn = checkInLine(await settings.get(sessionId), now);
       const agents = agentLines(await chatAgentsOf(sessionId), now);
       return { content: [{ type: "text", text: [...changed, renderOpenPlan(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
     },
@@ -117,22 +128,30 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // recorded in <data dir>/instance.json. No server, no section.
   const chatAgentsOf = async (sessionId: string): Promise<ChatAgent[]> => {
     try {
-      const instance = JSON.parse(await readFile(join(dataDir(), "instance.json"), "utf8")) as { url?: unknown };
-      if (typeof instance.url !== "string") return [];
-      const response = await fetch(`${instance.url}api/threads/${encodeURIComponent(sessionId)}/agents`, { signal: AbortSignal.timeout(3000) });
+      const service = await chatService(dataDir());
+      if (!service) return [];
+      const response = await fetch(`${service.base}api/threads/${encodeURIComponent(sessionId)}/agents`, { signal: AbortSignal.timeout(3000) });
       if (!response.ok) return [];
       const body = await response.json() as { agents?: unknown };
       return Array.isArray(body.agents) ? body.agents as ChatAgent[] : [];
     } catch { return []; }
   };
-  const jobs = () => jobRegistry(join(dataDir(), "chat-jobs.json"));
+  const jobs = () => hostJobRegistry(dataDir());
   const corrections = () => new CorrectionLedger(dataDir());
+  // The chat host's ledger, read at most once a minute: the context hook runs before every model request, and the box is 0.2 s away from the Mac.
+  let remoteLedger: { at: number; ledger: Ledger | null } | null = null;
+  const readLedger = async (): Promise<Ledger | null> => {
+    const service = await remoteChatService();
+    if (!service) return await corrections().read();
+    if (!remoteLedger || Date.now() - remoteLedger.at > 60_000) remoteLedger = { at: Date.now(), ledger: await serviceCall<Ledger>(service, "api/agent/corrections") };
+    return remoteLedger.ledger;
+  };
   pi.on("context", async (event, ctx) => {
     if (!marked && !job && !underChat) return undefined;
     let messages = event.messages;
     if (marked) try { messages = withMessageIds(messages) ?? messages; } catch { /* no ids */ }
     let ledger: Ledger | null = null;
-    try { ledger = await corrections().read(); } catch { /* no ledger */ }
+    try { ledger = await readLedger(); } catch { /* no ledger */ }
     messages = deliverCorrections({ messages, branch: ctx.sessionManager.getBranch(), ledger, job: !marked, brief: BRIEF_CORRECTIONS,
       append: data => pi.appendEntry(CORRECTION_CHECKPOINT, data) });
     return { messages };
@@ -158,6 +177,12 @@ export default function historyExtension(pi: ExtensionAPI): void {
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const call = parseCorrectionCall(params);
         const chat = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
+        const service = await remoteChatService();
+        if (service) {
+          const answer = await serviceCall<{ text: string }>(service, "api/agent/corrections", { call: params, chat });
+          remoteLedger = null;
+          return { content: [{ type: "text", text: answer?.text ?? "The chat host has no corrections route yet." }], details: undefined };
+        }
         // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads.
         const cleanRoom = await new IdIndex(join(dataDir(), CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(chat.id), () => false);
         const ledger = cleanRoom ? new CorrectionLedger(dataDir(), CLEAN_ROOM_CORRECTIONS_FILE) : corrections();

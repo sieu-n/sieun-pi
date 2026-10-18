@@ -3,6 +3,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
+import { jobRegistry } from "./chat-sources.ts";
+import { IdIndex } from "./id-index.ts";
+import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
 import type { Duplex } from "node:stream";
 import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
@@ -16,7 +19,7 @@ import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
-import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
+import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
@@ -472,6 +475,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (!board) throw new RequestError(404, "No board for this chat.");
           json(res, 200, board); return;
         }
+        if (route === "api/agent/jobs") {
+          const text = await readFile(join(dirname(backend.boards.dir), "chat-jobs.json"), "utf8").catch(() => "{\"jobs\":{}}");
+          res.writeHead(200, { "Content-Type": "application/json" }); res.end(text); return;
+        }
         if (route === "api/agent/corrections" || route === "api/agent/sends") {
           const name = route === "api/agent/corrections" ? "corrections.json" : "sends.jsonl";
           const text = await readFile(join(dirname(backend.boards.dir), name), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
@@ -597,6 +604,32 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== origin) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
       const body = record(await jsonBody(req));
+      // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
+      if (route === "api/agent/check-in") {
+        const chat = threadId(text(body.chat, "chat", 128));
+        const settings = checkInSettings(join(dirname(backend.boards.dir), "check-in-settings.json"));
+        const now = Date.now();
+        const changed = body.change === undefined ? [] : [await chatCheckIn(settings, chat, parseChatCheckIn(body.change), now)];
+        json(res, 200, { changed, line: checkInLine(await settings.get(chat), now) }); return;
+      }
+      if (route === "api/agent/jobs") {
+        const jobs = jobRegistry(join(dirname(backend.boards.dir), "chat-jobs.json"));
+        const names = Array.isArray(body.names) ? body.names.filter((name): name is string => typeof name === "string") : [];
+        if (body.op === "add") await jobs.add(names, text(body.chat, "chat", 256), typeof body.chatId === "string" ? body.chatId : undefined);
+        else if (body.op === "remove") await jobs.remove(names);
+        else throw new RequestError(400, "Send {op: add|remove, names, chat?, chatId?}.");
+        json(res, 200, { ok: true }); return;
+      }
+      if (route === "api/agent/corrections") {
+        const call = parseCorrectionCall(body.call);
+        const chat = record(body.chat);
+        const ref = { id: threadId(text(chat.id, "chat.id", 128)), name: typeof chat.name === "string" ? chat.name : "" };
+        // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads (extension/index.ts).
+        const dataDir = dirname(backend.boards.dir);
+        const cleanRoom = await new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(ref.id), () => false);
+        const ledger = new CorrectionLedger(dataDir, cleanRoom ? CLEAN_ROOM_CORRECTIONS_FILE : undefined);
+        json(res, 200, { text: correctionResult(await ledger.apply(call, ref)) }); return;
+      }
       if (route === "api/agent/wakes") {
         // board.wake from a box without the chat role: the same file it writes on the chat host, delivered through that box's relay (src/wakes.ts).
         const wake = parseWake(body);

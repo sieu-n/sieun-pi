@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One prime-sync run: make this box's Prime setup match every other box's.
 
-1. The sieun-pi checkout fast-forwards to GitHub main when it is behind and on main.
+1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its dirty files kept.
 2. Every home link in install-manifest.json points at the checkout, so skills, the global AGENTS.md,
    pstack-models.json and the extensions match the commit. A copy in a link's place is deleted.
 3. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
@@ -105,6 +105,8 @@ def host_name() -> str:
 
 
 def pull_checkout(checkout: Path) -> str:
+    """Move a checkout on main to GitHub main. Local commits are replayed on top of it and never pushed, and dirty files ride along.
+    Anything that does not apply cleanly leaves the checkout as it was, and the next run tries again."""
     branch = git(checkout, "symbolic-ref", "--short", "-q", "HEAD", check=False)
     if branch != "main":
         return f"checkout is on {branch or 'a detached HEAD'}, not main"
@@ -112,14 +114,80 @@ def pull_checkout(checkout: Path) -> str:
     head, remote = rev(checkout, "HEAD"), rev(checkout, "origin/main")
     if head == remote:
         return f"at {head[:7]}"
-    if _ancestor(checkout, head, remote):
-        merged = subprocess.run(["git", "-C", str(checkout), "merge", "--ff-only", "--quiet", remote], capture_output=True, env=GIT_ENV, timeout=120)
-        if merged.returncode != 0:
-            return f"behind {remote[:7]} and the fast-forward failed: {merged.stderr.decode(errors='replace').strip()[:300]}"
-        return f"pulled {head[:7]}..{remote[:7]}"
     if _ancestor(checkout, remote, head):
         return f"ahead of origin/main {remote[:7]} at {head[:7]}"
-    return f"diverged from origin/main {remote[:7]} at {head[:7]}"
+    if _ancestor(checkout, head, remote):
+        move_checkout(checkout, head, remote)
+        return f"pulled {head[:7]}..{remote[:7]}"
+    target, count = replay(checkout, head, remote)
+    move_checkout(checkout, head, target)
+    if not count:
+        return f"pulled {head[:7]}..{remote[:7]}, whose local commits origin/main already holds"
+    return f"rebased {count} local commits from {head[:7]} onto origin/main {remote[:7]} as {target[:7]}"
+
+
+def replay(checkout: Path, head: str, remote: str) -> tuple[str, int]:
+    """Cherry-pick the local commits that origin/main lacks onto it in the object store, without touching the worktree."""
+    commits = git(checkout, "rev-list", "--reverse", "--no-merges", "--right-only", "--cherry-pick", f"{remote}...{head}").split()
+    tip, count = remote, 0
+    for commit in commits:
+        merged = subprocess.run(["git", "-C", str(checkout), "merge-tree", "--write-tree", f"--merge-base={commit}^", tip, commit],
+                                capture_output=True, env=GIT_ENV, timeout=120)
+        if merged.returncode != 0:
+            raise Skip(f"diverged from origin/main {remote[:7]} at {head[:7]}, and local commit {commit[:7]} conflicts with it")
+        tree = merged.stdout.decode().split()[0]
+        if tree == git(checkout, "rev-parse", f"{tip}^{{tree}}"):
+            continue
+        name, email, date, committer, committer_email = git(checkout, "log", "-1", "--format=%an%x00%ae%x00%ad%x00%cn%x00%ce", "--date=raw", commit).split("\0")
+        env = {**GIT_ENV, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_DATE": date,
+               "GIT_COMMITTER_NAME": committer, "GIT_COMMITTER_EMAIL": committer_email}
+        message = subprocess.run(["git", "-C", str(checkout), "log", "-1", "--format=%B", commit], capture_output=True, env=GIT_ENV, check=True).stdout
+        tip = subprocess.run(["git", "-C", str(checkout), "commit-tree", tree, "-p", tip, "-F", "-"], input=message,
+                             capture_output=True, env=env, check=True, timeout=120).stdout.decode().strip()
+        count += 1
+    return tip, count
+
+
+def move_checkout(checkout: Path, head: str, target: str) -> None:
+    """Point main at target and update the worktree like a branch switch. Dirty files on paths the move changes go into a stash first
+    and come back on top; an untracked file in the way, a conflict or a commit made meanwhile puts everything back."""
+    touched = set(filter(None, git(checkout, "diff", "--name-only", "-z", head, target).split("\0")))
+    dirty = set(filter(None, (git(checkout, "diff", "--name-only", "-z", "HEAD") + "\0" + git(checkout, "diff", "--cached", "--name-only", "-z")).split("\0")))
+    carry = sorted(touched & dirty)
+    stash = None
+    if carry:
+        before = rev(checkout, "stash@{0}")
+        git(checkout, "stash", "push", "--quiet", "-m", "prime-sync carry", "--", *carry)
+        stash = rev(checkout, "stash@{0}")
+        if stash == before:
+            raise Skip(f"git stash kept nothing of {', '.join(carry)}")
+        clean = subprocess.run(["git", "-C", str(checkout), "merge-tree", "--write-tree", f"--merge-base={head}", target, stash],
+                               capture_output=True, env=GIT_ENV, timeout=120).returncode == 0
+        if not clean:
+            unstash(checkout, stash)
+            raise Skip(f"local changes to {', '.join(carry)} conflict with origin/main")
+    if subprocess.run(["git", "-C", str(checkout), "update-ref", "-m", "prime-sync: move to origin/main", "refs/heads/main", target, head],
+                      capture_output=True, env=GIT_ENV).returncode != 0:
+        if stash:
+            unstash(checkout, stash)
+        raise Skip("main moved during the run")
+    switched = subprocess.run(["git", "-C", str(checkout), "read-tree", "-m", "-u", head, target], capture_output=True, env=GIT_ENV, timeout=120)
+    if switched.returncode != 0:
+        git(checkout, "update-ref", "-m", "prime-sync: undo move", "refs/heads/main", head, target)
+        if stash:
+            unstash(checkout, stash)
+        raise Skip(f"the worktree could not move: {switched.stderr.decode(errors='replace').strip()[:300]}")
+    if stash:
+        unstash(checkout, stash)
+
+
+def unstash(checkout: Path, stash: str) -> None:
+    applied = subprocess.run(["git", "-C", str(checkout), "stash", "apply", "--quiet", stash], capture_output=True, env=GIT_ENV, timeout=120)
+    if applied.returncode != 0:
+        raise Skip(f"stash {stash[:9]} (prime-sync carry) holds local changes that did not apply back: {applied.stderr.decode(errors='replace').strip()[:300]}")
+    stashes = git(checkout, "stash", "list", "--format=%H").split()
+    if stash in stashes:
+        git(checkout, "stash", "drop", "--quiet", f"stash@{{{stashes.index(stash)}}}")
 
 
 def _ancestor(repo: Path, older: str, newer: str) -> bool:
@@ -415,7 +483,7 @@ def run() -> dict:
             except Exception as error:
                 report[name] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("links", "settings", "state")) or "pulled" in str(report.get("code")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report
