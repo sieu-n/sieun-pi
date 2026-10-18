@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, nextState, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -47,4 +47,38 @@ test("the 24 h metrics leave out a 48 h old fix and say so, and the read reaches
   assert.equal(output.metrics.repeats_after_design, 0);
   assert.match(output.flagged!.find(slice => slice.kind === "hand_fixes")!.excerpt, /1 older changes since the last run are outside the 24 h metrics/);
   assert.match(auditSql(14021, now), /\(id > 14021 or ts >= to_timestamp\(\d+\)\) order by id$/);
+});
+
+// Guards d3 p146: audits 13970, 13971 and 13994 (10-17 and 10-18) had no fault for 3 runs, and an undesigned write was gone by the next run.
+const hand = (id: number, ts: number, key: string, reason: string): AuditRow => ({ id, ts, actor: "api-key", source: "ops-api", key, reason });
+
+test("the canary and doc_id hand writes of 10-17 and 10-18 are F15 and F16, and a writer's named fault wins over the keys", async () => {
+  const reg = await registry();
+  const fault = (keys: string[], text: string) => { const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys, text }, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; };
+  assert.equal(fault(["engage.canary_pct"], "check-in 22:45Z 10-17 (owner rule: always ~10% canary): raise the live canary cohort"), "F15");
+  assert.equal(fault(["engage.canary_offset"], "d1 kill-cause job 03:2xZ 10-18: the 2,000-a-day canary killed 5"), "F15");
+  assert.equal(fault(["doc_ids.refresh_enabled", "doc_id_profile_posts"], "watchlist last fixes: doc_id_profile_posts 28834890909485062"), "F16");
+  assert.equal(fault(["pause.crawl"], "F16: the refresher wrote a dead id, so the crawl waits"), "F16");
+  assert.equal(fault(["engage.canary_pct"], "F99: a fault nobody listed"), "undesigned");
+  assert.equal(classifyConfig({ actor: "canary-roster", keys: ["engage.canary_roster"], text: "roster refill" }, reg).kind, "automatic");
+});
+
+test("a hand write no fault covers is filed and counts as a fault without a job until the registry lists one for its key", async () => {
+  const now = AT + 3_600_000;
+  const first = await data(now, [hand(20001, AT, "lane.new_knob", "raise the new knob")]);
+  const base = report({ ...first, audit: { prod: [], staging: [] } }, await metrics(now)).metrics.faults_without_job!;
+  const one = report(first, await metrics(now));
+  assert.equal(one.metrics.undesigned_hand_fixes, 1);
+  assert.equal(one.metrics.faults_without_job, base + 1);
+  const state = nextState({}, first);
+  assert.deepEqual(state.filed!.map(entry => entry.keys), [["lane.new_knob"]]);
+  const later = now + 3_600_000;
+  const second = { ...await data(later, [hand(20002, AT + 7_200_000, "lane.new_knob", "again")]), filed: state.filed ?? [] };
+  const two = report(second, await metrics(later));
+  assert.equal(two.metrics.undesigned_hand_fixes, 0);
+  assert.equal(two.metrics.faults_without_job, base + 1);
+  assert.equal(nextState(state, second).filed!.length, 1);
+  const listed = { ...second, registry: { ...second.registry!, faults: [...second.registry!.faults, { id: "F99", title: "new knob", designs: ["p1"], owner: "t", match: { config_key_prefixes: ["lane."] } }] } };
+  assert.deepEqual(nextState(state, listed).filed, []);
+  assert.equal(report(listed, await metrics(later)).metrics.faults_without_job, base + 1);
 });

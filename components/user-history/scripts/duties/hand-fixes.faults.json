@@ -3,12 +3,13 @@
     "config_actors": [
       "doc-ids-extract",
       "facebook-doc-ids-extract",
-      "metal-deploy"
+      "metal-deploy",
+      "canary-roster"
     ],
     "config_sources": [
       "metal-box-stop-loop"
     ],
-    "note": "Writers that are part of the product. A lane controller or a supervised guard joins this list when its design ships. config_sources names a writer by config_audit.source when its actor also writes by hand: metal-box-stop-loop is the box stop loop, which runs as the systemd unit virev-box-stop.service since Crawler VP p173 closed on 10-16 00:40Z, while actor metal also writes by hand from source metal-owner."
+    "note": "Writers that are part of the product. A lane controller or a supervised guard joins this list when its design ships. config_sources names a writer by config_audit.source when its actor also writes by hand: metal-box-stop-loop is the box stop loop, which runs as the systemd unit virev-box-stop.service since Crawler VP p173 closed on 10-16 00:40Z, while actor metal also writes by hand from source metal-owner. canary-roster is the engage canary roster refill (crawler-v3 canary_roster.py), which keeps the roster at the owner's 10% of active accounts."
   },
   "faults": [
     {
@@ -210,6 +211,37 @@
       "match": {
         "config_key_prefixes": [
           "media.mirror_kinds"
+        ]
+      }
+    },
+    {
+      "id": "F15",
+      "title": "Canary cohort size and pick set by hand",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "p139",
+        "commit:c88ec81859"
+      ],
+      "owner": "engage account checkpoints (p139): the canary roster keeps the owner's 10% of active prod accounts and holds only accounts with 3 days of reads (c88ec81859, probe ci/canary-proven-roster-2), so engage.canary_pct (audit 13970) and engage.canary_offset (audit 13994) are no longer set by hand",
+      "match": {
+        "config_key_prefixes": [
+          "engage.canary_"
+        ]
+      }
+    },
+    {
+      "id": "F16",
+      "title": "Instagram doc_id set by hand when the refresher picks one that does not serve",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "p127",
+        "commit:54c93ec18f"
+      ],
+      "owner": "watchlist last fixes (p127): the doc-ids extract writes a new doc_id_profile_posts only after a logged-out probe of it serves (54c93ec18f, probe ci/ig-timeline-shell-r3), so doc_ids.refresh_enabled and doc_id_profile_posts (audit 13971) are no longer set by hand",
+      "match": {
+        "config_key_prefixes": [
+          "doc_ids.",
+          "doc_id_"
         ]
       }
     }

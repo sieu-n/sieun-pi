@@ -29,8 +29,10 @@ const BOX = "root@64.34.205.243";
 /*
  * Targets in hand-fixes.duty.json, all <= 0, and their sources (rule c75: one headline and at most 3 supporting metrics):
  * - faults_without_job, the headline: rule c63, every hand fix starts a design job, and the owner, 10-14, "자체적으로 고쳐질 수 있게 설계를
- *   바꾸는게 니 역할이야"; a fault with no live or done design is one nobody is making fix itself.
- * - undesigned_hand_fixes: a hand fix with no fault has no design.
+ *   바꾸는게 니 역할이야"; a fault with no live or done design is one nobody is making fix itself. It also counts the faults this check files
+ *   (filedAfter), one for each hand write kind no listed fault covers, from the run that first sees it until the registry lists a fault for it.
+ * - undesigned_hand_fixes: a hand fix with no listed fault and no filed one has no design. A writer names its fault at the start of the reason
+ *   (`F<n>: `, the ops write routes' `fault` field), which wins over the tag, the keys and the prose.
  * - repeats_after_design: a hand fix in the last 24 h for a fault whose design step is done means the design did not fix it. Both 24 h metrics
  *   count the fixes since 24 h ago, as the duty labels say, while the read also reaches back to the last run's mark after a skipped day.
  * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
@@ -117,10 +119,15 @@ export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & 
   return [...groups.values()].map(group => ({ ...group, what: `${group.what} ${group.keys.join(",")}`.slice(0, 160) }));
 }
 
+/** The fault id a writer names at the start of the reason; crawler-v3's ops write routes store their `fault` field as `F<n>: <reason>`. */
+const NAMED_FAULT = /^(F\d+): /;
+
 export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string }, registry: Registry): Verdict {
   const automatic = registry.automatic_writers;
   if (automatic.config_actors.includes(fix.actor) || (fix.writer && automatic.config_sources?.includes(fix.writer))) return { kind: "automatic" };
   if (new RegExp(registry.exempt.config_reason_regex).test(fix.text)) return { kind: "exempt" };
+  const named = NAMED_FAULT.exec(fix.text)?.[1];
+  if (named) { const listed = registry.faults.find(item => item.id === named); return listed ? { kind: "fault", fault: listed } : { kind: "undesigned" }; }
   const fault = registry.faults.find(item => item.match.config_reason_tag && new RegExp(`^(?:${item.match.config_reason_tag})`).test(fix.text)) ??
     registry.faults.find(item => item.match.config_key_prefixes?.some(prefix => fix.keys.some(key => key.startsWith(prefix)))) ??
     registry.faults.find(item => item.match.config_reason_regex && new RegExp(item.match.config_reason_regex).test(fix.text));
@@ -197,6 +204,41 @@ export interface HandData {
   audit: Partial<Record<World, AuditRow[]>>; events: Partial<Record<World, StatusEvent[]>>;
   box?: { containers: BoxContainer[]; execs: BoxExec[] }; mac?: MacProcess[];
   errors: { source: Source; message: string }[];
+  /** The faults earlier runs filed (HandState.filed). */
+  filed?: Filed[];
+}
+/** A hand write kind with no listed fault, filed by this check: the config keys, when it first came, and its audit line. */
+export interface Filed { keys: string[]; at: number; text: string; line: string }
+
+type Fix = { fix: HandFix & { keys?: readonly string[] }; verdict: Verdict };
+
+/** Every config change and fault-named engage status write this run read, each with its verdict. */
+export function handFixes(data: HandData, registry: Registry): Fix[] {
+  const fixes: Fix[] = [];
+  for (const world of WORLDS) {
+    for (const fix of groupAudit(world, data.audit[world] ?? [])) fixes.push({ fix, verdict: classifyConfig(fix, registry) });
+    for (const event of data.events[world] ?? []) {
+      const verdict = classifyEvent(event, registry);
+      if (verdict) fixes.push({ verdict, fix: { source: `${world} engage`, at: event.at, what: `account ${event.accountId}`, text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}` } });
+    }
+  }
+  return fixes;
+}
+
+const filedFor = (filed: readonly Filed[], fix: { keys?: readonly string[] }): Filed | undefined =>
+  filed.find(entry => entry.keys.some(key => fix.keys?.includes(key)));
+
+/**
+ * The filed faults after this run: the earlier ones, then each hand write this run read that no listed fault covers and no filed one has
+ * its key, less every entry a listed fault now covers by its keys or its reason. The registry only grew by hand from d3 jobs, and an
+ * undesigned write counted once and was gone by the next run: audits 13970, 13971 and 13994 on 10-17 and 10-18 had no fault 3 runs in a row.
+ */
+export function filedAfter(previous: readonly Filed[], fixes: readonly Fix[], registry: Registry): Filed[] {
+  const filed = [...previous];
+  for (const { fix, verdict } of fixes)
+    if (verdict.kind === "undesigned" && fix.keys?.length && !filedFor(filed, fix))
+      filed.push({ keys: [...fix.keys], at: fix.at, text: fix.text.slice(0, 300), line: `${fix.source} ${utc(fix.at)} ${fix.what}`.slice(0, 200) });
+  return filed.filter(entry => classifyConfig({ actor: "", keys: entry.keys, text: entry.text }, registry).kind !== "fault");
 }
 
 export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
@@ -208,18 +250,11 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   const registry = data.registry;
   const refs = data.refs ?? new Map<string, RefState>();
   if (registry) {
-    const fixes: { fix: HandFix; verdict: Verdict }[] = [];
-    for (const world of WORLDS) {
-      for (const fix of groupAudit(world, data.audit[world] ?? [])) fixes.push({ fix, verdict: classifyConfig(fix, registry) });
-      for (const event of data.events[world] ?? []) {
-        const verdict = classifyEvent(event, registry);
-        if (verdict) fixes.push({ verdict, fix: { source: `${world} engage`, at: event.at, what: `account ${event.accountId}`, text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}` } });
-      }
-    }
+    const fixes = handFixes(data, registry);
     const recent = fixes.filter(item => item.fix.at >= at - DAY);
     const older = fixes.length - recent.length;
     const counted = recent.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
-    const undesigned = counted.filter(item => item.verdict.kind === "undesigned");
+    const undesigned = counted.filter(item => item.verdict.kind === "undesigned" && !filedFor(data.filed ?? [], item.fix));
     const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done" &&
       !(item.verdict.fault.done_at && item.fix.at < Date.parse(item.verdict.fault.done_at)));
     metrics.undesigned_hand_fixes = undesigned.length;
@@ -234,8 +269,10 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     for (const item of repeats) flagged.push({ at: item.fix.at, kind: "repeat", excerpt: `${item.verdict.kind === "fault" ? item.verdict.fault.id : ""} design step done, yet: ${line(item)}`.slice(0, 400),
       ...(item.verdict.kind === "fault" && item.verdict.fault.designs[0] ? { item: item.verdict.fault.designs[0] } : {}) });
     const jobless = registry.faults.filter(fault => stepState(fault, refs) === "none");
-    metrics.faults_without_job = jobless.length;
+    const filed = filedAfter(data.filed ?? [], fixes, registry);
+    metrics.faults_without_job = jobless.length + filed.length;
     if (jobless.length) flagged.push({ at, kind: "faults_without_job", excerpt: `No live or done design work: ${jobless.map(fault => `${fault.id} ${fault.title} (${fault.owner})`).join("; ")}`.slice(0, 1000) });
+    for (const entry of filed) flagged.push({ at: entry.at, kind: "faults_without_job", excerpt: `Filed by this check, a hand write no listed fault covers, until hand-fixes.faults.json lists a fault for ${entry.keys.join(", ")}: ${entry.line}: ${entry.text}`.slice(0, 400) });
   }
   if (data.mac) {
     const writers = data.mac.filter(process => process.writes);
@@ -261,10 +298,11 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
  * Where the last run stopped, per source; a source that failed keeps its old mark. Each run reads from that mark or from 24 h ago, whichever
  * is earlier, so a second run in a day still counts the day's fixes and a run after a skipped day still lists the older ones.
  */
-export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>> }
+export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>>; filed?: Filed[] }
 
 export function nextState(state: HandState, data: HandData): HandState {
-  const next: HandState = { audit: { ...state.audit }, events: { ...state.events } };
+  const next: HandState = { audit: { ...state.audit }, events: { ...state.events },
+    filed: data.registry ? filedAfter(state.filed ?? [], handFixes(data, data.registry), data.registry) : state.filed ?? [] };
   for (const world of WORLDS) {
     const rows = data.audit[world];
     if (rows) next.audit![world] = Math.max(state.audit?.[world] ?? 0, ...rows.map(row => row.id));
@@ -354,7 +392,7 @@ export interface HandDeps {
 }
 
 export async function measure(deps: HandDeps): Promise<HandData> {
-  const data: HandData = { now: deps.now, audit: {}, events: {}, errors: [] };
+  const data: HandData = { now: deps.now, audit: {}, events: {}, errors: [], filed: deps.state.filed ?? [] };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
