@@ -286,23 +286,26 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
   const holds: PoolHold[] = [];
   for (const line of lines) {
     if (!line.includes('"parked"') && !line.includes('"unparked"')) continue;
-    let entry: { event?: unknown; session?: unknown; at?: unknown; room?: unknown };
+    let entry: { event?: unknown; session?: unknown; at?: unknown; slot_at?: unknown; room?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string" || typeof entry.at !== "number") continue;
     const at = entry.at * 1000;
     const hold = open.get(entry.session);
     const room = entry.event === "parked" && Array.isArray(entry.room) ? entry.room.filter((name): name is string => typeof name === "string") : [];
+    // A refusal holds the tree until the slot it names; a tree that asks no more after its slot passed is no longer held by the pool. At 17:24Z
+    // on 10-18 four trees given a cell under 2 min ahead asked no more, and the first reader held them open up to the run.
+    const until = typeof entry.slot_at === "number" ? Math.max(at, entry.slot_at * 1000) : at;
     if (room.length) {
-      if (hold) { hold.to = at; continue; }
-      const fresh = { session: entry.session, from: at, to: at, room };
+      if (hold) { hold.to = Math.max(hold.to, until); continue; }
+      const fresh = { session: entry.session, from: at, to: until, room };
       open.set(entry.session, fresh);
       holds.push(fresh);
     } else if (hold) {
-      hold.to = at;
+      hold.to = Math.min(hold.to, at);
       open.delete(entry.session);
     }
   }
-  for (const hold of open.values()) hold.to = now;
+  for (const hold of holds) hold.to = Math.min(hold.to, now);
   return holds;
 }
 
