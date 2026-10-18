@@ -12,7 +12,7 @@ import type { Unstarted } from "./brief-keeper.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
-import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
+import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { Leftovers } from "./job-leftovers.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
@@ -279,7 +279,7 @@ export interface CheckInSource {
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.
    */
-  interrupted?: (isJob: (run: InterruptedRun) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>;
+  interrupted?: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>;
   /** The turns the service holds and gives back itself (`readHeldTurns`), which the check-in reads as moving; absent or failing: none. */
   held?: (now: number) => Promise<HeldTurns>;
   /** The jobs whose session never got its first prompt (`unstartedJobs`, src/brief-keeper.ts), which the check-in reads as not started; absent or failing: none. */

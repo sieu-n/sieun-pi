@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -47,6 +48,9 @@ class ResumePausedTests(unittest.TestCase):
         hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
         hosts.start()
         self.addCleanup(hosts.stop)
+        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED):
+            found.clear()
+            self.addCleanup(found.clear)
 
     def session(self, sid, entries, parent=None, activity="idle", **flags):
         path = self.root / f"{sid}.jsonl"
@@ -341,9 +345,10 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([stamp.isoformat() for stamp in found], ["2026-10-15T14:35:39.152000+00:00", "2026-10-15T16:06:56.136000+00:00"])
 
 
-    def test_a_job_archived_and_aborted_by_a_daemon_restart_is_resumed(self):
+    def test_a_job_archived_and_aborted_inside_a_daemon_restart_is_reported_unresolved_and_not_resumed(self):
         # 10-16 00:19:58Z: the daemon supervisor stopped and a new one listened at 00:20:13Z. daily code health report (no open step) was
-        # archived at 00:19:58.026Z with an empty abort 1 ms later; the default list then showed it archived and no sweep continued it.
+        # archived at 00:19:58.026Z with an empty abort 1 ms later. The archive line has no cause and an owner Stop writes the same line, so the
+        # restart window's timing does not prove the restart wrote it (chat-057a, 10-18): the run is listed as unresolved and gets nothing.
         archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
         aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
         self.session("restartcut00", [role(31, "toolResult"), archived, aborted], lifecycle="archived")
@@ -353,8 +358,8 @@ class ResumePausedTests(unittest.TestCase):
         with patch.object(resume_paused, "daemon_restarts", return_value=[window]), \
                 patch.object(resume_paused, "worker_shutdowns", return_value=[]):
             report = self.run_direct()
-        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("restartcut00", "daemon_restart")])
-        self.assertEqual(self.sent, [("0" * 24 + "restartcut00", "continue")])
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        self.assertEqual([(entry["id"], entry["archived_at"]) for entry in resume_paused.UNRESOLVED], [("restartcut00", at(30.01))])
 
     def deleted_owner(self, chat, sub, sid, archived_at, aborted_at):
         folder = self.root / "artifacts" / chat / sub
@@ -380,7 +385,7 @@ class ResumePausedTests(unittest.TestCase):
         self.deleted_owner("01a1164b-chat", "sub-aaaa0001", sid, 30.01, 30)
         stop = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
         report = self.run_saved_owners([sid], restarts=[stop])
-        self.assertEqual([(p["name"], p["reason"], p["target"]) for p in report["paused"]], [("sub-aaaa0001", "daemon_restart", sid)])
+        self.assertEqual((report["paused"], [(entry["name"], entry["session_id"]) for entry in resume_paused.UNRESOLVED]), ([], [("sub-aaaa0001", sid)]))
         calls = []
         self.addCleanup(resume_paused.OWNERS.clear)
         with patch.object(resume_paused, "run", side_effect=lambda cmd: calls.append(cmd) or '{"sessions": []}'), \
@@ -423,6 +428,17 @@ class ResumePausedTests(unittest.TestCase):
         report = self.run_saved_owners([child, parked], restarts=[window])
         self.assertEqual(report["paused"], [])
 
+    def test_an_unresolved_run_does_not_hold_back_a_proven_cut_in_the_same_pass(self):
+        archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
+        self.session("restartcut00", [role(31, "toolResult"), archived, aborted], lifecycle="archived")
+        self.session("provencut000", [assistant(41, "toolUse"), role(40, "toolResult")])
+        window = (NOW - dt.timedelta(minutes=30, seconds=5), NOW - dt.timedelta(minutes=29, seconds=45))
+        with patch.object(resume_paused, "daemon_restarts", return_value=[window]), patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_direct()
+        self.assertEqual(([p["id"] for p in report["paused"]], self.sent), (["provencut000"], [("provencut000", "continue")]))
+        self.assertEqual([entry["id"] for entry in resume_paused.UNRESOLVED], ["restartcut00"])
+
     def test_a_reopened_job_that_refuses_its_full_id_gets_the_continue_on_its_live_id(self):
         # 10-17 19:51Z: the chat service reopened six archived jobs and each ran again, but the send to the full id answered
         # "Unknown active session", so the pass logged six failed continues.
@@ -443,7 +459,7 @@ class ResumePausedTests(unittest.TestCase):
                 self.sessions = resume_paused.with_saved_owners(self.sessions, resume_paused.saved_rows({sid}), {sid})
                 self.owners(sid)
                 args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
-                                          only="", state=str(self.root / "state.json"))
+                                          only=sid, state=str(self.root / "state.json"))
                 with patch.object(resume_paused, "send", side_effect=send), patch.object(resume_paused, "pool_bin", return_value=None):
                     report = resume_paused.resume(self.sessions, args, NOW)
         self.assertEqual([child["result"] for child in report["children"]], [{"deliveryStatus": "delivered"}])
@@ -564,6 +580,87 @@ class ResumePausedTests(unittest.TestCase):
         (self.root / "deleted-jobs.json").write_text(json.dumps({"01a143b3-chat": {"sub-ad098135": 1}}))
         self.assertEqual(self.run_saved_owners(["01a143dc-aa89-767d-845a-9c39765e9128"])["paused"], [])
 
+    def test_a_turn_the_update_stopped_after_more_tool_steps_still_counts(self):
+        # probe queue trust, 10-18: the mem.3 update wrote its notice at 06:46:02.996Z, the turn ran three more tool steps, and its tool call
+        # ended on "Request was aborted" at 06:46:40.193Z when the old daemon stopped its worker. No pass counted it as cut.
+        notice = {"type": "custom_message", "customType": "prime-agent.update_restart", "timestamp": at(30.62)}
+        aborted_tool = {"type": "message", "timestamp": at(30), "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}}
+        steps = [assistant(30.45, "toolUse"), role(30.44, "toolResult"), assistant(30.3, "toolUse")]
+        message = {"type": "custom_message", "customType": "agent_message", "timestamp": at(30.5)}
+        self.session("probequeue01", [assistant(31, "toolUse"), notice, *steps, aborted_tool])
+        self.session("newuserturn0", [assistant(31, "toolUse"), notice, role(30.5, "user"), *steps, aborted_tool])
+        self.session("newmessage00", [assistant(31, "toolUse"), notice, message, *steps, aborted_tool])
+        self.session("longafter000", [assistant(33, "toolUse"), {**notice, "timestamp": at(32)}, *steps, aborted_tool])
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]), patch.object(resume_paused, "daemon_restarts", return_value=[]):
+            report = self.run_direct(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("probequeue01", "cut_off")])
+
+    AIR_REBOOT = "01a14d56-4447-714c-beb1-7aa8a2c9c09b"
+
+    def air_reboot(self, *after, between=(), notice=True):
+        # air reboot proof 2, 10-18: the idle unload archived it at 06:22:28.102Z (unloaded.json 06:22:28.949Z), its parent woke it at 06:40:24Z,
+        # and the mem.3 update stopped its tool call at 06:46:11Z. The update's restore failed, so list showed it archived from the 06:22 line.
+        folder = self.root / "artifacts" / "01a11af8-962e-773d-a19a-ee4104011987" / "sub-e40ffbe0"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": "air reboot proof 2"}))
+        entries = [{"type": "message", "timestamp": "2026-10-18T06:22:20.000Z", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "waiting"}]}},
+                   {"type": "session_state", "timestamp": "2026-10-18T06:22:28.102Z", "state": {"status": "archived"}},
+                   {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-18T06:40:24.444Z"},
+                   {"type": "message", "timestamp": "2026-10-18T06:40:40.506Z", "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "toolCall", "name": "bash"}]}},
+                   *([{"type": "custom_message", "customType": "prime-agent.update_restart", "timestamp": "2026-10-18T06:46:02.956Z"}] if notice else []),
+                   *between,
+                   {"type": "message", "timestamp": "2026-10-18T06:46:11.042Z", "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}},
+                   *after]
+        (folder / f"{self.AIR_REBOOT}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+    def run_air_reboot(self, unloaded_at="2026-10-18T06:22:28.949Z", restarts=()):
+        now = dt.datetime(2026, 10, 18, 6, 58, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                patch.object(resume_paused, "daemon_restarts", return_value=list(restarts)), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.dict(resume_paused.UNLOADED, {self.AIR_REBOOT: resume_paused.parse_ts(unloaded_at)}, clear=True):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.AIR_REBOOT}), {self.AIR_REBOOT})
+            return resume_paused.resume(rows, args, now)
+
+    def test_an_unload_before_the_cut_turn_does_not_hide_the_updates_cut(self):
+        self.air_reboot()
+        self.assertEqual([(p["name"], p["reason"], p["target"], p["errored_at"]) for p in self.run_air_reboot()["paused"]],
+                         [("air reboot proof 2", "cut_off", self.AIR_REBOOT, "2026-10-18T06:46:11.042Z")])
+
+    def test_an_unload_before_the_cut_turn_does_not_hide_an_update_cut_after_more_steps(self):
+        steps = [{"type": "message", "timestamp": "2026-10-18T06:46:05.000Z", "message": {"role": "toolResult", "content": "x"}},
+                 {"type": "message", "timestamp": "2026-10-18T06:46:06.000Z", "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "toolCall", "name": "bash"}]}}]
+        self.air_reboot(between=steps)
+        self.assertEqual([p["reason"] for p in self.run_air_reboot()["paused"]], ["cut_off"])
+
+    def test_an_owner_archive_inside_a_restart_window_wins(self):
+        # The owner archived the run-3 test chat at 06:52:53Z on 10-18 (archived-chats.json). An archive line that falls in a restart window
+        # reads as the restart's, so only the owner's record tells them apart.
+        archived = {"type": "session_state", "timestamp": "2026-10-18T06:52:53.805Z", "state": {"status": "archived"}}
+        self.air_reboot(archived, notice=False)
+        window = (resume_paused.parse_ts("2026-10-18T06:52:50Z"), resume_paused.parse_ts("2026-10-18T06:53:30Z"))
+        (self.root / "archived-chats.json").write_text(json.dumps({"ids": ["01a14db9-c12c-72fa-ad78-02fecd442f20"]}))
+        unresolved = lambda: [entry["session_id"] for entry in resume_paused.UNRESOLVED]
+        self.assertEqual((self.run_air_reboot(restarts=[window])["paused"], unresolved()), ([], [self.AIR_REBOOT]),
+                         "with no record the archive's cause is unknown: not resumed, reported")
+        for ids, why in ((["01a11af8-962e-773d-a19a-ee4104011987"], "the owner archived the job's chat"), ([self.AIR_REBOOT], "the owner archived the session itself")):
+            resume_paused.UNRESOLVED.clear()
+            (self.root / "archived-chats.json").write_text(json.dumps({"ids": ids}))
+            self.assertEqual((self.run_air_reboot(restarts=[window])["paused"], unresolved()), ([], []), why)
+
+    def test_a_stop_after_the_updates_cut_still_wins(self):
+        archived = {"type": "session_state", "timestamp": "2026-10-18T06:52:53.805Z", "state": {"status": "archived"}}
+        self.air_reboot(archived)
+        self.assertEqual(self.run_air_reboot()["paused"], [], "a parent or the owner archived it after the cut")
+        self.assertEqual(self.run_air_reboot(unloaded_at="2026-10-18T06:52:54.100Z")["paused"], [], "the unload stopped it after the cut")
+        window = (resume_paused.parse_ts("2026-10-18T06:52:50Z"), resume_paused.parse_ts("2026-10-18T06:53:30Z"))
+        self.assertEqual(self.run_air_reboot(restarts=[window])["paused"], [],
+                         "an update archives no session it keeps, so an archive after its notice is an unattributed stop, even in a restart window")
+        (self.root / "deleted-jobs.json").write_text(json.dumps({"01a11af8-962e-773d-a19a-ee4104011987": {"sub-e40ffbe0": 1}}))
+        self.assertEqual(self.run_air_reboot(restarts=[window])["paused"], [], "a recorded delete wins")
+
     def test_an_archived_owner_in_the_default_list_counts_as_saved(self):
         full = "01a141b8-c786-723a-baec-b975a1a24279"
         listed = [{"id": full, "sessionId": full, "lifecycle": "archived"}, {"id": "other", "lifecycle": "archived"}]
@@ -669,9 +766,10 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(resume_paused.load_unloaded(path), {self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")})
         self.assertEqual(resume_paused.load_unloaded(self.root / "missing.json"), {})
 
-    def fake_relay(self, files):
+    def fake_relay(self, files, errors=None):
         """A relay on localhost that serves `files` ({path: bytes}) the way prime-relay's GET /v1/file does: a Range from an offset, 416 with the
-        size past the end, and a folder as its entries."""
+        size past the end, a folder as its entries, and 404 "no such file" for anything else. `errors` ({path: status}) fails those reads."""
+        errors = errors or {}
         import http.server
         import threading
         import urllib.parse as parse
@@ -685,6 +783,10 @@ class ResumePausedTests(unittest.TestCase):
                     self.send_response(401), self.end_headers()
                     return
                 path = parse.parse_qs(parse.urlparse(self.path).query)["path"][0]
+                if path in errors:
+                    self.send_response(errors[path]), self.end_headers()
+                    self.wfile.write(b'{"error":"relay failed"}')
+                    return
                 if path in files:
                     body = files[path]
                     start = int(self.headers.get("Range", "bytes=0-")[6:-1] or 0)
@@ -697,8 +799,8 @@ class ResumePausedTests(unittest.TestCase):
                 entries = [{"name": name[len(path) + 1:], "type": "file", "size": len(body), "mtimeMs": 1792296000000}
                            for name, body in files.items() if name.startswith(path + "/") and "/" not in name[len(path) + 1:]]
                 if not entries:
-                    self.send_response(403), self.end_headers()
-                    self.wfile.write(b'{"error":"path is outside the relay roots"}')
+                    self.send_response(404), self.end_headers()
+                    self.wfile.write(b'{"error":"no such file"}')
                     return
                 self.send_response(200), self.end_headers()
                 self.wfile.write(json.dumps({"entries": entries}).encode())
@@ -786,6 +888,37 @@ class ResumePausedTests(unittest.TestCase):
                    {"type": "message", "timestamp": "2026-10-18T06:47:30.000Z", "message": {"role": "toolResult", "content": [{"type": "text", "text": "Request was aborted"}]}}]
         self.assertEqual(self.census_writer(*resumed), [])
 
+    def test_another_boxs_job_record_that_fails_to_read_gets_nothing_and_is_reported(self):
+        # The relay's 404 "no such file" proves the record is missing; any other failure, or a record that is not a JSON object, leaves the
+        # delete unknown, so that job gets nothing and the pass lists it as incomplete.
+        record = self.MAC_JOB.rsplit("/", 1)[0] + "/rlm-subagent.json"
+        full = "01a14d38-d851-77a8-969c-29b2acca24f6"
+        cases = (("missing", {}, {}, ["continue"], None),
+                 ("deleted", {record: b'{"status": "deleted"}'}, {}, [], None),
+                 ("live", {record: b'{"status": "running"}'}, {}, ["continue"], None),
+                 ("relay error", {}, {record: 500}, [], "could not be read (relay mac: " + record + ": 500)"),
+                 ("other 404", {}, {record: 404}, [], "could not be read (relay mac: " + record + ": 404)"),
+                 ("not json", {record: b"{"}, {}, [], "is not valid JSON (1 bytes)"),
+                 ("not an object", {record: b"[]"}, {}, [], "does not have the expected shape"))
+        for name, extra, errors, expected, cause in cases:
+            with self.subTest(name):
+                self.addCleanup(resume_paused.INCOMPLETE.clear)
+                resume_paused.INCOMPLETE.clear()
+                (self.root / "state.json").unlink(missing_ok=True)
+                box = self.fake_relay({self.MAC_JOB: self.mac_job(), **extra}, errors)
+                rows = [{"id": full[-12:], "sessionId": full, "lifecycle": "archived", "activity": "idle", "sessionFile": self.MAC_JOB,
+                         "sessionName": "components test count", "runtimeKind": "subagent", "lastActivityAt": "2026-10-18T04:21:36.659Z"}]
+                sent = []
+                box.list = lambda all_rows=False: rows if all_rows else []
+                box.send = lambda target, text: sent.append(text) or '{"deliveryStatus": "delivered"}'
+                args = argparse.Namespace(message="continue", since_minutes=0, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+                with patch.dict(resume_paused.UNLOADED, {full: resume_paused.parse_ts("2026-10-18T04:21:40Z")}, clear=True), \
+                        patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"):
+                    resume_paused.resume_box(box, args)
+                self.assertEqual(sent, expected)
+                self.assertEqual((self.root / "state.json").exists(), bool(expected))
+                self.assertEqual(resume_paused.INCOMPLETE, [{"host": "mac", "error": f"not checked {full[-12:]}: sub-df01e456/rlm-subagent.json on mac {cause}"}] if cause else [])
+
     def test_another_boxs_failed_worker_is_left_to_that_box(self):
         # After the chats moved to us-metal02 at 05:30Z on 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced.
         box = self.fake_relay({self.MAC_JOB: self.mac_job()})
@@ -795,6 +928,185 @@ class ResumePausedTests(unittest.TestCase):
         box.list = lambda all_rows=False: rows
         args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
         self.assertEqual(resume_paused.resume_box(box, args)["paused"], [])
+
+    def test_a_malformed_answer_from_another_box_keeps_this_boxs_report(self):
+        # The overrun test's first fake printed a list with no "sessions" key, and the KeyError ended the whole pass after this box's sends.
+        class Broken:
+            remote = True
+            name = "mac"
+
+            def list(self, all_rows=False):
+                raise KeyError("sessions")
+
+        with patch.object(resume_paused.LocalBox, "list", return_value=[]), patch.object(resume_paused, "other_boxes", return_value=[Broken()]), \
+                patch.object(resume_paused, "UNLOADED_FILE", self.root / "unloaded.json"), patch.dict(resume_paused.UNLOADED, {}, clear=True), \
+                patch("sys.argv", ["x", "--json", "--dry-run", "--direct", "--state", str(self.root / "state.json")]), patch("sys.stderr"), \
+                patch("builtins.print") as printed:
+            resume_paused.main()
+        report = json.loads(printed.call_args.args[0])
+        self.assertEqual((report["paused"], report["incomplete"]), ([], [{"host": "mac", "error": "'sessions'"}]))
+
+    CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200"
+
+    def two_cut_jobs(self, **row):
+        """Two jobs under one chat whose turns were cut 11 min ago, as rows the daemon lists, and the send loop's sub-folder of each."""
+        rows, subs = [], {}
+        for sid, sub in (("01a14da8-6bca-76b3-9db8-85ef9cec80b3", "sub-8b9d12da"), ("01a14dc0-465e-7639-84ec-601805c6e474", "sub-3075f485")):
+            folder = self.root / "artifacts" / self.CHAT / sub
+            folder.mkdir(parents=True)
+            (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": sub}))
+            (folder / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [assistant(12, "toolUse"), role(11, "toolResult")]) + "\n")
+            rows.append({"id": sid, "sessionId": sid, "lifecycle": "live", "activity": "idle", "sessionFile": str(folder / f"{sid}.jsonl"),
+                         "sessionName": sub, "runtimeKind": "subagent", "lastActivityAt": at(11), "parentSessionId": self.CHAT, **row})
+            subs[sid] = sub
+        return rows, subs
+
+    def run_stopped_mid_pass(self, rows, on_first_send, only=(), fail_first=None):
+        """A --direct pass over `rows` whose first send runs `on_first_send` before it answers (or fails with `fail_first`)."""
+        sent = []
+
+        def fake_send(target, text):
+            sent.append(target)
+            if len(sent) == 1:
+                on_first_send()
+                if fail_first:
+                    raise resume_paused.CommandError(fail_first)
+            return {"deliveryStatus": "delivered"}
+
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                  only=",".join(only), state=str(self.root / "state.json"))
+        self.addCleanup(resume_paused.INCOMPLETE.clear)
+        with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.object(resume_paused, "pool_bin", return_value=None), patch.object(resume_paused, "send", side_effect=fake_send), \
+                patch.object(resume_paused, "live_id", return_value=None), patch.dict(resume_paused.UNLOADED, {}, clear=True):
+            report = resume_paused.resume(rows, args, NOW)
+        state = json.loads((self.root / "state.json").read_text()) if (self.root / "state.json").exists() else {}
+        return report, sent, state
+
+    def test_a_run_deleted_or_archived_after_the_pass_found_it_gets_no_continue(self):
+        for record, body in (("deleted-jobs.json", lambda first, second, sub: {self.CHAT: {sub: 1}}),
+                             ("archived-chats.json", lambda first, second, sub: {"ids": [second]}),
+                             ("archived-chats.json", lambda first, second, sub: {"ids": [self.CHAT]})):
+            with self.subTest(record=record, body=body):
+                for path in self.root.iterdir():
+                    shutil.rmtree(path) if path.is_dir() else path.unlink()
+                rows, subs = self.two_cut_jobs()
+                first, second = (row["sessionId"] for row in rows)
+                report, sent, state = self.run_stopped_mid_pass(rows, lambda: (self.root / record).write_text(json.dumps(body(first, second, subs[second]))))
+                self.assertEqual(sent, [first[-12:]])
+                self.assertEqual(list(state), [first])
+                results = {child["id"]: child["result"] for child in report["children"]}
+                self.assertRegex(results[second[-12:]], r"^skipped: (deleted on purpose|archived by the owner) after the pass found it$")
+                self.assertEqual(resume_paused.INCOMPLETE, [])
+
+    def test_a_run_deleted_after_its_send_failed_is_never_relayed(self):
+        rows, subs = self.two_cut_jobs(lifecycle="archived", saved=True)
+        first = rows[0]["sessionId"]
+        relayed = []
+        with patch.object(resume_paused, "relay", side_effect=lambda *a: relayed.append(a) or {"deliveryStatus": "delivered"}):
+            report, sent, state = self.run_stopped_mid_pass(rows[:1], lambda: (self.root / "deleted-jobs.json").write_text(json.dumps({self.CHAT: {subs[first]: 1}})),
+                                                            only=[first], fail_first=f"prime-agent send failed (1): Error: Unknown active session: {first}")
+        self.assertEqual((sent, relayed, state), ([first], [], {}))
+        self.assertEqual(report["children"][0]["result"], "skipped: deleted on purpose after the pass found it")
+
+    def test_an_unreadable_stop_record_during_the_sends_stops_the_rest_and_is_reported(self):
+        rows, _ = self.two_cut_jobs()
+        first, second = (row["sessionId"] for row in rows)
+        report, sent, state = self.run_stopped_mid_pass(rows, lambda: (self.root / "archived-chats.json").write_text(""))
+        self.assertEqual((sent, list(state)), ([first[-12:]], [first]))
+        self.assertEqual({child["id"]: child["result"] for child in report["children"]}[second[-12:]], {"error": "not sent: archived-chats.json is not valid JSON (0 bytes)"})
+        self.assertEqual(resume_paused.INCOMPLETE, [{"host": None, "error": f"not sent to {second[-12:]}: archived-chats.json is not valid JSON (0 bytes)"}])
+
+    def test_a_missing_stop_record_is_empty_and_a_malformed_one_makes_the_box_incomplete(self):
+        rows, _ = self.two_cut_jobs()
+        self.addCleanup(resume_paused.INCOMPLETE.clear)
+
+        def pass_with(record):
+            path = self.root / "deleted-jobs.json"
+            path.unlink(missing_ok=True)
+            if record is not None:
+                path.write_text(record)
+            with patch.object(resume_paused.LocalBox, "list", return_value=rows), patch.object(resume_paused, "other_boxes", return_value=[]), \
+                    patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                    patch.object(resume_paused, "DELETED_JOBS", path), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "missing.json"), \
+                    patch.object(resume_paused, "UNLOADED_FILE", self.root / "unloaded.json"), patch.dict(resume_paused.UNLOADED, {}, clear=True), \
+                    patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                    patch.object(resume_paused, "pool_bin", return_value=None), patch.object(resume_paused, "send", side_effect=AssertionError("dry run")), \
+                    patch("sys.argv", ["x", "--json", "--dry-run", "--direct", "--since-minutes", "0", "--state", str(self.root / "state.json")]), patch("sys.stderr"), \
+                    patch("builtins.print") as printed:
+                resume_paused.main()
+            return json.loads(printed.call_args.args[0])
+
+        self.assertEqual((len(pass_with(None)["paused"]), pass_with(None).get("incomplete")), (2, None))
+        for record, cause in (("{", "is not valid JSON (1 bytes)"), ('{"chat": [1]}', "does not have the expected shape")):
+            report = pass_with(record)
+            self.assertEqual((report["paused"], report["incomplete"]), ([], [{"host": None, "error": f"sent nothing: deleted-jobs.json {cause}"}]))
+
+    def pass_stopped_by_sigterm(self, ids, send_seconds, wait_for):
+        """Runs the script on a private HOME with a fake prime-agent whose sends take `send_seconds`, and a slowbox in hosts.json whose
+        daemon list never answers. Sends SIGTERM once the file named by `wait_for` ("sending" or "reading") appears."""
+        import signal
+        import subprocess
+        import sys
+        import time
+        home, bin_dir = self.root / "home", self.root / "bin"
+        sessions = home / ".prime" / "agent" / "sessions"
+        sessions.mkdir(parents=True)
+        bin_dir.mkdir()
+        ago = lambda minutes: (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+        rows = []
+        for sid in ids:
+            (sessions / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [
+                {"type": "message", "timestamp": ago(12), "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "toolCall", "name": "bash"}]}},
+                {"type": "message", "timestamp": ago(11), "message": {"role": "toolResult", "content": "x"}}]) + "\n")
+            rows.append({"id": sid, "sessionId": sid, "lifecycle": "live", "activity": "idle", "sessionFile": str(sessions / f"{sid}.jsonl"),
+                         "sessionName": sid, "runtimeKind": "top-level", "lastActivityAt": ago(11)})
+        sends, sending, reading = self.root / "sends.txt", self.root / "sending", self.root / "reading"
+        agent = bin_dir / "prime-agent"
+        agent.write_text(f"#!{sys.executable}\nimport json, sys, time\n"
+                         f"if sys.argv[1] == 'list': print(json.dumps({{'sessions': {rows!r}}}))\n"
+                         f"else: open({str(sending)!r}, 'w').close(); time.sleep({send_seconds}); open({str(sends)!r}, 'a').write(sys.argv[3] + '\\n'); "
+                         "print(json.dumps({'deliveryStatus': 'delivered'}))\n")
+        node = bin_dir / "node"
+        node.write_text(f"#!/bin/sh\necho \"$@\" > {reading}\nexec sleep 600\n")
+        for tool in (agent, node):
+            tool.chmod(0o755)
+        (self.root / "token").write_text("t0ken")
+        hosts = self.root / "hosts.json"
+        hosts.write_text(json.dumps({"hosts": [{"name": "slowbox", "hostname": "slowbox-host", "address": "127.0.0.1", "relayPort": 9, "token": "file:token"}]}))
+        env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin", "TMPDIR": str(self.root), "PRIME_AGENT_BIN": str(agent), "SIEUN_PI_HOSTS": str(hosts)}
+        started = time.monotonic()
+        with subprocess.Popen([sys.executable, "-B", str(REPO / "skills/resume-paused-sessions/scripts/resume_paused.py"), "--json", "--direct"],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
+            while not (self.root / wait_for).exists() and time.monotonic() - started < 30:
+                time.sleep(0.05)
+            run.send_signal(signal.SIGTERM)
+            stdout, stderr = run.communicate(timeout=30)
+        self.assertNotIn("t0ken", stdout + stderr)
+        self.assertEqual(run.returncode, 128 + signal.SIGTERM, stderr)
+        state = json.loads((home / ".prime" / "agent" / "resume-paused-sessions.json").read_text())
+        return json.loads(stdout), sends.read_text().split(), sorted(state)
+
+    def test_a_sigterm_while_another_box_reads_keeps_this_boxs_sends_and_names_the_stop(self):
+        # 06:57Z on 10-18: the pass sent 8 continues on us-metal02 by 06:56:06.9Z (its state file), then read the Mac through its relay until
+        # the chat service's 90 s execFile timeout sent SIGTERM. It died with no output, and the service logged "Command failed" with no cause.
+        sid = "01a14da6-e39d-72c5-82d8-5882bce4a3a2"
+        report, sent, state = self.pass_stopped_by_sigterm([sid], 0, "reading")
+        self.assertEqual((sent, state), ([sid[-12:]], [sid]))
+        self.assertEqual([(child["id"], child["result"]) for child in report["children"]], [(sid[-12:], {"deliveryStatus": "delivered", "deliveryMode": None})])
+        self.assertEqual([entry["host"] for entry in report["incomplete"]], ["slowbox"])
+        self.assertRegex(report["incomplete"][0]["error"], r"^stopped by SIGTERM after \d+\.\d s while it checked slowbox, last step: node hosts-cli\.mjs daemon slowbox list$")
+
+    def test_a_sigterm_during_a_send_lets_that_send_finish_and_be_recorded_and_sends_no_more(self):
+        first, second = "01a14d9a-e19c-7168-926d-af8264556278", "01a14db7-b96a-77ba-84b3-3baf2a4f874e"
+        report, sent, state = self.pass_stopped_by_sigterm([first, second], 1, "sending")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(state, [next(sid for sid in (first, second) if sid.endswith(sent[0]))])
+        self.assertEqual([child["id"] for child in report["children"]], sent)
+        self.assertEqual([entry["host"] for entry in report["incomplete"]], [None])
+        self.assertRegex(report["incomplete"][0]["error"], r"^stopped by SIGTERM after \d+\.\d s during the sends on this box, last step: prime-agent send --json ")
 
 if __name__ == "__main__":
     unittest.main()

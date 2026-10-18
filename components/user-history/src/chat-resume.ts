@@ -1,24 +1,101 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
-import type { InterruptedHead, InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
+import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf } from "./shared/interrupted.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
 const script = fileURLToPath(new URL("../../../skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
 const CHECK_TTL_MS = 15_000;
+/**
+ * A pass longer than this logs a warning and keeps running: the dry run took 45 to 58 s on 10-18 and 67 s at 06:58Z, and the old 90 s kill
+ * at 06:52Z and 06:57Z threw away a finished pass, 8 sent continues included, and left the Mac's jobs unchecked. Each daemon call and relay
+ * read inside the script has its own bound (60 s and 20 s).
+ */
+const OVERRUN_WARN_MS = 90_000;
+const ID_FLAGS = new Set(["--owners", "--only", "--unstuck"]);
 
-function runScript(args: readonly string[]): Promise<InterruptedReport> {
+/** The flags of a run, with each id list as its count: the 06:52Z log line on 10-18 named 134 owners and no cause. */
+const describeArgs = (args: readonly string[]): string =>
+  args.map((arg, index) => ID_FLAGS.has(args[index - 1] ?? "") ? `<${arg.split(",").filter(Boolean).length} ids>` : arg).join(" ");
+
+const REASONS: ReadonlySet<string> = new Set<InterruptedRun["reason"]>(["error", "cut_off", "empty_reply", "hung", "worker_failed", "worker_stopped",
+  "aborted", "never_started", "daemon_restart"]);
+const isText = (value: unknown): value is string => typeof value === "string";
+const isOptionalText = (value: unknown): boolean => value === undefined || typeof value === "string";
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isResult = (value: unknown): boolean => isText(value) || (isRecord(value) && (!("error" in value) || isText(value.error)));
+
+/** The first field of `entry` the server reads that has the wrong type, as `<list>[<index>].<field>`, or null. */
+function badField(list: string, entries: unknown, checks: Record<string, (value: unknown) => boolean>, optional = false): string | null {
+  if (entries === undefined && optional) return null;
+  if (!Array.isArray(entries)) return list;
+  for (const [index, entry] of entries.entries()) {
+    if (!isRecord(entry)) return `${list}[${index}]`;
+    const field = Object.entries(checks).find(([key, check]) => !check(entry[key]));
+    if (field) return `${list}[${index}].${field[0]}`;
+  }
+  return null;
+}
+
+/** The script's JSON report, or why it is not one: the server reads each field below, so a wrong one is named instead of failing later. */
+function parseReport(stdout: string): { report: InterruptedReport } | { malformed: string } {
+  let value: unknown;
+  try { value = JSON.parse(stdout); } catch { return { malformed: stdout.trim() ? `printed ${Buffer.byteLength(stdout)} bytes that are not JSON` : "printed nothing" }; }
+  if (!isRecord(value)) return { malformed: "printed JSON that is not an object" };
+  const run = { id: isText, name: isText, reason: (reason: unknown) => isText(reason) && REASONS.has(reason), error: isText, errored_at: (at: unknown) => at === null || isOptionalText(at),
+    head: isText, session_id: isOptionalText, head_session_id: isOptionalText, host: isOptionalText };
+  const bad = (isText(value.checked_at) ? null : "checked_at")
+    ?? badField("paused", value.paused, run)
+    ?? badField("heads", value.heads, { id: isText, name: isText, result: isResult })
+    ?? badField("children", value.children, { id: isText, name: isText, head: isText, result: isResult }, true)
+    ?? badField("incomplete", value.incomplete, { host: (host: unknown) => host === null || isText(host), error: isText }, true)
+    ?? badField("unresolved", value.unresolved, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText,
+      archived_at: isOptionalText, error: isText, host: isOptionalText }, true);
+  return bad ? { malformed: `printed a report whose ${bad} is missing or has the wrong type` } : { report: value as unknown as InterruptedReport };
+}
+
+function exitCause(error: ExecFileException, ms: number): string {
+  const after = `after ${(ms / 1000).toFixed(1)} s`;
+  if (error.signal) return `ended by ${error.signal} ${after}`;
+  if (typeof error.code === "number") return `exited ${error.code} ${after}`;
+  return `failed (${error.code ?? error.name}) ${after}: ${error.message.split("\n")[0]}`;
+}
+
+const warnLine = (line: string): void => { process.stderr.write(`${line}\n`); };
+
+/**
+ * Runs the script to its end and answers its report, with a warning once it runs past `warnAfterMs`. A run that failed but printed a report
+ * (a stop after its first box) answers that report, with the cause in `incomplete` when the script named none; a run with no report rejects
+ * with its flags, exit cause and last output lines.
+ */
+export function runScript(args: readonly string[], file = script, warnAfterMs = OVERRUN_WARN_MS, warn = warnLine): Promise<InterruptedReport> {
+  const started = Date.now();
+  const overrun = setTimeout(() => warn(`resume: resume_paused.py ${describeArgs(args)} still running after ${(warnAfterMs / 1000).toFixed(1)} s`), warnAfterMs);
   return new Promise((resolve, reject) => {
-    execFile(process.env.PYTHON ?? "python3", ["-B", script, "--json", ...args], { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) { reject(new Error((stderr || stdout).trim().split("\n").at(-1) || error.message)); return; }
-      try { resolve(JSON.parse(stdout) as InterruptedReport); }
-      catch { reject(new Error("The resume script printed no JSON.")); }
+    execFile(process.env.PYTHON ?? "python3", ["-B", file, "--json", ...args], { maxBuffer: Infinity }, (error, stdout, stderr) => {
+      clearTimeout(overrun);
+      const ms = Date.now() - started;
+      if (ms > warnAfterMs) warn(`resume: resume_paused.py ${describeArgs(args)} took ${(ms / 1000).toFixed(1)} s`);
+      const parsed = parseReport(stdout);
+      if (!error && "report" in parsed) { resolve(parsed.report); return; }
+      const said = stderr.trim().split("\n").slice(-3).join(" / ");
+      const cause = error ? exitCause(error, ms) : `${"malformed" in parsed ? parsed.malformed : "printed no JSON"} after ${(ms / 1000).toFixed(1)} s`;
+      const line = `resume_paused.py ${describeArgs(args)} ${cause}${error && "malformed" in parsed && stdout.trim() ? ` and ${parsed.malformed}` : ""}${said ? `: ${said}` : ""}`;
+      if (!("report" in parsed)) { reject(new Error(line)); return; }
+      const report = parsed.report;
+      resolve(report.incomplete?.length ? report : { ...report, incomplete: [{ host: null, error: line }] });
     });
   });
 }
+
+const withIncomplete = (report: InterruptedReport, ...earlier: readonly InterruptedReport[]): InterruptedReport => {
+  const incomplete = [...earlier.flatMap(run => run.incomplete ?? []), ...report.incomplete ?? []];
+  return incomplete.length ? { ...report, incomplete } : report;
+};
+
 
 /**
  * Runs one check at a time for every open tab, and never next to a resume, so two clicks or two tabs cannot send "continue" to the same
@@ -80,16 +157,19 @@ export class InterruptedRuns {
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
    */
-  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>,
+  resumeJobs(isJob: (run: JobOf) => boolean, reopen: (sessionId: string) => Promise<void>,
     owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>,
     cut: ReadonlySet<string> = new Set()): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
       const listed = new Set([...owners, ...cut]);
       const named = listed.size ? ["--owners", [...listed].join(",")] : [];
-      const jobs = (await this.run(["--dry-run", "--direct", ...named])).paused
+      const planned = await this.run(["--dry-run", "--direct", ...named]);
+      const jobs = planned.paused
         .filter(run => run.session_id !== undefined && run.reason !== "hung" && (isJob(run) || cut.has(run.session_id)));
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
-      if (!jobs.length) return null;
+      const unresolved = (planned.unresolved ?? []).filter(isJob);
+      const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...(unresolved.length ? { unresolved } : {}) };
+      if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
       const reopenAll = async (ids: Iterable<string>): Promise<void> => {
         for (const id of new Set(ids)) {
           try { await reopen(id); }
@@ -105,11 +185,12 @@ export class InterruptedRuns {
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
       const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
-      if (!lost.length) return sent;
+      if (!lost.length) return { ...withIncomplete(sent, planned), ...(unresolved.length ? { unresolved } : {}) };
       await reopenAll(lost);
       const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box]);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
-      return { ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) };
+      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again),
+        ...(unresolved.length ? { unresolved } : {}) };
     });
     this.forget();
     return report;
@@ -142,7 +223,7 @@ const isGone = (result: InterruptedHead["result"]): boolean => typeof result ===
  * hook failure and a worker stop ended at 13:48Z, two of them two levels under Crawler VP, and their steps stalled over 2 h.
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
-  interrupted: (isJob: (run: InterruptedRun) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
+  interrupted: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
   owners: ReadonlySet<string> = new Set()): Promise<void> {
   const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
   try {
@@ -150,6 +231,10 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
     for (const job of report?.children ?? []) {
       const run = report!.paused.find(entry => entry.id === job.id);
       log(`job ${job.name}: interrupted (${run?.reason ?? "?"} at ${run?.errored_at ?? "?"}); continue: ${typeof job.result === "string" ? job.result : JSON.stringify(job.result)}`);
+    }
+    for (const entry of report?.incomplete ?? []) log(`chats: interrupted jobs: not finished on ${entry.host ?? "this box"}: ${entry.error}`);
+    for (const entry of report?.unresolved ?? []) {
+      log(`job ${entry.name}: not resumed: an archive at ${entry.archived_at ?? "?"} with no recorded cause stopped its turn (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
   } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }
 }
