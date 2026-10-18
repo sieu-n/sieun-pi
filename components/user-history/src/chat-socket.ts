@@ -9,15 +9,17 @@ import type { ThreadHave } from "./shared/types.ts";
  *
  * The upgrade URL may name the first subscriptions (`parseUrlSubscriptions`), so a fresh page's first frames need no subscribe round trip.
  * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" | "refresh" | "usage" }` (sessions with `delta: true` for changed rows only, and archived rows only with `archived: true` too), `{ type: "subscribe", sub, feed: "thread", id }`,
- * `{ type: "subscribe", sub, feed: "agents", id }` (the agents of a chat, or of the chat a job belongs to)
+ * `{ type: "subscribe", sub, feed: "agents", id }` (the agents of a chat, or of the chat a job belongs to; changed agents only with `delta: true`)
  * and `{ type: "unsubscribe", sub }`. `sub` is a number the page picks. Server to client: `{ sub, event, data }` for a feed
  * event, and `{ event: "ping" }` every `pingMs` so proxies keep the socket open and the page can tell a dead socket.
  */
 /**
  * A reconnect names what the page already holds, so the server sends only what changed: `have` on the sessions feed is `id:hash` per row
- * (shared/sessions-delta.ts `sessionsHave`), and on a thread feed its newest message key and the board's `rev|updatedAt` (`ThreadHave`).
+ * (shared/sessions-delta.ts `sessionsHave`), on an agents feed `key:hash` per agent (`agentsHave`), and on a thread feed its newest message
+ * key and the board's `rev|updatedAt` (`ThreadHave`).
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave }
+  | { feed: "agents"; id: string; delta?: true; have?: string };
 export type FeedSend = (event: string, data: unknown) => void;
 /** Starts one feed. A thread feed opens the thread first, so it may resolve later; the returned function stops it. */
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
@@ -53,7 +55,10 @@ function parseValue(value: unknown): { type: "subscribe"; sub: number; feed: Fee
       ...(typeof raw.board === "string" && raw.board.length <= 100 ? { board: raw.board } : {}) };
     return { type: "subscribe", sub, feed: { feed: "thread", id: message.id, ...(have.last || have.board ? { have } : {}) } };
   }
-  if (message.feed === "agents" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "agents", id: message.id } };
+  if (message.feed === "agents" && typeof message.id === "string" && message.id.length <= 512) {
+    const have = message.delta === true && typeof message.have === "string" ? message.have : undefined;
+    return { type: "subscribe", sub, feed: { feed: "agents", id: message.id, ...(message.delta === true ? { delta: true } : {}), ...(have ? { have } : {}) } };
+  }
   return { type: "reject", sub, message: `Unknown feed: ${String(message.feed).slice(0, 40)}.` };
 }
 
@@ -121,8 +126,13 @@ export class FeedSockets {
       unsubscribe?.();
     };
     ws.on("pong", () => { state.alive = true; });
-    /** Resolves once the first frame of the URL's thread feed went out, or it failed. */
+    /** Resolves once the first frame of every thread feed started so far went out, or it failed. */
     let threadFirst: Promise<void> = Promise.resolve();
+    const startThread = (message: NonNullable<ReturnType<typeof parseMessage>>) => {
+      let done!: () => void;
+      threadFirst = Promise.all([threadFirst, new Promise<void>(resolve => { done = resolve; })]).then(() => {});
+      handle(message, Promise.resolve(), done);
+    };
     const handle = (message: NonNullable<ReturnType<typeof parseMessage>>, after: Promise<void> = Promise.resolve(), first?: () => void) => {
       if (message.type === "unsubscribe") { stop(message.sub); return; }
       const reject = message.type === "reject" ? message.message
@@ -149,17 +159,17 @@ export class FeedSockets {
     for (const value of initial) {
       const message = parseValue(value);
       if (!message) continue;
-      if (message.type === "subscribe" && message.feed.feed === "thread") {
-        let done!: () => void;
-        threadFirst = new Promise<void>(resolve => { done = resolve; });
-        handle(message, Promise.resolve(), done);
-      } else handle(message, threadFirst);
+      if (message.type === "subscribe" && message.feed.feed === "thread") startThread(message);
+      else handle(message, threadFirst);
     }
+    // An agents feed starts once every thread feed asked for before it has sent its first frame, so a reconnect's thread lines go out ahead
+    // of the agents lists on the same socket.
     ws.on("message", raw => {
       state.alive = true;
       const message = parseMessage(raw);
       if (!message) { log("closed a socket that sent a malformed frame"); ws.close(1008, "Unexpected message."); return; }
-      handle(message);
+      if (message.type === "subscribe" && message.feed.feed === "thread") startThread(message);
+      else handle(message, message.type === "subscribe" && message.feed.feed === "agents" ? threadFirst : Promise.resolve());
     });
     ws.on("close", () => {
       this.sockets.delete(ws);

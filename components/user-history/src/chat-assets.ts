@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import esbuildSvelte from "esbuild-svelte";
 import { iconPng } from "./chat-icon.ts";
+import { scopeClass, type PrepaintModule } from "./prepaint.ts";
 
 const sveltePlugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
 
@@ -15,8 +16,9 @@ export interface Asset { body: Buffer; etag: string; contentType: string; br?: B
 /**
  * `version` names this build; the page carries it and the sessions stream reports it, so an open tab sees a restart onto new code.
  * `app` returns the installable-app file for a route under the capability path (manifest and icons), or undefined.
+ * `prepaint` is the server half of the build (prepaint.ts), or undefined where it did not load.
  */
-export interface ClientBundle { js: Asset; css: Asset; version: string; app?: (route: string) => Asset | undefined }
+export interface ClientBundle { js: Asset; css: Asset; version: string; app?: (route: string) => Asset | undefined; prepaint?: PrepaintModule }
 
 export function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
@@ -37,13 +39,15 @@ export function packAsset(asset: Asset): Asset {
   return { ...asset, br: brotliCompressSync(asset.body, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: asset.body.length } }), gzip: gzipSync(asset.body, { level: 9 }) };
 }
 
+const svelteOptions = (generate: "client" | "server") => ({ runes: true, css: "external" as const, dev: false, generate, cssHash: ({ filename }: { filename?: string }) => scopeClass(filename ?? "") });
+
 /** The esbuild and Svelte compile of the client: app.js and app.css. It holds its thread for seconds, so `buildClientBundle` runs it in a worker. */
 export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array }> {
   const entry = fileURLToPath(new URL("./client/main.ts", import.meta.url));
   const result = await build({
     entryPoints: [entry], bundle: true, write: false, format: "esm", target: "es2022", minify: true, sourcemap: false, legalComments: "none",
     outdir: "/virtual", entryNames: "app", logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' },
-    plugins: [sveltePlugin({ compilerOptions: { runes: true, css: "external", dev: false }, cache: false, filterWarnings: (warning: { code: string }) => !warning.code.startsWith("a11y") })],
+    plugins: [sveltePlugin({ compilerOptions: svelteOptions("client"), cache: false, filterWarnings: (warning: { code: string }) => !warning.code.startsWith("a11y") })],
   });
   const js = result.outputFiles.find(file => file.path.endsWith(".js"));
   const css = result.outputFiles.find(file => file.path.endsWith(".css"));
@@ -51,12 +55,40 @@ export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array
   return { js: js.contents, css: css?.contents ?? new Uint8Array() };
 }
 
-type Compiled = { ok: true; js: Asset; css: Asset } | { ok: false; error: string };
+/**
+ * The server half: client/prepaint-lines.ts and ChatLines.svelte compiled for Node, one ES module with no imports. The page modules that
+ * reach the browser's store or API on import (store.svelte.ts, api.ts) are empty here, since a server render runs no event handler or effect.
+ */
+export async function compileServer(): Promise<string> {
+  const entry = fileURLToPath(new URL("./client/prepaint-lines.ts", import.meta.url));
+  const result = await build({
+    entryPoints: [entry], bundle: true, write: false, format: "esm", platform: "node", target: "node22", minify: true, sourcemap: false, legalComments: "none",
+    outdir: "/virtual", entryNames: "prepaint", logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' },
+    plugins: [
+      { name: "browser-only", setup: build => {
+        build.onResolve({ filter: /\/(store\.svelte|api)\.ts$/ }, args => ({ path: args.path, namespace: "browser-only" }));
+        build.onLoad({ filter: /.*/, namespace: "browser-only" }, () => ({ contents: "export const store = {}; export const api = {};", loader: "js" }));
+      } },
+      sveltePlugin({ compilerOptions: svelteOptions("server"), cache: false, filterWarnings: () => false }),
+    ],
+  });
+  const js = result.outputFiles.find(file => file.path.endsWith(".js"));
+  if (!js) throw new Error("Server bundle produced no prepaint.js");
+  return js.text;
+}
+
+/** The server half, loaded from its source. A build that fails to load leaves the page without the still view, never without the app. */
+export async function loadPrepaint(source: string): Promise<PrepaintModule | undefined> {
+  try { return await import("data:text/javascript;base64," + Buffer.from(source).toString("base64")) as PrepaintModule; }
+  catch (error) { process.stderr.write(`prepaint: the server bundle did not load: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; }
+}
+
+type Compiled = { ok: true; js: Asset; css: Asset; prepaint: string } | { ok: false; error: string };
 
 /** The worker's half: compile, then compress both assets there too, since brotli at quality 11 takes about a second for app.js. */
-export async function compileAndPack(): Promise<{ js: Asset; css: Asset }> {
-  const { js, css } = await compileClient();
-  return { js: packAsset(asset(js, "text/javascript; charset=utf-8")), css: packAsset(asset(css, "text/css; charset=utf-8")) };
+export async function compileAndPack(): Promise<{ js: Asset; css: Asset; prepaint: string }> {
+  const [{ js, css }, prepaint] = await Promise.all([compileClient(), compileServer()]);
+  return { js: packAsset(asset(js, "text/javascript; charset=utf-8")), css: packAsset(asset(css, "text/css; charset=utf-8")), prepaint };
 }
 
 /** A worker message carries Uint8Arrays where the asset had Buffers. */
@@ -71,7 +103,7 @@ export const PREBUILT_DIR = fileURLToPath(new URL("../.client-bundle/", import.m
 const prebuiltFiles = (stem: string) => [stem, `${stem}.br`, `${stem}.gz`];
 
 export async function writePrebuilt(dir = PREBUILT_DIR): Promise<void> {
-  const { js, css } = await compileAndPack();
+  const { js, css, prepaint } = await compileAndPack();
   const draft = `${dir.replace(/\/+$/, "")}.${process.pid}.tmp`;
   await rm(draft, { recursive: true, force: true });
   await mkdir(draft, { recursive: true });
@@ -81,6 +113,7 @@ export async function writePrebuilt(dir = PREBUILT_DIR): Promise<void> {
     await writeFile(join(draft, br!), packed.br!);
     await writeFile(join(draft, gzip!), packed.gzip!);
   }
+  await writeFile(join(draft, PREPAINT_FILE), prepaint);
   await rm(dir, { recursive: true, force: true });
   await rename(draft, dir);
 }
@@ -92,12 +125,16 @@ export async function readPrebuilt(dir = PREBUILT_DIR): Promise<ClientBundle | n
     return { ...asset(body!, contentType), br: br!, gzip: gzip! };
   };
   try {
-    const [js, css] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8")]);
-    return bundleOf(js, css);
+    const [js, css, prepaint] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8"), readFile(join(dir, PREPAINT_FILE), "utf8")]);
+    return await bundleOf(js, css, prepaint);
   } catch { return null; }
 }
 
-const bundleOf = (js: Asset, css: Asset): ClientBundle => ({ js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset });
+const PREPAINT_FILE = "prepaint.mjs";
+const bundleOf = async (js: Asset, css: Asset, prepaint: string): Promise<ClientBundle> => {
+  const loaded = await loadPrepaint(prepaint);
+  return { js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset, ...(loaded ? { prepaint: loaded } : {}) };
+};
 
 /** The release's prebuilt bundle (`readPrebuilt`), else a compile in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering. */
 export async function buildClientBundle(dir = PREBUILT_DIR): Promise<ClientBundle> {
@@ -110,7 +147,7 @@ function compileInWorker(): Promise<ClientBundle> {
     worker.once("message", (compiled: Compiled) => {
       void worker.terminate();
       if (!compiled.ok) { reject(new Error(compiled.error)); return; }
-      resolve(bundleOf(revive(compiled.js), revive(compiled.css)));
+      resolve(bundleOf(revive(compiled.js), revive(compiled.css), compiled.prepaint));
     });
     worker.once("error", reject);
     worker.once("exit", code => { reject(new Error(`The client bundle worker exited (${code}) with no bundle.`)); });

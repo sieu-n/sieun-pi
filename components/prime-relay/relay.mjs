@@ -160,14 +160,22 @@ export function createRelay(config, log = () => {}) {
       const slim = request.headers[SLIM_HEADER] === "images";
       const deltas = request.headers[DELTA_HEADER] === "1";
       socket.pipe(daemon);
-      let out = slim ? daemon.pipe(slimSnapshots()) : daemon;
-      if (deltas) out = out.pipe(encodeLineDeltas());
-      out.pipe(socket);
+      // The daemon's bytes are read as they come and wait here for the box, never in the daemon's socket. When its socket backs up, the
+      // supervisor drops a session's events and sends the whole snapshot again, and over the Mac link each resent snapshot backed it up anew.
+      const stages = [...(slim ? [slimSnapshots()] : []), ...(deltas ? [encodeLineDeltas()] : [])];
+      for (let at = 1; at < stages.length; at++) stages[at - 1].pipe(stages[at]);
+      const last = stages.at(-1);
+      last?.on("data", chunk => { socket.write(chunk); });
+      last?.on("end", () => socket.end());
+      const first = stages[0] ?? socket;
+      daemon.on("data", chunk => { first.write(chunk); });
+      daemon.on("end", () => first.end());
       log(`tunnel open from ${socket.remoteAddress}${slim ? ", snapshots without older images" : ""}${deltas ? ", message updates as deltas" : ""}`);
     });
     daemon.once("error", error => { if (opened) socket.destroy(); else refuse("502 Bad Gateway"); log(`daemon socket: ${error.message}`); });
     socket.once("error", () => daemon.destroy());
-    daemon.once("close", () => socket.destroy());
+    // A daemon that closed cleanly ended the stages above, and the box still gets the bytes waiting here.
+    daemon.once("close", hadError => { if (hadError) socket.destroy(); });
     socket.once("close", () => daemon.destroy());
   });
   // A box's chat service keeps its file reads on open connections (src/hosts.ts agentFor); Node's 5 s default closed them between bursts.

@@ -32,7 +32,7 @@ test("a first page is served from memory, then from its file after a restart, an
 
 test("a release's prebuilt client bundle is read from disk at start, and a folder missing a file compiles instead", async () => {
   const dir = mkdtempSync(join(tmpdir(), "prebuilt-"));
-  for (const [name, body] of [["app.js", "js"], ["app.js.br", "jsbr"], ["app.js.gz", "jsgz"], ["app.css", "css"], ["app.css.br", "cssbr"], ["app.css.gz", "cssgz"]]) writeFileSync(join(dir, name!), body!);
+  for (const [name, body] of [["app.js", "js"], ["app.js.br", "jsbr"], ["app.js.gz", "jsgz"], ["app.css", "css"], ["app.css.br", "cssbr"], ["app.css.gz", "cssgz"], ["prepaint.mjs", "prepaint"]]) writeFileSync(join(dir, name!), body!);
   const bundle = await readPrebuilt(dir);
   assert.ok(bundle);
   assert.equal(bundle.js.body.toString(), "js");

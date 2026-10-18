@@ -744,7 +744,7 @@ export class Catalog {
         if (count) row.unreadCount = count;
       }
     }
-    const rates = await this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
+    const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     const queued = await this.queueSource();
     const wakes = await this.wakesSource(now).catch(() => []);
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
@@ -760,15 +760,23 @@ export class Catalog {
     return { rows, tags: labels?.tags ?? [] };
   }
 
-  /** Output rates per session from the usage store, asked at most once per RATES_MS for the same ids; nothing when no store is wired. */
-  private async ratesFor(sessionIds: string[], now: number): Promise<Record<string, TokenRate>> {
+  /**
+   * Output rates per session from the usage store, asked at most once per RATES_MS for the same ids; nothing when no store is wired. A
+   * projection never waits for the store: it takes the last answer and asks again in the background, and the next frame, which comes within
+   * RATES_MS while an agent works (`scheduleRates`), carries the new one. On 10-18 a scratch serve at the live rate waited about 225 ms for
+   * the usage worker on every fourth projection, and those waits were the projections' whole 90th percentile (300 ms against 60 ms median).
+   */
+  private ratesFor(sessionIds: string[], now: number): Record<string, TokenRate> {
     const ids = [...new Set(sessionIds)].sort();
     const key = ids.join(",");
-    if (this.rates && this.rates.key === key && now - this.rates.at < RATES_MS) return this.rates.value;
-    const value = ids.length ? await this.ratesSource(ids).catch(() => ({})) : {};
-    this.rates = { key, at: now, value };
-    return value;
+    const known = this.rates;
+    if (!this.ratesReading && !(known && known.key === key && now - known.at < RATES_MS)) {
+      const reading = this.ratesReading = (ids.length ? this.ratesSource(ids).catch(() => ({})) : Promise.resolve({}))
+        .then(value => { this.rates = { key, at: now, value }; }).finally(() => { if (this.ratesReading === reading) this.ratesReading = undefined; });
+    }
+    return known?.value ?? {};
   }
+  private ratesReading: Promise<void> | undefined;
 
   /** While an agent of a chat works, the rows go out again every RATES_MS with fresh rates; the timer stops once nothing works. */
   private scheduleRates(working: boolean): void {

@@ -1,5 +1,6 @@
 import { childName, childWorking, stepOwner } from "./checkin-steps.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
+import { sortAgents } from "./shared/sessions-delta.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
 import { treeWakes, type Wake, wakeWait } from "./wakes.ts";
 
@@ -385,8 +386,7 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
       link: draft.link, state, ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: new Date(at).toISOString() } : {}), steps: draft.steps,
       ...(draft.subagents ? { subagentsRunning: draft.subagents } : {}), ...(draft.total ? { subagentsTotal: draft.total } : {}) };
   });
-  const at = new Map(agents.map(agent => [agent, atOf(agent.lastActivityAt)]));
-  return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at.get(right)! - at.get(left)!);
+  return sortAgents(agents);
 }
 
 /** A chat's agents as the last projection built them, with what they were built from (`keptChatAgents`). */

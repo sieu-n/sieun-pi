@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
-import { applySessionsDelta, parseSessionsHave, rowHash, SessionsDiff, sessionsHave } from "../src/shared/sessions-delta.ts";
+import { applySessionsDelta, parseHave, rowHash, SessionsDiff, sessionsHave } from "../src/shared/sessions-delta.ts";
 import { formatCursor, messageKey } from "../src/shared/message-key.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
 import type { SessionRow, SessionsDelta, SessionsEvent, ThreadEvent } from "../src/shared/types.ts";
@@ -21,7 +21,7 @@ test("a reconnecting page that names its rows gets only the rows that changed, a
   const now = [row("d", "2026-10-18T10:00:05Z"), row("b", "2026-10-18T10:00:04Z", { name: "new" }), row("a", "2026-10-18T10:00:03Z")];
   // A row whose fields were set in another order hashes the same.
   assert.equal(rowHash({ cwd: "/", id: "a", created: held[0]!.created, lastActivityAt: held[0]!.lastActivityAt, name: "a" } as unknown as SessionRow), rowHash(held[0]!));
-  const have = parseSessionsHave(sessionsHave(held)!)!;
+  const have = parseHave(sessionsHave(held)!)!;
   const diff = new SessionsDiff();
   diff.resume(have);
   const frame = diff.frame(event(now)) as SessionsDelta;
@@ -35,12 +35,12 @@ test("a reconnecting page that names its rows gets only the rows that changed, a
   assert.deepEqual(later.patch.map(patch => patch.id), ["a"]);
   // A page with nothing changed still hears it is current.
   const same = new SessionsDiff();
-  same.resume(parseSessionsHave(sessionsHave(now)!)!);
+  same.resume(parseHave(sessionsHave(now)!)!);
   const quiet = same.frame(event(now)) as SessionsDelta;
   assert.deepEqual([quiet.add, quiet.remove], [[], []]);
   // No `have`, or a malformed one, gets the whole list.
   assert.equal(new SessionsDiff().frame(event(now))?.type, "sessions");
-  assert.equal(parseSessionsHave("nonsense"), null);
+  assert.equal(parseHave("nonsense"), null);
 });
 
 const ID = "01a1164b-0000-7000-8000-0000000000aa";
