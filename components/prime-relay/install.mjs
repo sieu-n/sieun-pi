@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs, host-stats.ts and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing,
+Copies relay.mjs, host-stats.ts and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs) to it,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -18,6 +18,11 @@ const share = join(home, ".local/share/prime-relay");
 const configDir = join(home, ".config/prime-relay");
 const configFile = join(configDir, "relay.json");
 const tokenFile = join(configDir, "token");
+/**
+ * The folders another box may read, GET only. The daemon logs let the chat host's resume pass (resume_paused.py) see this box's daemon restarts
+ * and worker stops, which archive and abort turns no one asked to stop. A root a relay.json already lists stays.
+ */
+const ROOTS = ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs"];
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 
 function args(argv) {
@@ -108,7 +113,7 @@ function main() {
   const config = {
     listen: options.listen ?? current.listen ?? tailscaleIp(), port: options.port ?? current.port ?? 7790,
     daemonSocket: options.daemonSocket ?? current.daemonSocket ?? defaultSocket(),
-    roots: current.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts"], tokenFile: current.tokenFile ?? tokenFile,
+    roots: [...new Set([...(current.roots ?? []), ...ROOTS])], tokenFile: current.tokenFile ?? tokenFile,
   };
   writeAtomic(configFile, `${JSON.stringify(config, null, 2)}\n`, 0o600);
   const node = process.execPath;

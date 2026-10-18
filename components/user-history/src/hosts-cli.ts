@@ -12,6 +12,8 @@ const USAGE = `usage: sieun-pi hosts <command>
   read <host> <path> [--from <bytes>]      prints a file from that host's sessions or session-artifacts
   transcript <host> <session id> [--from <bytes>]
                                            prints that session's messages, read through the relay
+  daemon <host> list [--all 1]             prints that host's daemon list as {"sessions": [...]}, like prime-agent list --json
+  daemon <host> send <session> <message>   sends the message to that session on that host's daemon and prints the daemon's answer
   bridge                                   keeps ~/.local/state/sieun-pi/hosts/<host>.sock open for every other host`;
 
 function flags(argv: string[]): { rest: string[]; values: Map<string, string> } {
@@ -110,6 +112,19 @@ export async function runHostsCommand(argv: string[]): Promise<void> {
       if (!line.trim()) continue;
       try { const text = messageText(JSON.parse(line) as Record<string, unknown>); if (text) process.stdout.write(`${text}\n`); } catch { /* a partial last line */ }
     }
+  } else if (command === "daemon") {
+    // resume_paused.py drives another box's daemon through this: prime-agent's own CLI waits 3 s for the daemon's hello, which a relay tunnel
+    // from us-metal02 to the Mac missed on every try at 05:10Z on 10-18.
+    const [name, action, target, ...words] = rest;
+    if (!name || (action !== "list" && !(action === "send" && target && words.length))) throw new Error(USAGE);
+    const { client, close } = await clientFor(hostNamed(registry, name), registry);
+    try {
+      const command = action === "list" ? { type: "list", ...(values.get("all") ? { all: true } : {}) } : { type: "send_message", targetActiveSessionId: target, message: words.join(" ") };
+      const response = await client.request(command as Parameters<DaemonClient["request"]>[0], 60_000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      const data = response.data as { sessions?: unknown } | unknown[];
+      process.stdout.write(`${JSON.stringify(action === "list" ? { sessions: Array.isArray(data) ? data : (data as { sessions?: unknown }).sessions ?? [] } : data)}\n`);
+    } finally { await close(); }
   } else if (command === "bridge") {
     const bridge = new HostBridge(registry, { log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
     await bridge.start();

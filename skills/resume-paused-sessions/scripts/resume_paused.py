@@ -90,13 +90,18 @@ Usage:
   python3 resume_paused.py --json
 """
 import argparse
+import concurrent.futures
 import datetime as dt
 import json
 import mmap
 import os
 import re
 import shutil
+import socket
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import sys
 from pathlib import Path
 
@@ -175,8 +180,155 @@ def run(cmd):
     return p.stdout
 
 
+class LocalBox:
+    """The box this pass runs on: its own daemon through prime-agent and its own disk."""
+    remote = False
+    name = None
+
+    def __init__(self):
+        self.home = Path.home()
+
+    def list(self, all_rows=False):
+        return json.loads(run([prime_agent_bin(), "list", "--json", *(["--all"] if all_rows else [])]))["sessions"]
+
+    def send(self, target, message):
+        return run([prime_agent_bin(), "send", "--json", target, message])
+
+    def read(self, path, start=0):
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            return fh.read()
+
+    def size(self, path):
+        return os.path.getsize(path)
+
+    def mtime(self, path):
+        return os.path.getmtime(path)
+
+    def logs(self):
+        texts = []
+        for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
+            try:
+                texts.append(path.read_text(errors="ignore"))
+            except OSError:
+                continue
+        return texts
+
+
+class RelayBox:
+    """Another box in ~/.config/sieun-pi/hosts.json: its daemon through `sieun-pi hosts daemon`, which waits longer for the daemon's hello than
+    prime-agent's 3 s, and its files through its relay's GET /v1/file. The chat service runs this pass on the box that holds the chat role, so
+    one pass covers the jobs of every box: at 04:41Z on 10-18 the Mac's token hook cuts sat outside the box's pass."""
+    remote = True
+
+    def __init__(self, host, token):
+        self.name = host["name"]
+        self.base = f"http://{host['address']}:{host['relayPort']}"
+        self.token = token
+        self.home = None
+        self.rows = None
+
+    def _get(self, path, start=None, timeout=20):
+        request = urllib.request.Request(f"{self.base}/v1/file?path={urllib.parse.quote(str(path))}",
+                                         headers={"Authorization": f"Bearer {self.token}", **({"Range": f"bytes={start}-"} if start is not None else {})})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as answer:
+                return answer.status, dict(answer.headers), answer.read()
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, dict(error.headers or {}), error.read()
+        except (OSError, ValueError) as error:
+            raise OSError(f"relay {self.name}: {error}") from None
+
+    def _cli(self, *args):
+        return run([shutil.which("node") or "node", str(HOSTS_CLI), "daemon", self.name, *args])
+
+    def list(self, all_rows=False):
+        rows = json.loads(self._cli("list", *(["--all", "1"] if all_rows else [])))["sessions"]
+        if not all_rows:
+            self.rows = rows
+        for row in rows:
+            path = row.get("sessionFile") or ""
+            if self.home is None and "/.prime/agent/" in path:
+                self.home = Path(path.split("/.prime/agent/")[0])
+        return rows
+
+    def send(self, target, message):
+        return self._cli("send", target, message)
+
+    def size(self, path):
+        status, headers, _ = self._get(path, start=1 << 50)
+        if status == 416:
+            return int(headers.get("X-File-Size") or headers.get("x-file-size") or 0)
+        raise OSError(f"relay {self.name}: {path}: {status}")
+
+    def read(self, path, start=0):
+        status, _, body = self._get(path, start=start or None)
+        if status in (200, 206):
+            return body
+        if status == 416:
+            return b""
+        raise OSError(f"relay {self.name}: {path}: {status}")
+
+    def mtime(self, path):
+        status, _, body = self._get(Path(path).parent)
+        if status != 200:
+            raise OSError(f"relay {self.name}: {path}: {status}")
+        entry = next((e for e in json.loads(body).get("entries", []) if e.get("name") == Path(path).name), None)
+        if not entry:
+            raise OSError(f"relay {self.name}: {path}: not listed")
+        return entry["mtimeMs"] / 1000
+
+    def logs(self):
+        """The daemon logs, when the relay's roots include ~/.prime/agent/logs; else none, so no restart or shutdown window is known there."""
+        if self.home is None:
+            return []
+        folder = self.home / ".prime" / "agent" / "logs"
+        try:
+            status, _, body = self._get(folder)
+        except OSError:
+            return []
+        if status != 200:
+            return []
+        texts = []
+        for entry in json.loads(body).get("entries", []):
+            if entry.get("type") == "file" and re.match(r"daemon\.sock\..*\.log", entry.get("name", "")):
+                try:
+                    texts.append(self.read(folder / entry["name"]).decode("utf-8", "ignore"))
+                except OSError:
+                    continue
+        return texts
+
+
+# Tail reads through one relay at a time.
+RELAY_READS = 16
+HOSTS_FILE = Path(os.environ.get("SIEUN_PI_HOSTS") or Path.home() / ".config" / "sieun-pi" / "hosts.json")
+HOSTS_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "hosts-cli.mjs"
+BOX = LocalBox()
+
+
+def other_boxes():
+    """A RelayBox for each host in hosts.json other than this machine, or none when the file is missing."""
+    try:
+        hosts = json.loads(HOSTS_FILE.read_text()).get("hosts") or []
+    except (OSError, ValueError):
+        return []
+    me = socket.gethostname().split(".")[0].lower()
+    boxes = []
+    for host in hosts:
+        if str(host.get("hostname", "")).split(".")[0].lower() == me or not str(host.get("token", "")).startswith("file:"):
+            continue
+        ref = Path(host["token"][len("file:"):])
+        try:
+            token = (ref if ref.is_absolute() else HOSTS_FILE.parent / ref).read_text().strip()
+        except OSError:
+            continue
+        boxes.append(RelayBox(host, token))
+    return boxes
+
+
 def list_sessions():
-    return json.loads(run([prime_agent_bin(), "list", "--json"]))["sessions"]
+    return BOX.list()
 
 
 def session_files(ids):
@@ -201,7 +353,10 @@ def session_files(ids):
 
 
 def saved_rows(ids):
-    """A row like `prime-agent list --all` gives for each session in `ids` the daemon does not hold, read from its file on disk."""
+    """A row like `prime-agent list --all` gives for each session in `ids` the daemon does not hold, read from its file on disk. Another box's
+    rows come from its daemon's full list, since its disk is read through the relay."""
+    if BOX.remote:
+        return [row for row in BOX.list(all_rows=True) if (row.get("sessionId") or row["id"]) in ids] if ids else []
     rows = []
     for sid, path in session_files(ids).items():
         try:
@@ -241,10 +396,19 @@ def deleted_on_purpose(path):
         deleted = {}
     gone = {child for chat in deleted.values() if isinstance(chat, dict) for child in chat}
     while folder.name.startswith("sub-"):
-        if folder.name in gone or parent_deleted(folder):
+        if folder.name in gone or (remote_deleted(folder) if BOX.remote else parent_deleted(folder)):
             return True
         folder = folder.parent
     return False
+
+
+def remote_deleted(folder):
+    """Another box's job folder whose rlm-subagent.json the RLM runtime marked deleted. Its parent's transcript is not read: a chat's reached
+    152 MB on 10-16, too much to pull through the relay on every pass."""
+    try:
+        return json.loads(BOX.read(folder / "rlm-subagent.json")).get("status") == "deleted"
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def parent_deleted(folder):
@@ -280,11 +444,7 @@ def with_saved_owners(sessions, saved_rows, owners):
 def tail_entries(path, nbytes=256_000):
     """Parsed entries from the tail of a session jsonl."""
     try:
-        with open(path, "rb") as fh:
-            fh.seek(0, 2)
-            size = fh.tell()
-            fh.seek(max(0, size - nbytes))
-            chunk = fh.read().decode("utf-8", "ignore")
+        chunk = BOX.read(path, max(0, BOX.size(path) - nbytes)).decode("utf-8", "ignore")
     except OSError:
         return []
     entries = []
@@ -446,7 +606,8 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
     return any(e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived" for e in after)
 
 
-def hung_since(session, now):
+def hung_since(session, now, entries=None):
+    # `entries`: a call that gives the session's tail entries, when the caller holds them.
     """Minutes a session has shown as working with no activity and nothing legitimately long running, else None.
 
     After a sleep or a network drop a model stream or a retry wait can hang for hours while the session still reads
@@ -454,15 +615,21 @@ def hung_since(session, now):
     """
     if not is_busy(session) or any(session.get(flag) for flag in WORK_FLAGS):
         return None
-    # lastActivityAt can lag: a retry loop keeps writing error messages to the session file without moving it.
-    stamps = [parse_ts(session.get("lastActivityAt") or session.get("modified"))]
+    # lastActivityAt can lag: a retry loop keeps writing error messages to the session file without moving it. It never runs ahead of the
+    # file, so a recent one settles it without a read.
+    limit = TOOL_HUNG_MIN if any(session.get(flag) for flag in TOOL_FLAGS) else HUNG_MIN
+    listed = parse_ts(session.get("lastActivityAt") or session.get("modified"))
+    if listed and (now - listed).total_seconds() / 60 < limit:
+        return None
+    stamps = [listed]
     path = session.get("sessionFile")
-    entries = tail_entries(path, 64_000) if path else []
+    entries = entries() if entries else tail_entries(path, 64_000) if path else []
     stamps += [parse_ts(entry.get("timestamp")) for entry in entries[-5:]]
-    try:
-        stamps.append(dt.datetime.fromtimestamp(os.path.getmtime(path), dt.timezone.utc) if path else None)
-    except OSError:
-        pass
+    if not BOX.remote:
+        try:
+            stamps.append(dt.datetime.fromtimestamp(BOX.mtime(path), dt.timezone.utc) if path else None)
+        except OSError:
+            pass
     stamps = [stamp for stamp in stamps if stamp]
     if not stamps:
         return None
@@ -471,18 +638,13 @@ def hung_since(session, now):
     if msg.get("role") == "assistant" and msg.get("stopReason") == "stop":
         return None  # the turn finished; the daemon's "working" is stale, and there is nothing to resume
     idle = (now - max(stamps)).total_seconds() / 60
-    limit = TOOL_HUNG_MIN if any(session.get(flag) for flag in TOOL_FLAGS) else HUNG_MIN
     return idle if idle >= limit else None
 
 
 def worker_shutdowns():
     """Each time the daemon sent a session worker SIGTERM, from its logs and their rotated .old files, oldest first."""
     stamps = []
-    for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
-        try:
-            text = path.read_text(errors="ignore")
-        except OSError:
-            continue
+    for text in BOX.logs():
         stamps += [stamp for stamp in map(parse_ts, SHUTDOWN_LINE.findall(text)) if stamp]
     return sorted(stamps)
 
@@ -494,11 +656,7 @@ def daemon_restarts():
     A daemon restart archives every live session and aborts its turn, which no one asked for.
     """
     windows = []
-    for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
-        try:
-            text = path.read_text(errors="ignore")
-        except OSError:
-            continue
+    for text in BOX.logs():
         previous = None
         for line in text.splitlines():
             if not line.startswith("["):
@@ -586,9 +744,9 @@ def never_started(session, entries, nbytes=256_000):
     if not path or not notice or last_message(entries):
         return None
     try:
-        if os.path.getsize(path) > nbytes:
+        if BOX.size(path) > nbytes:
             return None
-        record = json.loads((Path(path).parent / "rlm-subagent.json").read_text())
+        record = json.loads(BOX.read(Path(path).parent / "rlm-subagent.json"))
     except (OSError, ValueError):
         return None
     task = record.get("prompt") if isinstance(record, dict) else None
@@ -666,6 +824,21 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             tails[sid] = tail_entries(by_id[sid].get("sessionFile", ""))
         return tails[sid]
 
+    if BOX.remote:
+        # Each relay read takes 0.4 to 1.6 s from us-metal02 to the Mac (10-18), so the tails this pass may read are fetched at once.
+        def wanted(s):
+            full = s.get("sessionId") or s["id"]
+            if only and full not in only:
+                return False
+            seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
+            fresh = not since_minutes or not seen_at or (now - seen_at).total_seconds() / 60 <= since_minutes + 5
+            listed = parse_ts(s.get("lastActivityAt") or s.get("modified"))
+            hung = listed and (now - listed).total_seconds() / 60 >= HUNG_MIN
+            return bool(s.get("sessionFile")) and (full in OWNERS or full in UNLOADED or full in only or (fresh and (not is_busy(s) or hung)))
+        ids = [short_id(s) for s in sessions if wanted(s)]
+        with concurrent.futures.ThreadPoolExecutor(RELAY_READS) as pool:
+            tails.update(zip(ids, pool.map(lambda sid: tail_entries(by_id[sid]["sessionFile"]), ids)))
+
     paused = []
     for s in sessions:
         sid = short_id(s)
@@ -677,10 +850,18 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         # before its cut turn does not hide it (a deleted job still does).
         named = full in only
         unloaded_at = UNLOADED.get(full)
+        seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
+        if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and unloaded_at is None and not named and since_minutes \
+                and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
+            continue  # an old archive, read no further
         if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
                 and not archived_by_restart(entries_of(sid), restarts):
             continue
         if s.get("workerState") == "failed":
+            if BOX.remote:
+                # Reopening another box's head would restart a tree that may have moved: after the chats moved to us-metal02 at 05:30Z on
+                # 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced on the box.
+                continue
             head = head_of(sid, by_id)
             paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
                            "kind": s.get("runtimeKind"), "reason": "worker_failed",
@@ -689,7 +870,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                            "head_session_id": by_id.get(head, s).get("sessionId") or by_id.get(head, s)["id"]})
             continue
         if is_busy(s):
-            hung = hung_since(s, now)
+            hung = hung_since(s, now, (lambda: entries_of(sid)) if BOX.remote else None)
             if hung is None or (since_minutes and hung > since_minutes):
                 continue
             head = head_of(sid, by_id)
@@ -774,7 +955,7 @@ def compose(message, head_id, runs, working):
 
 
 def send(target, message):
-    out = run([prime_agent_bin(), "send", "--json", target, message])
+    out = BOX.send(target, message)
     try:
         j = json.loads(out)
     except ValueError:
@@ -944,6 +1125,25 @@ def resume(sessions, args, now):
             "since_minutes": args.since_minutes, "checked_at": now.isoformat()}
 
 
+def resume_box(box, args):
+    """One box's pass: its sessions, the saved ones the owners and the idle unload's record name, and their resume. Another box's runs carry
+    its name in `host`."""
+    global BOX
+    BOX = box
+    try:
+        sessions = list_sessions()
+        read = OWNERS | set(UNLOADED) | set(filter(None, args.only.split(",")))
+        if read:
+            sessions = with_saved_owners(sessions, saved_rows(read - {s.get("sessionId") or s["id"] for s in sessions}), read)
+        part = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
+    finally:
+        BOX = LocalBox()
+    if box.remote:
+        for key in ("paused", "heads", "children"):
+            part[key] = [{**row, "host": box.name} for row in part[key]]
+    return part
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--message", default="continue", help='message to send (default "continue")')
@@ -955,6 +1155,7 @@ def main():
     ap.add_argument("--unstuck", default="", help="comma-separated full session ids the caller aborted because they were hung")
     ap.add_argument("--direct", action="store_true", help="message each interrupted run itself and send no head a list")
     ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs, read from their files when the daemon does not list them")
+    ap.add_argument("--this-box", action="store_true", help="look only at this box's daemon, not at the other boxes in hosts.json")
     ap.add_argument("--owners", default="", help="comma-separated full session ids that own an open step of a chat (see above)")
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
@@ -962,14 +1163,16 @@ def main():
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.since_minutes or 1e7)
     UNLOADED.update({sid: stamp for sid, stamp in load_unloaded(UNLOADED_FILE).items() if stamp >= since})
 
-    try:
-        sessions = list_sessions()
-        read = OWNERS | set(UNLOADED) | set(filter(None, args.only.split(",")))
-        if read:
-            sessions = with_saved_owners(sessions, saved_rows(read - {s.get("sessionId") or s["id"] for s in sessions}), read)
-        report = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
-    except CommandError as error:
-        raise SystemExit(str(error))
+    report = None
+    for box in [LocalBox(), *([] if args.this_box else other_boxes())]:
+        try:
+            part = resume_box(box, args)
+        except (CommandError, OSError, ValueError) as error:
+            if not box.remote:
+                raise SystemExit(str(error))
+            sys.stderr.write(f"resume: {box.name}: {error}\n")
+            continue
+        report = part if report is None else {**report, **{key: report[key] + part[key] for key in ("paused", "heads", "children")}}
     if args.json:
         print(json.dumps(report, indent=1))
         return
@@ -992,3 +1195,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

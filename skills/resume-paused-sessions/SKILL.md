@@ -25,6 +25,8 @@ The script reads `prime-agent list --json` and the tail of each live session fil
 
 It skips runs that were aborted or archived, unless the abort or archive came from a daemon restart (it reads each supervisor restart from the daemon logs and lists such runs as `daemon_restart`) or from the chat service's idle unload (`~/.prime/agent/browser-chat/unloaded.json`, read from the session file when the daemon no longer lists it). It also skips runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also holds back a run until `pi-pool who` names an account that can serve its tree, because an earlier resume fails again at once. A run that stopped on a token hook failure is held back instead until the hook, run once for its tree the way Prime runs it, gives a token, and the token is dropped unread.
 
+The script also looks at every other box in `~/.config/sieun-pi/hosts.json`: it lists and messages that box's daemon through `sieun-pi hosts daemon <host> list|send` and reads its session files and daemon logs through the box's relay (`GET /v1/file`, the tail by Range). So the pass the chat service runs on the chat host covers the jobs of every box. `--this-box` keeps it to the local daemon.
+
 Each run maps to its head through `parentActiveSessionId`. An idle head gets the message plus the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 
 The other flags are `--message`, `--since-minutes 0` for no age limit, `--include-children` (use it only when the user asks), `--state` and `--json`.
@@ -59,3 +61,4 @@ prime-agent send --json <12-char-id> continue # deliveryStatus: delivered, deliv
 ```
 
 The 12-char id is the last 12 characters of the session UUID. Do not send `continue` to a run whose last message ended with `stopReason: "stop"` or `aborted`. Do not send it to a run that failed on a 400 request error or stopped days ago.
+

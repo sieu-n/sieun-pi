@@ -10,7 +10,7 @@ Every request needs `Authorization: Bearer <token>`, and a request without it ge
 - `GET /v1/daemon` with `Connection: Upgrade` and `Upgrade: prime-daemon` answers 101 and then carries raw bytes both ways to the daemon socket, so the JSONL protocol passes through unparsed.
 - `GET /v1/host` returns the box's CPU, memory and memory groups (cgroups on Linux, the pressure feed on macOS) and its own `pi-pool queue --json` and `pi-pool config` unparsed, from `host-stats.ts`; Settings > Hosts draws one card per box from it.
 - `POST /v1/watch` takes worker pids, one per line, and returns `{"usable":...,"footprints":...}`: the box's usability reading (the raw pressure feed on macOS, PSI, swap-outs and runnable tasks a core over the CPUs the relay may run on, on Linux, from `host-stats.ts`) and those workers' footprints from sieun-pi's `worker-footprint.py`, which the install copies beside the relay. The chat service's watch reads every other box this way, so sleeping_gb and the worker totals cover each box.
-- `GET /v1/file?path=<absolute path>` reads a file under the configured roots, by default `~/.prime/agent/sessions` and `~/.prime/agent/session-artifacts`, and any other path gets 403. `Range: bytes=N-` returns 206 from offset N, `HEAD` returns the size, and a folder returns `{"entries":[...]}`.
+- `GET /v1/file?path=<absolute path>` reads a file under the configured roots, by default `~/.prime/agent/sessions`, `~/.prime/agent/session-artifacts` and `~/.prime/agent/logs` (the daemon logs, so the chat host's resume pass sees this box's daemon restarts), and any other path gets 403. `Range: bytes=N-` returns 206 from offset N, `HEAD` returns the size, and a folder returns `{"entries":[...]}`.
 
 ## Install
 

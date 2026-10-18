@@ -15,7 +15,7 @@ import { readSession, readSessionFile, sessionFiles, type RunState, type Scenari
  * after it finished gets no continue. The criteria live in the run folder's
  * criteria.md.
  */
-export const TASK = "have a job count the test files in each folder under components and tell me which three folders have the most";
+export const TASK = "have a job go through every .ts file under components/user-history/src and, for each exported function longer than 80 lines, write one plain sentence on what it does, put the list in a file, and tell me the ten longest";
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
 const ARTIFACTS = join(HOME, ".prime/agent/session-artifacts");

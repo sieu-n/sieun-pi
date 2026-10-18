@@ -44,6 +44,9 @@ class ResumePausedTests(unittest.TestCase):
         hook = patch.object(resume_paused, "TOKEN_HOOK", self.root / "no-hook")
         hook.start()
         self.addCleanup(hook.stop)
+        hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
+        hosts.start()
+        self.addCleanup(hosts.stop)
 
     def session(self, sid, entries, parent=None, activity="idle", **flags):
         path = self.root / f"{sid}.jsonl"
@@ -626,5 +629,90 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(resume_paused.load_unloaded(path), {self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")})
         self.assertEqual(resume_paused.load_unloaded(self.root / "missing.json"), {})
 
+    def fake_relay(self, files):
+        """A relay on localhost that serves `files` ({path: bytes}) the way prime-relay's GET /v1/file does: a Range from an offset, 416 with the
+        size past the end, and a folder as its entries."""
+        import http.server
+        import threading
+        import urllib.parse as parse
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.headers.get("Authorization") != "Bearer t0ken":
+                    self.send_response(401), self.end_headers()
+                    return
+                path = parse.parse_qs(parse.urlparse(self.path).query)["path"][0]
+                if path in files:
+                    body = files[path]
+                    start = int(self.headers.get("Range", "bytes=0-")[6:-1] or 0)
+                    if start >= len(body) and start:
+                        self.send_response(416), self.send_header("X-File-Size", str(len(body))), self.end_headers()
+                        return
+                    self.send_response(206 if start else 200), self.send_header("X-File-Size", str(len(body))), self.end_headers()
+                    self.wfile.write(body[start:])
+                    return
+                entries = [{"name": name[len(path) + 1:], "type": "file", "size": len(body), "mtimeMs": 1792296000000}
+                           for name, body in files.items() if name.startswith(path + "/") and "/" not in name[len(path) + 1:]]
+                if not entries:
+                    self.send_response(403), self.end_headers()
+                    self.wfile.write(b'{"error":"path is outside the relay roots"}')
+                    return
+                self.send_response(200), self.end_headers()
+                self.wfile.write(json.dumps({"entries": entries}).encode())
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return resume_paused.RelayBox({"name": "mac", "address": "127.0.0.1", "relayPort": server.server_address[1]}, "t0ken")
+
+    MAC_JOB = "/Users/sieunpark/.prime/agent/session-artifacts/01a14d38-3fa3-72cd-a10b-dc0b2fb2e976/sub-df01e456/01a14d38-d851-77a8-969c-29b2acca24f6.jsonl"
+
+    def mac_job(self):
+        # run-1 of the token-hook-resume clean room, 10-18: the Mac job's last turn failed on the hook at 04:18:25Z and the unload stopped it.
+        error = {"type": "message", "timestamp": "2026-10-18T04:18:25.152Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                       "content": [], "errorMessage": self.HOOK_ERROR}}
+        archived = {"type": "session_state", "timestamp": "2026-10-18T04:21:36.659Z", "state": {"status": "archived"}}
+        return ("\n".join(json.dumps(entry) for entry in [role(60, "user"), error, archived]) + "\n").encode()
+
+    def test_a_relay_box_reads_another_boxs_files_through_its_relay(self):
+        body = self.mac_job()
+        box = self.fake_relay({self.MAC_JOB: body, self.MAC_JOB.replace(".jsonl", "") + "/x": b""})
+        self.assertEqual((box.size(self.MAC_JOB), box.read(self.MAC_JOB, 10), box.read(self.MAC_JOB, len(body))), (len(body), body[10:], b""))
+        self.assertEqual(box.mtime(self.MAC_JOB), 1792296000.0)
+        self.assertEqual(box.logs(), [])
+        with patch.object(resume_paused, "BOX", box):
+            self.assertEqual([e.get("type") for e in resume_paused.tail_entries(self.MAC_JOB, 200)], ["session_state"])
+            self.assertEqual(len(resume_paused.tail_entries(self.MAC_JOB)), 3)
+
+    def test_one_pass_resumes_a_mac_job_through_the_mac_daemon(self):
+        box = self.fake_relay({self.MAC_JOB: self.mac_job()})
+        full = "01a14d38-d851-77a8-969c-29b2acca24f6"
+        rows = [{"id": full[-12:], "sessionId": full, "lifecycle": "archived", "activity": "idle", "sessionFile": self.MAC_JOB, "sessionName": "components test count",
+                 "runtimeKind": "subagent", "lastActivityAt": "2026-10-18T04:21:36.659Z"}]
+        sent = []
+        box.list = lambda all_rows=False: rows if all_rows else []
+        box.send = lambda target, text: sent.append((target, text)) or '{"deliveryStatus": "delivered", "deliveryMode": "steer"}'
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        with patch.dict(resume_paused.UNLOADED, {full: resume_paused.parse_ts("2026-10-18T04:21:40Z")}, clear=True):
+            report = resume_paused.resume_box(box, args)
+        self.assertEqual([(p["host"], p["reason"], p["errored_at"]) for p in report["paused"]], [("mac", "error", "2026-10-18T04:18:25.152Z")])
+        self.assertEqual(sent, [(full, "continue")])
+        self.assertIsInstance(resume_paused.BOX, resume_paused.LocalBox)
+
+    def test_another_boxs_failed_worker_is_left_to_that_box(self):
+        # After the chats moved to us-metal02 at 05:30Z on 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced.
+        box = self.fake_relay({self.MAC_JOB: self.mac_job()})
+        full = "01a14d66-0000-7000-8000-000000000001"
+        rows = [{"id": full[-12:], "sessionId": full, "lifecycle": "live", "activity": "idle", "workerState": "failed", "sessionFile": self.MAC_JOB,
+                 "sessionName": "relay keep moved-to-us-metal02", "runtimeKind": "top-level", "lastActivityAt": "2026-10-18T05:05:39.702Z"}]
+        box.list = lambda all_rows=False: rows
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        self.assertEqual(resume_paused.resume_box(box, args)["paused"], [])
+
 if __name__ == "__main__":
     unittest.main()
+

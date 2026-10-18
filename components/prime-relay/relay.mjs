@@ -20,7 +20,7 @@ export function loadConfig(file) {
   const raw = JSON.parse(readFileSync(file, "utf8"));
   const config = {
     listen: String(raw.listen), port: Number(raw.port), daemonSocket: expand(String(raw.daemonSocket)),
-    roots: (raw.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts"]).map(root => expand(String(root))),
+    roots: (raw.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs"]).map(root => expand(String(root))),
     token: readFileSync(expand(String(raw.tokenFile)), "utf8").trim(),
   };
   if (!config.listen || !Number.isInteger(config.port) || !isAbsolute(config.daemonSocket) || config.token.length < 32) throw new Error(`${file}: needs listen, port, an absolute daemonSocket and a tokenFile with at least 32 characters`);
