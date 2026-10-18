@@ -265,8 +265,12 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
   return { holds, grants, ...(first ? { firstAt: Date.parse(TIME.exec(first)![1]!) } : {}) };
 }
 
-/** A tree pi-pool refused while `room` named accounts that took its class, from the first such refusal to its next account or `now`. */
-export interface PoolHold { session: string; from: number; to: number; room: readonly string[] }
+/**
+ * A tree pi-pool refused while `room` named accounts that took its class, from the first such refusal to its next account or `now`. `cell` is
+ * true when every such refusal waited for a cell (R5 wait, `backoff: false`): since pi-pool 42884712 `room` names only accounts the rules let
+ * the tree enter but for a cell, so the tree waited its turn at R4's pace behind trees of its priority or higher, and no slot was free.
+ */
+export interface PoolHold { session: string; from: number; to: number; room: readonly string[]; cell: boolean }
 /**
  * pi-pool.log on us-metal02 grew 2.6 MB from 21:34Z on 10-17 to 16:38Z on 10-18, about 140 KB an hour, so this tail holds about 14 h, past the
  * window and the longest backoff draw (2 h).
@@ -286,7 +290,7 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
   const holds: PoolHold[] = [];
   for (const line of lines) {
     if (!line.includes('"parked"') && !line.includes('"unparked"')) continue;
-    let entry: { event?: unknown; session?: unknown; at?: unknown; slot_at?: unknown; room?: unknown };
+    let entry: { event?: unknown; session?: unknown; at?: unknown; slot_at?: unknown; room?: unknown; backoff?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string" || typeof entry.at !== "number") continue;
     const at = entry.at * 1000;
@@ -295,9 +299,10 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
     // A refusal holds the tree until the slot it names; a tree that asks no more after its slot passed is no longer held by the pool. At 17:24Z
     // on 10-18 four trees given a cell under 2 min ahead asked no more, and the first reader held them open up to the run.
     const until = typeof entry.slot_at === "number" ? Math.max(at, entry.slot_at * 1000) : at;
+    const cell = entry.backoff === false;
     if (room.length) {
-      if (hold) { hold.to = Math.max(hold.to, until); continue; }
-      const fresh = { session: entry.session, from: at, to: until, room };
+      if (hold) { hold.to = Math.max(hold.to, until); hold.cell &&= cell; continue; }
+      const fresh = { session: entry.session, from: at, to: until, room, cell };
       open.set(entry.session, fresh);
       holds.push(fresh);
     } else if (hold) {
@@ -474,7 +479,10 @@ export function measure(input: Inputs): PrecheckOutput {
     ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: heldFrom(job), to: job.resumedAt ?? now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   const poolHeld = (input.pool ?? []).filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
-  const poolAt = (from: number, to: number): PoolHold | undefined => poolHeld.find(hold => hold.from + HOLD_MS < to && hold.to >= from);
+  // A hold that only waited for a cell is pi-pool's R4 pace at work with no slot free, like a turn its tree's cap holds (`freeSlotWait`): it
+  // counts in queue_holds_30 and cell_wait_min_30, and leaves the minute clean. At 17:37Z on 10-18, after pi-pool 42884712, 26 minutes read
+  // dirty from low trees whose every refusal waited for a krenerd77 or claude11 cell while higher trees took them.
+  const poolAt = (from: number, to: number, cell: boolean): PoolHold | undefined => poolHeld.find(hold => hold.cell === cell && hold.from + HOLD_MS < to && hold.to >= from);
   const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
@@ -485,7 +493,7 @@ export function measure(input: Inputs): PrecheckOutput {
   // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them.
   const offlineMin = new Map<string, number[]>();
   let offlineAny = 0, offlineFaults = 0;
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
@@ -531,8 +539,9 @@ export function measure(input: Inputs): PrecheckOutput {
     else if (sides.size) other++;
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     const waited = line && freeSlotWait(line);
-    const parked = poolAt(from, to);
+    const parked = poolAt(from, to, false);
     if (waited || parked) freeSlot++;
+    if (poolAt(from, to, true)) cellWait++;
     if (waited) why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
     if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
@@ -599,6 +608,7 @@ export function measure(input: Inputs): PrecheckOutput {
     unattributed_unusable_min_30: unattributed,
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
+    cell_wait_min_30: cellWait,
     daemon_fail_min_30: daemonFail,
     slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
@@ -618,6 +628,7 @@ export function measure(input: Inputs): PrecheckOutput {
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
+    `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
@@ -651,7 +662,8 @@ export function measure(input: Inputs): PrecheckOutput {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
   for (const hold of poolHeld.sort((a, b) => a.from - b.from).slice(0, 12)) {
-    flagged.push({ kind: "queue_hold", item: hold.session, excerpt: `pi-pool refused ${hold.session} for ${minutes(hold.to - hold.from)} min, ${clock(hold.from)} to ${clock(hold.to)}, while ${hold.room.join(", ")} took its class.` });
+    flagged.push({ kind: "queue_hold", item: hold.session, excerpt: `pi-pool refused ${hold.session} for ${minutes(hold.to - hold.from)} min, ${clock(hold.from)} to ${clock(hold.to)}, ` +
+      (hold.cell ? `waiting for a cell of ${hold.room.join(", ")} at R4's pace while trees of its priority or higher took them.` : `while ${hold.room.join(", ")} took its class.`) });
   }
   for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id, excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves, from its check-in at ${clock(entry.at!)}.` });
   for (const line of redDuties) flagged.push({ kind: "stuck_duty", excerpt: line });
