@@ -39,7 +39,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 17
+VERSION = 18
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -193,9 +193,10 @@ def own_root():
     return name if UUID.match(name) else None
 
 
-RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet")
+RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet|No chat service is set up")
 # A chat service restart leaves the cross-host routes down or without the other boxes' roots for about 23 s (10-18: stop 05:14:32Z, start
-# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s.
+# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s. On the
+# chat host the service removes instance.json while it restarts, so the helper answers "No chat service is set up" then (VP of CI, 10-18).
 RESTART_WAIT = 60
 RESTART_STEP = 5
 
@@ -239,6 +240,53 @@ async def with_other_boxes(roster):
         return roster
     known = {agent.get("sessionId") for agent in roster["agents"] if isinstance(agent, dict)}
     return {**roster, "agents": roster["agents"] + [agent for agent in extra if agent.get("sessionId") not in known]}
+
+
+OTHER_ROOTS = {"at": 0.0, "root": None, "agents": []}
+# A send's other-box roots are read at most this often, since each read starts the node helper (about 1 s); a root moved meanwhile is
+# still found by the fallback after the local daemon's 'No sibling matches'.
+OTHER_ROOTS_TTL = 30
+
+
+async def other_roots(root):
+    """The roots on other boxes than this root's, as the chat catalog lists them (cross-host-message.ts siblings), read once per OTHER_ROOTS_TTL."""
+    if OTHER_ROOTS["root"] != root or time.time() - OTHER_ROOTS["at"] > OTHER_ROOTS_TTL:
+        agents = (await cross_host("siblings", {"session": root})).get("agents", [])
+        OTHER_ROOTS.update(at=time.time(), root=root, agents=[agent for agent in agents if isinstance(agent, dict)])
+    return OTHER_ROOTS["agents"]
+
+
+def pick_other(agents, to):
+    """The one root `to` names among other boxes' roots, the way pickRoot in cross-host-message.ts reads it, with how it matched; else None."""
+    wanted = str(to or "").strip()
+    exact = [agent for agent in agents if wanted in (agent.get("sessionId"), agent.get("activeSessionId"))]
+    if len(exact) == 1:
+        return exact[0], "id"
+    named = [agent for agent in agents if str(agent.get("sessionName") or "").strip().lower() == wanted.lower() or
+             (len(wanted) >= 8 and str(agent.get("sessionId") or "").startswith(wanted))]
+    return (named[0], "name") if len(named) == 1 else None
+
+
+async def other_box_first(real, payload):
+    """The other-box root a root's sibling send names when the chat catalog lists it under another box; None to send it here as it came.
+
+    At 05:35Z on 10-18 'metal box owner', a Mac root, sent to 'tiktok shop', which had moved to us-metal02 while its old file still sat in the
+    Mac's sessions folder. The Mac daemon matched that copy and reopened it, and it ran tool calls until 05:39Z. So a send goes by the catalog's
+    host first. A name that also names a different session here stays here, since then the name means this box's root."""
+    root = own_root()
+    if not root or payload.get("receiver_role") != "sibling" or not payload.get("receiver_name"):
+        return None
+    found = pick_other(await other_roots(root), payload.get("receiver_name"))
+    if not found:
+        return None
+    target, how = found
+    if how == "name":
+        roster = await real("agent_observe.list")
+        here = [agent for agent in (roster.get("agents", []) if isinstance(roster, dict) else []) if isinstance(agent, dict) and
+                agent.get("relationship") == "sibling" and str(agent.get("sessionName") or "").strip().lower() == str(payload["receiver_name"]).strip().lower()]
+        if any(agent.get("sessionId") != target.get("sessionId") for agent in here):
+            return None
+    return target
 
 
 async def send_other_box(payload, error, resend):
@@ -306,12 +354,21 @@ async def request(request_type, payload=None, *args, **kwargs):
         return with_note(await real(request_type, payload, *args, **kwargs), note)
     started = earlier["since"] if earlier else time.time()
     try:
-        try:
-            reply = await real(request_type, payload, *args, **kwargs)
-        except Exception as error:
-            if not direct:
-                raise
-            reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
+        target = None
+        if direct:
+            try:
+                target = await other_box_first(real, payload)
+            except Exception as error:
+                print(f"user-history: the other boxes' roots did not read ({error}); sent here first", file=sys.stderr)
+        if target:
+            reply = await cross_host("send", {"from": own_root(), "to": target["sessionId"], "message": payload.get("message")})
+        else:
+            try:
+                reply = await real(request_type, payload, *args, **kwargs)
+            except Exception as error:
+                if not direct:
+                    raise
+                reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
         if request_type == "agent_observe.list":
             reply = await with_other_boxes(reply)
         if direct:

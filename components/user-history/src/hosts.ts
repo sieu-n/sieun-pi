@@ -152,6 +152,11 @@ export async function hostHealth(host: Host): Promise<HostHealth> {
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error), ms: Date.now() - started }; }
 }
 
+/** A relay's refusal of a file read, with its HTTP status: 404 means the file is not on that host's disk (moved or deleted). */
+function relayError(host: Host, path: string, response: { status: number; body: Buffer }): Error & { status: number } {
+  return Object.assign(new Error(`relay ${host.name}: ${path}: ${response.status} ${response.body.toString("utf8").slice(0, 200)}`), { status: response.status });
+}
+
 /** Bytes of a file on the host's disk from offset `from`, read through its relay. `size` is the whole file, so the next tail starts there. */
 export async function readHostFile(host: Host, path: string, options: { from?: number } = {}): Promise<{ bytes: Buffer; size: number; from: number }> {
   const from = options.from ?? 0;
@@ -160,7 +165,7 @@ export async function readHostFile(host: Host, path: string, options: { from?: n
     const size = Number(/\/(\d+)$/.exec(String(response.headers["content-range"] ?? ""))?.[1] ?? 0);
     return { bytes: Buffer.alloc(0), size, from: size };
   }
-  if (response.status !== 200 && response.status !== 206) throw new Error(`relay ${host.name}: ${path}: ${response.status} ${response.body.toString("utf8").slice(0, 200)}`);
+  if (response.status !== 200 && response.status !== 206) throw relayError(host, path, response);
   return { bytes: response.body, size: Number(response.headers["x-file-size"] ?? response.body.length), from };
 }
 
@@ -168,7 +173,7 @@ export type HostDirEntry = { name: string; type: "dir" | "file" | "other"; size:
 
 export async function listHostDir(host: Host, path: string): Promise<HostDirEntry[]> {
   const response = await relayRequest(host, `/v1/file?path=${encodeURIComponent(path)}`);
-  if (response.status !== 200) throw new Error(`relay ${host.name}: ${path}: ${response.status} ${response.body.toString("utf8").slice(0, 200)}`);
+  if (response.status !== 200) throw relayError(host, path, response);
   const body = JSON.parse(response.body.toString("utf8")) as { entries?: HostDirEntry[] };
   if (!body.entries) throw new Error(`relay ${host.name}: ${path} is a file`);
   return body.entries;

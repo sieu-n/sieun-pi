@@ -129,6 +129,8 @@ test("a root kernel's sibling send refused as failed asks the chat service to op
     let body = "";
     req.on("data", chunk => { body += chunk; });
     req.on("end", () => {
+      // The kernel reads the other boxes' roots before a sibling send (other_box_first); both roots are on this box here.
+      if (req.url!.includes("api/agent/siblings")) { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ agents: [] })); return; }
       const { from, to } = JSON.parse(body) as { from: string; to: string };
       const answer = req.url!.endsWith("api/agent/reopen") ? reopenSibling(directory, from, to) : Promise.reject(new Error(`unexpected ${req.url}`));
       answer.then(value => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); },

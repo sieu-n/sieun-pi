@@ -16,6 +16,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, Co
 import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
+import { movedReason, movedTo } from "../src/moved-copy.ts";
 import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent } from "../src/shared/types.ts";
@@ -247,7 +248,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     });
     return persona;
   };
+  let moved: string | null = null;
   pi.on("session_start", async (_event, ctx) => {
+    try { moved = movedTo(getAgentDir(), ctx.sessionManager.getSessionFile()); } catch { moved = null; }
     try {
       const depth = depthOf(ctx.sessionManager.getHeader());
       marked = depth === 0 && hasChatMarker(ctx.sessionManager.getEntries());
@@ -286,6 +289,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
   /** The soft-cap notes of each tool call: the call runs, and its result gets them (a chat's shell past look-ups, a load-wait loop). */
   const callNotes = new Map<string, string[]>();
   pi.on("tool_call", async (event, ctx) => {
+    if (moved) return { block: true, reason: movedReason(moved) };
     try {
       const notes = [chatShellNote({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked }),
         marked || job || underChat ? loadWaitNote(event.toolName, event.input) : undefined].filter((note): note is string => note !== undefined);
