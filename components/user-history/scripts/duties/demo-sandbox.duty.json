@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "walk_problems",
-      "label": "Problems in the demo walk (outside calls, fails, no walk in 24 h)",
+      "label": "Problems in the demo walk (outside calls, fails, no walk in 24 h, box tree out of step with the Mac)",
       "op": "<=",
       "target": 0,
       "headline": true
@@ -43,6 +43,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Every run, once /health answers, run the offline walk behind the load gate (in apps/virev-demo, `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../.cache/duties/virev-demo-offline.json ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json`). Each missed metric gets one fix job, or a steer to its live one. walk_problems: a job that makes the fake database answer each outside request, or fixes the failed page. health_ms: read virev-demo-error.log; with no 200 in 30 s, `pm2 restart virev-demo` once (PM2_HOME=.cache/pm2-dev) and start a job on the cause. restarts_24h: steer \"5180 materialize crash loop fix\" for a materialize crash loop, else start a job on the cause the restart line names. ssr_timeouts_24h: steer or start \"5180 SSR hang fix\", which fixes the wait that never ends. Fixes ship as `commit.mjs --object-only --push-ci ci/<name>` objects that land on their own green run; no deploy, nothing to 5174. Tell the owner only when 5180 is down over an hour.",
+  "onMiss": "Every run, once /health answers, run the offline walk behind the load gate (in apps/virev-demo, `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../.cache/duties/virev-demo-offline.json ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json`). Each missed metric gets one fix job, or a steer to its live one. walk_problems: a job that makes the fake database answer each outside request, or fixes the failed page. health_ms: read virev-demo-error.log; with no 200 in 30 s, `pm2 restart virev-demo` once (PM2_HOME=.cache/pm2-dev) and start a job on the cause. restarts_24h: steer \"5180 materialize crash loop fix\" for a materialize crash loop, else start a job on the cause the restart line names. ssr_timeouts_24h: steer or start \"5180 SSR hang fix\", which fixes the wait that never ends. Fixes ship as `commit.mjs --object-only --push-ci ci/<name>` objects that land on their own green run; no deploy, nothing to 5174. A box_drift, box_sync_stale or box_sync_missing slice means the Mac watcher ai.virev.demo-box-sync (~/.local/share/virev-demo-sync on the Mac, README.md there) stopped or keeps failing; fix it on the Mac over `ssh mac`, never by a commit or push of demo files. Tell the owner only when 5180 is down over an hour.",
   "boardGoal": "p1"
 }
