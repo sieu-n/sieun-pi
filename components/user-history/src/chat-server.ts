@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname } from "node:path";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { parseWake } from "./wakes.ts";
 import type { Duplex } from "node:stream";
 import { createGzip, type Gzip } from "node:zlib";
 import { applyAgentOps } from "./agent-board.ts";
@@ -518,6 +520,18 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           return;
         }
         if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
+        // The board skill on a box without the chat role reads the chat's files here (skills/board, hosts.json roles.chat).
+        if (route === "api/agent/board") {
+          const board = await backend.boards.read(threadId(url.searchParams.get("chat") ?? ""));
+          if (!board) throw new RequestError(404, "No board for this chat.");
+          json(res, 200, board); return;
+        }
+        if (route === "api/agent/corrections" || route === "api/agent/sends") {
+          const name = route === "api/agent/corrections" ? "corrections.json" : "sends.jsonl";
+          const text = await readFile(join(dirname(backend.boards.dir), name), "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; });
+          if (text === null) throw new RequestError(404, `No ${name} on the chat host.`);
+          res.writeHead(200, { "Content-Type": name.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8" }); res.end(text); return;
+        }
         if (route === "api/interrupted") { json(res, 200, await interruptedRuns.check()); return; }
         const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
         if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
@@ -656,6 +670,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== origin) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
       const body = record(await jsonBody(req));
+      if (route === "api/agent/wakes") {
+        // board.wake from a box without the chat role: the same file it writes on the chat host, delivered through that box's relay (src/wakes.ts).
+        const wake = parseWake(body);
+        if (!wake) throw new RequestError(400, "Send {session, on: {kind: run|time, ...}, note, since}.");
+        const key = wake.on.kind === "run" ? `run-${wake.on.run}` : `time-${Math.floor(wake.on.at / 1000)}`;
+        const folder = join(dirname(backend.boards.dir), "wakes");
+        const path = join(folder, `${wake.session}-${key}.json`);
+        await writeFile(`${path}.tmp`, JSON.stringify(wake), { mode: 0o600 });
+        await rename(`${path}.tmp`, path);
+        json(res, 200, { path }); return;
+      }
       if (route === "api/threads") {
         const id = requestId(body.requestId);
         // The hosts.json box the New chat picker chose; absent means the box this service runs on.
