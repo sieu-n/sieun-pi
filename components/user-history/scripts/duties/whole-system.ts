@@ -1,5 +1,6 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
@@ -10,6 +11,7 @@ import { OPEN, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
+import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 
@@ -285,6 +287,8 @@ export interface Inputs {
   boards?: ReadonlyMap<string, ChatBoard | null>;
   /** When each session that owns an open step last wrote its transcript, ms. */
   ownerActivity?: ReadonlyMap<string, number>;
+  /** Sessions that own an open step and sleep on a board.wake, they or a subagent below them (`treeWakes`): a live owner, as for check-ins (80cbdd1). */
+  waking?: ReadonlySet<string>;
 }
 
 /**
@@ -294,7 +298,7 @@ export interface Inputs {
  * has not written since the snapshot; a step the chat closed, removed, or gave to a job that is working drops out. An up-to-date snapshot counts as read.
  */
 export function liveStuck(value: number, at: number, flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined,
-  activity: ReadonlyMap<string, number>): number {
+  activity: ReadonlyMap<string, number>, waking: ReadonlySet<string> = new Set()): number {
   if (!board || Date.parse(board.updatedAt) <= at) return value;
   const open = new Map<string, { sessionId?: string }>();
   walk(board.plan, item => { if (OPEN.has(item.status)) open.set(item.id, item); });
@@ -302,6 +306,7 @@ export function liveStuck(value: number, at: number, flagged: readonly FlaggedSl
   return [...items].filter(id => {
     const step = open.get(id);
     if (!step) return false;
+    if (step.sessionId && waking.has(step.sessionId)) return false;
     const wrote = step.sessionId ? activity.get(step.sessionId) : undefined;
     return wrote === undefined || wrote <= at;
   }).length;
@@ -379,7 +384,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
     const fresh = at !== undefined && (chat.everyMs === undefined || now - at <= chat.everyMs);
     const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
-    return { chat, value: read > 0 ? liveStuck(read, at!, run!.flagged, input.boards?.get(chat.id), input.ownerActivity ?? new Map()) : 0, at };
+    return { chat, value: read > 0 ? liveStuck(read, at!, run!.flagged, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking) : 0, at };
   }).filter(entry => entry.value > 0);
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
@@ -587,6 +592,30 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
   return out;
 }
 
+/**
+ * The step owners that sleep on an owed board.wake, they or a subagent below them: launch main bro's deep walks 99 (p137) and hand run lanes
+ * autoscale (p145) slept on CI run wakes on 10-18 and wrote nothing while they waited.
+ */
+async function wakingOwners(agentDir: string, wakesDir: string, boards: ReadonlyMap<string, ChatBoard | null>, now: number): Promise<Set<string>> {
+  const wakes = await pendingWakes(wakesDir, now);
+  const out = new Set<string>();
+  if (!wakes.length) return out;
+  const below = (session: string): string[] => {
+    const dir = join(agentDir, "session-artifacts", session);
+    try {
+      return readdirSync(dir).filter(name => name.startsWith("sub-")).flatMap(sub => {
+        try { return readdirSync(join(dir, sub)).filter(name => name.endsWith(".jsonl")).map(name => name.slice(0, -".jsonl".length)); } catch { return []; }
+      });
+    } catch { return []; }
+  };
+  for (const board of boards.values()) {
+    walk(board?.plan ?? [], item => {
+      if (OPEN.has(item.status) && item.sessionId && !out.has(item.sessionId) && treeWakes(item.sessionId, below, wakes).length) out.add(item.sessionId);
+    });
+  }
+  return out;
+}
+
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
 async function main(): Promise<void> {
@@ -623,6 +652,7 @@ async function main(): Promise<void> {
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
     boards,
     ownerActivity: await ownerActivity(join(dataDir, ".."), boards),
+    waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }

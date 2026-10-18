@@ -221,3 +221,22 @@ test("d7 counts no stuck step of a check-in whose job still works, and reads the
   const { job: _job, ...noJob } = run;
   assert.equal(read([noJob], "2026-10-18T06:54:00Z"), 27, "a check-in that started no job owns nothing");
 });
+
+// launch main bro 10-18: deep walks 99 (p137) and hand run lanes autoscale (p145) slept on board.wakes for CI runs and wrote nothing, so a
+// snapshot older than the board read them as stuck. A step owner asleep on a wake is live, as for check-ins (80cbdd1).
+test("d7 counts a step owner asleep on a board.wake as a live owner", () => {
+  const checkIn = Date.parse("2026-10-18T06:30:00Z");
+  const chat = "01a11bd7-072f-7591-ad1d-f123c276cde5";
+  const run = { duty: "checkin", at: checkIn, trigger: "schedule" as const, ms: 1, verdict: "missed" as const, summary: "",
+    metrics: { stuck_steps: { value: 2, target: 0, op: "<=" as const, met: false } },
+    flagged: ["p137", "p145"].map(item => ({ chat, at: checkIn, kind: "stuck_steps", excerpt: `${item} is stuck (ci)`, item })) };
+  const step = (id: string, sessionId: string) => ({ id, text: id, status: "doing" as const, children: [], sessionId });
+  const board: ChatBoard = { v: 2, rev: 400, todos: [], updatedAt: "2026-10-18T06:40:00Z",
+    plan: [{ id: "p125", text: "p125", status: "doing", children: [step("p137", "deep-walks-99"), step("p145", "lanes-autoscale")] }] };
+  const read = (waking: string[]) => measure({ now: Date.parse("2026-10-18T06:54:00Z"), watch: [], log: { holds: [] },
+    chats: [{ id: chat, name: "launch main bro", duties: [], runs, everyMs: 120 * 60_000 }], boards: new Map([[chat, board]]),
+    ownerActivity: new Map(), waking: new Set(waking) }).metrics.stuck_steps_all;
+  const runs = [run];
+  assert.equal(read(["deep-walks-99", "lanes-autoscale"]), 0);
+  assert.equal(read(["deep-walks-99"]), 1, "p145's owner has no wake and wrote nothing since the snapshot");
+});
