@@ -1,11 +1,13 @@
 // On 10-18 the archived blind-test chats "Reddit index gaps" and "Bluesky index gaps" left wiki pages that said "measured daily" while nothing
-// measured them, so clean-room teardown archives the curated pages its chat made and names them test output.
+// measured them, so clean-room teardown archives the curated pages its chat made and names them test output in the body. Each page keeps its
+// own description, since on 10-18 a shared test description made x-fields and youtube/fields duplicates of linkedin/fields for the dup gate.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { archiveEdits, archiveTestPages, TEST_DESCRIPTION, testPages } from "../scripts/clean-room/wiki-pages.ts";
 
 const SETUP = Date.parse("2026-10-18T04:51:20Z");
 const page = (title: string) => `<!--wiki\n{"title": "${title}", "description": "The top 10 holes, measured daily.", "status": "current"}\n-->\n<h1>${title}</h1>\n`;
+const occurrences = (text: string, part: string) => text.split(part).length - 1;
 
 test("teardown archives the pages the test chat made and leaves older pages, other chats' pages and session logs", async () => {
   const changes = [
@@ -36,17 +38,19 @@ test("teardown archives the pages the test chat made and leaves older pages, oth
   // The title stays as the h1 has it, since the wiki refuses a title that differs from the first <h1> (r3g's teardown, 10-18).
   assert.match(after, /"title": "Reddit index gaps"/);
   assert.match(after, /"status": "archived"/);
-  assert.ok(after.includes(TEST_DESCRIPTION));
-  assert.doesNotMatch(after, /measured daily/);
+  assert.match(after, /"description": "The top 10 holes, measured daily."/);
+  assert.ok(after.includes(`<h1>Reddit index gaps</h1>\n<p>${TEST_DESCRIPTION}</p>\n`));
+  assert.equal(occurrences(after, TEST_DESCRIPTION), 1);
   assert.deepEqual(await archiveTestPages("http://wiki", [transcript], SETUP, fake), { archived: [], failed: [] });
   assert.deepEqual(patches, ["apps/crawler-v3/reddit-index-gaps/index.html"]);
+  assert.equal(files.get("apps/crawler-v3/reddit-index-gaps/index.html"), after, "a second run adds nothing");
   assert.deepEqual(archiveEdits("<h1>no frontmatter</h1>"), []);
 });
 
-test("a page a hub links keeps its status and still gets the test-output description", async () => {
+test("a page a hub links keeps its status and still gets the test-output line in its body", async () => {
   const path = "apps/crawler-v3/platforms/linkedin/fields.html";
   const changes = [{ path, version: 1, ts: "2026-10-18T11:40:00Z" }];
-  let raw = page("LinkedIn fields");
+  let raw = page("LinkedIn fields").replace("</h1>\n", "</h1>\n<wiki-tldr>\n\t<strong>What.</strong> Every LinkedIn field.\n</wiki-tldr>\n<p>See <code>&lt;wiki-tldr&gt;</code>.</p>\n");
   const sent: number[] = [];
   const fake = (async (url: string, init?: RequestInit) => {
     const at = new URL(url).pathname;
@@ -60,7 +64,21 @@ test("a page a hub links keeps its status and still gets the test-output descrip
   }) as typeof fetch;
   assert.deepEqual(await archiveTestPages("http://wiki", [path], Date.parse("2026-10-18T11:22:00Z"), fake), { archived: [path], failed: [] });
   assert.deepEqual(sent, [2, 1]);
-  assert.ok(raw.includes(TEST_DESCRIPTION));
+  assert.ok(raw.includes(`<wiki-tldr>\n\t${TEST_DESCRIPTION}\n\t<strong>What.</strong>`));
+  assert.match(raw, /"description": "The top 10 holes, measured daily."/);
   assert.match(raw, /"status": "current"/);
+  const once = raw;
   assert.deepEqual(await archiveTestPages("http://wiki", [path], Date.parse("2026-10-18T11:22:00Z"), fake), { archived: [path], failed: [] }, "a rerun of teardown passes");
+  assert.equal(raw, once, "a rerun adds nothing");
+  assert.deepEqual(sent, [2, 1, 1]);
+});
+
+test("the body line goes in once even when its anchor repeats, and a page the old teardown marked gets it in the body too", () => {
+  const twice = `<!--wiki\n{"title": "Twins", "description": "${TEST_DESCRIPTION}", "status": "archived"}\n-->\n<h1>Twins</h1>\n<p>One</p>\n<h1>Twins</h1>\n<p>Two</p>\n`;
+  const edits = archiveEdits(twice);
+  assert.equal(edits.length, 1);
+  assert.equal(occurrences(twice, edits[0]!.old_string), 1);
+  const after = twice.replace(edits[0]!.old_string, edits[0]!.new_string);
+  assert.ok(after.includes(`<h1>Twins</h1>\n<p>${TEST_DESCRIPTION}</p>\n<p>One</p>`));
+  assert.deepEqual(archiveEdits(after), []);
 });
