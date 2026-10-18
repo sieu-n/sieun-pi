@@ -868,6 +868,16 @@ export class Catalog {
 
   notify(): Promise<void> { return this.emit(); }
 
+  /**
+   * The rows of the last frame while a listener holds the feed, so that every change the catalog hears of sends a new frame within emitGapMs and
+   * one projection; null with no listener or before the first frame. A read of one row takes these instead of building every row and every
+   * chat's agents again: on 10-18 the chat_board tool's api/threads/<id>/agents read started its own projection on each call, since the inputs
+   * change 13.3 times a second, and it answered in 1.0 to 3.5 s 34 times between 15:13Z and 17:03Z while projections ran a p90 of 0.7 to 2.7 s.
+   */
+  framedRows(): readonly SessionRow[] | null {
+    return this.listeners.size && this.lastEvent ? this.lastEvent.sessions : null;
+  }
+
   /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
   watch(listener: (event: SessionsEvent) => void): () => void {
     this.listeners.add(listener);

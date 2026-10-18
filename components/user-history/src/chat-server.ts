@@ -763,8 +763,11 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             json(res, 200, nextBriefView(id, duty, brief, `Next run of ${(await backend.duties.view(id)).find(view => view.duty.id === duty)?.duty.name ?? duty}`)); return;
           }
           if (action === "agents") {
-            // The chat's agents as its row carries them; the chat_board tool reads this for its "Agents:" lines.
+            // The chat's agents as its row carries them; the chat_board tool reads this for its "Agents:" lines and gives up after 3 s. The last
+            // frame's row answers when there is one (Catalog.framedRows); a chat not in it yet gets a projection of its own.
             if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            const framed = backend.catalog.framedRows()?.find(candidate => candidate.id === id);
+            if (framed) { json(res, 200, { agents: framed.agents ?? [] }); return; }
             await backend.catalog.summary(id);
             const row = (await backend.catalog.rows()).find(candidate => candidate.id === id);
             json(res, 200, { agents: row?.agents ?? [] }); return;
