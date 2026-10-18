@@ -616,6 +616,7 @@ export class Catalog {
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
   private index(rows: SessionSummary[]): void {
+    this.inputs++;
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
     this.own = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : [row.sessionId]));
@@ -755,10 +756,27 @@ export class Catalog {
     this.ratesTimer.unref();
   }
 
-  async rows(): Promise<SessionRow[]> { return (await this.project()).rows; }
+  /**
+   * The rows now. A call while a projection runs on the same inputs takes that projection's rows instead of building its own: on 10-18 a scratch
+   * serve of this box's chats got 22 to 98 rows() calls per 30 s, from duty, check-in and archive code looking up one row each, and every call
+   * built all 3,700 rows and every chat's agents beside the frames' own projections. A change to the daemon rows or a notify() starts a new one.
+   */
+  async rows(): Promise<SessionRow[]> {
+    const running = this.running;
+    return (await (running && running.inputs === this.inputs ? running.result : this.tracked())).rows;
+  }
+  /** Bumped by each change the catalog hears of (new daemon rows, and every emit: notify, schedules, cut ends, rates), so rows() never takes a projection that began before one. */
+  private inputs = 0;
+  private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
+  private tracked(): ReturnType<Catalog["project"]> {
+    const run = { inputs: this.inputs, result: this.project() };
+    this.running = run;
+    void run.result.finally(() => { if (this.running === run) this.running = undefined; }).catch(() => {});
+    return run.result;
+  }
 
   async event(): Promise<SessionsEvent> {
-    const { rows, tags } = await this.project();
+    const { rows, tags } = await this.tracked();
     return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
@@ -770,6 +788,7 @@ export class Catalog {
    * frames went out in bursts of 4 identical lists within 140 ms from projections that overlapped.
    */
   private emit(): Promise<void> {
+    this.inputs++;
     if (!this.emitRun) {
       this.emitRun = this.emitOnce().finally(() => { this.emitRun = undefined; });
       return this.emitRun;
@@ -948,7 +967,7 @@ export class Catalog {
    * The row shows this lifecycle until the daemon list agrees (archived: listed as archived with no active session). The daemon scan can lag
    * behind the session file, and the terminal agents view hides a deactivated row the same way until it does.
    */
-  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); }
+  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); this.inputs++; }
 
   private applyHeld(row: SessionSummary, projected: SessionRow): SessionRow {
     const held = this.heldLifecycle.get(row.sessionId);
