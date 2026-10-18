@@ -41,6 +41,9 @@ class ResumePausedTests(unittest.TestCase):
         logs = patch.object(resume_paused, "LOG_DIR", self.root / "no-logs", create=True)
         logs.start()
         self.addCleanup(logs.stop)
+        hook = patch.object(resume_paused, "TOKEN_HOOK", self.root / "no-hook")
+        hook.start()
+        self.addCleanup(hook.stop)
 
     def session(self, sid, entries, parent=None, activity="idle", **flags):
         path = self.root / f"{sid}.jsonl"
@@ -494,6 +497,77 @@ class ResumePausedTests(unittest.TestCase):
             found = resume_paused.daemon_restarts()
         self.assertEqual([(a.isoformat(), b.isoformat()) for a, b in found],
                          [("2026-10-16T00:19:53.036000+00:00", "2026-10-16T00:20:13.549000+00:00")])
+
+    # ci train (01a14068, a root job of VP of CI): its last turn ran out of retries on the token hook at 10:25:52Z on 10-16, the idle unload
+    # stopped it at 10:27:23Z (service.log 10:27:34Z), the daemon no longer listed it, and it got no continue after the hook worked again.
+    CI_TRAIN = "01a14068-faa2-7369-a7d0-0389df1d4632"
+    HOOK_ERROR = ('Failed to resolve API key for provider "anthropic" from shell command: /Users/sieunpark/.config/pi-pool/bin/pi-pool-token '
+                  "pi-pool: the token hook gave no token; the retry uses a new hook run.")
+
+    def ci_train(self):
+        def error(stamp):
+            return {"type": "message", "timestamp": stamp, "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                       "content": [], "errorMessage": self.HOOK_ERROR}}
+        entries = [{"type": "message", "timestamp": "2026-10-16T10:23:08.612Z", "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}},
+                   *map(error, ["2026-10-16T10:23:38.629Z", "2026-10-16T10:24:20.306Z", "2026-10-16T10:25:04.785Z", "2026-10-16T10:25:52.307Z"]),
+                   {"type": "agent_status", "timestamp": "2026-10-16T10:26:07.308Z"},
+                   {"type": "session_state", "timestamp": "2026-10-16T10:27:23.453Z", "state": {"status": "archived"}}]
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        (sessions / f"{self.CI_TRAIN}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+    def run_ci_train(self, unloaded, dry_run=True):
+        now = dt.datetime(2026, 10, 17, 19, 55, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=dry_run, include_children=False, direct=True,
+                                  only="", state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.dict(resume_paused.UNLOADED, unloaded, clear=True), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.CI_TRAIN}), {self.CI_TRAIN})
+            return resume_paused.resume(rows, args, now)
+
+    def test_a_job_the_idle_unload_stopped_after_a_token_hook_failure_is_resumed(self):
+        self.ci_train()
+        self.assertEqual(self.run_ci_train({})["paused"], [])
+        report = self.run_ci_train({self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")})
+        self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
+                         [("error", self.CI_TRAIN, "2026-10-16T10:25:52.307Z")])
+
+    def fake_hook(self, gives):
+        hook = self.root / "pi-pool-token"
+        seen = self.root / "hook-session"
+        hook.write_text("#!/bin/sh\n" f'printf %s "$PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID" > "{seen}"\n'
+                        + ("printf sk-ant-oat01-secret\n" if gives else "echo 'pi-pool: remote pool unreachable' >&2; exit 1\n"))
+        hook.chmod(0o755)
+        return patch.object(resume_paused, "TOKEN_HOOK", hook), seen
+
+    def test_the_continue_after_a_token_hook_failure_waits_until_the_hook_gives_the_tree_a_token(self):
+        self.ci_train()
+        unloaded = {self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")}
+        dead, seen = self.fake_hook(gives=False)
+        with dead:
+            report = self.run_ci_train(unloaded, dry_run=False)
+        self.assertEqual((report["paused"], self.sent, seen.read_text()), ([], [], self.CI_TRAIN))
+        works, _ = self.fake_hook(gives=True)
+        with works, patch("sys.stdout") as stdout:
+            report = self.run_ci_train(unloaded, dry_run=False)
+        self.assertEqual(self.sent, [(self.CI_TRAIN, "continue")])
+        self.assertNotIn("sk-ant", json.dumps(report) + str(stdout.mock_calls))
+
+    def test_a_saved_job_maps_to_the_job_above_it_so_the_hook_check_asks_for_its_tree(self):
+        chat = "01a11ba8-9d2c-727c-8ded-38f819ca9f29"
+        job = self.root / "artifacts" / chat / "sub-738c756b" / "01a14130-7ba1-71ba-be87-6794d2b743b0.jsonl"
+        child = job.parent / "sub-0b3d1659" / "01a14cfe-4ba8-739d-bbcd-10e610c5580e.jsonl"
+        child.parent.mkdir(parents=True)
+        job.write_text("")
+        self.assertEqual([resume_paused.parent_of(path) for path in (job, child, self.root / "sessions" / f"{chat}.jsonl")],
+                         [chat, "01a14130-7ba1-71ba-be87-6794d2b743b0", None])
+
+    def test_load_unloaded_reads_the_idle_unload_record(self):
+        path = self.root / "unloaded.json"
+        path.write_text(json.dumps({self.CI_TRAIN: "2026-10-16T10:27:34.023Z", "bad": 3}))
+        self.assertEqual(resume_paused.load_unloaded(path), {self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")})
+        self.assertEqual(resume_paused.load_unloaded(self.root / "missing.json"), {})
 
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,15 @@ workers SIGTERMed at 17:43:22Z left stuck steps root cause unloaded and out of
 the default list, and the owner's stop archived three step owners at 18:25Z;
 nothing resumed any of them.
 
+A session the chat service's idle unload stopped (browser-chat/unloaded.json) counts like one a restart archived: the unload stops a
+session about 2 min after its turn ends, a failed turn included, and its archive hid the failure. The idle unload stopped 16 root jobs
+and 27 check-ins between 0.2 and 1.5 min after a token hook failure in the 10-16 to 10-17 hook outage (ci train at 10:27:34Z on 10-16),
+and none got a continue after the hook worked again at 19:50Z on 10-17. Such a session is read from its file even when the daemon no
+longer lists it.
+
+A run stopped on a token hook failure is resumed only once the hook gives its tree a token: the pass runs the hook the way Prime does
+before it sends, and keeps the token out of every output.
+
 A job deleted on purpose never counts: one the chat service deleted or parked
 (deleted-jobs.json), one under such a job, one whose parent's rlm.delete_subagent
 returned it, and one archived right before its aborted reply outside a daemon
@@ -119,6 +128,17 @@ UPDATE_NOTICE = "prime-agent.update_restart"
 UPDATE_ABORT_S = 60.0
 # Full session ids that own an open step of a chat (--owners).
 OWNERS = set()
+UNLOADED_FILE = Path.home() / ".prime" / "agent" / "browser-chat" / "unloaded.json"
+# {full session id: when the chat service's idle unload stopped it}, read from UNLOADED_FILE in main().
+UNLOADED = {}
+# The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
+UNLOAD_MATCH_S = 60.0
+TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
+SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
+# The hook models.json names for both pooled providers.
+TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
+# Prime gives the token hook 10 s.
+HOOK_TIMEOUT_S = 10
 RECOVERY_NOTICE = "prime-agent.worker_recovery"
 NEVER_STARTED_INTRO = ("[resume] Your parent spawned you, but its worker stopped before your task reached you, so the chat service sends it now. "
                        "Your task, as your parent wrote it:\n\n")
@@ -178,10 +198,23 @@ def saved_rows(ids):
             meta = {}
         name = meta.get("sessionName") if isinstance(meta, dict) else None
         stamp = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        parent = parent_of(path)
         rows.append({"id": sid, "sessionId": sid, "lifecycle": "archived", "activity": "idle", "sessionFile": str(path),
                      "sessionName": name if isinstance(name, str) else sid, "runtimeKind": "subagent" if meta else "top-level",
-                     "lastActivityAt": stamp})
+                     "lastActivityAt": stamp, **({"parentSessionId": parent} if parent else {})})
     return rows
+
+
+def parent_of(path):
+    """The full session id of the job above the job file at `path` (ARTIFACTS_DIR/<root>/sub-*/.../<id>.jsonl), or None for a thread, so a
+    saved job maps to its chat's tree and the token hook check asks for that tree."""
+    folder = Path(path).parent
+    if not folder.name.startswith("sub-"):
+        return None
+    above = folder.parent
+    if not above.name.startswith("sub-"):
+        return above.name
+    return next((p.name[:-6] for p in above.glob("*.jsonl") if len(p.name) == 42), None)
 
 
 def deleted_on_purpose(path):
@@ -271,6 +304,44 @@ def run_provider(entries):
     return None
 
 
+def load_unloaded(path):
+    """{full session id: datetime} from the idle unload's record, or {} when there is none."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    stamps = {sid: parse_ts(value) for sid, value in data.items() if isinstance(value, str)} if isinstance(data, dict) else {}
+    return {sid: stamp for sid, stamp in stamps.items() if stamp}
+
+
+def archived_by_unload(entries, unloaded_at):
+    """The session's last archive came from the idle unload's stop at `unloaded_at`."""
+    archives = [e for e in entries if e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived"]
+    stamp = parse_ts(archives[-1].get("timestamp")) if archives else None
+    return bool(unloaded_at and stamp) and 0 <= (unloaded_at - stamp).total_seconds() <= UNLOAD_MATCH_S
+
+
+def hook_blocker(root_session_id, provider, cache):
+    """Why the token hook gives this tree no token now, or None when it gives one or there is no hook to run.
+
+    The hook runs as Prime runs it for the tree's next request, with the tree's session id and a 10 s limit, and its stdout, the token,
+    is dropped unread."""
+    if not TOKEN_HOOK.exists() or provider not in ("anthropic", "openai-codex"):
+        return None
+    hook = TOKEN_HOOK
+    if (root_session_id, provider) not in cache:
+        try:
+            ran = subprocess.run([str(hook), "--provider", provider], env={**os.environ, SESSION_ENV: root_session_id},
+                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=HOOK_TIMEOUT_S)
+            gave = ran.returncode == 0 and bool(ran.stdout.strip())
+            cache[(root_session_id, provider)] = None if gave else f"the token hook gave no {provider} token (exit {ran.returncode})"
+        except subprocess.TimeoutExpired:
+            cache[(root_session_id, provider)] = f"the token hook gave no {provider} token in {HOOK_TIMEOUT_S} s"
+        except OSError:
+            cache[(root_session_id, provider)] = None
+    return cache[(root_session_id, provider)]
+
+
 def pool_bin():
     found = shutil.which("pi-pool") or str(Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool")
     return found if Path(found).exists() else None
@@ -345,12 +416,13 @@ def is_busy(session):
     return session.get("activity") == "working" or any(session.get(flag) for flag in BUSY_FLAGS)
 
 
-def stopped_on_purpose(entries, last, restarts=list):
+def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
     """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted.
 
-    An archive that a daemon restart wrote does not count, and an archive written just before the aborted reply outside a restart does, even
-    next to a worker's SIGTERM, since an archive stops the worker too. `find_paused` also drops a recorded delete (`deleted_on_purpose`)."""
-    if archived_by_restart(entries, restarts) or update_before(entries, last):
+    An archive that a daemon restart or the idle unload wrote does not count, and an archive written just before the aborted reply outside a
+    restart does, even next to a worker's SIGTERM, since an archive stops the worker too. `find_paused` also drops a recorded delete
+    (`deleted_on_purpose`)."""
+    if archived_by_restart(entries, restarts) or archived_by_unload(entries, unloaded_at) or update_before(entries, last):
         return False
     msg = last.get("message") or {}
     if msg.get("role") == "assistant" and msg.get("stopReason") == "aborted" and archive_before(entries, last):
@@ -554,10 +626,11 @@ def save_state(path, state, now, keep_minutes):
     tmp.replace(path)
 
 
-def find_paused(sessions, since_minutes, state, now, direct=False):
+def find_paused(sessions, since_minutes, state, now, direct=False, only=frozenset(), check_hook=False):
     by_id = {short_id(s): s for s in sessions}
     tails = {}
     accounts = {}
+    hooks = {}
     stops = []
 
     def shutdowns():
@@ -585,8 +658,12 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
     for s in sessions:
         sid = short_id(s)
         full = s.get("sessionId") or s["id"]
+        if only and full not in only:
+            continue
         owner = full in OWNERS
-        if s.get("lifecycle") != "live" and not (owner and s.get("saved")) and not archived_by_restart(entries_of(sid), restarts):
+        unloaded_at = UNLOADED.get(full)
+        if s.get("lifecycle") != "live" and not (owner and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
+                and not archived_by_restart(entries_of(sid), restarts):
             continue
         if s.get("workerState") == "failed":
             head = head_of(sid, by_id)
@@ -620,7 +697,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             verdict = ("never_started", "Its worker stopped before its first task reached it.")
         else:
             unstuck = full in UNSTUCK
-            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts):
+            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
                 continue
             verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner, restarts)
             if not verdict:
@@ -639,9 +716,13 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
         root = by_id.get(head, s)
-        blocker = account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts)
+        root_id, provider = root.get("sessionId") or root["id"], run_provider(entries_of(sid))
+        if verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
+            blocker = hook_blocker(root_id, provider, hooks) if check_hook else None
+        else:
+            blocker = account_blocker(root_id, provider, accounts)
         if blocker:
-            continue  # resuming now would fail on the same account; it shows again once pi-pool has one
+            continue  # resuming now would fail the same way; it shows again once pi-pool gives the tree a token
         paused.append({
             "id": sid,
             # The short id changes when a session is reloaded; the state file keys by the full session id.
@@ -729,9 +810,7 @@ def resume(sessions, args, now):
     state = load_state(args.state)
     direct = getattr(args, "direct", False)
     only = set(filter(None, getattr(args, "only", "").split(",")))
-    paused = find_paused(sessions, args.since_minutes, state, now, direct)
-    if only:
-        paused = [p for p in paused if p["session_id"] in only]
+    paused = find_paused(sessions, args.since_minutes, state, now, direct, only, check_hook=not args.dry_run)
     if direct:
         return direct_resume(paused, args, state, now)
 
@@ -811,11 +890,14 @@ def main():
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
     OWNERS.update(filter(None, args.owners.split(",")))
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.since_minutes or 1e7)
+    UNLOADED.update({sid: stamp for sid, stamp in load_unloaded(UNLOADED_FILE).items() if stamp >= since})
 
     try:
         sessions = list_sessions()
-        if OWNERS:
-            sessions = with_saved_owners(sessions, saved_rows(OWNERS - {s.get("sessionId") or s["id"] for s in sessions}), OWNERS)
+        read = OWNERS | set(UNLOADED)
+        if read:
+            sessions = with_saved_owners(sessions, saved_rows(read - {s.get("sessionId") or s["id"] for s in sessions}), read)
         report = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
     except CommandError as error:
         raise SystemExit(str(error))

@@ -24,6 +24,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { quietWorkers, RECYCLE_QUIET_MS, recyclePlan, unloadPlan } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
+import { recordUnloaded } from "./unloaded.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -282,6 +283,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const response = await catalog.clientFor(row.activeSessionId!).request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
       if (!response.success) { dutyLog(`idle unload: ${row.sessionId.slice(0, 8)}: ${response.error}`); return false; }
       done.add(row.sessionId);
+      await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       // The daemon's kill writes the archived state, which would hide the chat until the next service start unarchived it (Chats.adopt).
       if (chatIds.has(row.sessionId)) await threads.unarchive(row.sessionId).catch(error => dutyLog(`idle unload: unarchive ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       return true;
