@@ -200,20 +200,27 @@ export async function madeScratchTrees(transcripts: readonly string[], dirs: rea
   return madeTrees(transcripts, dirs, root, named, artifacts, path => `/scratch/${path.slice(root.length + 1)}`, true);
 }
 
-/** Whether anything at or below `path` changed after `since` (epoch ms). A symlink is read as itself, never followed. */
-async function changedAfter(path: string, since: number): Promise<boolean> {
+/**
+ * Whether anything at or below `path` changed after `since` or was born before `start` (epoch ms): a later write is another session's work, and
+ * an older entry was moved in from elsewhere, since a `git archive` export, a clone or a copy makes new inodes. A file with more than one link
+ * (a pnpm store hardlink in node_modules) keeps its store birth, so only its change time counts. A symlink is read as itself, never followed.
+ */
+async function heldElsewhere(path: string, start: number, since: number): Promise<boolean> {
   const item = await lstat(path).catch(() => null);
   if (!item) return false;
   if (item.mtimeMs > since) return true;
+  if (item.birthtimeMs > 0 && item.birthtimeMs < start && (item.isDirectory() || item.nlink === 1)) return true;
   if (!item.isDirectory()) return false;
-  for (const entry of await readdir(path).catch(() => [])) if (await changedAfter(join(path, entry), since)) return true;
+  for (const entry of await readdir(path).catch(() => [])) if (await heldElsewhere(join(path, entry), start, since)) return true;
   return false;
 }
 
 /**
  * The entries of `root` that `named` finds in a gone session's own lines, born after its first line, and unchanged since its file last changed:
- * the entry itself, or with `deep` anything under it, so a scratch tree another live session still writes in stays (on 10-18 at 16:44Z an
- * earlier disk job deleted ~/scratch/disk-growth-p9 by hand while the next disk job, in another chat, still wrote its file lists there).
+ * the entry itself, or with `deep` anything under it (`heldElsewhere`), so a scratch tree another live session still writes in stays (on
+ * 10-18 at 16:44Z an earlier disk job deleted ~/scratch/disk-growth-p9 by hand while the next disk job, in another chat, still wrote its file
+ * lists there), and so does one that holds what a job moved in from elsewhere (at 12:31Z on 10-18 a cleanup job moved 116 repo copies, 9.6 GB,
+ * out of wiki session folders into ~/scratch/session-copies-1018 because their writers were still live).
  */
 async function madeTrees(transcripts: readonly string[], dirs: readonly string[], root: string, named: RegExp, artifacts: string,
   needle: (path: string) => string, deep: boolean): Promise<string[]> {
@@ -229,7 +236,7 @@ async function madeTrees(transcripts: readonly string[], dirs: readonly string[]
       if (made.has(path) || SHARED_TMP.test(entry) || /^\.+$/.test(entry)) continue;
       const item = await lstat(path).catch(() => null);
       if (!item || item.isSymbolicLink() || (uid !== undefined && item.uid !== uid)) continue;
-      if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs && !(deep && await changedAfter(path, info.mtimeMs))) made.add(path);
+      if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs && !(deep && await heldElsewhere(path, start, info.mtimeMs))) made.add(path);
     }
   }
   return unnamedByLive(made, transcripts, dirs, artifacts, needle);
