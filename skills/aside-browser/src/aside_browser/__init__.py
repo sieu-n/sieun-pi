@@ -8,6 +8,11 @@ new session), every call falls back to the one-shot CLI `aside repl`, which
 loses state between calls; the returned text then starts with a
 `[aside-browser fallback]` line.
 
+On a box, open_tab() sends a page that needs none of the owner's logins to a headless
+Chromium on this host (box/box.mjs, one runner per kernel) that exposes the same REPL
+globals, and later calls follow the tab's browser. Every Aside tab renders on the
+owner's Mac, so this keeps our own apps and public pages off his machine.
+
 `run()` guards the three most common agent mistakes found in an audit of
 11,428 Aside REPL calls:
 
@@ -25,12 +30,17 @@ import ast
 import asyncio
 import base64
 import datetime
+import hashlib
 import json
 import os
 import re
 import shutil
+import select
+import socket
 import subprocess
+import sys
 import tempfile
+import threading
 from typing import Any
 
 SERVER = "aside"
@@ -40,6 +50,8 @@ _OPENED_MARK = "__ASIDE_OPENED__:"
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS = re.compile(r"^\[(ok|error) \| \d+ms\]$")
 REGISTRY_FILE = "aside-browser-tabs.json"
+BOX_PREFIX = "box-"
+BOX_DIR = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "box"))
 
 
 class AsideError(RuntimeError):
@@ -236,18 +248,37 @@ def owner_key() -> str:
     return os.environ.get("RLM_SESSION_DIR") or f"pid:{os.getpid()}"
 
 
-def _registry_path() -> str | None:
+def _state_dir() -> str:
+    return os.environ.get("ASIDE_BROWSER_STATE") or os.path.expanduser("~/.local/state/aside-browser/owners")
+
+
+def _registry_path(key: str | None = None) -> str:
+    """One file per owner in a shared folder, so any kernel on this host can find tabs whose owner has exited."""
+    return os.path.join(_state_dir(), hashlib.sha1((key or owner_key()).encode()).hexdigest()[:16] + ".json")
+
+
+def _legacy_registry_path() -> str | None:
     folder = os.environ.get("RLM_SESSION_DIR")
     return os.path.join(folder, REGISTRY_FILE) if folder else None
 
 
+def _process_start(pid: int) -> str:
+    """The process start time from /proc, so a reused pid does not count as the same kernel. Empty where /proc is missing."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return ""
+
+
 def _owned_tabs() -> dict[str, str]:
-    """targetId -> url opened by this session. Reloaded from the session folder after a kernel restart."""
+    """targetId -> url opened by this session. Reloaded from the shared folder after a kernel restart."""
     key = owner_key()
     if key not in _owned:
         _owned[key] = {}
-        path = _registry_path()
-        if path and os.path.exists(path):
+        for path in (_registry_path(), _legacy_registry_path()):
+            if not path or not os.path.exists(path):
+                continue
             try:
                 with open(path, encoding="utf-8") as fh:
                     data = json.load(fh)
@@ -255,25 +286,45 @@ def _owned_tabs() -> dict[str, str]:
                     _owned[key].update({str(k): str(v) for k, v in data["tabs"].items()})
             except (OSError, ValueError):
                 pass
+            break
     return _owned[key]
 
 
 def _save_owned() -> None:
     path = _registry_path()
-    if not path:
+    tabs_now = _owned_tabs()
+    if not tabs_now:
+        for old in (path, _legacy_registry_path()):
+            if old and os.path.exists(old):
+                os.remove(old)
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".aside-tabs-", dir=os.path.dirname(path))
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"owner": owner_key(), "tabs": _owned_tabs()}, fh)
+        json.dump({"owner": owner_key(), "host": socket.gethostname(), "pid": os.getpid(), "start": _process_start(os.getpid()), "tabs": tabs_now}, fh)
     os.replace(tmp, path)
+
+
+def _alive(entry: dict[str, Any]) -> bool:
+    """Whether the kernel that wrote a registry entry still runs. An entry from another host or with no pid counts as alive."""
+    pid = entry.get("pid")
+    if entry.get("host") != socket.gethostname() or not isinstance(pid, int):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    start = _process_start(pid)
+    return not (entry.get("start") and start and start != entry["start"])
 
 
 def _remember(target_ids: list[str], url: str = "") -> None:
     owned = _owned_tabs()
     changed = False
     for tid in target_ids:
-        if tid and tid not in owned:
+        if tid and tid not in owned and not tid.startswith(BOX_PREFIX):
             owned[tid] = url
             changed = True
     if changed:
@@ -590,10 +641,10 @@ _PAGE_JS = (
 )
 
 
-async def _page() -> dict[str, Any]:
+async def _page(browser: str | None = None) -> dict[str, Any]:
     """The current tab's URL, title and the email addresses it shows (a Gmail thread's recipients), for the send check and the send log."""
     try:
-        text = await _repl(_scoped(_PAGE_JS), "send check")
+        text = await _repl(_scoped(_PAGE_JS), "send check", browser=browser)
     except AsideError:
         return {}
     for line in reversed(text.splitlines()):
@@ -663,14 +714,110 @@ async def _cli_fallback(tool: str, arguments: dict[str, Any]) -> str:
     return "[aside-browser fallback] host has no `aside` MCP server yet; ran one-shot `aside repl` (state does not persist). Run /reload in the TUI.\n" + text
 
 
-async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str | None = None) -> str:
-    """Send code as is. Records tabs reported by the open-tab marker and adds hints to known errors.
+# ---------------------------------------------------------------- box browser
+
+# Hosts where a page shows the owner's own account, so it opens in his Aside window. Every other http(s) page opens in the
+# box's headless Chromium: at 04:00 to 07:00Z on 2026-10-18 agents made 582 Aside REPL calls from us-metal02, and their open
+# tabs all render as visible in his window (visibilityState 'visible' in every tab), while Aside used 70 to 105% of a Mac core.
+LOGIN_HOSTS = re.compile(
+    r"(?:^|\.)(?:google\.com|youtube\.com|github\.com|gitlab\.com|posthog\.com|geonode\.com|iwebfusion\.net|railway\.(?:com|app)"
+    r"|vercel\.com|stripe\.com|cloudflare\.com|convex\.dev|supabase\.com|amazon\.com|aws\.amazon\.com|apple\.com|icloud\.com"
+    r"|slack\.com|notion\.so|figma\.com|claude\.ai|anthropic\.com|openai\.com|chatgpt\.com|aside\.com|g2g\.com|impact\.com"
+    r"|tailscale\.com|grafana\.net|sentry\.io|linear\.app|atlassian\.net|clerk\.com|kakao\.com|naver\.com|coupang\.com"
+    r"|x\.com|twitter\.com|linkedin\.com|discord\.com|facebook\.com|instagram\.com|reddit\.com|threads\.net|bsky\.app)$",
+    re.I,
+)
+_LOGIN_PAGE = re.compile(r"^https?://(?:accounts\.|login\.|auth\.|sso\.)|/(?:log-?in|sign-?in|sign_in|auth|sso|oauth|session)(?:[/?#.]|$)", re.I)
+
+
+def browser_for(url: str) -> str:
+    """'box' for a page that needs none of the owner's logins (our own apps, public pages), else 'aside'."""
+    m = re.match(r"https?://([^/:?#]+)", url or "", re.I)
+    if not m or not box_available() or LOGIN_HOSTS.search(m.group(1)) or _host_kind(url):
+        return "aside"
+    return "box"
+
+
+def box_available() -> bool:
+    """The box runner works here: not the owner's Mac (Aside is local there), its playwright-core is installed, and ASIDE_BROWSER_BOX is not 0."""
+    if os.environ.get("ASIDE_BROWSER_BOX", "1") == "0" or sys.platform == "darwin":
+        return False
+    return bool(_node()) and os.path.isdir(os.path.join(BOX_DIR, "node_modules", "playwright-core"))
+
+
+def _node() -> str | None:
+    found = shutil.which("node") or os.path.expanduser("~/.local/node/bin/node")
+    return found if found and os.path.exists(found) else None
+
+
+class _BoxRunner:
+    """One `node box.mjs` per kernel. It exits, and its tabs close, when the kernel's end of stdin closes."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen[str] | None = None
+        self.log = ""
+        self.lock = threading.Lock()
+        self.next = 0
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def _start(self) -> subprocess.Popen[str]:
+        node = _node()
+        if not node:
+            raise AsideError("no node binary for the box browser", "Open the page in Aside with browser='aside'.")
+        fd, self.log = tempfile.mkstemp(prefix="aside-box-", suffix=".log")
+        try:
+            self.proc = subprocess.Popen(
+                [node, os.path.join(BOX_DIR, "box.mjs")], cwd=BOX_DIR, text=True, bufsize=1,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=fd,
+            )
+        finally:
+            os.close(fd)
+        return self.proc
+
+    def call(self, code: str, timeout: float = 120) -> str:
+        with self.lock:
+            proc = self.proc if self.running() else self._start()
+            self.next += 1
+            assert proc.stdin and proc.stdout
+            proc.stdin.write(json.dumps({"id": self.next, "code": code}) + "\n")
+            proc.stdin.flush()
+            while True:
+                ready, _, _ = select.select([proc.stdout], [], [], timeout)
+                line = proc.stdout.readline() if ready else ""
+                if not line:
+                    proc.kill()
+                    with open(self.log, encoding="utf-8", errors="replace") as fh:
+                        tail = fh.read()[-1500:]
+                    raise AsideError(f"box browser {'timed out after %ds' % timeout if not ready else 'exited'}: {tail}".strip())
+                reply = json.loads(line)
+                if reply.get("id") == self.next:
+                    break
+        if "error" in reply:
+            raise AsideError(str(reply["error"]))
+        return str(reply.get("out", ""))
+
+
+_box = _BoxRunner()
+
+
+async def _box_call(code: str) -> str:
+    return await asyncio.to_thread(_box.call, code)
+
+
+_browser = "aside"
+
+
+async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str | None = None, browser: str | None = None) -> str:
+    """Send code as is to `browser` (default: the browser of the last open_tab or attach). Records tabs reported by the open-tab marker and adds hints to known errors.
 
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
     """
+    browser = browser or _browser
     approved = False
     if _sends(plain or code) or owner_ok:
-        info = await _page()
+        info = await _page(browser)
         reason = outside_send(plain or code, str(info.get("u") or "")) if _sends(plain or code) else None
         if reason:
             _refuse_send(reason, owner_ok, _page_target(info) or (plain or code)[:300])
@@ -682,7 +829,7 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
     if not approved:
         code = guard_clicks(code)
     try:
-        text = await _call("repl", {"title": title, "code": code})
+        text = await (_box_call(code) if browser == "box" else _call("repl", {"title": title, "code": code}))
     except AsideError as exc:
         message, opened = _strip_opened(str(exc))
         _remember(opened)
@@ -730,16 +877,23 @@ repl = run
 
 
 async def tabs() -> list[dict[str, Any]]:
-    """List open Aside browser tabs as dicts with targetId, active, title, url, owned (opened by this session)."""
-    text = await _repl(
-        _scoped("const __tabs = await listBrowserTabs(); console.log(JSON.stringify(__tabs.map(t => ({targetId: t.targetId, active: t.active, title: t.title, url: t.url}))))"),
-        "list tabs",
+    """List open tabs as dicts with targetId, active, title, url, owned (opened by this session) and browser ('aside' or 'box').
+
+    Aside tabs come first. Box tabs (targetId box-N) belong to this kernel and close with it.
+    """
+    await _sweep_quietly()
+    lister = _scoped(
+        "const __tabs = await listBrowserTabs(); console.log(JSON.stringify(__tabs.map(t => ({targetId: t.targetId, active: t.active, title: t.title, url: t.url}))))"
     )
-    line = [l for l in text.splitlines() if l.startswith("[")]
-    found = json.loads(line[-1]) if line else []
+    found: list[dict[str, Any]] = []
     owned = _owned_tabs()
-    for tab in found:
-        tab["owned"] = tab.get("targetId") in owned
+    for browser in ("aside", "box") if _box.running() else ("aside",):
+        text = await _repl(lister, "list tabs", browser=browser)
+        line = [l for l in text.splitlines() if l.startswith("[")]
+        for tab in json.loads(line[-1]) if line else []:
+            tab["owned"] = browser == "box" or tab.get("targetId") in owned
+            tab["browser"] = browser
+            found.append(tab)
     return found
 
 
@@ -751,12 +905,29 @@ async def owned_tabs() -> list[dict[str, Any]]:
     return [t for t in found if t["owned"]]
 
 
-async def open_tab(url: str) -> str:
-    """Open url in a new Aside tab owned by this session, set it as `page`, return title, final URL and targetId."""
+_BOX_NOTE = (
+    "[aside-browser box] Opened in the box's headless Chromium, which has none of the owner's logins. "
+    "Pass browser='aside' for a page that needs one."
+)
+
+
+async def open_tab(url: str, browser: str | None = None) -> str:
+    """Open url in a new tab owned by this session, set it as `page`, return title, final URL and targetId.
+
+    browser=None picks by URL with browser_for(): a page that needs the owner's login opens in his Aside window, every other
+    page (our own apps, public pages) in the box's headless Chromium. Later run(), snapshot() and screenshot() calls use that tab.
+    """
+    global _browser
+    where = browser or browser_for(url)
+    if where not in ("aside", "box"):
+        raise ValueError("browser must be 'aside' or 'box'")
+    await _sweep_quietly()
     text = await _repl(
         _scoped(f"const __p = await openTab({_js_string(url)}); console.log(JSON.stringify({{title: await __p.title(), url: __p.url(), targetId: __p.targetId}}))"),
         f"open {url}",
+        browser=where,
     )
+    _browser = where
     for line in reversed(text.splitlines()):
         if line.startswith("{") and '"targetId"' in line:
             try:
@@ -764,19 +935,25 @@ async def open_tab(url: str) -> str:
             except ValueError:
                 continue
             _remember([info.get("targetId", "")], info.get("url") or url)
+            if where == "box" and _LOGIN_PAGE.search(str(info.get("url") or "")) and not _LOGIN_PAGE.search(url):
+                text += f"\n[aside-browser hint] The box landed on a sign-in page. Open it in the owner's Aside instead: open_tab({url!r}, browser='aside')."
             break
-    return text
+    return _BOX_NOTE + "\n" + text if where == "box" else text
 
 
 async def attach(target_id: str | None = None) -> str:
-    """Attach an already open tab (by targetId from tabs(), or the active tab) as `page`.
+    """Attach an already open tab (by targetId from tabs(), or the active Aside tab) as `page`.
 
-    An attached tab is not owned: close_tab() refuses it unless force=True.
+    An attached Aside tab is not owned: close_tab() refuses it unless force=True.
     """
+    global _browser
+    where = "box" if target_id and target_id.startswith(BOX_PREFIX) else "aside"
     code = (
         f"await attachBrowserTab({_js_string(target_id)});" if target_id else "await attachActiveBrowserTab();"
     ) + " console.log(JSON.stringify({title: await page.title(), url: page.url(), targetId: page.targetId}))"
-    return await _repl(_scoped(code), "attach tab")
+    text = await _repl(_scoped(code), "attach tab", browser=where)
+    _browser = where
+    return text
 
 
 async def snapshot(interactive: bool = True, selector: str | None = None, show_hidden: bool = False) -> str:
@@ -815,6 +992,7 @@ async def _close(target_id: str) -> str:
             " console.log('closed', " + tid + ", '- tabs left in this REPL:', tabs.length)"
         ),
         "close tab",
+        browser="box" if target_id.startswith(BOX_PREFIX) else "aside",
     )
 
 
@@ -838,13 +1016,13 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
     run(). force=True closes any tab; use it only when the user asked for that tab to close.
     """
     if target_id is not None:
-        if not force and target_id not in _owned_tabs():
+        if not force and target_id not in _owned_tabs() and not target_id.startswith(BOX_PREFIX):
             raise _refuse_close(target_id)
         text = await _close(target_id)
         _forget([target_id])
         return text
     # One REPL call reads the current tab and closes it only when this session owns it, which saves a round trip to the Mac.
-    allowed = "true" if force else json.dumps(list(_owned_tabs())) + ".includes(__id)"
+    allowed = "true" if force or _browser == "box" else json.dumps(list(_owned_tabs())) + ".includes(__id)"
     found = _json_line(await _repl(
         _scoped(
             f"const __id = page ? page.targetId : null; const __ok = !!__id && {allowed};"
@@ -862,23 +1040,72 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
     return f"closed {target_id} - tabs left in this REPL: {found.get('left')}"
 
 
-async def close_own_tabs() -> list[str]:
-    """Close every still-open tab this agent session opened, in one REPL call. Returns the closed targetIds."""
-    owned = list(_owned_tabs())
-    if not owned:
-        return []
+async def _close_open(ids: list[str], title: str) -> list[str]:
+    """Close those of ids that are still open in Aside, in one REPL call. Returns the closed targetIds."""
     found = _json_line(await _repl(
         _scoped(
             f"const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = [];"
-            f" for (const __id of {json.dumps(owned)}) {{ if (!__open.has(__id)) continue;"
+            f" for (const __id of {json.dumps(ids)}) {{ if (!__open.has(__id)) continue;"
             " await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id)); __closed.push(__id); }"
             " console.log(JSON.stringify({closed: __closed}))"
         ),
-        "close own tabs",
+        title,
+        browser="aside",
     ))
-    closed = [str(t) for t in found.get("closed") or []]
-    _forget(owned)
+    return [str(t) for t in found.get("closed") or []]
+
+
+async def close_own_tabs() -> list[str]:
+    """Close every still-open tab this agent session opened, Aside and box. Returns the closed targetIds."""
+    closed: list[str] = []
+    if _box.running():
+        found = _json_line(await _repl(
+            _scoped("const __ids = tabs.map(t => t.targetId); for (const t of [...tabs]) await closeTab(t); console.log(JSON.stringify({closed: __ids}))"),
+            "close own box tabs",
+            browser="box",
+        ))
+        closed += [str(t) for t in found.get("closed") or []]
+    owned = list(_owned_tabs())
+    if owned:
+        closed += await _close_open(owned, "close own tabs")
+        _forget(owned)
     return closed
+
+
+async def sweep_stale_tabs() -> list[str]:
+    """Close the Aside tabs of agent kernels on this host that have exited, and drop their records. Returns the closed targetIds.
+
+    open_tab() and tabs() run this first, so a tab lives about as long as the kernel that opened it. Tabs the owner opened
+    have no record, so the sweep never touches them.
+    """
+    folder = _state_dir()
+    stale: dict[str, list[str]] = {}
+    for name in os.listdir(folder) if os.path.isdir(folder) else []:
+        path = os.path.join(folder, name)
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                entry = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if entry.get("owner") != owner_key() and isinstance(entry.get("tabs"), dict) and not _alive(entry):
+            stale[path] = [str(t) for t in entry["tabs"]]
+    ids = [t for found in stale.values() for t in found]
+    closed = await _close_open(ids, "sweep stale tabs") if ids else []
+    for path in stale:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    return closed
+
+
+async def _sweep_quietly() -> None:
+    try:
+        await sweep_stale_tabs()
+    except AsideError:
+        pass
 
 
 async def agent(prompt: str, session_id: str | None = None, owner_ok: str | None = None) -> str:

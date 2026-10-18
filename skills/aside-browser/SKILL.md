@@ -1,11 +1,12 @@
 ---
 name: aside-browser
-description: "The browser for this machine, with the user's logged-in sessions. Use for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps."
+description: "The browser for this machine: the user's Aside with his logged-in sessions, plus a headless Chromium on the box for pages that need no login. Use for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps."
 ---
 
 # aside-browser
 
 This module drives the separately installed Aside browser through the `aside` MCP server and its `repl`, `exec` and `memory_search` tools.
+On a box, `open_tab()` opens a page that needs none of the owner's logins in a headless Chromium on that box instead, with the same REPL globals.
 
 ## Setup
 
@@ -15,6 +16,7 @@ This module drives the separately installed Aside browser through the `aside` MC
 4. Put the CLI on the MCP process's `PATH`, or use its absolute path as the MCP command.
 5. Start a new session or run `/reload`, because Prime Agent reads MCP settings only then.
 6. Check access with `await aside_browser.tabs()`.
+7. On a box, install the headless runner once with `cd skills/aside-browser/box && npm ci`, which needs `node` and Playwright's Chromium in `~/.cache/ms-playwright`.
 
 Without the MCP server, each call runs the one-shot CLI, and its output starts with `[aside-browser fallback]`.
 The fallback keeps no state between calls, so multi-step tab work needs the MCP server.
@@ -24,15 +26,17 @@ The fallback looks for the CLI at `ASIDE_CLI`, then `aside` on `PATH`, then `~/.
 
 ```python
 await aside_browser("return await page.title()")   # run REPL JS; `return value` prints it (`aside guide repl`)
-await aside_browser.tabs()                       # [{targetId, active, title, url, owned}]
-await aside_browser.open_tab(url)                # sets `page`; this session owns the tab
+await aside_browser.tabs()                       # [{targetId, active, title, url, owned, browser}]
+await aside_browser.open_tab(url)                # sets `page`; this session owns the tab; browser picked by URL
+await aside_browser.open_tab(url, browser="aside")  # force the owner's Aside window ("box" forces the headless one)
 await aside_browser.attach(target_id=None)       # reuse a tab the user has open (None = active tab); not owned
 await aside_browser.snapshot(interactive=True)   # a11y tree with [ref=eN]; then page.locator('eN').click()
 await aside_browser.screenshot('/abs/path.png', full_page=False, annotated=False)  # copies the PNG out of the sandbox
 await aside_browser.close_tab()                  # current tab, only if this session opened it
 await aside_browser.close_tab(target_id)         # one owned tab; force=True closes any tab
-await aside_browser.close_own_tabs()             # every tab this session opened
+await aside_browser.close_own_tabs()             # every tab this session opened, Aside and box
 await aside_browser.owned_tabs()                 # open tabs this session opened
+await aside_browser.sweep_stale_tabs()           # close Aside tabs whose agent kernel has exited
 await aside_browser.agent("Find the unread Slack message from Alex")   # delegate to the Aside agent; returns session_id
 await aside_browser.agent("continue", session_id="...")
 await aside_browser.memory_search("what does the user work on")
@@ -70,10 +74,12 @@ The Aside REPL lacks some Playwright methods:
 
 The user and other agents share the browser.
 A tab belongs to the session that opened it with `open_tab()`, or with `openTab()` inside `run()`.
-The module records owned tabs in `aside-browser-tabs.json` under `RLM_SESSION_DIR`, so the record survives a kernel restart.
+The module records owned Aside tabs, with the kernel's pid, in one file per session under `~/.local/state/aside-browser/owners` (`ASIDE_BROWSER_STATE`), so the record survives a kernel restart.
 
 - Use `attach()` only when the task is about a page the user already has open.
 - Otherwise open your own tab with `open_tab()`, and call `close_own_tabs()` when done.
+- `open_tab()` and `tabs()` first close the Aside tabs of any agent kernel on this host that has exited, so a tab you leave open lives about as long as your kernel.
+- Tabs the owner opened have no record, so no sweep or close touches them.
 - `close_tab()` refuses a tab this session did not open, attached tabs included.
 - `run()` refuses code that loops over `tabs` and closes them.
 - Never call `page.close()`.
@@ -126,14 +132,21 @@ The todo must be checked off and answered by the owner with its first choice or 
 
 ## Browser rules
 
-- Use no other browser automation, such as a CLI that launches its own browser, a headless browser, or a repo screenshot script.
+- On a box, `open_tab(url)` opens a page that needs none of the owner's logins (our own apps on localhost or the tailnet, public pages) in the box's headless Chromium, because every tab in his Aside renders on his Mac even in the background.
+- A page on a host in `LOGIN_HOSTS` (Google, GitHub, vendor dashboards, social sites), a mail, ticket or social page, or any non-http URL opens in his Aside (c82, c103).
+- When a box page lands on a sign-in page, the result says so, and you open it again with `open_tab(url, browser="aside")`.
+- Box tabs have targetIds `box-1`, `box-2` and so on, and they close when your kernel exits.
+- In a box tab, `snapshot()` returns Playwright's full AI snapshot with `[ref=eN]` ids, `annotatedScreenshot` has no ref boxes, and `fs` is the box's real file system.
+- `agent()`, `memory_search()` and the site skill globals always use Aside.
+- On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside.
+- Use no other browser automation, such as a CLI that launches its own browser or a repo screenshot script.
 - If a skill, playbook or memory names another browser tool, change that text to `aside-browser`.
 - Screenshots are in device pixels, so read the viewport size and device pixel ratio before you crop for `attach_image`.
 - Read pages with `snapshot()`, not `page.content()`.
 - Pass a ref from the latest snapshot as `page.locator('e12')`, never inside a CSS selector, because each new snapshot invalidates the old refs.
-- The REPL's `fs` reaches only the Aside session directory, while `screenshot()` writes to any local path that you then view with `attach_image`.
+- The Aside REPL's `fs` reaches only the Aside session directory, while `screenshot()` writes to any local path that you then view with `attach_image`.
 - `aside exec` sessions do not show in the chat list, so control them with `aside session list|resume|stop <id>`.
 
 ## Tests
 
-From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server.
+From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server, plus one box test that serves a page on 127.0.0.1 when the runner is installed.

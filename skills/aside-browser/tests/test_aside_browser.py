@@ -41,9 +41,15 @@ class FakeMcp:
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = patch.dict(os.environ, {"RLM_SESSION_DIR": self.tmp.name, "GLOBAL_RULES_SEND_LOG": os.path.join(self.tmp.name, "sends.jsonl")})
+        self.env = patch.dict(os.environ, {
+            "RLM_SESSION_DIR": self.tmp.name,
+            "GLOBAL_RULES_SEND_LOG": os.path.join(self.tmp.name, "sends.jsonl"),
+            "ASIDE_BROWSER_STATE": os.path.join(self.tmp.name, "owners"),
+            "ASIDE_BROWSER_BOX": "0",
+        })
         self.env.start()
         ab._owned.clear()
+        ab._browser = "aside"
 
     def sends(self) -> list[dict]:
         try:
@@ -233,6 +239,148 @@ class TabOwnershipTests(Base):
         self.assertEqual(mcp.calls, [])
         self.call(ab.run("for (const t of tabs) await t.close()", force=True))
         self.assertEqual(len(mcp.calls), 1)
+
+
+class StaleTabSweepTests(Base):
+    def entry(self, owner: str, pid: int, tabs: dict) -> str:
+        path = ab._registry_path(owner)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"owner": owner, "host": ab.socket.gethostname(), "pid": pid, "start": ab._process_start(pid), "tabs": tabs}, fh)
+        return path
+
+    def dead_pid(self) -> int:
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        return proc.pid
+
+    def test_records_name_the_kernel_that_opened_the_tab(self):
+        ab._remember(["T1"], "https://example.com/")
+        with open(ab._registry_path(), encoding="utf-8") as fh:
+            entry = json.load(fh)
+        self.assertEqual((entry["pid"], entry["tabs"]), (os.getpid(), {"T1": "https://example.com/"}))
+        self.assertTrue(ab._alive(entry))
+
+    def test_tabs_of_an_exited_kernel_close_and_its_record_goes(self):
+        gone = self.entry("/sessions/finished-job", self.dead_pid(), {"OLD1": "https://example.com/", "OLD2": "about:blank"})
+        live = self.entry("/sessions/working-job", os.getpid(), {"LIVE": "https://example.com/"})
+        mcp = self.fake('{"closed":["OLD1"]}')
+        self.assertEqual(self.call(ab.sweep_stale_tabs()), ["OLD1"])
+        self.assertEqual(len(mcp.calls), 1)
+        self.assertIn('["OLD1", "OLD2"]', mcp.calls[0]["code"])
+        self.assertNotIn("LIVE", mcp.calls[0]["code"])
+        self.assertFalse(os.path.exists(gone))
+        self.assertTrue(os.path.exists(live))
+
+    def test_a_reused_pid_counts_as_exited(self):
+        path = self.entry("/sessions/old-kernel", os.getpid(), {"OLD": "https://example.com/"})
+        with open(path, encoding="utf-8") as fh:
+            entry = json.load(fh)
+        entry["start"] = "1"
+        self.assertEqual(ab._alive(entry), not ab._process_start(os.getpid()))
+
+    def test_nothing_stale_makes_no_browser_call(self):
+        self.entry("/sessions/working-job", os.getpid(), {"LIVE": "https://example.com/"})
+        mcp = self.fake()
+        self.assertEqual(self.call(ab.sweep_stale_tabs()), [])
+        self.assertEqual(mcp.calls, [])
+
+    def test_open_tab_sweeps_first(self):
+        self.entry("/sessions/finished-job", self.dead_pid(), {"OLD": "https://example.com/"})
+        mcp = self.fake('{"closed":["OLD"]}', '{"title":"Gmail","url":"https://mail.google.com/","targetId":"T1"}')
+        self.call(ab.open_tab("https://mail.google.com/"))
+        self.assertIn("sweep stale tabs", mcp.calls[0]["title"])
+        self.assertIn("openTab", mcp.calls[1]["code"])
+        self.assertEqual(list(ab._owned_tabs()), ["T1"])
+
+
+class BrowserRoutingTests(Base):
+    def test_pages_that_need_no_login_go_to_the_box(self):
+        with patch.object(ab, "box_available", return_value=True):
+            for url in (
+                "http://localhost:5176/page/domains/devops/duty-failures-2026-10-18.html",
+                "https://us-metal02-dev.tail0c093d.ts.net/c96df5bd/#01a14d31",
+                "http://100.83.139.73:25190/",
+                "https://www.primeintellect.ai/blog",
+                "https://example.com/?a",
+            ):
+                self.assertEqual(ab.browser_for(url), "box", url)
+
+    def test_pages_with_the_owners_login_stay_in_aside(self):
+        with patch.object(ab, "box_available", return_value=True):
+            for url in (
+                "https://mail.google.com/mail/u/0/#inbox",
+                "https://search.google.com/search-console?resource_id=sc-domain%3Avirev.ai",
+                "https://github.com/settings/apps/virev-ci-ctl",
+                "https://app.geonode.com/unlimited-proxies?tab=statistics",
+                "https://my.iwebfusion.net/clientarea.php?action=services",
+                "https://www.reddit.com/r/Music/",
+                "https://us.posthog.com/project/226805/experiments/476339",
+                "chrome-extension://fjdhphbdlfjogobdofoaagnlnkoibdge/main.html",
+                "about:blank",
+            ):
+                self.assertEqual(ab.browser_for(url), "aside", url)
+
+    def test_box_off_sends_everything_to_aside(self):
+        self.assertEqual(ab.browser_for("https://example.com/"), "aside")
+
+
+@unittest.skipUnless(shutil.which("node") and os.path.isdir(os.path.join(ab.BOX_DIR, "node_modules", "playwright-core")), "box runner not installed")
+class BoxBrowserTests(Base):
+    def setUp(self):
+        super().setUp()
+        import http.server
+        import threading
+
+        page = b"<title>Box page</title><h1>Hello</h1><button onclick=\"document.title='clicked'\">Go</button>"
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(page)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/"
+        os.environ["ASIDE_BROWSER_BOX"] = "1"
+
+    def tearDown(self):
+        if ab._box.proc:
+            ab._box.proc.kill()
+            ab._box.proc.wait()
+            for pipe in (ab._box.proc.stdin, ab._box.proc.stdout):
+                pipe.close()
+            ab._box.proc = None
+        self.server.shutdown()
+        self.server.server_close()
+        super().tearDown()
+
+    def test_an_own_app_page_renders_on_the_box_with_the_repl_api_and_never_reaches_aside(self):
+        mcp = self.fake("[]")
+        async def flow():
+            opened = await ab.open_tab(self.url)
+            tree = await ab.snapshot()
+            ref = [w for w in tree.split() if w.startswith("[ref=") and "Go" in tree.split("\n")[[i for i, l in enumerate(tree.split("\n")) if w in l][0]]][0][5:-1]
+            await ab.run(f"await page.locator('{ref}').click()")
+            title = await ab.run("return await page.title()")
+            shot = await ab.screenshot(os.path.join(self.tmp.name, "box.png"))
+            listed = await ab.tabs()
+            closed = await ab.close_own_tabs()
+            return opened, title, shot, listed, closed
+        opened, title, shot, listed, closed = self.call(flow())
+        self.assertIn("[aside-browser box]", opened)
+        self.assertIn('"targetId":"box-1"', opened)
+        self.assertEqual(title, "clicked")
+        with open(shot, "rb") as fh:
+            self.assertEqual(fh.read(4), b"\x89PNG")
+        self.assertEqual([(t["targetId"], t["browser"], t["owned"]) for t in listed if t["browser"] == "box"], [("box-1", "box", True)])
+        self.assertEqual(closed, ["box-1"])
+        self.assertEqual([c["title"] for c in mcp.calls], ["list tabs"])
 
 
 if __name__ == "__main__":

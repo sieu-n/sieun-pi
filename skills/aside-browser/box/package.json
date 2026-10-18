@@ -1,0 +1,8 @@
+{
+  "name": "aside-browser-box",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.58.2"
+  }
+}
