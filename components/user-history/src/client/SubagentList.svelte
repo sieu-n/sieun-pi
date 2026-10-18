@@ -6,7 +6,8 @@
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
   import type { ChildAgent, ChildPulse, ChildStatus, ChildUsage } from "../shared/types.ts";
-  import { childDetail, childName, isActiveChild } from "./children.ts";
+  import { childDetail, childName, childSearchText, isActiveChild } from "./children.ts";
+  import { api } from "./api.ts";
   import StatusMark from "./StatusMark.svelte";
   import { childUsage } from "./thread-side.svelte.ts";
 
@@ -55,12 +56,22 @@
   const isActive = isActiveChild;
   const detailOf = (child: ChildAgent) => childDetail(child, readingOf(child));
 
+  /** The whole labels of jobs the feed sent cut, fetched once per thread when the owner first searches. */
+  let fullLabels = $state.raw<{ thread: string; labels: Record<string, string> } | null>(null);
+  let labelsAsked: string | null = null;
+  $effect(() => {
+    if (!query.trim() || labelsAsked === threadId || !children.some(child => child.labelMore)) return;
+    const thread = labelsAsked = threadId;
+    api.childLabels(thread).then(labels => { fullLabels = { thread, labels }; }, () => { labelsAsked = null; });
+  });
+  const labelOf = (child: ChildAgent): string | undefined => fullLabels?.thread === threadId ? fullLabels.labels[child.id] : undefined;
+
   const counts = $derived({ all: children.length, active: children.filter(isActive).length, inactive: children.filter(child => !isActive(child)).length });
   const matched = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     return children
       .filter(child => scope === "all" || (scope === "active") === isActive(child))
-      .filter(child => !needle || (nameOf(child) + " " + (child.model ?? "") + " " + child.label + " " + (child.recap ?? "")).toLowerCase().includes(needle));
+      .filter(child => !needle || childSearchText(child, labelOf(child)).includes(needle));
   });
   type Item = { kind: "header"; group: Group; count: number; top: number } | { kind: "child"; child: ChildAgent; top: number };
   const layout = $derived.by(() => {

@@ -16,10 +16,15 @@ export const NOTE_PREVIEW_CHARS = 300;
 /**
  * A job's `label` is the whole task brief it was given, and the page reads only its first line (client/children.ts `childName`) and searches it
  * (SubagentList.svelte). On 10-18 the labels were 56 KB of the 62 KB children frame of chat 01a14d31, and the page got that frame twice on each
- * load from Korea, inline in the shell and again on the socket. The feed sends the first `LABEL_CHARS` of each.
+ * load from Korea, inline in the shell and again on the socket. The feed sends the first `LABEL_CHARS` of each with `labelMore`, and
+ * `childLabels` answers `GET api/threads/<id>/child-labels` with the whole ones.
  */
 export const LABEL_CHARS = 300;
-const clipChild = (child: ChildAgent): ChildAgent => child.label.length > LABEL_CHARS ? { ...child, label: child.label.slice(0, LABEL_CHARS) } : child;
+const clipChild = (child: ChildAgent): ChildAgent => child.label.length > LABEL_CHARS ? { ...child, label: child.label.slice(0, LABEL_CHARS), labelMore: true } : child;
+/** The whole label of each job whose label the feed cut, by job id. */
+export function childLabels(children: readonly ChildAgent[]): Record<string, string> {
+  return Object.fromEntries(children.filter(child => child.label.length > LABEL_CHARS).map(child => [child.id, child.label]));
+}
 const sentEvents = new WeakMap<ThreadEvent, ThreadEvent>();
 /** A thread event as the feed and the shell send it: job labels cut to `LABEL_CHARS`, once per event however many pages get it. */
 export function wireEvent(event: ThreadEvent): ThreadEvent {

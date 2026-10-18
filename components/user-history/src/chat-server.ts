@@ -23,7 +23,7 @@ import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
 import { SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
-import { wireEvent } from "./first-page.ts";
+import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -640,6 +640,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         if (route === "api/interrupted") { json(res, 200, await interruptedRuns.check()); return; }
         const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
         if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
+        const labels = /^api\/threads\/([^/]+)\/child-labels$/.exec(route);
+        if (labels) { json(res, 200, { labels: childLabels(backend.threads.state(threadId(decodeURIComponent(labels[1]!)))?.children ?? []) }); return; }
         if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }
         if (route === "api/models") {
           const id = url.searchParams.get("id");

@@ -102,6 +102,8 @@ export const api = {
   updateChats: () => post<{ chats: number }>("api/chats/update", {}),
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
+  /** The whole label of each job the feed sent cut (`ChildAgent.labelMore`), by job id. */
+  childLabels: (id: string) => get<{ labels: Record<string, string> }>("api/threads/" + encodeURIComponent(id) + "/child-labels").then(body => body.labels),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
   promptView: (id: string, via: readonly string[] = []) =>
     get<PromptView>("api/threads/" + encodeURIComponent(id) + "/prompt" + (via.length ? "?via=" + via.map(encodeURIComponent).join(",") : ""), 60000),
