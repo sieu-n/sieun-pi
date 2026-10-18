@@ -65,6 +65,16 @@ test("the canary and doc_id hand writes of 10-17 and 10-18 are F15 and F16, and 
   assert.equal(classifyConfig({ actor: "canary-roster", keys: ["engage.canary_roster"], text: "roster refill" }, reg).kind, "automatic");
 });
 
+// Guards the d3 reds of 10-18 16:4xZ: audits 14089, 14107, 14217, 14221 and 14235 read as 5 undesigned writes and 3 faults without a job.
+test("the 10-18 throttle steps are F1, the deep backfill stop is F21, and the owner's dated pause.enrich order is exempt", async () => {
+  const reg = await registry();
+  const fault = (keys: string[], text: string) => { const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys, text }, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; };
+  assert.equal(fault(["throttle.crawl_per_minute.instagram", "throttle.deep_crawl_per_minute.tiktok"], "c100 (owner 10-18 02:14Z: push GeoNode to 150 MB/s) supersedes the 09-11 spend pause"), "F1");
+  assert.equal(fault(["deep_backfill.enabled"], "p625 stopgap (alerts-b-feeder, crawler prod alerts job, parent go): prod 43490e7e9f sweep_deep_backfill fills crawl_profile"), "F21");
+  assert.equal(fault(["pause.enrich", "pause.enrich.owner", "pause.enrich.expires_at"], "pause.enrich owner decided: the owner's order of 2026-10-13: 'can we not enrich for now?' (For you todo t32)"), "exempt");
+  assert.equal(fault(["pause.enrich"], "pause.enrich: the owner's order, as I read it"), "undesigned");
+});
+
 test("a hand write no fault covers is filed and counts as a fault without a job until the registry lists one for its key", async () => {
   const now = AT + 3_600_000;
   const first = await data(now, [hand(20001, AT, "lane.new_knob", "raise the new knob")]);

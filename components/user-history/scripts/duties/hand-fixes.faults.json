@@ -18,7 +18,7 @@
       "designs": [
         "01a115e2-9544-7204-b8db-8ce4d5319048/p170"
       ],
-      "owner": "Crawler ops / Crawler VP (01a115e2), TikTok Shop thread, metal (01a11d24)",
+      "owner": "Crawler ops / Crawler VP (01a115e2), TikTok Shop thread, metal (01a11d24); throttle.crawl_per_minute and throttle.deep_crawl_per_minute for Instagram and TikTok are stepped by hand toward c100's GeoNode 150 MB/s (audits 14107, 14217, 14235 on 10-18), which the same lane rate controller takes over",
       "match": {
         "config_key_prefixes": [
           "instagram_census.",
@@ -34,7 +34,9 @@
           "pause.discovery",
           "pause.xiaohongshu_anon",
           "pause.douyin",
-          "media.sample_percent"
+          "media.sample_percent",
+          "throttle.crawl_per_minute.",
+          "throttle.deep_crawl_per_minute."
         ]
       }
     },
@@ -298,11 +300,24 @@
       "match": {
         "box_exec_regex": "mw_sweep_feeder"
       }
+    },
+    {
+      "id": "F21",
+      "title": "The deep backfill sweep overfills crawl_profile topics, so deep_backfill.enabled is switched off by hand",
+      "designs": [
+        "commit:69e079b37f"
+      ],
+      "owner": "crawler prod alerts job (alerts-b-feeder): sweep_deep_backfill filled crawl_profile.instagram and crawl_profile.tiktok up to CRAWL_TOPIC_CAPACITY, and lag grew 230k to 505k each from 12:42Z to 16:13Z on 10-18, so deep_backfill.enabled went off by hand (audit 14221); 69e079b37f bounds the deep sweep by its own in-flight work (land 39), and the switch goes back on after promote 13",
+      "match": {
+        "config_key_prefixes": [
+          "deep_backfill."
+        ]
+      }
     }
   ],
   "exempt": {
-    "config_reason_regex": "^owner: \"|A/B|^Owner order",
-    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec and the prod `python -c \"$0\"` exec of the script that opens 'Daily B2 version inventory for ONE bucket' are the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, its timer; on prod run-inventory.sh calls inventory.py host influencer-prod virev-prod-crawler-worker, read 10-18 05:34Z), so neither is a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
+    "config_reason_regex": "^owner: \"|A/B|^Owner order|the owner's order of \\d{4}-\\d{2}-\\d{2}: '",
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec and the prod `python -c \"$0\"` exec of the script that opens 'Daily B2 version inventory for ONE bucket' are the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, its timer; on prod run-inventory.sh calls inventory.py host influencer-prod virev-prod-crawler-worker, read 10-18 05:34Z), so neither is a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix. A reason that quotes the owner's dated order (the owner's order of 2026-10-13: 'can we not enrich for now?', pause.enrich audit 14089) is the same kind of decision.",
     "box_exec_regex": "\\.venv/bin/python - 3600 8$|Daily B2 version inventory for ONE bucket"
   }
 }
