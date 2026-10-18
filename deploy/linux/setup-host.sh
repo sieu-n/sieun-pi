@@ -40,4 +40,17 @@ systemctl daemon-reload
 systemctl enable ssh-public-guard
 systemctl restart ssh-public-guard
 
+# ssh to the Mac reuses one of 16 masters (ssh-mac.conf explains why), and ssh-mac-slot picks one by ssh's pid.
+install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local" "$home/.local/bin"
+install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$home/.ssh/config.d" "$home/.ssh/cm"
+install -m 755 -o "$DEV_USER" -g "$DEV_USER" "$here/ssh-mac-slot" "$home/.local/bin/ssh-mac-slot"
+sed "s#/home/sieun/#$home/#g" "$here/ssh-mac.conf" > "$home/.ssh/config.d/mac.conf"
+chown "$DEV_USER:$DEV_USER" "$home/.ssh/config.d/mac.conf"; chmod 600 "$home/.ssh/config.d/mac.conf"
+touch "$home/.ssh/config"
+if ! grep -qxF 'Include ~/.ssh/config.d/mac.conf' "$home/.ssh/config"; then
+  { echo 'Include ~/.ssh/config.d/mac.conf'; cat "$home/.ssh/config"; } > "$home/.ssh/config.new"
+  mv "$home/.ssh/config.new" "$home/.ssh/config"
+fi
+chown "$DEV_USER:$DEV_USER" "$home/.ssh/config"; chmod 600 "$home/.ssh/config"
+
 echo "dev: no slice limits; dev.slice holds docker, user-$(id -u "$DEV_USER").slice holds the harness and agents"
