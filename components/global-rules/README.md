@@ -37,6 +37,7 @@ The aside-browser skill holds the runtime check for webmail, ticket, contact and
 It prepends one line to each ipython cell, and that line runs `kernel-guard.py` once per kernel.
 From then on the kernel checks each send as it happens, so a command, URL or MCP tool built at run time is judged like a literal one.
 It checks every subprocess (`bash()`, `subprocess`, `os.system`) whose text names a send tool, with shell variables from the process environment filled in, through `send-check.ts`, which runs the tool_call guard's own rules.
+Each Python process keeps one `node send-check.ts --serve` for its checks, started on first use. It exits after 2 minutes with no check, and the process starts a fresh one when it is gone, after a fork, or when its environment or a global-rules `.ts` or `.json` file changes. A git argv list with no shell syntax in any word skips the check, because no send rule judges git.
 It checks HTTP writes from `httpx` and `httpx2`, and every HTTP/1 request written to a socket, against `send-targets.json` in Python.
 The socket check covers `requests`, `urllib`, `http.client`, raw `socket` and `ssl` writes, and asyncio TLS such as `aiohttp`, whose request it reads at `ssl.SSLObject.write` before encryption.
 It also checks connects to SMTP ports 25, 465, 587 and 2525 on any non-local host, and every `rlm.mcp.call_tool` call that may send.

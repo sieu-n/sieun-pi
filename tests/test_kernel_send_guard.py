@@ -493,5 +493,138 @@ class ChildProcesses(KernelGuardBase):
         self.assertEqual(self.fake_runs(), [])
 
 
+NODE_SHIM = """#!/bin/sh
+printf '%s\\n' "$*" >> "$NODE_LOG"
+exec {real} "$@"
+"""
+
+KILL_JUDGE = (
+    "import os, signal, time\n"
+    "for pid in [p for p in os.listdir('/proc') if p.isdigit()]:\n"
+    "    try:\n"
+    "        stat = open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()\n"
+    "        cmd = open(f'/proc/{pid}/cmdline', 'rb').read()\n"
+    "    except OSError:\n"
+    "        continue\n"
+    "    if int(stat[1]) == os.getpid() and b'--serve' in cmd:\n"
+    "        os.kill(int(pid), signal.SIGKILL)\n"
+    "        RESULT = 'killed'\n"
+)
+
+CURL_GET = "import subprocess\nsubprocess.run(['curl', '-sS', 'https://api.resend.com/emails/abc'])\n"
+CURL_POST = "import subprocess\nsubprocess.run(['curl', '-X', 'POST', 'https://api.resend.com/emails', '-d', 'x'])\n"
+
+
+class OneJudgePerProcess(KernelGuardBase):
+    """10-18 on us-metal02: kernels and their child Pythons started a fresh `node send-check.ts` for every check, 8 to 12 a second
+    at 0.11 CPU s each, and a sampler's `git ls-files` on paths with .sh, node or http in them made 4 of those a second."""
+
+    def setUp(self):
+        super().setUp()
+        self.node_log = self.tmp / "node.log"
+        self.node_log.write_text("")
+        shim = self.bin / "node"
+        shim.write_text(NODE_SHIM.format(real=shutil.which("node")))
+        shim.chmod(0o755)
+
+    def cells(self, *cells, env=None):
+        return self.run_cells(*cells, env={"NODE_LOG": str(self.node_log), **(env or {})})
+
+    def judges(self):
+        return [line for line in self.node_log.read_text().splitlines() if "send-check.ts" in line]
+
+    def test_many_checks_share_one_judge_and_a_send_is_still_refused(self):
+        out = self.cells(CURL_GET * 5 + CURL_POST)
+        self.assert_refused(out, "curl call writes to")
+        self.assertEqual(len(self.fake_runs()), 5)
+        self.assertEqual(len(self.judges()), 1, self.judges())
+        self.assertTrue(self.judges()[0].endswith("send-check.ts --serve"), self.judges())
+        self.assertEqual([(line["decision"], line["layer"]) for line in self.sends()], [("refused", "kernel")])
+
+    def test_a_changed_environment_starts_a_fresh_judge(self):
+        out = self.cells(CURL_GET + "import os\nos.environ['SOME_FLAG'] = '1'\n" + CURL_GET + CURL_GET)
+        self.assert_passed(out)
+        self.assertEqual(len(self.judges()), 2, self.judges())
+
+    def test_a_judge_that_dies_is_started_again_and_still_refuses(self):
+        if not os.path.isdir("/proc/self"):
+            self.skipTest("finds the judge through /proc")
+        out = self.cells(CURL_GET, KILL_JUDGE, CURL_POST)
+        self.assertEqual(out["result"], "killed")
+        self.assert_refused(out)
+        self.assertEqual(len(self.fake_runs()), 1)
+        self.assertEqual(len(self.judges()), 2, self.judges())
+
+    def test_without_node_a_check_still_falls_open(self):
+        (self.bin / "node").write_text("#!/bin/sh\nexit 127\n")
+        out = self.cells(CURL_POST)
+        self.assert_passed(out)
+        self.assertEqual(len(self.fake_runs()), 1)
+
+    def test_plain_git_on_hinted_paths_starts_no_judge(self):
+        out = self.cells(
+            "import subprocess\n"
+            "subprocess.run(['git', 'ls-files', '--', 'deploy.sh', 'node_modules/x.js', 'http_client.py', 'curl-notes.md'], capture_output=True)\n"
+            "subprocess.run(['/usr/bin/git', 'status', '--short', 'scripts/post-to-gh.sh'], capture_output=True)\n"
+        )
+        self.assert_passed(out)
+        self.assertEqual(self.judges(), [])
+
+    def test_git_with_shell_syntax_is_still_judged(self):
+        for code in (
+            "import subprocess\nsubprocess.run(['git', 'log', '--format=x; curl -X POST https://api.resend.com/emails -d x'], capture_output=True)\n",
+            "import subprocess\nsubprocess.run('git ls-files a.sh; curl -X POST https://api.resend.com/emails -d x', shell=True)\n",
+        ):
+            self.assert_refused(self.cells(code))
+        self.assertEqual(self.fake_runs(), [])
+
+
+PLAIN_GIT_TABLE = r"""
+import json, subprocess, sys
+sys.global_rules_send_guard = True
+guard = sys.argv[1]
+ns = {"__name__": "global_rules_send_guard", "__file__": guard}
+exec(compile(open(guard).read(), guard, "exec"), ns)
+rows = []
+for executable, argv in json.loads(sys.stdin.read()):
+    skip = ns["plain_git"](executable, argv)
+    text = ns["shell_text"](argv)
+    verdict = ns["one_shot"]({"kind": "shell", "text": text, "cwd": sys.argv[2], "repo": False, "approval": ""})
+    rows.append([argv, skip, bool(verdict.get("block"))])
+print(json.dumps(rows))
+"""
+
+
+class PlainGitSkipsOnlyPasses(KernelGuardBase):
+    """plain_git skips the judge only for argv that send-check.ts always passes; anything that can send is still judged."""
+
+    def test_the_skip_agrees_with_the_judge(self):
+        script = self.tmp / "table.py"
+        script.write_text(PLAIN_GIT_TABLE)
+        hook = self.tmp / "hook.sh"
+        hook.write_text("curl -X POST https://api.resend.com/emails -d x\n")
+        url = "https://api.resend.com/emails"
+        cases = [
+            [None, ["git", "ls-files", "deploy.sh", "node/x.ts", "http.py"]],
+            [None, ["git", "add", "--", "curl -X POST " + url + " -d x"]],
+            [None, ["git", "-c", "alias.s=!curl -X POST " + url + " -d x", "s"]],
+            [None, ["git", "log", "--grep", "sendgrid smtp gh issue create"]],
+            [None, ["git", "log", "--format=x; curl -X POST " + url + " -d x"]],
+            [None, ["git", "show", "$(curl -X POST " + url + " -d x)"]],
+            [None, ["curl -X POST " + url + " -d x /git", "ls-files"]],
+            ["curl", ["git", "-X", "POST", url, "-d", "x"]],
+            [None, ["bash", str(hook)]],
+            [None, ["/bin/sh", "-c", "git ls-files; curl -X POST " + url + " -d x"]],
+        ]
+        proc = subprocess.run([sys.executable, "-B", str(script), str(GUARD), str(self.tmp)], input=json.dumps(cases), capture_output=True, text=True, timeout=180)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = json.loads(proc.stdout)
+        self.assertEqual([row[1] for row in rows], [True, True, True, True, False, False, False, False, False, False])
+        for argv, skip, block in rows:
+            if skip:
+                self.assertFalse(block, argv)
+        self.assertEqual([row[2] for row in rows[4:]], [True, True, True, False, True, True])
+
+
 if __name__ == "__main__":
     unittest.main()
