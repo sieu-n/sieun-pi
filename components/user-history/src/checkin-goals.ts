@@ -1,5 +1,5 @@
 import type { MetricFact } from "./checkin-done.ts";
-import { heldByTodo } from "./checkin-end-state.ts";
+import { heldByTodo, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { targetOp, targetStaleMs } from "./shared/chat-board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
@@ -161,12 +161,23 @@ export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick
  * pause of the thread that owns its push step (`paused`, the chats whose check-in he paused). The owner's focus pause at 23:03Z on 10-17 stopped
  * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
  */
-export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set(), views: readonly StepView[] = []): string | undefined {
+export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set(), views: readonly StepView[] = [],
+  board: ChatBoard | null = null): string | undefined {
   for (const item of [goal, push?.item]) {
     const until = Date.parse(item?.waitUntil ?? "");
     if (Number.isFinite(until) && until > now) return `until ${zTime(until)}`;
   }
   if (push && threadPaused(push.owner, push.item, paused)) return `on the owner's pause of ${push.owner?.name ?? push.item.sessionId}`;
+  // A goal whose open steps besides its push step all move, live or carried, with at least one waiting on another step that live jobs carry,
+  // moves when that step's work lands: AI harness p453 on 10-18 had p566 blocked on p565 (five live jobs) and its other steps live, and the
+  // 12:26 KST check-in started a push job on p563 and p566.
+  const carriers = stepCarriers(board, views);
+  const others = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.id !== push?.item.id);
+  const carried = others.map(view => stepCarrier(view.item, carriers));
+  if (others.length && carried.some(Boolean) && others.every((view, index) => carried[index] || view.owner?.state === "working" || view.cls === "foryou" || view.cls === "parked")) {
+    const first = carried.find(Boolean)!;
+    return `on ${first.id}, which ${first.owners.length === 1 ? `${first.owners[0]!.name} carries` : `${first.owners.length} live jobs carry`}`;
+  }
   if (!push) {
     // A goal with no push step whose every open step waits on its owner's board.wake or a time still ahead moves when that wait ends; a job
     // to push it now would wake the sleeper early (clean room 10-18 02:49Z: "disk free check" slept until 03:01Z for its second reading, and
@@ -208,7 +219,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     if (memo) kept[goal.id] = memo;
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views, todos);
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), act }];
   });

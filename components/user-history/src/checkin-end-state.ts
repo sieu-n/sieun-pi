@@ -39,6 +39,36 @@ export function heldByTodo(item: Pick<PlanItem, "id" | "text" | "waitFor" | "not
   return todos.some(todo => todo.from === "agent" && !todo.done && (id.test(todo.text) || coversStep(todo, item as PlanItem) || (todo.id !== undefined && named.has(todo.id))));
 }
 
+/**
+ * The live owners that carry each plan item: every open leaf step whose owner works now (`views`), listed under its own id and under every
+ * item above it. A step that waits on one of these items waits on work that moves (`stepCarrier`).
+ */
+export function stepCarriers(board: { plan: readonly PlanItem[] } | null, views: readonly Pick<StepView, "item" | "owner">[]): Map<string, JobFact[]> {
+  const parents = new Map<string, string>();
+  const visit = (items: readonly PlanItem[], parent?: string) => { for (const item of items) { if (parent) parents.set(item.id, parent); visit(item.children, item.id); } };
+  visit(board?.plan ?? []);
+  const carriers = new Map<string, JobFact[]>();
+  for (const view of views) {
+    if (view.owner?.state !== "working") continue;
+    for (let id: string | undefined = view.item.id; id !== undefined; id = parents.get(id)) carriers.set(id, [...carriers.get(id) ?? [], view.owner]);
+  }
+  return carriers;
+}
+/**
+ * The plan item the first clause of a step's wait names, other than the step itself, whose work live owners carry (`stepCarriers`), with them.
+ * AI harness 10-18 12:26 KST: p566 waited for "The chats move to us-metal02 (p565)", whose five steps had live jobs, and the check-in started a
+ * push job on it; the 12:15 d7 run did the same with 'chats move to metal02'.
+ */
+export function stepCarrier(item: Pick<PlanItem, "id" | "waitFor">, carriers: ReadonlyMap<string, readonly JobFact[]>): { id: string; owners: readonly JobFact[] } | undefined {
+  for (const id of firstClause(item.waitFor ?? "").match(/\bp\d+\b/g) ?? []) {
+    const owners = id === item.id ? undefined : carriers.get(id);
+    if (owners?.length) return { id, owners };
+  }
+  return undefined;
+}
+const carriedText = ({ id, owners }: { id: string; owners: readonly JobFact[] }): string =>
+  `its wait is on ${id}, which ${owners.length === 1 ? `${ownerLabel(owners[0]!)} carries` : `${owners.length} live jobs carry`}`;
+
 /** One open leaf step in the end state or stuck, with why. */
 export interface EndStateView { view: StepView; state: EndState; reason: string }
 
@@ -60,6 +90,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const wait = item.waitFor ?? "";
   const carrier = waitCarrier(wait, facts);
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);
+  const carried = movers.steps ? stepCarrier(item, movers.steps) : undefined;
+  if (carried) return out("moving", carriedText(carried));
   const mover = outsideMover(view, movers, rows, self);
   if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
@@ -116,7 +148,9 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
  */
 export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>;
   /** Every CI run the cache holds by id (`Train.all`), for a step whose wait names a run that is queued or running (`runMover`). Absent: none. */
-  runs?: ReadonlyMap<string, CiRun> }
+  runs?: ReadonlyMap<string, CiRun>;
+  /** The live owners that carry each plan item (`stepCarriers`), for a step whose wait names another step (`stepCarrier`). Absent: none. */
+  steps?: ReadonlyMap<string, readonly JobFact[]> }
 
 /**
  * A step whose wait names a CI run that the cache reads as queued or running, with an owner that has not failed or been cancelled, moves: the

@@ -16,7 +16,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stuckLine } from "./checkin-end-state.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
@@ -147,7 +147,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
-  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, ...(context.train?.all ? { runs: context.train.all } : {}) };
+  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, ...(context.train?.all ? { runs: context.train.all } : {}),
+    steps: stepCarriers(board, goaled) };
   const doneFacts = context.doneFacts ?? NO_FACTS;
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
