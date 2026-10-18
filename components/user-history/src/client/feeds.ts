@@ -39,6 +39,8 @@ class FeedSocket {
   /** Boot subscriptions no listener has taken yet, by `feedKey`, and the frames that came for them meanwhile. */
   private readonly boot = new Map<string, number>();
   private readonly bootFrames = new Map<number, unknown[]>();
+  /** The thread frames the page shell carried inline (chat-server.ts shellTail), by `feedKey`: the first subscriber gets them before any socket frame. */
+  private readonly inline = new Map<string, unknown[]>();
 
   constructor() {
     window.addEventListener("online", () => { if (document.visibilityState === "visible") this.reconnectNow(); });
@@ -52,6 +54,11 @@ class FeedSocket {
     });
     this.adopt(window.__bootFeed);
     delete window.__bootFeed;
+    const shell = document.getElementById("boot-thread");
+    if (shell?.dataset.id) {
+      try { this.inline.set(feedKey({ feed: "thread", id: shell.dataset.id }), JSON.parse(shell.textContent ?? "[]") as unknown[]); } catch { /* the feed's own snapshot comes anyway */ }
+      shell.remove();
+    }
   }
 
   /** Takes over the boot socket while it is still open, and plays back what it received before this bundle ran. */
@@ -78,17 +85,20 @@ class FeedSocket {
   }
 
   subscribe(feed: Feed, onEvent: Listener["onEvent"], onError: Listener["onError"]): () => void {
-    const booted = this.boot.get(feedKey(feed));
+    const key = feedKey(feed);
+    const booted = this.boot.get(key);
     const sub = booted ?? this.nextSub++;
     this.listeners.set(sub, { feed, onEvent, onError });
+    const early: unknown[] = (this.inline.get(key) ?? []).map(data => ({ sub, event: "thread", data }));
+    this.inline.delete(key);
     if (booted !== undefined) {
-      this.boot.delete(feedKey(feed));
-      const frames = this.bootFrames.get(sub) ?? [];
+      this.boot.delete(key);
+      early.push(...this.bootFrames.get(sub) ?? []);
       this.bootFrames.delete(sub);
-      // After the caller has its stop function: a frame may stop the feed it arrives on.
-      if (frames.length) queueMicrotask(() => { for (const frame of frames) this.dispatch(frame as { sub: number; event: string; data?: unknown }); });
     } else if (this.socket?.readyState === WebSocket.OPEN) this.send({ type: "subscribe", sub, ...feed });
     else this.connect();
+    // After the caller has its stop function: a frame may stop the feed it arrives on.
+    if (early.length) queueMicrotask(() => { for (const frame of early) this.dispatch(frame as { sub: number; event: string; data?: unknown }); });
     return () => {
       if (!this.listeners.delete(sub)) return;
       if (this.socket?.readyState === WebSocket.OPEN) this.send({ type: "unsubscribe", sub });

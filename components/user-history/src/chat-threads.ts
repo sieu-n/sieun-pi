@@ -855,6 +855,16 @@ export class ThreadHub {
     };
   }
 
+  /**
+   * What the page shell carries inline for `id` (chat-server.ts `inlineFrames`): the small first snapshot a new feed gets (`Thread.firstFrame`),
+   * then the children and the board. It opens the thread as a feed does, and the page's own feed subscribes a moment later.
+   */
+  async firstFrames(id: string): Promise<ThreadEvent[]> {
+    const thread = await this.start(id, false, true);
+    const { children, board } = thread.state;
+    return [thread.firstFrame(), ...(children.length ? [{ type: "children" as const, children }] : []), ...(board ? [{ type: "board" as const, board }] : [])];
+  }
+
   state(id: string): ThreadState | undefined { return this.threads.get(id)?.state; }
 
   /** A chat's board changed (either writer): its open thread's listeners get a board event. A closed thread reads the file when it opens. */

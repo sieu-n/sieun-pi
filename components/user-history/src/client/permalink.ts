@@ -13,13 +13,30 @@ export function parseHash(hash: string): HashTarget | null {
   return /^\d+$/.test(raw.slice(at + 1)) && Number.isSafeInteger(stamp) ? { id: raw.slice(0, at), at: stamp } : { id: raw, at: null };
 }
 
+/**
+ * What a page URL opens: its hash, else `?t=<id>`. The client keeps `?t=` on the open thread (`searchFor`), because the server never sees the
+ * hash, and with it the page shell carries the thread's first page inline (chat-server.ts shellTail).
+ */
+export function pageTarget(page: { hash: string; search: string } = location): HashTarget | null {
+  const named = new URLSearchParams(page.search).get("t");
+  return parseHash(page.hash) ?? (named ? { id: named, at: null } : null);
+}
+
+/** `search` with `?t=` set to the thread `id`, or without it for none. */
+export function searchFor(id: string | null, search = ""): string {
+  const params = new URLSearchParams(search);
+  if (id) params.set("t", id); else params.delete("t");
+  const text = params.toString();
+  return text ? "?" + text : "";
+}
+
 export function hashFor(id: string, at: number | null = null): string {
   return "#" + encodeURIComponent(id) + (at === null ? "" : "@" + at);
 }
 
 /** The full page URL for a message, the one Copy link puts on the clipboard. */
 export function permalink(id: string, at: number, page: { origin: string; pathname: string; search: string } = location): string {
-  return page.origin + page.pathname + page.search + hashFor(id, at);
+  return page.origin + page.pathname + searchFor(id, page.search) + hashFor(id, at);
 }
 
 /**

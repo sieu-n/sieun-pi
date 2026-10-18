@@ -7,7 +7,7 @@ import { prependOlder } from "./thread-pages.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
-import { hashFor, parseHash } from "./permalink.ts";
+import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
 import type { PromptTarget } from "../shared/prompt-view.ts";
@@ -23,7 +23,7 @@ const NEW_ROW_WAIT_MS = 3000;
 type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
 
 function bootJump(): { id: string; at: number } | null {
-  const target = parseHash(location.hash);
+  const target = pageTarget();
   return target && target.at !== null ? { id: target.id, at: target.at } : null;
 }
 
@@ -33,7 +33,7 @@ class Store {
   daemon = $state<"up" | "down" | "unknown">("unknown");
   daemonError = $state<string | null>(null);
   /** Read from the hash at once, so the first render on a thread URL never mounts the new-chat screen and its five requests. */
-  selectedId = $state<string | null>(parseHash(location.hash)?.id ?? null);
+  selectedId = $state<string | null>(pageTarget()?.id ?? null);
   threads = $state.raw<Record<string, ThreadEntry>>({});
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
@@ -96,7 +96,9 @@ class Store {
   }
 
   private readHash(): void {
-    const target = parseHash(location.hash);
+    const target = pageTarget();
+    const search = searchFor(target?.id ?? null, location.search);
+    if (search !== location.search) history.replaceState(history.state, "", location.pathname + search + location.hash);
     this.selectedId = target?.id ?? null;
     this.jump = target && target.at !== null ? { id: target.id, at: target.at } : null;
   }
@@ -104,7 +106,8 @@ class Store {
   /** Opens a thread, and with `at` lands on the message with that `timestamp` once the thread shows. */
   select(id: string | null, at: number | null = null): void {
     const next = id ? hashFor(id, at) : "";
-    if (location.hash !== next) history.pushState(null, "", location.pathname + location.search + next);
+    const search = searchFor(id, location.search);
+    if (location.hash !== next || location.search !== search) history.pushState(null, "", location.pathname + search + next);
     this.selectedId = id;
     this.jump = id && at !== null ? { id, at } : null;
   }

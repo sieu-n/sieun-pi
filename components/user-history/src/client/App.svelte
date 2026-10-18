@@ -36,7 +36,7 @@
 
   /**
    * The selected row, once the sessions stream has listed it: a chat renders Chat.svelte, anything else Thread.svelte. Before the list lands,
-   * the chat ids in the page shell decide (chat-server.ts renderShell), so the thread paints as soon as its snapshot arrives.
+   * the chat ids in the page shell decide (chat-server.ts shellHead), so the thread paints as soon as its snapshot arrives.
    */
   const selectedRow = $derived(store.session(store.selectedId));
   const shellChats = new Set((document.body.dataset.chats ?? "").split(",").filter(Boolean));

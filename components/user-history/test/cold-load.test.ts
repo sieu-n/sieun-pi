@@ -7,7 +7,7 @@ import { brotliDecompressSync } from "node:zlib";
 import { runInNewContext } from "node:vm";
 import WebSocket from "ws";
 import { bootFeedScript } from "../src/boot-feed.ts";
-import { parseHash } from "../src/client/permalink.ts";
+import { pageTarget } from "../src/client/permalink.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { asset, packAsset } from "../src/chat-assets.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
@@ -77,14 +77,44 @@ test("feeds named in the socket URL start on the upgrade, the thread's snapshot 
   assert.deepEqual(started, ["thread", "sessions"]);
   assert.deepEqual(frames.filter(frame => frame.includes(":thread:") || frame.includes(":sessions:")), ["1:thread:snapshot", "2:sessions:sessions"]);
 });
-
-test("the boot script reads the thread from the hash the way the page does", () => {
-  for (const hash of ["", "#01a14d31-6ec0", "#01a14d31-6ec0@1792305420954", "#abc%40def", "#x@notanumber"]) {
+test("the boot script reads the thread from the hash, else ?t=, the way the page does", () => {
+  const urls: Array<[string, string]> = [["", ""], ["", "#01a14d31-6ec0"], ["", "#01a14d31-6ec0@1792305420954"], ["", "#abc%40def"], ["", "#x@notanumber"],
+    ["?t=01a14d31-6ec0", ""], ["?t=other", "#01a14d31-6ec0@1792305420954"], ["?x=1", ""]];
+  for (const [search, hash] of urls) {
     const sockets: string[] = [];
     const window: Record<string, unknown> = {};
-    runInNewContext(bootFeedScript, { window, URL, JSON, decodeURIComponent, location: { hash }, document: { baseURI: "https://box.example/cap/", body: { dataset: { chatToken: "t" } } },
+    runInNewContext(bootFeedScript, { window, URL, URLSearchParams, JSON, decodeURIComponent, location: { hash, search }, document: { baseURI: "https://box.example/cap/", body: { dataset: { chatToken: "t" } } },
       WebSocket: class { constructor(url: URL) { sockets.push(String(url)); } } });
     const subs = JSON.parse(new URL(sockets[0]!).searchParams.get("subs")!) as Array<{ feed: string; id?: string }>;
-    assert.equal(subs.find(sub => sub.feed === "thread")?.id ?? null, parseHash(hash)?.id ?? null, hash);
+    assert.equal(subs.find(sub => sub.feed === "thread")?.id ?? null, pageTarget({ hash, search })?.id ?? null, search + hash);
   }
+});
+
+// Guards the 10-18 07:30Z Aside reads from Korea after d74e001: the shell painted at 228 to 448 ms, but the newest message only at 1.25 to 1.63 s, because its socket is a new TCP and TLS connection through tailscale serve.
+test("a shell with ?t= carries that thread's first frames inline, packed, and goes without them when they are slow", async t => {
+  const snapshot = { type: "snapshot", snapshot: { messages: [{ role: "user", content: "</script><script>alert(1)</script>", timestamp: 1 }] } };
+  let slow = false;
+  const backend = { close: async () => {}, chats: { ids: async () => new Set<string>() },
+    threads: { firstFrames: async (id: string) => { if (slow) await new Promise(resolve => setTimeout(resolve, 2000)); return id === "t1" ? [snapshot] : []; } } } as unknown as ChatBackend;
+  const server = await startChatServer({ backend, bundle: { js: script, css: style, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+    identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-cold-inline.sock" }, onStop: async () => {} });
+  t.after(() => server.close());
+  const shell = await get(server.url + "?t=t1", { "accept-encoding": "gzip, deflate, br" });
+  assert.equal(shell.headers["content-encoding"], "br");
+  const html = brotliDecompressSync(shell.body).toString();
+  const inline = /<script type="application\/json" id="boot-thread" data-id="t1">([\s\S]*?)<\/script>/.exec(html);
+  assert.ok(inline, html);
+  assert.deepEqual(JSON.parse(inline[1]!), [snapshot]);
+  assert.doesNotMatch((await get(server.url)).body.toString(), /boot-thread/);
+  // The head goes out before the server has the page, so the browser fetches app.js and opens its socket meanwhile.
+  slow = true;
+  const started = Date.now();
+  const firstChunk = await new Promise<number>((resolve, reject) => {
+    const req = request(server.url + "?t=t1", res => { res.once("data", () => resolve(Date.now() - started)); res.resume(); });
+    req.on("error", reject); req.end();
+  });
+  assert.ok(firstChunk < 300, `head after ${firstChunk} ms`);
+  const late = Date.now();
+  assert.doesNotMatch((await get(server.url + "?t=t1")).body.toString(), /boot-thread/);
+  assert.ok(Date.now() - late < 1500);
 });

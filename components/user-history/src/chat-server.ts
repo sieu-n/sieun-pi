@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { gzipSync } from "node:zlib";
+import { constants as zlibConstants, createBrotliCompress, createGzip, gzipSync } from "node:zlib";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
@@ -39,6 +39,7 @@ import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
+import type { ThreadEvent } from "./shared/types.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -62,12 +63,13 @@ function remoteWorkspace(input: string, host: string): string {
 }
 
 /**
- * The page shell. The script and style go by their hashed names (`assetName`), so a later load reads them from the browser's cache, and the
- * inline boot script opens the feeds socket while app.js is still on its way (boot-feed.ts). The stylesheet comes after that script, because
- * an inline script waits for every stylesheet above it to load. `data-chats` names the chats, so a thread URL paints its chat view from the
- * snapshot instead of waiting for the sessions list to say it is a chat (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
+ * The page shell, in two parts. `shellHead` goes out at once: the script and style by their hashed names (`assetName`), so a later load
+ * reads them from the browser's cache, and the inline boot script, which opens the feeds socket while app.js is still on its way
+ * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load. `data-chats`
+ * names the chats, so a thread URL paints its chat view from the snapshot instead of waiting for the sessions list to say it is a chat
+ * (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
  */
-export function renderShell(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
+export function shellHead(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -86,7 +88,17 @@ export function renderShell(csrfToken: string, version: string, wiki: string | n
 <body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}" data-wiki="${escapeAttribute(wiki ?? "")}" data-chats="${escapeAttribute([...chats].join(","))}">
 <script>${bootFeedScript}</script>
 <link rel="stylesheet" href="${escapeAttribute(assets.css)}">
-<div id="app"></div>
+`;
+}
+
+/**
+ * The rest of the shell, with the first frames of the thread the URL names (`?t=`) in the shape its feed sends them, so the page paints the
+ * thread with no request of its own. app.js is a module script, so it runs only once this part has arrived.
+ */
+export function shellTail(thread: { id: string; frames: readonly ThreadEvent[] } | null = null): string {
+  // `<` as \u003c keeps a message that holds "</script>" inside the JSON block.
+  const inline = thread ? `<script type="application/json" id="boot-thread" data-id="${escapeAttribute(thread.id)}">${JSON.stringify(thread.frames).replaceAll("<", "\\u003c")}</script>\n` : "";
+  return `${inline}<div id="app"></div>
 </body>
 </html>
 `;
@@ -445,6 +457,34 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
   }
+  /**
+   * The first frames of a thread for the shell, or null when they take longer than `inlineWaitMs`. From Korea the page's own socket brings
+   * them about three round trips (560 ms) after the shell, so a shell that waits longer than that for them is slower than going without.
+   */
+  const inlineWaitMs = 400;
+  async function inlineFrames(id: string): Promise<readonly ThreadEvent[] | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), inlineWaitMs); });
+    const frames = backend.threads.firstFrames(id).catch((error: unknown) => {
+      process.stderr.write(`${new Date().toISOString()} shell ${id.slice(0, 8)}: no inline page: ${error instanceof Error ? error.message : String(error)}\n`);
+      return null;
+    });
+    try { return await Promise.race([frames, late]); } finally { clearTimeout(timer); }
+  }
+  /**
+   * The shell goes out as a packed stream: its head is flushed at once, so the browser fetches app.js and opens the socket while the server
+   * still reads the thread's first page, and the tail with that page follows (brotli at quality 5 packs it in about a millisecond).
+   */
+  function startHtml(req: IncomingMessage, res: ServerResponse): { write(text: string): void; end(text: string): void } {
+    const accepts = String(req.headers["accept-encoding"] ?? "");
+    const encoding = /\bbr\b/.test(accepts) ? "br" : gzips(req) ? "gzip" : null;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...(encoding ? { "Content-Encoding": encoding } : {}), Vary: "Accept-Encoding" });
+    if (!encoding) return { write: text => { res.write(text); }, end: text => { res.end(text); } };
+    const packer = encoding === "br" ? createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }) : createGzip({ level: 6 });
+    packer.pipe(res);
+    packer.on("error", () => { res.destroy(); });
+    return { write: text => { packer.write(text); packer.flush(); }, end: text => { packer.end(text); } };
+  }
   const packedAssets = new WeakMap<Asset, Buffer>();
   /** `immutable` for a hashed name (`assetName`): its body never changes, so the browser asks again only after a release renames it. */
   function serveAsset(req: IncomingMessage, res: ServerResponse, asset: Asset, immutable = false) {
@@ -554,8 +594,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const built = await bundle;
           const js = assetName("app", "js", built.js), css = assetName("app", "css", built.css);
           if (route === "") {
+            const named = url.searchParams.get("t");
+            const id = named && idPattern.test(named) ? named : null;
+            const frames = id ? inlineFrames(id) : Promise.resolve(null);
             const [wiki, chats] = await Promise.all([wikiOrigin(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version, wiki, { js, css }, chats)); return;
+            const html = startHtml(req, res);
+            html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
+            const found = await frames;
+            html.end(shellTail(id && found ? { id, frames: found } : null));
+            return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }
           if (route === css) { serveAsset(req, res, built.css, true); return; }
