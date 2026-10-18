@@ -8,8 +8,9 @@
 
   /**
    * One footer row: a live trace of all-agent tokens per second from the `usage` feed, with the current figure, for the token kind picked in
-   * Settings > Usage (output unless changed). A click opens Settings > Usage. The feed is subscribed only while the tab is visible, and the
-   * only motion is a 2 s CSS slide per update, so an idle feed costs nothing.
+   * Settings > Usage (output unless changed). A click opens Settings > Usage. The feed is subscribed only while the tab is visible. The trace
+   * has no motion: a 2 s slide per update kept a transform animation running almost all the time, and Chromium ticks the main thread at 60
+   * frames a second for it while the page has an IntersectionObserver.
    */
   const W = 60;
   const H = 18;
@@ -45,18 +46,14 @@
   <span class="name">{name}</span>
   <span class="trace" aria-hidden="true">
     {#if summary}
-      {#key summary.at}
-        <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="trace-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity="0.28" /><stop offset="1" stop-color="var(--accent)" stop-opacity="0" /></linearGradient>
-          </defs>
-          <g class="slide">
-            <path class="fill" d={area} />
-            <path class="glow" d={line} />
-            <path class="ink" d={line} />
-          </g>
-        </svg>
-      {/key}
+      <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="trace-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity="0.28" /><stop offset="1" stop-color="var(--accent)" stop-opacity="0" /></linearGradient>
+        </defs>
+        <path class="fill" d={area} />
+        <path class="glow" d={line} />
+        <path class="ink" d={line} />
+      </svg>
     {/if}
   </span>
   <span class="figure">{summary ? tokens(summary.perSecond[metric]) : "–"}<span class="unit">tok/s</span></span>
@@ -68,8 +65,6 @@
   .name { width: 48px; flex: none; font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .trace { flex: 1; min-width: 0; height: 18px; overflow: hidden; border-bottom: 1px solid var(--border); }
   svg { display: block; width: 100%; height: 100%; overflow: visible; }
-  .slide { animation: slide 2s linear forwards; }
-  @keyframes slide { from { transform: translateX(2px); } to { transform: translateX(0); } }
   path { vector-effect: non-scaling-stroke; }
   .fill { fill: url(#trace-fill); stroke: none; }
   .glow { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; opacity: 0.22; }
@@ -78,5 +73,4 @@
   .figure { flex: none; min-width: 58px; text-align: right; font-weight: 600; color: var(--text); }
   .stale .figure { color: var(--text-faint); }
   .unit { margin-left: 3px; font-weight: 500; color: var(--text-faint); }
-  @media (prefers-reduced-motion: reduce) { .slide { animation: none; } }
 </style>

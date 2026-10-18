@@ -40,7 +40,11 @@ function bootJump(): { id: string; at: number } | null {
 }
 
 class Store {
-  sessions = $state<SessionRow[]>([]);
+  /**
+   * Raw, because every sessions frame replaces the whole list. A deep $state wrapped all of its ~2,700 rows in new proxies on each frame, about
+   * one frame a second, which held the idle renderer near 10% CPU on its own (10-18).
+   */
+  sessions = $state.raw<SessionRow[]>([]);
   tags = $state<Tag[]>([]);
   daemon = $state<"up" | "down" | "unknown">("unknown");
   daemonError = $state<string | null>(null);

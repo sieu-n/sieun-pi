@@ -235,9 +235,8 @@
   .chevron.down { transform: rotate(90deg); }
   .label { flex: none; white-space: nowrap; color: var(--text-muted); transition: color 0.12s; }
   .sep::before { content: "·"; margin-right: 8px; color: var(--text-faint); }
-  .shimmer { color: transparent; background: linear-gradient(90deg, var(--text-muted) 0%, var(--text-muted) 38%, var(--text) 50%, var(--text-muted) 62%, var(--text-muted) 100%) 100% 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: shimmer 2.2s linear infinite; }
-  .head:hover .shimmer { color: transparent; }
-  @keyframes shimmer { to { background-position: -100% 0; } }
+  .shimmer { animation: shimmer 2.2s ease-in-out infinite; }
+  @keyframes shimmer { 50% { opacity: 0.45; } }
   .time { flex: none; font-variant-numeric: tabular-nums; }
   .args { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; opacity: 0.8; }
   .fresh { flex: none; margin-left: auto; padding-left: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -283,6 +282,6 @@
   .block.error { color: var(--danger); }
 
   @media (prefers-reduced-motion: reduce) {
-    .shimmer { animation: none; background: none; color: var(--text-muted); }
+    .shimmer { animation: none; }
   }
 </style>

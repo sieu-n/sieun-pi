@@ -642,7 +642,7 @@
   .typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); animation: typing 1.2s ease-in-out infinite; }
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes typing { 0%, 60%, 100% { opacity: 0.35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+  @keyframes typing { 0%, 60%, 100% { opacity: 0.35; } 30% { opacity: 1; } }
   /* A folded run of updates: one muted line, centered like a notice, that opens the reader. */
   .line.updates { justify-content: center; margin: 2px 0; border-radius: 999px; }
   .updates-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
