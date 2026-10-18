@@ -6,7 +6,7 @@
 
   /**
    * A plan step's agent after its text, in the Plan card and the plan view: the Agents card's status dot (a spinner while it works) and the
-   * agent's name (`stepAgent`), cut with an ellipsis; the full name is in the tooltip. A click opens it in place: an Agents row through
+   * agent's name (`stepAgent`) in full, wrapped onto more lines when it is long, with the dot on its first line. A click opens it in place: an Agents row through
    * `onagent` (the job drawer or the thread), a stored session as its thread, an owner with no row through `onjob`. `onopen` runs first (the plan view closes itself). An agent
    * whose turn waits in the Mac-wide turn queue shows the waiting dot; its place and wait ("Queued 3 of 7, waiting 4 min") show only in the tooltip.
    */
@@ -34,8 +34,10 @@
 {/if}
 
 <style>
-  .agent-chip { vertical-align: top; margin-left: 4px; gap: 4px; max-width: 16ch; }
-  .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  .agent-chip { vertical-align: top; margin-left: 4px; gap: 4px; max-width: 100%; align-items: flex-start; text-align: left; }
+  .agent-chip .chip-label { white-space: normal; overflow-wrap: anywhere; }
+  .agent-chip > :global(.spinner) { margin-top: 3.5px; }
+  .dot { flex: none; width: 7px; height: 7px; margin-top: 5.5px; border-radius: 50%; background: var(--border-strong); }
   .dot.idle { background: var(--success); }
   .dot.waiting { background: var(--warning); }
   .dot.failed { background: var(--danger); }

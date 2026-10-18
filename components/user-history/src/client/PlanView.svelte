@@ -14,7 +14,7 @@
 
   /**
    * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, its IdChip, its
-   * title (two lines at most; the whole title shows on hover), its agent (AgentChip: it closes the view and opens the job drawer or the
+   * title (in full, wrapped), its agent (AgentChip: it closes the view and opens the job drawer or the
    * agent's thread), the first sentence of its note (a click shows the whole note, `firstSentence`) and its requirement lines. Done and
    * dropped steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
@@ -134,12 +134,12 @@
   .row { border-radius: 6px; padding-left: calc(var(--depth) * 18px); transition: background-color 0.3s; }
   .row.lit { animation: lit 2s ease-out; }
   @keyframes lit { from { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; box-shadow: none; } }
-  /* The title wraps to two lines at most; the counter, the agent and the go mark sit after it on its first line. */
+  /* The title shows in full and wraps; the counter, the agent and the go mark sit after it on its first line, and a long agent name wraps in its 40%. */
   .line { display: flex; align-items: flex-start; gap: 4px; padding: 4px 6px 4px 0; line-height: 20px; }
   .line > :global(*) { flex: none; }
   .line :global(.status) { height: 20px; }
   .line :global(.id-chip) { height: 20px; line-height: 20px; }
-  .line > .text { flex: 0 1 auto; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  .line > .text { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .fold { display: inline-flex; vertical-align: top; width: 18px; height: 20px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
@@ -147,7 +147,7 @@
   .row.plan.done > .line > .text { color: var(--text-muted); }
   .row.plan.dropped > .line > .text { color: var(--text-faint); text-decoration: line-through; }
   .progress { margin-left: 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .line :global(.agent-chip) { height: 20px; line-height: 20px; margin-left: 4px; }
+  .line :global(.agent-chip) { flex: 0 1 auto; max-width: 40%; line-height: 20px; margin-left: 4px; }
   .note { display: block; margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 8px); font-size: 12.5px; line-height: 1.5; text-align: left; color: var(--text-faint); overflow-wrap: anywhere; white-space: pre-wrap; }
   button.note:hover { color: var(--text-muted); }
   .more { margin-left: 6px; color: var(--accent); }
@@ -160,6 +160,5 @@
     .view { padding: 6px 12px 40px; }
     .count { display: none; }
     .row { padding-left: calc(var(--depth) * 12px); }
-    .line :global(.agent-chip) { max-width: 140px; }
   }
 </style>

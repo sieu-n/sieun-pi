@@ -27,8 +27,8 @@
    * Plan steps are a tree: everything with children starts folded, and done and dropped steps hide behind "Show done" per parent. A row is a
    * fixed lead (the fold, the status mark and the IdChip, the board id in small muted mono that a click copies) and one line beside it: a goal
    * shows its title and progress, a step its title, its AgentChip (status dot and short name; a click opens the job drawer or the thread) and
-   * its wait, and either one the "needs your go" mark when it applies (`rowParts`). The title is cut to one line with the whole text in its
-   * tooltip; notes and requirement lines live in the plan view only. A todo's link opens through `store.openArtifact` (the reader, the thread,
+   * its wait, and either one the "needs your go" mark when it applies (`rowParts`). The title and the chip show in full and wrap (owner
+   * 10-18: "don't shorten this show all for the title"); notes and requirement lines live in the plan view only. A todo's link opens through `store.openArtifact` (the reader, the thread,
    * or a tab). The Plan header carries an "Open plan" button, and a double click on a row or its hover "open" button opens the plan view
    * (`store.openPlan`) on that item. `checkIn` is the server's 5-minute tick line under the cards. `apply` gets the board after the owner's
    * ops and the ops themselves; it resolves false when
@@ -307,22 +307,22 @@
   .empty { padding: 24px 8px; text-align: center; }
   .plan-list { list-style: none; margin: 0; padding: 0; }
   /*
-   * A row: a fixed lead (the fold, the status mark and the id chip; 18 px boxes) and one line beside it. The title takes the room first and
-   * ends in an ellipsis; the wait shrinks before it. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default
-   * width.
+   * A row: a fixed lead (the fold, the status mark and the id chip; 18 px boxes) and the line beside it. Nothing is cut: the title wraps and
+   * takes at least 60% of the line, the count, the chip, the wait and the go mark sit beside its first line when they fit and wrap under it
+   * when they do not. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
    */
   .plan-item { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .plan-item { padding-top: 3px; padding-bottom: 3px; }
   .row-lead { display: inline-flex; flex: none; align-items: center; height: 18px; gap: 2px; }
-  .plan-line { display: flex; flex: 1; min-width: 0; align-items: center; gap: 5px; margin: 0; line-height: 18px; white-space: nowrap; overflow: hidden; }
-  .plan-text { flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
-  .plan-line :global(.agent-chip) { flex: none; margin-left: 0; }
+  .plan-line { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: flex-start; gap: 2px 5px; margin: 0; line-height: 18px; }
+  .plan-text { flex: 1 1 60%; min-width: 0; overflow-wrap: anywhere; }
+  .plan-line :global(.agent-chip) { flex: 0 1 auto; margin-left: 0; }
   .fold { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .plan-item.done .plan-text { color: var(--text-muted); }
   .plan-item.dropped .plan-text { color: var(--text-faint); text-decoration: line-through; }
-  .progress, .wait { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-  .wait { flex: 0 4 auto; min-width: 4ch; overflow: hidden; text-overflow: ellipsis; }
+  .progress, .wait { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .wait { flex: 0 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .go-mark { flex: none; padding: 0 5px; border-radius: 999px; font-size: 10.5px; line-height: 16px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
   /*
    * The row's "open in plan view" button sits over the row's top right corner, out of the text flow, with a fade so it reads over a long
@@ -386,6 +386,9 @@
   .agent-subs + .agent-rate, .agent-subs + .agent-age, .agent-rate + .agent-age { margin-left: 0; }
   .agent-age { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .chips > .link-chip { max-width: 100%; align-items: flex-start; text-align: left; }
+  .chips > .link-chip > :global(svg) { flex: none; margin-top: 3.5px; }
+  .chips .chip-label { white-space: normal; overflow-wrap: anywhere; }
   .check-in { display: flex; align-items: center; gap: 6px; margin: 0; padding: 2px 4px; font-size: 11.5px; color: var(--text-faint); }
   .check-in.on { color: var(--text-muted); }
   @container app (max-width: 899px) {
