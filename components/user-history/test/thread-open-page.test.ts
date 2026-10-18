@@ -50,7 +50,8 @@ test("thread open: the first frame holds the newest page and older pages read on
   const before = bytesRead();
   await hub.subscribe(ID, event => events.push(event));
   const openRead = bytesRead() - before;
-  const first = events[0];
+  const [preview, first] = events;
+  assert.ok(preview?.type === "snapshot" && preview.snapshot.messages.length < FIRST_PAGE_MESSAGES, "a preview of the newest messages comes first (thread-first-page.test.ts)");
   assert.equal(first?.type, "snapshot");
   if (first?.type !== "snapshot") return;
   const page = first.snapshot.messages;

@@ -12,6 +12,7 @@ import { isReopenable } from "./reopen-send.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
+import { firstPage } from "./first-page.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
@@ -118,12 +119,27 @@ class Thread {
   /**
    * The state as a feed sends it: a snapshot with the newest page of messages and no board or children, then the children and, with `board`,
    * the board as their own events. Until 10-18 a snapshot carried about 1,000 messages, the board and the children, 0.45 to 1.28 MB per frame.
+   * A new feed (`first`) gets `firstFrame` before that snapshot, which is left out when the first frame already held the whole page.
    */
-  send(listener: Listener, board: boolean, children = this.state.children.length > 0): void {
+  send(listener: Listener, board: boolean, children = this.state.children.length > 0, first = false): void {
     const { connection: _connection, error: _error, board: _board, children: held, messages, older, ...rest } = this.state;
-    listener({ type: "snapshot", snapshot: { ...rest, ...pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES) } });
+    const page = pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES);
+    const small = first ? this.firstFrame() : null;
+    if (small) listener(small);
+    if (small?.type !== "snapshot" || small.snapshot.messages.length < page.messages.length || small.snapshot.messages.some((message, index) => message !== page.messages[index])) {
+      listener({ type: "snapshot", snapshot: { ...rest, ...page } });
+    }
     if (children) listener({ type: "children", children: held });
     if (board && this.state.board) listener({ type: "board", board: this.state.board });
+  }
+  /**
+   * What a new feed paints first, and what the page shell inlines: a snapshot of the newest messages that fit FIRST_PAGE_BYTES, with what only
+   * an opened work row shows cut to previews (src/first-page.ts). From Korea the full page of 100 messages took more than one round trip.
+   */
+  firstFrame(): ThreadEvent {
+    const { connection: _connection, error: _error, board: _board, children: _children, messages, older, ...rest } = this.state;
+    const floor = messages.length - pageBefore(messages, messages.length, older, FIRST_PAGE_MESSAGES).messages.length;
+    return { type: "snapshot", snapshot: { ...rest, ...firstPage(messages, older, floor) } };
   }
   broadcast(event: ThreadEvent): void {
     const children = this.state.children;
@@ -829,7 +845,7 @@ export class ThreadHub {
     thread.listeners.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
-    thread.send(listener, true);
+    thread.send(listener, true, undefined, true);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
     if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
