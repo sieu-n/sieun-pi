@@ -14,7 +14,7 @@ export const byActivity = (left: SessionRow, right: SessionRow): number => activ
 
 type Fields = Record<string, unknown>;
 
-function patchAgents(agents: readonly ChatAgent[], patch: NonNullable<SessionRowPatch["agents"]>): ChatAgent[] {
+function patchAgents<Agent extends { key: string }>(agents: readonly Agent[], patch: { upsert: Agent[]; remove: string[]; order?: string[] }): Agent[] {
   const byKey = new Map(agents.map(agent => [agent.key, agent]));
   for (const key of patch.remove) byKey.delete(key);
   for (const agent of patch.upsert) byKey.set(agent.key, agent);
@@ -126,8 +126,11 @@ function canonical(value: unknown): string {
   return `{${fields.map(key => `${JSON.stringify(key)}:${canonical((value as Fields)[key])}`).join(",")}}`;
 }
 
-/** A short hash of a row's content (FNV-1a over its canonical JSON): a reconnecting page names each row it holds by it (`SessionsDiff.resume`). */
-export function rowHash(row: SessionRow): string {
+/**
+ * A short hash of a row's or an agent's content (FNV-1a over its canonical JSON): a reconnecting page names each one it holds by it
+ * (`SessionsDiff.resume`, `AgentsDiff`).
+ */
+export function rowHash(row: SessionRow | ChatAgent): string {
   const text = canonical(row);
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 0x01000193) >>> 0; }
@@ -137,12 +140,16 @@ export function rowHash(row: SessionRow): string {
 /** A page names at most this many rows on a reconnect; one that holds more (the archived rows too) gets the whole list. */
 export const RESUME_ROWS = 1000;
 
-/** What a reconnecting page holds, as the feed's `have`: `id:hash` per row, comma-separated. */
-export function sessionsHave(rows: readonly SessionRow[]): string | undefined {
-  return rows.length && rows.length <= RESUME_ROWS ? rows.map(row => `${row.id}:${rowHash(row)}`).join(",") : undefined;
-}
+const have = <Item extends SessionRow | ChatAgent>(items: readonly Item[], id: (item: Item) => string): string | undefined =>
+  items.length && items.length <= RESUME_ROWS ? items.map(item => `${id(item)}:${rowHash(item)}`).join(",") : undefined;
 
-export function parseSessionsHave(text: string): Map<string, string> | null {
+/** What a reconnecting page holds, as the feed's `have`: `id:hash` per row, comma-separated. */
+export const sessionsHave = (rows: readonly SessionRow[]): string | undefined => have(rows, row => row.id);
+/** The same for an agents feed: `key:hash` per agent, in the page's order. */
+export const agentsHave = (agents: readonly ChatAgent[]): string | undefined => have(agents, agent => agent.key);
+
+/** A `have` as id to hash, in the page's order, or null for one that does not parse or names more than `RESUME_ROWS`. */
+export function parseHave(text: string): Map<string, string> | null {
   const held = new Map<string, string>();
   for (const item of text.split(",")) {
     const at = item.lastIndexOf(":");
@@ -178,6 +185,11 @@ export function withoutAgents(event: SessionsEvent): SessionsEvent {
 
 /** One `agents` feed frame: the chat's agents, and for a job's session the chat whose agent it is and what `store.openJob` takes for it. */
 export interface AgentsView { chat: string | null; open?: string; agents: ChatAgent[] }
+/**
+ * An agents frame for a page that subscribed with `delta: true`: the agents that differ from what the page holds by `key`, the keys gone,
+ * and the order only where patching would not rebuild it (`patchAgents`).
+ */
+export interface AgentsDelta { type: "agents-delta"; chat: string | null; open?: string; upsert: ChatAgent[]; remove: string[]; order?: string[] }
 /** The agents a page asks for with `{ feed: "agents", id }`: `id` is a chat, or a job's session that a chat lists as its subagent or root. */
 export function agentsView(rows: readonly SessionRow[], id: string): AgentsView {
   const chat = rows.find(row => row.id === id && row.chat);
@@ -231,6 +243,61 @@ export class SessionsDiff {
       if (rebuilt.length !== event.sessions.length || rebuilt.some((row, index) => row.id !== event.sessions[index]?.id)) delta.order = event.sessions.map(row => row.id);
     }
     if (!add.length && !patch.length && !remove.length && !delta.order && rest === previous.rest) return null;
+    return delta;
+  }
+}
+
+/**
+ * A chat's agents in the order `chatAgents` (src/chat-agents.ts) gives them: working first, then the latest activity first, a stable sort.
+ * An agent that sleeps on a wake reads working (`withWaits`, after the sort), so it sorts with the agents whose turn ended.
+ */
+export function sortAgents<Agent extends ChatAgent>(agents: Agent[]): Agent[] {
+  const working = (agent: Agent) => Number(agent.state === "working" && !agent.wait);
+  const at = new Map(agents.map(agent => [agent, Date.parse(agent.lastActivityAt ?? "") || 0]));
+  return agents.sort((left, right) => working(right) - working(left) || at.get(right)! - at.get(left)!);
+}
+
+/** The agents view a page holds after an agents frame: a whole view replaces it, and a delta patches it and sorts it unless it sent `order`. */
+export function applyAgentsFrame(view: AgentsView | null, frame: AgentsView | AgentsDelta): AgentsView {
+  if (!("upsert" in frame)) return frame;
+  const agents = patchAgents(view?.agents ?? [], frame);
+  return { chat: frame.chat, ...(frame.open !== undefined ? { open: frame.open } : {}), agents: frame.order ? agents : sortAgents(agents) };
+}
+
+/**
+ * One agents feed subscriber's view, the way `SessionsDiff` serves the sessions feed: the first frame goes out whole, each later one as the
+ * agents that changed, or not at all. A page that reconnects names the agents it holds (`agentsHave`), and its first frame is a delta with
+ * only the agents that differ. The order goes along only when `applyAgentsFrame`'s sort would not rebuild it. On 10-18 the feed sent the
+ * whole list on every change: 01a1164b's 252 agents, 229 of them not working, were 84 KB a frame and 73 frames a minute, and a reconnect
+ * pulled them again.
+ */
+export class AgentsDiff {
+  private sent: AgentsView | null = null;
+
+  /** `held` is a reconnecting page's `have`, the agents it holds by `rowHash`, in its order. */
+  constructor(private held: Map<string, string> | null = null) {}
+
+  frame(view: AgentsView): AgentsView | AgentsDelta | null {
+    const previous = this.sent, held = this.held;
+    this.sent = view;
+    this.held = null;
+    if (!previous && held && uniqueKeys(view.agents)) {
+      const now = new Map(view.agents.map(agent => [agent.key, agent]));
+      const kept = [...held.keys()].flatMap(key => now.get(key) ?? []);
+      return this.delta(view, kept, view.agents.filter(agent => held.get(agent.key) !== rowHash(agent)), [...held.keys()].filter(key => !now.has(key)));
+    }
+    if (!previous || !uniqueKeys(previous.agents) || !uniqueKeys(view.agents)) return previous && json(previous) === json(view) ? null : view;
+    const old = new Map(previous.agents.map(agent => [agent.key, json(agent)]));
+    const keys = new Set(view.agents.map(agent => agent.key));
+    const delta = this.delta(view, previous.agents, view.agents.filter(agent => old.get(agent.key) !== json(agent)), [...old.keys()].filter(key => !keys.has(key)));
+    return delta.upsert.length || delta.remove.length || delta.order || view.chat !== previous.chat || view.open !== previous.open ? delta : null;
+  }
+
+  /** The delta from the page's `before` list, with `order` only when the page's patch and sort would put the agents elsewhere. */
+  private delta(view: AgentsView, before: readonly ChatAgent[], upsert: ChatAgent[], remove: string[]): AgentsDelta {
+    const delta: AgentsDelta = { type: "agents-delta", chat: view.chat, ...(view.open !== undefined ? { open: view.open } : {}), upsert, remove };
+    const rebuilt = sortAgents(patchAgents(before, { upsert, remove }));
+    if (rebuilt.length !== view.agents.length || rebuilt.some((agent, index) => agent.key !== view.agents[index]!.key)) delta.order = view.agents.map(agent => agent.key);
     return delta;
   }
 }

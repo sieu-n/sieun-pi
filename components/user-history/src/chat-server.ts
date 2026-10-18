@@ -22,7 +22,7 @@ import { readWikiPage, wikiOrigin, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
-import { agentsView, parseSessionsHave, SessionsDiff, withoutAgents, withoutArchived } from "./shared/sessions-delta.ts";
+import { AgentsDiff, agentsView, parseHave, SessionsDiff, withoutAgents, withoutArchived } from "./shared/sessions-delta.ts";
 import { prepaintHash, prepaintHtml } from "./prepaint.ts";
 import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
@@ -437,11 +437,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       sendBuild(build => send("build", build));
       if (!feed.delta) return backend.catalog.subscribe(event => send("sessions", event));
       const diff = new SessionsDiff();
-      const held = feed.have ? parseSessionsHave(feed.have) : null;
+      const held = feed.have ? parseHave(feed.have) : null;
       if (held) diff.resume(held);
       return backend.catalog.subscribe(event => { const frame = diff.frame(withoutAgents(feed.archived ? event : withoutArchived(event))); if (frame) send("sessions", frame); });
     }
     if (feed.feed === "agents") {
+      if (feed.delta) {
+        const diff = new AgentsDiff(feed.have ? parseHave(feed.have) : null);
+        return backend.catalog.watch(event => { const frame = diff.frame(agentsView(event.sessions, feed.id)); if (frame) send("agents", frame); });
+      }
       let sent = "";
       return backend.catalog.watch(event => {
         const view = agentsView(event.sessions, feed.id);

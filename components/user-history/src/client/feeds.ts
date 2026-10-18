@@ -5,7 +5,7 @@ import type { ThreadHave } from "../shared/types.ts";
  * The socket opens on the first subscription, reconnects with backoff while any feed is subscribed, and subscribes again
  * after each reconnect. The server answers a new subscription with a fresh snapshot, so nothing is lost across a reconnect.
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string };
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; have?: ThreadHave } | { feed: "agents"; id: string; delta?: true; have?: string };
 /** A feed given as a function is read again at each subscribe, so a reconnect names what the page holds by then (chat-socket.ts `have`). */
 type FeedSource = Feed | (() => Feed);
 type Listener = { feed: FeedSource; onEvent: (event: string, data: unknown) => void; onError: () => void };
