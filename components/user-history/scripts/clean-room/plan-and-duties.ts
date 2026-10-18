@@ -214,7 +214,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const riskMetrics = metrics.filter(({ metric }) => /risk|alert|disk|rate.?limit|fir(e|ing)/i.test(`${metric.key} ${metric.label}`));
 
   const ended = state.until !== undefined && state.until <= now;
-  const voided = checks.find(check => check.id === "8")!.ok === false || raced;
+  // On 10-18 run-1's chat and its check-in job waited on pi-pool for the whole 90 min window and never got a model turn, so nothing was judged.
+  const ran = head.some(event => event.at >= sentAt && (event.kind === "assistant" || event.kind === "call"));
+  const voided = checks.find(check => check.id === "8")!.ok === false || raced || (ended && !ran);
   const unmet = checks.filter(check => check.ok !== true);
   const verdict: Verdict = voided ? "void" : !unmet.length ? "pass" : ended || unmet.some(check => check.ok === false && ["1", "2"].includes(check.id)) ? "fail" : "open";
   const label = (check: Check): string => check.ok === null ? "not reached yet" : check.ok ? "met" : ended || ["1", "2", "8"].includes(check.id) ? "not met" : "not met yet";
@@ -222,6 +224,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${state.chat.id}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(now)}, check-in every ${state.everyMs / 60_000} min, with a messy seeded board and the owner's one sentence. Judged by \`clean-room.ts evaluate\` at board rev ${board?.rev ?? "?"}.`,
     `Criteria: ${join(run, "criteria.md")}. Evidence: the board file ${join(DATA, "boards", `${state.chat.id}.json`)}, the duties file ${join(DATA, "duties", `${state.chat.id}.json`)}, the session file ${join(homedir(), ".prime/agent/sessions", `${state.chat.id}.jsonl`)}, and ${run}/boards and agents.`, "",
+    ...(!ran ? ["The chat never got a model turn after the sentence: each of its turns ended with an error before any text or tool call, such as a pi-pool slot wait, so the run judged nothing.", ""] : []),
     ...(raced ? [`The chat read its board at ${iso(firstRead!.at)}, before the seed at ${iso(seededTime)}, so it saw an empty board and the run is void.`, ""] : []),
     "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${label(check)}: ${check.detail}`), "",
     "## Seen, not judged", "",
