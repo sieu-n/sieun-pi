@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -84,7 +84,8 @@ export interface SandboxDeps {
   /** A file's text, or a thrown error when it cannot be read. */
   read: (path: string) => Promise<string>;
   repo: string;
-  pm2: { bin: string; home: string };
+  /** `zone` is the IANA time zone of the pm2 daemon that writes the logs (pm2Zone), which may differ from this process's TZ. */
+  pm2: { bin: string; home: string; zone: string };
 }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { status?: string } }
 
@@ -100,18 +101,48 @@ export async function probe(deps: Pick<SandboxDeps, "fetch" | "now">, url: strin
   }
 }
 
-/** The local time pm2 writes at the start of each log line (`2026-10-12T22:38:26: ...`), or null. */
-export function logTime(line: string): number | null {
+const isZone = (zone: string): boolean => { try { new Intl.DateTimeFormat("en-US", { timeZone: zone }); return true; } catch { return false; } };
+
+/**
+ * The time zone pm2 writes its log times in: the pm2 daemon's own TZ (from /proc on Linux), else the zone of the host's /etc/localtime, else UTC.
+ * Never this process's TZ: the chat service on us-metal02 runs with TZ=Asia/Seoul while the box and its pm2 run in UTC, so on 10-18 the d1 run
+ * read the 02:17:26 UTC restart as 17:17:26Z the day before.
+ */
+export async function pm2Zone(home: string, read: (path: string) => Promise<string> = path => readFile(path, "utf8"), link: (path: string) => Promise<string> = readlink): Promise<string> {
+  try {
+    const pid = (await read(join(home, "pm2.pid"))).trim();
+    const tz = (await read(`/proc/${pid}/environ`)).split("\0").find(entry => entry.startsWith("TZ="))?.slice(3).replace(/^:/, "");
+    if (tz && isZone(tz)) return tz;
+  } catch { /* no /proc (macOS) or no pm2.pid: the daemon runs in the host's zone */ }
+  try {
+    const zone = /zoneinfo\/(.+)$/.exec(await link("/etc/localtime"))?.[1];
+    if (zone && isZone(zone)) return zone;
+  } catch { /* no /etc/localtime */ }
+  return "UTC";
+}
+
+/** How far `zone` is ahead of UTC at the instant `at`, in ms. */
+function zoneOffset(at: number, zone: string): number {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(at).map(part => [part.type, Number(part.value)]));
+  return Date.UTC(parts.year!, parts.month! - 1, parts.day!, parts.hour!, parts.minute!, parts.second!) - Math.floor(at / 1000) * 1000;
+}
+
+/** The wall time pm2 writes at the start of each log line (`2026-10-12T22:38:26: ...`) in the writer's `zone`, or null. */
+export function logTime(line: string, zone: string): number | null {
   const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}): /.exec(line);
-  return match ? new Date(match[1]!).getTime() : null;
+  if (!match) return null;
+  const wall = Date.parse(`${match[1]}Z`);
+  const guess = wall - zoneOffset(wall, zone);
+  return wall - zoneOffset(guess, zone);
 }
 
 /** The timed lines of a pm2 log within the last 24 h that pass `keep`. */
-function recentLines(text: string, now: number, keep: (line: string) => boolean): { at: number; line: string }[] {
+function recentLines(text: string, now: number, zone: string, keep: (line: string) => boolean): { at: number; line: string }[] {
   const lines: { at: number; line: string }[] = [];
   for (const line of text.split("\n")) {
     if (!keep(line)) continue;
-    const at = logTime(line);
+    const at = logTime(line, zone);
     if (at === null || at > now || now - at > DAY_MS) continue;
     lines.push({ at, line });
   }
@@ -131,22 +162,22 @@ function group<T extends { at: number }>(items: T[]): T[][] {
 
 export interface TimeoutEvent { first: number; last: number; lines: number; sample: string }
 /** SSR "transport invoke timed out" events over the last 24 h in the pm2 error log, oldest first. */
-export function ssrTimeouts(errorLog: string, now: number): TimeoutEvent[] {
-  return group(recentLines(errorLog, now, line => line.includes("transport invoke timed out")))
+export function ssrTimeouts(errorLog: string, now: number, zone: string): TimeoutEvent[] {
+  return group(recentLines(errorLog, now, zone, line => line.includes("transport invoke timed out")))
     .map(lines => ({ first: lines[0]!.at, last: lines.at(-1)!.at, lines: lines.length, sample: lines.at(-1)!.line.slice(0, 300) }));
 }
 
 /** dev-guard memory kill lines over the last 24 h in the pm2 error log. */
-export function guardKills(errorLog: string, now: number): string[] {
-  return recentLines(errorLog, now, line => line.includes(`[dev-guard] ${PM2_NAME}: dev tree memory`)).map(entry => entry.line);
+export function guardKills(errorLog: string, now: number, zone: string): string[] {
+  return recentLines(errorLog, now, zone, line => line.includes(`[dev-guard] ${PM2_NAME}: dev tree memory`)).map(entry => entry.line);
 }
 
 /** File changes vite logged in the out log in the EDITS_WINDOW_MS before `at`. */
-export function editsBefore(outLog: string, at: number): number {
+export function editsBefore(outLog: string, at: number, zone: string): number {
   let count = 0;
   for (const line of outLog.split("\n")) {
     if (!/\] \((?:ssr|client)\) (?:page reload|hmr update) /.test(line)) continue;
-    const time = logTime(line);
+    const time = logTime(line, zone);
     if (time !== null && time <= at && at - time <= EDITS_WINDOW_MS) count++;
   }
   return count;
@@ -162,10 +193,10 @@ export interface RestartEvent { at: number; exits: Exit[]; kinds: ExitKind[] }
  * (outLog undefined: unknown, so it counts); anything else is a crash. Restarts are the non-config exits grouped into events, so the crash loop
  * of 10-15 04:26 KST (about 30 exits with code 2 in 40 s, materialize refusing hand edits) counts once.
  */
-export function restarts(pm2Log: string, outLog: string | undefined, now: number): { events: RestartEvent[]; config: Exit[] } {
-  const stops = recentLines(pm2Log, now, line => line.includes(`Stopping app:${PM2_NAME} `)).map(entry => entry.at);
-  const configs = outLog === undefined ? [] : recentLines(outLog, now, line => line.includes("config changed, exiting so pm2 starts a fresh dev server")).map(entry => entry.at);
-  const exits: Exit[] = recentLines(pm2Log, now, line => line.includes(`App [${PM2_NAME}:`) && line.includes("] exited with code [")).map(({ at, line }) => {
+export function restarts(pm2Log: string, outLog: string | undefined, now: number, zone: string): { events: RestartEvent[]; config: Exit[] } {
+  const stops = recentLines(pm2Log, now, zone, line => line.includes(`Stopping app:${PM2_NAME} `)).map(entry => entry.at);
+  const configs = outLog === undefined ? [] : recentLines(outLog, now, zone, line => line.includes("config changed, exiting so pm2 starts a fresh dev server")).map(entry => entry.at);
+  const exits: Exit[] = recentLines(pm2Log, now, zone, line => line.includes(`App [${PM2_NAME}:`) && line.includes("] exited with code [")).map(({ at, line }) => {
     const code = Number(/exited with code \[(-?\d+)\]/.exec(line)?.[1] ?? NaN);
     const kind: ExitKind = code === 97 ? "guard"
       : stops.some(stop => stop <= at && at - stop <= 15_000) ? "command"
@@ -233,13 +264,13 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     metrics.ssr_timeouts_24h = 1;
     sourceError("source", `${PM2_NAME}-error.log: ${errorLog.message}; ssr_timeouts_24h reads 1 because an unread log cannot show a clean day`);
   } else {
-    const events = ssrTimeouts(errorLog, at);
+    const events = ssrTimeouts(errorLog, at, deps.pm2.zone);
     metrics.ssr_timeouts_24h = events.length;
     for (const event of events) {
-      const edits = typeof outLog === "string" ? `, ${editsBefore(outLog, event.first)} file changes in the 3 min before` : "";
+      const edits = typeof outLog === "string" ? `, ${editsBefore(outLog, event.first, deps.pm2.zone)} file changes in the 3 min before` : "";
       flagged.push({ at, kind: "ssr_timeout", excerpt: `${event.lines} timeout lines ${iso(event.first)} to ${iso(event.last)}${edits}; last: ${event.sample}` });
     }
-    const kills = guardKills(errorLog, at);
+    const kills = guardKills(errorLog, at, deps.pm2.zone);
     metrics.guard_restarts_24h = kills.length;
     for (const kill of kills) flagged.push({ at, kind: "guard_restart", excerpt: kill });
   }
@@ -247,7 +278,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     metrics.restarts_24h = 1;
     sourceError("source", `pm2.log: ${pm2Log.message}; restarts_24h reads 1 because an unread log cannot show a clean day`);
   } else {
-    const { events, config } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at);
+    const { events, config } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at, deps.pm2.zone);
     metrics.restarts_24h = events.length;
     metrics.config_restarts_24h = config.length;
     for (const event of events) {
@@ -301,8 +332,9 @@ const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("demo-sandbox: OUTPUT_FILE is not set\n"); process.exit(2); }
+  const home = join(REPO, ".cache/pm2-dev");
   const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO,
-    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } });
+    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
