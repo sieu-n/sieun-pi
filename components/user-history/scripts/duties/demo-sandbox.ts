@@ -3,6 +3,7 @@ import { readFile, readlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { type PeerReach, peerReach, readTailscaleStatus, seenAgo } from "../../src/host-reach.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -19,7 +20,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   server") is development, so it is run detail.
  * - ssr_timeouts_24h: times in 24 h a page hung on "transport invoke timed out", from the pm2 error log. Error lines less than
  *   EVENT_GAP_MS apart are one event, since one hung request logs 3 to 20 lines.
- *   walk_problems also counts box drift: the walk runs on us-metal02's 5180, so its tree has to match the owner's Mac tree (readBoxSync).
+ *   walk_problems also counts box drift: the walk runs on us-metal02's 5180, so its tree has to match the owner's Mac tree (readBoxSync). A
+ *   stale watcher status while Tailscale reads the Mac offline is a closed laptop, so it counts 0.
  * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h,
  * outside_requests, box_drift and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
  * show a clean day, plus 1 to source_errors and a flagged slice. `lastEventAt` names the newest restart and SSR timeout, so a miss streak whose
@@ -111,6 +113,8 @@ export interface SandboxDeps {
   platform: NodeJS.Platform;
   /** `zone` is the IANA time zone of the pm2 daemon that writes the logs (pm2Zone), which may differ from this process's TZ. */
   pm2: { bin: string; home: string; zone: string };
+  /** Whether Tailscale reads the owner's Mac up, for the sync watcher check (readBoxSync). */
+  mac: () => Promise<PeerReach>;
 }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { status?: string } }
 
@@ -349,7 +353,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   }
 
   // Box drift from the owner's Mac tree adds to walk_problems; box_drift is detail.
-  const sync = readBoxSync(await readOrError(join(deps.repo, SYNC_FILE)), at);
+  const sync = readBoxSync(await readOrError(join(deps.repo, SYNC_FILE)), at, await deps.mac());
   metrics.walk_problems += sync.problems;
   metrics.box_drift = sync.drift;
   flagged.push({ at, kind: sync.kind, excerpt: sync.excerpt });
@@ -366,9 +370,11 @@ export interface SyncStatus { ok?: boolean; checked_at?: string; drift?: number 
 /**
  * Whether this box's demo tree matches the owner's Mac tree, from the Mac sync watcher's status file. The walk runs on this box's 5180, so a
  * drifted tree walks code the owner never sees. Drift that stayed above 0 for two checks in a row counts its files (a failed check counts 1),
- * and a missing, unreadable or stale status counts 1. One check with drift does not count, since the watcher heals it before the next.
+ * and a missing, unreadable or stale status counts 1. One check with drift does not count, since the watcher heals it before the next. A stale
+ * status while Tailscale reads the Mac offline counts 0: on 10-18 the lid closed at about 13:05Z and d1 read red all evening for a watcher that
+ * cannot run on a sleeping Mac.
  */
-export function readBoxSync(text: string | Error, now: number): { problems: number; drift: number; kind: string; excerpt: string } {
+export function readBoxSync(text: string | Error, now: number, mac: PeerReach): { problems: number; drift: number; kind: string; excerpt: string } {
   if (text instanceof Error) return { problems: 1, drift: 0, kind: "box_sync_missing", excerpt: `${SYNC_FILE}: ${text.message}; check ${SYNC_FIX}` };
   let status: SyncStatus;
   try { status = JSON.parse(text) as SyncStatus; }
@@ -376,6 +382,7 @@ export function readBoxSync(text: string | Error, now: number): { problems: numb
   const checked = Date.parse(status.checked_at ?? "");
   const drift = status.drift ?? 0;
   if (!Number.isFinite(checked) || now - checked > SYNC_STALE_MS) {
+    if (!mac.online) return { problems: 0, drift, kind: "box_sync_offline", excerpt: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(now, mac.lastSeen)}), so the Mac sync watcher last checked ${Number.isFinite(checked) ? iso(checked) : "at an unknown time"}; not counted, it checks again when the Mac wakes` };
     return { problems: 1, drift, kind: "box_sync_stale", excerpt: `the Mac sync watcher last checked ${Number.isFinite(checked) ? iso(checked) : "at an unknown time"}, over 30 min ago; check ${SYNC_FIX}` };
   }
   if (status.alert) {
@@ -392,12 +399,19 @@ const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
     (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
+/** The Mac's reach from this box's Tailscale peer entry for `ssh mac`'s host; online when either read fails, so the stale check counts as before. */
+async function macReach(): Promise<PeerReach> {
+  const host = await exec("ssh", ["-G", "mac"]).then(out => /^hostname (\S+)$/m.exec(out)?.[1], () => undefined);
+  const status = host ? await readTailscaleStatus() : null;
+  return host && status ? peerReach(status, host) : { online: true };
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("demo-sandbox: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = join(REPO, ".cache/pm2-dev");
   const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO, platform: process.platform,
-    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) } });
+    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) }, mac: macReach });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
