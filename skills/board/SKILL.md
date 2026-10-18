@@ -87,7 +87,7 @@ Ops apply in order, all or none. A refused op returns the reason and the fix.
 3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements, target or duty. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
 5. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
-6. `todo_update {id,text?,done?,links?}` edits a todo, and its `links` replaces the list. Only the owner answers a todo. `todo_remove {id}` removes it.
+6. `todo_update {id,text?,done?,links?,choices?}` edits a todo, and its `links` replaces the list. `choices` gives an open ask tap answers in place, or `null` clears them, so a free-text review the owner has left open gets a one-tap answer without a re-post that resets its age. Only the owner answers a todo. `todo_remove {id}` removes it.
 
 A link is `{label,target}`, up to 5 per todo. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
 

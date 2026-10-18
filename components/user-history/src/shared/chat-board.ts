@@ -427,6 +427,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       const op: BoardOp = { op: "todo_update", id: id(value.id) };
       const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
       const list = links(value.links); if (list) op.links = list;
+      if (value.choices === null) op.choices = null; else if (value.choices !== undefined) op.choices = choices(value.choices);
       if (value.done !== undefined) { if (typeof value.done !== "boolean") invalid("done must be true or false."); op.done = value.done; }
       if (value.reply === null) op.reply = null;
       else if (value.reply !== undefined) op.reply = str(value.reply, "reply", BOARD_LIMITS.reply);
@@ -577,7 +578,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
       if (actor === "agent" && op.reply !== undefined) throw new BoardError("forbidden", AGENT_REPLY_ERROR);
-      if (actor === "agent" && todo.answeredBy === "owner" && op.text !== undefined && op.text !== todo.text) {
+      const newChoices = op.choices !== undefined && (op.choices ?? []).join("\n") !== (todo.choices ?? []).join("\n");
+      if (actor === "agent" && todo.answeredBy === "owner" && (op.text !== undefined && op.text !== todo.text || newChoices)) {
         throw new BoardError("forbidden", "The owner answered this todo; its question stays as asked. Add a new todo for a new question.");
       }
       const next: OwnerTodo = { ...todo };
@@ -590,7 +592,13 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         if (op.links.length) next.links = op.links; else delete next.links;
         parts.push(op.links.length ? `set ${op.links.length === 1 ? "a link" : `${op.links.length} links`} on ${parts.length ? "it" : quote(next.text)}` : `cleared the links on ${parts.length ? "it" : quote(next.text)}`);
       }
-      if (actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined)) checkAgentTodo(next);
+      // Choices on an open ask let the owner answer it with a tap, with no re-post that resets its age: every review todo open past 48 h on
+      // 10-18 had none (t25 at 92 h), while the asks with choices in the live chats were open at most 44 h.
+      if (newChoices) {
+        if (op.choices?.length) next.choices = op.choices; else delete next.choices;
+        parts.push(op.choices?.length ? `offered ${op.choices.map(quote).join(" / ")} on ${parts.length ? "it" : quote(next.text)}` : `cleared the choices on ${parts.length ? "it" : quote(next.text)}`);
+      }
+      if (actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined || newChoices)) checkAgentTodo(next);
       // The first part names the todo, later parts say "it".
       const label = () => parts.length ? "it" : quote(next.text);
       // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.

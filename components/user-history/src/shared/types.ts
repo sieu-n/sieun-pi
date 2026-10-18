@@ -162,7 +162,7 @@ export type BoardOp =
       waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null; duty?: string | null }
   | { op: "plan_remove"; id: string }
   | { op: "todo_add"; text: string; choices?: string[]; step?: string; links?: ArtifactLink[] }
-  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[] }
+  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[]; choices?: string[] | null }
   | { op: "todo_remove"; id: string };
 
 export interface ThreadSnapshot {
