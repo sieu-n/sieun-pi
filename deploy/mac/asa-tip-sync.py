@@ -1,44 +1,44 @@
 #!/usr/bin/python3
-"""Fast-forward the box auto-sns-agent checkout to the Mac checkout's sieun/dev.
+"""Fast-forward this follower's auto-sns-agent checkout to the tip host's sieun/dev.
 
-Run by asa-mac-sync.timer and by tip-host.mjs after each land (systemctl --user start asa-mac-sync.service).
-Installed as a copy in ~/.local/share/asa-mac-sync; its log, blocked.json and carried/ live in ~/.local/state/asa-mac-sync. Each run fetches the Mac's local sieun/dev over ssh into
-refs/remotes/mac/sieun/dev and fast-forwards the box's sieun/dev only when:
-  - the box checkout is on sieun/dev and its HEAD is an ancestor of the Mac tip,
-  - no .git/index.lock exists and the index stages nothing,
-  - every path the fast-forward writes is clean on disk, or already holds the Mac
-    tip's bytes (a file another session copied over by hand).
-A wiki page (apps/llm-wiki/content/) that the Mac tip changes while the box holds
-other bytes keeps the box's bytes: since 2026-10-18 04:17Z the wiki host (this box)
-is the one writer of wiki pages, and the Mac gets them from wiki-box-commit's
-ci/wiki-box objects, so the box copy is the same page or newer. The fast-forward
-leaves that file as a local edit on the new HEAD, and wiki-box-commit ships it.
-Outside the wiki, a live edit on a path the fast-forward writes rides on the move: it is
-merged onto the tip's bytes, a hunk both sides changed keeps the live side, and the old
-bytes are saved in CARRY_DIR. A file that cannot be merged as text (binary, symlink, added
-or deleted on one side) keeps its bytes as a local edit on the new HEAD. Until 2026-10-18
-such a path skipped the run, and with dozens of sessions editing the checkout the box sat
-at b9df6df9df from 06:36Z to 08:3xZ, over 120 commits behind, because some live path always
-overlapped the incoming range. Live edits on other paths stay untouched, because a
-fast-forward never writes them.
-A .git/index.lock that no process holds open, with no git process running in the checkout,
-is removed once it is older than STALE_LOCK_S.
-When the box line is not an ancestor of the Mac tip, the run moves the box to the
-Mac tip only if the Mac tip already holds every box-only commit: as a Replayed-From
-trailer (tip-host.mjs and the 2026-10-18 replay write it) or as the same bytes on every
-path the commit changed. Since 2026-10-18 the box is a follower: commit.mjs and
-land-object.mjs land on the Mac over ssh (.git/agent-tip-host.json), so the box branch
-only ever follows the Mac. Any box-only commit the Mac lacks skips the run and is named.
-It never drops a commit the Mac lacks and never pushes. Every run writes one JSON
-line to the log, and a skipped run names its reason.
+Since 2026-10-18 11:24Z the tip host is us-metal02, and the Mac follows it. Until then the Mac held the tip, and at
+load 435 to 470 from about 10:50Z its sshd refused the box's lands, so about 30 commit.mjs and land-object.mjs runs on
+the box retried against it and nothing landed. A follower checkout has .git/agent-tip-host.json, so commit.mjs and
+land-object.mjs land on the tip host over ssh (tip-host.mjs), and this script brings the follower along.
+
+Run on the Mac by launchd ai.virev.asa-tip-sync every minute and by tip-host.mjs after each land (the config's "sync"
+command). Installed as a copy in ~/.local/share/asa-tip-sync; its log, blocked.json and carried/ live in
+~/.local/state/asa-tip-sync. Each run fetches the tip host's sieun/dev over ssh into refs/remotes/tip/sieun/dev and
+fast-forwards the local sieun/dev only when:
+  - the checkout is on sieun/dev and its HEAD is an ancestor of the tip,
+  - no .git/index.lock exists and the index stages nothing, apart from entries at a state the branch moved past,
+  - every path the fast-forward writes is clean on disk, or already holds the tip's bytes.
+A state the branch moved past is the path's entry, or its absence, at a commit between the oldest commit in sieun/dev's
+reflog and HEAD, other than HEAD's. A land that moves sieun/dev without the index or disk leaves such entries behind;
+the run sets a staged one back to HEAD's and gives such a file on disk the tip's bytes, saving the old ones in CARRY_DIR.
+Bytes no commit held there are live edits.
+A wiki page (apps/llm-wiki/content/) that the tip changes while this checkout holds other bytes keeps the local bytes,
+since the wiki host (us-metal02) is the one writer of wiki pages.
+Outside the wiki, a live edit on a path the fast-forward writes rides on the move: it is merged onto the tip's bytes,
+a hunk both sides changed keeps the live side, and the old bytes are saved in CARRY_DIR. A file that cannot be merged
+as text (binary, symlink, added or deleted on one side) keeps its bytes as a local edit on the new HEAD. Until
+2026-10-18 such a path skipped the run, and with dozens of sessions editing the box checkout it sat at b9df6df9df from
+06:36Z to 08:3xZ, over 120 commits behind. Live edits on other paths stay untouched.
+A .git/index.lock that no process holds open, with no git process running in the checkout, is removed once it is
+older than STALE_LOCK_S.
+When the local line is not an ancestor of the tip, the run moves to the tip only if the tip already holds every
+local-only commit: as a Replayed-From trailer (tip-host.mjs and land-object.mjs write it) or as the same bytes on every
+path the commit changed. Any local-only commit the tip lacks skips the run and is named; land it on the tip host with
+land-object.mjs. It never drops a commit the tip lacks and never pushes. Every run writes one JSON line to the log,
+and a skipped run names its reason.
 """
 import calendar, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 
 REPO = os.environ.get("ASA_SYNC_REPO") or os.path.expanduser("~/Documents/Github/auto-sns-agent")
-URL = os.environ.get("ASA_SYNC_URL") or "mac:/Users/sieunpark/Documents/Github/auto-sns-agent"
+URL = os.environ.get("ASA_SYNC_URL") or "sieun@100.83.139.73:/home/sieun/Documents/Github/auto-sns-agent"
 BRANCH = "refs/heads/sieun/dev"
-TRACK = "refs/remotes/mac/sieun/dev"
-STATE = os.environ.get("ASA_SYNC_STATE") or os.path.expanduser("~/.local/state/asa-mac-sync")
+TRACK = "refs/remotes/tip/sieun/dev"
+STATE = os.environ.get("ASA_SYNC_STATE") or os.path.expanduser("~/.local/state/asa-tip-sync")
 LOG = os.environ.get("ASA_SYNC_LOG") or os.path.join(STATE, "sync.log")
 CARRY_DIR = os.environ.get("ASA_SYNC_CARRY") or os.path.join(STATE, "carried")
 BLOCK_STATE = os.environ.get("ASA_SYNC_BLOCK_STATE") or os.path.join(STATE, "blocked.json")
@@ -47,6 +47,7 @@ BLOCK_ALERT_S = int(os.environ.get("ASA_SYNC_BLOCK_ALERT_S") or 600)
 # The ops chat box-memory-guard sends to.
 OPS_THREAD = os.environ.get("ASA_SYNC_OPS_THREAD") or "01a11af8-962e-773d-a19a-ee4104011987"
 PRIME_BIN = os.environ.get("ASA_SYNC_PRIME_BIN") or os.path.expanduser("~/.local/bin/prime-agent")
+HOST = os.uname().nodename.split(".")[0]
 # The 10 min ops alert at 08:24Z on 2026-10-18 sat with nobody acting while ecosystem.config.cjs held the box. So the VP of CI asked for the
 # session that wrote a blocking path to hear of it at BLOCK_ALERT_S, and for one line on the AI harness chat's For you list at FORYOU_S.
 FORYOU_S = int(os.environ.get("ASA_SYNC_FORYOU_S") or 1800)
@@ -87,7 +88,7 @@ def watch_block(outcome, line):
     now = time.time()
     if outcome in ("noop", "fast-forward", "converge"):
         if state.get("alerted"):
-            send(OPS_THREAD, f"[asa-mac-sync] us-metal02 follows the Mac again: {outcome} at {line['ts']}, HEAD {line.get('now') or line.get('head')}.")
+            send(OPS_THREAD, f"[asa-tip-sync] {HOST} follows the tip host again: {outcome} at {line['ts']}, HEAD {line.get('now') or line.get('head')}.")
         if state.get("todo"):
             board_ops([{"op": "todo_update", "id": state["todo"], "done": True}])
         state = {}
@@ -96,13 +97,13 @@ def watch_block(outcome, line):
         mins = int((now - state["since"]) // 60)
         if now - state["since"] >= BLOCK_ALERT_S:
             if not state.get("alerted"):
-                state["alerted"] = send(OPS_THREAD, f"[asa-mac-sync] us-metal02 auto-sns-agent sieun/dev has not followed the Mac for {mins} min. "
+                state["alerted"] = send(OPS_THREAD, f"[asa-tip-sync] {HOST} auto-sns-agent sieun/dev has not followed the tip host for {mins} min. "
                                                     f"Last run: {json.dumps(line)[:900]}. Log: {LOG}")
             owners = state.setdefault("owners", {})
             for rel, session, why in blockers(line):
                 if rel in owners:
                     continue
-                told = bool(session) and send(session, f"[asa-mac-sync] us-metal02's auto-sns-agent checkout has not followed the Mac's sieun/dev for {mins} min, "
+                told = bool(session) and send(session, f"[asa-tip-sync] {HOST}'s auto-sns-agent checkout has not followed the tip host's sieun/dev for {mins} min, "
                                                        f"because {why}. Please commit it or put it back to HEAD. The sync never drops it on its own. Log: {LOG}")
                 owners[rel] = {"session": session, "told": told}
         if now - state["since"] >= FORYOU_S and not state.get("todo"):
@@ -113,14 +114,20 @@ def watch_block(outcome, line):
 
 
 def send(agent, text):
-    r = subprocess.run([PRIME_BIN, "send", agent, text], capture_output=True, timeout=60)
+    try:
+        r = subprocess.run([PRIME_BIN, "send", agent, text], capture_output=True, timeout=60)
+    except OSError:
+        return False
     return r.returncode == 0
 
 
 def board_ops(ops):
     """Applies chat_board ops to FORYOU_CHAT's board with the chat's own board-apply script. Its summary lines, or "" when it refused."""
-    r = subprocess.run([*BOARD_APPLY, FORYOU_CHAT, json.dumps(ops)], cwd=USER_HISTORY if os.path.isdir(USER_HISTORY) else None,
-                       capture_output=True, timeout=120)
+    try:
+        r = subprocess.run([*BOARD_APPLY, FORYOU_CHAT, json.dumps(ops)], cwd=USER_HISTORY if os.path.isdir(USER_HISTORY) else None,
+                           capture_output=True, timeout=120)
+    except OSError:
+        return ""
     return r.stdout.decode(errors="replace") if r.returncode == 0 else ""
 
 
@@ -128,7 +135,7 @@ def ask_owner(mins, line, owners):
     """Puts one line on FORYOU_CHAT's For you list. The todo id, or None when the board took nothing."""
     who = "; ".join(f"session {v['session'][:8]} wrote {rel}" + (" and was told" if v["told"] else "") for rel, v in owners.items() if v["session"])
     paths = [rel for rel in owners] or [line.get("reason", "an unknown reason")]
-    text = (f"The box copy of auto-sns-agent has not followed the Mac for {mins} min, held up by {', '.join(paths[:3])}. "
+    text = (f"The {HOST} copy of auto-sns-agent has not followed the tip for {mins} min, held up by {', '.join(paths[:3])}. "
             f"{(who[0].upper() + who[1:] + '.') if who else 'No session could be found for it.'} Should this chat get it committed or dropped?")
     links = [{"label": f"session {v['session'][:8]}", "target": f"thread:{v['session']}"} for v in owners.values() if v["session"]][:4]
     out = board_ops([{"op": "todo_add", "text": text, "choices": ["Yes, get it sorted", "Leave it"],
@@ -231,6 +238,10 @@ def out(*args):
 def lock_holders(lock):
     """Pids that hold lock open or run git with their working directory in REPO."""
     real, holders = os.path.realpath(REPO), []
+    if not os.path.isdir("/proc"):
+        # macOS: lsof names the lock's holders, and any running git counts as one.
+        r = subprocess.run(["sh", "-c", f"lsof -t '{lock}'; pgrep -x git"], capture_output=True, text=True)
+        return [int(p) for p in r.stdout.split()]
     for pid in filter(str.isdigit, os.listdir("/proc")):
         try:
             if any(os.readlink(f"/proc/{pid}/fd/{fd}") == lock for fd in os.listdir(f"/proc/{pid}/fd")):
@@ -318,6 +329,48 @@ def write_file(rel, mode, data):
     os.replace(tmp, p)
 
 
+def put(rel, entry):
+    """Write entry's blob to rel on disk, or remove rel when entry is None."""
+    if entry is None:
+        try:
+            os.remove(os.path.join(REPO, rel))
+        except FileNotFoundError:
+            pass
+        return
+    os.makedirs(os.path.dirname(os.path.join(REPO, rel)) or REPO, exist_ok=True)
+    write_file(rel, entry[0], git("cat-file", "blob", entry[1]).stdout)
+
+
+def refresh_left_behind(now, skip, saved):
+    """Give every tracked file outside WIKI that sits at a state the branch moved past the bytes of now, saving the old bytes under saved.
+
+    The move writes only the paths in head..tip, so without this the 359 files and 236 deletions a land left on the Mac's disk on
+    2026-10-18 would stay as reverts in the work tree. Returns the paths it wrote.
+    """
+    rels = [rel for rel in git("diff", "--name-only", "-z", "--no-renames", now).stdout.decode().split("\0")
+            if rel and rel not in skip and not rel.startswith(WIKI)]
+    disks = {rel: disk_state(rel) for rel in rels}
+    entries = {rel: tip_entry(now, rel) for rel in rels}
+    rels = [rel for rel in rels if disks[rel] != entries[rel] and index_entry(rel) == entries[rel]
+            and "120000" not in ((disks[rel] or ("",))[0], (entries[rel] or ("",))[0]) and (disks[rel] or ("",))[0] != "dir"]
+    held = left_behind(now, {rel: disks[rel] for rel in rels})
+    done = []
+    for rel in rels:
+        disk, entry = disks[rel], entries[rel]
+        if rel not in held:
+            continue
+        if disk is not None:
+            dst = os.path.join(saved, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(os.path.join(REPO, rel), "rb") as src, open(dst, "wb") as f:
+                f.write(src.read())
+        put(rel, entry)
+        done.append(rel)
+    if done:
+        git("update-index", "-q", "--refresh", check=False)
+    return done
+
+
 def superseded(rel, head, tip):
     """True when the file on disk is older than the newest commit in head..tip that changed it.
 
@@ -337,7 +390,7 @@ def superseded(rel, head, tip):
 
 
 def unlanded(box_only, head, tip):
-    """Box-only commits the Mac tip holds neither as a Replayed-From trailer nor as the same bytes."""
+    """Local-only commits the tip holds neither as a Replayed-From trailer nor as the same bytes."""
     base = out("merge-base", head, tip)
     replayed = set()
     for line in out("log", "--format=%B", f"{base}..{tip}").splitlines():
@@ -347,10 +400,79 @@ def unlanded(box_only, head, tip):
     for c in box_only:
         if c in replayed:
             continue
+        # A commit this checkout got by replaying a tip host commit names it, as 19b7371d8c on the Mac named
+        # box commit 40b23c48aa at the 11:24Z tip move on 2026-10-18; it is landed when the tip holds that one.
+        named = re.findall(r"^Replayed-From: ([0-9a-f]{40})", out("log", "-1", "--format=%B", c), re.M)
+        if any(n in replayed or git("merge-base", "--is-ancestor", n, tip, check=False).returncode == 0 for n in named):
+            continue
         rows = changed_paths(f"{c}^", c)
         if not rows or any(tip_entry(tip, rel) != new for rel, _old, new in rows):
             missing.append(c)
+    # A later tip commit can change a path again, so the same change as a tip commit also counts: 6a73f04e21 on the Mac
+    # is d78f05a7f2 on the box (one patch-id), and at 11:49Z on 2026-10-18 a newer box commit had changed one of its 4 paths.
+    if missing:
+        tip_ids = patch_ids(f"{base}..{tip}")
+        missing = [c for c in missing if not (patch_ids(f"{c}^!").keys() & tip_ids.keys())]
     return missing
+
+
+def patch_ids(rev_range):
+    """{patch-id: commit} for every non-merge commit in rev_range."""
+    log_p = git("log", "-p", "--no-color", "--no-ext-diff", "--no-merges", "--format=commit %H", rev_range).stdout
+    ids = subprocess.run([GIT, "patch-id", "--stable"], input=log_p, capture_output=True, env=READ_ENV).stdout.decode().split()
+    return dict(zip(ids[0::2], ids[1::2]))
+
+
+def raw_states(*args, paths):
+    """{rel: set of entry or None} from git log --raw over args, limited to paths."""
+    states = {}
+    raw = git("--literal-pathspecs", "log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", *args, "--stdin",
+              inp=("--\n" + "".join(rel + "\n" for rel in paths)).encode()).stdout.decode().split("\0")
+    i = 0
+    while i < len(raw) - 1:
+        meta = raw[i].lstrip("\n")
+        if not meta.startswith(":"):
+            i += 1
+            continue
+        om, nm, ob, nb, _ = meta[1:].split(" ")
+        got = states.setdefault(raw[i + 1], set())
+        got.add(None if om == "000000" else (om, ob))
+        got.add(None if nm == "000000" else (nm, nb))
+        i += 2
+    return states
+
+
+def left_behind(head, wanted):
+    """The paths of wanted ({rel: entry or None}) whose entry is a state git already holds, so it is no live edit.
+
+    A state counts when the path had it at a commit from the oldest commit in sieun/dev's reflog up to head, or, for bytes,
+    at a commit on a branch or remote branch since then. On 2026-10-18 the Mac's land-object.mjs runs moved sieun/dev from
+    10:44Z to 11:09Z and left the pre-land bytes of 50 paths staged and the index without 36 paths those lands added, and
+    files on disk held drafts whose commits sit on ci/ branches, so asa-tip-sync skipped on "the index stages changes" and
+    a carry would have merged those reverts onto the tip. refs/stash is left out, since lint-staged backs up live edits there.
+    """
+    if not wanted:
+        return set()
+    oldest = out("log", "-g", "--format=%H", BRANCH).splitlines()[-1:]
+    if not oldest or git("merge-base", "--is-ancestor", oldest[0], head, check=False).returncode != 0:
+        return set()
+    at_oldest = {}
+    for row in git("ls-tree", "-r", "-z", "--full-tree", oldest[0]).stdout.decode().split("\0"):
+        if "\t" in row:
+            meta, rel = row.split("\t", 1)
+            if rel in wanted:
+                mode, _type, blob = meta.split(" ")
+                at_oldest[rel] = (mode, blob)
+    states = raw_states(f"{oldest[0]}..{head}", paths=wanted)
+    held = {rel for rel, entry in wanted.items() if entry == at_oldest.get(rel) or entry in states.get(rel, ())}
+    # Bytes never added to the object store are a live edit, so only stored blobs need the branch walk.
+    rest = [rel for rel, entry in wanted.items() if rel not in held and entry is not None]
+    known = git("cat-file", "--batch-check", inp="".join(wanted[rel][1] + "\n" for rel in rest).encode()).stdout.decode().splitlines()
+    rest = [rel for rel, row in zip(rest, known) if not row.endswith(" missing")]
+    if rest:
+        other = raw_states("--branches", "--remotes", f"^{oldest[0]}", paths=rest)
+        held |= {rel for rel in rest if wanted[rel] in other.get(rel, ())}
+    return held
 
 
 def index_entry(rel):
@@ -391,29 +513,36 @@ def main():
         box_only = out("rev-list", f"{tip}..{head}").split()
         missing = unlanded(box_only, head, tip)
         if missing:
-            return log("skip", reason="box sieun/dev has commits the Mac tip lacks", head=head[:10], tip=tip[:10],
-                       box_only_commits=len(box_only), missing=[c[:10] for c in missing][:20],
-                       mac_only_commits=int(out("rev-list", "--count", f"{head}..{tip}")))
+            return log("skip", reason="local sieun/dev has commits the tip lacks", head=head[:10], tip=tip[:10],
+                       local_only_commits=len(box_only), missing=[c[:10] for c in missing][:20],
+                       tip_only_commits=int(out("rev-list", "--count", f"{head}..{tip}")))
     if os.path.exists(os.path.join(REPO, ".git", "index.lock")) and not clear_stale_lock():
         return log("skip", reason=".git/index.lock exists", head=head[:10], tip=tip[:10])
     staged = out("diff-index", "--cached", "--name-only", head).splitlines()
-    # A path staged at the Mac tip's bytes is a move half done (a sync that stopped after
-    # setting the index). Its entry goes back to HEAD's, and the move below sets it again.
+    # A path staged at the tip's bytes is a move half done (a sync that stopped after
+    # setting the index). A path staged at a state the branch moved past is a land that moved
+    # sieun/dev and left the index behind. Either entry goes back to HEAD's, and the move below sets it again.
     halfway = [rel for rel in staged if index_entry(rel) == tip_entry(tip, rel)]
-    for rel in halfway:
+    held = left_behind(head, {rel: index_entry(rel) for rel in staged if rel not in halfway})
+    stale_index = [rel for rel in staged if rel in held]
+    for rel in [] if "--dry-run" in sys.argv else halfway + stale_index:
         entry = tip_entry(head, rel)
         if entry is None:
             git("update-index", "--force-remove", "--", rel)
         else:
             git("update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{rel}")
-    staged = [rel for rel in staged if rel not in halfway]
+    staged = [rel for rel in staged if rel not in halfway and rel not in stale_index]
     if staged:
         return log("skip", reason="the index stages changes", head=head[:10], tip=tip[:10], staged=staged[:20], staged_count=len(staged))
 
     rows = changed_paths(head, tip)
-    dirty, preapplied, kept, carried, overlap = [], [], [], [], []
+    disks = {rel: disk_state(rel) for rel, _old, _new in rows}
+    # A file on disk at a state the branch moved past was left behind by a land, so it takes the tip's bytes
+    # like a superseded draft. Carried as a live edit it would merge that land's revert onto the tip.
+    held = left_behind(head, {rel: disks[rel] for rel, old, new in rows if disks[rel] not in (old, new) and (disks[rel] or ("",))[0] != "dir"})
+    dirty, preapplied, kept, carried, overlap, stale = [], [], [], [], [], []
     for rel, old, new in rows:
-        disk = disk_state(rel)
+        disk = disks[rel]
         if disk == old:
             continue
         if disk == new:
@@ -421,6 +550,9 @@ def main():
         elif rel.startswith(WIKI) and new is not None and disk is not None and disk[0] == new[0]:
             preapplied.append((rel, old, new))
             kept.append(rel)
+        elif rel in held and "120000" not in (disk and disk[0], new and new[0]) and (disk is None or disk[0] != "dir"):
+            carried.append((rel, old, new, disk, None))
+            stale.append(rel)
         elif (merged := carry(rel, disk, old, new)) is not None:
             carried.append((rel, old, new, disk, merged))
         elif new is not None and disk is not None and disk[0] != "dir" and superseded(rel, head, tip):
@@ -441,7 +573,8 @@ def main():
         return print(json.dumps({"dry_run": True, "head": head[:10], "tip": tip[:10], "paths": len(rows),
                                  "preapplied": len(preapplied) - len(kept), "kept_local": kept,
                                  "carried": [c[0] for c in carried if c[4] is not None], "overlap": overlap,
-                                 "superseded": [c[0] for c in carried if c[4] is None]}))
+                                 "superseded": [c[0] for c in carried if c[4] is None and c[0] not in stale], "stale": stale,
+                                 "stale_index": stale_index}))
 
     # A carried path holds a live edit on a file the move changes. Its bytes are saved in
     # CARRY_DIR, the file gets the tip's bytes for the move, and the edit goes back on top.
@@ -451,12 +584,14 @@ def main():
         for rel, _old, new, disk, _merged in carried:
             if disk_state(rel) != disk:
                 return log("skip", reason="a carried path changed while the run read it", path=rel)
+            if disk is None:
+                continue
             dst = os.path.join(saved, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(os.path.join(REPO, rel), "rb") as src, open(dst, "wb") as f:
                 f.write(src.read())
         for rel, _old, new, _disk, _merged in carried:
-            write_file(rel, new[0], git("cat-file", "blob", new[1]).stdout)
+            put(rel, new)
             preapplied.append((rel, _old, new))
 
     def set_index(rel, entry):
@@ -465,11 +600,17 @@ def main():
         else:
             git("update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{rel}")
 
+    def restore(rel, disk):
+        if disk is None:
+            put(rel, None)
+        else:
+            write_file(rel, disk[0], open(os.path.join(saved, rel), "rb").read())
+
     def undo():
         for rel, old, _new in preapplied:
             set_index(rel, old)
         for rel, _old, _new, disk, _merged in carried:
-            write_file(rel, disk[0], open(os.path.join(saved, rel), "rb").read())
+            restore(rel, disk)
 
     try:
         for rel, _old, new in preapplied:
@@ -478,26 +619,33 @@ def main():
         undo()
         raise
     if converge:
-        m = git("update-ref", "-m", "asa-mac-sync: follow the Mac tip, every box-only commit is on it", BRANCH, tip, head, check=False)
+        m = git("update-ref", "-m", "asa-tip-sync: follow the tip, every local-only commit is on it", BRANCH, tip, head, check=False)
         if m.returncode == 0:
             m = git("read-tree", "-m", "-u", head, tip, check=False)
             if m.returncode != 0:
-                git("update-ref", "-m", "asa-mac-sync: read-tree refused, back", BRANCH, head, tip, check=False)
+                git("update-ref", "-m", "asa-tip-sync: read-tree refused, back", BRANCH, head, tip, check=False)
     else:
         m = git("merge", "--ff-only", "--no-stat", "--quiet", tip, check=False)
     if m.returncode != 0:
         undo()
-        return log("skip", reason="the move to the Mac tip was refused", head=head[:10], tip=tip[:10],
+        return log("skip", reason="the move to the tip was refused", head=head[:10], tip=tip[:10],
                    detail=m.stderr.decode(errors="replace").strip()[-600:])
     now = out("rev-parse", "HEAD")
     for rel, _old, new, disk, merged in carried:
         if merged is None and now == tip:
             continue
-        write_file(rel, new[0] if now == tip else disk[0], merged if now == tip else open(os.path.join(saved, rel), "rb").read())
+        if now == tip:
+            write_file(rel, new[0], merged)
+        else:
+            restore(rel, disk)
+    if now == tip:
+        saved = saved or os.path.join(CARRY_DIR, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{head[:10]}-{tip[:10]}")
+        stale += refresh_left_behind(now, {c[0] for c in carried} | set(kept), saved)
     log(("converge" if converge else "fast-forward") if now == tip else "error", head=head[:10], tip=tip[:10], now=now[:10],
         commits=int(out("rev-list", "--count", f"{head}..{now}")), paths=len(rows), preapplied=len(preapplied) - len(kept) - len(carried),
-        carried=[c[0] for c in carried if c[4] is not None], overlap=overlap, superseded=[c[0] for c in carried if c[4] is None],
-        carried_saved=saved, kept_local=kept[:30])
+        carried=[c[0] for c in carried if c[4] is not None], overlap=overlap, superseded=[c[0] for c in carried if c[4] is None and c[0] not in stale],
+        stale=stale[:30], stale_count=len(stale), stale_index=stale_index[:30], stale_index_count=len(stale_index),
+        carried_saved=saved if saved and os.path.isdir(saved) else None, kept_local=kept[:30])
 
 
 if __name__ == "__main__":

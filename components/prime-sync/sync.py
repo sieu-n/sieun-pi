@@ -194,7 +194,7 @@ def move_checkout(checkout: Path, head: str, target: str, remote: str) -> str:
     A live edit is merged onto the target's bytes with git merge-file. When the file was last written before the newest origin/main
     commit that changed it, it is that commit's draft and takes the target's bytes. Otherwise a hunk both sides changed keeps the live
     side, and a file that cannot be merged as text (binary, symlink, added or deleted on one side) keeps its bytes as a local edit.
-    The old bytes of every carried or superseded file are saved under carried/ first. asa-mac-sync moves the box's auto-sns-agent
+    The old bytes of every carried or superseded file are saved under carried/ first. asa-tip-sync moves the Mac's auto-sns-agent
     checkout this way since 10-18, because a stash that refused any overlap held the Mac's checkout from 05:24Z until a chat stashed 15 files.
     Only a staged edit that differs from both the disk and the target, or a folder in a file's place, holds the move, and it is named."""
     dirty, preset, carried, kept = [], [], [], []
