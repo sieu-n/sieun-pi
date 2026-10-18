@@ -120,6 +120,8 @@ export type PeerOptions = {
   changeMs: number;
   /** The wait before a closed or failed link connects again. */
   reconnectMs: number;
+  /** Why the box cannot be dialed now, such as Tailscale reading it offline, so the connect fails at once instead of on its deadlines; null to dial. */
+  reach?: () => Promise<string | null>;
   /**
    * Set: the link never subscribes to the roster, and the copy lists the roster (live sessions only) every this many ms instead. Unset: the
    * copy follows the roster_update stream.
@@ -158,6 +160,8 @@ export class SessionPeer {
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
   private syncNext: Promise<void> | undefined;
+  /** The last failed sync's message, logged once until a sync answers or another failure comes. */
+  private failure: string | undefined;
   private fullList: Promise<void> | undefined;
   private changeTimer: ReturnType<typeof setTimeout> | undefined;
   private catchUpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -210,6 +214,8 @@ export class SessionPeer {
     if (client.isConnected && this.subscribed) return;
     this.connecting ??= (async () => {
       try {
+        const away = await this.options.reach?.();
+        if (away) throw new Error(away);
         await client.reconnect(deadlines.socketMs);
         const hello = await client.waitForHello(deadlines.helloMs);
         this.options.onHello?.(hello);
@@ -243,8 +249,10 @@ export class SessionPeer {
       if (!this.listed) await this.full();
       else await this.roster();
       this.scheduleResync();
-    })().catch(error => {
-      if (!this.closed) this.options.log(`copy ${this.name}: ${error instanceof Error ? error.message : String(error)}`);
+    })().then(() => { this.failure = undefined; }, error => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.closed && message !== this.failure) this.options.log(`copy ${this.name}: ${message}`);
+      this.failure = message;
       throw error;
     }).finally(() => { this.syncing = undefined; this.schedulePoll(); });
     return this.syncing;

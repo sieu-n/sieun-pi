@@ -1,7 +1,9 @@
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, type SessionSummary } from "prime-agent";
 import { mirrorFile, pruneMirror } from "./host-mirror.ts";
+import { HostReach, seenAgo } from "./host-reach.ts";
 import { HostBridge, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
 import { SessionPeer } from "./session-peer.ts";
 
@@ -61,17 +63,39 @@ export class HostCatalogs {
   /** Called after a host's rows changed or it went down, so the catalog lays them into its next frame. */
   onChange: () => void = () => {};
 
-  /** `copies` keeps each box's copy on disk (`copyPath`) so a restart lists nothing; tests leave it off. */
+  /** Each box Tailscale read offline at its last read, with why, from the reads before each connect of its copy (`away`). */
+  private readonly offline = new Map<string, string>();
+  /** Each box whose last relay read of a session file got no answer, with the error, until a read answers. */
+  private readonly unanswered = new Map<string, string>();
+
+  /**
+   * `copies` keeps each box's copy on disk (`copyPath`) so a restart lists nothing; tests leave it off. `reach` reads which boxes are offline
+   * (src/host-reach.ts); the watch and the outbox share it, so one Tailscale read serves them all.
+   */
   constructor(readonly registry: HostsRegistry, private readonly bridge: HostBridge, readonly self: Host | null = selfHost(registry),
-    private readonly log: (line: string) => void = () => {}, copies = false) {
+    private readonly log: (line: string) => void = () => {}, copies = false,
+    readonly reach: HostReach = new HostReach({ addressOf: name => registry.hosts.find(host => host.name === name)?.address, log })) {
     for (const host of registry.hosts) {
       if (host.name === self?.name) continue;
       const client = new DaemonClient(bridge.socketPath(host.name));
       const peer = new SessionPeer({ name: host.name, client, file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
-        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, log: line => this.log(`hosts: ${line}`),
+        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, reach: () => this.away(host), log: line => this.log(`hosts: ${line}`),
         onChange: () => { if (copies) this.pruneCopies(host.name); this.onChange(); } });
       this.remotes.set(host.name, { host, client, peer });
     }
+  }
+
+  /**
+   * Why the box is offline by Tailscale's word, null when it reads online. On 10-18 the MacBook Pro was offline from 13:10Z with its lid closed,
+   * and each connect of its copy waited out the tunnel's 10 s every 15 s, while a page that opened a Mac thread waited 15 s per relay read of its
+   * file, twice, before the sidebar's first frame went out.
+   */
+  private async away(host: Host): Promise<string | null> {
+    const reach = await this.reach.reach(host.name);
+    if (reach.online) { this.offline.delete(host.name); return null; }
+    const why = `${host.name} is offline (Tailscale last seen ${seenAgo(Date.now(), reach.lastSeen)})`;
+    this.offline.set(host.name, why);
+    return why;
   }
 
   /** True once every other box's copy holds a full list, this run's or the disk copy's; before that a session missing from the rows may be on one. */
@@ -86,7 +110,13 @@ export class HostCatalogs {
   /** The name the rows of this box carry; null when this machine is not in hosts.json. */
   get selfName(): string | null { return this.self?.name ?? null; }
 
-  start(): void { for (const remote of this.remotes.values()) void remote.peer.sync().catch(() => {}); }
+  /** Each copy's sync, and a Tailscale read at once, since a copy reads its disk copy before its first connect asks. */
+  start(): void {
+    for (const remote of this.remotes.values()) {
+      void this.away(remote.host).catch(() => {});
+      void remote.peer.sync().catch(() => {});
+    }
+  }
 
   /** How many full lists, roster lists and roster updates this service took from the other boxes since it started. */
   get counts(): { full: number; roster: number; updates: number } {
@@ -168,16 +198,32 @@ export class HostCatalogs {
 
   /**
    * A local copy of a session file on another host, brought up to date by `mirrorFile`, which the `hosts transcript` and `hosts read` commands
-   * share, so a file this service copied costs them only its new bytes.
+   * share, so a file this service copied costs them only its new bytes. A box Tailscale reads offline is not dialed, and one whose last read or
+   * daemon connect got no answer is read again behind the caller: both give the copy this box has at once, or fail at once without one.
    */
   mirror(host: Host, path: string): Promise<string> {
     const key = `${host.name}:${path}`;
-    const pending = this.mirrors.get(key);
-    if (pending) return pending;
-    if (Date.now() - (this.mirroredAt.get(key) ?? 0) < MIRROR_FRESH_MS) return Promise.resolve(mirrorPath(host, path));
     const local = mirrorPath(host, path);
+    const offline = this.offline.get(host.name);
+    const pending = this.mirrors.get(key) ?? (offline || Date.now() - (this.mirroredAt.get(key) ?? 0) < MIRROR_FRESH_MS ? undefined : this.read(host, path, key, local));
+    const peer = this.remotes.get(host.name)?.peer;
+    const down = offline ?? this.unanswered.get(host.name) ?? (peer?.state === "down" ? peer.error ?? `${host.name} did not answer` : undefined);
+    if (!down) return pending ?? Promise.resolve(local);
+    pending?.catch(() => {});
+    // A read that got no answer leaves an empty file where the copy goes (mirrorFile opens it first), so only bytes count as a copy.
+    if ((statSync(local, { throwIfNoEntry: false })?.size ?? 0) > 0) return Promise.resolve(local);
+    return Promise.reject(new Error(`${down}; this box has no copy of ${path}`));
+  }
+
+  private read(host: Host, path: string, key: string, local: string): Promise<string> {
     const job = (async () => {
-      await mirrorFile(host, path, local);
+      try { await mirrorFile(host, path, local); } catch (error) {
+        // A refusal with a status (404: the file left that box) is an answer; a timeout or a refused connection is not.
+        if ((error as { status?: unknown }).status === undefined) this.unanswered.set(host.name, error instanceof Error ? error.message : String(error));
+        else this.unanswered.delete(host.name);
+        throw error;
+      }
+      this.unanswered.delete(host.name);
       this.mirroredAt.set(key, Date.now());
       return local;
     })().finally(() => { this.mirrors.delete(key); });

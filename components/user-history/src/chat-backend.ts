@@ -255,7 +255,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
-  const reach = new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
+  const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
   const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
