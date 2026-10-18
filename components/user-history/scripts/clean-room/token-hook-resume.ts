@@ -60,6 +60,24 @@ function rootJobs(chat: string): { id: string; name: string }[] {
     return rows.flatMap(row => row.sessionId && row.sessionName && names.has(row.sessionName) && row.runtimeKind !== "subagent" ? [{ id: row.sessionId, name: row.sessionName }] : []);
   } catch { return []; }
 }
+/** The pids of the Prime daemons on this box, whose children are the session workers; empty off Linux. */
+function daemonPids(): Set<number> {
+  if (process.platform !== "linux") return new Set();
+  return new Set(readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+    // A worker runs the same binary with --mode daemon on a worker-*.sock; the daemon itself listens on daemon.sock.
+    try { return /\0--mode\0daemon\0--daemon-socket\0[^\0]*\/daemon\.sock\0/.test(readFileSync(`/proc/${name}/cmdline`, "utf8")) ? [Number(name)] : []; } catch { return []; }
+  }));
+}
+/** The direct children of `parents`, from each thread's /proc children list. */
+function childrenOf(parents: ReadonlySet<number>): number[] {
+  return [...parents].flatMap(pid => {
+    try {
+      return readdirSync(`/proc/${pid}/task`).flatMap(tid => {
+        try { return readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").split(" ").filter(Boolean).map(Number); } catch { return []; }
+      });
+    } catch { return []; }
+  });
+}
 /** The pids of the chat services on this box, which run a hook check for a tree; empty off Linux. */
 function chatServices(): Set<number> {
   if (process.platform !== "linux") return new Set();
@@ -125,6 +143,7 @@ export async function killHooks(run: string, until: number, windowMs: number): P
   let jobs = new Set<string>();
   let active = new Set<string>();
   let parents = new Set<number>();
+  let daemons = new Set<number>();
   let looked = 0;
   while (Date.now() < until && (first === undefined || Date.now() < first + windowMs)) {
     const stateFile = join(run, "run.json");
@@ -135,11 +154,17 @@ export async function killHooks(run: string, until: number, windowMs: number): P
       // Only the chat's root jobs: the chat keeps its token, as the chats of the 16 dead roots did, so nothing above a root steers it back.
       const roots = rootJobs(chat);
       if (roots.length) writeFileSync(join(run, "roots.json"), JSON.stringify(roots, null, 1));
-      jobs = new Set(roots.map(root => root.id));
+      // A read that fails (prime-agent list timed out often on 10-18) keeps what the last one found, and ids only add up: in run-11 the
+      // root's hooks went unkilled from 12:19:25Z, and its turn went through at 12:20:11Z inside the window.
+      for (const root of roots) jobs.add(root.id);
       const tree = jobs.size ? activeIds(jobs) : { ids: new Set<string>(), workers: new Set<number>() };
-      active = tree.ids;
-      parents = new Set([...tree.workers, ...active.size ? chatServices() : []]);
+      for (const id of tree.ids) active.add(id);
+      parents = new Set([...parents, ...tree.workers, ...active.size ? chatServices() : []]);
+      daemons = daemonPids();
     }
+    // A continue that reopens a stopped root starts it on a new worker, which runs its hook within a second, before the next read of the list.
+    // So each poll also reads the daemons' children and scans any new one.
+    if (active.size) for (const pid of childrenOf(daemons)) parents.add(pid);
     for (const hook of active.size ? hookRuns(parents) : []) {
       if (!active.has(hook.session) && !jobs.has(hook.session)) continue;
       try { process.kill(hook.pid, "SIGKILL"); } catch { continue; }
