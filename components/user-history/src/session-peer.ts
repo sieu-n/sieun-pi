@@ -107,6 +107,11 @@ export type PeerOptions = {
   changeMs: number;
   /** The wait before a closed or failed link connects again. */
   reconnectMs: number;
+  /**
+   * Set: the link never subscribes to the roster, and the copy lists the roster (live sessions only) every this many ms instead. Unset: the
+   * copy follows the roster_update stream.
+   */
+  pollMs?: number;
   log: (line: string) => void;
   /** The rows or the state changed. */
   onChange: () => void;
@@ -144,6 +149,7 @@ export class SessionPeer {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private resyncTimer: ReturnType<typeof setTimeout> | undefined;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
+  private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
   constructor(private readonly options: PeerOptions) {
@@ -158,9 +164,6 @@ export class SessionPeer {
   }
 
   get name(): string { return this.options.name; }
-
-  /** Resolves once the disk copy of the last run is read (or found missing), so a caller right after a start sees what it saved. */
-  loaded(): Promise<void> { return this.loading; }
 
   /** The rows as the box's daemon gave them; every live row reads as saved while the box is down. */
   list(): SessionSummary[] {
@@ -192,8 +195,10 @@ export class SessionPeer {
         await client.reconnect(deadlines.socketMs);
         const hello = await client.waitForHello(deadlines.helloMs);
         this.options.onHello?.(hello);
-        const response = await client.request({ type: "roster_subscribe" }, deadlines.subscribeMs, { recoverable: false });
-        if (!response.success) throw new Error(response.error);
+        if (this.options.pollMs === undefined) {
+          const response = await client.request({ type: "roster_subscribe" }, deadlines.subscribeMs, { recoverable: false });
+          if (!response.success) throw new Error(response.error);
+        }
         this.subscribed = true;
         this.error = undefined;
         this.setState("up");
@@ -223,7 +228,7 @@ export class SessionPeer {
     })().catch(error => {
       if (!this.closed) this.options.log(`copy ${this.name}: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
-    }).finally(() => { this.syncing = undefined; });
+    }).finally(() => { this.syncing = undefined; this.schedulePoll(); });
     return this.syncing;
   }
 
@@ -284,6 +289,14 @@ export class SessionPeer {
   private catchUp(): void {
     if (this.closed || this.catchUpTimer) return;
     this.catchUpTimer = setTimeout(() => { this.catchUpTimer = undefined; void this.sync().catch(() => {}); }, CATCH_UP_MS);
+  }
+
+  /** The next roster list of a polled link, after each sync whether it answered or failed. */
+  private schedulePoll(): void {
+    const pollMs = this.options.pollMs;
+    if (pollMs === undefined || this.closed || this.pollTimer) return;
+    this.pollTimer = setTimeout(() => { this.pollTimer = undefined; void this.sync().catch(() => {}); }, pollMs);
+    this.pollTimer.unref?.();
   }
 
   private scheduleReconnect(): void {
@@ -351,6 +364,6 @@ export class SessionPeer {
 
   close(): void {
     this.closed = true;
-    for (const timer of [this.changeTimer, this.catchUpTimer, this.reconnectTimer, this.resyncTimer, this.saveTimer]) clearTimeout(timer);
+    for (const timer of [this.changeTimer, this.catchUpTimer, this.reconnectTimer, this.resyncTimer, this.saveTimer, this.pollTimer]) clearTimeout(timer);
   }
 }

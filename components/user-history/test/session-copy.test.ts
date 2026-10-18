@@ -164,3 +164,21 @@ test("the first frame after a service start is the box's copy from disk, with no
   assert.equal(frames.some(frame => frame.daemon === "down" || frame.sessions.length === 0), false);
   assert.deepEqual(daemon.asked, ["roster"], "the start lists only the roster");
 });
+
+test("another box's link never subscribes to its roster and lists the roster every poll instead, because the Mac's roster_update stream resent its whole roster without end (10-18, 199.7 MB in 9 min)", async (t: TestContext) => {
+  const daemon = fakeDaemon({ live: [row("a", true)], saved: [row("b", false)] });
+  const types: string[] = [];
+  const request = (daemon.client as unknown as { request: (command: { type: string }) => Promise<unknown> }).request;
+  (daemon.client as unknown as { request: (command: { type: string; all?: boolean }) => Promise<unknown> }).request = async command => { types.push(command.type === "list" && command.all ? "list all" : command.type); return request(command); };
+  const peer = new SessionPeer({ name: "mac", client: daemon.client, file: null, deadlines: { socketMs: 10, helloMs: 10 }, changeMs: 0, reconnectMs: 10, pollMs: 15,
+    log: () => {}, onChange: () => {} });
+  t.after(() => peer.close());
+  await peer.sync();
+  assert.equal(peer.state, "up");
+  daemon.state.connected = true;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(types.includes("roster_subscribe"), false, "no roster stream from another box");
+  assert.equal(types[0], "list all");
+  assert.ok(types.filter(type => type === "list").length >= 2, `the roster is listed every poll: ${types.join(", ")}`);
+  assert.deepEqual(peer.list().map(entry => entry.sessionId).sort(), ["a", "b"]);
+});

@@ -8,6 +8,14 @@ import { SessionPeer } from "./session-peer.ts";
 /** Copies of other boxes' session files, refreshed by byte range, so readers that open a session file by path work for every host. */
 export const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
 const RECONNECT_MS = 5000;
+/**
+ * Another box's copy lists its roster (live sessions only) this often instead of following its roster_update stream. On 10-18 the Mac's stream
+ * through the relay sent 199.7 MB in 9 min to the box's chat service (release-30de70f): the daemon marks a client backpressured on any write
+ * over the socket's buffer and, on each drain, resends the whole roster (204 entries, 651 KB, inactive agents too) if anything changed meanwhile,
+ * so over a 185 ms link the resends never stopped. The roster list was 79 rows, 215 KB and 0.3 to 1.0 s, so this costs about 860 KB a minute.
+ * Owner, 10-18 15:18 KST: "그냥 종종 싱크 맞춰" (just sync now and then).
+ */
+export const REMOTE_POLL_MS = 15_000;
 /** Roster updates come up to 116 a minute (10-12); the catalog lays them into one frame per this wait. */
 const CHANGE_DEBOUNCE_MS = 300;
 /** A copy brought up to date this recently is used as it is; a check-in tick asks for the same chat's file several times in a row. */
@@ -45,16 +53,13 @@ export class HostCatalogs {
       if (host.name === self?.name) continue;
       const client = new DaemonClient(bridge.socketPath(host.name));
       const peer = new SessionPeer({ name: host.name, client, file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
-        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, log: line => this.log(`hosts: ${line}`), onChange: () => this.onChange() });
+        changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, log: line => this.log(`hosts: ${line}`), onChange: () => this.onChange() });
       this.remotes.set(host.name, { host, client, peer });
     }
   }
 
   /** True once every other box's copy holds a full list, this run's or the disk copy's; before that a session missing from the rows may be on one. */
   allListed(): boolean { return [...this.remotes.values()].every(remote => remote.peer.listed); }
-
-  /** Resolves once every other box's disk copy is read; after it `allListed` reads true for each box whose copy the last run saved. */
-  async loaded(): Promise<void> { await Promise.all([...this.remotes.values()].map(remote => remote.peer.loaded())); }
 
   /** The name the rows of this box carry; null when this machine is not in hosts.json. */
   get selfName(): string | null { return this.self?.name ?? null; }
