@@ -8,7 +8,7 @@ import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-boa
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
-import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerState, parkedBy, quote, readySteps,
+import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
@@ -149,7 +149,9 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued,
     steps: stepCarriers(board, goaled) };
-  const doneFacts = context.doneFacts ?? NO_FACTS;
+  const working = new Set<string>();
+  walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && ownerOf(item, facts)?.state === "working") working.add(item.id); });
+  const doneFacts = { ...context.doneFacts ?? NO_FACTS, working };
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }

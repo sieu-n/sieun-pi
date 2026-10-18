@@ -55,6 +55,8 @@ export interface PrState { state: "merged" | "open" | "closed"; mergedAt?: numbe
 export interface DoneFacts {
   metrics: ReadonlyMap<string, MetricFact>;
   prs: ReadonlyMap<string, PrState>;
+  /** The plan items whose owner job works now (`ownerOf`): a met metric under a job still at work is its job's reading, not the fix's. */
+  working?: ReadonlySet<string>;
 }
 export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
 
@@ -93,7 +95,7 @@ export interface DoneReason { reason: string; at: number }
  * nothing about the fix: frontend bro p174 makes d1/walk_problems count server outside calls and 5xx pages, and the metric read 0 on the
  * 10-15 21:04Z run, before the step and its job (born 10-16 00:36Z) existed.
  */
-export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty" | "waitFor" | "note" | "job" | "sessionId">>, facts: DoneFacts): DoneReason | null {
+export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "id" | "duty" | "waitFor" | "note" | "job" | "sessionId">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
   // A step the board refuses to close on its own note is not done (ops guy 10-16, p254: d1/servers_not_answering read 0 while the step waited
   // for eecd9d7d5b to land, which never reached sieun/dev, and 3 check-ins in a row said "close it").
@@ -107,6 +109,10 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
     const fact = facts.metrics.get(item.duty);
     const jobBorn = item.sessionId ? sessionBornAt(item.sessionId) : null;
     if (jobBorn !== null && fact && fact.at < jobBorn) return null;
+    // A met reading while the step's own job still works, or its note says the fix waits on its release, is not the fix: AI harness p597 on
+    // 10-18 read done when d7/stuck_steps_all went from 27 to 0 at 06:58Z, because a check-in job gave the alert steps a job, while p597's job
+    // "d7 ownerless steps root cause" worked and its fix 0c07c5565 was "pushed and waiting on its release".
+    if (item.id !== undefined && facts.working?.has(item.id)) return null;
     return fact?.met && fact.missedAt !== undefined ? { reason: `its metric ${item.duty} moved from a miss to met on the duty's last run`, at: fact.at } : null;
   }
   const prs = mergeStep(item.text) ? mergedPrs(item.text) : [];
@@ -144,7 +150,7 @@ const SHIP_WORK = /\b(?:probes?|land(?:s|ed|ing)?|push(?:es|ed|ing)?|verify-dev)
 /** A wait on a land or a push: it is over only when a note names the landed commit. */
 const LAND_WAIT = /\b(?:land(?:s|ed|ing)?|push(?:es|ed|ing)?)\b/i;
 /** A sentence that leaves the run, the land or the push to later or to another session: on its way, on green, handed to or owned by another thread. */
-const NOT_YET = new RegExp(String.raw`\b(?:still|not\s+yet|(?:goes|go)\s+green|on\s+green|waits?\s+(?:for|on)|until|will|hand(?:s|ed)?\s+(?:it\s+)?(?:off\s+)?to|` +
+const NOT_YET = new RegExp(String.raw`\b(?:still|not\s+yet|(?:goes|go)\s+green|on\s+green|wait(?:s|ing)?\s+(?:for|on)|not\s+(?:yet\s+)?live|isn['’]t\s+live|until|will|hand(?:s|ed)?\s+(?:it\s+)?(?:off\s+)?to|` +
   String.raw`moved\s+to|takes?\s+over|owns?\s+(?:the\s+|its\s+)?(?:[\w'’-]+\s+){0,2}(?:land|lands|push|pushes|run|runs|probe)|reports?\s+back|lands\s+it|to\s+land)\b`, "i");
 const SHA = /(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/-])/i;
 /** A commit said to be on a shared branch ("on sieun/dev as c839950e5c", "in land 33 on origin/staging (f9f3a0f1c6)"). */
