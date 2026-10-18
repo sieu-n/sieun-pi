@@ -1,5 +1,5 @@
 [Unit]
-Description=wiki-box-commit: push the wiki pages written on this wiki host to a ci/wiki-box object
+Description=wiki-box-commit: push the wiki pages written on this wiki host to a refs/wiki-box object
 After=network-online.target
 
 [Service]
