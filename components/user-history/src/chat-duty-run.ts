@@ -105,8 +105,8 @@ export type CheckInStart = "done" | "failed";
  */
 export const STILL_WORKING = "skipped: previous run still working";
 /**
- * Why a slot of a standing duty ran nothing: its last run was still measuring or starting its job (ops guy 10-12: the 14:35Z run took 19 min
- * to start its job under load, and the 14:45Z slot left no record).
+ * Why a slot of a standing duty ran nothing: its last run was still measuring (ops guy 10-12: the 14:35Z run took 19 min under load, and the
+ * 14:45Z slot left no record). A slot that comes while the last run starts its job gets no record (`skipBusy`).
  */
 export const STILL_GOING = "skipped: previous run still";
 /** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
@@ -187,7 +187,7 @@ function checkInMinutes(value: unknown): number {
 }
 
 /**
- * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other, and each slot it holds up gets a skipped record), one catch-up for a daily slot
+ * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other, and each slot it holds up while measuring gets a skipped record), one catch-up for a daily slot
  * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the measure against the targets, and then one duty job
  * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
  * starts none, and while the duty's last job still works a run measures but starts no job and says so in its summary, unless that job is stuck past
@@ -403,13 +403,26 @@ export class Duties {
   }
 
   /**
-   * Records a slot that came while the duty's last run still goes, so every slot has a record; the next slot is one interval later. A run still
-   * reading the catalog has not taken its slot yet: it takes this one or leaves it due.
+   * A slot that came while the duty's last run still goes; the next slot is one interval later. A run still reading the catalog has not taken
+   * its slot yet: it takes this one or leaves it due. A run that has measured and is starting its job (or waiting for a working slot) already
+   * has its record, so the slot only moves on and gets no skipped record: from 10-15 to 10-18 Whole system got 30 skipped records in 72 runs,
+   * each a slot that came while one run's job start waited in the daemon for up to 2 h, and the duty read as failing for the wait. A run still
+   * measuring gets a skipped record, so every slot keeps one (ops guy 10-12: a 19-minute measure left the 14:45Z slot with none).
    */
   private async skipBusy(chatId: string, duty: Duty, slot: number): Promise<void> {
     const at = this.now();
     const going = this.steps.get(`${chatId}/${duty.id}`);
     if (going?.step === "reading the catalog") return;
+    if (going?.step === "starting its job" || going?.step === "waiting for a working slot") {
+      await this.store.update(chatId, duties => {
+        const found = duties.find(entry => entry.id === duty.id);
+        if (!found) return;
+        if (found.schedule.kind === "every") found.lastRunAt = at;
+        else found.lastSlotAt = slot;
+      });
+      this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: the run of ${new Date(going.at).toTimeString().slice(0, 5)} is still ${going.step}, so this slot starts no run`);
+      return;
+    }
     const summary = `${STILL_GOING} ${going?.step ?? "going"}${going ? ` (run of ${new Date(going.at).toTimeString().slice(0, 5)}, ${Math.round((at - going.at) / 1000)} s ago)` : ""}`;
     await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === duty.id);

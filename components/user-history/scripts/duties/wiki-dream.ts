@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -385,6 +386,18 @@ export function unmeasuredReason(result: PrecheckOutput): string | null {
   return clip(`could not measure ${missing.join(", ")}: ${inputs.join("; ") || "no input named"}`, 290);
 }
 
+/**
+ * The sieun-pi checkout whose `(wiki-dream)` commits the precheck reads: SIEUN_PI_REPO, else the checkout this script sits in, else the one its
+ * release links node_modules to (scripts/release-chat.mjs builds a release from git archive, with no .git). Until 10-18 it was the Mac path
+ * ~/Documents/Github/sieun-pi, and on us-metal02, whose checkout is ~/src/sieun-pi, the 04:23Z run failed `git log sieun-pi` with ENOENT.
+ */
+export function piCheckout(scriptDir: string, fromEnv: string | undefined = process.env.SIEUN_PI_REPO): string {
+  if (fromEnv) return fromEnv;
+  const root = resolve(scriptDir, "../../../..");
+  if (existsSync(join(root, ".git"))) return root;
+  try { return dirname(realpathSync(join(root, "node_modules"))); } catch { return root; }
+}
+
 const execNoShell: Exec = (file, args, options) => new Promise((done, failed) => {
   execFile(file, args, { cwd: options.cwd, timeout: options.timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 << 20 }, (error, stdout, stderr) => {
     if (!error) { done(String(stdout)); return; }
@@ -400,7 +413,7 @@ async function main(): Promise<void> {
   const lastRuns = await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").then(text => JSON.parse(text) as unknown, () => []);
   const deps: DreamDeps = {
     now: Date.now(), exec: execNoShell, readText: path => readFile(path, "utf8"), node: process.execPath,
-    repos: { wiki: process.env.LLM_WIKI_REPO || join(home, "Documents/Github/auto-sns-agent"), pi: process.env.SIEUN_PI_REPO || join(home, "Documents/Github/sieun-pi") },
+    repos: { wiki: process.env.LLM_WIKI_REPO || join(home, "Documents/Github/auto-sns-agent"), pi: piCheckout(dirname(fileURLToPath(import.meta.url))) },
     files: {
       corrections: join(home, ".prime/agent/browser-chat/corrections.json"),
       harness: join(home, ".prime/agent/harness/harness_state.json"),

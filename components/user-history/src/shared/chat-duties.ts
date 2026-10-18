@@ -197,18 +197,41 @@ export function shapeNote(metrics: readonly Pick<DutyMetric, "key" | "headline">
 }
 
 /**
+ * The value a precheck writes for a metric whose source failed, or its negative for an at-least target: the convention of auto-sns-agent
+ * scripts/duties/ci/duty-sources.mjs and of estate-reads, seo-new-articles and wiki-dream here. It is no measure. From 10-15 to 10-17 GeoNode
+ * proxy use read working_exits_dropped 999999 in every run because prod had no crawler.sticky_walks table, and each run counted it as a miss.
+ */
+export const PLACEHOLDER = 999_999;
+const isPlaceholder = (value: number): boolean => value === PLACEHOLDER || value === -PLACEHOLDER;
+
+/** Why the precheck could not read its inputs, from its `source_error` and `gap` items, for the summary of a run with unmeasured metrics. */
+function sourceReasons(output: PrecheckOutput): string {
+  const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap").map(slice => slice.excerpt.trim()))];
+  const text = reasons.slice(0, 4).join("; ");
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
+/**
  * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) it gives is on target,
- * missed when one is off, error when it gives none. A counted metric it leaves out is not measured: it gets no result, so it is neither met
- * nor missed, and the summary names it. Other numbers in the output never change it. The summary leads with the headline, names each miss
- * with its target or says the measured ones are on target, and ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403
- * left Apps reach staging without demo_ci_ok, and the run must still judge apps_picked and open_review_max_h.
+ * missed when one is off, error when it gives none. A counted metric it leaves out or writes as the `PLACEHOLDER` is not measured: it gets no
+ * result, so it is neither met nor missed, and the summary names it with the precheck's source errors as the reason. Other numbers in the
+ * output never change it. The summary leads with the headline, names each miss with its target or says the measured ones are on target, and
+ * ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403 left Apps reach staging without demo_ci_ok, and the run must
+ * still judge apps_picked and open_review_max_h; a run with no counted metric measured is an error, which pauses the duty after ERROR_PAUSE_RUNS.
  */
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
   const note = shapeNote(metrics);
   const counted = verdictMetrics(metrics);
   const results: Record<string, MetricResult> = {};
-  const absent = counted.filter(metric => typeof output.metrics[metric.key] !== "number" || !Number.isFinite(output.metrics[metric.key]));
-  const unmeasured = `the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}`;
+  const valueOf = (metric: DutyMetric): unknown => output.metrics[metric.key];
+  const missing = counted.filter(metric => typeof valueOf(metric) !== "number" || !Number.isFinite(valueOf(metric)));
+  const placeholders = counted.filter(metric => !missing.includes(metric) && isPlaceholder(valueOf(metric) as number));
+  const absent = [...missing, ...placeholders];
+  const reasons = absent.length ? sourceReasons(output) : "";
+  const unmeasured = [
+    ...missing.length ? [`the precheck gave no value for ${missing.map(metric => metric.key).join(", ")}`] : [],
+    ...placeholders.length ? [`the precheck wrote the placeholder ${PLACEHOLDER} for ${placeholders.map(metric => metric.key).join(", ")}`] : [],
+  ].join(" and ") + (reasons ? ` (${reasons})` : "");
   const withNote = (parts: string[]): string => [...parts, ...note ? [note] : []].join("; ");
   if (absent.length && absent.length === counted.length) return { verdict: "error", metrics: results, summary: withNote([unmeasured]) };
   const end = (summary: string): string => withNote([summary, ...absent.length ? [`not measured: ${unmeasured}`] : []]);
