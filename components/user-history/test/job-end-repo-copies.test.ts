@@ -1,6 +1,8 @@
 // 10-18 ops report on us-metal02: jobs had copied repo trees into their wiki session folders (sessions/2026/10/18/1408-land-speed-takeover held 35),
 // and content/sessions held 1.7M files, 1.3M of them in 502 copies, which the wiki index, git status and every walker paid for. A job's end now
 // deletes the untracked copies in the session folders its transcripts opened, and keeps the session pages and the copies git tracks.
+// At 16:46Z 41 `git archive <sha> apps/<app>` exports (1.9 GB), 3 bare mirrors (1.2 GB) and a .venv were still there, because only .git,
+// pnpm-workspace.yaml and scripts/repo counted as a copy.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +31,12 @@ function wiki(): string {
   put(content, `${SESSION}/tool/node_modules/x/index.js`);
   put(content, `${SESSION}/tool/package.json`);
   put(content, `${SESSION}/kept/pnpm-workspace.yaml`);
+  put(content, `${SESSION}/data/mirror.git/HEAD`);
+  put(content, `${SESSION}/data/mirror.git/objects/pack/p.pack`);
+  put(content, `${SESSION}/data/mirror.git/refs/heads/main`);
+  put(content, `${SESSION}/data/vent-src/apps/vent/pyproject.toml`);
+  put(content, `${SESSION}/data/fixture/apps/vent/src/app.py`);
+  put(content, `${SESSION}/tool/.venv/bin/python`);
   put(content, "sessions/2026/10/18/1950-tip-guard-reds/build/src/pnpm-workspace.yaml");
   return content;
 }
@@ -40,10 +48,10 @@ test("the session folders a transcript opened come from the POST /api/agent/sess
   assert.deepEqual((await openedWikiSessions([file])).sort(), ["sessions/2026/10/17/0901-py-dict", SESSION]);
 });
 
-test("repo copies are the folders with .git, pnpm-workspace.yaml or scripts/repo, plus each node_modules, and nothing above them", async () => {
+test("repo copies are the folders with .git, pnpm-workspace.yaml, scripts/repo, a bare repo or an app export, plus each node_modules and .venv, and nothing above them", async () => {
   const content = wiki();
   const found = (await repoCopies(join(content, SESSION))).map(path => path.slice(content.length + SESSION.length + 2)).sort();
-  assert.deepEqual(found, ["drafts/clone", "drafts/scripts-only", "export-base", "kept", "tool/node_modules"]);
+  assert.deepEqual(found, ["data/mirror.git", "data/vent-src", "drafts/clone", "drafts/scripts-only", "export-base", "kept", "tool/.venv", "tool/node_modules"]);
 });
 
 test("a job's end deletes the untracked copies in the session folders it opened and keeps its pages, tracked copies and other sessions", async () => {
@@ -56,8 +64,8 @@ test("a job's end deletes the untracked copies in the session folders it opened 
     tmpTrees: async () => [], inside: async () => [], removeTmp: async () => [],
   };
   const left = await endLeftovers(source, dir);
-  assert.equal(left.copies.length, 4);
-  for (const gone of ["export-base", "drafts/clone", "drafts/scripts-only", "tool/node_modules"]) assert.ok(!existsSync(join(content, SESSION, gone)), gone);
-  for (const kept of ["index.html", "report.md", "data/run.log", "drafts/notes.md", "tool/package.json", "kept/pnpm-workspace.yaml"]) assert.ok(existsSync(join(content, SESSION, kept)), kept);
+  assert.equal(left.copies.length, 7);
+  for (const gone of ["export-base", "drafts/clone", "drafts/scripts-only", "tool/node_modules", "tool/.venv", "data/mirror.git", "data/vent-src"]) assert.ok(!existsSync(join(content, SESSION, gone)), gone);
+  for (const kept of ["index.html", "report.md", "data/run.log", "data/fixture/apps/vent/src/app.py", "drafts/notes.md", "tool/package.json", "kept/pnpm-workspace.yaml"]) assert.ok(existsSync(join(content, SESSION, kept)), kept);
   assert.ok(existsSync(join(content, "sessions/2026/10/18/1950-tip-guard-reds/build/src/pnpm-workspace.yaml")));
 });

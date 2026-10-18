@@ -13,7 +13,8 @@ import type { RawProcess } from "./mac-usable-watch.ts";
  * itself: every process that carries the RLM_HARNESS_STATE_DIR of the job's session or of a session under it (its subagents) and sits under no
  * kernel and no Prime process (worker-footprint.py `strays`), and every Aside tab those sessions opened (`aside-browser-tabs.json` in their
  * session folders). Shared services (PM2, Aside, cua-driver) and Prime's own processes are never named, so ops guy's pm2 dev servers stay.
- * It also deletes the repo copies a job left in its wiki session folders and the /tmp trees it made, after stopping the rig processes in them.
+ * It also deletes the repo copies a job left in its wiki session folders and the /tmp trees it made, after stopping the rig processes in them,
+ * and the kernel-state.dill files and repo copies its sessions left in session-artifacts.
  */
 
 export const ARTIFACTS = join(homedir(), ".prime", "agent", "session-artifacts");
@@ -23,7 +24,7 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; tmp: readonly string[] }
+export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; tmp: readonly string[]; artifacts: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -43,6 +44,10 @@ export interface LeftoverSource {
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
   /** Deletes these dirs; returns the ones it deleted. */
   removeTmp: (dirs: readonly string[]) => Promise<readonly string[]>;
+  /** The repo copies the sessions of these transcripts left in session-artifacts (`artifactCopies`); `dirs` are the gone sessions' folders. */
+  artifactCopies: (transcripts: readonly string[], dirs: readonly string[]) => Promise<readonly string[]>;
+  /** The kernel-state.dill files of the sessions of these transcripts (`kernelStates`). */
+  kernelStates: (transcripts: readonly string[]) => Promise<readonly string[]>;
 }
 
 /** The session ids, transcripts, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
@@ -85,8 +90,10 @@ export async function openedWikiSessions(transcripts: readonly string[]): Promis
 
 /**
  * The repo copies under a wiki session folder: each folder below it that holds `.git`, `pnpm-workspace.yaml` or `scripts/repo` (a clone or a
- * `git archive` export), and each `node_modules`. On 10-18 the session folders held 502 such copies with 1.3M of their 1.7M files, and the wiki
- * index, `git status` and every walker paid for them.
+ * `git archive` export), a bare git repo (`HEAD`, `objects` and `refs`, a `git clone --mirror`), or an `apps/<app>` with its `package.json` or
+ * `pyproject.toml` (a `git archive <sha> apps/<app>` export), and each `node_modules` and `.venv`. On 10-18 the session folders held 502 such
+ * copies with 1.3M of their 1.7M files, and the wiki index, `git status` and every walker paid for them. At 16:46Z, after the job line moved
+ * scratch trees out, 41 app exports (1.9 GB), 3 mirrors (1.2 GB) and a `.venv` were still there, which the first three markers missed.
  */
 export async function repoCopies(folder: string): Promise<string[]> {
   const copies: string[] = [];
@@ -95,10 +102,14 @@ export async function repoCopies(folder: string): Promise<string[]> {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const path = join(dir, entry.name);
-      if (entry.name === "node_modules") { copies.push(path); continue; }
+      if (entry.name === "node_modules" || entry.name === ".venv") { copies.push(path); continue; }
       const inside = await readdir(path, { withFileTypes: true }).catch(() => []);
-      const copy = inside.some(item => item.name === ".git" || item.name === "pnpm-workspace.yaml" ||
-        (item.name === "scripts" && item.isDirectory() && existsSync(join(path, "scripts", "repo"))));
+      const names = new Set(inside.map(item => item.name));
+      const apps = inside.some(item => item.name === "apps" && item.isDirectory()) ? await readdir(join(path, "apps"), { withFileTypes: true }).catch(() => []) : [];
+      const copy = names.has(".git") || names.has("pnpm-workspace.yaml") ||
+        inside.some(item => item.name === "scripts" && item.isDirectory() && existsSync(join(path, "scripts", "repo"))) ||
+        (names.has("HEAD") && names.has("objects") && names.has("refs")) ||
+        apps.some(app => app.isDirectory() && ["package.json", "pyproject.toml"].some(file => existsSync(join(path, "apps", app.name, file))));
       if (copy) copies.push(path);
       else await walk(path);
     }
@@ -189,6 +200,14 @@ export async function madeTmpTrees(transcripts: readonly string[], dirs: readonl
       if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs) made.add(path);
     }
   }
+  return unnamedByLive(made, transcripts, dirs, artifacts);
+}
+
+/**
+ * The paths of `made` that no session still live in the same chat names outside its tool results. The chat and the jobs above a gone job are
+ * left out of that read, because they quote its report.
+ */
+async function unnamedByLive(made: Set<string>, transcripts: readonly string[], dirs: readonly string[], artifacts: string): Promise<string[]> {
   if (!made.size) return [];
   const ended = new Set(transcripts);
   const above = (folder: string): boolean => dirs.some(dir => dir.startsWith(folder + "/"));
@@ -203,6 +222,53 @@ export async function madeTmpTrees(transcripts: readonly string[], dirs: readonl
     }
   }
   return [...made];
+}
+
+const KERNEL_STATE = /^kernel-state\.dill(\.[A-Za-z0-9]+\.tmp)?$/;
+const SESSION_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The kernel-state.dill files of these sessions: a kernel's saved namespace, kept under its parent's `session-artifacts/<id>/`, which only a
+ * resume of that session reads. On 10-18 the 4,000 subagents the daemon had deleted on us-metal02 still held 3.9 GB of them.
+ */
+export async function kernelStates(transcripts: readonly string[]): Promise<string[]> {
+  const found: string[] = [];
+  for (const file of transcripts) {
+    const kernel = join(dirname(dirname(file)), "session-artifacts", file.slice(file.lastIndexOf("/") + 1, -".jsonl".length));
+    for (const entry of await readdir(kernel).catch(() => [])) if (KERNEL_STATE.test(entry)) found.push(join(kernel, entry));
+  }
+  return found;
+}
+
+/**
+ * The repo copies (`repoCopies`) gone sessions left in ~/.prime/agent/session-artifacts: those in the sessions' own folders, and those in a named
+ * folder of session-artifacts that a transcript names outside its tool results and that were born while that session ran, minus a copy a live
+ * session in the same chat names. On 10-18 between 02:30Z and 16:12Z session-artifacts grew 10.6 GB on us-metal02, 4.5 GB of it five
+ * `git archive` trees in grafana-c that a grafana job exported to test merged trees.
+ */
+export async function artifactCopies(transcripts: readonly string[], dirs: readonly string[], artifacts = ARTIFACTS): Promise<string[]> {
+  const found = new Set<string>();
+  const made = new Set<string>();
+  const named = /\.prime\/agent\/session-artifacts\/([A-Za-z0-9._+@-]+)/g;
+  const uid = process.getuid?.();
+  for (const file of transcripts) {
+    for (const copy of await repoCopies(dirname(file))) found.add(copy);
+    const [text, info] = await Promise.all([ownLines(file), stat(file).catch(() => null)]);
+    let start = NaN;
+    try { start = Date.parse((JSON.parse(text.slice(0, text.indexOf("\n"))) as { timestamp?: string }).timestamp ?? ""); } catch { /* no header */ }
+    if (!info || !Number.isFinite(start)) continue;
+    for (const name of new Set([...text.matchAll(named)].map(match => match[1]!))) {
+      if (SESSION_DIR.test(name) || /^\.+$/.test(name)) continue;
+      const folder = await lstat(join(artifacts, name)).catch(() => null);
+      if (!folder?.isDirectory() || (uid !== undefined && folder.uid !== uid)) continue;
+      for (const copy of await repoCopies(join(artifacts, name))) {
+        const item = await lstat(copy).catch(() => null);
+        if (item && item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs) made.add(copy);
+      }
+    }
+  }
+  for (const copy of await unnamedByLive(made, transcripts, dirs, artifacts)) found.add(copy);
+  return [...found];
 }
 
 /**
@@ -242,7 +308,7 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 /**
  * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
  * open Aside for them again, deletes the repo copies they left in the wiki session folders they opened, and ends the /tmp trees they made
- * (`endTmp`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
+ * (`endTmp`), and deletes the kernel states and repo copies they left in session-artifacts (`endArtifacts`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
  * delete leaves its children detached only once it exits.
  */
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
@@ -259,7 +325,16 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const tmp = await endTmp(source, transcripts, typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ stopped: [], removed: [] }));
-  return { stopped: [...stopped, ...tmp.stopped], tabs: Math.max(tabs, 0), copies, tmp: tmp.removed };
+  const artifacts = await endArtifacts(source, transcripts, typeof dirs === "string" ? [dirs] : dirs).catch(() => []);
+  return { stopped: [...stopped, ...tmp.stopped], tabs: Math.max(tabs, 0), copies, tmp: tmp.removed, artifacts };
+}
+
+/** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
+async function endArtifacts(source: LeftoverSource, transcripts: readonly string[], dirs: readonly string[]): Promise<readonly string[]> {
+  const [copies, states] = await Promise.all([source.artifactCopies(transcripts, dirs), source.kernelStates(transcripts)]);
+  const held = new Set(copies.length ? (await source.inside(copies)).map(entry => entry.dir) : []);
+  const free = [...states, ...copies.filter(copy => !held.has(copy))];
+  return free.length ? source.removeTmp(free) : [];
 }
 
 function helper(args: readonly string[], input = ""): Promise<unknown> {
@@ -291,9 +366,10 @@ console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(i
   });
 }
 
-/** Transcripts whose wiki session folders and /tmp trees were already cleared, so the sweep of deleted jobs reads each transcript once. */
+/** Transcripts whose wiki session folders, /tmp trees and session-artifacts copies were already cleared, so the sweep of deleted jobs reads each transcript once. */
 const copiesCleared = new Set<string>();
 const tmpCleared = new Set<string>();
+const artifactsCleared = new Set<string>();
 
 /** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, `removeRepoCopies` and `madeTmpTrees`. */
 export const leftoverSource: LeftoverSource = {
@@ -324,4 +400,10 @@ export const leftoverSource: LeftoverSource = {
     for (const dir of dirs) if (await rm(dir, { recursive: true, force: true }).then(() => true, () => false)) removed.push(dir);
     return removed;
   },
+  artifactCopies: (transcripts, dirs) => {
+    const fresh = transcripts.filter(file => !artifactsCleared.has(file));
+    for (const file of fresh) artifactsCleared.add(file);
+    return fresh.length ? artifactCopies(fresh, dirs) : Promise.resolve([]);
+  },
+  kernelStates: transcripts => kernelStates(transcripts),
 };
