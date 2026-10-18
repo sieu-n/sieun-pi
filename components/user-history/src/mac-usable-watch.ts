@@ -20,6 +20,9 @@ const MINUTE = 60_000;
  * one core. 6,000 is the swapout rate at which 18 feed reads at 10:59-11:02Z on
  * 10-14 said warn while kernel_task paged at 168% to 256% of a core with 6,210 to 22,956 swapouts a second. The same reads set kernel_task's
  * line at one core; at 20:23Z on 10-14, with the Mac usable by the VP's read, it ran at 17.7%.
+ * A kernel_task minute at 0 swapouts is the memory compressor (r 0.93 with compressions a second, 02:56-02:59Z on 10-18), and the owner feels it:
+ * across 539 probes at 02:45-03:10Z on 10-18, a /usr/bin/true spawn took a median 10.6 ms (p90 52 ms) at kernel_task 100% or more against
+ * 3.6 ms (p90 18 ms) under it.
  */
 export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
