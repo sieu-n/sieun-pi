@@ -360,6 +360,30 @@ test("skills and tools: a stopped cua daemon is started and the grants are read 
   assert.equal(stuck.calls.filter(call => call === "cua-driver status").length, 16);
 });
 
+test("skills and tools: on Linux the cua check reads the display and AT-SPI, and a stopped daemon starts through systemd", async () => {
+  const linux = { x11: true, wayland: false, atspi: true, xsend_event: true };
+  const deps = fakeDeps();
+  deps.platform = "linux";
+  let daemon = false;
+  const exec = deps.exec;
+  deps.exec = async (program, args, options) => {
+    const key = `${basename(program)} ${args.join(" ")}`;
+    if (key === "cua-driver permissions status --json") { deps.calls.push(key); return ok(JSON.stringify(daemon ? linux : { daemon_running: false, status: "unknown" })); }
+    if (key === "cua-driver status") { deps.calls.push(key); return ok(daemon ? "Cua Driver daemon is running\n" : "Cua Driver daemon is not running\n"); }
+    if (key === "systemctl --user start cua-driver.service") { deps.calls.push(key); daemon = true; return ok(""); }
+    return exec(program, args, options);
+  };
+  const [result] = await runChecks(deps, CHECKS.filter(check => check.id === "cua_permissions"));
+  assert.deepEqual(result!.outcome, { status: "pass", detail: "X11 display and AT-SPI reachable (started the stopped daemon)" });
+  assert.ok(!deps.calls.some(call => call.startsWith("open ")), deps.calls.join("\n"));
+
+  const headless = fakeDeps({ exec: [[/^cua-driver permissions/, ok(JSON.stringify({ ...linux, x11: false }))]] });
+  headless.platform = "linux";
+  const [failed] = await runChecks(headless, CHECKS.filter(check => check.id === "cua_permissions"));
+  assert.equal(failed!.outcome.status, "fail");
+  assert.match(failed!.outcome.status === "fail" ? failed!.outcome.fix : "", /xvfb\.service/);
+});
+
 test("skills and tools: off-switches for removed skills pass, and a skill read the wiki did not log still passes", async () => {
   const { outcome } = await run({
     files: { [`${HOME}/.prime/agent/settings.json`]: JSON.stringify({ ...SETTINGS, skills: [...SETTINGS.skills, "-/h/.prime/agent/skills/interrogate", "-/h/.prime/agent/skills/principle-gone"] }) },

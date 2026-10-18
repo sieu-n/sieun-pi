@@ -10,6 +10,8 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `sieun-pi-chat.service` | The chat from `~/.local/share/sieun-pi-chat/current`, the release folder that `scripts/release-chat.mjs` builds. |
 | `prime-agent-watchdog.timer` | One cycle of `~/.prime/agent/watchdog/cron_cycle.py` every 10 minutes, as `com.sieun.prime-agent-watchdog` does on the Mac. |
 | `llm-wiki.service` | `pnpm run dev` of `apps/llm-wiki` in `~/src/auto-sns-agent`. |
+| `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
+| `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
 
 The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `PRIME_API_KEY` for the `prime-inference` provider.
@@ -37,7 +39,7 @@ prime-agent --version   # 0.9.8
 # Bun for the poteto-mode scripts
 curl -fsSL https://bun.sh/install | bash && export PATH=$HOME/.bun/bin:$PATH
 
-# settings.json first, so apply keeps it: no aside, cua-driver or paper MCP servers, which are macOS apps
+# settings.json first, so apply keeps it; the Tools section below adds the aside and cua-driver MCP servers (Paper is macOS only)
 mkdir -p ~/.prime/agent && install -m 0600 /dev/stdin ~/.prime/agent/settings.json <<'EOF'
 {"telemetry":{"enabled":false},"defaultProvider":"anthropic","defaultModel":"claude-opus-5-5","defaultThinkingLevel":"high",
  "packages":[],"bundledSkills":{"websearch":false},
@@ -65,3 +67,15 @@ The watchdog code is not in this repository. Copy `watchdog.py`, `cron_cycle.py`
 
 Release a commit to the chat with `node scripts/release-chat.mjs <sha>`. On Linux it restarts `sieun-pi-chat.service` instead of kickstarting the LaunchAgent.
 Update the pool with `/usr/bin/python3 -B components/pi-pool/install.py --ref <sha>`.
+
+## Tools
+
+The Settings > Tools and skills panel checks web search, the Aside browser and cua-driver. On Linux each one needs these steps.
+
+1. Web search reads a Virev key from `"virev": {"type": "api_key", "key": "kb_live_..."}` in `~/.prime/agent/auth.json`. Run `uv sync` in `~/.prime/agent/skills/websearch`, and install `websearch`, `board` and `aside-browser` into the kernel venv from `~/.prime/agent/skills/<name>` with `uv pip install --python ~/.prime/agent/kernel-venv/bin/python -e`.
+2. Install the Aside CLI with `curl -fsSL https://releases.aside.com/install.sh | bash`. Aside Browser does not run here, so sign the CLI in with `aside login --email <owner email>`, confirm the code in Aside on the Mac (Settings > Account > Devices), and pick the Mac with `aside host use <host>`.
+3. Install cua-driver with `curl -fsSL https://cua.ai/driver/install.sh | CUA_DRIVER_NO_MODIFY_PATH=1 bash`.
+4. Xvfb comes from Ubuntu debs unpacked without root. Run `apt-get download xvfb xserver-common libxfont2 libfontenc1 x11-xkb-utils` and unpack each one with `dpkg-deb -x <deb> ~/.local/opt/xvfb`.
+5. Xvfb runs `/usr/bin/xkbcomp`, which the box lacks. Copy `usr/bin/Xvfb` to `Xvfb-localxkb` and replace its one `/usr/bin\0` string with `.\0` padded by NULs to 9 bytes, so it runs the unpacked `xkbcomp` from the unit's working directory.
+6. Install `cua-driver-x11` into `~/.local/bin`, then install and start `xvfb.service` and `cua-driver.service`.
+7. Add the servers to `settings.json` as in the main README, with `/home/sieun/.local/bin/aside` and `/home/sieun/.local/bin/cua-driver-x11` as the commands.

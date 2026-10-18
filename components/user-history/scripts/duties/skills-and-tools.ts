@@ -49,6 +49,8 @@ export interface Deps {
   now: () => number;
   /** Waits between polls; tests pass one that returns at once. */
   sleep?: (ms: number) => Promise<void>;
+  /** "linux" on a headless box such as us-metal02, where xvfb.service and cua-driver.service run the display and the daemon; absent means macOS. */
+  platform?: NodeJS.Platform;
   /** Writes the kernel venv's sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
   pinSkillPaths?: () => Promise<PinResult[]>;
 }
@@ -92,7 +94,8 @@ async function mcpServer(deps: Deps, name: string): Promise<McpServer | string> 
 async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
   const running = async () => /daemon is running/.test((await deps.exec(paths(deps).cua, ["status"], { timeoutMs: 10_000 })).stdout);
   if (await running()) return true;
-  await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
+  if (deps.platform === "linux") await deps.exec("systemctl", ["--user", "start", "cua-driver.service"], { timeoutMs: 10_000 });
+  else await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
   for (let tries = 0; tries < 15; tries++) {
     if (await running()) return true;
     await (deps.sleep ?? (ms => new Promise<void>(done => setTimeout(done, ms))))(1000);
@@ -190,7 +193,7 @@ export const CHECKS: readonly Check[] = [
   { id: "cua_permissions", group: "computer use", tool: "cua-driver", run: async deps => {
     const ask = async () => {
       const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: 10_000 });
-      let status: { accessibility?: unknown; screen_recording?: unknown; daemon_running?: unknown } = {};
+      let status: { accessibility?: unknown; screen_recording?: unknown; daemon_running?: unknown; x11?: unknown; wayland?: unknown; atspi?: unknown } = {};
       try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
       return { result, status };
     };
@@ -199,10 +202,16 @@ export const CHECKS: readonly Check[] = [
     const started = status.daemon_running === false && await ensureCuaDaemon(deps);
     if (started) ({ result, status } = await ask());
     if (status.accessibility === true && status.screen_recording === true) return PASS(`accessibility and screen recording granted${started ? " (started the stopped daemon)" : ""}`);
+    // Linux has no grants: the daemon reports whether it reaches an X11 or Wayland display and the AT-SPI bus.
+    if ("x11" in status || "atspi" in status) {
+      if ((status.x11 === true || status.wayland === true) && status.atspi === true) return PASS(`${status.x11 === true ? "X11" : "Wayland"} display and AT-SPI reachable${started ? " (started the stopped daemon)" : ""}`);
+      return FAIL("agent", `x11 ${status.x11}, wayland ${status.wayland}, atspi ${status.atspi}`, "start the display and daemon with `systemctl --user start xvfb.service cua-driver.service` and read `cua-driver doctor`");
+    }
     if (status.accessibility === false || status.screen_recording === false)
       return FAIL("owner", `accessibility ${status.accessibility}, screen recording ${status.screen_recording}`, "run `cua-driver permissions grant` and click the macOS dialogs");
     return FAIL("agent", `grant status unknown (${status.daemon_running === false ? "the daemon did not start within 15 s" : failText(result)})`,
-      "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
+      deps.platform === "linux" ? "run `systemctl --user start xvfb.service cua-driver.service`, read `cua-driver doctor`, and re-check"
+        : "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
   } },
   { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", run: async deps => {
     const server = await mcpServer(deps, "cua-driver");
@@ -633,6 +642,7 @@ export function realDeps(scratchDir: string): Deps {
     repo: process.env.HARNESS_REPO || join(home, "Documents/Github/auto-sns-agent"),
     scratchDir,
     now: Date.now,
+    platform: process.platform,
     pinSkillPaths: () => pinSkillPaths({ home }),
   };
 }
