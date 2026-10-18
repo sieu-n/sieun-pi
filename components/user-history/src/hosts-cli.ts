@@ -8,7 +8,7 @@ const USAGE = `usage: sieun-pi hosts <command>
 
   list                                     each host in ~/.config/sieun-pi/hosts.json, its roles and its relay's health
   start <host> [--cwd <dir>] [--name <n>] [--model <provider/id>] [--thinking <level>] <prompt>
-                                           starts a resident session on that host's daemon and sends it the prompt
+                                           starts a resident session on that host's daemon with the prompt as its first user message
   read <host> <path> [--from <bytes>]      prints a file from that host's sessions or session-artifacts
   transcript <host> <session id> [--from <bytes>]
                                            prints that session's messages, read through the relay
@@ -94,7 +94,7 @@ export async function runHostsCommand(argv: string[]): Promise<void> {
       if (!created.success) throw new Error(created.error);
       const data = created.data as Summary;
       if (!data.activeSessionId) throw new Error(`${host.name} returned no session`);
-      const sent = await client.request({ type: "send_message", targetActiveSessionId: data.activeSessionId, message: words.join(" ") }, 30_000, { recoverable: false });
+      const sent = await client.request({ type: "prompt", activeSessionId: data.activeSessionId, message: words.join(" "), source: "interactive", queueIfBusy: true } as Parameters<DaemonClient["request"]>[0], 30_000, { recoverable: false });
       if (!sent.success) throw new Error(sent.error);
       process.stdout.write(`${JSON.stringify({ host: host.name, sessionId: data.sessionId, activeSessionId: data.activeSessionId, sessionFile: data.sessionFile })}\n`);
     } finally { await close(); }
