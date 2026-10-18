@@ -41,7 +41,6 @@ import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
-import type { ThreadEvent } from "./shared/types.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -97,9 +96,8 @@ export function shellHead(csrfToken: string, version: string, wiki: string | nul
  * The rest of the shell, with the first frames of the thread the URL names (`?t=`) in the shape its feed sends them, so the page paints the
  * thread with no request of its own. app.js is a module script, so it runs only once this part has arrived.
  */
-export function shellTail(thread: { id: string; frames: readonly ThreadEvent[] } | null = null): string {
-  // `<` as \u003c keeps a message that holds "</script>" inside the JSON block.
-  const inline = thread ? `<script type="application/json" id="boot-thread" data-id="${escapeAttribute(thread.id)}">${JSON.stringify(thread.frames).replaceAll("<", "\\u003c")}</script>\n` : "";
+export function shellTail(thread: { id: string; json: string } | null = null): string {
+  const inline = thread ? `<script type="application/json" id="boot-thread" data-id="${escapeAttribute(thread.id)}">${thread.json}</script>\n` : "";
   return `${inline}<div id="app"></div>
 </body>
 </html>
@@ -458,11 +456,11 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     res.end(body);
   }
   /**
-   * The first frames of a thread for the shell, or null when they take longer than `inlineWaitMs`. From Korea the page's own socket brings
+   * The JSON block of a thread's first frames for the shell, or null when it takes longer than `inlineWaitMs`. From Korea the page's own socket brings
    * them about three round trips (560 ms) after the shell, so a shell that waits longer than that for them is slower than going without.
    */
   const inlineWaitMs = 400;
-  async function inlineFrames(id: string): Promise<readonly ThreadEvent[] | null> {
+  async function inlineFrames(id: string): Promise<string | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), inlineWaitMs); });
     const frames = backend.threads.firstFrames(id).catch((error: unknown) => {
@@ -600,7 +598,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const html = startHtml(req, res);
             html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
             const found = await frames;
-            html.end(shellTail(id && found ? { id, frames: found.map(wireEvent) } : null));
+            html.end(shellTail(id && found ? { id, json: found } : null));
             return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }

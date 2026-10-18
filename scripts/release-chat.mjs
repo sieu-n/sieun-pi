@@ -12,7 +12,7 @@ or on Linux restarts the systemd user unit sieun-pi-chat.service. When the relea
 ~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 One release runs at a time: a second command waits for the first one's lock, then checks again.
 A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
-The build runs npm run typecheck and npm test of components/user-history inside the release before the flip.
+The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback.`;
@@ -137,6 +137,8 @@ async function build(options, home, sha, dir) {
     const app = join(scratch, "components/user-history");
     run("npm", ["run", "--silent", "typecheck"], app);
     run("npm", ["run", "--silent", "test"], app);
+    // The packed client bundle, so the service start reads it instead of compiling it (6.5 s at a load of 50 on 10-18) while every shell waits.
+    run("node", ["src/chat-assets-prebuild.mjs"], app);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
     renameSync(scratch, dir);
   } catch (error) {

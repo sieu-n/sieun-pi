@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -60,16 +62,55 @@ export async function compileAndPack(): Promise<{ js: Asset; css: Asset }> {
 /** A worker message carries Uint8Arrays where the asset had Buffers. */
 const revive = (sent: Asset): Asset => ({ ...sent, body: Buffer.from(sent.body), ...(sent.br ? { br: Buffer.from(sent.br) } : {}), ...(sent.gzip ? { gzip: Buffer.from(sent.gzip) } : {}) });
 
-/** The client bundle, compiled in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering while it builds. */
-export function buildClientBundle(): Promise<ClientBundle> {
+/**
+ * The packed bundle release-chat.mjs writes into a release before it goes live (`chat-assets-prebuild.mjs`), so a restart reads it from disk.
+ * A checkout without it compiles at start. On 10-18 the compile took 6.5 s at a load of 50, and every page shell waited for it after each of
+ * the day's 21 restarts by 08:40Z.
+ */
+export const PREBUILT_DIR = fileURLToPath(new URL("../.client-bundle/", import.meta.url));
+const prebuiltFiles = (stem: string) => [stem, `${stem}.br`, `${stem}.gz`];
+
+export async function writePrebuilt(dir = PREBUILT_DIR): Promise<void> {
+  const { js, css } = await compileAndPack();
+  const draft = `${dir.replace(/\/+$/, "")}.${process.pid}.tmp`;
+  await rm(draft, { recursive: true, force: true });
+  await mkdir(draft, { recursive: true });
+  for (const [stem, packed] of [["app.js", js], ["app.css", css]] as const) {
+    const [body, br, gzip] = prebuiltFiles(stem);
+    await writeFile(join(draft, body!), packed.body);
+    await writeFile(join(draft, br!), packed.br!);
+    await writeFile(join(draft, gzip!), packed.gzip!);
+  }
+  await rm(dir, { recursive: true, force: true });
+  await rename(draft, dir);
+}
+
+/** The prebuilt bundle in `dir`, or null when the folder or one of its files is missing. */
+export async function readPrebuilt(dir = PREBUILT_DIR): Promise<ClientBundle | null> {
+  const read = async (stem: string, contentType: string): Promise<Asset> => {
+    const [body, br, gzip] = await Promise.all(prebuiltFiles(stem).map(name => readFile(join(dir, name))));
+    return { ...asset(body!, contentType), br: br!, gzip: gzip! };
+  };
+  try {
+    const [js, css] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8")]);
+    return bundleOf(js, css);
+  } catch { return null; }
+}
+
+const bundleOf = (js: Asset, css: Asset): ClientBundle => ({ js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset });
+
+/** The release's prebuilt bundle (`readPrebuilt`), else a compile in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering. */
+export async function buildClientBundle(dir = PREBUILT_DIR): Promise<ClientBundle> {
+  return await readPrebuilt(dir) ?? await compileInWorker();
+}
+
+function compileInWorker(): Promise<ClientBundle> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./chat-assets-worker.mjs", import.meta.url));
     worker.once("message", (compiled: Compiled) => {
       void worker.terminate();
       if (!compiled.ok) { reject(new Error(compiled.error)); return; }
-      const script = revive(compiled.js);
-      const style = revive(compiled.css);
-      resolve({ js: script, css: style, version: createHash("sha256").update(script.etag + style.etag).digest("hex").slice(0, 16), app: appAsset });
+      resolve(bundleOf(revive(compiled.js), revive(compiled.css)));
     });
     worker.once("error", reject);
     worker.once("exit", code => { reject(new Error(`The client bundle worker exited (${code}) with no bundle.`)); });

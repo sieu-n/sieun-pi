@@ -14,7 +14,7 @@ import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
-import { firstPage } from "./first-page.ts";
+import { FirstPages, firstPage, wireEvent } from "./first-page.ts";
 import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
@@ -112,6 +112,8 @@ class Thread {
   opening = false;
   readonly listeners = new Set<Listener>();
   touched = Date.now();
+  /** The shell's JSON block made from `state` (ThreadHub.firstPage), so shells of an unchanged thread reuse it. */
+  inlined: { state: ThreadState; text: string } | undefined;
   idleSince: number | null = Date.now();
   /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
   lastEventAt = Date.now();
@@ -260,7 +262,8 @@ export class ThreadHub {
 
   /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
-    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {}) {
+    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
+    private readonly firstPages = new FirstPages(null)) {
     this.dormant = new Dormancy(idle);
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
@@ -387,6 +390,7 @@ export class ThreadHub {
   }
 
   private turnEnded(thread: Thread): void {
+    this.firstPage(thread);
     for (const observer of [...this.observers]) observer.idle(thread.id);
   }
 
@@ -487,6 +491,7 @@ export class ThreadHub {
   private async dispose(id: string): Promise<void> {
     const thread = this.threads.get(id);
     if (!thread) return;
+    this.firstPage(thread);
     this.threads.delete(id);
     this.dormant.forget(id);
     thread.flush();
@@ -795,6 +800,7 @@ export class ThreadHub {
       thread.sessionFile = summary.sessionFile;
       thread.opening = true;
       this.threads.set(id, thread);
+      if (first) this.firstPage(thread);
       mark("first page", at);
       void board.then(found => {
         if (found === undefined || this.threads.get(id) !== thread) return;
@@ -850,6 +856,7 @@ export class ThreadHub {
       this.evict("live");
       this.bind(thread, live.connection, activeSessionId!);
       thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, live.snapshot) });
+      this.firstPage(thread);
       log();
       this.attached(thread);
     } catch (error) {
@@ -884,13 +891,24 @@ export class ThreadHub {
   }
 
   /**
-   * What the page shell carries inline for `id` (chat-server.ts `inlineFrames`): the small first snapshot a new feed gets (`Thread.firstFrame`),
-   * then the children and the board. It opens the thread as a feed does, and the page's own feed subscribes a moment later.
+   * The JSON block the page shell carries for `id` (chat-server.ts `inlineFrames`): the small first snapshot a new feed gets (`Thread.firstFrame`)
+   * and nothing else, since the page's own feed brings the board and the children right after it. Until 10-18 the block held them too: 496 KB
+   * of HTML, 147 KB packed, for the biggest chat, of which the board was 414 KB, and the feed sent them again. A thread in memory makes the block
+   * from its state; one that is not answers from `firstPages`, made when its last turn ended, and opens in the background for the page's feed.
    */
-  async firstFrames(id: string): Promise<ThreadEvent[]> {
-    const thread = await this.start(id, false, true);
-    const { children, board } = thread.state;
-    return [thread.firstFrame(), ...(children.length ? [{ type: "children" as const, children }] : []), ...(board ? [{ type: "board" as const, board }] : [])];
+  async firstFrames(id: string): Promise<string> {
+    const held = this.threads.get(id);
+    if (held) return this.firstPage(held);
+    const saved = await this.firstPages.get(id);
+    if (saved === undefined) return this.firstPage(await this.start(id, false, true));
+    void this.start(id, false, true).catch(() => {});
+    return saved;
+  }
+
+  /** The thread's first frame as the shell inlines it, made once per state and kept in `firstPages`. */
+  private firstPage(thread: Thread): string {
+    if (thread.inlined?.state !== thread.state) thread.inlined = { state: thread.state, text: this.firstPages.put(thread.id, [wireEvent(thread.firstFrame())], thread.sessionFile ?? null) };
+    return thread.inlined.text;
   }
 
   state(id: string): ThreadState | undefined { return this.threads.get(id)?.state; }
@@ -1414,5 +1432,6 @@ export class ThreadHub {
     clearInterval(this.sweeper);
     this.unwatchCatalog?.();
     await Promise.all([...this.threads.keys()].map(id => this.dispose(id)));
+    await this.firstPages.flush();
   }
 }

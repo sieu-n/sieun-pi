@@ -9,8 +9,10 @@ import WebSocket from "ws";
 import { bootFeedScript } from "../src/boot-feed.ts";
 import { pageTarget } from "../src/client/permalink.ts";
 import { startChatServer } from "../src/chat-server.ts";
+import { inlineJson } from "../src/first-page.ts";
 import { asset, packAsset } from "../src/chat-assets.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
+import type { ThreadEvent } from "../src/shared/types.ts";
 
 function get(url: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
   return new Promise((resolve, reject) => {
@@ -95,7 +97,7 @@ test("a shell with ?t= carries that thread's first frames inline, packed, and go
   const snapshot = { type: "snapshot", snapshot: { messages: [{ role: "user", content: "</script><script>alert(1)</script>", timestamp: 1 }] } };
   let slow = false;
   const backend = { close: async () => {}, chats: { ids: async () => new Set<string>() },
-    threads: { firstFrames: async (id: string) => { if (slow) await new Promise(resolve => setTimeout(resolve, 2000)); return id === "t1" ? [snapshot] : []; } } } as unknown as ChatBackend;
+    threads: { firstFrames: async (id: string) => { if (slow) await new Promise(resolve => setTimeout(resolve, 2000)); return id === "t1" ? inlineJson([snapshot as unknown as ThreadEvent]) : "[]"; } } } as unknown as ChatBackend;
   const server = await startChatServer({ backend, bundle: { js: script, css: style, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
     identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-cold-inline.sock" }, onStop: async () => {} });
   t.after(() => server.close());

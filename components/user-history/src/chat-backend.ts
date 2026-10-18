@@ -7,6 +7,7 @@ import type { HostCatalogs } from "./host-catalogs.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
+import { FirstPages } from "./first-page.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
@@ -162,7 +163,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
-      file: join(dataDir, "idle-clocks.json") });
+      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")));
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
