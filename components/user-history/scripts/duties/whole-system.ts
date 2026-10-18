@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
+import { ownerChats } from "../../src/owner-chats.ts";
 import { type Cut, cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
@@ -430,10 +431,8 @@ async function main(): Promise<void> {
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
   const config = await readJson(join(poolDir, "config.json")) as { mac_working_max?: number } | null;
-  const listed = await readJson(join(dataDir, "chats.json")) as { ids?: unknown } | null;
-  const ids = (Array.isArray(listed?.ids) ? listed.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
-  const archivedFile = await readJson(join(dataDir, "archived-chats.json")) as { ids?: unknown } | null;
-  const archived = new Set((Array.isArray(archivedFile?.ids) ? archivedFile.ids : []).filter((id): id is string => typeof id === "string"));
+  // Only the owner's chats (`ownerChats`): an archived or clean-room test chat stays out of his counts and the job's messages.
+  const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   const chats: Inputs["chats"][number][] = [];
@@ -445,7 +444,7 @@ async function main(): Promise<void> {
     chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs, paused,
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
-  const live = ids.filter(id => !archived.has(id));
+  const live = ids;
   const cut = await findCutJobs(join(dataDir, "..", "session-artifacts"), live,
     (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, await daemonStops(join(dataDir, "..", "logs")));
   const boardStore = new BoardStore(dataDir);

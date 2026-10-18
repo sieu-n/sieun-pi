@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
+import { ownerChats } from "../../src/owner-chats.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { withWakes } from "../../src/checkin-load.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
@@ -67,12 +67,7 @@ function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; lin
 
 export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] }): Promise<DutyFleet> {
   const { dataDir, now } = options;
-  const listOf = async (file: string): Promise<string[]> => {
-    const value = JSON.parse(await readFile(join(dataDir, file), "utf8").catch(() => "{}")) as { ids?: unknown };
-    return (Array.isArray(value.ids) ? value.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
-  };
-  const notOwners = new Set([...await listOf("archived-chats.json"), ...await listOf(CLEAN_ROOM_CHATS_FILE)]);
-  const ids = (await listOf("chats.json")).filter(id => !notOwners.has(id));
+  const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
   const boards = new BoardStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));

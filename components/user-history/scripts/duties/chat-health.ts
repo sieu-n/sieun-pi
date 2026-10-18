@@ -20,6 +20,7 @@ import { endStateKpi, endStateLine, OK_STATES, stuckLine } from "../../src/check
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, stuckPastCheckIn, stuckStepHours, unfixedFlags } from "./checkin-quality.ts";
 import { OpsReader, unapplied } from "../../src/checkin-ops.ts";
+import { ownerChats } from "../../src/owner-chats.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -238,8 +239,8 @@ async function main(): Promise<void> {
   if (!Number.isFinite(now)) { process.stderr.write("chat-health: CHAT_HEALTH_NOW is not a number\n"); process.exit(2); }
   const dataDir = process.env.CHAT_HEALTH_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
-  const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
-  const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
+  // Only the owner's chats (`ownerChats`): an archived or clean-room test chat is not his to count or message.
+  const ids = await ownerChats(dataDir);
   const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
     no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
     deadMs: 0, flagged: new Map(), seen: [] };

@@ -19,6 +19,7 @@ import { boardPrs, metricFacts } from "../../src/checkin-done.ts";
 import { prStates } from "../../src/pr-states.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
+import { ownerChats } from "../../src/owner-chats.ts";
 
 /**
  * Board classes: every open leaf step of every chat board in one class (`stepClass`), from the boards, the check-in memory (each step's last
@@ -114,7 +115,8 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   const registry = JSON.parse(await readFile(join(dataDir, "chat-jobs.json"), "utf8").catch(() => "{}")) as { jobs?: Record<string, { chat?: string }> };
   const rootsOf = (names: readonly string[]): string[] => Object.entries(registry.jobs ?? {}).filter(([, entry]) => names.includes(entry.chat ?? "")).map(([root]) => root);
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8").catch(() => "{}")) as { ids?: unknown };
-  const ids = (options.chats ?? (Array.isArray(listed.ids) ? listed.ids : [])).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
+  // Only the owner's chats unless `chats` names some (`ownerChats`): an archived or clean-room test chat is not his to count or message.
+  const ids = (options.chats ?? await ownerChats(dataDir)).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
   /** Every listed chat, whose active duties a goal's note may name as its cover (`checkInDuties`). */
   const allChats = new Set((Array.isArray(listed.ids) ? listed.ids : []).filter((id): id is string => typeof id === "string"));
   const boards = new BoardStore(dataDir);
