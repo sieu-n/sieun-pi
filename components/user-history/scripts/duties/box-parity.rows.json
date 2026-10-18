@@ -1673,7 +1673,8 @@
   ],
   "box": [
    {
-    "panel": "websearch_query"
+    "panel": "websearch_query",
+    "shared": "Google is down on the Virev search backend"
    }
   ]
  },

@@ -198,7 +198,7 @@ def version(argv, host, cwd=None):
     if not path:
         return "absent"
     real = os.path.realpath(path)
-    read = version_from_path(real)
+    read = None if cwd else version_from_path(real)
     if read:
         return "v:" + read
     stamp = "%s@%d" % (real, int(os.stat(real).st_mtime))
@@ -268,7 +268,7 @@ def mcp(name):
 
 
 def probe(spec, host, tip):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "intended"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "intended", "shared"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":

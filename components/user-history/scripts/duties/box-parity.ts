@@ -13,7 +13,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
  *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler) and a row with `byDesign`
- *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes.
+ *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
+ *   whose detail starts with the probe's `shared` text comes from a service both hosts use, such as Google on Virev, so it is no box gap.
  * - `mac_behind_box`: commits on the box's auto-sns-agent sieun/dev, the shared tip since 10-18 11:23Z, that the Mac's sieun/dev lacks.
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
@@ -73,9 +74,10 @@ export function compareVersions(a: string, b: string): number {
   return left.letter === right.letter ? 0 : left.letter < right.letter ? -1 : 1;
 }
 
-/** The box value of a Skills and tools check: a pass, or an off that is off on purpose, is "ok". */
-export const panelValue = (outcome: Outcome | undefined): string =>
-  !outcome ? "fail: the Skills and tools check did not run" : outcome.status === "fail" ? `fail: ${outcome.detail}` : "ok";
+/** The box value of a Skills and tools check: a pass, an off that is off on purpose, or a fail the probe's `shared` text names, is "ok". */
+export const panelValue = (outcome: Outcome | undefined, shared?: unknown): string =>
+  !outcome ? "fail: the Skills and tools check did not run"
+    : outcome.status === "fail" && !(typeof shared === "string" && outcome.detail.startsWith(shared)) ? `fail: ${outcome.detail}` : "ok";
 
 const probesOf = (row: Row, host: "mac" | "box"): Probe[] => row[host] ?? row.probes ?? [];
 
@@ -85,7 +87,7 @@ export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutp
   for (const row of rows) {
     const boxProbes = probesOf(row, "box");
     const macValues = mac.values[row.id] ?? [];
-    const boxValues = (box.values[row.id] ?? []).map((value, index) => value === "panel" ? panelValue(panel.get(String(boxProbes[index]?.panel))) : value);
+    const boxValues = (box.values[row.id] ?? []).map((value, index) => value === "panel" ? panelValue(panel.get(String(boxProbes[index]?.panel)), boxProbes[index]?.shared) : value);
     const misses: string[] = [];
     const intended: string[] = [];
     probesOf(row, "mac").forEach((_, index) => {

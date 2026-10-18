@@ -1,7 +1,7 @@
 // Owner 10-18 (goal p1): us-metal02 matches the owner's MacBook Pro for every tool; these cases pin how the Box tools parity duty judges a row, a limit and port 22.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -53,6 +53,15 @@ test("judgeRows counts misses, folds in panel outcomes and keeps intended and by
   assert.equal(result.matched, 3);
 });
 
+test("judgeRows takes a panel fail that the probe's shared text names as a match, and still counts any other fail", () => {
+  const rows: Row[] = [{ id: "search", tool: "tools-panel check websearch_query", mac: [{ const: "ok" }], box: [{ panel: "websearch_query", shared: "Google is down on the Virev" }] }];
+  const mac = output("mac", { search: ["ok"] });
+  const box = output("box", { search: ["panel"] });
+  const fail = (detail: string) => new Map([["websearch_query", { status: "fail" as const, fixer: "agent" as const, detail, fix: "x" }]]);
+  assert.equal(judgeRows(rows, mac, box, fail("Google is down on the Virev search backend; results came from the DuckDuckGo fallback")).off.length, 0);
+  assert.deepEqual(judgeRows(rows, mac, box, fail("Virev search error (500)")).off.map(verdict => verdict.row.id), ["search"]);
+});
+
 const context = (files: Record<string, string>, nice: Record<number, number> = {}): LimitContext =>
   ({ scope: "user", defaultTasksMax: "272774", memTotal: 1000, read: path => files[path], niceOf: pid => nice[pid] });
 
@@ -91,6 +100,23 @@ test("publicSsh needs a refused control port to call 22 closed", () => {
   assert.equal(publicSsh({ ssh: "open", control: "refused" }, on).value, 1);
   assert.equal(publicSsh({ ssh: "dropped", control: "dropped" }, on).value, undefined);
   assert.equal(publicSsh(new Error("ssh failed"), { ActiveState: "inactive", Result: "success" }).value, 1);
+});
+
+test("the probe runs a version row with a cwd on the Mac, since a pinned packageManager there wins over the installed version", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-"));
+  const pkg = join(home, ".local/lib/node_modules/pnpm");
+  mkdirSync(join(pkg, "bin"), { recursive: true });
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  mkdirSync(join(home, "repo"), { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "pnpm", version: "10.33.0" }));
+  writeFileSync(join(pkg, "bin/pnpm.cjs"), "#!/bin/sh\nif [ -f package.json ]; then echo 10.32.1; else echo 10.33.0; fi\n", { mode: 0o755 });
+  symlinkSync(join(pkg, "bin/pnpm.cjs"), join(home, ".local/bin/pnpm"));
+  writeFileSync(join(home, "repo/package.json"), JSON.stringify({ packageManager: "pnpm@10.32.1" }));
+  const rows: Row[] = [{ id: "repo", tool: "cli pnpm", probes: [{ version: ["pnpm", "--version"], cwd: "~/repo" }] },
+    { id: "bare", tool: "cli pnpm", probes: [{ version: ["pnpm", "--version"] }] }];
+  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, boxTip: null, known: {} })).toString("base64");
+  const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+  assert.deepEqual([out.values.repo, out.values.bare], [["v:10.32.1"], ["v:10.33.0"]]);
 });
 
 test("parseShow splits systemctl show records", () => {
