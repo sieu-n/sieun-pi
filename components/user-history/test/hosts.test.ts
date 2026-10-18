@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 // @ts-expect-error The relay is plain JavaScript with no types, so it runs on a box with nothing but node.
-import { createRelay } from "../../prime-relay/relay.mjs";
+import { createRelay, daemonWorking } from "../../prime-relay/relay.mjs";
 import { HostBridge, hostHealth, listHostDir, parseHosts, readHostFile, roleUrl, selfHost, type Host, type HostsRegistry } from "../src/hosts.ts";
 
 const TOKEN = "a".repeat(64);
@@ -90,4 +90,27 @@ test("a bridge socket carries bytes both ways to the remote daemon socket, and t
     socket.destroy();
   } finally { await bridge.close(); }
   await assert.rejects(readFile(join(dir, "bridge", "box.sock")), /ENOENT/);
+});
+
+test("daemonWorking reads the daemon's roster through a protocol 7 envelope and is true only while a session works", async () => {
+  const path = join(dir, "roster.sock");
+  let rows: object[] = [];
+  const commands: { type?: string; command?: { type?: string } }[] = [];
+  const server = createServer(socket => {
+    socket.write(JSON.stringify({ type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 7 } }) + "\n");
+    socket.on("data", (chunk: Buffer) => {
+      const command = JSON.parse(chunk.toString());
+      commands.push(command);
+      socket.write(JSON.stringify({ type: "response", id: command.id, success: true, data: { sessions: rows } }) + "\n");
+    });
+  });
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  try {
+    rows = [{ sessionId: "a", activity: "idle" }];
+    assert.equal(await daemonWorking(path), false);
+    rows = [{ sessionId: "a", activity: "idle" }, { sessionId: "b", activity: "working" }];
+    assert.equal(await daemonWorking(path), true);
+    assert.deepEqual([commands[0]?.type, commands[0]?.command?.type], ["command", "list"]);
+    assert.equal(await daemonWorking(join(dir, "missing.sock")), null);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });

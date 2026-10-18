@@ -2,6 +2,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, realpathSync } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -119,9 +120,70 @@ export function createRelay(config, log = () => {}) {
   return server;
 }
 
+/** One `list` over the daemon socket: true when a session is in a turn, a tool call or a compaction; null when the daemon did not answer. */
+export function daemonWorking(socketPath, timeoutMs = 10_000) {
+  return new Promise(resolve => {
+    const socket = createConnection(socketPath);
+    let buffer = "";
+    const done = value => { socket.destroy(); resolve(value); };
+    socket.setTimeout(timeoutMs, () => done(null));
+    socket.once("error", () => done(null));
+    socket.on("data", chunk => {
+      buffer += chunk;
+      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.type === "daemon_hello") {
+          const protocol = message.protocol;
+          socket.write(`${JSON.stringify({ type: "command", id: "awake", protocol, clientId: "prime-relay", command: { id: "awake", type: "list" } })}\n`);
+        } else if (message.id === "awake") {
+          const rows = message.success && Array.isArray(message.data?.sessions) ? message.data.sessions : null;
+          done(rows && rows.some(row => row.activity === "working" || row.isStreaming || row.isRunningTools || row.isCompacting));
+        }
+      }
+    });
+  });
+}
+
+/** The Mac may idle-sleep again once no session has worked for this long; the chat service's own hold (chat-awake.ts) uses the same 2 min. */
+const AWAKE_RELEASE_MS = 2 * 60_000;
+const AWAKE_POLL_MS = 30_000;
+
+/**
+ * On macOS, `caffeinate -i -w <relay pid>` runs while the box's daemon has a session at work and until AWAKE_RELEASE_MS after the last one, so a
+ * turn on this Mac never idle-sleeps when the chat service runs on another box. Lid-close sleep still happens.
+ */
+export function holdAwake(socketPath, log, options = {}) {
+  if ((options.platform ?? process.platform) !== "darwin") return () => {};
+  let hold = null;
+  let lastWorkAt = null;
+  const check = async () => {
+    const working = await daemonWorking(socketPath);
+    const now = Date.now();
+    if (working) lastWorkAt = now;
+    if (working && !hold) {
+      hold = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+      const child = hold;
+      child.once("exit", () => { if (hold === child) hold = null; });
+      child.once("error", error => log(`awake: caffeinate: ${error.message}`));
+      log("awake: a session works; holding idle sleep off");
+    } else if (!working && hold && (lastWorkAt === null || now - lastWorkAt >= AWAKE_RELEASE_MS)) {
+      hold.kill();
+      hold = null;
+      log("awake: nothing has worked for 2 min; idle sleep allowed again");
+    }
+  };
+  void check();
+  const timer = setInterval(() => { void check(); }, AWAKE_POLL_MS);
+  return () => { clearInterval(timer); hold?.kill(); };
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   const file = expand(process.argv[2] ?? "~/.config/prime-relay/relay.json");
   const config = loadConfig(file);
   const log = line => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   createRelay(config, log).listen(config.port, config.listen, () => log(`prime-relay ${VERSION} on ${config.listen}:${config.port} for ${config.daemonSocket}`));
+  holdAwake(config.daemonSocket, log);
 }
