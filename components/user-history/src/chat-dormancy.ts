@@ -207,10 +207,12 @@ export class Dormancy {
   }
 
   /**
-   * A pinned chat with no thread in the hub (a service start, or a daemon restart that closed it) whose session last worked longer ago than
-   * the daemon's idle time stays detached, so a restart does not load every idle worker again. Its last work is the later of the session's
-   * activity and the idle clock saved before the start. Running subagents keep it only when one session below it (`childTimes`, epoch ms at any
-   * depth, NaN for none, read only then) was active within CHILD_SILENT_MS. The result is that idle time; null means resume it.
+   * A pinned chat with no thread in the hub (a service start, or a daemon restart that closed it) that is not at work stays detached until its
+   * first need: a send, a duty, or a catalog row that shows it working (`woken`). Its last work is the later of the session's activity and the
+   * idle clock saved before the start. Running subagents keep it only when one session below it (`childTimes`, epoch ms at any depth, NaN for
+   * none, read only then) was active within CHILD_SILENT_MS, and a duty that holds it keeps it too. The result is that idle time; null means
+   * resume it. On 10-18 the starts from 04:22Z to 06:15Z each opened 11 to 49 sessions live in their first 3 min, 13 to 253 s of attach and
+   * snapshot in all and up to 49 s for one, and only the chats idle past idleEvictionMinutes stayed detached.
    */
   async restedOnDisk(summary: SessionSummary, childTimes: () => readonly number[]): Promise<number | null> {
     const known = [Date.parse(summary.lastActivityAt ?? ""), this.before.get(summary.sessionId) ?? Number.NaN].filter(Number.isFinite);
@@ -221,7 +223,7 @@ export class Dormancy {
       const times = childTimes();
       if (times.length === 0 || times.some(at => !(now - at >= CHILD_SILENT_MS))) return null;
     }
-    return await this.due(summary.sessionId, last) ? now - last : null;
+    return await this.held(summary.sessionId) ? null : now - last;
   }
 }
 
