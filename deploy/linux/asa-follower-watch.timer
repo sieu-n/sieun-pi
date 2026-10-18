@@ -1,0 +1,12 @@
+[Unit]
+Description=Run asa-follower-watch every 2 minutes
+
+[Timer]
+OnBootSec=2min
+# One run is one ssh call that takes about 0.5 s (12:23Z on 2026-10-18, Mac load 200), and the ops alert is due at
+# 10 min (asa-tip-sync's BLOCK_ALERT_S), so a 2 min check sends it at 10 to 12 min.
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
