@@ -22,12 +22,13 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 
 1. The command builds `~/.local/share/sieun-pi-chat/release-<sha7>` from `git archive`, links both node_modules folders to the checkout, and runs `npm run typecheck` (tsc and svelte-check) and `npm test` inside the release, niced.
 2. `npm test` runs every file in `components/user-history/test`. Each one guards a real incident or an owner rule and names it on its first line. Add a test only for a failure that happened, with that line.
-3. It points `current` at the release with one rename, runs `launchctl kickstart -k gui/$UID/com.sieun.agent-chat`, and prints the release id on its last line.
-4. It holds `~/.local/share/sieun-pi-chat/release.lock` from start to kickstart, so a second release waits for the first one.
+3. It points `current` at the release with one rename, restarts the chat and prints the release id on its last line. On a Linux box the restart is `systemctl --user restart sieun-pi-chat.service`, and only the Mac runs `launchctl kickstart -k gui/$UID/com.sieun.agent-chat`.
+4. It takes `~/.local/share/sieun-pi-chat/release.lock` before the build and holds it to the restart, so a second release waits through the first one's whole build and tests.
 5. It refuses, with exit 3, a commit that does not descend from the live release's commit. On 10-15 at 18:32:56 KST one job flipped `current` back to release-81a0540 and another job flipped it to 476a86b 30 s later, because each ran the steps by hand.
 6. To go back on purpose, run `node scripts/release-chat.mjs <sha or release id> --rollback`, which reuses a built release folder.
 7. A release whose diff touches only scripts/duties or tests takes `--no-kickstart`, because duty prechecks read `current` at each run.
 8. Never run `ln -sfn` on `current` or kickstart the service by hand, because a hand step skips the lock and the newer-only check.
+9. A flip is not a restart. When a newer release that descends from this one waits for the lock, this release writes `restart.owed` and leaves the restart to it, so the running chat keeps the code it started on until that restart. On us-metal02 on 10-18 the chat ran release-6d3b60d from 06:57:18Z while `current` moved 8 times.
 
 ## Merges, pushes and promotes
 
