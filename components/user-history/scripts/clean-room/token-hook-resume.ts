@@ -191,7 +191,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     detail: finished.length ? finished.map(job => `job ${job.id} finished, the unload stopped it at ${iso(job.stopped)}, ${job.after.length} continues after it`).join("; ") +
       (Date.now() < lastSweep ? `; waits for one resume pass after ${iso(lastSweep - 11 * 60_000)}` : "") : "no job has finished and been stopped by the unload yet" });
 
-  const tree = new Set([chat, ...jobs.map(job => job.id)]);
+  // The chat's check-in duty jobs run on the server's clock and are part of the system, not someone stepping in.
+  const runsFile = join(run, "runs.jsonl");
+  const duty = (existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").filter(line => line.trim()) : [])
+    .flatMap(line => { const job = (JSON.parse(line) as { job?: { id?: string } }).job; return job?.id ? [job.id] : []; });
+  const tree = new Set([chat, ...jobs.map(job => job.id), ...duty]);
   const seeds = new Set(state.seeds);
   const owner = events.filter(event => event.kind === "text" && event.role === "user" && event.at >= state.windowStart && !seeds.has(event.text.trim()) && !event.text.startsWith("[")).map(event => event.kind === "text" ? event.text : "");
   const outside = [chat, ...jobs.map(job => job.id)].flatMap(id => (id === chat ? events : readSessionFile(jobs.find(job => job.id === id)!.file))
