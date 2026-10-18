@@ -89,7 +89,7 @@
             </ul>
           </details>
         {/each}
-        <p class="note">The groups add up to {gb(groupTotal)} GB of memory footprint. Footprint also counts compressed and swapped pages, so it can pass the {gb(view.memory.usedBytes)} GB in RAM.</p>
+        <p class="note">The groups add up to {gb(groupTotal)} GB of memory footprint, the number Activity Monitor shows. It can pass the {gb(view.memory.usedBytes)} GB in RAM, because footprint also counts{view.memory.swapUsedBytes ? ` the ${gb(view.memory.swapUsedBytes)} GB in swap and` : ""} compressed pages at full size.</p>
       </div>
     {/if}
     {#if error}<p class="note problem">The last reading failed. {error}</p>{/if}
