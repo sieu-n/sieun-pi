@@ -76,12 +76,13 @@ def load_config() -> dict:
 def host_name() -> str:
     """This box's name in sieun-pi's hosts registry (the host whose hostname is this one), else the short hostname."""
     hostname = socket.gethostname()
+    names = {hostname, hostname.split(".")[0]}
     try:
         hosts = json.loads((HOME / ".config/sieun-pi/hosts.json").read_text()).get("hosts", [])
     except (OSError, ValueError):
         hosts = []
     for host in hosts:
-        if isinstance(host, dict) and host.get("hostname") == hostname and host.get("name"):
+        if isinstance(host, dict) and host.get("hostname") in names and host.get("name"):
             return host["name"]
     return hostname.split(".")[0]
 
