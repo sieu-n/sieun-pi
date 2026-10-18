@@ -1,6 +1,6 @@
 import { TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { formatCursor, messageKey } from "./shared/message-key.ts";
-import type { ImagePart, OlderPage, TextPart, ThreadMessage } from "./shared/types.ts";
+import type { ChildAgent, ImagePart, OlderPage, TextPart, ThreadEvent, ThreadMessage } from "./shared/types.ts";
 
 /**
  * The JSON bytes of a new feed's first snapshot. The owner's Mac in Korea is 186 ms from this box (10-18), and a fresh connection sends about
@@ -12,6 +12,27 @@ export const FIRST_PAGE_BYTES = 36 * 1024;
 export const PREVIEW_CHARS = 140;
 /** A collapsed work row shows the first line of a job's message; the first page keeps 300 characters of it. */
 export const NOTE_PREVIEW_CHARS = 300;
+
+/**
+ * A job's `label` is the whole task brief it was given, and the page reads only its first line (client/children.ts `childName`) and searches it
+ * (SubagentList.svelte). On 10-18 the labels were 56 KB of the 62 KB children frame of chat 01a14d31, and the page got that frame twice on each
+ * load from Korea, inline in the shell and again on the socket. The feed sends the first `LABEL_CHARS` of each.
+ */
+export const LABEL_CHARS = 300;
+const clipChild = (child: ChildAgent): ChildAgent => child.label.length > LABEL_CHARS ? { ...child, label: child.label.slice(0, LABEL_CHARS) } : child;
+const sentEvents = new WeakMap<ThreadEvent, ThreadEvent>();
+/** A thread event as the feed and the shell send it: job labels cut to `LABEL_CHARS`, once per event however many pages get it. */
+export function wireEvent(event: ThreadEvent): ThreadEvent {
+  const children = event.type === "children" ? event.children : event.type === "snapshot" ? event.snapshot.children : undefined;
+  if (!children?.some(child => child.label.length > LABEL_CHARS)) return event;
+  let sent = sentEvents.get(event);
+  if (!sent) {
+    sent = event.type === "children" ? { ...event, children: event.children.map(clipChild) }
+      : event.type === "snapshot" ? { ...event, snapshot: { ...event.snapshot, children: children.map(clipChild) } } : event;
+    sentEvents.set(event, sent);
+  }
+  return sent;
+}
 
 function cut(text: string, limit: number): { text: string; truncated: boolean } {
   return text.length > limit ? { text: text.slice(0, limit), truncated: true } : { text, truncated: false };

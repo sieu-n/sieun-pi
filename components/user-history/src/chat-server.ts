@@ -23,6 +23,7 @@ import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
 import { SessionsDiff, withoutArchived } from "./shared/sessions-delta.ts";
+import { wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -431,7 +432,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
     try {
       const id = threadId(feed.id);
-      const stop = await backend.threads.subscribe(id, event => send("thread", event));
+      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)));
       pushSide(id, side => send("side", side));
       return stop;
     } catch (error) {
@@ -601,7 +602,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const html = startHtml(req, res);
             html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
             const found = await frames;
-            html.end(shellTail(id && found ? { id, frames: found } : null));
+            html.end(shellTail(id && found ? { id, frames: found.map(wireEvent) } : null));
             return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }
