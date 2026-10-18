@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cpuSides, linuxUsable, parseCpuList, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, schedstatMark, seedSchedstat, userSlice } from "../../prime-relay/host-stats.ts";
+import { cpuSides, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, schedstatMark, seedSchedstat, userSlice } from "../../prime-relay/host-stats.ts";
 import { parseLinuxReading, parseUsableRaw, startMacUsableWatch, type Footprints, type WatchSource, unusable, watchFile } from "../src/mac-usable-watch.ts";
 
 // The harness's CPU set on us-metal02 from /proc/<pid>/status, the same for prime-agent-daemon, sieun-pi-chat, pi-pool-serve and prime-relay.
@@ -33,35 +33,20 @@ test("schedstat gives each CPU's run plus wait time, and an unknown version is n
   assert.equal(parseSchedstat("version 17\ntimestamp 1\n"), null);
 });
 
-// us-metal02's CPU sets on 10-18: the user slice's 32 odd CPUs, virev-ci.slice's 32 even ones and virev-prod.slice's 16 others, 80 in all.
-const odd = (cpus: number[]) => cpus.filter(cpu => cpu % 2 === 1);
-const ALL = Array.from({ length: 80 }, (_, cpu) => cpu);
-const PINNED_HARNESS = parseCpuList("9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,49,51,53,55,57,59,61,63,65,67,69,71,73,75,77,79")!;
-const VIREV_CI = parseCpuList("0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,70")!;
-const VIREV_PROD = parseCpuList("1,3,5,7,32,34,36,38,41,43,45,47,72,74,76,78")!;
-test("CPU sides on shared cores: Virev's VMs count only for the CPUs they share with the harness, none while it is pinned beside them and all once the pin is lifted", () => {
-  assert.equal(PINNED_HARNESS.length + VIREV_CI.length + VIREV_PROD.length, 80);
-  assert.deepEqual(parseCpuList("0-2,5"), [0, 1, 2, 5]);
-  assert.equal(parseCpuList(""), null);
+// us-metal02 on 10-18 after 07:45Z, when its slices lost their CPU pins: the harness, Virev's 24 cores of CI VMs and its prod VMs share all 80 CPUs.
+test("CPU sides with no pins: Virev's CI and prod VMs count in full, so a minute when CI uses more cores than the harness is not the harness's", () => {
   const slice = userSlice("0::/user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service\n")!;
   const before = new Map([[slice.slice, 0], ["virev.slice/virev-ci.slice", 0], ["virev.slice/virev-prod.slice", 0], ["dev.slice", 0], ["system.slice", 0]]);
   const after = new Map([[slice.slice, 200_000_000], ["virev.slice/virev-ci.slice", 240_000_000], ["virev.slice/virev-prod.slice", 20_000_000], ["dev.slice", 30_000_000], ["system.slice", 8_000_000]]);
-  const cgroups = new Map([["virev.slice/virev-ci.slice", VIREV_CI], ["virev.slice/virev-prod.slice", VIREV_PROD], ["dev.slice", PINNED_HARNESS], ["system.slice", ALL]]);
-  assert.deepEqual(cpuSides(before, after, slice, 10_000, { harness: PINNED_HARNESS, cgroups }), { harness: 20, apps: 3, owner: 0, ci: 0, system: 0.32 },
-    "pinned to its 32 CPUs the harness meets none of the VMs' time, and the OS's time over all 80 counts for the 32 it shares");
-  assert.deepEqual(cpuSides(before, after, slice, 10_000, { harness: ALL, cgroups }), { harness: 20, apps: 5, owner: 0, ci: 24, system: 0.8 },
-    "spanning all 80 the harness meets every VM's time, so 24 cores of CI outweigh it and the minute is not the harness's");
-  assert.deepEqual(cpuSides(before, after, slice, 10_000, { harness: odd(ALL), cgroups }), { harness: 20, apps: 3 + 2 / 2, owner: 0, ci: 0, system: 0.4 },
-    "half of virev-prod's CPUs are odd, so half of its time counts");
-  assert.deepEqual(cpuSides(before, after, slice, 10_000), { harness: 20, apps: 5, owner: 0, ci: 24, system: 0.8 }, "with no CPU sets read every cgroup counts in full");
+  assert.deepEqual(cpuSides(before, after, slice, 10_000), { harness: 20, apps: 5, owner: 0, ci: 24, system: 0.8 });
 });
 
-test("runnable tasks a core over shared cores average every CPU the harness may run on, VM vCPU time included", () => {
+test("runnable tasks a core with no pins average all 80 CPUs, VM vCPU time included", () => {
   const window = 10 * SECOND;
-  const before = new Map(ALL.map(cpu => [cpu, 0]));
-  const after = new Map(ALL.map(cpu => [cpu, VIREV_CI.includes(cpu) ? 2 * window : PINNED_HARNESS.includes(cpu) ? window : 0]));
-  assert.equal(runnablePerCore(before, after, PINNED_HARNESS, window / 1e6), 1, "pinned, the harness's 32 CPUs carry one task each");
-  assert.equal(runnablePerCore(before, after, ALL, window / 1e6), (32 * 2 + 32) / 80, "unpinned, CI's queued vCPUs on the shared even CPUs count too");
+  const all = Array.from({ length: 80 }, (_, cpu) => cpu);
+  const before = new Map(all.map(cpu => [cpu, 0]));
+  const after = new Map(all.map(cpu => [cpu, cpu % 2 === 0 ? 2 * window : window]));
+  assert.equal(runnablePerCore(before, after, all, window / 1e6), 1.5, "CI's queued vCPUs on the even CPUs count beside the harness's tasks on the odd ones");
 });
 
 test("runnable tasks a core count only the harness's CPUs, so busy harness CPUs beside idle VM CPUs read busy", () => {
