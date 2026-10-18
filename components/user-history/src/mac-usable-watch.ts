@@ -442,8 +442,16 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
   }
 }
 
-/** Takes one sample and appends its line; null when the catalog holds no rows yet. */
-export async function sample(source: WatchSource): Promise<WatchLine | null> {
+/** What a box's relay read says when the service stopped before it answered, or stopped with no read made. */
+export const UNREAD_AT_STOP = "unread: the chat service stopped before the relay answered";
+const unreadHost = (name: string): HostWatchLine => ({ name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: UNREAD_AT_STOP });
+
+/**
+ * Takes one sample and appends its line; null when the catalog holds no rows yet. Once `stopping` resolves, each relay read still out reads
+ * unread and the line goes out with this box's own numbers, so a stop never drops a sample in flight. On 10-18 the Mac's relay timed out at
+ * 35 s (hosts.ts relayWatch) while restarts at 10:46:55Z and 10:58:45Z stopped the service, and the 10:46:30Z and 10:58:30Z samples left no line.
+ */
+export async function sample(source: WatchSource, stopping?: Promise<void>): Promise<WatchLine | null> {
   const now = source.now ?? Date.now;
   const started = process.cpuUsage();
   const rows = source.rows();
@@ -456,7 +464,10 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const chatIds = source.chats();
   const [footprints, queue, chats, usable, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
     (source.feed ?? readUsable)(at),
-    chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } }))))]);
+    chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
+      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } });
+      return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
+    })))]);
   const resumed = process.cpuUsage();
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
     ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB) };
@@ -497,22 +508,31 @@ export const nextSampleAt = (at: number): number => Math.floor((at - MINUTE / 2)
  * without a line, and on Linux their window starts at that process's last reading (`seedSchedstat`). On 10-18 each restart line came about 10 s
  * after the service started, and its window held only the service's boot: 06:07:39Z read 1.48, 06:11:15Z 1.17, 06:15:49Z 1.43 and 06:21:27Z
  * 1.48 runnable a core against 0.6 to 0.9 for the lines around them, and 06:15:49Z was the last line of a minute whose 06:15:30Z line read 0.61.
+ *
+ * The stop writes the sample in flight with its relay reads still out marked unread (`sample`), then a sample of its own when the minute it
+ * stops in has no line yet, so a restart leaves no wall-clock minute without a line. On 10-18 the service began to stop at about 06:00:28Z
+ * and the next one listened at 06:01:28Z, so 06:00Z had none. Of the 29 minutes the 10-18 file had with no line, 27 sat within
+ * 2 minutes of a service start.
  */
-export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => void {
+export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () => Promise<void> {
   const now = source.now ?? Date.now;
   const last = readLastSample(source.dataDir);
   if (last?.sched && !source.feed) seedSchedstat(last.sched);
-  let running = false;
+  let lastAt = last?.at ?? null;
+  let running: Promise<void> | null = null;
   let landed = false;
+  let markStopping!: () => void;
+  const stopping = new Promise<void>(resolve => { markStopping = resolve; });
+  const written = () => lastAt !== null && Math.floor(lastAt / MINUTE) === Math.floor(now() / MINUTE);
   const startTick = () => {
-    if (last && Math.floor(last.at / MINUTE) === Math.floor(now() / MINUTE) && source.rows().length) landed = true;
+    if (written() && source.rows().length) landed = true;
     else tick();
   };
+  const run = () => sample(source, stopping).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
+    .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
   const tick = () => {
     if (running) return;
-    running = true;
-    void sample(source).then(line => { if (line) landed = true; })
-      .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
+    running = run().finally(() => { running = null; });
   };
   let due = nextSampleAt(now());
   let timer: NodeJS.Timeout;
@@ -524,5 +544,11 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
   const first = setInterval(() => { if (landed) clearInterval(first); else startTick(); }, firstMs);
   first.unref();
   startTick();
-  return () => { clearTimeout(timer); clearInterval(first); };
+  return async () => {
+    clearTimeout(timer);
+    clearInterval(first);
+    markStopping();
+    await running;
+    if (!written()) await run();
+  };
 }

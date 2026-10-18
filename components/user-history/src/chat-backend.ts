@@ -245,7 +245,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
-  const stopWatch = ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+  const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
@@ -357,11 +357,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     async close() {
       if (closed) return;
       closed = true;
+      // First, so the line of the minute it stops in goes out while the rest closes (startMacUsableWatch).
+      const watchStopped = stopWatch();
       await outbox.close();
       await agentOutbox.close();
+      await watchStopped;
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
-      stopWatch();
       stopWakes();
       stopBriefs();
       stopAlerts();
