@@ -161,12 +161,22 @@ export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick
  * pause of the thread that owns its push step (`paused`, the chats whose check-in he paused). The owner's focus pause at 23:03Z on 10-17 stopped
  * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
  */
-export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set()): string | undefined {
+export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set(), views: readonly StepView[] = []): string | undefined {
   for (const item of [goal, push?.item]) {
     const until = Date.parse(item?.waitUntil ?? "");
     if (Number.isFinite(until) && until > now) return `until ${zTime(until)}`;
   }
   if (push && threadPaused(push.owner, push.item, paused)) return `on the owner's pause of ${push.owner?.name ?? push.item.sessionId}`;
+  if (!push) {
+    // A goal with no push step whose every open step waits on its owner's board.wake or a time still ahead moves when that wait ends; a job
+    // to push it now would wake the sleeper early (clean room 10-18 02:49Z: "disk free check" slept until 03:01Z for its second reading, and
+    // goal_gaps read p1 "no live job owns it", so the check-in steered the job 12 min early).
+    const open = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id);
+    const asleep = (view: StepView): string | undefined => view.owner?.wake !== undefined ? `on ${view.owner.name}'s ${view.owner.wake.replace(/^a /, "")}`
+      : Date.parse(view.item.waitUntil ?? "") > now ? `until ${zTime(Date.parse(view.item.waitUntil!))}` : undefined;
+    const waits = open.map(asleep);
+    if (open.length && waits.every(Boolean) && open.some(view => view.owner?.wake !== undefined)) return [...new Set(waits)].join(" and ");
+  }
   return undefined;
 }
 
@@ -198,7 +208,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     if (memo) kept[goal.id] = memo;
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views, todos);
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), act }];
   });

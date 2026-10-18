@@ -7,6 +7,7 @@ import { agentLines, withWaits } from "../src/chat-agents.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { type ChatThreads, type CheckInSource } from "../src/chat-sources.ts";
+import { goalPushes, pushNeeded } from "../src/checkin-goals.ts";
 import { jobPushes } from "../src/checkin-jobs.ts";
 import { withWakes } from "../src/checkin-load.ts";
 import { checkInSettings, clockTime } from "../src/checkin-settings.ts";
@@ -225,4 +226,19 @@ test("agents API: an agent asleep on a board.wake reads working with its wait, n
   const [row] = withWaits([agent], [wake(agent.sessionId!, { kind: "run", run: 39091572149 })], () => []);
   assert.deepEqual([row!.state, row!.wait], ["working", "waits for run 39091572149"]);
   assert.deepEqual(agentLines([row!], NOW), ["Agents:", "- query mcp build: waits for run 39091572149 (p596)"]);
+});
+
+test("goal_gaps: a goal with no push step whose open steps all wait on their job's board.wake waits on that wake, so no push wakes the job early (clean room 10-18 02:49Z, disk free check)", () => {
+  const AT = Date.parse("2026-10-18T02:48:57.000Z");
+  const goal: PlanItem = { id: "p1", text: "Measure how much this Mac's free disk space changes over 25 minutes", status: "doing", children: [],
+    target: { metric: "free disk readings taken 25 minutes apart, with the change reported", target: 2, unit: "readings", current: 1, measuredAt: "2026-10-18T02:37:00Z" } } as unknown as PlanItem;
+  const owner: JobFact = { key: "sub-6aeec326", name: "disk free check", state: "working", wake: "a board.wake at 03:01Z" };
+  const view = (id: string, extra: Partial<PlanItem> = {}) => ({ item: { id, text: id, status: "doing", job: owner.name, children: [], ...extra }, owner, cls: "live", goal: { id: goal.id, text: goal.text } });
+  const views = [view("p2", { waitUntil: "2026-10-18T03:01:49Z" }), view("p3", { status: "todo" })] as never[];
+  const board = { plan: [{ ...goal, children: views.map(each => (each as { item: PlanItem }).item) }], todos: [] } as unknown as ChatBoard;
+  const [push] = goalPushes(board, views, undefined, 10 * 60_000, AT).pushes;
+  assert.deepEqual([push!.act, push!.waits], ["waiting", "on disk free check's board.wake at 03:01Z"]);
+  assert.equal(pushNeeded(push!), false);
+  const awake = goalPushes(board, views.map(each => ({ ...(each as object), owner: { ...owner, wake: undefined } })) as never[], undefined, 10 * 60_000, AT).pushes[0]!;
+  assert.equal(awake.act, "start", "with the job awake the goal still needs a push step, as p670 does");
 });
