@@ -8,7 +8,7 @@ import { readSession, readSessionFile, sessionFiles, type RunState, type Scenari
  * The clean-room scenario for the idle unload of subagents (src/idle-unload.ts). At 21:33Z on 10-17, 57 idle subagents stayed resident with a
  * Python kernel each inside trees that still ran, because Prime's child passivation sweep timed out and the unload stopped only roots. A fresh
  * chat gets one ordinary task that a job does. The run passes when every job of the chat and then the chat itself stop holding a worker on
- * their own once idle, with nobody stepping in. The criteria live in the run folder's criteria.md.
+ * their own once idle, and no process of the chat's tree is left, with nobody stepping in. The criteria live in the run folder's criteria.md.
  */
 export const TASK = "have a job count how many SKILL.md files the skills folder has and how many of those skills also have a references folder. give me both numbers";
 const HOME = homedir();
@@ -26,6 +26,11 @@ interface Row { sessionId: string; sessionName?: string; activeSessionId?: strin
 function daemonRows(): Row[] {
   const out = execFileSync("prime-agent", ["sessions", "--all", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   return (JSON.parse(out) as { sessions: Row[] }).sessions;
+}
+/** Each process whose environment names the chat's session folder (RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR of its tree), as its pid and command start. */
+function treeProcesses(chat: string): string[] {
+  const out = execFileSync("ps", ["-E", "-ww", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  return out.split("\n").filter(line => line.includes(`session-artifacts/${chat}`) && !line.includes("clean-room.ts")).map(line => line.trim().split(/\s+/).slice(0, 3).join(" "));
 }
 function idleMinutes(): number | "off" {
   try {
@@ -90,6 +95,10 @@ function judge(_run: string, state: RunState): { verdict: Verdict; text: string 
   const lastChat = Math.max(0, ...events.map(event => event.at));
   checks.push({ id: "c", ok: chatRow?.activeSessionId === undefined ? true : null,
     detail: `the chat's last event ${iso(lastChat)}; its session is ${chatRow?.activeSessionId === undefined ? `not resident (${chatRow?.lifecycle ?? "not listed"})` : "still resident"}` });
+
+  const left = treeProcesses(chat);
+  checks.push({ id: "e", ok: chatRow?.activeSessionId === undefined ? left.length === 0 : null,
+    detail: `${left.length} processes still carry the chat's session folder in their environment${left.length ? `: ${left.map(line => clip(line, 160)).join("; ")}` : ""}` });
 
   const tree = new Set([chat, ...jobs.map(job => job.id)]);
   const seeds = new Set(state.seeds);

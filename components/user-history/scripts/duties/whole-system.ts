@@ -268,9 +268,11 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued with ${FREE_SLOTS} or more free slots in ${freeSlot}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
-  const asleep = latest?.sleeping;
-  if (asleep && asleep.gb > 0) flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes, ` +
-    `${asleep.gb} GB at ${clock(Date.parse(latest.at))} in ${asleep.workers} whole workers and ${asleep.kernels} kernels: ${asleep.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")}.` });
+  if (latest?.sleeping && latest.sleeping.gb > 0) {
+    const asleep = latest.sleeping;
+    flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes, ` +
+      `${asleep.gb} GB at ${clock(Date.parse(latest.at))} in ${asleep.workers} whole workers and ${asleep.kernels} kernels: ${asleep.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")}.` });
+  }
   for (const line of oversize) flagged.push({ kind: "oversized", excerpt: line });
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });

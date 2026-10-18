@@ -254,10 +254,10 @@ test("sleeping_gb averages what sessions idle past the idle window held over the
   const output = measure(inputs({ watch, day }));
   assert.equal(output.metrics.sleeping_gb, 0.75, "the 40 min old line is outside the 30 min window");
   assert.equal(output.metrics.oversized_procs, 2);
-  const flags = output.flagged.filter(flag => flag.kind === "oversized").map(flag => flag.excerpt);
+  const flags = (output.flagged ?? []).filter(flag => flag.kind === "oversized").map(flag => flag.excerpt);
   assert.match(flags[0]!, /Prime worker 5784 \(VP, 9 sessions\) holds 2.6 GB, over 3x the day's median worker of 0.33 GB/);
   assert.match(flags[1]!, /the chat service holds 3.2 GB/);
-  assert.match(output.flagged.find(flag => flag.kind === "sleeping")!.excerpt, /0.25 GB at .* in 1 whole workers and 0 kernels: launch main bro 0.25 GB/);
+  assert.match((output.flagged ?? []).find(flag => flag.kind === "sleeping")!.excerpt, /0.25 GB at .* in 1 whole workers and 0 kernels: launch main bro 0.25 GB/);
   assert.equal(FAR_ABOVE, 3);
   assert.equal(measure(inputs({ watch: [line(1)] })).metrics.sleeping_gb, 0, "lines before the watch counted it read 0");
 });
