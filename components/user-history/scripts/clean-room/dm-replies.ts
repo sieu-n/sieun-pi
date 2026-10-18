@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ownerMessageId, serverNote, TELL_OWNER_TOOL } from "../../src/shared/chat-feed.ts";
@@ -10,11 +10,22 @@ import type { RunState, Scenario, Verdict } from "./session-read.ts";
  * three-part task that brings several job reports back, and the judge reads every tell_owner call: its sentences, bullets, bold and labels,
  * whether it packs more than one update, whether its reply_to names the owner message it answers, and whether a job report with nothing for
  * the owner got a message. `baseline --before <session id>[@<ISO time>][:<n>]` measures the last n calls (20) of any chat the same way.
+ *
+ * The c104 repeat (owner 10-18 06:55Z, on the VP of CI chat's three bubbles that each quoted his "is this correct?" and one of which was a bare
+ * mermaid block: "바로 다음 답변에는 reply =to 쓰지 않기", "그냥 답변을 풀어서 보내라는 뜻이 아님", "차라리 ... llm-wiki document만들어서
+ * response/document-embed로 보내는게 나을 정도") adds FOLLOW_UP, sent after the first turn: a reply in a turn the owner started sets no reply_to,
+ * no bubble is a bare piece of an answer (a code block, diagram or image with no sentence), no message carries a code fence, and the diagram
+ * answer arrives as one short message with a wiki page link whose page exists and draws the diagram.
  */
 export const TASK = "few things i want to know, no rush. which sieun-pi duties failed the most over the last 3 days, what takes the most disk " +
   "on this box, and how many sieun-pi commits landed on main this week and which chats or jobs made them. put one job on each and just tell me " +
   "when all three are in";
+/** The owner's second message, sent with `clean-room.ts say` after the chat's first turn ends: a question that wants a diagram and a check. */
+export const FOLLOW_UP = "also can you explain how a sieun-pi commit gets from a job to the live chat app here, in a diagram? i think the job " +
+  "commits on main and then release-chat restarts the service right away... is this correct?";
 const SESSIONS = join(homedir(), ".prime/agent/sessions");
+const WIKI_CONTENT = join(homedir(), "Documents/Github/auto-sns-agent/apps/llm-wiki/content");
+const WIKI_LINK = /(?:wiki:|:5176\/page\/|apps\/llm-wiki\/content\/)([^\s`"'<>()[\]]+?\.(?:html?|md))/g;
 
 /** Who started the turn a call belongs to: the owner (with his message's id), a job or another agent, or a server note such as a check-in. */
 type Starter = { kind: "owner"; id: string } | { kind: "job" | "agent" | "server"; from: string };
@@ -24,6 +35,8 @@ export interface Told {
   /** The id of the owner's latest message before this call. */
   lastOwner: string;
   sentences: number; paragraphs: number; bullets: number; bold: boolean; label: boolean; packs: boolean; question: boolean;
+  /** A bubble with no sentence of its own, only a code block, diagram or image: a piece of an answer spread over several bubbles. */
+  piece: boolean; fence: boolean; wikiPages: string[];
   /** Why its reply_to breaks the rule, or "" when it holds. */
   quoteFault: string;
 }
@@ -37,7 +50,7 @@ const readable = (text: string): string => text.replace(/```[\s\S]*?```/g, "\n\n
   .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "url");
 
 /** Shape counts of one message. A sentence ends at . ! ? or a line end; a decimal like 3.5 or an id like 0217773a3 does not end one. */
-export function shape(text: string): Pick<Told, "sentences" | "paragraphs" | "bullets" | "bold" | "label" | "packs" | "question"> {
+export function shape(text: string): Pick<Told, "sentences" | "paragraphs" | "bullets" | "bold" | "label" | "packs" | "question" | "piece" | "fence" | "wikiPages"> {
   const plain = readable(text);
   const lines = plain.split("\n").map(line => line.trim()).filter(line => line && !line.startsWith(">"));
   const sentences = lines.map(line => line.replace(BULLET, "").split(/(?<=[.!?\u3002])["')\]]*\s+(?=\S)/u).filter(piece => /[\p{L}\p{N}]/u.test(piece)).length)
@@ -46,7 +59,10 @@ export function shape(text: string): Pick<Told, "sentences" | "paragraphs" | "bu
   const bullets = lines.filter(line => BULLET.test(line)).length;
   const bold = /\*\*[^*\n]+\*\*|__[^_\n]+__/.test(text);
   const label = text.split("\n").some(line => LABEL.test(line));
-  return { sentences, paragraphs, bullets, bold, label, packs: paragraphs >= 2 || bullets >= 2, question: /\?/.test(plain) };
+  const fence = /```/.test(text);
+  const wikiPages = [...text.matchAll(WIKI_LINK)].map(match => match[1]!);
+  return { sentences, paragraphs, bullets, bold, label, packs: paragraphs >= 2 || bullets >= 2, question: /\?/.test(plain),
+    piece: sentences === 0 && (fence || /!\[[^\]]*\]\([^)]*\)/.test(text)), fence, wikiPages };
 }
 
 /** Every tell_owner call of a session file, in order, with the turn it belongs to and the reply_to rule checked. */
@@ -99,7 +115,8 @@ export function toldCalls(file: string): Told[] {
       const replyTo = typeof part.arguments?.reply_to === "string" && part.arguments.reply_to.trim() ? part.arguments.reply_to.trim() : null;
       let quoteFault = "";
       if (replyTo) {
-        if (!owners.has(replyTo)) quoteFault = `names ${replyTo}, which is no owner message so far`;
+        if (starter.kind === "owner") quoteFault = `quotes ${replyTo} in a reply to his latest message ${starter.id}`;
+        else if (!owners.has(replyTo)) quoteFault = `names ${replyTo}, which is no owner message so far`;
         else if (turnQuoted.has(replyTo)) quoteFault = `quotes ${replyTo} again in the same turn`;
         else if (!turnOwners.has(replyTo) && laterQuoted.has(replyTo)) quoteFault = `quotes ${replyTo} again in a later turn`;
         turnQuoted.add(replyTo);
@@ -126,6 +143,16 @@ export function routineWakes(calls: readonly Told[]): Told[][] {
   });
 }
 
+/** A wiki page on this box's llm-wiki content, as its .html or its .md source, that draws a diagram: a mermaid block, an svg or an image. */
+function diagramPage(path: string): boolean {
+  const base = join(WIKI_CONTENT, decodeURIComponent(path.replace(/^\/+/, "")));
+  for (const file of [base, base.replace(/\.html?$/, ".md"), base.replace(/\.md$/, ".html")]) {
+    if (!existsSync(file)) continue;
+    if (/mermaid|<svg|<img|!\[[^\]]*\]\(/.test(readFileSync(file, "utf8"))) return true;
+  }
+  return false;
+}
+
 const median = (values: readonly number[]): number => {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -140,8 +167,9 @@ const quote = (text: string, length = 240): string => {
 const who = (starter: Starter): string => starter.kind === "owner" ? `owner ${starter.id}` : `${starter.kind} ${starter.from}`;
 
 /** The numbers the criteria name, for a list of calls. */
-export function numbers(calls: readonly Told[]): { calls: number; medianSentences: number; packing: number; formatted: number; quoteFaults: number; routine: number } {
+export function numbers(calls: readonly Told[]): { calls: number; medianSentences: number; packing: number; pieces: number; fences: number; formatted: number; quoteFaults: number; routine: number } {
   return { calls: calls.length, medianSentences: median(calls.map(call => call.sentences)), packing: calls.filter(call => call.packs).length,
+    pieces: calls.filter(call => call.piece).length, fences: calls.filter(call => call.fence).length,
     formatted: calls.filter(call => call.bullets > 0 || call.bold || call.label).length, quoteFaults: calls.filter(call => call.quoteFault).length,
     routine: routineWakes(calls).length };
 }
@@ -149,10 +177,11 @@ export function numbers(calls: readonly Told[]): { calls: number; medianSentence
 export function report(calls: readonly Told[]): string[] {
   const n = numbers(calls);
   return [
-    `- ${n.calls} tell_owner calls; median ${n.medianSentences} sentences; ${n.packing} pack more than one update; ${n.formatted} use bullets, bold or a label; ` +
+    `- ${n.calls} tell_owner calls; median ${n.medianSentences} sentences; ${n.packing} pack more than one update; ${n.pieces} are a bare piece of an answer; ` +
+      `${n.fences} carry a code block or diagram; ${n.formatted} use bullets, bold or a label; ` +
       `${n.quoteFaults} have a reply_to fault; ${n.routine} wake-up turns sent a routine message.`, "",
-    "| at | turn started by | sentences | packs | bullets, bold, label | reply_to | text |", "|---|---|---|---|---|---|---|",
-    ...calls.map(call => `| ${iso(call.at)} | ${who(call.starter)} | ${call.sentences} | ${call.packs ? "yes" : "no"} | ` +
+    "| at | turn started by | sentences | packs | bare piece | bullets, bold, label | reply_to | text |", "|---|---|---|---|---|---|---|---|",
+    ...calls.map(call => `| ${iso(call.at)} | ${who(call.starter)} | ${call.sentences} | ${call.packs ? "yes" : "no"} | ${call.piece ? "yes" : "no"} | ` +
       `${[call.bullets ? `${call.bullets} bullets` : "", call.bold ? "bold" : "", call.label ? "label" : ""].filter(Boolean).join(", ") || "none"} | ` +
       `${call.replyTo ? call.replyTo + (call.quoteFault ? `, fault: ${call.quoteFault}` : "") : "none"} | ${quote(call.text).replace(/\|/g, "\\|")} |`),
   ];
@@ -176,8 +205,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("a", reports.length >= 3 ? true : null, `${reports.length} job messages reached the chat`);
   const finished = calls.some(call => call.starter.kind !== "owner");
   add("b", !calls.length ? null : n.medianSentences <= 2 ? (finished ? true : null) : false, `median ${n.medianSentences} sentences over ${n.calls} calls`);
-  const packed = calls.filter(call => call.packs);
-  add("c", packed.length ? false : calls.length ? true : null, packed.length ? packed.map(call => `${iso(call.at)}: "${quote(call.text, 160)}"`).join("; ") : "no call packs more than one update");
+  const packed = calls.filter(call => call.packs || call.piece);
+  add("c", packed.length ? false : calls.length ? true : null, packed.length
+    ? packed.map(call => `${iso(call.at)} ${call.piece ? "bare piece" : "packs"}: "${quote(call.text, 160)}"`).join("; ")
+    : "no call packs more than one update or carries only a piece of an answer");
   const formatted = calls.filter(call => call.bullets > 0 || call.bold || call.label);
   add("d", formatted.length ? false : calls.length ? true : null, formatted.length ? formatted.map(call => `${iso(call.at)}: "${quote(call.text, 160)}"`).join("; ") : "no bullets, bold or labels");
   const faults = calls.filter(call => call.quoteFault);
@@ -185,6 +216,18 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     : `${calls.filter(call => call.replyTo).length} calls set reply_to, each on the owner message it answers`);
   add("f", routine.length ? false : finished ? true : null, routine.length ? routine.map(group => `${iso(group[0]!.at)} after ${who(group[0]!.starter)}: "${quote(group[0]!.text, 160)}"`).join("; ")
     : `${reports.length} job messages; ${new Set(calls.filter(call => call.starter.kind !== "owner").map(call => call.turn)).size} wake-up turns messaged the owner, each with a result or a question`);
+  const followAt = all.find(entry => entry.type === "message" && (entry.message as { role?: string }).role === "user" &&
+    blockText((entry.message as { content?: unknown }).content).includes(FOLLOW_UP.slice(0, 60)));
+  const after = followAt ? calls.filter(call => call.at >= Date.parse(String(followAt.timestamp))) : [];
+  const page = after.find(call => call.wikiPages.length && call.sentences <= 2 && !call.fence);
+  const drawn = page?.wikiPages.find(path => diagramPage(path));
+  const fenced = calls.filter(call => call.fence);
+  add("h", fenced.length ? false : !followAt ? null : drawn ? true : null,
+    fenced.length ? fenced.map(call => `${iso(call.at)} carries a code block: "${quote(call.text, 160)}"`).join("; ")
+      : !followAt ? "the follow-up has not been sent"
+      : drawn ? `${iso(page!.at)} sent "${quote(page!.text, 200)}", and wiki:${drawn} exists and draws a diagram`
+      : page ? `${iso(page.at)} links ${page.wikiPages.join(", ")}, which is missing or has no diagram`
+      : `no message after the follow-up links a wiki page in 2 sentences or fewer (${after.length} calls)`);
   add("g", typed.length === 0 && outside.length === 0, typed.length || outside.length ? [...typed.map(text => `typed: "${quote(text, 120)}"`), ...outside.map(entry => `message: "${quote(blockText(entry.content), 120)}"`)].join("; ")
     : "only the owner-style message, server notes and the chat's own jobs reached the chat");
   const verdict: Verdict = checks.find(check => check.id === "g")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
@@ -207,7 +250,7 @@ function baseline(before: string): { verdict: Verdict; text: string } {
   const end = until ? Date.parse(until) : Infinity;
   const calls = toldCalls(join(SESSIONS, `${id}.jsonl`)).filter(call => call.at <= end).slice(-Number(count ?? 20));
   const n = numbers(calls);
-  const ok = n.medianSentences <= 2 && n.packing === 0 && n.formatted === 0 && n.quoteFaults === 0 && n.routine === 0;
+  const ok = n.medianSentences <= 2 && n.packing === 0 && n.pieces === 0 && n.fences === 0 && n.formatted === 0 && n.quoteFaults === 0 && n.routine === 0;
   return { verdict: ok ? "pass" : "fail", text: [`# DM-style replies, ${id}, last ${calls.length} calls to ${until ?? "now"}: ${ok ? "pass" : "fail"}`, "", ...report(calls), ""].join("\n") };
 }
 
@@ -219,6 +262,7 @@ export const dmReplies: Scenario = {
     `# Run setup: ${state.chat.name}`, "",
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one owner-style first message and no seeded board, todo or fixture.`, "",
     "## The first message", "", `> ${TASK}`, "",
+    "## The follow-up", "", "Once the first turn ends, `clean-room.ts say` sends the owner's second message through the composer's route.", "", `> ${FOLLOW_UP}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),
   baseline,

@@ -95,14 +95,15 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: "Send the owner one chat message, its own bubble, like a DM: one point in 1 or 2 short casual sentences, with no " +
-      "bullets, bold or labels. Call it again for a second point. Markdown, images and mermaid diagrams render, for when he asks for one.",
+    description: "Send the owner one chat message, its own bubble, like a VP's Slack DM: one point in 1 or 2 short casual sentences, " +
+      "with no bullets, bold or labels. Call it again for a second point, never for the rest of the same answer. An explanation or diagram " +
+      "goes on a wiki page: send the one-line takeaway with its wiki: link, which shows as a page card.",
     parameters: {
       type: "object",
       properties: {
         text: { type: "string" },
-        reply_to: { type: "string", description: "[message id] of the owner message this message answers, when newer messages came after it. " +
-          "Leave it out on an update nobody asked for. On a wake-up, set it only on the one message that brings the result that owner message asked for." },
+        reply_to: { type: "string", description: "Leave it out when you answer the owner's latest message. Set it only on a wake-up (a job " +
+          "report or a check-in), on the one message that brings the result an owner message asked for when newer messages came after it: its [message id]." },
       },
       required: ["text"],
     },
