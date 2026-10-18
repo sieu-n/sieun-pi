@@ -30,7 +30,9 @@ export const PM2_NAMES = ["search"] as const;
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
-export interface UptimeDeps { fetch: typeof fetch; exec: Exec; now: () => number; pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
+/** `platform` is the OS of the host whose pm2 and localhost services this run measures; `read` gives a file's text or throws. */
+export interface UptimeDeps { fetch: typeof fetch; exec: Exec; read: (path: string) => Promise<string>; platform: NodeJS.Platform; now: () => number;
+  pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
 /** pm2's restart count per process name, kept between runs. */
 export interface UptimeState { restarts: Record<string, { restartTime: number; at: number }> }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { restart_time?: number; status?: string } }
@@ -50,6 +52,14 @@ export async function probe(deps: Pick<UptimeDeps, "fetch" | "now">, url: string
   } catch (error) {
     return { status: 0, ms: deps.now() - start, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** The measured host's load averages and swap in use, for the line a down service gets: sysctl on macOS, /proc on Linux. */
+export async function hostLoad(deps: Pick<UptimeDeps, "exec" | "read" | "platform">): Promise<string> {
+  if (deps.platform === "darwin") return (await deps.exec("sysctl", ["-n", "vm.loadavg", "vm.swapusage"])).replace(/\s+/g, " ").trim();
+  const [loadavg, meminfo] = await Promise.all([deps.read("/proc/loadavg"), deps.read("/proc/meminfo")]);
+  const kb = (key: string) => Number(new RegExp(`^${key}:\\s+(\\d+) kB`, "m").exec(meminfo)?.[1] ?? NaN);
+  return `${loadavg.trim().split(/\s+/).slice(0, 3).join(" ")}, swap used ${Math.round((kb("SwapTotal") - kb("SwapFree")) / 1024)} MB of ${Math.round(kb("SwapTotal") / 1024)} MB`;
 }
 
 /** Restarts since the last run. A pm2 count lower than the saved one means pm2 itself started over, so all of today's count is new. */
@@ -95,8 +105,8 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
   if (metrics.servers_not_answering) {
-    const mac = await deps.exec("sysctl", ["-n", "vm.loadavg", "vm.swapusage"]).catch((error: unknown) => `sysctl failed: ${String(error)}`);
-    flagged.push({ at, kind: "mac", excerpt: `Mac at the probe: load ${mac.replace(/\s+/g, " ").trim()}`.slice(0, 300) });
+    const load = await hostLoad(deps).catch((error: unknown) => `unread: ${String(error)}`);
+    flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });
   }
 
   let list: Pm2Process[];
@@ -135,7 +145,7 @@ async function main(): Promise<void> {
   const env = await readFile(join(REPO, "apps/search/.env.local"), "utf8").then(parseEnv, () => ({}));
   const wiki = roleUrl(await loadHosts(), "wiki");
   if (!wiki) { process.stderr.write("local-dev-uptime: no host holds the wiki role in hosts.json\n"); process.exit(2); }
-  const result = await measureUptime({ fetch, exec, now: Date.now, env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
+  const result = await measureUptime({ fetch, exec, read: path => readFile(path, "utf8"), platform: process.platform, now: Date.now, env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
     previous?.restarts ? previous : undefined);
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && result.state) await writeFile(stateFile, JSON.stringify(result.state) + "\n");

@@ -54,6 +54,27 @@ export function footprintMb(output: string): number {
   return Math.round(bytes / 1024 / 1024);
 }
 
+/**
+ * The sum of `Pss` and `SwapPss` over `/proc/<pid>/smaps_rollup` texts, in MB: the Linux count nearest to phys_footprint, with swapped pages
+ * included and pages shared inside the tree counted once. The pm2 daemon runs every dev app in one systemd unit (auto-sns-dev-pm2.service on
+ * us-metal02), so the unit's memory.current is the whole stack, not this tree.
+ */
+export function pssMb(rollups: readonly string[]): number {
+  const kb = rollups.flatMap(text => [...text.matchAll(/^(?:Pss|SwapPss):\s+(\d+) kB$/gm)]).reduce((sum, match) => sum + Number(match[1]), 0);
+  return Math.round(kb / 1024);
+}
+
+/** How the dev tree's memory is read on the host the precheck measures: footprint on macOS, smaps_rollup on Linux. */
+export async function treeMb(deps: Pick<SandboxDeps, "exec" | "read" | "platform">, pids: readonly number[]): Promise<number> {
+  if (deps.platform === "darwin") return footprintMb(await deps.exec("footprint", ["--noCategories", "-f", "bytes", ...pids.flatMap(pid => ["-p", String(pid)])]));
+  const rollups = await Promise.all(pids.map(pid => deps.read(`/proc/${pid}/smaps_rollup`).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ESRCH") return "";
+    throw error;
+  })));
+  if (!rollups.some(Boolean)) throw new Error(`no /proc/<pid>/smaps_rollup could be read for pids ${pids.join(", ")}`);
+  return pssMb(rollups);
+}
+
 export const BASE_URL = "http://localhost:5180";
 /** How long a probe waits for an answer: the 30 s timeout every 5180 health check uses. The health_ms target is 3 s inside it. */
 export const ANSWER_TIMEOUT_MS = 30_000;
@@ -85,6 +106,8 @@ export interface SandboxDeps {
   /** A file's text, or a thrown error when it cannot be read. */
   read: (path: string) => Promise<string>;
   repo: string;
+  /** The OS of the host whose pm2 and processes this run measures, which picks how dev_tree_mb is read (treeMb). */
+  platform: NodeJS.Platform;
   /** `zone` is the IANA time zone of the pm2 daemon that writes the logs (pm2Zone), which may differ from this process's TZ. */
   pm2: { bin: string; home: string; zone: string };
 }
@@ -296,10 +319,10 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     if (!proc?.pid) sourceError("source", `pm2 has no live ${PM2_NAME} process (status ${proc?.pm2_env?.status ?? "missing"}), so its memory is unknown`);
     else {
       const pids = treePids(await deps.exec("ps", ["-axo", "pid=,ppid="]), proc.pid);
-      metrics.dev_tree_mb = footprintMb(await deps.exec("footprint", ["--noCategories", "-f", "bytes", ...pids.flatMap(pid => ["-p", String(pid)])]));
+      metrics.dev_tree_mb = await treeMb(deps, pids);
       flagged.push({ at, kind: metrics.dev_tree_mb > MEMORY_FLAG_MB ? "memory" : "memory_ok", excerpt: `${PM2_NAME} dev tree (pids ${pids.join(", ")}) holds ${metrics.dev_tree_mb} MB` });
     }
-  } catch (error) { sourceError("source", `pm2 or footprint (PM2_HOME ${deps.pm2.home}): ${error instanceof Error ? error.message : String(error)}`); }
+  } catch (error) { sourceError("source", `pm2 or the ${deps.platform === "darwin" ? "footprint" : "smaps_rollup"} read (PM2_HOME ${deps.pm2.home}): ${error instanceof Error ? error.message : String(error)}`); }
 
   // walk_problems (the headline) and outside_requests (detail).
   const walkText = await readOrError(join(deps.repo, WALK_FILE));
@@ -369,7 +392,7 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("demo-sandbox: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = join(REPO, ".cache/pm2-dev");
-  const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO,
+  const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO, platform: process.platform,
     pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
