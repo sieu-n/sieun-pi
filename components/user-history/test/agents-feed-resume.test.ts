@@ -66,7 +66,7 @@ test("the server sends a thread's first lines before an agents list asked for in
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.deepEqual(frames, [], "the agents list waits for the thread");
   release();
-  await new Promise(resolve => setTimeout(resolve, 100));
+  while (frames.length < 2) await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(frames, ["1:thread", "2:agents"]);
 });
 
