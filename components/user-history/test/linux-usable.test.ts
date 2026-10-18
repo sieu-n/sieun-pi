@@ -33,6 +33,15 @@ test("schedstat gives each CPU's run plus wait time, and an unknown version is n
   assert.equal(parseSchedstat("version 17\ntimestamp 1\n"), null);
 });
 
+test("a restart's first window starts a cgroup the last process did not read at this module's load, so it never counts the cgroup's life since boot", { skip: process.platform !== "linux" || !userSlice(readFileSync("/proc/self/cgroup", "utf8")) }, async () => {
+  const mark = schedstatMark()!;
+  assert.ok(mark.cgroups?.["system.slice"] !== undefined, "this box reads system.slice");
+  const { "system.slice": _dropped, ...older } = mark.cgroups!;
+  assert.equal(seedSchedstat({ at: mark.at - 60_000, times: mark.times, cgroups: older }), true);
+  const reading = await linuxUsable(Date.now());
+  assert.ok(reading?.cpuCores && reading.cpuCores.system <= availableParallelism(), JSON.stringify(reading?.cpuCores));
+});
+
 // us-metal02 on 10-18 after 07:45Z, when its slices lost their CPU pins: the harness, Virev's 24 cores of CI VMs and its prod VMs share all 80 CPUs.
 test("CPU sides with no pins: Virev's CI and prod VMs count in full, so a minute when CI uses more cores than the harness is not the harness's", () => {
   const slice = userSlice("0::/user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service\n")!;

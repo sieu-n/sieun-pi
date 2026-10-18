@@ -385,6 +385,9 @@ export function seedSchedstat(mark: unknown): boolean {
   }
   if (seeded.size !== lastSched.times.size) return false;
   const usage = cgroups && typeof cgroups === "object" ? new Map(Object.entries(cgroups).filter((entry): entry is [string, number] => typeof entry[1] === "number")) : undefined;
+  // A cgroup the last process did not read starts at this module's load, never at 0: release-a71b8cb added virev-ci.slice, and its first
+  // line on 10-18 at 07:54:12Z counted the slice's whole life since boot as 3874 cores of CI in one window.
+  if (usage) for (const [path, usec] of lastSched.cgroups ?? []) if (!usage.has(path)) usage.set(path, usec);
   lastSched = { at, times: seeded, ...usage ? { cgroups: usage } : {} };
   return true;
 }
