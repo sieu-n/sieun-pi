@@ -244,11 +244,23 @@
           "doc_id_"
         ]
       }
+    },
+    {
+      "id": "F17",
+      "title": "Lane process counts fixed, extra writers and crawlers started by hand",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p145",
+        "commit:dfeb8a5808"
+      ],
+      "owner": "hand run lanes autoscale (p145): the crawler-worker supervisor sets the process count of instagram-census-writer, tiktok-shop-crawler, tiktok-shop-writer and meta-ads-writer from each lane's Kafka lag, held only by the live PG box-stop line, memory, idle cores and box IO (dfeb8a5808, probe ci/lane-autoscale-1), so /tmp/cw_extra_writer.py, /tmp/mw_extra_writer.py and /tmp/tts_extra_crawler.py and their /root/*-ops watchers go; lane owners Crawler ops (census writer speed), Meta Ads (01a10db4), TikTok Shop (01a10db8)",
+      "match": {
+        "box_exec_regex": "extra_writer|extra_crawler"
+      }
     }
   ],
   "exempt": {
     "config_reason_regex": "^owner: \"|A/B|^Owner order",
-    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
-    "box_exec_regex": "\\.venv/bin/python - 3600 8$"
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec and the prod `python -c \"$0\"` exec of the script that opens 'Daily B2 version inventory for ONE bucket' are the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, its timer; on prod run-inventory.sh calls inventory.py host influencer-prod virev-prod-crawler-worker, read 10-18 05:34Z), so neither is a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
+    "box_exec_regex": "\\.venv/bin/python - 3600 8$|Daily B2 version inventory for ONE bucket"
   }
 }

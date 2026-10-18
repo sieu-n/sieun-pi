@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, nextState, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, nextState, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -81,4 +81,18 @@ test("a hand write no fault covers is filed and counts as a fault without a job 
   const listed = { ...second, registry: { ...second.registry!, faults: [...second.registry!.faults, { id: "F99", title: "new knob", designs: ["p1"], owner: "t", match: { config_key_prefixes: ["lane."] } }] } };
   assert.deepEqual(nextState(state, listed).filed, []);
   assert.equal(report(listed, await metrics(later)).metrics.faults_without_job, base + 1);
+});
+
+// Guards d3 p145: the 05:21Z run of 10-18 counted 13 execs in virev-prod-crawler-worker; 12 were /tmp lane scripts (F17) and 1 the declared B2 inventory unit.
+test("the prod B2 inventory exec is its declared unit, and the hand-run lane writers and crawlers are F17", async () => {
+  const reg = await registry();
+  const exec = (command: string) => ({ container: "virev-prod-crawler-worker", service: "crawler-worker", running: true, command });
+  const script = (name: string) => exec(`sh -c dotenvx-start.sh /app/apps/crawler-v3/.venv/bin/python /tmp/${name}.py >> /tmp/${name}.1.log 2>&1`);
+  const inventory = exec('sh -c cd /app/apps/crawler-v3 && exec nice -n 10 dotenvx run -q -f "$DOTENV_FILE" -- .venv/bin/python -c "$0" "$@" ' +
+    '#!/usr/bin/env python3\n"""Daily B2 version inventory for ONE bucket, with a per-part checkpoint so a run resumes.');
+  const lanes = ["cw_extra_writer", "mw_extra_writer", "tts_extra_crawler"].map(script);
+  assert.deepEqual(handExecs([inventory, ...lanes], reg.exempt.box_exec_regex), lanes);
+  const f17 = reg.faults.find(fault => fault.id === "F17")!;
+  assert.ok(lanes.every(lane => new RegExp(f17.match.box_exec_regex!).test(lane.command)));
+  assert.ok(f17.designs.includes("01a11bd7-072f-7591-ad1d-f123c276cde5/p145"));
 });
