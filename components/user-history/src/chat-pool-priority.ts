@@ -1,4 +1,5 @@
 import { CHECK_IN_DUTY } from "./shared/chat-duties.ts";
+import type { PoolTreeClass } from "./chat-pool.ts";
 import type { PoolPriority, Priority, SessionRow } from "./shared/types.ts";
 
 /** The sidebar priority label as a pool class. None (0) leaves the thread's own class; Low (1) is low, Medium (2) normal, High (3) high. */
@@ -52,11 +53,13 @@ export const checkInClass = (chat: PoolPriority): PoolPriority => chat === "low"
 /** The class a duty job's first request carries: `checkInClass` of its chat for a check-in job (`isCheckInJob`), low for every other duty job. */
 export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority => isCheckInJob(name) ? checkInClass(chat) : "low";
 
-/** What a sync needs: the catalog rows, the duty job ids, and the pi-pool call that sets one root's class. */
+/** What a sync needs: the catalog rows, the duty job ids, the read of the classes the pool holds, and the pi-pool call that sets one root's class. */
 export interface PoolPrioritySource {
   rows(): Promise<readonly SessionRow[]>;
   /** The duty and check-in job ids among `rows`. */
   duties(rows: readonly SessionRow[]): Promise<ReadonlySet<string>>;
+  /** The record of each named root in the pool (readPoolClasses), or null when the pool cannot say. */
+  read?(sessionIds: readonly string[]): Promise<ReadonlyMap<string, PoolTreeClass> | null>;
   set(sessionId: string, priority: PoolPriority): Promise<void>;
   log?: (line: string) => void;
   now?: () => number;
@@ -76,9 +79,12 @@ export async function dutyJobIds(rows: readonly SessionRow[], registry: { rootsO
 export const PRIORITY_RETRY_MS = 5 * 60_000;
 
 /**
- * Keeps each live root's pool class equal to `poolPriorities`. A sync sets only roots whose class changed since this service last set it,
- * so the first sync after a start sets every live root once and later ones cost no pi-pool call. Syncs run one at a time; a sync asked for
- * while one runs runs once more after it.
+ * Keeps each live root's pool class equal to `poolPriorities`. A sync acts only on roots whose class changed since this service last set it
+ * or read it. It first reads those roots' records in one `read`, and sets a root only when its record holds another class, a sidebar label
+ * (a set clears it), or no record. So a start, which has set nothing yet, reads every live root once and sets only the ones that differ.
+ * On 10-18 the service started 7 times from 12:29Z to 13:08Z, and each start ran `pi-pool priority` once per live root, 52 calls in 10 s
+ * at 13:07:56Z, at about 0.15 CPU s each. When `read` gives null, every such root is set, as before. Syncs run one at a time; a sync asked
+ * for while one runs runs once more after it.
  */
 export class PoolPriorities {
   private readonly applied = new Map<string, PoolPriority>();
@@ -96,6 +102,7 @@ export class PoolPriorities {
       this.applied.set(sessionId, priority);
       this.failed.delete(sessionId);
     } catch (error) {
+      this.applied.delete(sessionId);
       this.failed.set(sessionId, { priority, at: now });
       this.source.log?.(`pool priority ${priority} for ${sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -117,10 +124,16 @@ export class PoolPriorities {
     const wanted = poolPriorities(rows, await this.source.duties(rows));
     const now = (this.source.now ?? Date.now)();
     for (const id of [...this.applied.keys()]) if (!wanted.has(id)) this.applied.delete(id);
-    for (const [id, priority] of wanted) {
-      if (this.applied.get(id) === priority) continue;
+    const due = [...wanted].filter(([id, priority]) => {
+      if (this.applied.get(id) === priority) return false;
       const failed = this.failed.get(id);
-      if (failed?.priority === priority && now - failed.at < PRIORITY_RETRY_MS) continue;
+      return !(failed?.priority === priority && now - failed.at < PRIORITY_RETRY_MS);
+    });
+    if (!due.length) return;
+    const held = await this.source.read?.(due.map(([id]) => id)).catch(() => null) ?? null;
+    for (const [id, priority] of due) {
+      const record = held?.get(id);
+      if (record?.priority === priority && record.label === null) { this.applied.set(id, priority); this.failed.delete(id); continue; }
       await this.set(id, priority);
     }
   }

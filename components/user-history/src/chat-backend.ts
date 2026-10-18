@@ -14,7 +14,7 @@ import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { relayWatch } from "./hosts.ts";
@@ -166,7 +166,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
       file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), scratch);
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
-  const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
+  const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), read: readPoolClasses, set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   // Each chat's duties: every run starts one duty job linked to the chat. The standing ones are scheduled here; the built-in check-in duty is
   // scheduled and measured in Chats and handed here, and its card edits the check-in setting.

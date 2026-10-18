@@ -87,13 +87,28 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(len(run.stdout.splitlines()), 1)
         snapshot = json.loads(run.stdout)
-        self.assertEqual(set(snapshot), {"queue", "config", "threads"})
+        self.assertEqual(set(snapshot), {"queue", "config", "threads", "trees"})
         self.assertEqual(json.loads(snapshot["threads"][0]["ls"]["anthropic"]["out"])["session"], KEY.key)
         self.assertEqual(files(base.POOL), before)
+
+    def test_a_tree_gives_the_class_its_record_holds_as_priority_writes_it(self):
+        new = "01a14f1d-48e1-71ff-b38c-59f16a572748"
+        trees = lambda: json.loads(self.cli("snapshot", "--json", "--tree", KEY.key, "--tree", new, "--tree", "no-such-session")["out"])["trees"]
+        who = lambda session: json.loads(self.cli("who", "--json", "--session", session)["out"])["priority"]
+        with unittest.mock.patch("time.time", return_value=NOW), unittest.mock.patch.object(vend.pool.registry, "session_key", lambda: None):
+            self.assertEqual(trees(), [{"session": KEY.key, "priority": who(KEY.key), "label": None},
+                                       {"session": new, "priority": None, "label": None}, {"session": "no-such-session", "priority": None, "label": None}])
+            for argv, holds in ((("low",), ("low", None)), (("high", "--label"), ("high", "high")), (("normal",), ("normal", None))):
+                self.assertEqual(self.cli("priority", *argv, "--session", KEY.key)["code"], 0)
+                self.assertEqual((trees()[0]["priority"], trees()[0]["label"]), holds)
+                self.assertEqual(trees()[0]["priority"], who(KEY.key))
+            self.assertEqual(self.cli("priority", "low", "--session", new)["code"], 0)
+            self.assertEqual(trees()[1], {"session": new, "priority": "low", "label": None})
 
     def test_a_thread_needs_a_session_and_a_model(self):
         self.assertNotEqual(self.cli("snapshot", "--json", "--thread", "s")["code"], 0)
         self.assertNotEqual(self.cli("snapshot", "--queue")["code"], 0)
+        self.assertNotEqual(self.cli("snapshot", "--json", "--tree")["code"], 0)
 
 
 if __name__ == "__main__":
