@@ -187,7 +187,7 @@ class KernelGuardBase(unittest.TestCase):
         self.runner.write_text(RUNNER)
 
     def run_cells(self, *cells, env=None, python=(sys.executable,)):
-        environ = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "OWNER_OK", "PYTHONSTARTUP"}}
+        environ = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "OWNER_OK", "PYTHONSTARTUP", "NODE_COMPILE_CACHE"}}
         environ.update({
             "HOME": str(self.tmp / "home"),
             "GLOBAL_RULES_LOG": str(self.tmp / "global-rules.log"),
@@ -455,6 +455,17 @@ class ChildProcesses(KernelGuardBase):
     def test_install_puts_the_child_guard_on_pythonpath(self):
         out = self.run_cells("pass\n")
         self.assertIn(str(CHILD_DIR), out["pythonpath"].split(os.pathsep))
+
+    def test_install_leaves_httpx_unimported_and_caches_node_compiles(self):
+        # 10-18: importing httpx at install cost every child Python 0.15 CPU s, and each node send-check.ts run stripped its types again.
+        out = self.run_cells("import os, sys\nRESULT = {'httpx': 'httpx' in sys.modules, 'cache': os.environ.get('NODE_COMPILE_CACHE')}\n")
+        self.assert_passed(out)
+        self.assertEqual(out["result"], {"httpx": False, "cache": str(self.tmp / "home" / ".cache" / "node-compile-cache")})
+
+    def test_httpx_imported_after_install_is_wrapped(self):
+        out = self.run_cells("import httpx, httpx._client\nRESULT = [getattr(httpx.Client.send, 'send_guarded', False), getattr(httpx.AsyncClient.send, 'send_guarded', False)]\n")
+        self.assert_passed(out)
+        self.assertEqual(out["result"], [True, True])
 
     def test_a_child_python_that_posts_to_a_mail_api_is_refused_inside_the_child(self):
         out = self.child(self.write("child_post.py", CHILD_POST))

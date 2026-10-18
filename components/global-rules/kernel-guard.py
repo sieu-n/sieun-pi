@@ -237,12 +237,11 @@ def wrap_sockets() -> None:
                 setattr(cls, name, guarded_write(original))
 
 
-def wrap_http(module_name: str) -> None:
+HTTP_MODULES = ("httpx", "httpx2")
+
+
+def wrap_http(module) -> None:
     """httpx and httpx2 open raw sockets, so the audit events miss their method and URL; check each request at Client.send."""
-    try:
-        module = __import__(module_name)
-    except ImportError:
-        return
     for cls_name, is_async in (("Client", False), ("AsyncClient", True)):
         cls = getattr(module, cls_name, None)
         original = getattr(cls, "send", None)
@@ -292,11 +291,58 @@ def guard_children() -> None:
         os.environ["PYTHONPATH"] = os.pathsep.join([CHILD_DIR, *paths])
 
 
+class WrapOnImport:
+    """Wraps httpx and httpx2 when a process imports them. Importing httpx up front cost each child Python 0.15 CPU s (183 of its 186 ms of
+    startup, measured with -X importtime on 10-18), and most children never use it."""
+
+    def find_spec(self, name, path=None, target=None):
+        if name not in HTTP_MODULES:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or not hasattr(finder, "find_spec"):
+                continue
+            spec = finder.find_spec(name, path, target)
+            if spec is not None:
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = WrappingLoader(spec.loader)
+                return spec
+        return None
+
+
+class WrappingLoader:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def create_module(self, spec):
+        return self.inner.create_module(spec)
+
+    def exec_module(self, module):
+        self.inner.exec_module(module)
+        wrap_http(module)
+
+
+def wrap_http_modules() -> None:
+    for name in HTTP_MODULES:
+        if name in sys.modules:
+            wrap_http(sys.modules[name])
+    if not any(isinstance(finder, WrapOnImport) for finder in sys.meta_path):
+        sys.meta_path.insert(0, WrapOnImport())
+
+
+def cache_node_compiles() -> None:
+    """Node children of this process keep their compiled TypeScript in a cache. Each `node send-check.ts` run stripped its types in wasm
+    again: 0.13 CPU s and 96 MB of fresh pages a run without the cache, 0.04 CPU s and 59 MB with it (10-18, about 130 runs a minute)."""
+    os.environ.setdefault("NODE_COMPILE_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "node-compile-cache"))
+
+
 def install() -> None:
     guard_children()
+    cache_node_compiles()
     wrap_mcp()
-    for name in ("httpx", "httpx2"):
-        wrap_http(name)
+    wrap_http_modules()
     wrap_sockets()
     sys.addaudithook(hook)
 
