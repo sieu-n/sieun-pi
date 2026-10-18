@@ -523,14 +523,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         res.writeHead(302, { Location: base }); res.end(); return;
       }
       if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
-      // The diagram frame is sandboxed with an opaque origin, so its own script request arrives cross-site. Both are static.
+      // The diagram frame is sandboxed with an opaque origin, so its page request arrives cross-site. The page is static.
       const frameRoute = url.pathname.slice(base.length);
       if (req.method === "GET" && frameRoute === "render" && req.headers["sec-fetch-dest"] === "iframe") {
         res.removeHeader("X-Frame-Options");
-        res.setHeader("Content-Security-Policy", renderPolicy(origin, base));
+        res.setHeader("Content-Security-Policy", renderPolicy(origin));
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderPage); return;
       }
-      if (req.method === "GET" && frameRoute === "render.js" && req.headers["sec-fetch-dest"] === "script") { serveAsset(req, res, await buildRenderBundle()); return; }
       const shellNavigation = req.method === "GET" && url.pathname === base &&
         req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document";
       if ((req.headers["sec-fetch-site"] === "cross-site" && !shellNavigation) ||
@@ -565,6 +564,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           if (route === "app.css" || /^app\.[0-9a-f]+\.css$/.test(route)) { serveAsset(req, res, built.css); return; }
           const appFile = built.app?.(route);
           if (appFile) { serveAsset(req, res, appFile); return; }
+          // The diagram renderer: the chat page fetches it once and hands it to each sandboxed frame (`renderPage`).
+          if (route === "render.js") { serveAsset(req, res, await buildRenderBundle()); return; }
         }
         if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
         // The board skill on a box without the chat role reads the chat's files here (skills/board, hosts.json roles.chat).

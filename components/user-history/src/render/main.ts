@@ -86,7 +86,7 @@ async function drawDiagram(request: DiagramRequest): Promise<void> {
 }
 
 /*
- * A wiki page is HTML an agent wrote. The frame's sandbox (opaque origin) and policy (no script but render.js, no network) are the
+ * A wiki page is HTML an agent wrote. The frame's sandbox (opaque origin) and policy (no script but the boot script and the renderer the chat hands it, no network) are the
  * boundary; the allowlist below keeps the page to document markup on top of that. An element off the list keeps its text and loses
  * its tag; a script, style, form, embed or inline SVG goes with its content.
  */

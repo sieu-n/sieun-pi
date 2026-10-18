@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { realpath, stat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, sep } from "node:path";
@@ -26,6 +27,21 @@ export function buildRenderBundle(): Promise<Asset> {
   }).catch(error => { renderBundle = null; throw error; });
   return renderBundle;
 }
+
+/**
+ * The frame's only script. Chrome keeps no HTTP cache for a frame with an opaque origin, so when each frame loaded the 5.3 MB renderer
+ * (1.5 MB gzipped) itself, every diagram downloaded it in full: on 10-18 a diagram showed its raw source for 8 to 70 s on the Mac in Korea.
+ * The chat page fetches the renderer once through its own cache (`src/client/diagrams.ts`) and hands each frame a copy as a Blob.
+ */
+const BOOT = `addEventListener("message", function boot(event) {
+  if (event.source !== parent || !event.data || event.data.type !== "renderer" || !(event.data.code instanceof Blob)) return;
+  removeEventListener("message", boot);
+  var script = document.createElement("script");
+  script.src = URL.createObjectURL(event.data.code);
+  document.body.appendChild(script);
+});
+parent.postMessage({ type: "boot" }, "*");`;
+const BOOT_SOURCE = "'sha256-" + createHash("sha256").update(BOOT).digest("base64") + "'";
 
 export const renderPage = `<!doctype html>
 <html>
@@ -72,14 +88,14 @@ body.page #doc { display: block; padding: 4px 0 8px; overflow-wrap: anywhere; }
 <body>
 <div id="out"></div>
 <div id="doc"></div>
-<script src="render.js"></script>
+<script>${BOOT}</script>
 </body>
 </html>
 `;
 
 /** The frame's own policy. `origin` is the chat's origin, the only page allowed to embed it. */
-export function renderPolicy(origin: string, base: string): string {
-  return `default-src 'none'; script-src ${origin}${base}render.js; style-src 'unsafe-inline'; img-src data: blob: https:; font-src data:; ` +
+export function renderPolicy(origin: string): string {
+  return `default-src 'none'; script-src ${BOOT_SOURCE} blob:; style-src 'unsafe-inline'; img-src data: blob: https:; font-src data:; ` +
     `base-uri 'none'; form-action 'none'; frame-ancestors ${origin}`;
 }
 

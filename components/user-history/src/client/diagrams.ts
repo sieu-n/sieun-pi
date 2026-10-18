@@ -1,8 +1,9 @@
 /*
  * Draws `.diagram-block` code blocks, and a wiki page's own HTML, in sandboxed frames (see src/chat-render.ts). The chat page keeps
  * its strict CSP; each frame has an opaque origin and gets only the block's source, or the page's HTML, by postMessage. Blocks draw
- * after the reply stops streaming and when they come near the screen. A page frame asks the chat for its file images (the frame
- * cannot reach the API) and hands link clicks back to the chat.
+ * after the reply stops streaming and when they come near the screen. Each frame gets the renderer script from the chat too, because a
+ * frame with an opaque origin has no HTTP cache. A page frame asks the chat for its file images (the frame cannot reach the API) and hands
+ * link clicks back to the chat.
  */
 
 type Theme = "light" | "dark";
@@ -32,10 +33,32 @@ function send(entry: Frame): void {
   entry.frame.contentWindow.postMessage({ type: "render", id: entry.id, theme: current, ...entry.payload }, "*");
 }
 
+let renderer: Promise<Blob> | null = null;
+/** The renderer bundle, fetched once per page through the browser's cache; a frame cannot cache it (see `renderPage` in src/chat-render.ts). */
+function loadRenderer(): Promise<Blob> {
+  renderer ??= fetch("render.js").then(response => {
+    if (!response.ok) throw new Error(`the renderer did not load (HTTP ${response.status})`);
+    return response.blob();
+  }).catch((error: unknown) => { renderer = null; throw error; });
+  return renderer;
+}
+
+function fail(entry: Frame, message: string): void {
+  entry.block.classList.remove("diagram-ready");
+  entry.block.classList.add("diagram-failed");
+  const note = entry.block.querySelector(".diagram-error") ?? entry.block.querySelector(".diagram-slot")?.appendChild(document.createElement("div"));
+  if (note) { note.className = "diagram-error"; note.textContent = "Could not draw this diagram: " + message.split("\n")[0]; }
+}
+
 function onMessage(event: MessageEvent): void {
   const entry = event.source ? frames.get(event.source as Window) : undefined;
   if (!entry || typeof event.data !== "object" || event.data === null) return;
   const data = event.data as { type?: unknown; id?: unknown; height?: unknown; message?: unknown; href?: unknown; index?: unknown; src?: unknown };
+  if (data.type === "boot") {
+    const frame = event.source as Window;
+    loadRenderer().then(code => frame.postMessage({ type: "renderer", code }, "*"), (error: unknown) => fail(entry, error instanceof Error ? error.message : String(error)));
+    return;
+  }
   if (data.type === "ready") { entry.ready = true; send(entry); return; }
   if (data.id !== entry.id) return;
   if (data.type === "open" && typeof data.href === "string") { entry.page?.onOpen(data.href); return; }
@@ -48,12 +71,7 @@ function onMessage(event: MessageEvent): void {
     entry.frame.style.height = Math.min(Math.max(Math.ceil(data.height), 40), entry.maxHeight) + "px";
     entry.block.classList.remove("diagram-failed");
     entry.block.classList.add("diagram-ready");
-  } else if (data.type === "error") {
-    entry.block.classList.remove("diagram-ready");
-    entry.block.classList.add("diagram-failed");
-    const note = entry.block.querySelector(".diagram-error") ?? entry.block.querySelector(".diagram-slot")?.appendChild(document.createElement("div"));
-    if (note) { note.className = "diagram-error"; note.textContent = "Could not draw this diagram: " + String(data.message ?? "unknown error").split("\n")[0]; }
-  }
+  } else if (data.type === "error") fail(entry, String(data.message ?? "unknown error"));
 }
 
 let listening = false;
@@ -76,6 +94,7 @@ function mount(block: HTMLElement): void {
 }
 
 function attach(block: HTMLElement, slot: HTMLElement, payload: Payload, maxHeight: number, page: PageHost | null): Frame {
+  void loadRenderer().catch(() => {});
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", "allow-scripts");
   frame.setAttribute("title", payload.kind === "page" ? "Wiki page" : "Diagram");

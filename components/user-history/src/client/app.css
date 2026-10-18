@@ -139,7 +139,7 @@ a { color: var(--accent); }
 .artifact-link { display: inline; cursor: pointer; overflow-wrap: anywhere; color: var(--accent); font: inherit; padding: 0; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; }
 .artifact-link:hover, .artifact-link:focus-visible { text-decoration-color: currentColor; }
 .link-icon { display: inline-block; width: 0.95em; height: 0.95em; margin-right: 0.3em; vertical-align: -0.12em; flex: none; }
-/* Diagram blocks show their source until the sandboxed frame reports a drawing; then the switch picks one. */
+/* A diagram block shows its source while the reply streams, a short line while its frame draws, and the source again if drawing fails. */
 .prose .diagram-switch { display: none; gap: 2px; margin-left: auto; margin-right: 6px; }
 .prose .diagram-ready .diagram-switch { display: inline-flex; }
 .prose .diagram-switch button { font-size: 12px; padding: 2px 8px; border-radius: 6px; color: var(--text-muted); }
@@ -150,6 +150,9 @@ a { color: var(--accent); }
 .prose .diagram-ready:not(.show-source) .diagram-slot { height: auto; overflow: visible; }
 .prose .diagram-ready:not(.show-source) pre { display: none; }
 .prose .diagram-failed .diagram-slot { height: auto; }
+.prose .diagram-block[data-mounted]:not(.diagram-ready, .diagram-failed) pre { display: none; }
+.prose .diagram-block[data-mounted]:not(.diagram-ready, .diagram-failed) .diagram-slot { height: auto; }
+.prose .diagram-block[data-mounted]:not(.diagram-ready, .diagram-failed) .diagram-slot::before { content: "Drawing the diagram…"; display: block; padding: 0.75em 1em; font-size: 12.5px; color: var(--text-muted); }
 .prose .diagram-failed .diagram-frame { display: none; }
 .diagram-dialog { width: min(96vw, 1600px); max-height: 92vh; padding: 12px; overflow: auto; }
 .diagram-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
