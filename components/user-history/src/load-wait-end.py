@@ -4,8 +4,9 @@ A tool call returns its result only when the cell ends, so a note on a cell that
 after the loop ended (on 10-13 such loops held 8 jobs 2 min to 1 h 51 min). load-wait.ts puts one prelude line in front of such a cell, which
 runs this file once per kernel and file version and then arms the cell. While the armed cell runs:
 
-1. Its first `time.sleep` or `asyncio.sleep` raises LoadWaitEnded, so the loop ends after its first check. Sleeps in other threads and in
-   tasks the cell did not await run as before.
+1. Its first `time.sleep` or `asyncio.sleep` called from the cell's own code raises LoadWaitEnded, so the loop ends after its first check.
+   Sleeps inside library calls (rlm.delete_subagent waits with asyncio.sleep), in other threads and in tasks the cell did not await run as
+   before: a cell that only quotes a load wait in a string matches too, and its library calls must keep working.
 2. Each shell command it starts through bash() gets a shell `sleep` function that ends the shell with exit 75, and each Python process those
    commands start gets the sitecustomize.py in load-wait-shim/, which ends the process at its first sleep the same way. That covers the
    `bash('python3 -u gate.py')` form and the shell `until ...; do sleep 60; done` form.
@@ -18,11 +19,13 @@ import os
 import sys
 import time
 
-VERSION = 1
+VERSION = 2
 SHIM = os.path.join(os.path.dirname(os.path.realpath(__file__)), "load-wait-shim")
 MESSAGE = "the load wait ended after its first check (c47); run the check now"
 SHELL = "sleep() { printf '%s\\n' 'user-history: " + MESSAGE + "' >&2; exit 75; }"
 PREFIX = "PRIME_AGENT_BASH_COMMAND_PREFIX"
+# The kernel compiles each cell as "<cell-N>".
+CELL = "<cell"
 
 
 class LoadWaitEnded(BaseException):
@@ -32,7 +35,9 @@ class LoadWaitEnded(BaseException):
 _armed = set()
 
 
-def _in_armed_cell():
+def _in_armed_cell(caller):
+    if not caller.f_code.co_filename.startswith(CELL):
+        return False
     try:
         task = asyncio.current_task()
     except RuntimeError:
@@ -45,13 +50,13 @@ _asyncio_sleep = asyncio.sleep
 
 
 def sleep(seconds):
-    if _in_armed_cell():
+    if _in_armed_cell(sys._getframe(1)):
         raise LoadWaitEnded(MESSAGE)
     return _time_sleep(seconds)
 
 
 async def asleep(delay, result=None):
-    if _in_armed_cell():
+    if _in_armed_cell(sys._getframe(1)):
         raise LoadWaitEnded(MESSAGE)
     return await _asyncio_sleep(delay, result)
 

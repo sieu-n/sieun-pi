@@ -30,7 +30,8 @@ async def _aend(*args, **kwargs):
 time.sleep = _end
 asyncio.sleep = _aend
 
-_here = os.path.dirname(os.path.realpath(__file__))
-_spec = importlib.machinery.PathFinder.find_spec("sitecustomize", [entry for entry in sys.path if os.path.realpath(entry or ".") != _here])
+# Every load-wait-shim folder is skipped by name: the release's and the checkout's may both be on the path, and each would load the other.
+_rest = [entry for entry in sys.path if os.path.basename(os.path.realpath(entry or ".")) != "load-wait-shim"]
+_spec = importlib.machinery.PathFinder.find_spec("sitecustomize", _rest)
 if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(importlib.util.module_from_spec(_spec))
