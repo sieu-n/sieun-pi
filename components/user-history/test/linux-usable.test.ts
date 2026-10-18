@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { linuxUsable, parseCpusAllowed, parseSchedstat, runnablePerCore, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
+import { cpuSides, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, schedstatMark, seedSchedstat, userSlice } from "../../prime-relay/host-stats.ts";
 import { parseLinuxReading, parseUsableRaw, startMacUsableWatch, type Footprints, type WatchSource, unusable, watchFile } from "../src/mac-usable-watch.ts";
 
 // The harness's CPU set on us-metal02 from /proc/<pid>/status, the same for prime-agent-daemon, sieun-pi-chat, pi-pool-serve and prime-relay.
@@ -118,4 +118,26 @@ test("a restart in a minute the last process already wrote writes no start line;
   filled();
   assert.equal(lines(dataDir, later).length, 1);
   assert.equal(JSON.parse(readFileSync(join(dataDir, "mac-usable", "last-sample.json"), "utf8")).at, later);
+});
+
+// us-metal02 at 06:42Z on 10-18 over 10 s: user-1001.slice 20.4 cores, prime-agent-daemon.service 13.9 of them, auto-sns-dev-pm2.service 2.2,
+// dev.slice's docker apps 5.6, system.slice 0.9.
+test("CPU sides: the harness is the user slice less the apps', owner's and CI's units in it, and a restarted unit counts its new value", () => {
+  const slice = userSlice("0::/user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service\n")!;
+  assert.deepEqual(slice, { slice: "user.slice/user-1001.slice", app: "user.slice/user-1001.slice/user@1001.service/app.slice" });
+  assert.equal(userSlice("0::/system.slice/prime-relay.service\n"), null);
+  assert.equal(parseUsageUsec("usage_usec 123\nuser_usec 100\n"), 123);
+  const app = (unit: string) => `${slice.app}/${unit}`;
+  const before = new Map([[slice.slice, 1_000_000_000], [app("auto-sns-dev-pm2.service"), 50_000_000], [app("ci-cache.service"), 9_000_000], ["dev.slice", 70_000_000], ["system.slice", 5_000_000]]);
+  const after = new Map([[slice.slice, 1_204_000_000], [app("auto-sns-dev-pm2.service"), 72_000_000], [app("ci-cache.service"), 1_000_000], ["dev.slice", 126_000_000], ["system.slice", 14_000_000]]);
+  assert.deepEqual(cpuSides(before, after, slice, 10_000), { harness: 18.1, apps: 7.8, owner: 0, ci: 0.1, system: 0.9 });
+  assert.equal(cpuSides(new Map(), after, slice, 10_000), null);
+});
+
+test("on a Linux box in a user slice the reading carries each side's cores", { skip: process.platform !== "linux" || !userSlice(readFileSync("/proc/self/cgroup", "utf8")) }, async () => {
+  for (let spin = Date.now(); Date.now() - spin < 50;);
+  const reading = await linuxUsable(Date.now());
+  assert.ok(reading?.cpuCores && reading.cpuCores.harness > 0, JSON.stringify(reading));
+  assert.deepEqual(parseLinuxReading(reading), reading);
+  assert.equal(parseLinuxReading({ ...reading, cpuCores: { harness: -1 } })?.cpuCores, undefined);
 });

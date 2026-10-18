@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
+import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -88,14 +88,17 @@ export const readUsable = async (now: number): Promise<HostUsable | null> => pro
 const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 /**
  * A Linux reading checked at the edge, from a relay's answer or a watch line on disk: every stall, rate and runnablePerCore a finite number of
- * 0 or more and allowedCpus a whole number above 0. Null otherwise, so the box reads unknown.
+ * 0 or more and allowedCpus a whole number above 0. Null otherwise, so the box reads unknown. A cpuCores without every side a count of 0 or
+ * more is dropped, so that minute's cause reads unknown.
  */
 export function parseLinuxReading(reading: unknown): LinuxUsable | null {
   if (!isRecord(reading) || reading.kind !== "linux") return null;
   const { memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus } = reading;
   if (!count(memSomeAvg10) || !count(memFullAvg10) || !count(cpuSomeAvg10) || !count(runnablePerCore) || !(Number.isInteger(allowedCpus) && (allowedCpus as number) > 0) ||
     (swapoutsPerS !== null && !count(swapoutsPerS))) return null;
-  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number };
+  const sides = reading.cpuCores;
+  const cpuCores = isRecord(sides) && CPU_SIDES.every(side => count(sides[side])) ? Object.fromEntries(CPU_SIDES.map(side => [side, sides[side]])) as CpuSides : undefined;
+  return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {} };
 }
 
 /** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */

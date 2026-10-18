@@ -165,3 +165,35 @@ test("d7 reads a check-in snapshot older than the board's last write against the
   assert.equal(read(board("2026-10-18T04:41:00Z"), { "box-job-a": wrote }), 1, "p6's owner has not written since the snapshot");
   assert.equal(read(board("2026-10-18T04:31:00Z"), { "box-job-a": wrote, "box-job-b": wrote }), 3, "a snapshot newer than the board counts as read");
 });
+
+// d7 at 06:21Z on 10-18 read us-metal02 CPU-unusable at 05:55-05:59, 06:02, 06:04, 06:05, 06:07 and 06:15Z and put every minute on the app and
+// owner side with harness_unusable_min_30 0, since Linux readings never carry the Mac's memory groups. The runnable values are those lines'.
+test("a Linux CPU minute goes to the side whose cgroups used the most cores, and a Linux minute with no cpuCores reads no cause, never the apps'", () => {
+  const RUN_0621 = Date.parse("2026-10-18T06:21:10Z");
+  const at = (clock: string) => `2026-10-18T${clock}Z`;
+  const harness = { harness: 21.4, apps: 3.1, owner: 0, ci: 0.2, system: 0.9 };
+  const apps = { harness: 4.2, apps: 9.8, owner: 0, ci: 0, system: 0.9 };
+  const read = (runnablePerCore: number, cpuCores?: typeof harness): LinuxUsable => ({ ...linux(0, runnablePerCore), ...cpuCores ? { cpuCores } : {} });
+  const dirty: Record<string, LinuxUsable> = { "05:55:44": read(2.17, harness), "05:56:30": read(6.06, harness), "05:57:31": read(5.61, harness),
+    "05:58:30": read(2.06, harness), "05:59:30": read(2.73, harness), "06:02:30": read(1.74, harness), "06:04:30": read(2.78, harness),
+    "06:05:30": read(2.49, harness), "06:07:39": read(1.48, apps), "06:15:49": read(1.43) };
+  const lines: WatchLine[] = Array.from({ length: 30 }, (_, minute) => {
+    const stamp = new Date(RUN_0621 - 10_000 - (30 - minute) * 60_000 + 30_000).toISOString().slice(11, 19);
+    const box = Object.entries(dirty).find(([clock]) => clock.slice(0, 5) === stamp.slice(0, 5))?.[1] ?? read(0.7, harness);
+    return { ...boxLine(minute, box, mac), at: at(`${stamp}.000`) };
+  });
+  const { metrics, flagged } = measure({ now: RUN_0621, watch: lines, log: { holds: [] }, chats: [] });
+  assert.equal(metrics.unusable_min_30_us_metal02, 10);
+  assert.equal(metrics.harness_unusable_min_30, 8);
+  assert.equal(metrics.other_unusable_min_30, 1, "06:07Z, when the apps' cgroups used the most cores");
+  assert.equal(metrics.unattributed_unusable_min_30, 1, "06:15Z, a line from before cpuCores");
+  assert.match(flagged?.find(slice => slice.kind === "minutes")?.excerpt ?? "", /8 unusable minutes on the harness side, 1 on the app or owner side, 1 with no cause read/);
+});
+
+test("a Linux memory-only miss has no CPU cause to read and goes to no side", () => {
+  const box: LinuxUsable = { ...linux(72, 0.6), cpuCores: { harness: 20, apps: 1, owner: 0, ci: 0, system: 1 } };
+  const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, minute === 3 ? box : linux(0, 0.58), mac));
+  const { metrics } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
+  assert.equal(metrics.harness_unusable_min_30, 0);
+  assert.equal(metrics.unattributed_unusable_min_30, 1);
+});

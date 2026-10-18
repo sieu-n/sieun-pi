@@ -237,7 +237,72 @@ export async function hostStats(): Promise<HostStats> {
  * and its wait when it gets one, so time still open at the window's end shows up in the next window, and it is no instant queue length.
  * 1.0 means one runnable task for each of those CPUs.
  */
-export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; runnablePerCore: number; allowedCpus: number }
+export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10: number; cpuSomeAvg10: number; swapoutsPerS: number | null; runnablePerCore: number; allowedCpus: number;
+  /** Each side's CPU time over the same window, in cores (`cpuSides`); absent on readings before 10-18 06:5xZ and where the cgroups cannot be read. */
+  cpuCores?: CpuSides }
+/** Who CPU time on a Linux box belongs to: the harness (agents and the services that run them), the apps' servers, the owner, CI and the OS. */
+export type CpuSide = "harness" | "apps" | "owner" | "ci" | "system";
+export type CpuSides = Record<CpuSide, number>;
+export const CPU_SIDES: readonly CpuSide[] = ["harness", "apps", "owner", "ci", "system"];
+/**
+ * The cgroups each side's CPU time is read from, under /sys/fs/cgroup, with {app} for user@<uid>.service/app.slice in this process's
+ * user-<uid>.slice. The harness is that whole user slice (the Prime daemon and its workers, the chat service, pi-pool, the relay, agents'
+ * ssh sessions and their transient units) less the units named here for another side, so a unit that ends inside the window still counts.
+ * The CI VMs in virev.slice are left out: on us-metal02 their AllowedCPUs (0-8, 40-48 and the even CPUs 10-38 and 50-78) share none of the
+ * harness's 32, so they add no runnable task there.
+ */
+export const SIDE_CGROUPS: Readonly<Record<Exclude<CpuSide, "harness">, readonly string[]>> = {
+  apps: ["dev.slice", "{app}/auto-sns-dev-pm2.service", "{app}/box-devserver-heal.service"],
+  owner: ["{app}/code-server.service"],
+  ci: ["{app}/ci-cache.service", "{app}/ci-monitor.service"],
+  system: ["system.slice"],
+};
+/** usage_usec of a cgroup's cpu.stat; null when the line is absent. */
+export function parseUsageUsec(text: string): number | null {
+  const value = /^usage_usec (\d+)$/m.exec(text)?.[1];
+  return value === undefined ? null : Number(value);
+}
+/** This process's user-<uid>.slice and its user@<uid>.service/app.slice, from a /proc/self/cgroup text; null outside a user slice. */
+export function userSlice(cgroup: string): { slice: string; app: string } | null {
+  const match = /^0::\/(user\.slice\/user-(\d+)\.slice)(?:\/|$)/m.exec(cgroup);
+  return match ? { slice: match[1]!, app: `${match[1]}/user@${match[2]}.service/app.slice` } : null;
+}
+/**
+ * Each side's cores between two cgroup readings `ms` apart. A counter that went back (a unit restarted) counts its new value, a cgroup missing
+ * from the later reading counts 0, and the harness is its slice less the other sides' units under it. Null without both slice readings.
+ */
+export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>, slice: { slice: string; app: string }, ms: number): CpuSides | null {
+  const from = before.get(slice.slice), to = after.get(slice.slice);
+  if (from === undefined || to === undefined || !(ms > 0)) return null;
+  const used = (path: string): number => {
+    const end = after.get(path);
+    if (end === undefined) return 0;
+    const start = before.get(path) ?? 0;
+    return end >= start ? end - start : end;
+  };
+  const cores = (usec: number): number => Math.round(100 * Math.max(0, usec) / (ms * 1000)) / 100;
+  const sides = { harness: 0, apps: 0, owner: 0, ci: 0, system: 0 } satisfies CpuSides;
+  let inSlice = 0;
+  for (const [side, paths] of Object.entries(SIDE_CGROUPS) as [Exclude<CpuSide, "harness">, readonly string[]][]) {
+    for (const template of paths) {
+      const path = template.replace("{app}", slice.app);
+      const usec = used(path);
+      sides[side] += usec;
+      if (path.startsWith(`${slice.slice}/`)) inSlice += usec;
+    }
+  }
+  sides.harness = used(slice.slice) - inSlice;
+  return Object.fromEntries(CPU_SIDES.map(side => [side, cores(sides[side])])) as CpuSides;
+}
+const CGROUP_ROOT = "/sys/fs/cgroup";
+const readText = (path: string): string => { try { return readFileSync(path, "utf8"); } catch { return ""; } };
+const ownSlice = process.platform === "linux" ? userSlice(readText("/proc/self/cgroup")) : null;
+/** The usage_usec of the user slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. */
+function readCgroups(slice: { slice: string; app: string } | null): Map<string, number> | undefined {
+  if (!slice) return undefined;
+  const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
+  return new Map(paths.flatMap(path => { const usec = parseUsageUsec(readText(join(CGROUP_ROOT, path, "cpu.stat"))); return usec === null ? [] : [[path, usec] as const]; }));
+}
 /** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
 export function psiAvg10(text: string, kind: "some" | "full"): number | null {
   const value = new RegExp(`^${kind} avg10=([\\d.]+)`, "m").exec(text)?.[1];
@@ -292,23 +357,24 @@ export function runnablePerCore(before: ReadonlyMap<number, number>, after: Read
   return counted ? ns / (ms * 1e6 * cores.length) : null;
 }
 let lastSwap: { at: number; pages: number } | null = null;
-const loadSchedstat = (): { at: number; times: Map<number, number> } | null => {
-  try {
-    const times = parseSchedstat(readFileSync("/proc/schedstat", "utf8"));
-    return times ? { at: Date.now(), times } : null;
-  } catch { return null; }
+type Sched = { at: number; times: Map<number, number>; cgroups?: Map<string, number> };
+const loadSchedstat = (): Sched | null => {
+  const times = parseSchedstat(readText("/proc/schedstat"));
+  const cgroups = readCgroups(ownSlice);
+  return times ? { at: Date.now(), times, ...cgroups ? { cgroups } : {} } : null;
 };
 let lastSched = process.platform === "linux" ? loadSchedstat() : null;
-/** Where the next linuxUsable window starts: the last reading's time and per-CPU nanoseconds, null before the module could read schedstat. */
-export type SchedstatMark = { at: number; times: Record<string, number> };
-export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times) };
+/** Where the next linuxUsable window starts: the last reading's time, per-CPU nanoseconds and cgroup usage_usec; null before the module could read schedstat. */
+export type SchedstatMark = { at: number; times: Record<string, number>; cgroups?: Record<string, number> };
+export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times),
+  ...lastSched.cgroups ? { cgroups: Object.fromEntries(lastSched.cgroups) } : {} };
 /**
  * Starts the next linuxUsable window at `mark`, the last reading of the process before a restart, so the first line after it averages over the
  * same span as any other line. False, and the window stays at the module's load, when the mark is malformed, not older than this module's
  * baseline, or a counter went back since it (a reboot).
  */
 export function seedSchedstat(mark: unknown): boolean {
-  const { at, times } = (mark ?? {}) as { at?: unknown; times?: unknown };
+  const { at, times, cgroups } = (mark ?? {}) as { at?: unknown; times?: unknown; cgroups?: unknown };
   if (!lastSched || typeof at !== "number" || !(at < lastSched.at) || !times || typeof times !== "object") return false;
   const seeded = new Map<number, number>();
   for (const [cpu, ns] of Object.entries(times)) {
@@ -317,7 +383,8 @@ export function seedSchedstat(mark: unknown): boolean {
     seeded.set(Number(cpu), ns);
   }
   if (seeded.size !== lastSched.times.size) return false;
-  lastSched = { at, times: seeded };
+  const usage = cgroups && typeof cgroups === "object" ? new Map(Object.entries(cgroups).filter((entry): entry is [string, number] => typeof entry[1] === "number")) : undefined;
+  lastSched = { at, times: seeded, ...usage ? { cgroups: usage } : {} };
   return true;
 }
 /**
@@ -334,12 +401,15 @@ export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null>
   const swapoutsPerS = pages !== null && previous && now > previous.at ? Math.max(0, (pages - previous.pages) * 1000 / (now - previous.at)) : null;
   const times = parseSchedstat(schedstat!);
   const before = lastSched;
-  lastSched = times ? { at: now, times } : null;
+  const cgroups = readCgroups(ownSlice);
+  lastSched = times ? { at: now, times, ...cgroups ? { cgroups } : {} } : null;
   const cores = parseCpusAllowed(status!);
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
   if (memSome === null || memFull === null || runnable === null || !cores) return null;
+  const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at) : null;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
-    swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length };
+    swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
+    ...sides ? { cpuCores: sides } : {} };
 }
 /** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
 export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };

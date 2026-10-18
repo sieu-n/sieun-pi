@@ -61,26 +61,36 @@ const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
 };
 
 /**
- * Whether agent sessions hold the largest footprint of the box in `view`, or the largest growth since `previous` (the same box in the line
- * before) when that line is at most 2 minutes older. A reading with no groups has no shares to compare and goes to the apps' or owner's side.
+ * Whose minute an unusable reading of `view` is. On the Mac it is the harness's when agent sessions hold the largest footprint of the box, or
+ * the largest growth since `previous` (the same box in the line before) when that line is at most 2 minutes older. On a Linux box it is the
+ * harness's when a CPU miss came with the harness's cgroups using the most cores (host-stats.ts `cpuSides`). A reading with nothing to
+ * compare is unknown, never the apps': a Mac line with no groups, a Linux line from before cpuCores, or a Linux memory-only miss. d7 at 06:21Z
+ * on 10-18 put all 11 CPU minutes on us-metal02 on the app and owner side, since Linux readings never carry the Mac's memory groups.
  */
-export function isHarnessMinute(view: HostView, previous?: { view: HostView; gapMs: number }): boolean {
-  if (!feedGroups(view.usable)) return false;
+export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: number }): MinuteSide {
+  const usable = view.usable;
+  if (usable && isLinuxReading(usable)) {
+    if (!usable.cpuCores || !unusable(usable).includes("cpu")) return "unknown";
+    const { harness, ...rest } = usable.cpuCores;
+    return harness > 0 && Object.values(rest).every(cores => cores <= harness) ? "harness" : "other";
+  }
+  if (!feedGroups(usable)) return "unknown";
   const now = memoryShares(view);
-  if (leads(now)) return true;
-  if (!previous || !feedGroups(previous.view.usable) || previous.gapMs > 2 * MINUTE) return false;
+  if (leads(now)) return "harness";
+  if (!previous || !feedGroups(previous.view.usable) || previous.gapMs > 2 * MINUTE) return "other";
   const before = memoryShares(previous.view);
   const growth = new Map([...now].map(([id, gb]) => [id, gb - (before.get(id) ?? 0)] as const));
-  return (growth.get("agents") ?? 0) > 0 && leads(growth);
+  return (growth.get("agents") ?? 0) > 0 && leads(growth) ? "harness" : "other";
 }
+export type MinuteSide = "harness" | "other" | "unknown";
 
-/** `isHarnessMinute` for each box of a line of `lines`, judged against the same box in the line before it there. */
-export function harnessSide(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => boolean {
+/** `minuteSide` for each box of a line of `lines`, judged against the same box in the line before it there. */
+export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => MinuteSide {
   const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
   return (line, view) => {
     const before = previous.get(line);
     const same = before && hostViews(before).find(candidate => candidate.name === view.name);
-    return isHarnessMinute(view, same ? { view: same, gapMs: Date.parse(line.at) - Date.parse(before.at) } : undefined);
+    return minuteSide(view, same ? { view: same, gapMs: Date.parse(line.at) - Date.parse(before.at) } : undefined);
   };
 }
 
@@ -314,8 +324,8 @@ export function measure(input: Inputs): PrecheckOutput {
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0;
-  const isHarness = harnessSide(input.watch);
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, other = 0, unattributed = 0;
+  const side = sideOf(input.watch);
   const dirty: string[] = [];
   const unknownLines: string[] = [];
   const perHost = new Map<string, { usable: number; unusable: number; unknown: number }>();
@@ -325,7 +335,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < to; });
     const why: string[] = [];
     const unknown: string[] = [];
-    let harnessMinute = false, unusableMinute = false;
+    const sides = new Set<MinuteSide>();
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
@@ -333,12 +343,13 @@ export function measure(input: Inputs): PrecheckOutput {
       const miss = unusable(view.usable);
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      unusableMinute = true;
       why.push(`${view.name} unusable (${miss.join(", ")})`);
-      if (isHarness(line, view)) harnessMinute = true;
+      sides.add(side(line, view));
     }
-    if (line && !unknown.length) { fed++; if (!unusableMinute) usable++; }
-    if (unusableMinute) { if (harnessMinute) harness++; else other++; }
+    if (line && !unknown.length) { fed++; if (!sides.size) usable++; }
+    if (sides.has("harness")) harness++;
+    else if (sides.has("unknown")) unattributed++;
+    else if (sides.size) other++;
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     const waited = line && freeSlotWait(line);
     if (waited) {
@@ -390,6 +401,7 @@ export function measure(input: Inputs): PrecheckOutput {
     fed_min_30: fed,
     harness_unusable_min_30: harness,
     other_unusable_min_30: other,
+    unattributed_unusable_min_30: unattributed,
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
     unwatched_min_30: unwatched,
@@ -405,7 +417,7 @@ export function measure(input: Inputs): PrecheckOutput {
   }
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable} and unknown in ${count.unknown}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
-    `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
+    `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it in ${freeSlot}.` });
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
