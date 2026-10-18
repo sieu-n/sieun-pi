@@ -233,9 +233,10 @@ class IntentWriter:
 
 
 # ----------------------------------------------------------------- credentials
-def credential_for_keychain(a, cfg):
+def credential_for_keychain(a, cfg, refresh=True):
     """(access_token, source) from the account's Keychain item. A refresh takes
-    the index flock, then re-reads before rotating."""
+    the index flock, then re-reads before rotating. With refresh=False, None
+    instead of a refresh."""
     service = a.cred.service
     adapter = base.KeychainAdapter(service)
     creds = adapter.read()
@@ -246,6 +247,8 @@ def credential_for_keychain(a, cfg):
     remaining = (creds["expiresAt"] - time.time() * 1000) / 1000
     if remaining > cfg["refresh_skew_sec"]:
         return creds["accessToken"], "store"
+    if not refresh:
+        return None
 
     with base.index_lock("anthropic"):
         creds2 = base.recover_rotation(service, adapter)
@@ -268,8 +271,8 @@ def credential_for_keychain(a, cfg):
         return merged["accessToken"], "refreshed"
 
 
-def credential_for_codex(a, cfg):
-    """(access_token, source) from the account's auth.json."""
+def credential_for_codex(a, cfg, refresh=True):
+    """(access_token, source) from the account's auth.json; with refresh=False, None instead of a refresh."""
     adapter = base.CodexFileAdapter(a.cred.path)
     store_key = "codex-" + a.id
     blob = adapter.read()
@@ -279,6 +282,8 @@ def credential_for_codex(a, cfg):
     if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
         registry.assert_codex_identity(token, a.id)
         return token, "store"
+    if not refresh:
+        return None
 
     with base.index_lock("openai-codex"):
         blob = base.recover_rotation(store_key, adapter)
@@ -303,12 +308,32 @@ def credential_for_codex(a, cfg):
         return token, "refreshed"
 
 
-def credential_for(a, cfg):
+def credential_for(a, cfg, refresh=True):
     if isinstance(a.cred, registry.Keychain):
-        return credential_for_keychain(a, cfg)
+        return credential_for_keychain(a, cfg, refresh)
     if isinstance(a.cred, registry.CredFile):
-        return credential_for_codex(a, cfg)
+        return credential_for_codex(a, cfg, refresh)
     raise RuntimeError(f"unknown credential kind for {a.id}")
+
+
+def stay_now(state, d, tree, key, provider, cfg, now, parent):
+    """The token of a tree that stays on its account, with the vend recorded in `state`, so the hook takes the
+    pool flock once instead of twice. Only for a stay whose credential is a file read with no refresh: a Keychain
+    read runs security(1), which the flock must not wait on. None sends the vend down the two-flock path.
+    On us-metal02 on 10-18 the flock was held 91% of the time, each hold read and wrote the 2.7 MB state.json,
+    and 23 hooks in 10 min gave up after STATE_LOCK_TIMEOUT."""
+    if key is None or d is None or isinstance(d, sched.Wait) or d.account.id != tree.current:
+        return None
+    if isinstance(d.account.cred, registry.Keychain) and not base.FILE_SECRETS:
+        return None
+    try:
+        got = credential_for(d.account, cfg, refresh=False)
+    except Exception:
+        return None
+    if got is None:
+        return None
+    HookWriter(state).record_vend(key, provider, d.account, got[1], d.reason, d.shadowed, now, parent)
+    return got[0]
 
 
 def agent_dir():
@@ -584,7 +609,8 @@ def vend(provider):
     admission or wait, release it, fetch or refresh the credential under
     the index lock, then re-take the pool flock to record the vend. The
     pool flock is never held across a refresh, so `pi-pool use` never queues
-    behind one. When the flock stays busy past STATE_LOCK_TIMEOUT, the tree keeps
+    behind one. A tree that stays on its account with a file credential that
+    needs no refresh records its vend in the first hold (`stay_now`). When the flock stays busy past STATE_LOCK_TIMEOUT, the tree keeps
     the account it was last vended, if that account can still serve.
 
     A tree that waits gets its own account while the provider refuses it, so the
@@ -606,7 +632,8 @@ def vend(provider):
             d, tree, wrote = schedule(state, key, provider, accounts, cfg, now)
             reads = reads_due(state, provider, accounts, cfg, now)
             HookWriter(state).start_reads(provider, [a.id for a in reads], now)
-            if pruned or wrote or reads:
+            token = stay_now(state, d, tree, key, provider, cfg, now, parent)
+            if pruned or wrote or reads or token:
                 base.save_json(base.STATE, state)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
@@ -623,6 +650,9 @@ def vend(provider):
             start_usage_read(provider, reads)
         except OSError as e:
             base.log("usage_read_failed", provider=provider, error=str(e))
+    if token:
+        sys.stdout.write(token)
+        return
     if d is None:
         raise RuntimeError(f"no {provider} account can serve this session")
     if isinstance(d, sched.Wait):

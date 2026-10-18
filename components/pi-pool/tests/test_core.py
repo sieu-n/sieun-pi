@@ -384,8 +384,8 @@ class BusyPoolLock(unittest.TestCase):
         state["sessions"][KEY.key]["vends"]["anthropic"] = {"account_id": account_id, "email": "b@x", "at": NOW - 5, "n": 3}
         return state
 
-    def run_vend(self, state, busy_calls, key=KEY, accounts=(A, B)):
-        calls, logged, saved = [], [], []
+    def run_vend(self, state, busy_calls, key=KEY, accounts=(A, B), credential=None, calls=None):
+        calls, logged, saved = [] if calls is None else calls, [], []
 
         @contextlib.contextmanager
         def lock(*args, **kwargs):
@@ -398,9 +398,11 @@ class BusyPoolLock(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for module, name, value in ((base, "config", CFG), (registry, "load_index", list(accounts)),
                                         (registry, "session_key", key), (registry, "load_state", state),
-                                        (base, "load_json", state), (vending, "credential_for", ("fixture-token", "store")),
-                                        (base, "proc_info", {"start": "s"})):
+                                        (base, "load_json", state), (base, "proc_info", {"start": "s"})):
                 stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(vending, "credential_for",
+                                                           side_effect=credential or (lambda a, cfg, refresh=True: ("fixture-token", "store"))))
+            stack.enter_context(unittest.mock.patch.object(base, "anthropic_refusal", return_value=None))
             stack.enter_context(unittest.mock.patch.object(base, "Flock", lock))
             stack.enter_context(unittest.mock.patch.object(time, "time", return_value=NOW))
             stack.enter_context(unittest.mock.patch.object(base, "save_json", side_effect=lambda *a: saved.append(a)))
@@ -438,11 +440,45 @@ class BusyPoolLock(unittest.TestCase):
         self.assertEqual(out, "fixture-token")
 
     def test_a_busy_lock_at_record_time_still_emits_the_token(self):
-        out, logged, saved = self.run_vend(self.vended_state(), busy_calls={2})
+        refreshing = lambda a, cfg, refresh=True: ("fixture-token", "refreshed") if refresh else None
+        out, logged, saved = self.run_vend(self.vended_state(), busy_calls={2}, credential=refreshing)
         self.assertEqual(out, "fixture-token")
         self.assertIn(("vend_unrecorded", {"provider": "anthropic", "account": "b@x", "session": KEY.key}), logged)
         self.assertEqual(saved, [])
 
+
+
+class OneHoldStay(unittest.TestCase):
+    """us-metal02, 10-18 08:23 to 08:33Z: the pool flock was held 91% of the time and 23 hooks gave up after
+    STATE_LOCK_TIMEOUT, because every vend read and wrote the 2.7 MB state.json under two holds."""
+
+    def setUp(self):
+        self.busy = BusyPoolLock()
+
+    def test_a_stay_with_a_file_credential_takes_the_flock_once_and_records_the_vend(self):
+        calls, state = [], self.busy.vended_state()
+        with unittest.mock.patch.object(base, "FILE_SECRETS", True):
+            out, logged, saved = self.busy.run_vend(state, busy_calls=set(), calls=calls)
+        self.assertEqual((out, len(calls), len(saved)), ("fixture-token", 1, 1))
+        vend = state["sessions"][KEY.key]["vends"]["anthropic"]
+        self.assertEqual((vend["account_id"], vend["n"], vend["at"], vend["source"]), ("b", 4, NOW, "store"))
+        self.assertEqual(logged, [])
+
+    def test_a_stay_that_needs_a_refresh_or_a_keychain_read_keeps_the_two_holds(self):
+        refreshing = lambda a, cfg, refresh=True: ("fixture-token", "refreshed") if refresh else None
+        for why, secrets, credential in (("refresh", True, refreshing), ("keychain", False, None)):
+            with self.subTest(why=why), unittest.mock.patch.object(base, "FILE_SECRETS", secrets):
+                calls, state = [], self.busy.vended_state()
+                out, _, saved = self.busy.run_vend(state, busy_calls=set(), credential=credential, calls=calls)
+                self.assertEqual((out, len(calls), len(saved)), ("fixture-token", 2, 1))
+                self.assertEqual(state["sessions"][KEY.key]["vends"]["anthropic"]["n"], 4)
+
+    def test_a_switch_keeps_the_two_holds(self):
+        calls, state = [], self.busy.vended_state(account_id="b", cooldowns={"b": NOW + 600})
+        with unittest.mock.patch.object(base, "FILE_SECRETS", True):
+            out, _, _ = self.busy.run_vend(state, busy_calls=set(), calls=calls)
+        self.assertEqual((out, len(calls)), ("fixture-token", 2))
+        self.assertEqual(state["sessions"][KEY.key]["vends"]["anthropic"]["account_id"], "a")
 
 class IndexWindows(unittest.TestCase):
     """Index windows, classified by windowSeconds and name
