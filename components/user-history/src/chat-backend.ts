@@ -5,7 +5,6 @@ import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
 import type { HostCatalogs } from "./host-catalogs.ts";
 import { ChatLabels } from "./chat-labels.ts";
-import { ChatBookmarks } from "./chat-bookmarks.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
@@ -62,8 +61,6 @@ export interface ChatBackend {
   threads: ThreadHub;
   readState: ChatReadState;
   labels: ChatLabels;
-  /** `<dataDir>/bookmarks.json`: chat messages the owner saved, listed in the Bookmarks view. */
-  bookmarks: ChatBookmarks;
   defaults: ChatDefaultsStore;
   /** `<dataDir>/new-chat.json`: the New chat box's start skill. */
   newChat: NewChatStore;
@@ -136,7 +133,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const treeWorker = primeWorkers(join(agentDir, "daemon-workers"));
   const readState = new ChatReadState(join(dataDir, "read-state.json"));
   const labels = new ChatLabels(join(dataDir, "labels.json"));
-  const bookmarks = new ChatBookmarks(join(dataDir, "bookmarks.json"));
   const defaults = chatDefaultsStore(agentDir);
   const newChat = newChatStore(join(dataDir, "new-chat.json"));
   await readState.snapshot().catch(() => null);
@@ -312,7 +308,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   void poolPriorities.sync();
   let closed = false;
   return {
-    catalog, threads, readState, labels, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
+    catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
     prompt: async (id, via) => {
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });

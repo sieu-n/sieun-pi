@@ -248,7 +248,6 @@ export interface SessionRow {
   tags: string[];
   priority: Priority;
   schedule?: ThreadSchedule;
-  progress: Progress;
   /** Cost in dollars of the thread plus every subagent below it, the terminal agents view's number; absent when the daemon reported no usage. */
   cost?: number;
   /** Present while working: freshness inputs for this thread and its running subagents. */
@@ -342,9 +341,7 @@ export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags:
 
 export type Priority = 0 | 1 | 2 | 3;
 export interface Tag { id: string; name: string; hue: number }
-export type Progress = "none" | "plan" | "implementation" | "qa";
-export const PROGRESS_STEPS: readonly Progress[] = ["none", "plan", "implementation", "qa"];
-export interface ThreadLabels { tags: string[]; priority: Priority; progress: Progress }
+export interface ThreadLabels { tags: string[]; priority: Priority }
 /** A person's memo on a thread. `updatedAt` is 0 when there is none. */
 export interface ThreadSchedule { kind: "heartbeat" | "cron"; label?: string; status: "active" | "paused"; expression: string; nextRunAt?: string }
 export type LabelAction =
@@ -352,8 +349,7 @@ export type LabelAction =
   | { op: "rename"; tagId: string; name: string }
   | { op: "delete"; tagId: string }
   | { op: "tag"; tagId: string; ids: string[]; on: boolean }
-  | { op: "priority"; ids: string[]; priority: Priority }
-  | { op: "progress"; ids: string[]; progress: Progress };
+  | { op: "priority"; ids: string[]; priority: Priority };
 
 /**
  * Model catalog for one thread, or, with no thread, for the new-chat screen: `current`, `thinkingLevel` and `availableThinkingLevels` then come from
