@@ -8,14 +8,15 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The Apps reach staging duty's precheck (`node --import tsx scripts/duties/apps-reach-staging.ts`) for the frontend chat. The headline,
  * apps_picked, is how many of the 6 Prospect apps have an owner pick in the 5180 demo's Staging line (apps/virev-demo/lines/staging.json in
- * auto-sns-agent). open_review_max_h is the age of the oldest open review todo the chat put on For you, and demo_ci_ok whether the last
- * verify-dev run on sieun/dev that ran the virev-demo turbo tasks passed them: the runs and their jobs come from the local CI cache
- * (`CI_CACHE`, no GitHub call) and the receipt lines from the monorepo lint job's log (one gh call per run read). Run detail, not judged:
- * source_errors and each tab's 0 to 100% status (`tabs`), the owner's "report status (in 0%-100%) of each tab". An unreadable Staging line or
- * board fails the run, since neither the headline nor the reviews can be read without it. An unreadable cache or log, or no run that ran
- * both tasks, leaves demo_ci_ok out of the output (not measured, so the runner judges the other metrics) with a source flag. On 10-18
- * 00:30Z a GitHub 403 rate limit on `gh run list` scored demo_ci_ok 0 while run 39076957943 on sieun/dev had passed both tasks. No model
- * call, no browser.
+ * auto-sns-agent). open_review_max_h is the age of the oldest open review todo the chat put on For you that the chat can still fix (no tap
+ * answers yet, or answered and still open); one with tap answers and no reply only waits on the owner and goes to owner_held_review_max_h, run
+ * detail. demo_ci_ok is whether the last verify-dev run on sieun/dev that ran the virev-demo turbo tasks passed them: the runs and their jobs
+ * come from the local CI cache (`CI_CACHE`, no GitHub call) and the receipt lines from the monorepo lint job's log (one gh call per run read).
+ * Run detail, not judged: source_errors, owner_held_review_max_h and each tab's 0 to 100% status (`tabs`), the owner's "report status (in
+ * 0%-100%) of each tab". An unreadable Staging line or board fails the run, since neither the headline nor the reviews can be read without it.
+ * An unreadable cache or log, or no run that ran both tasks, leaves demo_ci_ok out of the output (not measured, so the runner judges the other
+ * metrics) with a source flag. On 10-18 00:30Z a GitHub 403 rate limit on `gh run list` scored demo_ci_ok 0 while run 39076957943 on sieun/dev
+ * had passed both tasks. No model call, no browser.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -38,7 +39,7 @@ export const DEMO_TASKS = ["virev-demo#check", "virev-demo#test:unit"] as const;
 const HOUR_MS = 3_600_000;
 
 export interface StagingLine { apps?: Record<string, { variant?: string; at?: string }>; log?: { at?: string }[] }
-export interface BoardTodo { id: string; text?: string; done?: boolean; from?: string; at?: string; step?: string }
+export interface BoardTodo { id: string; text?: string; done?: boolean; from?: string; at?: string; step?: string; reply?: string; choices?: string[] }
 export interface BoardItem { id: string; text?: string; status?: string; job?: string; children?: BoardItem[] }
 export interface Board { plan?: BoardItem[]; todos?: BoardTodo[] }
 export interface CacheJob { id?: number; name?: string; steps?: { name?: string; conclusion?: string }[] }
@@ -90,10 +91,18 @@ export function openSteps(plan: readonly BoardItem[], word: string): string[] {
 export const isReview = (todo: BoardTodo): boolean => todo.from === "agent"
   && (APPS.some(app => mentions(todo.text, app.word)) || /\b(review|pick|put in line)\b/i.test(todo.text ?? ""));
 
-/** Open review todos on For you, oldest first, with their age in hours (one decimal). */
-export function openReviews(todos: readonly BoardTodo[], now: number): { todo: BoardTodo; hours: number }[] {
+/**
+ * Whether an open review only waits on the owner's tap: it has tap answers (`choices`) and no reply. The duty job's fixes for an old review
+ * are to check off one he answered and to cut it to one-tap items, so neither is left to do, the same way the check-in counts a goal held by
+ * an open For you todo as owner-held (`ownerHeld`). On 10-18 Email t25 read 92.3 h with choices added in place and no answer, and its refresh
+ * step p194 was done.
+ */
+export const ownerHeldReview = (todo: BoardTodo): boolean => !todo.reply && (todo.choices?.length ?? 0) > 0;
+
+/** Open review todos on For you, oldest first, with their age in hours (one decimal) and whether only the owner's tap holds them. */
+export function openReviews(todos: readonly BoardTodo[], now: number): { todo: BoardTodo; hours: number; held: boolean }[] {
   return todos.filter(todo => !todo.done && isReview(todo) && Number.isFinite(Date.parse(todo.at ?? "")))
-    .map(todo => ({ todo, hours: Math.max(0, Math.round((now - Date.parse(todo.at!)) / HOUR_MS * 10) / 10) }))
+    .map(todo => ({ todo, hours: Math.max(0, Math.round((now - Date.parse(todo.at!)) / HOUR_MS * 10) / 10), held: ownerHeldReview(todo) }))
     .sort((a, b) => b.hours - a.hours);
 }
 
@@ -159,8 +168,8 @@ export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> 
   // targets 6) and the owner's "get an accepted version of each app in the prospects view". open_review_max_h at most 48: the review limit the
   // duty has held since 10-12; incident, the board went from t5 (2026-10-09T12:38Z) to t11 (2026-10-12T05:55Z), 65 h with nothing to pick, and
   // on 2026-10-12T13:34Z the owner asked "what should i review?". demo_ci_ok at least 1 is a yes or no check, set only when a run answers it.
-  // source_errors is run detail.
-  const metrics: Record<string, number> = { apps_picked: 0, open_review_max_h: 0, source_errors: 0 };
+  // source_errors and owner_held_review_max_h are run detail.
+  const metrics: Record<string, number> = { apps_picked: 0, open_review_max_h: 0, owner_held_review_max_h: 0, source_errors: 0 };
   const sourceError = (excerpt: string) => { metrics.source_errors! += 1; flagged.push({ at, kind: "source", excerpt }); };
   const message = (error: unknown) => error instanceof Error ? error.message : String(error);
   const readJson = async <T>(path: string, what: string): Promise<T> => {
@@ -181,10 +190,11 @@ export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> 
   }
 
   const reviews = openReviews(board.todos ?? [], at);
-  metrics.open_review_max_h = reviews[0]?.hours ?? 0;
-  for (const { todo, hours } of reviews) {
-    flagged.push({ at, kind: "open_review", ...(todo.step ? { item: todo.step } : {}),
-      excerpt: `${todo.id} open ${hours} h (since ${todo.at}${todo.step ? `, step ${todo.step}` : ""}): ${(todo.text ?? "").slice(0, 160)}` });
+  metrics.open_review_max_h = reviews.find(review => !review.held)?.hours ?? 0;
+  metrics.owner_held_review_max_h = reviews.find(review => review.held)?.hours ?? 0;
+  for (const { todo, hours, held } of reviews) {
+    flagged.push({ at, kind: held ? "owner_held_review" : "open_review", ...(todo.step ? { item: todo.step } : {}),
+      excerpt: `${todo.id} open ${hours} h${held ? ", waits on the owner's tap" : ""} (since ${todo.at}${todo.step ? `, step ${todo.step}` : ""}): ${(todo.text ?? "").slice(0, 160)}` });
   }
 
   const tabs = apps.map(app => tabStatus(board.plan ?? [], app));

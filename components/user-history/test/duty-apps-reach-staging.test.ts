@@ -95,7 +95,31 @@ test("apps reach staging: open reviews are agent todos naming an app or asking t
     { id: "t27", text: "Say yes or no to the List app's top-10 changes (http://x/1731-list-app-review/review.html).", done: false, from: "agent", at: iso(2), step: "p120" },
     { id: "t28", text: "Renew the GeoNode plan?", done: false, from: "agent", at: iso(90) },
     { id: "t29", text: "Pick the Home chart", done: false, from: "owner", at: iso(80) }];
-  assert.deepEqual(openReviews(todos, NOW).map(({ todo, hours }) => [todo.id, hours]), [["t25", 30], ["t27", 2]]);
+  assert.deepEqual(openReviews(todos, NOW).map(({ todo, hours, held }) => [todo.id, hours, held]), [["t25", 30, false], ["t27", 2, false]]);
+});
+
+test("apps reach staging: a review with tap answers and no reply waits on the owner, so it leaves open_review_max_h for owner_held_review_max_h", async () => {
+  // The frontend chat's For you on 10-18 00:45Z: t25 had its choices added in place by the refresh step p194 and read 92.3 h, t28 had none.
+  const now = Date.parse("2026-10-18T00:45:10.861Z");
+  const todos = [
+    { id: "t25", text: "Three yes or no questions on Email. 1. When you open Email, do you land on your templates first with nothing to set up?", done: false, step: "p129",
+      links: [{ label: "Email on Staging", target: "http://localhost:5180/configure?scenario=kbeauty-brand&line=staging&to=/app/analytics/email" }],
+      from: "agent", at: "2026-10-14T04:29:50.206Z", choices: ["Yes to all 3", "No to some, I'll say which"] },
+    { id: "t28", text: "Look at three screens and say good or what to change. Connections, one answer per part: 1. multiple accounts per channel.", done: false,
+      step: "p115", from: "agent", at: "2026-10-17T21:44:56.405Z" },
+    { id: "t29", text: "Is the new tighter sidebar on Staging right?", done: false, choices: ["Yes, good", "Change something"], step: "p189", from: "agent",
+      at: "2026-10-18T00:37:40.414Z" },
+  ];
+  const output = await measureStaging({ ...deps({ line: LINE, board: { plan: [], todos } }), now: () => now });
+  assert.equal(output.metrics.open_review_max_h, 3);
+  assert.equal(output.metrics.owner_held_review_max_h, 92.3);
+  assert.deepEqual(output.flagged?.filter(item => item.kind.endsWith("review")).map(item => [item.kind, item.item]),
+    [["owner_held_review", "p129"], ["open_review", "p115"]]);
+  assert.match(output.flagged!.find(item => item.kind === "owner_held_review")!.excerpt, /^t25 open 92\.3 h, waits on the owner's tap \(since/);
+  const answered = todos.map(todo => todo.id === "t25" ? { ...todo, reply: "Yes to all 3", answeredBy: "owner" } : todo);
+  const after = await measureStaging({ ...deps({ line: LINE, board: { plan: [], todos: answered } }), now: () => now });
+  assert.equal(after.metrics.open_review_max_h, 92.3, "an answered review left open is the chat's to check off");
+  assert.equal(after.metrics.owner_held_review_max_h, 0);
 });
 
 test("apps reach staging: a tab's status counts its Staging pick as one step, and dropped steps leave", () => {
@@ -114,7 +138,7 @@ test("apps reach staging: measures picks, the oldest open review, each tab and t
     { id: 6, status: "completed", path: ".github/workflows/land.yml", jobs: lintJobs(60, "success") }, { id: 3, status: "completed", jobs: lintJobs(30, "skipped") },
     { id: 2, status: "completed", jobs: lintJobs(20, "success"), log: LEFT_OUT }, { id: 1, status: "completed", jobs: lintJobs(10, "success"), log: CACHED }] });
   const output = await measureStaging(run);
-  assert.deepEqual(output.metrics, { apps_picked: 4, open_review_max_h: 20, demo_ci_ok: 1, source_errors: 0 });
+  assert.deepEqual(output.metrics, { apps_picked: 4, open_review_max_h: 20, owner_held_review_max_h: 0, demo_ci_ok: 1, source_errors: 0 });
   assert.deepEqual(run.calls.map(call => call.join(" ")), ["gh api repos/{owner}/{repo}/actions/jobs/20/logs", "gh api repos/{owner}/{repo}/actions/jobs/10/logs"],
     "the runs and jobs come from the CI cache, and only the lint job logs are read from GitHub");
   assert.deepEqual(output.flagged?.filter(item => item.kind !== "tab_status").map(item => item.kind).sort(),
