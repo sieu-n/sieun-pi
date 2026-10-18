@@ -30,3 +30,27 @@ test("aside_tabs on macOS keeps the local open -a Aside fix", async () => {
   const outcome = await asideTabs.run(deps());
   assert.ok(outcome.status === "fail" && outcome.fix.startsWith("open Aside with `open -a Aside`"), JSON.stringify(outcome));
 });
+
+const railwayAuth = CHECKS.find(check => check.id === "railway_auth")!;
+const railwayDeps = (token: string | undefined): Deps => ({
+  ...deps("linux"),
+  env: token === undefined ? {} : { RAILWAY_API_TOKEN: token },
+  exec: async (_file, _args, options) => options.env?.RAILWAY_API_TOKEN && options.env.HOME !== "/home/sieun"
+    ? { code: 1, stdout: "", stderr: "Unauthorized. Please check that your RAILWAY_API_TOKEN is valid", ms: 0 }
+    : { code: 0, stdout: "Logged in as Sieun Park (sieunpark77@gmail.com)", stderr: "", ms: 0 },
+});
+
+test("railway_auth fails a broken RAILWAY_API_TOKEN that the OAuth login would hide", async () => {
+  const outcome = await railwayAuth.run(railwayDeps("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("railway.com/account/tokens"), JSON.stringify(outcome));
+});
+
+test("railway_auth names the inline comment when RAILWAY_API_TOKEN carries one", async () => {
+  const outcome = await railwayAuth.run(railwayDeps('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # PERSONAL account token'));
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("inline comment"), JSON.stringify(outcome));
+});
+
+test("railway_auth without RAILWAY_API_TOKEN keeps the OAuth whoami", async () => {
+  const outcome = await railwayAuth.run(railwayDeps(undefined));
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+});

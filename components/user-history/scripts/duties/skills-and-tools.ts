@@ -53,6 +53,8 @@ export interface Deps {
   platform?: NodeJS.Platform;
   /** Writes the kernel venv's sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
   pinSkillPaths?: () => Promise<PinResult[]>;
+  /** Absent means process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -173,6 +175,20 @@ async function liveSessions(deps: Deps): Promise<number> {
 async function cliLogin(deps: Deps, file: string, args: string[], ok: (result: ExecResult) => boolean, fix: string, cwd?: string): Promise<Outcome> {
   const result = await deps.exec(file, args, { ...(cwd ? { cwd } : {}), timeoutMs: 20_000 });
   return result.code === 0 && ok(result) ? PASS(brief(both(result), 120)) : FAIL("agent", `${file} ${args.join(" ")}: ${failText(result)}`, fix);
+}
+
+/** railway prefers RAILWAY_API_TOKEN to the OAuth login in ~/.railway/config.json and passes on the login for an hour after each refresh, so a broken env token hid there on 10-18. With the token set, whoami runs under an empty HOME, so only the token can pass. */
+async function railwayAuth(deps: Deps): Promise<Outcome> {
+  const loggedIn = (result: ExecResult) => both(result).includes("Logged in as");
+  const token = (deps.env ?? process.env).RAILWAY_API_TOKEN;
+  if (!token) return cliLogin(deps, "railway", ["whoami"], loggedIn, "run `railway login --browserless` in the owner's Aside browser");
+  const env = { RAILWAY_API_TOKEN: token, RAILWAY_NO_AUTO_UPDATE: "1", HOME: join(deps.scratchDir, `railway-token-home-${process.pid}`) };
+  const result = await deps.exec("railway", ["whoami"], { env, timeoutMs: 20_000 });
+  if (result.code === 0 && loggedIn(result)) return PASS(`RAILWAY_API_TOKEN: ${brief(both(result), 120)}`);
+  const fix = /[\s#"']/.test(token)
+    ? `RAILWAY_API_TOKEN holds ${token.length} chars with a space, # or quote; move the inline comment in ~/.config/sieun-pi/agent.env and ~/.zshenv to its own line, since systemd EnvironmentFile keeps it in the value`
+    : "Railway refuses RAILWAY_API_TOKEN; mint an account token at https://railway.com/account/tokens and put it in ~/.config/sieun-pi/agent.env and ~/.zshenv";
+  return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, fix);
 }
 
 async function dotenvFiles(deps: Deps): Promise<string[]> {
@@ -412,7 +428,7 @@ export const CHECKS: readonly Check[] = [
     "sign in with the `codex login` device flow in the owner's Aside browser; a password prompt makes it an owner item") },
   { id: "gh_auth", group: "service clis", tool: "gh", run: deps => cliLogin(deps, "gh", ["auth", "status"], result => both(result).includes("Logged in to github.com"), "run `gh auth login --web` in the owner's Aside browser") },
   { id: "vercel_auth", group: "service clis", tool: "vercel", run: deps => cliLogin(deps, "vercel", ["whoami"], () => true, "run `vercel login` in the owner's Aside browser") },
-  { id: "railway_auth", group: "service clis", tool: "railway", run: deps => cliLogin(deps, "railway", ["whoami"], result => both(result).includes("Logged in as"), "run `railway login --browserless` in the owner's Aside browser") },
+  { id: "railway_auth", group: "service clis", tool: "railway", run: railwayAuth },
   { id: "convex_auth", group: "service clis", tool: "convex", run: deps => cliLogin(deps, join(deps.repo, "node_modules/.bin/convex"), ["login", "status"],
     result => both(result).includes("Status: Logged in"), "run `npx convex login` in auto-sns-agent through the owner's Aside browser", deps.repo) },
   { id: "ssh_metal", group: "service clis", tool: "ssh us-metal01", run: async deps => {
