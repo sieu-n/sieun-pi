@@ -1,6 +1,6 @@
 import { coversStep, OWNER_WAIT } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
-import type { WakeWatch } from "./checkin-load.ts";
+import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { ago, clip, firstClause, type JobFact, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
@@ -111,7 +111,8 @@ const NAMED_WORK = /\b(land|promote|train)[\s-]*(\d+[a-z]?)\b|\b(\d{9,})\b/gi;
 const SESSION_PREFIX = /\b[0-9a-f]{8}\b/g;
 /**
  * Who moves a step from another session, by the pending board.wakes (`wakeWatches`): the session the step names as its owner sleeps on one, or
- * the first clause of its wait names a run or a land that a session sleeps on, or a thread asleep on one (by name, id, or an 8-character id).
+ * the first clause of its wait names a run or a land that a session sleeps on, or a land wait whose every named commit a land run some session
+ * sleeps on carries (`landCarries`), or a thread asleep on one (by name, id, or an 8-character id).
  * Crawler VP 10-15 19:10Z, after a daemon restart left the chat's jobs unlisted: 117 steps were stuck, 77 of them owned by crawler ops train,
  * asleep on its run wakes, and 29 more waiting on land 37, whose run 38790378691 the release owner 01a10810 slept on.
  */
@@ -129,6 +130,12 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
   for (const [session, watch] of watches) {
     const work = works.find(candidate => watch.works.has(candidate));
     if (work) return `its wait is on ${work}, which ${name(session)} sleeps on (${watch.label})`;
+  }
+  const commits = landWaitCommits(item.waitFor);
+  for (const [session, watch] of commits.length ? watches : []) {
+    if (watch.carries && commits.every(commit => watch.carries!.commits.has(commit))) {
+      return `its wait is on ${commits.join(", ")}, which ${watch.carries.land} carries and ${name(session)} sleeps on ${watch.label}`;
+    }
   }
   const thread = waitTarget(item.waitFor, rows, self)?.id;
   const prefixes = head.match(SESSION_PREFIX) ?? [];

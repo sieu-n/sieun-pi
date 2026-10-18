@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { JobFact, StepView } from "./checkin-steps.ts";
 import { treeWakes, type Wake, wakeLabel } from "./wakes.ts";
+import { firstClause } from "./shared/chat-board.ts";
 import type { PlanItem } from "./shared/types.ts";
 
 /*
@@ -65,7 +68,9 @@ export function readHeartbeats(file: string): ScheduledJob[] {
   }
 }
 /** One land or promote run of the release train as the CI cache last read it: `key` is the land it carries ("33", "32b") or "promote". */
-export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number }
+export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number;
+  /** The sieun/dev commit a land.yml run lands (its head sha); absent for promote runs and runs on a land branch. */
+  sha?: string }
 /** One run of any workflow as the CI cache last read it, with the branch it ran on (`ref`). */
 export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number; ref?: string; sha?: string; workflow?: string; event?: string; createdAt?: number }
 /**
@@ -75,6 +80,8 @@ export interface CiRun { id: string; running: boolean; conclusion: string | null
 export interface Train { runs: TrainRun[]; readAt: number; all?: ReadonlyMap<string, CiRun> }
 /** `<home>/.cache/virev/ci-runs.json`, which launchd ai.virev.ci-cache rewrites from GitHub every 30 s for sieu-n/auto-sns-agent. */
 export const trainFile = (home: string = homedir()): string => join(home, ".cache", "virev", "ci-runs.json");
+/** The checkout of sieu-n/auto-sns-agent, the repo the release train in `trainFile` runs for. */
+export const trainRepo = (home: string = homedir()): string => join(home, "Documents", "Github", "auto-sns-agent");
 const LAND_RUN = /^land:\s*land[\s-]+(\d+[a-z]?)\b/i;
 /** A branch a land runs on, `land/34` or `ci/land-34-r2`, with the land it carries when the name has one. */
 const LAND_BRANCH = /^(?:ci\/)?land(?:[-/_](\d+[a-z]?))?(?=$|[-/_])/i;
@@ -96,7 +103,8 @@ export function parseTrain(cache: unknown): Train | undefined {
       branch ? branch[1]?.toLowerCase() ?? "land" : undefined;
     if (!run || !key) return [];
     return [{ id: String(run.id), key, running: run.status !== "completed", conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
-      createdAt: Date.parse(String(run.created_at)), updatedAt: Date.parse(String(run.updated_at)) }];
+      createdAt: Date.parse(String(run.created_at)), updatedAt: Date.parse(String(run.updated_at)),
+      ...path.endsWith("/land.yml") && typeof run.head_sha === "string" ? { sha: run.head_sha } : {} }];
   }) };
 }
 /** The release train in `file` (`trainFile`); undefined when the file is missing or unreadable. */
@@ -146,12 +154,14 @@ export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], ses
   });
 }
 /** What one session asleep on pending board.wakes watches: its wake label (`wakeLabel`), and the work its run wakes are on ("run 38790378691", "land 37"). */
-export interface WakeWatch { label: string; works: ReadonlySet<string> }
+export interface WakeWatch { label: string; works: ReadonlySet<string>;
+  /** The commits named in open steps' waits that a land run this session sleeps on carries (`landCarries`), and that land, as in "land 40". */
+  carries?: { land: string; commits: ReadonlySet<string> } }
 /**
  * Each session with a pending board.wake (`pendingWakes`), by session id, with the work it watches: each run it waits on, and the land the CI
  * cache files that run under (`Train`). A step that waits on that run or land, or that this session owns, has a live owner in another session.
  */
-export function wakeWatches(wakes: readonly Wake[], train?: Train): Map<string, WakeWatch> {
+export function wakeWatches(wakes: readonly Wake[], train?: Train, carried: ReadonlyMap<string, ReadonlySet<string>> = new Map()): Map<string, WakeWatch> {
   const bySession = new Map<string, Wake[]>();
   for (const wake of wakes) bySession.set(wake.session, [...bySession.get(wake.session) ?? [], wake]);
   const works = ({ on }: Wake): string[] => {
@@ -160,7 +170,72 @@ export function wakeWatches(wakes: readonly Wake[], train?: Train): Map<string, 
     const land = train?.runs.find(run => run.id === id)?.key;
     return [`run ${id}`, ...(land !== undefined && land !== "land" && land !== "promote" ? [`land ${land}`] : [])];
   };
-  return new Map([...bySession].map(([session, owed]) => [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)) }]));
+  const carries = (owed: readonly Wake[]): WakeWatch["carries"] => {
+    for (const { on } of owed) {
+      if (on.kind !== "run") continue;
+      const commits = carried.get(String(on.run));
+      if (!commits?.size) continue;
+      const key = train?.runs.find(run => run.id === String(on.run))?.key;
+      return { land: key && key !== "land" ? `land ${key}` : `run ${on.run}`, commits };
+    }
+    return undefined;
+  };
+  return new Map([...bySession].map(([session, owed]) => {
+    const carry = carries(owed);
+    return [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)), ...carry ? { carries: carry } : {} }];
+  }));
+}
+
+/** A wait's first clause that names a land, promote or release, whose commits a land run can carry. */
+export const LAND_WAIT = /\b(?:land|lands|landed|promote|promotes|release|released)\b/i;
+/** A commit id as a wait names it: 7 to 40 hex characters with a digit and a letter, not part of a session id ("01a14fbe-a688-..."). */
+const COMMIT = /(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w-])/g;
+/** The commits the first clause of a wait on a land names (`LAND_WAIT`), lower case; none for any other wait. */
+export function landWaitCommits(waitFor: string | undefined): string[] {
+  const head = firstClause(waitFor ?? "").toLowerCase();
+  return LAND_WAIT.test(head) ? [...new Set(head.match(COMMIT) ?? [])] : [];
+}
+const git = promisify(execFile);
+const ancestry = new Map<string, Promise<boolean>>();
+/**
+ * Whether `commit` is in the history of `head` in `repo`; a commit the repo does not have yet is not. A yes is kept, since history never
+ * changes, and a no is asked again, since the checkout may fetch either commit later.
+ */
+const isAncestor = (repo: string, commit: string, head: string): Promise<boolean> => {
+  const key = `${repo}\0${commit}\0${head}`;
+  let answer = ancestry.get(key);
+  if (!answer) {
+    answer = git("git", ["-C", repo, "merge-base", "--is-ancestor", commit, head], { env: { ...process.env, GIT_DIR: undefined, GIT_INDEX_FILE: undefined, GIT_WORK_TREE: undefined } })
+      .then(() => true, () => { ancestry.delete(key); return false; });
+    ancestry.set(key, answer);
+  }
+  return answer;
+};
+/**
+ * For each land.yml run a pending board.wake waits on, the commits that open steps' land waits name (`landWaitCommits`) and that run lands,
+ * read with git in the train's checkout (`trainRepo`). A step that waits for "the next land and promote that carry <commit>" is then moved by
+ * the session asleep on the land that carries it (`wakeMover`). Crawler VP 10-18 16:31Z: p542 waited for "the next land and promote 13 carry bf3ebaf4fa,
+ * 39ffdfb8b4, ..." and counted stuck, while "land 39 rerun" slept on land 40's run 39144738917, whose pin e375b4cc0a carries all five commits.
+ */
+export async function landCarries(plan: readonly PlanItem[], wakes: readonly Wake[], train: Train | undefined, repo: string): Promise<Map<string, Set<string>>> {
+  const carried = new Map<string, Set<string>>();
+  const named = new Set<string>();
+  const visit = (items: readonly PlanItem[]) => {
+    for (const item of items) {
+      if (item.status === "todo" || item.status === "doing" || item.status === "blocked") for (const commit of landWaitCommits(item.waitFor)) named.add(commit);
+      visit(item.children);
+    }
+  };
+  visit(plan);
+  if (!train || !named.size) return carried;
+  for (const id of new Set(wakes.flatMap(({ on }) => on.kind === "run" ? [String(on.run)] : []))) {
+    const head = train.runs.find(run => run.id === id)?.sha;
+    if (!head) continue;
+    const commits = new Set<string>();
+    for (const commit of named) if (await isAncestor(repo, commit, head)) commits.add(commit);
+    if (commits.size) carried.set(id, commits);
+  }
+  return carried;
 }
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */
 const CHECK_IN_WORK = /\bcheck[- ]?ins?\b|\bboard\b|\bwatch(?:er|ers|es|ing)?\b|\bmonitor(?:s|ing)?\b|\bstatus\b|\bnudge[sd]?\b|\bguides?\b|\bstall(?:s|ed)?\b|\bprogress\b/i;

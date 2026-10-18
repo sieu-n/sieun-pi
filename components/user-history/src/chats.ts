@@ -5,7 +5,7 @@ import type { IdIndex } from "./id-index.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
+import { heartbeatsFile, landCarries, liveThreads, readHeartbeats, readTrain, trainFile, trainRepo, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
@@ -1238,9 +1238,10 @@ export class Chats {
     const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
+    const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
