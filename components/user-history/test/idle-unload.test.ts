@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, REPLIED_MS, unloadPlan } from "../src/idle-unload.ts";
+import { quietWorkers, RECYCLE_OWN_BYTES, RECYCLE_QUIET_MS, recyclePlan, ENDED_MS, unloadPlan } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; pool: string[]; rows: SessionSummary[] };
 const load = (name: string): Fixture => JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", name), "utf8")) as Fixture;
@@ -15,6 +15,8 @@ const isRoot = (row: SessionSummary): boolean => (row.rlmDepth ?? 0) === 0 && ro
 const day15 = load("daemon-rows-1015-2122.json");
 const at15 = Date.parse(day15.takenAt);
 const plan15 = unloadPlan(day15.rows, { attached: new Set(day15.chats), pool: new Set(day15.pool), now: at15, idleMs: TEN_MIN });
+/** A row with no verdict from the daemon's judge, so idleEvictionMinutes applies to it. */
+const unjudged = (row: SessionSummary): SessionSummary => { const { taskState: _verdict, ...rest } = row; return rest as SessionSummary; };
 
 test("the 10-15 rows unload the top-level jobs idle for idleEvictionMinutes with nothing running, queued or scheduled", () => {
   const roots = plan15.filter(isRoot);
@@ -22,12 +24,12 @@ test("the 10-15 rows unload the top-level jobs idle for idleEvictionMinutes with
   for (const row of roots) {
     assert.ok(!day15.chats.includes(row.sessionId), "never a chat the service holds attached");
     assert.ok(!day15.pool.includes(row.sessionId), "never one with a turn working or queued in pi-pool");
-    assert.ok(at15 - Date.parse(row.lastActivityAt!) >= TEN_MIN);
+    assert.ok(at15 - Date.parse(row.lastActivityAt!) >= (row.taskState ? ENDED_MS : TEN_MIN));
   }
 });
 
 test("a session with a heartbeat, a client attached, a running child, a queued input or idleEvictionMinutes of quiet missing keeps its worker", () => {
-  const base = plan15.find(isRoot)!;
+  const base = unjudged(plan15.find(isRoot)!);
   const input = { attached: new Set<string>(), pool: new Set<string>(), now: at15, idleMs: TEN_MIN };
   for (const change of [{ hasRegisteredHeartbeat: true }, { hasRegisteredCronJob: true }, { attachedClients: 1 }, { hasRunningRlmChildren: true },
     { sessionActions: { queuedCount: 1, steering: [], followUps: [] } }, { activity: "working" }, { lastActivityAt: new Date(at15 - TEN_MIN + 60_000).toISOString() }] as Partial<SessionSummary>[]) {
@@ -44,20 +46,20 @@ const at17 = Date.parse(day17.takenAt);
 const plan17 = unloadPlan(day17.rows, { attached: new Set(day17.chats), pool: new Set(day17.pool), now: at17, idleMs: TEN_MIN });
 const children17 = plan17.filter(row => !isRoot(row));
 
-test("the 10-17 rows stop each subagent idle for idleEvictionMinutes, or REPLIED_MS once it replied, with nothing at work below it", () => {
+test("the 10-17 rows stop each subagent idle for idleEvictionMinutes, or ENDED_MS once it replied, with nothing at work below it", () => {
   const names = new Set(children17.map(row => row.sessionName));
   for (const name of ["gap-niche-missing", "gap-secuid-missing", "grafana-c-checks", "test results in ci", "query mcp build"]) assert.ok(names.has(name), name);
   assert.ok(children17.length >= 15, `${children17.length} subagents`);
   const byId = new Map(day17.rows.map(row => [row.sessionId, row] as const));
   for (const row of children17) {
-    assert.ok(at17 - Date.parse(row.lastActivityAt!) >= (row.repliedSinceTask ? REPLIED_MS : TEN_MIN), row.sessionName);
+    assert.ok(at17 - Date.parse(row.lastActivityAt!) >= (row.repliedSinceTask || row.taskState ? ENDED_MS : TEN_MIN), row.sessionName);
     const below = day17.rows.filter(other => { for (let up = other.parentSessionId; up; up = byId.get(up)?.parentSessionId) if (up === row.sessionId) return true; return false; });
     assert.ok(below.every(other => other.activity === "idle"), `${row.sessionName} has a session at work below it`);
   }
 });
 
 test("a root reloaded by a message 1 to 2 minutes after it went quiet is not stopped in between", () => {
-  const root = plan15.find(isRoot)!;
+  const root = unjudged(plan15.find(isRoot)!);
   for (const quietMs of [60_000, 2 * 60_000, 4 * 60_000]) {
     assert.deepEqual(unloadPlan([{ ...root, lastActivityAt: new Date(at15 - quietMs).toISOString() }], { attached: new Set(), pool: new Set(), now: at15, idleMs: TEN_MIN }), []);
   }
@@ -91,16 +93,17 @@ const own18 = new Map(Object.entries(day18.own).map(([pid, bytes]) => [Number(pi
 const VP = "01a1164b-4a2d-742d-b27a-82f086ed0200";
 const MIN = 60_000;
 
-test("a subagent that replied to its parent stops after REPLIED_MS of quiet, and one that did not waits idleEvictionMinutes", () => {
+test("a subagent that replied to its parent stops after ENDED_MS of quiet, and an unjudged one that did not waits idleEvictionMinutes", () => {
   const replied = day18.rows.find(row => row.runtimeKind === "subagent" && row.repliedSinceTask === true && row.activeSessionId)!;
   const input = { attached: new Set<string>(), pool: new Set<string>(), now: at18, idleMs: TEN_MIN };
   const quietFor = (row: SessionSummary, ms: number): SessionSummary => ({ ...row, activity: "idle", isSessionActive: false, isStreaming: false, isRunningTools: false,
     hasRunningRlmChildren: false, isBashRunning: false, attachedClients: 0, lastActivityAt: new Date(at18 - ms).toISOString() });
-  assert.equal(REPLIED_MS, 2 * MIN);
-  assert.deepEqual(unloadPlan([quietFor(replied, REPLIED_MS - 1000)], input), [], "not before REPLIED_MS");
-  assert.equal(unloadPlan([quietFor(replied, REPLIED_MS)], input).length, 1);
-  assert.deepEqual(unloadPlan([quietFor({ ...replied, repliedSinceTask: false }, 5 * MIN)], input), [], "a subagent that has not replied keeps idleEvictionMinutes");
-  assert.deepEqual(unloadPlan([quietFor({ ...replied, runtimeKind: "top-level", rlmDepth: 0, repliedSinceTask: true }, 5 * MIN)], input), [], "a root keeps idleEvictionMinutes");
+  assert.equal(ENDED_MS, 2 * MIN);
+  assert.deepEqual(unloadPlan([quietFor(replied, ENDED_MS - 1000)], input), [], "not before ENDED_MS");
+  assert.equal(unloadPlan([quietFor(replied, ENDED_MS)], input).length, 1);
+  const { taskState: _verdict, ...unjudged } = replied;
+  assert.deepEqual(unloadPlan([quietFor({ ...unjudged, repliedSinceTask: false }, 5 * MIN)], input), [], "an unjudged subagent that has not replied keeps idleEvictionMinutes");
+  assert.deepEqual(unloadPlan([quietFor({ ...unjudged, runtimeKind: "top-level", rlmDepth: 0, repliedSinceTask: true }, 5 * MIN)], input), [], "an unjudged root keeps idleEvictionMinutes");
 });
 
 test("the 10-18 rows recycle no worker: the VP's worker is at work and every quiet worker holds under RECYCLE_OWN_BYTES of its own", () => {
@@ -133,4 +136,26 @@ test("once every session on the VP's worker is quiet for RECYCLE_QUIET_MS, the c
   const working = rest(RECYCLE_QUIET_MS, () => 0).map((row, at) => at === 1 ? { ...row, activity: "working" } as SessionSummary : row);
   assert.deepEqual(recyclePlan(quietWorkers(working, input), own18), [], "one session at work keeps the worker");
   assert.deepEqual(recyclePlan(quietWorkers(rest(RECYCLE_QUIET_MS, () => 0), { ...input, pool: new Set([on[0]!.sessionId]) }), own18), [], "a turn in pi-pool keeps the worker");
+});
+
+// The daemon's rows at 01:16Z on 10-18, swap at 12.56 GB of 13.31: 53 Python kernels, and 17 idle sessions that were no chat, had no client and
+// nothing at work below them. 14 had ended their task (a verdict, a reply to the parent, or a board.wake pending) and sat quiet 0.3 to 8.4 min.
+const day18b = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "daemon-rows-1018-0116.json"), "utf8")) as Fixture & { waking: string[] };
+const at18b = Date.parse(day18b.takenAt);
+
+test("the 01:16Z rows stop each session that ended its task once quiet ENDED_MS, roots with a wake or a verdict included, and never a chat", () => {
+  const input = { attached: new Set(day18b.chats), pool: new Set<string>(), now: at18b, idleMs: TEN_MIN, chats: new Set(day18b.chats), waking: new Set(day18b.waking) };
+  const names = unloadPlan(day18b.rows, input).map(row => row.sessionName);
+  for (const name of ["github token burn", "ci-job-runtime", "facebook index gaps", "fix repo prod secrets"]) assert.ok(names.includes(name), name);
+  assert.ok(!names.includes("runner reviewer") && !names.includes("babysitter"), "a root with no verdict and no wake keeps idleEvictionMinutes");
+  assert.ok(!names.includes("land tooling probes"), "a root quiet under ENDED_MS stays");
+  // 42260e0 stopped early only a subagent that replied: the same rows with no verdict and no wake.
+  const before = unloadPlan(day18b.rows.map(unjudged), { attached: input.attached, pool: input.pool, now: at18b, idleMs: TEN_MIN });
+  assert.ok(names.length >= before.length + 5, `${before.length} before, ${names.length} now`);
+  const chat = day18b.rows.find(row => day18b.chats.includes(row.sessionId) && row.taskState !== undefined && row.activeSessionId)!;
+  const dormant = { ...chat, attachedClients: 0, activity: "idle", hasRunningRlmChildren: false, lastActivityAt: new Date(at18b - 5 * MIN).toISOString() } as SessionSummary;
+  assert.deepEqual(unloadPlan([dormant], { ...input, attached: new Set() }), [], "a dormant chat with a verdict keeps idleEvictionMinutes");
+  assert.ok(!names.includes("us-metal02 setup"), "a root with its metal02-ci-slice child at work stays");
+  const job = day18b.rows.find(row => row.sessionName === "runner reviewer")!;
+  assert.equal(unloadPlan([job], { ...input, waking: new Set([job.sessionId]) }).length, 1, "a pending board.wake marks the job as waiting");
 });

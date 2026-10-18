@@ -261,7 +261,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     boards, log: dutyLog, ...agentMessage });
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
-  // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a subagent that replied after REPLIED_MS, since Prime's own
+  // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a session that ended its task after ENDED_MS, since Prime's own
   // sweeps fail under load (src/idle-unload.ts). A quiet worker that grew past RECYCLE_OWN_BYTES is recycled.
   const unloadIdle = async (): Promise<void> => {
     const stopped: string[] = [];
@@ -279,7 +279,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (chatIds.has(row.sessionId)) await threads.unarchive(row.sessionId).catch(error => dutyLog(`idle unload: unarchive ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       return true;
     };
-    for (const row of unloadPlan(catalog.daemonRows(), { attached, pool, now: Date.now(), idleMs: minutes === "off" ? null : minutes * 60_000 })) {
+    const now = Date.now();
+    const wakingNow = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
+    for (const row of unloadPlan(catalog.daemonRows(), { attached, pool, now, idleMs: minutes === "off" ? null : minutes * 60_000, chats: chatIds, waking: wakingNow })) {
       if (await stop(row)) stopped.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
     }
     if (stopped.length) dutyLog(`idle unload: stopped ${stopped.length} idle sessions: ${stopped.join(", ")}`);

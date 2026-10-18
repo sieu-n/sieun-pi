@@ -26,11 +26,14 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
 }
 
 /**
- * How long a subagent that already replied to its parent (`repliedSinceTask`) sits quiet before the unload stops it. At 00:39Z on 10-18 the
- * Mac read kernel_task at 106% with 18 finished jobs still loaded, and at 00:52Z the 18 idle subagents that had replied held 0.85 GB in their
- * Python kernels, 14 of them quiet under 5 min. A stopped subagent loads again on its parent's next message, as at idleEvictionMinutes.
+ * How long a session that ended its task sits quiet before the unload stops it, instead of idleEvictionMinutes: a subagent that replied to its
+ * parent (`repliedSinceTask`), a session the daemon judged (`taskState`, set only once a turn ended), or one with a board.wake pending (`waking`),
+ * which asked to be unloaded while it waits. A chat keeps idleEvictionMinutes. At 00:52Z on 10-18 the 18 idle subagents that had replied held
+ * 0.85 GB in their Python kernels. At 01:16Z, with swap at 12.56 GB, 14 of the 17 idle sessions that were no chat and had nothing below them at
+ * work had ended their task this way, quiet 0.3 to 8.4 min: 9 subagents and 5 root jobs, each root holding a whole worker of 0.30 to 0.51 GB of
+ * its own. A stopped session loads again on its next message or wake.
  */
-export const REPLIED_MS = 2 * 60_000;
+export const ENDED_MS = 2 * 60_000;
 
 /** The sessions with a session below them, at any depth, that is not idle. */
 function busyAncestors(rows: readonly SessionSummary[]): Set<string> {
@@ -44,15 +47,18 @@ function busyAncestors(rows: readonly SessionSummary[]): Set<string> {
 }
 
 /**
- * The rows the daemon lists that `unload` may stop: a top-level session (a job, or a chat that is not in `attached`, the chats the service still
+ * The rows the daemon lists that `unload` may stop (after ENDED_MS for a session that ended its task): a top-level session (a job, or a chat that is not in `attached`, the chats the service still
  * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it. `idleMs` null (idle
  * eviction off) stops none.
  */
-export function unloadPlan(rows: readonly SessionSummary[], input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null }): SessionSummary[] {
+export function unloadPlan(rows: readonly SessionSummary[], input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null;
+  chats?: ReadonlySet<string>; waking?: ReadonlySet<string> }): SessionSummary[] {
   const { idleMs } = input;
   if (idleMs === null) return [];
   const busy = busyAncestors(rows);
-  const wait = (row: SessionSummary): number => row.runtimeKind === "subagent" && row.repliedSinceTask === true ? Math.min(idleMs, REPLIED_MS) : idleMs;
+  const ended = (row: SessionSummary): boolean => !input.chats?.has(row.sessionId) &&
+    ((row.runtimeKind === "subagent" && row.repliedSinceTask === true) || row.taskState !== undefined || input.waking?.has(row.sessionId) === true);
+  const wait = (row: SessionSummary): number => ended(row) ? Math.min(idleMs, ENDED_MS) : idleMs;
   return rows.filter(row => quiet(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= wait(row));
 }
 
