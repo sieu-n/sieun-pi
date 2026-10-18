@@ -816,6 +816,8 @@ export class Chats {
    * background bash at the moment of the archive. A root the daemon lists as archived is skipped: it keeps its row under the chat, so before,
    * each service start archived it again and sent a second notice (10-14 17:50Z: stale tree guard land, vp worker heap fix and harness
    * footprint fix, archived 16:03Z to 17:15Z, were archived again at 17:50Z, a minute after the 17:49Z start, each with a second notice).
+   * Each root's archive runs on that root's queue key: on 10-18 at 16:35:25Z, the first tick after a service restart, it ran beside the wake
+   * check of "repo prod secrets move" and closed the session while the check was attaching to it ("Daemon session closed during attach").
    */
   private async endRoots(row: SessionRow): Promise<void> {
     const resumes = this.source.resumes;
@@ -830,23 +832,25 @@ export class Chats {
       const id = agent.sessionId!;
       if (this.chatIds.has(id) || duty.has(id) || (this.rootsEnded.has(id) && this.rootsEnded.get(id) === agent.lastActivityAt)) continue;
       this.rootsEnded.set(id, agent.lastActivityAt);
-      try {
-        const summary = await this.summary(id);
-        if (summary?.lifecycle === "archived") continue;
-        if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); continue; }
-        const sessionFile = summary?.sessionFile;
-        const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
-        if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); continue; }
-        const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
-        const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
-          report: jobReport(messages, agent.sender), endedAt: now });
-        await this.threads.archive(id);
-        const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
-        this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
-      } catch (error) {
-        this.rootsEnded.delete(id);
-        this.log(`chat ${row.id.slice(0, 8)}: archive idle root ${agent.name}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
-      }
+      await new Promise<void>(resolve => this.queue(id, async () => {
+        try {
+          const summary = await this.summary(id);
+          if (summary?.lifecycle === "archived") return;
+          if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); return; }
+          const sessionFile = summary?.sessionFile;
+          const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
+          if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); return; }
+          const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
+          const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
+            report: jobReport(messages, agent.sender), endedAt: now });
+          await this.threads.archive(id);
+          const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
+          this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+        } catch (error) {
+          this.rootsEnded.delete(id);
+          this.log(`chat ${row.id.slice(0, 8)}: archive idle root ${agent.name}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
+        } finally { resolve(); }
+      }));
     }
   }
 
