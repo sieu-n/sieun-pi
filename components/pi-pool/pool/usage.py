@@ -12,8 +12,8 @@ FIVE_HOURS_SEC = 5 * 3600
 WEEK_SEC = 7 * 24 * 3600
 # An account is read again after SAMPLE_MIN_SEC when a window is nearly full, and
 # after up to SAMPLE_MAX_SEC as its headroom grows; a full window waits for its reset.
-# Both are the cadence tokenmaxxing's check sampled this pool at from 2026-09-23 to
-# 2026-10-18 (26,807 reads, its usagePollTtlMs and SAMPLE_INTERVAL_MAX_MS).
+# Both are the cadence this pool's usage was sampled at from 2026-09-23 to 2026-10-18
+# (26,807 reads without a rate limit problem).
 SAMPLE_MIN_SEC = 90
 SAMPLE_MAX_SEC = 15 * 60
 READERS = 4
