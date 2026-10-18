@@ -1,4 +1,4 @@
-import { get, OWNER_UI_HEADERS, post } from "./api.ts";
+import { ApiError, get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
 import { dutyState, judgedRun, missStreak } from "./duty-card.ts";
@@ -66,7 +66,8 @@ export const metricValue = (value: number, unit = ""): string => `${Math.round(v
 const POLL_MS = 30_000;
 /**
  * One chat's duties for the board panel: loaded when the chat opens, again every 30 s while the panel shows, and after an action. A thread
- * that is not a chat, or a server without duties, reads as none.
+ * that is not a chat, or a server without duties, reads as none (404). A failed or timed-out poll keeps the last duties, since on 10-18 each
+ * chat release restarted the box chat (05:38, 05:41 and 05:44Z) and the poll that hit the restart emptied the card until the next one.
  */
 export class ChatDuties {
   views = $state.raw<DutyView[]>([]);
@@ -85,7 +86,7 @@ export class ChatDuties {
   async load(): Promise<void> {
     const chat = this.chat;
     try { const { duties } = await dutiesApi.view(chat); if (chat === this.chat) this.views = duties; }
-    catch { if (chat === this.chat) this.views = []; }
+    catch (error) { if (chat === this.chat && error instanceof ApiError && error.status === 404) this.views = []; }
   }
 
   async act(duty: string, action: DutyAction, schedule?: DutySchedule): Promise<void> {
