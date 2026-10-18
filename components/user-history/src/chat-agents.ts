@@ -217,13 +217,28 @@ function nameFor(name: string, first: string | undefined): string {
   return (first && derivedName(first)) || (titled ? derivedName(plain) : "") || plain || "untitled";
 }
 
-type Draft = {
-  key: string; sessionId?: string; childId?: string; name: string; job: string; sender: string; link: AgentLink; working: boolean; failed: boolean; ended: boolean;
-  activity: string; at: number; steps: string[]; contacts: Contact[]; names: Set<string>; subagents: number; total: number;
+/** What a row shows that changes while the agent works: its state, activity, clock and subagent counts. */
+type Shown = { working: boolean; failed: boolean; ended: boolean; activity: string; at: number; subagents: number; total: number };
+/** Where a draft's `Shown` fields come from: a hub child (with the daemon session it was matched to), a daemon session, a listed row, or none. */
+type Source = { child: string; session?: string } | { session: string } | { row: string } | null;
+type Draft = Shown & {
+  key: string; sessionId?: string; childId?: string; name: string; job: string; sender: string; link: AgentLink; steps: string[]; contacts: Contact[]; names: Set<string>;
+  source: Source;
 };
 const LINK_RANK: Record<AgentLink, number> = { subagent: 0, root: 1, step: 2, message: 3 };
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const atOf = (value: string | number | undefined): number => typeof value === "number" ? value : Date.parse(value ?? "") || 0;
+function childShown(child: ChildAgent, session: SubagentSession | undefined): Shown {
+  const working = child.status === "running" || child.status === "queued" || (session ? session.running : childWorking(child));
+  return { working, failed: !working && (child.status === "error" || session?.failed === true), ended: !working,
+    activity: working ? session?.activity ?? "" : child.error ?? session?.activity ?? child.answerPreview ?? "", at: Math.max(child.lastActivityAt ?? 0, atOf(session?.lastActivityAt)),
+    subagents: session?.subagentsRunning ?? 0, total: session?.subagentsTotal ?? 0 };
+}
+const sessionShown = (session: SubagentSession): Shown => ({ working: session.running, failed: session.failed, ended: !session.running, activity: session.activity ?? "",
+  at: atOf(session.lastActivityAt), subagents: session.subagentsRunning ?? 0, total: session.subagentsTotal ?? 0 });
+const rowShown = (row: SessionRow): Shown => ({ working: row.working, failed: !row.working && Boolean(row.failure), ended: false,
+  activity: row.working ? row.statusLabel ?? "" : row.failure ?? "", at: atOf(row.lastActivityAt ?? row.created), subagents: row.subagentsRunning, total: row.subagentsRunning });
+const GONE: Shown = { working: false, failed: false, ended: true, activity: "", at: 0, subagents: 0, total: 0 };
 
 /**
  * `stepOwner` per plan item, read again only when the item's job, session id or note changes. Every chat walked its whole plan on each catalog
@@ -272,6 +287,11 @@ function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undef
  * working while its own turn or any subagent below it runs, as `SessionRow.working` is.
  */
 export function chatAgents(input: AgentSources, observe?: (who: string, entry: AgentRow | undefined) => void): ChatAgent[] {
+  return agentsOf(chatDrafts(input, observe));
+}
+
+/** The drafts behind `chatAgents`: one per linked thread, with how it is linked, its steps and contacts, and where its `Shown` fields come from. */
+function chatDrafts(input: AgentSources, observe?: (who: string, entry: AgentRow | undefined) => void): Draft[] {
   const drafts: Draft[] = [];
   const bySession = new Map<string, Draft>();
   const byName = new Map<string, Draft>();
@@ -294,12 +314,9 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
     if (child.parentId !== undefined && childIds.has(child.parentId)) continue;
     const session = sessions.get(child.id) ?? input.childSessions.find(candidate => candidate.name !== undefined && candidate.name === child.sessionName);
     const name = childName(child);
-    const working = child.status === "running" || child.status === "queued" || (session ? session.running : childWorking(child));
     index({ key: "child:" + child.id, ...(session ? { sessionId: session.sessionId } : {}), childId: child.id, name: displayName(name, session?.first ?? child.label), job: name, sender: name,
-      link: "subagent", working, failed: !working && (child.status === "error" || session?.failed === true), ended: !working,
-      activity: working ? session?.activity ?? "" : child.error ?? session?.activity ?? child.answerPreview ?? "", at: Math.max(child.lastActivityAt ?? 0, atOf(session?.lastActivityAt)),
-      steps: [], contacts: [], names: new Set([name, child.id, child.sessionName ?? ""]), subagents: session?.subagentsRunning ?? 0,
-      total: session?.subagentsTotal ?? 0 });
+      link: "subagent", ...childShown(child, session), steps: [], contacts: [], names: new Set([name, child.id, child.sessionName ?? ""]),
+      source: { child: child.id, ...(session ? { session: session.sessionId } : {}) } });
   }
   for (const session of input.childSessions) {
     if ((session.childId && bySession.has(session.sessionId)) || drafts.some(draft => draft.sessionId === session.sessionId)) continue;
@@ -309,9 +326,8 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
     if (listed) { if (!listed.sessionId) { listed.sessionId = session.sessionId; bySession.set(session.sessionId, listed); } continue; }
     const name = session.name ?? "";
     index({ key: "child:" + (session.childId ?? session.sessionId), sessionId: session.sessionId, ...(session.childId ? { childId: session.childId } : {}),
-      name: displayName(name, session.first), job: name || session.sessionId, sender: name || session.sessionId, link: "subagent", working: session.running, failed: session.failed, ended: !session.running,
-      activity: session.activity ?? "", at: atOf(session.lastActivityAt), steps: [], contacts: [], names: new Set([name, session.childId ?? ""]), subagents: session.subagentsRunning ?? 0,
-      total: session.subagentsTotal ?? 0 });
+      name: displayName(name, session.first), job: name || session.sessionId, sender: name || session.sessionId, link: "subagent", ...sessionShown(session), steps: [], contacts: [],
+      names: new Set([name, session.childId ?? ""]), source: { session: session.sessionId } });
   }
 
   const thread = (entry: AgentRow, how: AgentLink): Draft | undefined => {
@@ -319,9 +335,8 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
     const known = bySession.get(entry.row.id);
     if (known) { link(known, how); return known; }
     const row = entry.row;
-    const draft: Draft = { key: "thread:" + row.id, sessionId: row.id, name: displayName(row.name, entry.first), job: "session:" + row.id, sender: row.name, link: how, working: row.working,
-      failed: !row.working && Boolean(row.failure), ended: false, activity: row.working ? row.statusLabel ?? "" : row.failure ?? "", at: atOf(row.lastActivityAt ?? row.created),
-      steps: [], contacts: [], names: new Set([row.name]), subagents: row.subagentsRunning, total: row.subagentsRunning };
+    const draft: Draft = { key: "thread:" + row.id, sessionId: row.id, name: displayName(row.name, entry.first), job: "session:" + row.id, sender: row.name, link: how,
+      ...rowShown(row), steps: [], contacts: [], names: new Set([row.name]), source: { row: row.id } };
     index(draft);
     return draft;
   };
@@ -340,8 +355,8 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
     const entry = rowOf(id);
     if (entry) return thread(entry, "step");
     const name = item.job && item.job !== id ? item.job : id;
-    const draft: Draft = { key: "thread:" + id, sessionId: id, name: name === id ? `thread ${id.slice(0, 8)}` : displayName(name, undefined), job: "session:" + id, sender: name, link: "step", working: false, failed: false,
-      ended: true, activity: "", at: 0, steps: [], contacts: [], names: new Set([name]), subagents: 0, total: 0 };
+    const draft: Draft = { key: "thread:" + id, sessionId: id, name: name === id ? `thread ${id.slice(0, 8)}` : displayName(name, undefined), job: "session:" + id, sender: name, link: "step",
+      ...GONE, steps: [], contacts: [], names: new Set([name]), source: null };
     index(draft);
     return draft;
   };
@@ -374,6 +389,11 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
     draft.contacts.push(contact);
   }
 
+  return drafts;
+}
+
+/** The agents of `chatDrafts`, running first, then by latest activity. */
+function agentsOf(drafts: readonly Draft[]): ChatAgent[] {
   const agents = drafts.map((draft): ChatAgent => {
     const last = draft.contacts.sort((left, right) => left.at - right.at).at(-1);
     const received = draft.contacts.filter(contact => contact.direction === "received").at(-1);
@@ -389,44 +409,84 @@ export function chatAgents(input: AgentSources, observe?: (who: string, entry: A
   return sortAgents(agents);
 }
 
-/** A chat's agents as the last projection built them, with what they were built from (`keptChatAgents`). */
-type KeptAgents = { self: string; children: readonly ChildAgent[]; sessions: string; board: ChatBoard | null; boardRev: string; roots: string; messages: readonly ThreadMessage[];
-  lookups: Map<string, string>; until: number; agents: ChatAgent[] };
+/** A chat's drafts as the last projection built them, with what their structure was built from (`keptChatAgents`). */
+type KeptAgents = { self: string; children: string; sessions: string; board: ChatBoard | null; boardRev: string; roots: string; messages: readonly ThreadMessage[];
+  lookups: Map<string, string>; until: number; drafts: Draft[]; agents: ChatAgent[] };
 const keptAgents = new Map<string, KeptAgents>();
-/** The fields of a looked-up row that `chatAgents` reads; empty for no row. */
-const lookupKey = (entry: AgentRow | undefined): string => entry
-  ? [entry.row.id, entry.row.name, entry.row.working, entry.row.failure ?? "", entry.row.statusLabel ?? "", entry.row.lastActivityAt ?? "", entry.row.created ?? "",
-    entry.row.subagentsRunning, entry.first ?? ""].join("\u0000")
-  : "";
-/** The same array, or two empty ones: a chat with no links gets a new empty array each projection. */
+/** What `chatDrafts` reads of a looked-up row to place it (its id, name and first task); empty for no row. Its state and clock are `Shown`. */
+const lookupKey = (entry: AgentRow | undefined): string => entry ? [entry.row.id, entry.row.name, entry.first ?? ""].join("\u0000") : "";
+/** What `chatDrafts` reads of a hub child to place it: its id, parent, names and label. Its status, activity and clock are `Shown`. */
+const childKey = (child: ChildAgent): string => [child.id, child.parentId ?? "", child.sessionName ?? "", child.label].join("\u0000");
+/** What `chatDrafts` reads of a child session to place it, with the first task by its length and head: it is read once from the file and only fills in. */
+const sessionKey = (session: SubagentSession): string => [session.sessionId, session.childId ?? "", session.name ?? "", session.first?.length ?? 0,
+  session.first?.slice(0, 80) ?? ""].join("\u0000");
+/** The same array, or two empty ones: a chat with no transcript gets a new empty array each projection. */
 const same = (left: readonly unknown[], right: readonly unknown[]): boolean => left === right || (!left.length && !right.length);
-/** The fields of a child session that `chatAgents` reads, with the first task by its length and head: it is read once from the file and only fills in. */
-const sessionKey = (session: SubagentSession): string => [session.sessionId, session.childId ?? "", session.name ?? "", session.running, session.failed, session.activity ?? "",
-  session.lastActivityAt ?? "", session.subagentsRunning ?? 0, session.subagentsTotal ?? 0, session.first?.length ?? 0, session.first?.slice(0, 80) ?? ""].join("\u0000");
 const boardRev = (board: ChatBoard | null): string => board ? `${board.rev}|${board.updatedAt}` : "";
+const sameShown = (left: Shown, right: Shown): boolean => left.working === right.working && left.failed === right.failed && left.ended === right.ended
+  && left.activity === right.activity && left.at === right.at && left.subagents === right.subagents && left.total === right.total;
 
 /**
- * `chatAgents` for one chat, built again only when its inputs changed: the hub's children, its sessions, the board, the roots, the transcript,
- * a row it looked up (by the fields it reads), or a contact crossing CONTACT_WINDOW_MS. The live daemon sent 13.3 roster updates a second on
- * 10-18, which the catalog laid into 4.45 projections a second, and each built every chat's agents again: 6.8 s of 100 s of a scratch serve's
- * main thread at that rate, while an update touches about 9 agents. Each call gets its own agent objects, since the catalog adds fields to them.
+ * Each draft's `Shown` fields from the sources now, or null when a source is gone, which a structure that did not change rules out. A hub child
+ * reads the session it was matched to when it was placed.
+ */
+function shownNow(drafts: readonly Draft[], input: AgentSources): Shown[] | null {
+  const children = new Map(input.children.map(child => [child.id, child]));
+  const sessions = new Map<string, SubagentSession>();
+  for (const session of input.childSessions) if (!sessions.has(session.sessionId)) sessions.set(session.sessionId, session);
+  const rowOf = rowFinder(input.rows);
+  const shown: Shown[] = [];
+  for (const { source } of drafts) {
+    if (source === null) { shown.push(GONE); continue; }
+    if ("child" in source) {
+      const child = children.get(source.child);
+      const session = source.session === undefined ? undefined : sessions.get(source.session);
+      if (!child || (source.session !== undefined && !session)) return null;
+      shown.push(childShown(child, session));
+    } else if ("row" in source) {
+      const entry = rowOf(source.row);
+      if (!entry) return null;
+      shown.push(rowShown(entry.row));
+    } else {
+      const session = sessions.get(source.session);
+      if (!session) return null;
+      shown.push(sessionShown(session));
+    }
+  }
+  return shown;
+}
+
+/**
+ * `chatAgents` for one chat. Its drafts are placed again only when what places them changed: the hub's children, its sessions or a row it
+ * looked up (by id, name and first task), the board, the roots, the transcript, or a contact crossing CONTACT_WINDOW_MS. A tick on an agent
+ * (its state, activity, clock or subagent counts) only reads those fields again. On 10-18 the live daemon sent 13.3 roster updates a second
+ * that changed 39.7 agents, and on a scratch serve at that rate more than half the chats were placed again on each projection, since a chat
+ * usually names a row whose clock or status had just changed. Each call gets its own agent objects, since the catalog adds fields to them.
  */
 export function keptChatAgents(input: AgentSources): ChatAgent[] {
   const self = `${input.self.id}\n${input.self.name}`;
+  const children = input.children.map(childKey).join("\n");
   const sessions = input.childSessions.map(sessionKey).join("\n");
   const roots = input.roots.join("\n");
   const before = keptAgents.get(input.self.id);
-  if (before && before.self === self && same(before.children, input.children) && before.sessions === sessions && before.board === input.board && before.boardRev === boardRev(input.board)
+  if (before && before.self === self && before.children === children && before.sessions === sessions && before.board === input.board && before.boardRev === boardRev(input.board)
     && before.roots === roots && same(before.messages, input.messages) && input.now < before.until) {
     const rowOf = rowFinder(input.rows);
-    if ([...before.lookups].every(([who, key]) => lookupKey(rowOf(who)) === key)) return before.agents.map(agent => ({ ...agent }));
+    const shown = [...before.lookups].every(([who, key]) => lookupKey(rowOf(who)) === key) ? shownNow(before.drafts, input) : null;
+    if (shown) {
+      if (shown.every((now, index) => sameShown(now, before.drafts[index]!))) return before.agents.map(agent => ({ ...agent }));
+      for (const [index, draft] of before.drafts.entries()) Object.assign(draft, shown[index]);
+      before.agents = agentsOf(before.drafts);
+      return before.agents.map(agent => ({ ...agent }));
+    }
   }
   const lookups = new Map<string, string>();
-  const agents = chatAgents(input, (who, entry) => { lookups.set(who, lookupKey(entry)); });
+  const drafts = chatDrafts(input, (who, entry) => { lookups.set(who, lookupKey(entry)); });
+  const agents = agentsOf(drafts);
   // A contact in the window leaves it at its time plus the window; one before the window never comes back into it.
   const since = input.now - CONTACT_WINDOW_MS;
   const until = Math.min(...transcriptLinks(input.messages).contacts.filter(contact => contact.at >= since).map(contact => contact.at + CONTACT_WINDOW_MS));
-  keptAgents.set(input.self.id, { self, children: input.children, sessions, board: input.board, boardRev: boardRev(input.board), roots, messages: input.messages, lookups, until, agents });
+  keptAgents.set(input.self.id, { self, children, sessions, board: input.board, boardRev: boardRev(input.board), roots, messages: input.messages, lookups, until, drafts, agents });
   return agents.map(agent => ({ ...agent }));
 }
 

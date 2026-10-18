@@ -26,8 +26,7 @@ test("a chat's agents are built again only when a row they name, their inputs or
   again[0]!.subagentsTotal = 99;
   assert.equal(keptChatAgents(input()).some(agent => agent.subagentsTotal === 99), false, "each call gets its own agent objects");
 
-  assert.deepEqual(states(keptChatAgents(input({ rows: rows(true) }))), ["s1:working", "s2:waiting"], "a named row that starts working is built again");
-  assert.ok(planReads > built);
+  assert.deepEqual(states(keptChatAgents(input({ rows: rows(true) }))), ["s1:working", "s2:waiting"], "a named row that starts working shows it");
   assert.deepEqual(states(keptChatAgents(input({ rows: rows(true), now: now + 120_000 }))), ["s1:working"], "a contact that leaves the window is built again");
   assert.deepEqual(states(keptChatAgents(input({ rows: rows(true), now: now + 120_000, childSessions: [{ sessionId: "c1", childId: "kid", name: "kid job", running: true, failed: false }] }))),
     ["c1:working", "s1:working"], "a new child session is built again");

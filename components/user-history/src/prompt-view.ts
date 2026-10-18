@@ -92,7 +92,7 @@ export async function sessionFileFor(sessionId: string, options: { listed: (id: 
 
 /**
  * The subagents a session spawned, oldest first: each `sub-*` folder with an rlm-subagent.json in its folder (a subagent's own folder, a root's
- * `session-artifacts/<id>`), the same folders `spawnedSubagents` counts in src/chat-catalog.ts.
+ * `session-artifacts/<id>`), the same folders `SpawnedCounts` counts in src/chat-catalog.ts.
  */
 async function spawned(sessionFile: string, sessionId: string): Promise<(PromptSubagent & { sessionFile: string })[]> {
   const folder = basename(dirname(sessionFile)).startsWith("sub-") ? dirname(sessionFile) : join(dirname(dirname(sessionFile)), "session-artifacts", sessionId);

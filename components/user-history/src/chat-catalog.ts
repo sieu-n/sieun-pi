@@ -351,7 +351,6 @@ export function subagentFolder(row: Pick<SessionSummary, "sessionId" | "sessionF
 
 /** How long a folder's spawned count is reused; the daemon tree covers subagents spawned since. */
 export const SPAWNED_MS = 30_000;
-const spawnedCounts = new Map<string, { at: number; count: number }>();
 async function countSpawned(folder: string): Promise<number> {
   const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
   const counts = await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(async entry => {
@@ -362,15 +361,28 @@ async function countSpawned(folder: string): Promise<number> {
   return counts.reduce((sum, count) => sum + count, 0);
 }
 /**
- * Every subagent ever spawned below `folder` at any depth, finished and deleted ones included: each `sub-*` folder holding an rlm-subagent.json.
- * The daemon drops a subagent from its list once rlm.delete_subagent removes it, but its folder stays. Cached per folder for SPAWNED_MS.
+ * Every subagent ever spawned below a folder at any depth, finished and deleted ones included: each `sub-*` folder holding an rlm-subagent.json.
+ * The daemon drops a subagent from its list once rlm.delete_subagent removes it, but its folder stays. A count is read again in the background
+ * once it is SPAWNED_MS old, and `onChange` runs when a read changes it, so a projection never waits for the folders: on 10-18 a scratch serve
+ * at the live rate awaited a count for each of about 1,000 agents on every projection, and the reads of the counts that had expired held it.
  */
-export async function spawnedSubagents(folder: string, now = Date.now()): Promise<number> {
-  const cached = spawnedCounts.get(folder);
-  if (cached && now - cached.at < SPAWNED_MS) return cached.count;
-  const count = await countSpawned(folder);
-  spawnedCounts.set(folder, { at: now, count });
-  return count;
+export class SpawnedCounts {
+  private readonly counts = new Map<string, { at: number; count: number }>();
+  private readonly reading = new Set<string>();
+  constructor(private readonly onChange: () => void) {}
+  /** The last count of `folder`, 0 before its first read ends. */
+  of(folder: string, now = Date.now()): number {
+    const known = this.counts.get(folder);
+    if ((!known || now - known.at >= SPAWNED_MS) && !this.reading.has(folder)) {
+      this.reading.add(folder);
+      void countSpawned(folder).then(count => {
+        this.reading.delete(folder);
+        this.counts.set(folder, { at: now, count });
+        if (count !== (known?.count ?? 0)) this.onChange();
+      });
+    }
+    return known?.count ?? 0;
+  }
 }
 
 /** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
@@ -523,6 +535,8 @@ export class Catalog {
   /** This box's sessions, kept the way every other box's are (`SessionPeer`): the roster stream keeps them current, and no page waits on a list. */
   private readonly peer: SessionPeer;
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
+  /** Each agent folder's spawned count; a count that a background read changed sends the rows again. */
+  private readonly spawned = new SpawnedCounts(() => { if (!this.closed) void this.emit(); });
   /** The rows the last projection built, by session id, that the next one may reuse (`KeptRow`). */
   private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
@@ -756,12 +770,12 @@ export class Catalog {
     const wakes = await this.wakesSource(now).catch(() => []);
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
-    await Promise.all(chatRows.flatMap(row => row.agents ?? []).map(async agent => {
+    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;
-      const spawned = folder ? await spawnedSubagents(folder, now) : 0;
+      const spawned = folder ? this.spawned.of(folder, now) : 0;
       if (spawned > (agent.subagentsTotal ?? 0)) agent.subagentsTotal = spawned;
-    }));
+    }
     // A queued agent's place moves as the queue drains, so the rows go out again while one waits too.
     this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
     return { rows, tags: labels?.tags ?? [] };
