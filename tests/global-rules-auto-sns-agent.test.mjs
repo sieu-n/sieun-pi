@@ -15,11 +15,20 @@ const HOME_CWD = "/Users/sieunpark";
 const OWNER = "01a10810-34b5-710f-88fe-3d369f89a8c9";
 const REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs/heads/sieun/dev 2>&1 | tail -3; git ls-remote origin refs/heads/sieun/dev";
 
+// The guard loads from the checkout's HEAD, so a fixture commits its guard files.
+const GIT_ID = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+function commitGuards(dir, message = "guards") {
+  const env = { PATH: process.env.PATH ?? "", HOME: root, ...GIT_ID };
+  execFileSync("/usr/bin/git", ["-C", dir, "add", "-A", "scripts/repo/agent/guards"], { env });
+  execFileSync("/usr/bin/git", ["-C", dir, "commit", "-q", "--allow-empty", "-m", message], { env });
+}
+
 function fixture(dir) {
   mkdirSync(join(dir, "scripts/repo/agent"), { recursive: true });
   cpSync(SOURCE, join(dir, "scripts/repo/agent/guards"), { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
   execFileSync("/usr/bin/git", ["init", "-q", "-b", "sieun/dev", dir]);
   execFileSync("/usr/bin/git", ["-C", dir, "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"]);
+  commitGuards(dir);
 }
 
 const skip = !existsSync(SOURCE) && "no auto-sns-agent checkout on this machine";
@@ -29,6 +38,7 @@ if (!skip) {
   fixture(checkout);
   fixture(broken);
   writeFileSync(join(broken, "scripts/repo/agent/guards/prime.mjs"), "throw new Error('fixture: prime.mjs is broken');\n");
+  commitGuards(broken, "a broken guard");
   Object.assign(process.env, {
     GLOBAL_RULES_AUTO_SNS_AGENT: checkout,
     GLOBAL_RULES_LOG: join(root, "global-rules.log"),
@@ -132,6 +142,7 @@ test("a live session follows a guard edit at its next tool call, with no worker 
   const guards = join(live, "scripts/repo/agent/guards");
   const old = execFileSync("/usr/bin/git", ["-C", join(SOURCE, "../../../.."), "archive", OLD_GUARDS, "scripts/repo/agent/guards"]);
   execFileSync("tar", ["-x", "-C", live], { input: old });
+  commitGuards(live, "the guard before b9a88ff4d7");
   const app = appWithTests(live);
   const script = `
     const handlers = [];
@@ -166,6 +177,7 @@ test("a live session follows a guard edit at its next tool call, with no worker 
     if (out.includes("ready\n") && !swapped) {
       swapped = true;
       cpSync(SOURCE, guards, { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
+      commitGuards(live, "the current guard");
       child.stdin.write("go\n");
     }
   });
@@ -198,7 +210,7 @@ test("a scratch copy of the repo, with its own old guard files, is judged by the
   assert.match(await call("bash", `cd ${app} && uv run pytest tests`, ctx(checkout, "x")) ?? "", /names the directory tests/);
 });
 
-test("a guard edit that fails to load keeps the last guard that loaded", { skip }, async () => {
+test("a landed guard that fails to load keeps the last guard that loaded", { skip }, async () => {
   const live = join(root, "keep", "auto-sns-agent");
   fixture(live);
   const loaded = [];
@@ -209,7 +221,30 @@ test("a guard edit that fails to load keeps the last guard that loaded", { skip 
     const push = `git -C ${live} push origin HEAD:refs/heads/sieun/dev`;
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
     writeFileSync(join(live, "scripts/repo/agent/guards/prime.mjs"), "throw new Error('fixture: a broken edit');\n");
+    commitGuards(live, "a broken guard");
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+  } finally {
+    process.env.GLOBAL_RULES_AUTO_SNS_AGENT = checkout;
+  }
+});
+
+test("an uncommitted edit to the checkout's guard files does not change the live guard", { skip }, async () => {
+  // 10-18 11:48Z: a session's unsaved edit to the shared tree's guards/git.mjs dropped the hooks-off push check for every session.
+  const live = join(root, "dirty", "auto-sns-agent");
+  fixture(live);
+  const loaded = [];
+  process.env.GLOBAL_RULES_AUTO_SNS_AGENT = live;
+  try {
+    const module = await import(`../components/global-rules/auto-sns-agent.ts?dirty`);
+    await module.register({ on: (name, handler) => loaded.push([name, handler]) });
+    const push = `git -C ${live} push origin HEAD:refs/heads/sieun/dev`;
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    writeFileSync(join(live, "scripts/repo/agent/guards/prime.mjs"), "export const registerRepoGuard = () => {};\nexport const onToolCall = () => undefined;\n");
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    const fresh = [];
+    const again = await import(`../components/global-rules/auto-sns-agent.ts?dirty-fresh`);
+    await again.register({ on: (name, handler) => fresh.push([name, handler]) });
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), fresh) ?? "", /git-push-sieun-dev/);
   } finally {
     process.env.GLOBAL_RULES_AUTO_SNS_AGENT = checkout;
   }
