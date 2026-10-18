@@ -9,6 +9,7 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { isReopenable } from "./reopen-send.ts";
+import { AttachQueue } from "./attach-queue.ts";
 import { userMessageAt } from "./send-once.ts";
 import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
@@ -41,39 +42,6 @@ type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubs
 
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
 const STOP_PENDING = /^Session worker \S+ did not stop/;
-
-/** Background daemon attaches that may run at once; a restart pins 10 chats, and at a load of 90 each attach took 16 to 41 s when all ran together. */
-export const BACKGROUND_ATTACHES = 2;
-
-/**
- * Daemon attaches (attach plus the first snapshot). A foreground one (a tab opening a thread, an owner send) starts at once. Background ones
- * (pinned chats coming back, stall checks) wait in order until fewer than `limit` attaches of either kind run. A foreground request for a key
- * still waiting promotes it, so an open chat never waits behind the others.
- */
-export class AttachQueue {
-  private active = 0;
-  private readonly waiting: { key: string; start(): void }[] = [];
-  constructor(private readonly limit = BACKGROUND_ATTACHES) {}
-
-  async run<T>(key: string, background: boolean, task: () => Promise<T>): Promise<T> {
-    if (!background || (this.active < this.limit && this.waiting.length === 0)) this.active++;
-    else await new Promise<void>(start => { this.waiting.push({ key, start }); });
-    try { return await task(); }
-    finally { this.active--; this.next(); }
-  }
-
-  promote(key: string): void {
-    const index = this.waiting.findIndex(entry => entry.key === key);
-    if (index < 0) return;
-    const [entry] = this.waiting.splice(index, 1);
-    this.active++;
-    entry!.start();
-  }
-
-  private next(): void {
-    while (this.active < this.limit && this.waiting.length) { this.active++; this.waiting.shift()!.start(); }
-  }
-}
 
 export class ThreadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -473,7 +441,7 @@ export class ThreadHub {
 
   /**
    * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again, as a
-   * background attach (`AttachQueue`), so after a restart the pins come back two at a time and an open tab or an owner send goes first. A
+   * background attach (`AttachQueue`), so after a restart the pins come back two at a time per box and an open tab or an owner send goes first. A
    * failed resume waits PIN_RETRY_MS, doubling per failure. One archived outside this server (the terminal agents view) is unpinned instead,
    * so the pin never brings an archived session back. A dormant chat is skipped, and one that rested on disk (`restedOnDisk`) opens saved, also
    * when an open tab already opened its thread: api portal vp and launch main bro, paused and idle 19 to 58 min, each got a new worker at the
@@ -861,7 +829,7 @@ export class ThreadHub {
         mark("attach");
         try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
         catch (error) { await connection.dispose().catch(() => {}); throw error; }
-      });
+      }, this.catalog.hostOf(id) ?? "");
       await filled;
       if (this.threads.get(id) !== thread) {
         await live?.connection.dispose().catch(() => {});
@@ -1055,7 +1023,7 @@ export class ThreadHub {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
       try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
-    });
+    }, this.catalog.hostOf(id) ?? "");
     // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
     const listed = liveSessionId(summary);
     const live = (listed === undefined ? null : await attachLive(listed).catch(error => { if (!isReopenable(error)) throw error; return null; }))
