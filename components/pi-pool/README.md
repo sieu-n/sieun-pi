@@ -409,7 +409,8 @@ with `why` (`depleted`, `limited`, `busy`, ...) and the `previous` account, and 
 line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 `credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
 Every refused request logs one `parked` line with `at` in epoch seconds, the slot, `backoff` and
-`room`, the accounts that take the tree's class on their last read, and the first request
+`room`, the accounts R1 to R7 would let the tree enter now but for a cell (R4), so a tree
+held by its move budget (R6) or by a projection (R2) logs no room, and the first request
 that gets an account after a wait logs one `unparked` line. The Whole system duty reads
 these (components/user-history/scripts/duties/whole-system.ts `readPoolLog`).
 `pi-pool status` counts today's `switch` lines per provider.

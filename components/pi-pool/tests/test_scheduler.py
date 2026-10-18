@@ -743,6 +743,18 @@ class SwitchLog(unittest.TestCase):
         logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [["c@x"]])
 
+    def test_a_refusal_by_the_move_budget_or_a_projection_logs_no_room(self):
+        # 01a11a24 on 10-18: a low tree out of moves (R6) parked on claude9 from 16:50Z to 17:21Z for slots at claude9's next
+        # read, as R2 projected claude9 past the low cap, and every parked line named claude9, krenerd77 and three more as room.
+        state = empty_state()
+        put(state, KEY, on="x", priority="low", moves=[NOW - 60])
+        logged, _ = self.run_vend(state, [acct("x", five=100, five_reset_in=1800), acct("y", five=5)])
+        self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [[]])
+        state = empty_state()
+        put(state, KEY, on="b", priority="low")
+        logged, _ = self.run_vend(state, [acct("p", five=40, tier="max 5x"), acct("b", five=100)])
+        self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [[]])
+
     def test_a_tree_that_waited_logs_unparked_when_it_gets_an_account(self):
         state = empty_state()
         put(state, KEY, on="b")

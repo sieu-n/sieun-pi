@@ -115,6 +115,8 @@ class Wait:
     left: "tuple | None" = None
     # slot_at is a backoff draw (R5), no cell on slot_account.
     backoff: bool = False
+    # The accounts R1-R7 would admit this tree onto now but for a cell (R4).
+    room: tuple = ()
 
 
 def admit_cap(cfg, priority):
@@ -477,7 +479,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if waits_for_rotation(accounts, cooldowns, cfg, now, p):
         u = random.random() if draw is None else draw
         return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
-    return Wait(slot_at, slot_account, vend, shadowed, left)
+    return Wait(slot_at, slot_account, vend, shadowed, left, room=tuple(candidates))
 
 
 def in_use_counts(state, provider, now=None, window_sec=None):
