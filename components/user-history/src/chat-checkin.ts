@@ -14,7 +14,8 @@ import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type 
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
-  staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
+  staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet, goalsWithoutDoneLine, planRiskSteps,
+  noDoneLineLine, riskStepsLine } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
@@ -93,6 +94,8 @@ export interface CheckInPrecheck {
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
   noDuty: PlanItem[];
+  /** The open goals with no done line (`goalsWithoutDoneLine`) and the open standing-risk steps (`planRiskSteps`), owner 10-18 (c110). */
+  noDoneLine?: PlanItem[]; risks?: PlanItem[];
   /** A board read error, an ask overflow, steps that can start, steps that wait on the owner with no question in For you, and reviews ready with no todo. */
   facts: string[];
   /** Every open leaf step in the owner's end state or stuck (`endState`), the KPI the brief leads with. */
@@ -175,6 +178,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       context.rows ?? [], context.train),
     fold, load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
+    noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
 }
 
@@ -308,6 +312,8 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("One session carries too much (split these into your own jobs per part)", flagged.filter(slice => slice.kind === "one_session_load").map(slice => slice.excerpt)),
     ...section("Heartbeats the check-in or a duty covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
     ...section("Open goals and no duty", flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.excerpt)),
+    ...section("Plan and duties (owner 10-18, c110: the plan holds only finishable work with a done line; standing risks go to a wiki risk page and a duty)",
+      [...precheck.noDoneLine?.length ? [noDoneLineLine(precheck.noDoneLine)] : [], ...precheck.risks?.length ? [riskStepsLine(precheck.risks)] : []]),
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
     ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
       precheck.stalled.map(stalledLine)),
@@ -368,15 +374,16 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
 export type ConvergenceMisses = { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number;
   idle_goals: number; stalled_steps: number; go_missing: number; requirements_missing: number; merges_without_go: number; goal_gaps: number; blocked_on_others: number; finished_open: number;
   loose_goals: number; extra_goals: number; open_under_closed: number; held_elsewhere: number; wait_met: number;
-  no_progress: number; stale_steps: number; goals_to_fold: number; one_session_load: number; redundant_heartbeats: number; goals_without_duty: number; stuck_steps: number };
+  no_progress: number; stale_steps: number; goals_to_fold: number; one_session_load: number; redundant_heartbeats: number; goals_without_duty: number; stuck_steps: number;
+  no_done_line: number; plan_risks: number };
 export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0,
   stalled_steps: 0, go_missing: 0, requirements_missing: 0, merges_without_go: 0, goal_gaps: 0, blocked_on_others: 0, finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-  held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0 };
+  held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0, no_done_line: 0, plan_risks: 0 };
 /** What the precheck found on the board besides the step classes: steps on another thread's work, broken hard gates, stalled waits, the plan's shape. */
 export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalPush[]; blocked: readonly BlockedStep[];
   done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly PlanItem[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
   held: readonly HeldGoal[]; waitsMet: readonly WaitMet[]; noProgress: NoProgress | null; stale: readonly StaleStep[]; fold: readonly FoldGoal[];
-  load?: readonly SessionLoad[]; heartbeats?: readonly RedundantHeartbeat[]; noDuty?: readonly PlanItem[];
+  load?: readonly SessionLoad[]; heartbeats?: readonly RedundantHeartbeat[]; noDuty?: readonly PlanItem[]; noDoneLine?: readonly PlanItem[]; risks?: readonly PlanItem[];
   /** Each open leaf step's end state (`endState`): every stuck one counts in `stuck_steps`. */
   end?: readonly EndStateView[];
   /** The step memos of this run (`checkInPrecheck`), for when a step's record last moved (`recordedAt`). */
@@ -390,7 +397,7 @@ export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly Ga
  * miss). Each flagged slice names its step (`item`).
  */
 export function convergenceMisses(chat: string, steps: readonly StepView[], { scope, gates, stalled, goals, blocked, done, loose, extra, underClosed, held, waitsMet: over,
-  noProgress: still, stale, fold, load = [], heartbeats = [], noDuty = [], end = [], memory }: BoardFindings, told: Readonly<Record<string, ToldEnd>>, everyMs: number, now: number): PrecheckOutput & { metrics: ConvergenceMisses; flagged: FlaggedSlice[] } {
+  noProgress: still, stale, fold, load = [], heartbeats = [], noDuty = [], noDoneLine = [], risks = [], end = [], memory }: BoardFindings, told: Readonly<Record<string, ToldEnd>>, everyMs: number, now: number): PrecheckOutput & { metrics: ConvergenceMisses; flagged: FlaggedSlice[] } {
   const misses: ConvergenceMisses = { ...NO_MISSES };
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: keyof ConvergenceMisses, item: string, excerpt: string) => { misses[kind]++; flagged.push({ chat, at: now, kind, excerpt, item }); };
@@ -448,6 +455,8 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const entry of load) flag("one_session_load", entry.goal.id, sessionLoadLine(entry));
   for (const entry of heartbeats) { misses.redundant_heartbeats++; flagged.push({ chat, at: now, kind: "redundant_heartbeats", excerpt: heartbeatLine(entry) }); }
   if (noDuty.length) flag("goals_without_duty", noDuty[0]!.id, noDutyLine(noDuty));
+  for (const goal of noDoneLine) flag("no_done_line", goal.id, noDoneLineLine([goal]));
+  for (const step of risks) flag("plan_risks", step.id, riskStepsLine([step]));
   for (const entry of end) if (!OK_STATES.has(entry.state)) flag("stuck_steps", entry.view.item.id, stuckLine(entry, now));
   return { metrics: misses, flagged };
 }
