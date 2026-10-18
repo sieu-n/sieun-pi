@@ -267,14 +267,14 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
  * The subagents that work although their own turn ended: one with a running subagent at any depth below it, or one whose session changed
  * within `windowMs` (the check-in interval). `subagents` holds the daemon's subagents by parent session id (`rosterChildren`), which gives a
  * hub child its session id and last activity too. frontend bro 10-13: its 5 jobs end each turn while their browser checkers and fix jobs run,
- * and the 02:39 and 02:57 check-ins flagged p92 to p97 as orphans with each job "idle". A subagent whose session is in `asleep` (it sleeps on a
- * pending board.wake, `pendingWakes`) works too, so the job above it does.
+ * and the 02:39 and 02:57 check-ins flagged p92 to p97 as orphans with each job "idle". A subagent whose session, or one at any depth below it, is in
+ * `asleep` (it sleeps on a pending board.wake, `pendingWakes`) works too, so the job above it does.
  */
 export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>, now: number, windowMs: number,
   asleep: ReadonlySet<string> = new Set()): Set<string> {
   const listed = new Map([...subagents.values()].flat().map(child => [child.id, child] as const));
   const runningBelow = (session: string, seen: Set<string>): boolean => (subagents.get(session) ?? []).some(child => childWorking(child) ||
-    (child.sessionId !== undefined && !seen.has(child.sessionId) && runningBelow(child.sessionId, seen.add(child.sessionId))));
+    (child.sessionId !== undefined && (asleep.has(child.sessionId) || (!seen.has(child.sessionId) && runningBelow(child.sessionId, seen.add(child.sessionId))))));
   return new Set(children.filter(child => {
     const session = child.sessionId ?? listed.get(child.id)?.sessionId;
     const at = Math.max(child.lastActivityAt ?? 0, listed.get(child.id)?.lastActivityAt ?? 0);

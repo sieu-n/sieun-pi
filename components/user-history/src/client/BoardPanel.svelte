@@ -251,9 +251,10 @@
         {@const subs = agentSubagents(agent)}
         <li>
           <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
-            <span class="agent-state">{#if agent.queued}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
+            <span class="agent-state">{#if agent.queued || (agent.wait && agent.state !== "working")}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
             <span class="agent-name">{agent.name}</span>
             {#if agent.queued}<span class="agent-activity" title={queueText(agent.queued, now)}>{QUEUED_TEXT}</span>
+            {:else if agent.wait && agent.state !== "working"}<span class="agent-activity">{agent.wait}</span>
             {:else if agent.activity}<span class="agent-activity" class:failed={agent.state === "failed"}>{agent.activity}</span>{/if}
             {#if subs}<span class="agent-subs" class:running={subs.running > 0} title={subs.title}>{subs.text}</span>{/if}
             {#if agent.rate}<span class="agent-rate" class:live={agent.rate.live && agent.state === "working"} title={agent.rate.live && agent.state === "working" ? "Output tokens per second now" : "Output tokens per second of its last turn"}>{rateText(agent.rate.tps)}</span>{/if}

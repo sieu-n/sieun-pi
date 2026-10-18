@@ -4,13 +4,14 @@ import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
-import { chatAgents, stepSessions, withQueue, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { chatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
+import type { Wake } from "./wakes.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -436,6 +437,8 @@ export class Catalog {
   ratesSource: (sessionIds: readonly string[]) => Promise<Record<string, TokenRate>> = async () => ({});
   /** The sessions the Mac-wide turn queue holds (`queueReader`), once the backend wires the pool; the default answers with none. It never rejects. */
   queueSource: () => Promise<ReadonlyMap<string, QueuePlace>> = async () => new Map();
+  /** The board.wakes the service still owes (`pendingWakes`), for the wait each job row shows (`withWaits`). */
+  wakesSource: (now: number) => Promise<readonly Wake[]> = async () => [];
   /** Stores a chat's step owners' session ids on its board (`stepSessions`), once the backend wires the board store; it never rejects. The default stores none. */
   linkSessions: (chatId: string, links: ReadonlyMap<string, { job: string; sessionId: string }>) => Promise<void> = async () => {};
   private rates: { key: string; at: number; value: Record<string, TokenRate> } | undefined;
@@ -696,7 +699,9 @@ export class Catalog {
     }
     const rates = await this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     const queued = await this.queueSource();
-    for (const row of chatRows) row.agents = withQueue(withRates(row.agents ?? [], rates), queued);
+    const wakes = await this.wakesSource(now).catch(() => []);
+    const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
+    for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
     await Promise.all(chatRows.flatMap(row => row.agents ?? []).map(async agent => {
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;

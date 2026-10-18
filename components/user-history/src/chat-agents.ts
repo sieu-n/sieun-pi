@@ -1,6 +1,7 @@
 import { childName, childWorking, stepOwner } from "./checkin-steps.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
+import { treeWakes, type Wake, wakeWait } from "./wakes.ts";
 
 /** A thread the chat exchanged agent messages with this long ago still counts as linked. */
 export const CONTACT_WINDOW_MS = 24 * 60 * 60_000;
@@ -345,12 +346,18 @@ const queuedWords = (place: QueuePlace, now: number): string => `queued ${place.
 /** The chat_board tool's "Agents:" section: one line per agent (name, state, age), every agent listed. Empty with no agent. */
 export function agentLines(agents: readonly ChatAgent[], now: number): string[] {
   if (!agents.length) return [];
-  return ["Agents:", ...agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`)];
+  return ["Agents:", ...agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : agent.state !== "working" && agent.wait ? agent.wait : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`)];
 }
 
 /** The agents with their place in the Mac-wide turn queue attached, for the sessions `pi-pool queue --json` lists as queued. */
 export function withQueue(agents: readonly ChatAgent[], places: ReadonlyMap<string, QueuePlace>): ChatAgent[] {
   return agents.map(agent => { const queued = agent.sessionId ? places.get(agent.sessionId) : undefined; return queued ? { ...agent, queued } : agent; });
+}
+
+/** The agents with the pending board.wakes of their session and every session below it (`below`, `treeWakes`) in words (`wakeWait`). */
+export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], below: (session: string) => readonly string[]): ChatAgent[] {
+  if (!wakes.length) return [...agents];
+  return agents.map(agent => { const owed = agent.sessionId ? treeWakes(agent.sessionId, below, wakes) : []; return owed.length ? { ...agent, wait: wakeWait(owed) } : agent; });
 }
 
 /** The agents with their output rates attached, for the session ids the usage store answered for. */

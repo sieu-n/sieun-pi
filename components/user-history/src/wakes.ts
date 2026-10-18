@@ -237,6 +237,24 @@ export function wakeLabel(wakes: readonly Wake[]): string {
   return `${what.length === 1 ? "a board.wake" : "board.wakes"} ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0]}`;
 }
 
+/**
+ * The wakes of `session` and of every session below it (`below` gives a session's child sessions). A job that ended its turn while its
+ * subagents sleep on board.wakes is live: ops guy 10-18 01:14Z, crawler prod alerts was told "ended" twice in 2 min while alerts-g-media slept
+ * on runs 39084595194 and 39084587449 and its siblings on their own wakes.
+ */
+export function treeWakes(session: string, below: (session: string) => readonly string[], wakes: readonly Wake[]): Wake[] {
+  const sessions = new Set([session]);
+  for (const id of sessions) for (const child of below(id)) sessions.add(child);
+  return wakes.filter(wake => sessions.has(wake.session));
+}
+
+/** A job's wakes in the Agents card's words, soonest time first: "waits for run 39080016700", "waits for 14:40Z", "waits for run 1 and 15:00Z". */
+export function wakeWait(wakes: readonly Wake[]): string {
+  const what = [...new Set([...wakes].sort((a, b) => (a.on.kind === "time" ? a.on.at : 0) - (b.on.kind === "time" ? b.on.at : 0))
+    .map(({ on }) => on.kind === "time" ? `${new Date(on.at).toISOString().slice(11, 16)}Z` : `run ${on.run}`))];
+  return `waits for ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0] ?? "a board.wake"}`;
+}
+
 /** Whether `session` has a wake file in `dir`. */
 export async function waking(dir: string, session: string): Promise<boolean> {
   return (await readdir(dir).catch(() => [] as string[])).some(name => name.startsWith(`${session}-`) && name.endsWith(".json"));

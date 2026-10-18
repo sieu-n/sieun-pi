@@ -1154,7 +1154,7 @@ export class Chats {
     // A job Prime admitted whose session never got its first prompt reads as not started, whatever its RLM status says (`withUnstarted`).
     const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
-      wakes, key => sessions.get(key)), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
+      wakes, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
@@ -1195,7 +1195,8 @@ export class Chats {
 
   /**
    * A job that stopped working without a report is checked again after a grace period: a job between two tool calls, resumed by a reply, or
-   * deleted in the meantime is not reported. Each end is reported once. While the chat is mid-turn, the daemon holds a job's report to it
+   * deleted in the meantime is not reported, and neither is a job live through a board.wake or a subagent at work in its tree (`jobLive`).
+   * Each end is reported once. While the chat is mid-turn, the daemon holds a job's report to it
    * until the chat's tool call ends, so the check waits for that, up to NO_REPORT_BUSY_TRIES graces (VP of CI 10-13: a report queued at 09:47:30Z
    * landed at 09:52:15Z, 3 s after a notice that said the job sent none).
    */
@@ -1204,11 +1205,28 @@ export class Chats {
     timer.unref?.();
   }
 
+  /** The sessions right below `session` in the daemon's list (`subagents`), for the wakes of a job's whole tree (`treeWakes`). */
+  private readonly below = (session: string): string[] => (this.subagents.get(session) ?? []).flatMap(child => child.sessionId ? [child.sessionId] : []);
+
+  /**
+   * Whether a job that ended its turn still has live work: a board.wake file of its own session (`waking`), a pending wake of a session at any
+   * depth below it, or a subagent at work below it (`liveJobs`). The no-report and open-steps notices skip such a job: ops guy 10-18, crawler
+   * prod alerts was told "ended" at 01:14Z and 01:17Z while its subagents slept on board.wakes for their CI runs, and the AI harness chat got
+   * "ended at 09:04 with no report" for multi host fixes six times in 40 min while it or its subagents slept on board.wakes.
+   */
+  private async jobLive(id: string, child: ChildAgent): Promise<boolean> {
+    const session = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
+    if (session !== undefined && await this.source.waking?.(session).catch(() => false)) return true;
+    const wakes = await this.source.wakes?.(this.now()).catch(() => []) ?? [];
+    return liveJobs([child], this.subagents, this.now(), 0, new Set(wakes.map(wake => wake.session))).size > 0;
+  }
+
   private async noReport(id: string, childId: string, tries: number): Promise<void> {
     await this.load();
     if (!this.chatIds.has(id)) return;
     const child = this.children.get(id)?.find(candidate => candidate.id === childId);
     if (!child || childWorking(child) || child.status === "cancelled" || child.repliedSinceTask !== false) return;
+    if (await this.jobLive(id, child)) return;
     if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterNoReport(id, childId, tries + 1); return; }
     const lastMessage = lastJobMessages(this.messages(id) ?? []).get(childName(child));
     const wokeAt = this.workingSince.get(child.id) ?? 0;
@@ -1229,7 +1247,7 @@ export class Chats {
    * A job whose turn ended while open steps still name it (`leftOpenSteps`) is told to the chat as one steer after the no-report grace, so the
    * chat closes, steers or restarts in that turn rather than at the next check-in, up to 2 h later. Its report lands first, and while the chat
    * is mid-turn the check waits for it, up to NO_REPORT_BUSY_TRIES graces, so a chat that closes the step on the report gets nothing. A job at
-   * work again, asleep on a board.wake the service still owes, or with a subagent at work below it is not told; each end is told once.
+   * work again, or live through a board.wake or a subagent at work in its tree (`jobLive`), is not told; each end is told once.
    */
   private laterOpenSteps(id: string, childId: string, tries = 0): void {
     const timer = setTimeout(() => this.queue(id, () => this.openSteps(id, childId, tries)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
@@ -1241,9 +1259,7 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     const children = this.children.get(id) ?? [];
     const child = children.find(candidate => candidate.id === childId);
-    if (!child || childWorking(child)) return;
-    if (child.sessionId !== undefined && await this.source.waking?.(child.sessionId).catch(() => false)) return;
-    if (liveJobs([child], this.subagents, this.now(), 0).size) return;
+    if (!child || childWorking(child) || await this.jobLive(id, child)) return;
     if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterOpenSteps(id, childId, tries + 1); return; }
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }

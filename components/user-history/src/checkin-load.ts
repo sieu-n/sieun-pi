@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { JobFact, StepView } from "./checkin-steps.ts";
-import { type Wake, wakeLabel } from "./wakes.ts";
+import { treeWakes, type Wake, wakeLabel } from "./wakes.ts";
 import type { PlanItem } from "./shared/types.ts";
 
 /*
@@ -134,15 +134,15 @@ export const liveThreads = (facts: readonly JobFact[], heartbeatsOf: (sessionId:
  * (`JobFact.wake`): a step it owns is moved by a live owner until the wake is due. `sessionOf` gives a subagent's session by its child id; a
  * thread's is its key. launch main bro 10-14: the release driver root owned p53, p75 and p56, ended its turn at 13:40Z on a board.wake for
  * 14:40Z (its hourly check of land 35 and promote 10), and the 13:50Z check-in flagged all three stuck and blocked on others, "release driver
- * thread is idle".
+ * thread is idle". A wake of a session below the job (`below` gives a session's child sessions, `treeWakes`) counts too: on 10-18 at 01:14Z crawler
+ * prod alerts had ended its turn while its subagents slept on their CI runs.
  */
-export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], sessionOf: (key: string) => string | undefined): JobFact[] {
-  const bySession = new Map<string, Wake[]>();
-  for (const wake of wakes) bySession.set(wake.session, [...bySession.get(wake.session) ?? [], wake]);
+export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], sessionOf: (key: string) => string | undefined,
+  below: (session: string) => readonly string[] = () => []): JobFact[] {
   return facts.map(fact => {
     const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
-    const owed = session === undefined ? undefined : bySession.get(session);
-    return owed ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
+    const owed = session === undefined ? [] : treeWakes(session, below, wakes);
+    return owed.length ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
   });
 }
 /** What one session asleep on pending board.wakes watches: its wake label (`wakeLabel`), and the work its run wakes are on ("run 38790378691", "land 37"). */

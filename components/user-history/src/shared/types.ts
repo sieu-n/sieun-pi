@@ -331,6 +331,8 @@ export interface ChatAgent {
   subagentsTotal?: number;
   /** Its turn waits in the Mac-wide turn queue (`pi-pool queue --json`); absent when it does not. */
   queued?: QueuePlace;
+  /** What it or a session below it sleeps on with board.wake (`wakeWait`): "waits for run 39080016700"; absent with no pending wake. */
+  wait?: string;
 }
 /** A session's place in the Mac-wide turn queue: its position, how many wait, and when it began to wait (epoch ms). */
 export interface QueuePlace { position: number; total: number; since: number }

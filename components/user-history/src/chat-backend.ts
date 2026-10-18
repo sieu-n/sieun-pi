@@ -208,6 +208,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   usage.start();
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = queued;
+  catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
   void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
