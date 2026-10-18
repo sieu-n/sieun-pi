@@ -6,4 +6,4 @@ After=network-online.target
 Type=oneshot
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/Documents/Github/auto-sns-agent
-ExecStart=%h/.local/node/bin/node %h/.local/share/wiki-box-commit/wiki-box-commit.mjs
+ExecStart=%h/.local/node/bin/node scripts/repo/agent/wiki-box-commit.mjs
