@@ -60,6 +60,8 @@ test("the canary and doc_id hand writes of 10-17 and 10-18 are F15 and F16, and 
   assert.equal(fault(["doc_ids.refresh_enabled", "doc_id_profile_posts"], "watchlist last fixes: doc_id_profile_posts 28834890909485062"), "F16");
   assert.equal(fault(["pause.crawl"], "F16: the refresher wrote a dead id, so the crawl waits"), "F16");
   assert.equal(fault(["engage.canary_pct"], "F99: a fault nobody listed"), "undesigned");
+  assert.equal(fault(["supply_hold.enabled"], "Crawler ops 06:0xZ (c72): supply hold root cause"), "F18");
+  assert.equal(fault(["media.video_concurrency"], "instagram ingest backlog job, 07:40Z: step 16->48"), "F19");
   assert.equal(classifyConfig({ actor: "canary-roster", keys: ["engage.canary_roster"], text: "roster refill" }, reg).kind, "automatic");
 });
 

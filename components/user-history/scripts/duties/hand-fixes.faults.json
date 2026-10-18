@@ -256,6 +256,35 @@
       "match": {
         "box_exec_regex": "extra_writer|extra_crawler"
       }
+    },
+    {
+      "id": "F18",
+      "title": "The supply hold switched off by hand while its proxy_unreachable holds stop prod reads",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p700",
+        "commit:e0d09f5a42"
+      ],
+      "owner": "Crawler VP p700 (supply hold zero d2): e0d09f5a42 makes a gateway that answers no CONNECT hold no read and retries a fresh exit, so supply_hold.enabled (audit 14032) stays on with no hand switch once it is on prod",
+      "match": {
+        "config_key_prefixes": [
+          "supply_hold."
+        ]
+      }
+    },
+    {
+      "id": "F19",
+      "title": "Media worker video places sized by hand against the media.fetch backlog",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p146",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p685"
+      ],
+      "owner": "Crawler VP p685 (instagram ingest backlog): Instagram reads reach OpenSearch, ClickHouse and B2 with no growing backlog; media.video_concurrency was stepped 16 to 48 and back by hand (audits 14044, 14047)",
+      "match": {
+        "config_key_prefixes": [
+          "media.video_concurrency"
+        ]
+      }
     }
   ],
   "exempt": {
