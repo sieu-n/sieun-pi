@@ -162,6 +162,8 @@ UNLOADED = {}
 # The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
 UNLOAD_MATCH_S = 60.0
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
+# The providers pi-pool vends tokens for; any other provider is not pooled and has no pool answer to read.
+POOLED_PROVIDERS = ("anthropic", "openai-codex")
 # pi-pool's queue hold as its hook or the extension words it: "this session waits for its slot at <time>".
 POOL_HOLD = re.compile(r"waits for its slot", re.IGNORECASE)
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
@@ -818,15 +820,22 @@ def pool_bin():
     return found if Path(found).exists() else None
 
 
-def account_blocker(root_session_id, provider, cache):
+def account_blocker(root_session_id, provider, cache, strict=False):
     """Why the account this tree's next request gets cannot serve, or None when it can (or there is no pool to ask).
 
     A run that stopped on a rate limit or a used-up account fails again at once if it resumes on the same account,
-    so it stays off the list until pi-pool has an account for it.
+    so it stays off the list until pi-pool has an account for it. With `strict` (the abort of a run asleep in its provider retry) a pooled
+    provider whose answer could not be read, or a resolved account `pi-pool ls` does not list, gives "unknown: ..." instead of None, since an
+    unknown answer is no proof the account can serve. A provider pi-pool does not pool gives None either way.
     """
-    tool = pool_bin()
-    if not tool or provider not in ("anthropic", "openai-codex"):
+    unknown = (lambda why: f"unknown: {why}") if strict else (lambda why: None)
+    if provider is None:
+        return unknown("the run's file names no provider")
+    if provider not in POOLED_PROVIDERS:
         return None
+    tool = pool_bin()
+    if not tool:
+        return unknown("no pi-pool binary")
     try:
         if provider not in cache:
             listed = subprocess.run([tool, "ls", "--json", "--provider", provider], capture_output=True, text=True, timeout=30)
@@ -834,10 +843,12 @@ def account_blocker(root_session_id, provider, cache):
         rows = cache[provider]
         who = subprocess.run([tool, "who", "--json", "--session", root_session_id], capture_output=True, text=True, timeout=30)
         resolved = (json.loads(who.stdout).get("providers") or {}).get(provider) if who.returncode == 0 else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    if rows is None or resolved is None:
-        return None
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        return unknown(f"pi-pool did not answer ({type(error).__name__})")
+    if rows is None:
+        return unknown(f"pi-pool ls --provider {provider} failed")
+    if resolved is None:
+        return unknown(f"pi-pool who gave no {provider} answer for the tree")
     # A tree that pi-pool holds in a wait, its slot or R5's 0 to 120 min backoff draw (30f44c22b), gets no turn before slot_at: a continue
     # would only meet the same hold, and an abort of a run in its retry would end it early.
     wait = resolved.get("wait") or {}
@@ -847,7 +858,9 @@ def account_blocker(root_session_id, provider, cache):
     if not account:
         return f"no {provider} account can serve"
     row = rows.get(account)
-    if row and not row.get("usable"):
+    if row is None:
+        return unknown(f"pi-pool ls does not list {account}")
+    if not row.get("usable"):
         return f"{row.get('email')} is {row.get('reason') or 'not usable'}"
     return None
 
@@ -1147,20 +1160,21 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
 
     def asleep_in_retry(s, sid, head):
         """retry_wait's mark, which lets the job sweep abort the run and continue it, only when the continue would go through right now: no
-        stop record names the run, and pi-pool has an account that can serve its tree and holds the tree in no wait or backoff. Otherwise
-        nothing, and the run stays with the Resume button."""
+        stop record names the run, and pi-pool has an account that can serve its tree and holds the tree in no wait or backoff. A run asleep
+        in its retry that fails a check gets `retry_blocked` with the reason instead, so a stop record that did not read or a pool answer
+        that is unknown shows in the report (and the record also under "incomplete") and the run stays with the Resume button."""
         mark = retry_wait(entries_of(sid))
         if not mark:
             return {}
         try:
             if stop_record(s.get("sessionFile")):
-                return {}
-        except RecordError:
-            return {}
+                return {"retry_blocked": "a stop record names it"}
+        except RecordError as error:
+            INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
+            return {"retry_blocked": f"its stop record did not read: {error}"}
         root = by_id.get(head, s)
-        if account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts):
-            return {}
-        return mark
+        blocker = account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts, strict=True)
+        return {"retry_blocked": blocker} if blocker else mark
 
     if BOX.remote:
         # Each relay read takes 0.4 to 1.6 s from us-metal02 to the Mac (10-18), so the tails this pass may read are fetched at once.

@@ -170,6 +170,11 @@ export class InterruptedRuns {
       const jobs = planned.paused
         .filter(run => run.session_id !== undefined && (run.reason !== "hung" || (unstick !== undefined && run.retry_error !== undefined)) &&
           (isJob(run) || cut.has(run.session_id)));
+      // A run asleep in its retry that the script would not let the sweep abort says why: a stop record, an unreadable one, or a pool hold
+      // or unknown pool answer. It stays with the Resume button.
+      for (const run of planned.paused) {
+        if (run.reason === "hung" && run.retry_blocked && isJob(run)) process.stderr.write(`resume: ${run.name} (${run.id}) sleeps in its provider retry; not aborted: ${run.retry_blocked}\n`);
+      }
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       const unresolved = (planned.unresolved ?? []).filter(isJob);
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...(unresolved.length ? { unresolved } : {}) };

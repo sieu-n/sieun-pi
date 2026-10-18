@@ -55,6 +55,19 @@ test("resumeJobs aborts a hung job asleep in its provider retry and continues it
   assert.deepEqual(calls[1], ["--direct", "--only", "j-cut", "--this-box"]);
 });
 
+test("a job asleep in its retry whose pool answer is unknown is reported and not aborted", async () => {
+  const blocked = { ...job("j-429", "hung", "chat1"), retry_blocked: "unknown: pi-pool who gave no anthropic answer for the tree" };
+  const runs = new InterruptedRuns(async () => ({ paused: [blocked], heads: [], checked_at: "now" }));
+  const aborted: string[] = [];
+  const lines: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try { assert.equal(await runs.resumeJobs(() => true, async () => {}, new Set(), undefined, new Set(), async id => { aborted.push(id); }), null); }
+  finally { process.stderr.write = write; }
+  assert.deepEqual(aborted, []);
+  assert.ok(lines.some(line => line.includes("not aborted: unknown: pi-pool who")), lines.join(""));
+});
+
 test("a job deleted between discovery and abort is neither aborted nor continued", async () => {
   // chat-057a's review of ec7f11b11 (10-18): the abort ran on the discovery pass alone, so a job its chat deleted in between, or one pi-pool
   // put in its 0 to 120 min backoff, would be aborted although its continue was then refused. The recheck right before the abort reads the

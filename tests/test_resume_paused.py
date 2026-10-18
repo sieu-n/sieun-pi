@@ -872,6 +872,43 @@ class ResumePausedTests(unittest.TestCase):
         self.assertFalse(marked(blocker="pi-pool holds the tree until 2026-10-18T12:40:00+00:00"))
         self.assertFalse(marked(record="deleted on purpose"))
 
+    def test_an_unknown_pool_answer_blocks_the_retry_abort_and_a_non_pooled_provider_does_not(self):
+        # chat-057a's review of 19fde4349 (10-18): a pool read that failed returned None, which read as "this account can serve".
+        def strict(ls=None, who=None, tool="pi-pool", provider="anthropic", error=None):
+            def run(cmd, **kwargs):
+                if error:
+                    raise error
+                body = ls if cmd[1] == "ls" else who
+                return resume_paused.subprocess.CompletedProcess(cmd, 0 if body is not None else 1, json.dumps(body or {}), "")
+            with patch.object(resume_paused, "pool_bin", return_value=tool), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
+                return (resume_paused.account_blocker("root", provider, {}, strict=True), resume_paused.account_blocker("root", provider, {}))
+
+        rows = {"rows": [{"id": "acct1", "usable": True}]}
+        good = {"providers": {"anthropic": {"account": "acct1", "wait": None}}}
+        self.assertEqual(strict(rows, good), (None, None))
+        self.assertTrue(strict(None, good)[0].startswith("unknown: pi-pool ls"))
+        self.assertTrue(strict(rows, None)[0].startswith("unknown: pi-pool who"))
+        self.assertTrue(strict(rows, good, tool=None)[0].startswith("unknown: no pi-pool"))
+        self.assertTrue(strict(error=resume_paused.subprocess.TimeoutExpired("pi-pool", 30))[0].startswith("unknown: pi-pool did not answer"))
+        self.assertTrue(strict({"rows": []}, good)[0].startswith("unknown: pi-pool ls does not list"))
+        self.assertTrue(strict(rows, good, provider=None)[0].startswith("unknown:"))
+        self.assertIsNone(strict(None, None, provider="openrouter")[0], "a provider pi-pool does not pool has no pool answer to wait for")
+        self.assertIsNone(strict(None, good)[1], "an ordinary continue keeps its old answer")
+
+    def test_a_stop_record_that_does_not_read_blocks_the_retry_abort_and_shows(self):
+        self.session("asleepasleep", [assistant(81, "toolUse"), role(80, "toolResult"),
+                                      assistant(80, "error", "429 This request would exceed your account's rate limit.")],
+                     activity="working", isStreaming=True, lastActivityAt=at(80))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
+        with patch.object(resume_paused, "account_blocker", return_value=None), \
+                patch.object(resume_paused, "stop_record", side_effect=resume_paused.RecordError("deleted-jobs.json is not JSON")):
+            report = self.run_resume(dry_run=True)
+        run = report["paused"][0]
+        self.assertNotIn("retry_error", run)
+        self.assertIn("did not read", run["retry_blocked"])
+        self.assertTrue(any("deleted-jobs.json" in item["error"] for item in resume_paused.INCOMPLETE))
+
     def test_a_tree_pi_pool_holds_in_a_wait_or_backoff_has_a_blocker(self):
         later = NOW.timestamp() + 3600
 
