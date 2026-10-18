@@ -125,7 +125,8 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
 }
 
 /**
- * `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`).
+ * `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`). It still runs the
+ * wakes and the brief keeper, since their files in its own data dir come only from sessions that write there.
  * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
  */
 export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; hosts?: HostCatalogs | null } = {}): Promise<ChatBackend> {
@@ -253,8 +254,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!response.success) throw new Error(response.error);
     },
   };
-  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
-  const stopBriefs = options.ownChatsOnly ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
+  const stopWakes = startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const stopBriefs = startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
       const chat = await dutyJobs.chat(record.root);
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);

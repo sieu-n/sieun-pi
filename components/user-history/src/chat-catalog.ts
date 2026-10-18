@@ -790,6 +790,9 @@ export class Catalog {
     return row ? sessionTitle(row) : null;
   }
 
+  /** True once every other box of hosts.json listed its sessions, and always without hosts.json. */
+  hostsListed(): boolean { return this.hosts?.allListed() ?? true; }
+
   /** The other boxes' rows, live ones only from a box whose daemon answers now; empty without hosts.json. */
   remoteRows(): readonly SessionSummary[] { return this.hosts?.rows() ?? []; }
 
