@@ -210,6 +210,8 @@ function emptyInfo(summary: SessionSummary): ThreadInfo {
 /** A pinned thread whose resume failed (a daemon timeout, a refused attach) is tried again after 15 s, doubling per failure up to 5 min. */
 const PIN_RETRY_MS = 15000;
 const PIN_RETRY_MAX_MS = 5 * 60_000;
+/** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
+const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
 export class ThreadHub {
   readonly images = new ImageStore();
@@ -993,13 +995,28 @@ export class ThreadHub {
     return thread;
   }
 
-  /** `ready` (the owner-turn mark) runs while the thread resumes and lands before the prompt goes. */
+  /**
+   * `ready` (the owner-turn mark) runs while the thread resumes and lands before the prompt goes. The prompt goes by the session's active id on
+   * the box's shared daemon client and does not wait for the thread's attach, which goes on behind it: on 10-18 the owner's "did you miss?" to
+   * frontend bro on the Mac never left the box, because each attach streams the whole context since the last compaction (9.9 MB, 7.75 MB of it
+   * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
+   * trip (230 ms to the Mac). Only a session with no live worker, or one whose listed worker is gone, waits for the resume to start it again.
+   */
   async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined }, trigger = "prompt"): Promise<void> {
-    const thread = await this.resume(id, false, trigger);
+    const resumed = this.resume(id, false, trigger);
+    resumed.catch(() => {});
+    const held = this.threads.get(id)?.live?.activeSessionId;
+    const listed = held ?? liveSessionId(await this.summary(id));
+    const ask = async <T>(activeSessionId: string, type: "get_state" | "get_model_catalog" | "prompt", fields: Record<string, unknown> = {}): Promise<T> => {
+      const response = await (await this.hostDaemon(this.catalog.hostOf(id))).request({ type, activeSessionId, ...fields } as never, type === "prompt" ? PROMPT_REQUEST_MS : undefined, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      return response.data as T;
+    };
+    let activeSessionId = listed ?? (await resumed).live!.activeSessionId;
     await input.ready;
-    const live = thread.live!;
     if (input.images.length) {
-      const [state, catalog] = await Promise.all([live.connection.getState(), live.connection.getModelCatalog()]);
+      const [state, catalog] = await Promise.all([ask<{ model?: { provider: string; id: string } | null }>(activeSessionId, "get_state"),
+        ask<{ models: { provider: string; id: string; input: string[] }[] }>(activeSessionId, "get_model_catalog")]);
       const model = state.model && catalog.models.find(candidate => candidate.provider === state.model!.provider && candidate.id === state.model!.id);
       if (!model?.input.includes("image")) throw new ThreadError(400, "Choose a model that accepts images.");
     }
@@ -1010,8 +1027,14 @@ export class ThreadHub {
       if (!command) throw new ThreadError(400, "Unknown slash command. The draft was kept.");
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
-    await live.connection.prompt(input.message, { source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) });
-    void this.refreshQueue(thread).catch(() => {});
+    const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) };
+    try { await ask(activeSessionId, "prompt", fields); } catch (error) {
+      if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
+      activeSessionId = (await resumed).live!.activeSessionId;
+      await ask(activeSessionId, "prompt", fields);
+    }
+    const thread = this.threads.get(id);
+    if (thread?.live) void this.refreshQueue(thread).catch(() => {});
   }
 
   /**
