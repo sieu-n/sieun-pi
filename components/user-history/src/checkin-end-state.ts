@@ -29,35 +29,15 @@ const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:
 
 /**
  * Whether an open agent todo holds the step by an explicit link: it names the step's id, links it (`step`) or a PR it names (`coversStep`), or
- * the step's wait names the todo's id, or the todo's text quotes the step's name (`stepName`), so one todo that asks about several steps holds
- * each of them. A shared word is not a link: on 10-14 13 of the 17 steps the classes counted as For you matched only by a word, and four of them
- * waited on a release. Duties review 10-18: t3 asked "Crawler VP's Arbitrary limits says 1,118 and ops guy's Limits rest on evidence says 96.
- * Which do we keep?" with a link to p4 only, and p14 "Limits rest on evidence (ops guy): stuck, ..." read as waiting on the owner with no todo.
+ * the step's wait names the todo's id. A shared word is not a link: on 10-14 13 of the 17 steps the classes counted as For you matched only by a
+ * word, and four of them waited on a release. A todo that only quotes a step's name is no link either, since a guessed hold can hide a step that is
+ * really stuck (c88; tried in a4672f1 for Duties review's p14 and taken back).
  */
 export function heldByTodo(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note">, todos: readonly Pick<OwnerTodo, "id" | "text" | "step" | "reply" | "done" | "from">[]): boolean {
   const id = new RegExp(`\\b${item.id}\\b`);
   const named = new Set(item.waitFor?.match(/\bt\d+\b/g) ?? []);
-  const name = stepName(item.text);
-  return todos.some(todo => todo.from === "agent" && !todo.done && (id.test(todo.text) || coversStep(todo, item as PlanItem) || (todo.id !== undefined && named.has(todo.id)) ||
-    (name !== undefined && quotesName(todo.text, name))));
+  return todos.some(todo => todo.from === "agent" && !todo.done && (id.test(todo.text) || coversStep(todo, item as PlanItem) || (todo.id !== undefined && named.has(todo.id))));
 }
-
-/**
- * A step's name for a todo to quote: its text before the first colon, or its whole text, with parenthetical asides dropped; undefined when that is
- * under two words or 12 characters, too common to stand for one step ("Build", "Fix it").
- */
-export function stepName(text: string): string | undefined {
-  const name = text.split(":")[0]!.replace(/\s*\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
-  return name.length >= 12 && name.split(" ").length >= 2 ? name : undefined;
-}
-const quotesName = (text: string, name: string): boolean => {
-  const hay = text.toLowerCase();
-  const needle = name.toLowerCase();
-  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
-    if (!/[a-z0-9]/.test(hay[at - 1] ?? "") && !/[a-z0-9]/.test(hay[at + needle.length] ?? "")) return true;
-  }
-  return false;
-};
 
 /** One open leaf step in the end state or stuck, with why. */
 export interface EndStateView { view: StepView; state: EndState; reason: string }
