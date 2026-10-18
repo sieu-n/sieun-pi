@@ -13,7 +13,7 @@ import type { RawProcess } from "./mac-usable-watch.ts";
  * itself: every process that carries the RLM_HARNESS_STATE_DIR of the job's session or of a session under it (its subagents) and sits under no
  * kernel and no Prime process (worker-footprint.py `strays`), and every Aside tab those sessions opened (`aside-browser-tabs.json` in their
  * session folders). Shared services (PM2, Aside, cua-driver) and Prime's own processes are never named, so ops guy's pm2 dev servers stay.
- * It also deletes the repo copies a job left in its wiki session folders and the /tmp trees it made, after stopping the rig processes in them,
+ * It also deletes the repo copies a job left in its wiki session folders and the /tmp and ~/scratch trees it made, after stopping the rig processes in them,
  * and the kernel-state.dill files and repo copies its sessions left in session-artifacts.
  */
 
@@ -38,7 +38,7 @@ export interface LeftoverSource {
   later: (ms: number, run: () => void) => void;
   /** Deletes the repo copies left in the wiki session folders these transcripts opened (`removeRepoCopies`); returns the folders it deleted. */
   removeCopies: (transcripts: readonly string[]) => Promise<readonly string[]>;
-  /** The /tmp trees the sessions of these transcripts made (`madeTmpTrees`); `dirs` are the gone sessions' folders. */
+  /** The /tmp and ~/scratch trees the sessions of these transcripts made (`madeTmpTrees`, `madeScratchTrees`); `dirs` are the gone sessions' folders. */
   tmpTrees: (transcripts: readonly string[], dirs: readonly string[]) => Promise<readonly string[]>;
   /** The processes that run in or hold these dirs (worker-footprint.py `--inside`). */
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
@@ -184,7 +184,39 @@ const TOOL_RESULT = '"role":"toolResult"';
  * about 1 GB each and 6 GB of repo clones from gone jobs.
  */
 export async function madeTmpTrees(transcripts: readonly string[], dirs: readonly string[], root = "/tmp", artifacts = ARTIFACTS): Promise<string[]> {
-  const named = new RegExp(`(?<![\\w./-])${escaped(root)}/(${TMP_NAME})`, "g");
+  return madeTrees(transcripts, dirs, root, new RegExp(`(?<![\\w./-])${escaped(root)}/(${TMP_NAME})`, "g"), artifacts, path => path, false);
+}
+
+export const SCRATCH = join(homedir(), "scratch");
+
+/**
+ * The top-level entries of ~/scratch the sessions of these transcripts made, by the rule of `madeTmpTrees`. The job line puts a job's repo trees
+ * under ~/scratch/<job>/, and transcripts write that path from `~`, `$HOME`, `/home/<user>` or `/Users/<user>`, so a live session's naming is
+ * matched by its `/scratch/<name>` part. On 10-18 between 16:04Z and 16:34Z jobs on us-metal02 added 7.5 GB of scratch trees, 0.66 GB per
+ * `git archive` export, and ~/scratch held 60 GB, most of it trees of jobs that had ended.
+ */
+export async function madeScratchTrees(transcripts: readonly string[], dirs: readonly string[], root = SCRATCH, artifacts = ARTIFACTS): Promise<string[]> {
+  const named = new RegExp(`(?<![\\w./-])(?:~|\\$HOME|/home/[\\w.-]+|/Users/[\\w.-]+)/scratch/(${TMP_NAME})`, "g");
+  return madeTrees(transcripts, dirs, root, named, artifacts, path => `/scratch/${path.slice(root.length + 1)}`, true);
+}
+
+/** Whether anything at or below `path` changed after `since` (epoch ms). A symlink is read as itself, never followed. */
+async function changedAfter(path: string, since: number): Promise<boolean> {
+  const item = await lstat(path).catch(() => null);
+  if (!item) return false;
+  if (item.mtimeMs > since) return true;
+  if (!item.isDirectory()) return false;
+  for (const entry of await readdir(path).catch(() => [])) if (await changedAfter(join(path, entry), since)) return true;
+  return false;
+}
+
+/**
+ * The entries of `root` that `named` finds in a gone session's own lines, born after its first line, and unchanged since its file last changed:
+ * the entry itself, or with `deep` anything under it, so a scratch tree another live session still writes in stays (on 10-18 at 16:44Z an
+ * earlier disk job deleted ~/scratch/disk-growth-p9 by hand while the next disk job, in another chat, still wrote its file lists there).
+ */
+async function madeTrees(transcripts: readonly string[], dirs: readonly string[], root: string, named: RegExp, artifacts: string,
+  needle: (path: string) => string, deep: boolean): Promise<string[]> {
   const uid = process.getuid?.();
   const made = new Set<string>();
   for (const file of transcripts) {
@@ -197,10 +229,10 @@ export async function madeTmpTrees(transcripts: readonly string[], dirs: readonl
       if (made.has(path) || SHARED_TMP.test(entry) || /^\.+$/.test(entry)) continue;
       const item = await lstat(path).catch(() => null);
       if (!item || item.isSymbolicLink() || (uid !== undefined && item.uid !== uid)) continue;
-      if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs) made.add(path);
+      if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs && !(deep && await changedAfter(path, info.mtimeMs))) made.add(path);
     }
   }
-  return unnamedByLive(made, transcripts, dirs, artifacts);
+  return unnamedByLive(made, transcripts, dirs, artifacts, needle);
 }
 
 /**
@@ -373,7 +405,7 @@ const copiesCleared = new Set<string>();
 const tmpCleared = new Set<string>();
 const artifactsCleared = new Set<string>();
 
-/** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, `removeRepoCopies` and `madeTmpTrees`. */
+/** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, `removeRepoCopies`, `madeTmpTrees` and `madeScratchTrees`. */
 export const leftoverSource: LeftoverSource = {
   strays: async sessions => {
     const answer = await helper(["--session", sessions.join(",")]) as { strays?: RawProcess[] };
@@ -391,7 +423,7 @@ export const leftoverSource: LeftoverSource = {
   tmpTrees: (transcripts, dirs) => {
     const fresh = transcripts.filter(file => !tmpCleared.has(file));
     for (const file of fresh) tmpCleared.add(file);
-    return fresh.length ? madeTmpTrees(fresh, dirs) : Promise.resolve([]);
+    return fresh.length ? Promise.all([madeTmpTrees(fresh, dirs), madeScratchTrees(fresh, dirs)]).then(found => found.flat()) : Promise.resolve([]);
   },
   inside: async dirs => {
     const answer = await helper(["--inside"], dirs.join("\n") + "\n") as { inside?: InsideProcess[] };
