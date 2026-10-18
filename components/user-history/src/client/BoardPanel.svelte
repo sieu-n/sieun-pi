@@ -307,15 +307,14 @@
   .empty { padding: 24px 8px; text-align: center; }
   .plan-list { list-style: none; margin: 0; padding: 0; }
   /*
-   * A row: a fixed lead (the fold, the status mark and the id chip; 18 px boxes) and the line beside it. Nothing is cut: the title wraps and
-   * takes at least 60% of the line, the count, the chip, the wait and the go mark sit beside its first line when they fit and wrap under it
-   * when they do not. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
+   * A row: a fixed lead (the fold, the status mark and the id chip; 18 px boxes) and the lines beside it. Nothing is cut: the title takes the
+   * whole width and wraps, and the count, the chip, the wait and the go mark sit on the line under it and wrap too. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
    */
   .plan-item { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .plan-item { padding-top: 3px; padding-bottom: 3px; }
   .row-lead { display: inline-flex; flex: none; align-items: center; height: 18px; gap: 2px; }
   .plan-line { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: flex-start; gap: 2px 5px; margin: 0; line-height: 18px; }
-  .plan-text { flex: 1 1 60%; min-width: 0; overflow-wrap: anywhere; }
+  .plan-text { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
   .plan-line :global(.agent-chip) { flex: 0 1 auto; margin-left: 0; }
   .fold { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
