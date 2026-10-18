@@ -372,6 +372,10 @@ export function measure(input: Inputs): PrecheckOutput {
     // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
     const after = run?.after?.metrics?.stuck_steps;
+    // A check-in whose job still works (it has a job and no after-job measure yet) is the live owner of every step it flagged, so none is stuck
+    // until that job ends and its after-job count says what it left: at 06:54Z on 10-18 d7 read 27, 26 of them ops guy's Grafana rule steps
+    // that its 06:49Z check-in job was giving jobs, and that chat's after-job measure at 06:55Z read 0.
+    if (run?.job && !run.after) return { chat, value: 0, at: run.at };
     const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
     const fresh = at !== undefined && (chat.everyMs === undefined || now - at <= chat.everyMs);
     const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;

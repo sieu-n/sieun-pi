@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
+import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
 import { type Footprints, hostWatchLine, nextSampleAt, parseUsableRaw, type QueueReading, unusable, type UsableReading, type WatchLine, watchLine } from "../src/mac-usable-watch.ts";
@@ -198,4 +199,25 @@ test("a Linux memory-only miss has no CPU cause to read and goes to no side", ()
   const { metrics } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
   assert.equal(metrics.harness_unusable_min_30, 0);
   assert.equal(metrics.unattributed_unusable_min_30, 1);
+});
+
+// Guards d7's 06:54Z run on 10-18: it read stuck_steps_all 27 while ops guy's 06:49Z check-in job was giving its 26 new Grafana rule steps
+// jobs; that check-in's after-job measure at 06:55Z read 0. A check-in job at work owns the steps it flagged.
+test("d7 counts no stuck step of a check-in whose job still works, and reads the after-job count once it ended", () => {
+  const checkIn = Date.parse("2026-10-18T06:49:00Z");
+  const chat = "01a11af8-962e-773d-a19a-ee4104011987";
+  const items = Array.from({ length: 27 }, (_, index) => `p${319 + index}`);
+  const run = { duty: "checkin", at: checkIn, trigger: "schedule" as const, ms: 1, verdict: "missed" as const, summary: "",
+    metrics: { stuck_steps: { value: 27, target: 0, op: "<=" as const, met: false } },
+    flagged: items.map(item => ({ chat, at: checkIn, kind: "stuck_steps", excerpt: `${item} is stuck (no_owner)`, item })),
+    job: { id: "01a14dc0-0000-7000-8000-000000000000", name: "check-in ops guy (+observability) 15:49" } };
+  const read = (runs: DutyRunRecord[], now: string) => measure({ now: Date.parse(now), watch: [], log: { holds: [] },
+    chats: [{ id: chat, name: "ops guy (+observability)", duties: [], runs, everyMs: 120 * 60_000 }] }).metrics.stuck_steps_all;
+  assert.equal(read([run], "2026-10-18T06:54:00Z"), 0, "the check-in job is at work on them");
+  const ended = (value: number) => ({ ...run, after: { at: Date.parse("2026-10-18T06:55:47Z"), verdict: "missed" as const, summary: "",
+    metrics: { stuck_steps: { value, target: 0, op: "<=" as const, met: value === 0 } } } });
+  assert.equal(read([ended(0)], "2026-10-18T07:00:00Z"), 0);
+  assert.equal(read([ended(2)], "2026-10-18T07:00:00Z"), 2, "what the ended job left counts");
+  const { job: _job, ...noJob } = run;
+  assert.equal(read([noJob], "2026-10-18T06:54:00Z"), 27, "a check-in that started no job owns nothing");
 });
