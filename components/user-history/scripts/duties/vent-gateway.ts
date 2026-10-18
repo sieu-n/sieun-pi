@@ -1,15 +1,15 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
  * The Vent chat's "Vent gateway" precheck (`node --import tsx scripts/duties/vent-gateway.ts`). No model call, no browser, names only for keys.
  * - through_vent_pct, the headline: the share of in-scope outside call sites and inbound webhooks that go through Vent in prod. Call sites come
- *   from the vent share script (sessions/2026/10/18/1949-vent-share-measure/data/vent_share.py in auto-sns-agent) at origin/main, which is what
- *   prod runs: a site counts when its code there goes through Vent and, when it runs in prod, prod Vent logged a successful vent.call for it in
+ *   from vent-share.py beside this file, run in the auto-sns-agent checkout at origin/main, which is what prod runs: a site counts when its
+ *   code there goes through Vent and, when it runs in prod, prod Vent logged a successful vent.call for it in
  *   the script's last 7 days. Row 63 (GeoNode proxy egress) is the one allowed exception and leaves the count. The 4 Convex inbound webhooks
  *   count when main's convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
  * - vent_success_24h_pct: successful prod vent.call rows over the last 24 h, without the caller's own 4xx (429 stays in) and calls the caller
@@ -25,7 +25,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 const SESSIONS = "apps/llm-wiki/content/sessions/2026/10/18";
-export const VENT_SHARE = `${SESSIONS}/1949-vent-share-measure/data/vent_share.py`;
+export const VENT_SHARE = join(dirname(fileURLToPath(import.meta.url)), "vent-share.py");
 const LISTERS = `${SESSIONS}/1610-vent-cutover-all-callers/data`;
 export const REF = "origin/main";
 const GRAFANA = "https://obs.virev.ai/api/ds/query";
