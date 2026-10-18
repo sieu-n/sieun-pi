@@ -213,6 +213,20 @@ function latestActivity(row: SessionSummary, running: ReadonlyMap<string, Sessio
   return Math.max(Number.isFinite(own) ? own : 0, ...(running.get(row.sessionId) ?? []).map(child => latestActivity(child, running, seen)));
 }
 
+/** The running subagent rows below a session at any depth, the rows `sessionPulse` reads. */
+function runningBelow(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>): SessionSummary[] {
+  const below: SessionSummary[] = [];
+  const seen = new Set([row.sessionId]);
+  const pending = [...(running.get(row.sessionId) ?? [])];
+  for (let child = pending.pop(); child; child = pending.pop()) {
+    if (seen.has(child.sessionId)) continue;
+    seen.add(child.sessionId);
+    below.push(child);
+    pending.push(...(running.get(child.sessionId) ?? []));
+  }
+  return below;
+}
+
 function pulseOf(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>): Pulse {
   const at = latestActivity(row, running);
   return {
@@ -729,11 +743,12 @@ export class Catalog {
       const working = isWorking(row, subtree);
       const origin = originOf(row);
       const archived = archivedByOwner?.has(row.sessionId) === true;
+      // A working row's pulse reads the rows of its running subagents at any depth, so they are part of its key.
       const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
-        archived, this.heldLifecycle.get(row.sessionId)];
+        archived, this.heldLifecycle.get(row.sessionId), working, ...(working ? runningBelow(row, running) : [])];
       const before = this.keptRows.get(row.sessionId);
-      // A chat row gets its agents and counts written onto it below, and a working row's pulse follows its running subagents, so both are built again.
-      if (!chat && !working && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
+      // A chat row gets its agents and counts written onto it below, so it is built again.
+      if (!chat && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
       const checkIn = checkIns?.get(row.sessionId);
       const brief = briefs?.get(row.sessionId);
       const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
@@ -743,7 +758,7 @@ export class Catalog {
       if (host) projected.host = host;
       // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
       if (archived) projected.archived = true;
-      if (!chat && !working) kept.set(row.sessionId, { key, row: projected });
+      if (!chat) kept.set(row.sessionId, { key, row: projected });
       rows.push(projected);
     }
     this.keptRows = kept;
