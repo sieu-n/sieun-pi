@@ -1,6 +1,8 @@
 import { DaemonClient } from "prime-agent";
+import { copyPath, mirrorPath } from "./host-catalogs.ts";
+import { mirrorFile } from "./host-mirror.ts";
 import { HostBridge, hostHealth, hostNamed, loadHosts, readHostFile, selfHost, type Host } from "./hosts.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,18 +45,45 @@ async function clientFor(host: Host, registry: Awaited<ReturnType<typeof loadHos
 
 type Summary = { sessionId?: string; activeSessionId?: string; sessionFile?: string; id?: string };
 
+const matches = (session: Summary, id: string): boolean => session.sessionId === id || session.activeSessionId === id || session.id === id || session.sessionId?.startsWith(id) === true;
+
+/**
+ * The session's file on `host`, from the chat service's copy of that host's list (`copyPath`) when the copy names it, else from the daemon's
+ * full list: on 10-18 each `hosts transcript mac` listed the Mac whole, 38.6 MB over the relay, to find one path.
+ */
 async function sessionFile(host: Host, registry: Awaited<ReturnType<typeof loadHosts>>, id: string): Promise<string> {
   if (id.startsWith("/")) return id;
+  const copied = await readFile(copyPath(host.name), "utf8").then(text => (JSON.parse(text) as { rows?: Summary[] }).rows ?? [], () => [] as Summary[]);
+  const known = copied.find(session => matches(session, id))?.sessionFile;
+  if (known) return known;
   const { client, close } = await clientFor(host, registry);
   try {
     const response = await client.request({ type: "list", all: true } as Parameters<DaemonClient["request"]>[0], 60_000, { recoverable: false });
     if (!response.success) throw new Error(response.error);
     const data = response.data as { sessions?: Summary[] } | Summary[];
     const sessions = Array.isArray(data) ? data : data.sessions ?? [];
-    const match = sessions.find(session => session.sessionId === id || session.activeSessionId === id || session.id === id || session.sessionId?.startsWith(id));
+    const match = sessions.find(session => matches(session, id));
     if (!match?.sessionFile) throw new Error(`no session ${id} on ${host.name}`);
     return match.sessionFile;
   } finally { await close(); }
+}
+
+/**
+ * Bytes of the file on `host` from `from`. Another host's file is read through this box's copy of it (`mirrorPath`), which the chat service
+ * keeps too, so a repeat read costs only the new bytes: from 07:52 to 07:57Z on 10-18 agents read frontend bro's 130 MB file whole through the
+ * relay three times, 299 MB on the link its 10 MB attach snapshot needed.
+ */
+async function hostFile(host: Host, registry: Awaited<ReturnType<typeof loadHosts>>, path: string, from: number): Promise<{ bytes: Buffer; size: number }> {
+  if (host.name === selfHost(registry)?.name) return await readHostFile(host, path, { from });
+  const local = mirrorPath(host, path);
+  await mirrorFile(host, path, local);
+  const file = await open(local, "r");
+  try {
+    const { size } = await file.stat();
+    const bytes = Buffer.alloc(Math.max(0, size - from));
+    if (bytes.length) await file.read(bytes, 0, bytes.length, from);
+    return { bytes, size };
+  } finally { await file.close(); }
 }
 
 function messageText(entry: Record<string, unknown>): string | null {
@@ -105,7 +134,7 @@ export async function runHostsCommand(argv: string[]): Promise<void> {
     if (!name || !target) throw new Error(USAGE);
     const host = hostNamed(registry, name);
     const path = command === "read" ? target : await sessionFile(host, registry, target);
-    const { bytes, size } = await readHostFile(host, path, { from: Number(values.get("from") ?? 0) });
+    const { bytes, size } = await hostFile(host, registry, path, Number(values.get("from") ?? 0));
     if (command === "read") { process.stdout.write(bytes); return; }
     process.stdout.write(`${host.name}:${path} (${size} bytes)\n`);
     for (const line of bytes.toString("utf8").split("\n")) {

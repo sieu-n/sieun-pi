@@ -1,8 +1,8 @@
-import { appendFile, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { DaemonClient, type SessionSummary } from "prime-agent";
-import { HostBridge, readHostFile, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
+import { mirrorFile } from "./host-mirror.ts";
+import { HostBridge, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
 import { SessionPeer } from "./session-peer.ts";
 
 /** Copies of other boxes' session files, refreshed by byte range, so readers that open a session file by path work for every host. */
@@ -166,8 +166,8 @@ export class HostCatalogs {
   }
 
   /**
-   * A local copy of a session file on another host, brought up to date from the byte the copy ends at, so a JSONL transcript costs only its new
-   * lines. A copy longer than the host's file (rewritten there) is fetched whole again.
+   * A local copy of a session file on another host, brought up to date by `mirrorFile`, which the `hosts transcript` and `hosts read` commands
+   * share, so a file this service copied costs them only its new bytes.
    */
   mirror(host: Host, path: string): Promise<string> {
     const key = `${host.name}:${path}`;
@@ -176,15 +176,7 @@ export class HostCatalogs {
     if (Date.now() - (this.mirroredAt.get(key) ?? 0) < MIRROR_FRESH_MS) return Promise.resolve(mirrorPath(host, path));
     const local = mirrorPath(host, path);
     const job = (async () => {
-      await mkdir(dirname(local), { recursive: true, mode: 0o700 });
-      const have = await stat(local).then(info => info.size, () => 0);
-      const read = await readHostFile(host, path, { from: have });
-      if (read.size < have) {
-        const whole = await readHostFile(host, path);
-        await writeFile(`${local}.tmp`, whole.bytes, { mode: 0o600 });
-        await rename(`${local}.tmp`, local);
-      } else if (read.bytes.length) await appendFile(local, read.bytes, { mode: 0o600 });
-      else if (!have) await writeFile(local, "", { mode: 0o600 });
+      await mirrorFile(host, path, local);
       this.mirroredAt.set(key, Date.now());
       return local;
     })().finally(() => { this.mirrors.delete(key); });
