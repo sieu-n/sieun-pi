@@ -96,7 +96,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
         if (streak >= CHANGE_APPROACH_MISSES) {
           // The check-in's working test (board-classes.ts): a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
-          const isLive = live ??= (() => {
+          live ??= (() => {
             const all = roster();
             const children = chatChildren(all, id);
             const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
