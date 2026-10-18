@@ -115,9 +115,10 @@ export const KILL_ORIGIN = "kill_origin";
 
 /** The kill the idle unload sends under `hello`: named as an idle unload to a daemon that lists KILL_ORIGIN, a bare kill to any other. */
 export function idleKillCommand(activeSessionId: string, hello: { serverCapabilities?: readonly string[] }) {
-  const capabilities: readonly string[] = hello.serverCapabilities ?? [];
-  return capabilities.includes(KILL_ORIGIN) ? { type: "kill" as const, activeSessionId, origin: "idle_unload" as const } : { type: "kill" as const, activeSessionId };
+  return takesKillOrigin(hello) ? { type: "kill" as const, activeSessionId, origin: "idle_unload" as const } : { type: "kill" as const, activeSessionId };
 }
+
+const takesKillOrigin = (hello: { serverCapabilities?: readonly string[] }) => (hello.serverCapabilities ?? []).includes(KILL_ORIGIN);
 
 export type UnloadClient = Pick<DaemonClient, "hello" | "waitForHello" | "request">;
 
@@ -140,7 +141,7 @@ export async function unloadRequest(client: UnloadClient, activeSessionId: strin
     if (!client.hello) await client.waitForHello();
     const hello = client.hello;
     if (!hello) return { success: false, error: "The daemon connection closed before its hello; the kill was not sent." };
-    if (!restorable && !(hello.serverCapabilities ?? []).includes(KILL_ORIGIN)) return { success: false, error: NO_BARE_KILL };
+    if (!restorable && !takesKillOrigin(hello)) return { success: false, error: NO_BARE_KILL };
     return await client.request(idleKillCommand(activeSessionId, hello), 30_000, { recoverable: false });
   } catch (error) {
     return { success: false, error: String(error) };
