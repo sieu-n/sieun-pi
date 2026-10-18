@@ -14,7 +14,8 @@ const gapsTask = (platform: string): string => `research which of our ${platform
   "measure each gap's size from real data, i want all 10 measured by tomorrow";
 /** One task per chat name, so a rerun gets new chats and a platform no earlier run left a top 10 page for (r3 left Instagram's at 10 of 10). */
 export const TASKS: Record<string, string> = { "Instagram index gaps": gapsTask("instagram"), "TikTok Shop index gaps": gapsTask("tiktok shop"),
-  "YouTube index gaps": gapsTask("youtube"), "TikTok index gaps": gapsTask("tiktok") };
+  "YouTube index gaps": gapsTask("youtube"), "TikTok index gaps": gapsTask("tiktok"), "LinkedIn index gaps": gapsTask("linkedin"),
+  "Facebook index gaps": gapsTask("facebook") };
 export const taskOf = (name: string): string => {
   const task = TASKS[name];
   if (!task) throw new Error(`no checkin-push-control task for the chat name "${name}"; known: ${Object.keys(TASKS).join(", ")}`);
