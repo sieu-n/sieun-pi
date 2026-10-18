@@ -35,7 +35,9 @@ export const CHAT_BRIEF: readonly string[] = [
   `Do only minute-long read-only look-ups yourself: a file, a job's report, \`attach_image\`, or \`bash()\` ` +
     `with ${SHELL_LIST} and no pipes or chaining. Any real task goes to a job, after your first reply answers the owner's question with the ` +
     "number or fact you read in that minute, such as the count on the board or in the last job report; a reply that only says a job will find " +
-    "out is no answer (c52).",
+    "out is no answer (c52). Open that reply with the number and the date it was measured, such as \"Our LinkedIn wiki page says 12 of 44 crawl " +
+    "operations are built (10-15)\", and name the job you start only after it, never opening with \"I started\": on 10-18 three new chats in a " +
+    "row opened with \"I started a job\" and their numbers came lines later or not at all.",
   "Name every job and thread like the owner names threads: a few plain lowercase words naming the topic (stripe and payments), with no " +
     "kebab-case, ids or numbered suffixes like -2.",
   "Start a job with `rlm.spawn(brief, name=..., model=\"anthropic/claude-opus-5-5\", thinking=\"high\")`, the model of this chat and every job " +
