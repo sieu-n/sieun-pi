@@ -36,6 +36,7 @@ function fixture(t) {
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test");
   write(".gitignore", "node_modules/\n");
+  write("components/user-history/src/chat-assets-prebuild.mjs", "");
   write("components/user-history/package.json", JSON.stringify({ name: "fixture", private: true, scripts: { typecheck: TYPECHECK, test: TEST } }));
   mkdirSync(path.join(repo, "node_modules"));
   mkdirSync(path.join(repo, "components/user-history/node_modules"));
@@ -91,20 +92,39 @@ test("on a Linux host the release restarts the systemd user unit instead", (t) =
   assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
 });
 
-test("an older release that waited on the lock behind a newer one is refused", async (t) => {
+test("an older release behind the lock of a newer one that holds it exits 0 at once and leaves current alone", async (t) => {
+  // 10-18 11:25Z: three jobs queued da7e7e0c3 behind the release of 8957c594a, which held it already.
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
   while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
-  const older = await f.releaseAsync([f.c2]);
+  for (const sha of [f.c2, f.c3]) {
+    const older = await f.releaseAsync([sha]);
+    assert.equal(older.status, 0, older.stderr);
+    assert.match(older.stderr, new RegExp(`${sha.slice(0, 7)} is already in the release of ${f.c3.slice(0, 7)} that pid \\d+ runs now`));
+    assert.doesNotMatch(older.stderr, /waiting for the release of/);
+  }
   const won = await newer;
   assert.equal(won.status, 0, won.stderr);
-  assert.equal(older.status, 3, older.stderr);
-  assert.match(older.stderr, /waiting for the release of/);
-  assert.match(older.stderr, /does not descend from the live release-/);
+  assert.doesNotMatch(won.stderr, /restart left to/);
   assert.equal(f.current(), id(f.c3));
   assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
   assert.equal(f.kicked().length, 1);
+});
+
+test("a commit the live release already holds exits 0 with nothing built, flipped or restarted", (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c3]).status, 0);
+  for (const sha of [f.c3, f.c2]) {
+    const again = f.release([sha]);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stderr, new RegExp(`${sha.slice(0, 7)} already live in ${id(f.c3)}; nothing to do`));
+    assert.equal(again.stdout.trim(), id(f.c3));
+  }
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
+  assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "release.lock")), false);
 });
 
 test("two releases started together end on the newer one", async (t) => {
@@ -116,15 +136,17 @@ test("two releases started together end on the newer one", async (t) => {
   assert.equal(f.current(), id(f.c3));
 });
 
-test("going back to an older or unrelated commit needs --rollback", (t) => {
+test("going back to an older or unrelated commit needs --rollback, and an older one without it changes nothing", (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
-  const refused = f.release([f.c1]);
+  const kept = f.release([f.c1]);
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.match(kept.stderr, /already live in/);
+  assert.equal(f.current(), id(f.c3));
+  const refused = f.release([f.side, "--no-kickstart"]);
   assert.equal(refused.status, 3);
   assert.match(refused.stderr, /Pass --rollback/);
-  assert.equal(f.current(), id(f.c3));
-  assert.equal(f.release([f.side, "--no-kickstart"]).status, 3);
   const back = f.release([id(f.c1), "--rollback"]);
   assert.equal(back.status, 0, back.stderr);
   assert.match(back.stderr, /built already/);

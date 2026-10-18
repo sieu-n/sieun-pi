@@ -11,7 +11,8 @@ Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points curre
 or on Linux restarts the systemd user unit sieun-pi-chat.service. When the release's deploy/linux sieun-pi-chat.service or .socket differs from
 ~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 One release runs at a time: a second command waits for the first one's lock, then checks again.
-A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
+A commit the live release or the release holding the lock already holds exits 0 with nothing done ("already live in release-X").
+Any other commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
@@ -83,12 +84,27 @@ function checkNewer(repo, home, sha, rollback) {
     throw new Refused(`${sha.slice(0, 7)} does not descend from the live ${live} (${liveSha.slice(0, 7)}); a newer release is live. Pass --rollback to go back on purpose`);
 }
 
+/**
+ * The release that already holds `sha`: the live release when `sha` is its commit or an ancestor of it, else null. Such a release is a no-op:
+ * at 11:25Z on 10-18 three jobs queued da7e7e0c3 behind 8957c594a, which held it already, and each would have waited for the lock to exit 3.
+ */
+function liveHolding(repo, home, sha) {
+  const live = liveRelease(home);
+  const liveSha = live ? releaseCommit(repo, resolve(home, live)) : null;
+  return liveSha && contains(repo, liveSha, sha) ? live : null;
+}
+
+/** Whether commit `outer` holds `inner`: the same commit or a descendant. */
+const contains = (repo, outer, inner) => spawnSync("git", ["-C", repo, "merge-base", "--is-ancestor", inner, outer], { env: gitEnv }).status === 0;
+
+class Covered extends Error {}
+
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
 }
 
 /** Takes <home>/release.lock, waiting while a live process holds it; a lock whose pid is gone is taken over. Returns the release function. */
-async function takeLock(home, sha) {
+async function takeLock(home, sha, repo) {
   const lock = join(home, "release.lock");
   const body = JSON.stringify({ pid: process.pid, sha, startedAt: new Date().toISOString() }) + "\n";
   const draft = `${lock}.${process.pid}`;
@@ -106,6 +122,8 @@ async function takeLock(home, sha) {
         log(`took over a stale lock (${held.trim() || "empty"})`);
         continue;
       }
+      if (repo && typeof holder.sha === "string" && contains(repo, holder.sha, sha))
+        throw new Covered(`${sha.slice(0, 7)} is already in the release of ${holder.sha.slice(0, 7)} that pid ${holder.pid} runs now; nothing to do`);
       if (!told) { log(`waiting for the release of ${String(holder.sha).slice(0, 7)} by pid ${holder.pid}, started ${holder.startedAt}`); told = true; }
       await new Promise(done => setTimeout(done, 500));
     }
@@ -224,18 +242,26 @@ function kickstart(home) {
   run(launchctl, ["kickstart", "-k", `gui/${userInfo().uid}/${LABEL}`], process.cwd());
 }
 
+const chatHome = () => resolve(process.env.SIEUN_PI_CHAT_HOME || join(homedir(), ".local/share/sieun-pi-chat"));
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const home = resolve(process.env.SIEUN_PI_CHAT_HOME || join(homedir(), ".local/share/sieun-pi-chat"));
+  const home = chatHome();
   mkdirSync(home, { recursive: true });
   const named = RELEASE_NAME.test(options.target) && existsSync(join(home, options.target)) ? join(home, options.target) : null;
   const sha = named ? releaseCommit(options.repo, named) : git(options.repo, ["rev-parse", "--verify", "--quiet", `${options.target}^{commit}`]);
   if (!sha) throw new UsageError(`${options.target} is not a commit in ${options.repo}`);
   const dir = named ?? join(home, `release-${sha.slice(0, 7)}`);
   const id = basename(dir);
+  const covered = () => {
+    const live = options.rollback ? null : liveHolding(options.repo, home, sha);
+    if (live) throw new Covered(`${sha.slice(0, 7)} already live in ${live}; nothing to do`);
+  };
+  covered();
   checkNewer(options.repo, home, sha, options.rollback);
-  await takeLock(home, sha);
+  await takeLock(home, sha, options.rollback ? null : options.repo);
   held = { options, home, sha };
+  covered();
   checkNewer(options.repo, home, sha, options.rollback);
   if (existsSync(dir)) log(`${id} is built already; reusing it`);
   else await build(options, home, sha, dir);
@@ -252,9 +278,11 @@ let held = null;
 
 main().catch(error => {
   log(error.message);
+  // A release that fails, or finds its commit live, after it took the lock still restarts for one that left it the restart.
   if (held && existsSync(join(held.home, OWED))) {
     try { restart({ ...held.options, kickstart: false }, held.home, held.sha); } catch (restartError) { log(restartError.message); }
   }
+  if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
   process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : 1);
 });
