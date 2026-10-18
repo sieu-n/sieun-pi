@@ -201,6 +201,13 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     const backlog = unseen.filter(url => age(url) > NEW_WINDOW_DAYS);
     try {
       const inspected = due.length ? await deps.inspect(due) : { rows: [], not_asked: [] };
+      // A failed inspection is asked once more: on 10-18 at 05:21Z /ko/blog/kol-key-opinion-leader answered "Internal error encountered." and
+      // counted as unindexed, and the same URL inspected minutes later was PASS, Submitted and indexed.
+      const retry = inspected.rows.filter(row => row.http !== 200 || row.error).map(row => row.url);
+      if (retry.length) {
+        const again = new Map((await deps.inspect(retry)).rows.map(row => [row.url, row]));
+        inspected.rows = inspected.rows.map(row => again.get(row.url) ?? row);
+      }
       const failed = [...inspected.rows.filter(row => row.http !== 200 || row.error).map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), ...inspected.not_asked.map(url => `${path(url)} (quota)`)];
       const unindexed = inspected.rows.filter(row => row.http === 200 && !row.error && row.verdict !== "PASS");
       for (const row of inspected.rows) if (row.http === 200 && row.verdict === "PASS") state.indexed[row.url] = today;
