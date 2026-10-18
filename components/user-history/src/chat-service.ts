@@ -15,6 +15,7 @@ import { openChat } from "./chat-open.ts";
 import { RemoteAccess, tailnetOwner, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import { takeListenFd } from "./listen-fd.ts";
+import type { EarlyShell } from "./early-shell.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
 /**
@@ -358,6 +359,14 @@ async function serve(options: Options): Promise<void> {
   const readOnly = scratch ? await (await import("./read-only-daemon.ts")).readOnlyDaemon(service.config.socketPath, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`)) : null;
   await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
+  // The port answers page shells from disk while the rest loads (src/early-shell.ts): a shell during a restart waited 12.1 s at 12:42Z on 10-18.
+  // On systemd's socket chat-service-cli.mjs starts it before this module loads; a serve that binds its own port starts it here.
+  const started = (globalThis as { __chatEarlyShell?: EarlyShell | null }).__chatEarlyShell;
+  const early = started && listenFd !== null ? started : await (await import("./early-shell.ts")).startEarlyShell({ listenFd,
+    port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken, dataDir: service.directory }).catch(error => {
+    if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
+    throw error;
+  });
   const { DaemonKeeper } = await import("./chat-daemon.ts");
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
   const keeper = !scratch && startsDaemon(primary)
@@ -450,7 +459,7 @@ async function serve(options: Options): Promise<void> {
     },
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
-  const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, capability: service.config.capability, csrfToken: service.config.csrfToken,
+  const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, early, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close, tailnetOwner: () => tailnetOwner() }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;

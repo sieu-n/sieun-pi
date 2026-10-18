@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 
@@ -13,6 +13,7 @@ import type { RawProcess } from "./mac-usable-watch.ts";
  * itself: every process that carries the RLM_HARNESS_STATE_DIR of the job's session or of a session under it (its subagents) and sits under no
  * kernel and no Prime process (worker-footprint.py `strays`), and every Aside tab those sessions opened (`aside-browser-tabs.json` in their
  * session folders). Shared services (PM2, Aside, cua-driver) and Prime's own processes are never named, so ops guy's pm2 dev servers stay.
+ * It also deletes the repo copies a job left in its wiki session folders and the /tmp trees it made, after stopping the rig processes in them.
  */
 
 export const ARTIFACTS = join(homedir(), ".prime", "agent", "session-artifacts");
@@ -22,7 +23,9 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[] }
+export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; tmp: readonly string[] }
+/** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
+export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
   /** The detached processes of these sessions (worker-footprint.py `--session`). */
   strays: (sessions: readonly string[]) => Promise<readonly RawProcess[]>;
@@ -34,6 +37,12 @@ export interface LeftoverSource {
   later: (ms: number, run: () => void) => void;
   /** Deletes the repo copies left in the wiki session folders these transcripts opened (`removeRepoCopies`); returns the folders it deleted. */
   removeCopies: (transcripts: readonly string[]) => Promise<readonly string[]>;
+  /** The /tmp trees the sessions of these transcripts made (`madeTmpTrees`); `dirs` are the gone sessions' folders. */
+  tmpTrees: (transcripts: readonly string[], dirs: readonly string[]) => Promise<readonly string[]>;
+  /** The processes that run in or hold these dirs (worker-footprint.py `--inside`). */
+  inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
+  /** Deletes these dirs; returns the ones it deleted. */
+  removeTmp: (dirs: readonly string[]) => Promise<readonly string[]>;
 }
 
 /** The session ids, transcripts, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
@@ -139,6 +148,81 @@ export async function deletedFolders(chatDir: string): Promise<string[]> {
   return found.filter(dir => !found.some(other => other !== dir && dir.startsWith(other + "/")));
 }
 
+/** Top-level /tmp names every session shares (caches, sockets, Prime's own dir), never one job's tree. */
+const SHARED_TMP = /^(prime-agent-\d+|tsx-\d+|node-compile-cache|v8-compile-cache-\d+|pytest-of-.+|systemd-private-.+|tmux-\d+|ssh-.+|snap-private-tmp|jiti|\.[\w-]+-unix)$/;
+const TMP_NAME = "[A-Za-z0-9._+@-]+";
+
+function escaped(text: string): string { return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+/**
+ * A transcript without its tool results: what the session wrote or was told (its briefs, code, commands and messages). A path that shows only
+ * in a result, such as an `ls /tmp` listing, was made by someone else as often as by the session.
+ */
+async function ownLines(file: string): Promise<string> {
+  const text = await readFile(file, "utf8").catch(() => "");
+  return text.includes(TOOL_RESULT) ? text.split("\n").filter(line => !line.includes(TOOL_RESULT)).join("\n") : text;
+}
+const TOOL_RESULT = '"role":"toolResult"';
+
+/**
+ * The top-level entries of `root` (/tmp, a tmpfs, so each byte is RAM or swap) the sessions of these transcripts made: a transcript names it
+ * outside its tool results (`ownLines`), our user owns it, it was born after that session's first line and last changed before the session's
+ * file did, so an entry that was there before the job, or one a later job made or wrote under a reused name, stays. A tree that a session
+ * still live in the same chat names (a sibling job briefed to take over a rig) stays too; the chat and the jobs above a gone job are left out
+ * of that read, because they quote its report. On 10-18 at 12:5xZ us-metal02's /tmp held 32.6 GB with swap full: 14 p8iso Prime rigs of
+ * about 1 GB each and 6 GB of repo clones from gone jobs.
+ */
+export async function madeTmpTrees(transcripts: readonly string[], dirs: readonly string[], root = "/tmp", artifacts = ARTIFACTS): Promise<string[]> {
+  const named = new RegExp(`(?<![\\w./-])${escaped(root)}/(${TMP_NAME})`, "g");
+  const uid = process.getuid?.();
+  const made = new Set<string>();
+  for (const file of transcripts) {
+    const [text, info] = await Promise.all([ownLines(file), stat(file).catch(() => null)]);
+    let start = NaN;
+    try { start = Date.parse((JSON.parse(text.slice(0, text.indexOf("\n"))) as { timestamp?: string }).timestamp ?? ""); } catch { /* no header */ }
+    if (!info || !Number.isFinite(start)) continue;
+    for (const entry of new Set([...text.matchAll(named)].map(match => match[1]!))) {
+      const path = join(root, entry);
+      if (made.has(path) || SHARED_TMP.test(entry) || /^\.+$/.test(entry)) continue;
+      const item = await lstat(path).catch(() => null);
+      if (!item || item.isSymbolicLink() || (uid !== undefined && item.uid !== uid)) continue;
+      if (item.birthtimeMs > 0 && item.birthtimeMs >= start && item.mtimeMs <= info.mtimeMs) made.add(path);
+    }
+  }
+  if (!made.size) return [];
+  const ended = new Set(transcripts);
+  const above = (folder: string): boolean => dirs.some(dir => dir.startsWith(folder + "/"));
+  const tops = new Set(dirs.filter(dir => dir.startsWith(artifacts + "/")).map(dir => join(artifacts, dir.slice(artifacts.length + 1).split("/")[0]!)));
+  for (const top of tops) {
+    const gone = await deletedFolders(top);
+    const live = (await sessionTree(top)).transcripts.filter(file => !ended.has(file) && !above(dirname(file)) && !gone.some(dir => file.startsWith(dir + "/")));
+    for (const file of live) {
+      if (!made.size) break;
+      const text = await ownLines(file);
+      for (const path of made) if (new RegExp(`${escaped(path)}(?![A-Za-z0-9._+@-])`).test(text)) made.delete(path);
+    }
+  }
+  return [...made];
+}
+
+/**
+ * Ends the /tmp trees gone sessions made (`madeTmpTrees`): the processes that run in one (a rig's daemon with its home there, its fake model,
+ * a vite in a clone) get SIGTERM, then the tree is deleted. A tree that a shared service, a Prime process outside the rig or a process of a
+ * session still live uses is kept whole. On 10-18 a p8iso rig's units outlived the job's own teardown and held 10.9 GiB, and its processes
+ * carried no RLM_HARNESS_STATE_DIR (systemd-run starts them with a clean environment), so `strays` never saw them.
+ */
+async function endTmp(source: LeftoverSource, transcripts: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ stopped: RawProcess[]; removed: readonly string[] }> {
+  const trees = await source.tmpTrees(transcripts, dirs);
+  if (!trees.length) return { stopped: [], removed: [] };
+  const using = await source.inside(trees);
+  const ended = new Set(sessions);
+  const held = new Set(using.filter(entry => entry.shared || (entry.prime && entry.session === null) || (entry.session !== null && !ended.has(entry.session))).map(entry => entry.dir));
+  const free = trees.filter(dir => !held.has(dir));
+  const rig = new Map(using.filter(entry => !entry.prime && free.includes(entry.dir)).map(entry => [entry.pid, entry]));
+  const stopped = await stop(source, [...rig.values()]);
+  return { stopped, removed: free.length ? await source.removeTmp(free) : [] };
+}
+
 /** SIGTERM to each process whose start time still matches, then SIGKILL after KILL_AFTER_MS to each one still running with that start time. */
 async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promise<RawProcess[]> {
   const stopped: RawProcess[] = [];
@@ -157,7 +241,8 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 
 /**
  * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
- * open Aside for them again, and deletes the repo copies they left in the wiki session folders they opened. With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
+ * open Aside for them again, deletes the repo copies they left in the wiki session folders they opened, and ends the /tmp trees they made
+ * (`endTmp`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
  * delete leaves its children detached only once it exits.
  */
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
@@ -171,16 +256,19 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
     const record = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => null);
     if (record) await writeFile(file, JSON.stringify({ ...record, tabs: {} })).catch(() => {});
   }
-  const copies = await source.removeCopies(trees.flatMap(tree => tree.transcripts)).catch(() => []);
-  return { stopped, tabs: Math.max(tabs, 0), copies };
+  const transcripts = trees.flatMap(tree => tree.transcripts);
+  const copies = await source.removeCopies(transcripts).catch(() => []);
+  const tmp = await endTmp(source, transcripts, typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ stopped: [], removed: [] }));
+  return { stopped: [...stopped, ...tmp.stopped], tabs: Math.max(tabs, 0), copies, tmp: tmp.removed };
 }
 
-function helper(args: readonly string[]): Promise<unknown> {
+function helper(args: readonly string[], input = ""): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+    const child = execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
       if (error) { reject(error); return; }
       try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
+    child.stdin?.end(input);
   });
 }
 
@@ -203,10 +291,11 @@ console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(i
   });
 }
 
-/** Transcripts whose wiki session folders were already cleared, so the sweep of deleted jobs reads each transcript once. */
+/** Transcripts whose wiki session folders and /tmp trees were already cleared, so the sweep of deleted jobs reads each transcript once. */
 const copiesCleared = new Set<string>();
+const tmpCleared = new Set<string>();
 
-/** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, and `removeRepoCopies`. */
+/** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open, `removeRepoCopies` and `madeTmpTrees`. */
 export const leftoverSource: LeftoverSource = {
   strays: async sessions => {
     const answer = await helper(["--session", sessions.join(",")]) as { strays?: RawProcess[] };
@@ -220,5 +309,19 @@ export const leftoverSource: LeftoverSource = {
     const fresh = transcripts.filter(file => !copiesCleared.has(file));
     for (const file of fresh) copiesCleared.add(file);
     return removeRepoCopies(fresh);
+  },
+  tmpTrees: (transcripts, dirs) => {
+    const fresh = transcripts.filter(file => !tmpCleared.has(file));
+    for (const file of fresh) tmpCleared.add(file);
+    return fresh.length ? madeTmpTrees(fresh, dirs) : Promise.resolve([]);
+  },
+  inside: async dirs => {
+    const answer = await helper(["--inside"], dirs.join("\n") + "\n") as { inside?: InsideProcess[] };
+    return Array.isArray(answer?.inside) ? answer.inside : [];
+  },
+  removeTmp: async dirs => {
+    const removed: string[] = [];
+    for (const dir of dirs) if (await rm(dir, { recursive: true, force: true }).then(() => true, () => false)) removed.push(dir);
+    return removed;
   },
 };

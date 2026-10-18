@@ -1,6 +1,6 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { JobFact } from "./checkin-steps.ts";
+import { type JobFact, POOL_WAIT } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
@@ -52,4 +52,46 @@ export async function writeResumePending(dataDir: string, runs: readonly Pick<In
   const temp = `${file}.${process.pid}.tmp`;
   const body = { at, runs: runs.flatMap(run => run.session_id ? [{ session: run.session_id, reason: run.reason }] : []) };
   await writeFile(temp, JSON.stringify(body)).then(() => rename(temp, file));
+}
+
+/**
+ * The pool wait a session's own transcript ends on: its last assistant message failed with pi-pool's reply that the session waits for its
+ * slot, or with the token hook's. A thread's catalog row has no error text, so `poolWait` never saw one: during the 14:09Z outage on 10-18 the
+ * check-in restarted the threads "wiki memory moves 10-18b" and "d7 mac reads and cpu minutes 10-18" three times each for "nothing moved",
+ * while both transcripts ended on "this session waits for its slot at 14:20:57Z".
+ */
+export function lastPoolWait(tail: string): string | undefined {
+  const lines = tail.split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const raw = lines[index]!;
+    if (!raw.includes('"assistant"')) continue;
+    let line: { type?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+    try { line = JSON.parse(raw); } catch { continue; }
+    if (line.type !== "message" || line.message?.role !== "assistant") continue;
+    const error = line.message.errorMessage;
+    return line.message.stopReason === "error" && typeof error === "string" && POOL_WAIT.test(error) ? error : undefined;
+  }
+  return undefined;
+}
+
+const TAIL_BYTES = 64 * 1024;
+async function tailOf(file: string): Promise<string> {
+  const size = (await stat(file).catch(() => null))?.size;
+  if (!size) return "";
+  const handle = await open(file, "r");
+  try {
+    const length = Math.min(size, TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    return buffer.toString("utf8");
+  } finally { await handle.close(); }
+}
+
+/** Each thread fact that is not working and whose transcript ends on a pool wait gets that wait as its error, which `poolWait` reads. */
+export async function withThreadPoolWaits(facts: readonly JobFact[], sessionsDir: string): Promise<JobFact[]> {
+  return Promise.all(facts.map(async fact => {
+    if (!fact.key.startsWith("thread:") || fact.state === "working") return fact;
+    const wait = lastPoolWait(await tailOf(join(sessionsDir, `${fact.key.slice("thread:".length)}.jsonl`)).catch(() => ""));
+    return wait ? { ...fact, error: wait } : fact;
+  }));
 }

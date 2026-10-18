@@ -14,7 +14,7 @@ import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { relayWatch } from "./hosts.ts";
@@ -166,7 +166,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
       file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), scratch);
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
-  const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
+  const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), read: readPoolClasses, set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   // Each chat's duties: every run starts one duty job linked to the chat. The standing ones are scheduled here; the built-in check-in duty is
   // scheduled and measured in Chats and handed here, and its card edits the check-in setting.
@@ -207,7 +207,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
+      interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {
           await threads.abort(id);
           await threads.settled(id);
@@ -259,7 +259,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
-  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog,
+  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session),
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
@@ -328,12 +328,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     restNow: (id, quietMs) => threads.restNow(id, quietMs),
     title: id => catalog.title(id),
-    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type),
+    // Only a file on this box can be rewritten as active after a bare kill, so another box's session is never killed by a daemon without
+    // kill_origin (src/idle-unload.ts NO_BARE_KILL).
+    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type, !catalog.hostOf(row.sessionId)),
     stopped: async (row, isChat, since) => {
       await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
-      // The daemon's kill writes the archived state, which would hide a chat until the next service start unarchived it (Chats.adopt) and the
-      // owner's plain thread (threads.json) for good. A chat he archived stays archived, and so does a thread an archive reached since `since`.
-      const listed = isChat || ((await created.ids()).includes(row.sessionId) && !(await chats.archivedIds()).has(row.sessionId));
+      // The daemon's kill writes the archived state, which would hide the session from agent_message and the list. Every session it stopped
+      // is rewritten as active, not only chats and threads.json threads: on 10-18 the jobs 'parity prod promote 12' and 'meta ads advertisers
+      // push' stayed archived after the 12:53:07Z sweep. A chat he archived stays archived, and so does a thread an archive reached since `since`.
+      const listed = isChat || !(await chats.archivedIds()).has(row.sessionId);
       if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
     },
     log: dutyLog,

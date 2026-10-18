@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHECKS, type Deps } from "../scripts/duties/skills-and-tools.ts";
+import { CHECKS, type Deps, type ExecResult, runChecks, toOutput } from "../scripts/duties/skills-and-tools.ts";
 
 const asideTabs = CHECKS.find(check => check.id === "aside_tabs")!;
 const deps = (platform?: NodeJS.Platform): Deps => ({
@@ -127,4 +127,42 @@ test("skill_paths runs check-skill-paths.mjs over a git archive of HEAD with GIT
   assert.deepEqual(calls.at(-1)!.args, ["-rf", node.cwd, `${node.cwd}.tar`]);
   const dead = await skillPaths.run(run('[{"file":"a/SKILL.md","line":1,"ref":"apps/x.ts"}]'));
   assert.ok(dead.status === "fail" && dead.detail.includes("apps/x.ts"), JSON.stringify(dead));
+});
+
+const macChecks = CHECKS.filter(check => ["aside_tabs", "aside_account", "paper_mcp"].includes(check.id));
+const tailscale = (online: boolean) => JSON.stringify({ Peer: { "nodekey:1": { DNSName: "main-dev-sieuns-macbook-pro-m2max.tail0c093d.ts.net.", TailscaleIPs: ["100.66.173.18"], Online: online, LastSeen: "2026-10-18T11:10:00Z" } } });
+const macDeps = (online: boolean, account: ExecResult, calls: string[]): Deps => ({
+  ...deps("linux"),
+  now: () => Date.parse("2026-10-18T13:24:00Z"),
+  readFile: async () => JSON.stringify({ mcpServers: { aside: { command: "aside", args: ["mcp"] }, paper: { command: "/usr/bin/ssh", args: ["mac", "paper", "mcp"] } } }),
+  mcp: async command => { calls.push(`mcp ${command}`); return { tools: [], error: "the server exited with code 255 before answering" }; },
+  exec: async (file, args) => {
+    calls.push(`${file} ${args.join(" ")}`);
+    if (file === "ssh" && args[0] === "-G") return { code: 0, stdout: "user sieunpark\nhostname 100.66.173.18\nport 22\n", stderr: "", ms: 0 };
+    if (file === "tailscale") return { code: 0, stdout: tailscale(online), stderr: "", ms: 0 };
+    return account;
+  },
+});
+const TIMED_OUT = { code: 124, stdout: "", stderr: "", ms: 10_002 };
+
+test("an offline Mac turns aside_tabs, aside_account and paper_mcp off, with no owner fix and one Tailscale probe", async () => {
+  const calls: string[] = [];
+  const results = await runChecks(macDeps(false, TIMED_OUT, calls), macChecks);
+  for (const { check, outcome } of results) {
+    assert.equal(outcome.status, "off", `${check.id} ${JSON.stringify(outcome)}`);
+    assert.ok(outcome.detail.includes("MacBook Pro is offline (Tailscale last seen 2h ago)"), outcome.detail);
+  }
+  assert.deepEqual(toOutput(results, 0).metrics, { checks_failed: 0, owner_fixes: 0, cua_failed: 0, websearch_failed: 0, checks_run: 3 });
+  assert.deepEqual(calls, ["ssh -G mac", "tailscale status --json"]);
+});
+
+test("aside_account on an online Mac keeps a signed-out reply as the owner's fix", async () => {
+  const signedOut = { code: 0, stdout: "  u0 sieunpark77@gmail.com signed out\n", stderr: "", ms: 0 };
+  const outcome = await CHECKS.find(check => check.id === "aside_account")!.run(macDeps(true, signedOut, []));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "owner" && outcome.fix.includes("sign in"), JSON.stringify(outcome));
+});
+
+test("aside_account on an online Mac calls a timeout a reach problem, not a sign-in", async () => {
+  const outcome = await CHECKS.find(check => check.id === "aside_account")!.run(macDeps(true, TIMED_OUT, []));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("ssh mac true") && !outcome.fix.includes("sign in"), JSON.stringify(outcome));
 });

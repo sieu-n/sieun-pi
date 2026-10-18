@@ -105,6 +105,39 @@ async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
   return false;
 }
 
+/** Whether host `mac` is up, for the checks that reach the Mac's Aside and Paper over ssh from the linux box. */
+export type MacReach = { online: true } | { online: false; detail: string };
+const macReaches = new WeakMap<Deps, Promise<MacReach>>();
+/**
+ * On linux, `aside` (~/.local/bin/aside-mac) and the paper MCP run over `ssh mac`, so a closed MacBook Pro failed aside_tabs, aside_account and
+ * paper_mcp at once on 10-18 13:24Z and told the owner to sign in to Aside. Tailscale's peer entry says whether the Mac is up without a network
+ * wait; it runs once per run (one promise per Deps), and anything it cannot read counts as online so the checks run as before.
+ */
+function macReach(deps: Deps): Promise<MacReach> {
+  if (deps.platform !== "linux") return Promise.resolve({ online: true });
+  let reach = macReaches.get(deps);
+  if (!reach) { reach = probeMac(deps); macReaches.set(deps, reach); }
+  return reach;
+}
+async function probeMac(deps: Deps): Promise<MacReach> {
+  // Both read local state (the ssh config, the tailscaled socket) and took 0.09 s and 0.03 s on us-metal02 on 10-18.
+  const host = /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: 10_000 })).stdout)?.[1];
+  if (!host) return { online: true };
+  type Peer = { DNSName?: string; TailscaleIPs?: string[]; Online?: boolean; LastSeen?: string };
+  let peers: Peer[];
+  try { peers = Object.values((parseJson((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: 10_000 })).stdout) as { Peer?: Record<string, Peer> }).Peer ?? {}); }
+  catch { return { online: true }; }
+  const peer = peers.find(entry => entry.TailscaleIPs?.includes(host) || entry.DNSName?.replace(/\.$/, "") === host);
+  if (peer?.Online !== false) return { online: true };
+  return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${ago(deps.now(), peer.LastSeen)}); Aside and Paper answer again when it wakes` };
+}
+const ago = (now: number, at: string | undefined): string => {
+  const minutes = Math.round((now - Date.parse(at ?? "")) / 60_000);
+  if (!Number.isFinite(minutes) || minutes < 0) return "at an unknown time";
+  return minutes < 60 ? `${minutes} min ago` : minutes < 48 * 60 ? `${Math.round(minutes / 60)}h ago` : `${Math.round(minutes / 1440)} days ago`;
+};
+const MAC_REACH_FIX = "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check";
+
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
 /** The version in a release folder name such as 0.9.8-daemon-fix.1-darwin-arm64-<sha>.VQKrC7, pre-release tag kept. */
@@ -323,6 +356,8 @@ export const CHECKS: readonly Check[] = [
     return FAIL("agent", `no results: ${failText(result)}`, "check that api.virev.ai answers and the skill's .venv imports");
   } },
   { id: "aside_tabs", group: "browser", tool: "Aside browser MCP", run: async deps => {
+    const mac = await macReach(deps);
+    if (!mac.online) return { status: "off", detail: mac.detail };
     const server = await mcpServer(deps, "aside");
     if (typeof server === "string") return missingServer("aside", server);
     const answer = await deps.mcp(server.command, server.args ?? [], { name: "repl", arguments: { title: "Skills duty probe",
@@ -332,15 +367,21 @@ export const CHECKS: readonly Check[] = [
     const count = Number(/"count"\s*:\s*(\d+)/.exec(result?.content?.[0]?.text ?? "")?.[1] ?? NaN);
     if (!answer.error && result?.isError !== true && count >= 1) return PASS(`${count} tabs`);
     return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(result?.content?.[0]?.text ?? "no text", 200)}`, deps.platform === "linux"
-      ? "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check"
-      : "open Aside with `open -a Aside` and re-check");
+      ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
   } },
+  /** Only a reply that lists no signed-in account is the owner's; a timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z and 13:24Z) is a reach problem. */
   { id: "aside_account", group: "browser", tool: "Aside account", run: async deps => {
+    const mac = await macReach(deps);
+    if (!mac.online) return { status: "off", detail: mac.detail };
     const result = await deps.exec("aside", ["account", "status"], { timeoutMs: 10_000 });
     const line = /^\*\s+\S+\s+\S+@\S+\s+signed in.*$/m.exec(result.stdout);
-    return line ? PASS(brief(line[0], 100)) : FAIL("owner", `aside account status: ${failText(result)}`, "sign in to the Aside account in the Aside app");
+    if (line) return PASS(brief(line[0], 100));
+    if (result.code !== 0) return FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
+    return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
   } },
   { id: "paper_mcp", group: "mcp", tool: "Paper MCP", run: async deps => {
+    const mac = await macReach(deps);
+    if (!mac.online) return { status: "off", detail: mac.detail };
     const server = await mcpServer(deps, "paper");
     if (typeof server === "string") return missingServer("paper", server);
     const answer = await deps.mcp(server.command, server.args ?? [], { name: "list_resources", arguments: { limit: 1 } }, MCP_TIMEOUT_MS);

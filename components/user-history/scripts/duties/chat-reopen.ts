@@ -8,7 +8,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * runs no chat itself. The duty job runs the check, and the server's after-job measure reads its verdict. Only a verdict written since the
  * newest run in LAST_RUNS_FILE started counts: a scheduled run reads the check of the run before it, and the after-job measure, whose runs
  * include its own, reads the check its job ran. A missing or older verdict, an open or void one, and a criterion not reached all read 0,
- * because an incomplete check is no pass.
+ * because an incomplete check is no pass. A run folder with a run.json and no verdict yet is a check still going: it reads 0 and is flagged
+ * `pending` with its window's end, so the duty job waits for it and starts no second check.
  *
  *   OUTPUT_FILE=<file> node --import tsx scripts/duties/chat-reopen.ts [--dir <dir>]
  */
@@ -33,6 +34,12 @@ const flagged: FlaggedSlice[] = [];
 const files = existsSync(dir) ? readdirSync(dir).filter(name => VERDICT.test(name)).sort() : [];
 const newest = files.at(-1);
 let metrics = zero;
+const pending = existsSync(dir) ? readdirSync(dir).filter(name => /^\d{8}-\d{4}$/.test(name) && existsSync(join(dir, name, "run.json")) &&
+  !files.some(file => file.startsWith(`${name}.`))).sort().at(-1) : undefined;
+if (pending) {
+  const until = (JSON.parse(readFileSync(join(dir, pending, "run.json"), "utf8")) as { until?: number }).until;
+  flagged.push({ kind: "pending", excerpt: `the reopen check ${pending} is still going${until ? ` until ${new Date(until).toISOString()}` : ""}: ${join(dir, pending)}` });
+}
 if (!newest) flagged.push({ kind: "gap", excerpt: `no reopen check has run yet: no verdict file in ${dir}` });
 else {
   const file = join(dir, newest);
@@ -45,7 +52,7 @@ else {
   if (at < since) flagged.push({ kind: "gap", at, excerpt: `no reopen check ran since the last run started at ${new Date(since).toISOString()}; the newest is ${newest}` });
   else if (verdict === "open" || verdict === "void") flagged.push({ kind: "incomplete", at, excerpt: `the reopen check ${stamp} ended ${verdict}: ${file}` });
   else if (Object.keys(read).length !== KEYS.length) flagged.push({ kind: "gap", at, excerpt: `${file} has no full Readings line` });
-  else metrics = { ...zero, ...read };
+  else if (!pending || pending < stamp!) metrics = { ...zero, ...read };
   const chat = /^Chat ([0-9a-f-]{36}) /m.exec(text)?.[1];
   for (const line of text.split("\n").filter(line => /^- \w+: (not met|not reached yet): /.test(line))) {
     flagged.push({ kind: "criterion", at, ...chat ? { chat } : {}, excerpt: line.slice(2, 400) });

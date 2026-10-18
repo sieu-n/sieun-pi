@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Outbox, type Stored } from "./outbox.ts";
 import { isSendTimeout, landedAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, stoppedSubagent } from "./subagent-relay.ts";
+import { moveOf } from "./worker-move.ts";
 
 /*
  * Every agent message the service sends (wakes, spawn briefs, alerts, the bridge watchdog) waits on disk here until the daemon takes it, so
@@ -20,6 +21,8 @@ export interface AgentOutboxDeps {
   fileOf: (session: string) => Promise<string | null>;
   /** Starts a tree's root from its file, for a target the daemon does not find. */
   startRoot?: (root: string) => Promise<void>;
+  /** The box that runs the session, null for this box; the outbox lines name another box, so the Whole system precheck books them there. */
+  hostOf?: (session: string) => string | null;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -34,16 +37,15 @@ class Full extends Error {}
 /** The target's worker is stopping or starting, so nothing was sent. */
 class Moving extends Error {}
 
-/**
- * A refusal because the target's worker is stopping or starting (or its session is closing). 10-18 12:06 to 12:22Z, 5 such messages got 1 to
- * 3 refusals each, every one counted in the Whole system precheck, and the outbox delivered each 6 to 63 s after its first refusal.
- */
-const MOVING = /Session worker is (stopping|starting)|Active session \S+ is (closing)/;
-
 /** The daemon's pending message limit a refusal names ("Target session has too many pending messages: 20 unfinished, limit is 20"). */
 export function pendingLimit(error: unknown): number | undefined {
   const found = /too many pending messages: \d+ unfinished, limit is (\d+)/.exec(error instanceof Error ? error.message : String(error));
   return found ? Number(found[1]) : undefined;
+}
+
+/** The root of a subagent's tree from its session file (`session-artifacts/<root>/...`); undefined for a root's own file. */
+export function treeOf(file: string | null): string | undefined {
+  return file ? /\/session-artifacts\/([0-9a-f-]{36})\//.exec(file)?.[1] : undefined;
 }
 
 export class AgentOutbox {
@@ -57,16 +59,23 @@ export class AgentOutbox {
   /** Targets whose worker was stopping or starting at the last send, with what it was doing and since when; their sends wait on get_state. */
   private readonly moving = new Map<string, { doing: string; since: number }>();
 
+  /**
+   * The send under way into each session tree, by its root. A tree's sessions share one worker, which took the 18 wakes of CI run 39124631211
+   * that went into the Crawler VP tree at 12:18:05Z on 10-18 one after another while us-metal02 read 59% cpu some: 7 landed from 12:18:06Z
+   * to 12:18:38Z, and the 11 still waiting at 12:18:35Z each timed out at the daemon's 30 s and counted as a fault. One send into a tree at a
+   * time asks the worker for what it does anyway, so each call waits only for its own target.
+   */
+  private readonly trees = new Map<string, Promise<unknown>>();
+
   private readonly now: () => number;
 
   constructor(dir: string, private readonly deps: AgentOutboxDeps) {
     this.now = deps.now ?? Date.now;
-    this.outbox = new Outbox({ dir, log: deps.log, ...deps.sleep ? { sleep: deps.sleep } : {}, ...deps.now ? { now: deps.now } : {},
+    this.outbox = new Outbox({ dir, log: deps.log, where: session => this.where(session), ...deps.sleep ? { sleep: deps.sleep } : {}, ...deps.now ? { now: deps.now } : {},
       deliver: async (entry, sending) => {
         const session = entry.threadId;
         await this.room(session, entry.id);
-        await sending();
-        if (await this.send(session, entry) === "sent") return;
+        if (await this.inTree(session, async () => { await sending(); return this.send(session, entry); }) === "sent") return;
         // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
         const file = await deps.fileOf(session).catch(() => null);
         const child = file ? await stoppedSubagent(file) : null;
@@ -107,27 +116,43 @@ export class AgentOutbox {
   private async send(session: string, entry: Stored): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
     try { sent = await this.deps.send(session, entry.text); } catch (error) {
-      const doing = MOVING.exec(error instanceof Error ? error.message : String(error));
+      const doing = moveOf(error);
       if (doing) {
         if (!this.moving.has(session)) {
-          this.moving.set(session, { doing: doing[1] ?? doing[2]!, since: this.now() });
-          this.deps.log(`outbox ${session.slice(0, 8)}: the target's worker is ${doing[1] ?? doing[2]}; ${entry.id} and the sends after it wait until get_state reads it`);
+          this.moving.set(session, { doing, since: this.now() });
+          this.deps.log(`outbox ${this.where(session)}: the target's worker is ${doing}; ${entry.id} and the sends after it wait until get_state reads it`);
         }
-        throw new Moving(doing[0]);
+        throw new Moving(error instanceof Error ? error.message : String(error));
       }
       const limit = pendingLimit(error);
       if (limit !== undefined && !this.full.has(session)) {
         this.full.set(session, limit);
-        this.deps.log(`outbox ${session.slice(0, 8)}: the target is full; ${entry.id} and the sends after it wait until it holds fewer than ${limit} unfinished messages`);
+        this.deps.log(`outbox ${this.where(session)}: the target is full; ${entry.id} and the sends after it wait until it holds fewer than ${limit} unfinished messages`);
       }
       throw error;
     }
     const moved = this.moving.get(session);
     if (moved) {
       this.moving.delete(session);
-      if (sent === "sent") this.deps.log(`outbox ${session.slice(0, 8)}: ${entry.id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
+      if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${entry.id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
     }
     return sent;
+  }
+
+  /** `act` once the send before it into the same tree (`treeOf`) ended. */
+  private async inTree<T>(session: string, act: () => Promise<T>): Promise<T> {
+    const tree = treeOf(await this.deps.fileOf(session).catch(() => null)) ?? session;
+    const run = (this.trees.get(tree) ?? Promise.resolve()).then(act);
+    const done = run.then(() => {}, () => {});
+    this.trees.set(tree, done);
+    void done.then(() => { if (this.trees.get(tree) === done) this.trees.delete(tree); });
+    return run;
+  }
+
+  /** The session's short id, and the box that runs it when that is another box. */
+  private where(session: string): string {
+    const host = this.deps.hostOf?.(session) ?? null;
+    return `${session.slice(0, 8)}${host ? ` on ${host}` : ""}`;
   }
 
   /** Throws Full while a target the daemon refused as full still reads as full, or does not answer; a target with no worker has room. */
@@ -140,7 +165,7 @@ export class AgentOutbox {
     const unfinished = target === null ? undefined : target.unfinished ?? 0;
     if (unfinished === undefined || unfinished >= limit) throw new Full(`the target holds ${unfinished ?? "an unknown number of"} unfinished messages, limit ${limit}`);
     this.full.delete(session);
-    this.deps.log(`outbox ${session.slice(0, 8)}: the target has room, ${unfinished} of ${limit} unfinished; sending ${id}`);
+    this.deps.log(`outbox ${this.where(session)}: the target has room, ${unfinished} of ${limit} unfinished; sending ${id}`);
   }
 
   /** Where a copy that may have gone is: in the target's file, in its worker's queue, held while the target is busy, in neither, or unknown. */

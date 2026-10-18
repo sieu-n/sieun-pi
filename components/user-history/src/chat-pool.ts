@@ -413,7 +413,7 @@ export const poolCommand = {
 export interface ProdRecord { trees: Record<string, string>; sessions: Record<string, string>; until: number }
 /** Sends the prod record to the pool, or clears it with null (src/prod-turns.ts). */
 export async function setProdTurns(record: ProdRecord | null): Promise<void> {
-  await run(poolCommand.prod(record));
+  partOut(await poolPart(poolCommand.prod(record)));
 }
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
@@ -503,10 +503,30 @@ export async function releaseTurn(sessionId: string): Promise<void> {
   await run(poolCommand.release(sessionId));
 }
 
-/** Sets a root session's pool class; the pool keeps it on the tree record, so every subagent of the root shares it. */
+/** The class a tree's pool record holds as the pool reads it, and its sidebar label; null priority for a tree with no record yet. */
+export interface PoolTreeClass { priority: PoolPriority | null; label: PoolPriority | null }
+
+/**
+ * Each tree's record as `pi-pool snapshot --json --tree <id>...` reads it, by session id, for the roots a sync has not set yet. Null when
+ * the pool does not answer it, such as an installed pi-pool from before --tree; a tree whose entry does not parse is left out.
+ */
+export async function readPoolClasses(sessionIds: readonly string[], part: (args: readonly string[]) => Promise<PoolPart> = poolPart): Promise<Map<string, PoolTreeClass> | null> {
+  const said = await part(["snapshot", "--json", ...sessionIds.flatMap(id => ["--tree", id])]);
+  if (said.code !== 0) return null;
+  const value: unknown = JSON.parse(said.out);
+  if (!isRecord(value) || !Array.isArray(value.trees)) return null;
+  return new Map(value.trees.flatMap((entry: unknown): [string, PoolTreeClass][] => {
+    if (!isRecord(entry) || !text(entry.session)) return [];
+    const priority = parsePoolPriority(entry.priority), label = parsePoolPriority(entry.label);
+    if ((entry.priority !== null && !priority) || (entry.label !== null && !label)) return [];
+    return [[entry.session as string, { priority, label }]];
+  }));
+}
+
+/** Sets a root session's pool class through hookd when it answers (poolPart); the pool keeps it on the tree record, so every subagent of the root shares it. */
 export async function setPoolPriority(sessionId: string, priority: PoolPriority): Promise<void> {
   if (!sessionId || sessionId.startsWith("-")) throw new Error("Choose a thread.");
-  try { await run(poolCommand.priority(sessionId, priority)); } finally { forgetAccountReadings(); }
+  try { partOut(await poolPart(poolCommand.priority(sessionId, priority))); } finally { forgetAccountReadings(); }
 }
 
 const accountArgument = (account: string | undefined): string => {

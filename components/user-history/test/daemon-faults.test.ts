@@ -138,3 +138,32 @@ test("the service's own stop and an outbox wait on a moving worker are no fault,
   assert.deepEqual(faults.map(fault => `${new Date(fault.at).toISOString()} ${fault.session} ${fault.what}`),
     ["2026-10-18T12:18:31.152Z 01a11d25 an outbox send waited 63 s while its worker was stopping"]);
 });
+
+// 10-18: outbox and open lines named no box unless a timeout's Socket did, so d7 booked the waits and refusals of Mac sessions 01a11d25,
+// 01a10810, 01a10db4, 01a11ba8 and 01a14ec1 on us-metal02. The lines now name another box after the session, and a job's wake takes the box
+// of the open just before it.
+test("an outbox or open line that names its box books the fault there, and a job's wake takes the box of its open", () => {
+  const faults = readServiceFaults([
+    "2026-10-18T12:18:31.152Z outbox 01a11d25 on mac: m-ded9b958-ea2c-4eb7-ba6a-35e8ed97eec9 went after its target's worker was stopping for 63 s",
+    "2026-10-18T12:19:27.037Z outbox 01a11ba8 on mac: m-bee74f88-b7da-4906-8918-f3ebb3720426 try 1: Session worker is failed",
+    "open 01a14ec1 on mac live 149 messages: catalog 297ms, first page 55ms, queue 0ms, attach 2678ms, failed: Session worker is stopping, total 4163ms",
+    "job 01a14ec1: wake: Session worker is stopping",
+    "2026-10-18T12:32:20.015Z duty 01a14d31/d1: met, tool_rows_off 0 (on target)",
+    "open 01a14efc saved 21 messages: catalog 0ms, first page 150ms, queue 0ms, failed: Session worker is stopping, total 516ms",
+    "job 01a14efc: wake: Session worker is stopping",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => `${fault.session} ${fault.host}`),
+    ["01a11d25 mac", "01a11ba8 mac", "01a14ec1 mac", "01a14ec1 mac", "01a14efc us-metal02", "01a14efc us-metal02"]);
+});
+
+// 12:46:22Z on 10-18 the supervisor refused a wake's send_message with "Session worker is stopping", the outbox waited it out with no line,
+// and the refusal alone made the minute dirty; the open of 01a14efc at 12:32:33Z was refused the same way.
+test("the supervisor's refusal for a worker that is stopping or starting is no fault, since the service waits it out", () => {
+  const faults = readSupervisorFaults([
+    "[2026-10-18T12:46:22.561Z] supervisor: Supervisor command send_message failed: Error: Session worker is stopping",
+    "[2026-10-18T12:32:33.591Z] supervisor: Supervisor command attach failed: Error: Session worker is stopping",
+    "[2026-10-18T06:47:36.113Z] supervisor: Supervisor command attach failed: Error: Session worker is starting",
+    "[2026-10-18T12:30:36.871Z] supervisor: Supervisor command reload failed: Error: Daemon worker client closed",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => fault.what), ["the supervisor's reload failed, its worker's connection closed"]);
+});

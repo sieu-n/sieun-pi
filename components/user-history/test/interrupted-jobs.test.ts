@@ -278,13 +278,20 @@ test("the job sweep logs an unresolved stop of a chat's job, does not send it, a
   const stop = (id: string, head: string) => ({ id: id.slice(-12), name: id, session_id: id, head: head.slice(-12), head_session_id: head,
     archived_at: "2026-10-18T06:52:53.805Z", error: "An archive with no recorded cause stopped its turn, so it is not resumed." });
   const calls: string[][] = [];
-  const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [], heads: [], checked_at: "now", unresolved: [stop("j-mine", "chat1"), stop("j-other", "elsewhere")] }; });
+  const deleted = (id: string, head: string) => ({ id: id.slice(-12), name: id, session_id: id, head: head.slice(-12), head_session_id: head,
+    stopped_at: "2026-10-18T10:40:44.800Z", stopped_by: "its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z)" });
+  const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [], heads: [], checked_at: "now",
+    unresolved: [stop("j-mine", "chat1"), stop("j-other", "elsewhere")], stopped: [deleted("j-deleted", "chat1"), deleted("j-far", "elsewhere")] }; });
   const lines: string[] = [];
   await resumeChatJobs([row("chat1", at)], new Set(["chat1"]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners), line => lines.push(line));
   assert.deepEqual(calls, [["--dry-run", "--direct"]]);
-  assert.deepEqual(lines, ["job j-mine: not resumed: an archive at 2026-10-18T06:52:53.805Z with no recorded cause stopped its turn (j-mine)"]);
+  assert.deepEqual(lines, [
+    "job j-mine: not resumed: An archive with no recorded cause stopped its turn, so it is not resumed. (archive at 2026-10-18T06:52:53.805Z, j-mine)",
+    "job j-deleted: not resumed, stopped on purpose: its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z) (j-deleted)"]);
   const dir = await mkdtemp(join(tmpdir(), "resume-script-"));
   const bad = join(dir, "bad.py");
   await writeFile(bad, `print(${JSON.stringify(JSON.stringify({ paused: [], heads: [], checked_at: "now", unresolved: [{ ...stop("j-mine", "chat1"), session_id: 3 }] }))})\n`);
   await assert.rejects(runScript(["--dry-run"], bad), /printed a report whose unresolved\[0\]\.session_id is missing/);
+  await writeFile(bad, `print(${JSON.stringify(JSON.stringify({ paused: [], heads: [], checked_at: "now", stopped: [{ ...deleted("j-deleted", "chat1"), stopped_by: 3 }] }))})\n`);
+  await assert.rejects(runScript(["--dry-run"], bad), /printed a report whose stopped\[0\]\.stopped_by is missing/);
 });

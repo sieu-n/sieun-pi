@@ -100,9 +100,11 @@ On us-metal02 on 10-18 Prime ran the token hook 16 times a second at 0.2 CPU s e
 same hook or CLI code with the client's argv, environment, cwd and parent pid, so every
 pool decision is the same code as before.
 
-The C hook client sends its fds 0, 1 and 2 with the request, so the token goes straight to
-Prime's pipe. It runs the Python hook itself for `--status`, `--cli`, other arguments and a
-terminal, when the socket does not answer, and when hookd answers `F`. Once the whole
+The C hook client sends its fds 0, 1 and 2 with the request, so the token, and the output of
+the /account extension's `--cli` calls, go straight to the caller's pipe. It runs the Python
+hook itself for `--status`, `--cli token`, `--cli watch`, other arguments and a terminal, when
+the socket does not answer, and when hookd answers `F`. A `--cli admit --wait` blocks in its
+hookd child, and its default `--pid` is the client's parent, as on the Python path. Once the whole
 request is sent it never runs the Python hook, so one request never vends twice. A
 SIGTERM to the client, or a client that goes away, reaches the run as a SIGTERM, which
 logs `hook_killed` and `hook_no_token` `interrupted` as before.
@@ -575,7 +577,7 @@ One run of one session holds one working slot from its first model call to its a
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
 - `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue.
 - `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
-- `pi-pool snapshot --json [--thread <session> <model>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints, with "" for no session or model. The chat service reads the pool this way, one process per 2 s at most, where on 10-18 at 11:44Z it ran those commands about 3 times a second (`pool/snapshot.py`).
+- `pi-pool snapshot --json [--thread <session> <model>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints, with "" for no session or model. The chat service reads the pool this way, one process per 2 s at most, where on 10-18 at 11:44Z it ran those commands about 3 times a second (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`: the class `priority --session <session>` keeps on that tree's record as the pool reads it (`normal` when the record has none), its sidebar label, and null priority when the tree has no record yet. The chat service reads it before it sets a class, so a restart sets only the roots whose record holds another class.
 - `pi-pool prod set '{"trees": {...}, "sessions": {...}, "until": <epoch sec>}'` names the trees and sessions on prod work, whose runs start at once as kind `prod`, and `pi-pool prod clear` drops the record.
 
 An owner run never waits and still counts toward the limit, so background work waits behind it.

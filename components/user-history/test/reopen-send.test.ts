@@ -13,7 +13,7 @@ import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
 import { reopenSibling, type Root, type RootDirectory } from "../src/cross-host-message.ts";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
-import { adoptMoved, type DaemonAnswer, type ReopenCatalog, reopenSession, sendReopening, treeRoot } from "../src/reopen-send.ts";
+import { adoptMoved, type DaemonAnswer, type ReopenCatalog, reopenSession, sendReopening, treeRoot, unarchiveOnItsBox } from "../src/reopen-send.ts";
 
 const REVIEWER = "01a11d25-4c00-7613-9039-7a8377db04bb";
 const VP_OF_CI = "01a1180e-6567-747f-bf44-452520ebdd1b";
@@ -182,4 +182,19 @@ test("a root kernel's sibling send refused as failed asks the chat service to op
     assert.deepEqual(await kernel(), { deliveryStatus: "delivered", sends: 2 });
     assert.deepEqual(box.requests, [{ type: "create", lifecycle: "resident", sessionPath: file }]);
   } finally { server.close(); }
+});
+
+// 10-18 12:53:05Z: the idle unload's kill archived the Mac's runner reviewer, and the app's Unarchive answered ok with its Mac file still archived.
+test("the owner's unarchive of another box's root opens it on that box's daemon, and one on this box is left to the file write", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "reopen-send-"));
+  const file = join(dir, `${REVIEWER}.jsonl`);
+  const mac = daemon(file), here = daemon(file, "here");
+  assert.equal(await unarchiveOnItsBox(catalog(file, mac, { host: "mac", here }), { agentDir: dir }, REVIEWER), true);
+  assert.deepEqual(mac.requests.map(command => command.type), ["create"]);
+  assert.equal(here.requests.length, 0, "this box's daemon opens no copy");
+  const local = daemon(file);
+  assert.equal(await unarchiveOnItsBox(catalog(file, local), { agentDir: dir }, REVIEWER), false);
+  assert.equal(local.requests.length, 0);
+  const running = { requests: [], client: { name: "mac", request: async () => ({ success: false as const, error: "session_already_active: 3fedc5d47878" }) } };
+  assert.equal(await unarchiveOnItsBox(catalog(file, running as unknown as Box, { host: "mac", here }), { agentDir: dir }, REVIEWER), true);
 });

@@ -22,7 +22,7 @@ hook logs as it logs Prime's timeout kill today.
 
 hookd answers F when the script is not in the release it loaded, when the client's environment gives
 another value to anything the pool or Python reads at start-up (HOME, USER, PI_POOL_DIR,
-PI_POOL_SECRETS, any PYTHON* variable, a locale that is not UTF-8), or when --release names a link
+PI_POOL_SECRETS, any PYTHON* variable but the global-rules folder on PYTHONPATH, a locale that is not UTF-8), or when --release names a link
 that no longer resolves to the loaded release; then it exits so systemd starts it on the new code.
 """
 import array, atexit, fcntl, gc, importlib.machinery, importlib.util, io, json, os, pwd, signal, socket, sys, threading, time, traceback
@@ -52,7 +52,17 @@ def start_env(env):
     return {"HOME": home, "USER": env.get("USER") or pwd.getpwuid(os.getuid()).pw_name,
             "PI_POOL_DIR": env.get("PI_POOL_DIR") or os.path.join(home, ".config", "pi-pool"),
             "PI_POOL_SECRETS": env.get("PI_POOL_SECRETS") == "file" or not os.path.exists("/usr/bin/security"),
-            "PYTHON": sorted((k, v) for k, v in env.items() if k.startswith("PYTHON"))}
+            "PYTHON": sorted((k, python_path(v) if k == "PYTHONPATH" else v) for k, v in env.items()
+                             if k.startswith("PYTHON") and not (k == "PYTHONPATH" and not python_path(v)))}
+
+
+def python_path(value):
+    """PYTHONPATH without the global-rules python-child folder. kernel-guard.py puts it on the PYTHONPATH of the
+    Prime workers it guards, and its sitecustomize loads the c37 send guard, which the hook needs none of: it sends
+    only OAuth refreshes and count_tokens probes. On us-metal02 at 12:40Z on 10-18, 15 of 40 prime-agent processes
+    carried it, and their 248 hook calls in 120 s fell back to the Python hook."""
+    return ":".join(entry for entry in value.split(":")
+                    if not os.path.normpath(entry).endswith(os.path.join("components", "global-rules", "python-child")))
 
 
 def utf8_locale(env):

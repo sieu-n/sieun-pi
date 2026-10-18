@@ -1,10 +1,13 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { IdIndex } from "./id-index.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
+import { alertSteps } from "./checkin-findings.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, walk } from "./checkin-steps.ts";
@@ -14,7 +17,7 @@ import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, 
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
-import { withHeldTurns } from "./held-turns.ts";
+import { withHeldTurns, withThreadPoolWaits } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -135,9 +138,10 @@ interface Gathered {
  * reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list, so a restart
  * re-adopts what it finds, and a scan of the session files brings back a chat the index lost.
  */
-/** The log's note of the repo copies a gone job left in its wiki session folders and the service deleted. */
+/** The log's note of the repo copies a gone job left in its wiki session folders and the /tmp trees it made, which the service deleted. */
 function copiesNote(left: Leftovers): string {
-  return left.copies.length ? `, deleted ${left.copies.length} repo copies (${left.copies.join(", ")})` : "";
+  return (left.copies.length ? `, deleted ${left.copies.length} repo copies (${left.copies.join(", ")})` : "") +
+    (left.tmp.length ? `, deleted ${left.tmp.length} /tmp trees (${left.tmp.slice(0, 5).join(", ")}${left.tmp.length > 5 ? ` and ${left.tmp.length - 5} more` : ""})` : "");
 }
 
 export class Chats {
@@ -901,7 +905,7 @@ export class Chats {
 
   /** Stops what a gone job left (`CheckInSource.leftovers`) once per session; nothing when the stop fails, which is logged. */
   private async leftovers(chat: string, dir: string, session?: string): Promise<Leftovers> {
-    const none = { stopped: [], tabs: 0, copies: [] };
+    const none = { stopped: [], tabs: 0, copies: [], tmp: [] };
     if (!this.source.leftovers || (session !== undefined && this.leftoversEnded.has(session))) return none;
     if (session !== undefined) this.leftoversEnded.add(session);
     return this.source.leftovers(dir, session).catch(error => {
@@ -913,7 +917,7 @@ export class Chats {
   /** Stops what a gone job left and logs it. */
   private async endLeftovers(chat: string, name: string, dir: string, session: string | undefined, what: string): Promise<void> {
     const left = await this.leftovers(chat, dir, session);
-    if (!left.stopped.length && !left.tabs && !left.copies.length) return;
+    if (!left.stopped.length && !left.tabs && !left.copies.length && !left.tmp.length) return;
     this.log(`chat ${chat.slice(0, 8)}: job ${name} ${what.replace(/\.$/, "")}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
   }
 
@@ -926,9 +930,9 @@ export class Chats {
     for (const id of this.chatIds) {
       const left = await this.source.deletedLeftovers(id).catch(error => {
         this.log(`chat ${id.slice(0, 8)}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
-        return { stopped: [], tabs: 0, copies: [] };
+        return { stopped: [], tabs: 0, copies: [], tmp: [] };
       });
-      if (left.stopped.length || left.tabs || left.copies.length) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+      if (left.stopped.length || left.tabs || left.copies.length || left.tmp.length) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
     }
   }
 
@@ -1236,8 +1240,10 @@ export class Chats {
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
+    const alerts = alertSteps(await readFile(join(process.env.AGENT_CHAT_DATA_DIR || join(this.source.home ?? homedir(), ".prime", "agent", "browser-chat"), "alert-bridge.json"), "utf8")
+      .then(text => JSON.parse(text) as unknown).catch(() => null), id);
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, alerts, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
@@ -1268,7 +1274,8 @@ export class Chats {
     const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
-    const facts = withQueuePlaces(threads.map(fact => {
+    const pooled = await withThreadPoolWaits(threads, join(this.source.home ?? homedir(), ".prime", "agent", "sessions"));
+    const facts = withQueuePlaces(pooled.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));

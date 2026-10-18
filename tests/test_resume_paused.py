@@ -1,4 +1,5 @@
 import argparse
+import collections
 import datetime as dt
 import importlib.util
 import http.server
@@ -51,7 +52,7 @@ class ResumePausedTests(unittest.TestCase):
         hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
         hosts.start()
         self.addCleanup(hosts.stop)
-        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED):
+        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED):
             found.clear()
             self.addCleanup(found.clear)
         for name, value in (("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
@@ -90,6 +91,16 @@ class ResumePausedTests(unittest.TestCase):
         self.session("aaaaaaaaaaaa", [assistant(40, "toolUse"), role(40, "toolResult")])
         self.session("bbbbbbbbbbbb", [assistant(1, "toolUse"), role(0.5, "toolResult")])
         self.session("cccccccccccc", [role(20, "user")], activity="working")
+        report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("aaaaaaaaaaaa", "cut_off")])
+
+    def test_a_cut_turn_with_the_worker_recovery_notice_after_it_counts_inside_the_grace_period(self):
+        recovery = {"type": "custom_message", "customType": "prime-agent.worker_recovery", "timestamp": at(0.9), "content": "x"}
+        call = assistant(1, "toolUse")
+        call["message"]["content"] = [{"type": "toolCall", "name": "ipython"}]
+        self.session("aaaaaaaaaaaa", [role(1.2, "toolResult"), call, recovery])
+        self.session("bbbbbbbbbbbb", [call, role(0.5, "toolResult")])
+        self.session("cccccccccccc", [dict(recovery, timestamp=at(1.5)), call])
         report = self.run_resume(dry_run=True)
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("aaaaaaaaaaaa", "cut_off")])
 
@@ -417,12 +428,11 @@ class ResumePausedTests(unittest.TestCase):
         child = "01a14103-72eb-7349-b56f-93fc7ba3684b"
         folder = deleted / "sub-6430b61d"
         folder.mkdir()
-        call = {"type": "message", "timestamp": at(30.02), "message": {"role": "assistant", "content": [
-            {"type": "toolCall", "name": "ipython", "arguments": {"code": "await rlm.delete_subagent(h1)"}}]}}
-        result = {"type": "message", "timestamp": at(30.01), "message": {"role": "toolResult", "content": [
-            {"type": "text", "text": "RLMSubagent(rlm_child_id='sub-6430b61d', session_name='fair-self-heal')"}]}}
-        parent = deleted / "01a140fc-ba32-7228-99c6-b12621a32ffc.jsonl"
-        parent.write_text(parent.read_text() + json.dumps(call) + "\n" + json.dumps(result) + "\n")
+        with patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"):
+            ledger = resume_paused.rlm_ledger_path()
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(json.dumps({"v": 1, "op": "delete", "at": at(30.02), "childId": "sub-6430b61d", "child": str(folder / f"{child}.jsonl"),
+                                      "reason": "user"}) + "\n")
         archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
         aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "content": []}}
         (folder / f"{child}.jsonl").write_text("\n".join(json.dumps(entry) for entry in [role(40, "user"), archived, aborted]) + "\n")
@@ -434,7 +444,9 @@ class ResumePausedTests(unittest.TestCase):
         (self.root / "deleted-jobs.json").write_text(json.dumps({chat: {"sub-7d295f61": 1}}))
         window = (NOW - dt.timedelta(minutes=30, seconds=10), NOW - dt.timedelta(minutes=29))
         report = self.run_saved_owners([child, parked], restarts=[window])
-        self.assertEqual(report["paused"], [])
+        self.assertEqual((report["paused"], resume_paused.UNRESOLVED), ([], []))
+        self.assertEqual(sorted((entry["session_id"], entry["stopped_by"]) for entry in resume_paused.STOPPED),
+                         [(child, f"its parent deleted it (rlm ledger delete, reason user, at {at(30.02)})"), (parked, "deleted on purpose")])
 
     def test_an_unresolved_run_does_not_hold_back_a_proven_cut_in_the_same_pass(self):
         archived = {"type": "session_state", "timestamp": at(30.01), "state": {"status": "archived"}}
@@ -1106,13 +1118,13 @@ class ResumePausedTests(unittest.TestCase):
                 self.assertEqual([(p["reason"], p["errored_at"]) for p in report["paused"]], [("error", "2026-10-18T04:18:25.152Z")] if job == "token hook" else [])
 
     def test_a_mac_job_stopped_after_a_warm_pass_found_it_gets_no_continue(self):
-        second_job = self.MAC_JOB.replace("sub-df01e456/01a14d38-d851", "sub-5e1f0a77/01a14d39-0000")
+        second_job = self.MAC_JOB.replace("sub-df01e456/01a14d38-d851-77a8-969c-29b2acca24f6", "sub-5e1f0a77/01a14d39-0000-77a8-969c-29b2acca2500")
         record = second_job.rsplit("/", 1)[0] + "/rlm-subagent.json"
         chat = self.MAC_JOB.split("/session-artifacts/")[1].split("/")[0]
         rows = [{"id": Path(job).stem[-12:], "sessionId": Path(job).stem, "lifecycle": "archived", "activity": "idle", "sessionFile": job,
                  "sessionName": Path(job).parent.name, "runtimeKind": "subagent", "lastActivityAt": "2026-10-18T04:21:36.659Z"} for job in (self.MAC_JOB, second_job)]
         unloaded = {row["sessionId"]: resume_paused.parse_ts("2026-10-18T04:21:40Z") for row in rows}
-        stops = (("deleted", lambda files: files.__setitem__(record, b'{"status": "deleted"}'), "deleted on purpose"),
+        stops = (("deleted", lambda files: files.__setitem__(record, b'{"status": "deleted"}'), "its parent deleted it (rlm-subagent.json status deleted)"),
                  ("archived", lambda files: (self.root / "archived-chats.json").write_text(json.dumps({"ids": [chat]})), "archived by the owner"))
         for name, stop, why in stops:
             with self.subTest(name):
@@ -1371,6 +1383,253 @@ class ChatHostStopRecords(unittest.TestCase):
         said = "".join(call.args[0] for call in stderr.write.call_args_list)
         self.assertIn("read deleted-jobs.json from the local file", said)
         self.assertIn("could not be reached", said)
+
+
+Held = collections.namedtuple("Held", "chat folder session last_at last_role deleted_at")
+
+
+class RecordedStops(unittest.TestCase):
+    NOW = dt.datetime(2026, 10, 18, 11, 4, tzinfo=dt.timezone.utc)
+    SIX = [Held("01a14dd5-e9d3-705d-bd63-245c21b2eee2", "sub-9e9f4273", "01a14ddc-06ee-724b-9147-6de2eff81ca8", "2026-10-18T09:09:54.047Z", "error", "2026-10-18T10:40:44.763Z"),
+           Held("01a14d31-6ec0-7005-bbe8-c38b7ae73cfb", "sub-85dca0ef", "01a14e29-cd19-75fc-8560-8d4b98b4fad0", "2026-10-18T08:51:18.992Z", "error", "2026-10-18T10:42:11.396Z"),
+           Held("01a14e13-6a5e-757f-8dcb-dc1284beed19", "sub-37b806e7", "01a14e18-f089-7390-aee2-16f7f55c2ce5", "2026-10-18T08:35:43.544Z", "error", "2026-10-18T10:42:29.977Z"),
+           Held("01a115e2-9544-7204-b8db-8ce4d5319048", "sub-4893ed85", "01a14d39-07b1-777b-a221-73482afa2fb1", "2026-10-18T04:46:01.899Z", "toolResult", "2026-10-18T06:57:48.843Z"),
+           Held("01a115e2-9544-7204-b8db-8ce4d5319048", "sub-2620f44a", "01a14d30-5d3a-707c-8fc6-3c5ac8991ab2", "2026-10-18T04:46:00.695Z", "toolResult", "2026-10-18T06:57:48.732Z"),
+           Held("01a1164b-4a2d-742d-b27a-82f086ed0200", "sub-38405c9a", "01a14d0e-be34-7066-9fdf-f3d91cc5d25a", "2026-10-18T05:41:27.311Z", "toolResult", "2026-10-18T05:41:27.291Z")]
+    HOOK_ERROR = 'Failed to resolve API key for provider "anthropic" from shell command: pi-pool-token: the token hook gave no token'
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.agent = self.root / "agent"
+        (self.agent / "sessions").mkdir(parents=True)
+        self.sent = []
+        for name, value in (("SESSIONS_DIR", self.agent / "sessions"), ("ARTIFACTS_DIR", self.agent / "session-artifacts"),
+                            ("DELETED_JOBS", self.agent / "browser-chat" / "deleted-jobs.json"), ("ARCHIVED_CHATS", self.agent / "browser-chat" / "archived-chats.json"),
+                            ("UPDATE_RESTARTS_DIR", self.agent / "update-restarts"), ("LOG_DIR", self.agent / "logs"), ("TOKEN_HOOK", self.root / "no-hook"),
+                            ("HOSTS_FILE", self.root / "no-hosts.json"), ("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
+            kept = patch.object(resume_paused, name, value, create=True)
+            kept.start()
+            self.addCleanup(kept.stop)
+        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED, resume_paused.OWNERS):
+            found.clear()
+            self.addCleanup(found.clear)
+        resume_paused.read_update_records.cache_clear()
+        self.addCleanup(resume_paused.read_update_records.cache_clear)
+        for name, value in (("daemon_restarts", []), ("worker_shutdowns", []), ("pool_bin", None)):
+            kept = patch.object(resume_paused, name, return_value=value)
+            kept.start()
+            self.addCleanup(kept.stop)
+        unloaded = patch.dict(resume_paused.UNLOADED, {}, clear=True)
+        unloaded.start()
+        self.addCleanup(unloaded.stop)
+
+    def ledger(self, *records, tail=""):
+        path = resume_paused.rlm_ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [{"v": 1, "op": "meta", "at": "2026-10-17T23:43:23.077Z", "sessionsDir": str(self.agent / "sessions")}, *records]
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines) + tail)
+        return path
+
+    def job(self, chat, sub, sid, entries, registry=None):
+        folder = self.agent / "session-artifacts" / chat / sub
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "rlm-subagent.json").write_text(json.dumps({"type": "rlm_subagent", "childId": sub, "sessionName": sub, **(registry or {})}))
+        path = folder / f"{sid}.jsonl"
+        path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+        return path
+
+    @staticmethod
+    def spawn(chat_dir, path, at):
+        return {"v": 1, "op": "spawn", "at": at, "childId": path.parent.name, "parent": str(chat_dir), "child": str(path), "depth": 1, "name": path.parent.name}
+
+    @staticmethod
+    def delete(path, at, reason="user"):
+        return {"v": 1, "op": "delete", "at": at, "childId": path.parent.name, "child": str(path), "reason": reason}
+
+    @staticmethod
+    def message(stamp, role_name, **extra):
+        return {"type": "message", "timestamp": stamp, "message": {"role": role_name, "content": [{"type": "text", "text": "x"}], **extra}}
+
+    @staticmethod
+    def archive(stamp, reason=None):
+        return {"type": "session_state", "timestamp": stamp, "state": {"status": "archived", **({"reason": reason} if reason else {})}}
+
+    @staticmethod
+    def later(stamp, seconds):
+        return (resume_paused.parse_ts(stamp) + dt.timedelta(seconds=seconds)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def run_owners(self, sids, dry_run=True):
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=dry_run, include_children=False, direct=True, only="",
+                                  state=str(self.root / "state.json"))
+        resume_paused.OWNERS.update(sids)
+        with patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows(set(sids)), set(sids))
+            return resume_paused.resume(rows, args, self.NOW)
+
+    def six(self):
+        records, sids = [], []
+        for chat, sub, sid, last_at, last_role, deleted_at in self.SIX:
+            last = (self.message(last_at, "assistant", stopReason="error", errorMessage="429 rate_limit_error: This request would exceed your account's rate limit")
+                    if last_role == "error" else self.message(last_at, "toolResult"))
+            archived_at = self.later(deleted_at, 0.004 if last_at > deleted_at else 0.05)
+            entries = [self.message(self.later(last_at, -60), "user"), last, self.archive(archived_at)] if last_at < deleted_at else \
+                [self.message(self.later(last_at, -60), "user"), self.archive(archived_at), last]
+            path = self.job(chat, sub, sid, entries)
+            records += [self.spawn(self.agent / "sessions" / f"{chat}.jsonl", path, "2026-10-18T05:35:51.027Z"), self.delete(path, deleted_at)]
+            sids.append(sid)
+        self.ledger(*records)
+        return sids
+
+    def test_the_six_held_back_jobs_are_reported_as_deleted_by_their_parents_ledger_records(self):
+        sids = self.six()
+        report = self.run_owners(sids)
+        self.assertEqual((report["paused"], resume_paused.UNRESOLVED), ([], []))
+        self.assertEqual(sorted(entry["session_id"] for entry in resume_paused.STOPPED), sorted(sids))
+        stopped = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
+        self.assertEqual(stopped["01a14ddc-06ee-724b-9147-6de2eff81ca8"],
+                         "its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z)")
+
+    def test_a_ledger_delete_holds_after_any_later_message_and_only_a_later_spawn_undoes_it(self):
+        chat = "01a14dd5-e9d3-705d-bd63-245c21b2eee2"
+        cut = "2026-10-18T10:50:00.000Z"
+        resume_continue = {"type": "message", "timestamp": "2026-10-18T10:45:00.000Z",
+                           "message": {"role": "user", "content": [{"type": "text", "text": "continue"}], "timestamp": 1792320300000}}
+        agent_message = {"type": "custom_message", "customType": "agent_message", "content": "[agent-message from parent]\n\ncarry on",
+                         "display": True, "timestamp": "2026-10-18T10:46:00.000Z"}
+        path = self.job(chat, "sub-9e9f4273", "01a14ddc-06ee-724b-9147-6de2eff81ca8",
+                        [self.message("2026-10-18T10:40:00.000Z", "user"), self.archive("2026-10-18T10:40:44.800Z"), resume_continue, agent_message,
+                         self.message(self.later(cut, -1), "assistant", stopReason="toolUse"), self.message(cut, "toolResult")])
+        parent = self.agent / "sessions" / f"{chat}.jsonl"
+        deleted = "its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z)"
+        self.ledger(self.spawn(parent, path, "2026-10-18T07:13:48.723Z"), self.delete(path, "2026-10-18T10:40:44.763Z"))
+        self.assertEqual(resume_paused.stop_record(str(path)), deleted,
+                         "a resume pass's continue is the same plain user message as an owner prompt, and an agent message proves no reopen")
+        self.assertEqual((self.run_owners([path.stem])["paused"], [entry["stopped_by"] for entry in resume_paused.STOPPED]), ([], [deleted]))
+        self.ledger(self.delete(path, "2026-10-18T10:40:44.763Z"), self.spawn(parent, path, "2026-10-18T10:44:00.000Z"))
+        self.assertIsNone(resume_paused.stop_record(str(path)), "a spawn after the delete revived the edge, as the runtime's replay does")
+        (path.parent / "rlm-subagent.json").write_text(json.dumps({"status": "deleted", "updatedAt": "2026-10-18T10:40:44.762Z"}))
+        self.assertEqual(resume_paused.stop_record(str(path)), "its parent deleted it (rlm-subagent.json status deleted, at 2026-10-18T10:40:44.762Z)",
+                         "the runtime never writes rlm-subagent.json back from deleted")
+
+
+    def test_a_job_under_a_deleted_job_is_stopped_by_the_ancestors_ledger_delete(self):
+        chat = "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb"
+        above = self.job(chat, "sub-85dca0ef", "01a14e29-cd19-75fc-8560-8d4b98b4fad0", [self.message("2026-10-18T08:00:00.000Z", "user")])
+        below = self.job(f"{chat}/sub-85dca0ef", "sub-12345678", "01a14e30-0000-7000-8000-000000000001",
+                         [self.message("2026-10-18T08:10:00.000Z", "user"), self.message("2026-10-18T08:51:00.000Z", "toolResult")])
+        self.ledger(self.delete(above, "2026-10-18T10:42:11.396Z"))
+        self.assertEqual(resume_paused.stop_record(str(below)), "a job above it was deleted (sub-85dca0ef, rlm ledger delete, reason user, at 2026-10-18T10:42:11.396Z)")
+
+    def test_the_registry_status_deleted_counts_on_this_box_too(self):
+        path = self.job("01a14e13-6a5e-757f-8dcb-dc1284beed19", "sub-37b806e7", "01a14e18-f089-7390-aee2-16f7f55c2ce5",
+                        [self.message("2026-10-18T08:30:00.000Z", "user"), self.message("2026-10-18T08:35:43.544Z", "toolResult")],
+                        registry={"status": "deleted", "updatedAt": "2026-10-18T10:42:29.976Z"})
+        self.assertEqual(resume_paused.stop_record(str(path)), "its parent deleted it (rlm-subagent.json status deleted, at 2026-10-18T10:42:29.976Z)")
+
+    def test_an_unreadable_ledger_line_stops_the_box_and_a_torn_last_line_is_skipped(self):
+        path = self.job("01a14dd5-e9d3-705d-bd63-245c21b2eee2", "sub-9e9f4273", "01a14ddc-06ee-724b-9147-6de2eff81ca8", [self.message("2026-10-18T09:00:00.000Z", "user")])
+        self.ledger(self.delete(path, "2026-10-18T10:40:44.763Z"), tail='{"v": 1, "op": "delete", "at": "2026-10-18T10:41')
+        self.assertTrue(resume_paused.stop_record(str(path)), "a line still being appended is the runtime's torn final line")
+        self.ledger(tail='{"v": 1, "op": "delete"\n')
+        with self.assertRaisesRegex(resume_paused.RecordError, r"rlm ledger line 2 is not valid JSON"):
+            resume_paused.stop_record(str(path))
+        self.ledger({"v": 2, "op": "delete", "at": "2026-10-18T10:41:00.000Z"})
+        with self.assertRaisesRegex(resume_paused.RecordError, r"rlm ledger line 2 has version 2"):
+            resume_paused.stop_record(str(path))
+
+    def reasoned(self, reason, last=None, sid="01a14eaa-0000-7000-8000-00000000000a"):
+        last = last or self.message("2026-10-18T10:20:00.000Z", "toolResult")
+        return self.job("01a14210-4e7d-72c3-aa67-e3d476f4e728", f"sub-{sid[-8:]}", sid,
+                        [self.message("2026-10-18T10:19:00.000Z", "user"), last, self.archive("2026-10-18T10:20:30.000Z", reason)])
+
+    def test_each_archive_reason_decides_by_its_contract(self):
+        cases = {"owner_stop": "stopped", "owner_archive": "stopped", "subagent_deleted": "stopped", "completed": "stopped", "replaced": "stopped",
+                 "subagent_cancelled": "stopped", "spawn_failed": "stopped", "draft_discarded": "stopped",
+                 "daemon_shutdown": "unresolved", "a_future_reason": "unresolved", None: "unresolved", "idle_unload": "stopped"}
+        sids = {}
+        for index, reason in enumerate(cases):
+            sids[self.reasoned(reason, sid=f"01a14eaa-0000-7000-8000-0000000000{index:02d}").stem] = reason
+        report = self.run_owners(list(sids))
+        self.assertEqual(report["paused"], [])
+        got = {**{entry["session_id"]: "stopped" for entry in resume_paused.STOPPED}, **{entry["session_id"]: "unresolved" for entry in resume_paused.UNRESOLVED}}
+        self.assertEqual({sids[sid]: kind for sid, kind in got.items()}, cases)
+        said = {sids[entry["session_id"]]: entry["error"] for entry in resume_paused.UNRESOLVED}
+        self.assertIn("daemon_shutdown", said["daemon_shutdown"])
+        self.assertIn("'a_future_reason'", said["a_future_reason"])
+        self.assertEqual(said[None], "An archive with no recorded cause stopped its turn, so it is not resumed.")
+
+    def test_an_idle_unload_reason_follows_the_token_hook_rule_without_the_chats_record(self):
+        hook = self.reasoned("idle_unload", self.message("2026-10-18T10:20:00.000Z", "assistant", stopReason="error", provider="anthropic", errorMessage=self.HOOK_ERROR))
+        report = self.run_owners([hook.stem])
+        self.assertEqual([(p["session_id"], p["reason"]) for p in report["paused"]], [(hook.stem, "error")])
+
+    def update_record(self, name, **fields):
+        folder = self.agent / "update-restarts"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"ee92e1d8c39e1961-{name}.json").write_text(json.dumps({"version": 1, "requestId": name, "phase": "complete", **fields}))
+
+    def test_an_update_discard_names_its_cause_only_when_one_record_alone_can_match(self):
+        resident = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d1")
+        draft = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d2")
+        other_update = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d3")
+        bare = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d4")
+        twice = self.reasoned("update_discarded", sid="01a14eaa-0000-7000-8000-0000000000d5")
+
+        def discard(path, cause, at="2026-10-18T10:20:29.990Z"):
+            return {"activeSessionId": path.stem[-12:], "sessionId": path.stem, "sessionFile": str(path), "reason": "update_discarded", "cause": cause, "at": at}
+
+        self.update_record("now", discarded=[discard(resident, "resident_after_prepare"), discard(draft, "empty_draft"), discard(twice, "empty_draft")])
+        self.update_record("earlier", discarded=[discard(other_update, "empty_draft", at="2026-10-18T10:19:59.000Z"),
+                                                 discard(twice, "empty_draft", at="2026-10-18T10:20:10.000Z")])
+        report = self.run_owners([resident.stem, draft.stem, other_update.stem, bare.stem, twice.stem])
+        self.assertEqual(report["paused"], [])
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [draft.stem])
+        said = {entry["session_id"]: entry["error"] for entry in resume_paused.UNRESOLVED}
+        self.assertEqual(set(said), {resident.stem, other_update.stem, bare.stem, twice.stem})
+        self.assertIn("resident_after_prepare", said[resident.stem])
+        self.assertIn("no discard record matches it", said[other_update.stem], "a discard written before the turn's last line closed an older run")
+        self.assertIn("no discard record matches it", said[bare.stem])
+        self.assertIn("2 discard records could match it", said[twice.stem], "two updates that both fit leave the cause unknown")
+
+    def test_two_records_that_list_one_archive_under_stopped_before_restore_leave_it_unresolved(self):
+        stopped = self.reasoned(None)
+        held = {"sessionId": stopped.stem, "sessionFile": str(stopped), "reason": "owner_stop", "at": "2026-10-18T10:20:30.000Z"}
+        self.update_record("now", stoppedBeforeRestore=[held])
+        self.run_owners([stopped.stem])
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [stopped.stem])
+        resume_paused.STOPPED.clear()
+        resume_paused.read_update_records.cache_clear()
+        self.update_record("again", stoppedBeforeRestore=[{**held, "reason": "unknown"}])
+        self.assertEqual(self.run_owners([stopped.stem])["paused"], [])
+        self.assertEqual((resume_paused.STOPPED, [entry["error"] for entry in resume_paused.UNRESOLVED]),
+                         ([], ["2 update records list its archive at 2026-10-18T10:20:30.000Z under stoppedBeforeRestore, so it is not resumed."]))
+
+    def test_a_session_the_update_did_not_restore_is_never_resumed_by_the_unload_rule(self):
+        hook = self.reasoned(None, self.message("2026-10-18T10:20:00.000Z", "assistant", stopReason="error", provider="anthropic", errorMessage=self.HOOK_ERROR))
+        resume_paused.UNLOADED[hook.stem] = resume_paused.parse_ts("2026-10-18T10:20:31.000Z")
+        self.assertEqual([p["session_id"] for p in self.run_owners([hook.stem])["paused"]], [hook.stem], "the unload record alone resumes a hook failure")
+        self.update_record("now", stoppedBeforeRestore=[{"sessionId": hook.stem, "sessionFile": str(hook), "reason": "unknown", "at": "2026-10-18T10:20:30.000Z"}])
+        resume_paused.UNRESOLVED.clear()
+        resume_paused.read_update_records.cache_clear()
+        self.assertEqual(self.run_owners([hook.stem])["paused"], [])
+        self.assertEqual([entry["session_id"] for entry in resume_paused.UNRESOLVED], [hook.stem])
+        self.assertIn("stoppedBeforeRestore", resume_paused.UNRESOLVED[0]["error"])
+
+    def test_the_send_rechecks_the_ledger_and_a_new_owner_stop_right_before_it_goes(self):
+        chat = "01a14dd5-e9d3-705d-bd63-245c21b2eee2"
+        path = self.job(chat, "sub-9e9f4273", "01a14ddc-06ee-724b-9147-6de2eff81ca8",
+                        [self.message("2026-10-18T10:00:00.000Z", "user"), self.message("2026-10-18T10:40:00.000Z", "toolResult")])
+        self.ledger()
+        found = self.run_owners([path.stem])["paused"]
+        self.assertEqual([p["reason"] for p in found], ["cut_off"])
+        self.ledger(self.delete(path, "2026-10-18T11:03:59.000Z"))
+        self.assertEqual(resume_paused.send_guard(found[0], self.NOW), "skipped: its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T11:03:59.000Z) after the pass found it")
+        self.ledger()
+        with path.open("a") as fh:
+            fh.write(json.dumps(self.archive("2026-10-18T11:04:00.500Z", "owner_stop")) + "\n")
+        self.assertEqual(resume_paused.send_guard(found[0], self.NOW), "skipped: the owner stopped it (archive reason owner_stop, at 2026-10-18T11:04:00.500Z) after the pass found it")
 
 
 if __name__ == "__main__":

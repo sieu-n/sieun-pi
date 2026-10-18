@@ -292,6 +292,52 @@ class PrimeSyncTests(unittest.TestCase):
         self.assertTrue(self.sync(box)["code"].startswith("pulled"))
         self.assertFalse((checkout / "skills/unslop").exists())
 
+    def private_commit(self, checkout, files):
+        """Commit through a private index and move main with update-ref, as faa58cd5 did on 10-18, leaving the shared index behind."""
+        index = {**ENV, "GIT_INDEX_FILE": str(self.root / "private-index")}
+        subprocess.run(["git", "-C", str(checkout), "read-tree", "HEAD"], env=index, check=True)
+        for rel, text in files.items():
+            (checkout / rel).parent.mkdir(parents=True, exist_ok=True)
+            (checkout / rel).write_text(text)
+            subprocess.run(["git", "-C", str(checkout), "add", rel], env=index, check=True)
+        tree = subprocess.run(["git", "-C", str(checkout), "write-tree"], env=index, check=True, capture_output=True, text=True).stdout.strip()
+        head = git("-C", str(checkout), "rev-parse", "HEAD")
+        commit = git("-c", "user.name=t", "-c", "user.email=t@t", "-C", str(checkout), "commit-tree", tree, "-p", head, "-m", "perf: private")
+        git("-C", str(checkout), "update-ref", "refs/heads/main", commit, head)
+
+    def test_a_private_index_commit_leaves_no_older_version_for_git_to_write_back(self):
+        # 10-18: faa58cd5's paths sat at faa58cd5^ in the shared index from 08:26Z, and a copy of the index into the worktree put the
+        # old bytes of four client files back and deleted chat-idle-motion.test.ts until 12:45Z.
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        self.private_commit(checkout, {"skills/unslop/SKILL.md": "v2 fix\n", "tests/motion.test.ts": "test\n"})
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "MM skills/unslop/SKILL.md\nD  tests/motion.test.ts\n?? tests/")
+        (checkout / "config/AGENTS.md").write_text("rules\nlive edit\n")
+        report = self.sync(box)
+        git("-C", str(checkout), "stash", "-q", "--keep-index")
+        git("-C", str(checkout), "stash", "pop", "-q")
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v2 fix\n")
+        self.assertEqual((checkout / "tests/motion.test.ts").read_text(), "test\n")
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M config/AGENTS.md")
+        self.assertEqual(report["index"], ["reset to HEAD from an older commit: skills/unslop/SKILL.md, tests/motion.test.ts"])
+
+    def test_an_older_version_already_written_back_takes_heads_bytes(self):
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        self.private_commit(checkout, {"skills/unslop/SKILL.md": "v2 fix\n", "tests/motion.test.ts": "test\n"})
+        git("-C", str(checkout), "stash", "-q", "--keep-index")
+        git("-C", str(checkout), "stash", "pop", "-q")
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v1\n")
+        self.assertFalse((checkout / "tests/motion.test.ts").exists())
+        (checkout / "config/AGENTS.md").write_text("rules\nstaged live edit\n")
+        git("-C", str(checkout), "add", "config/AGENTS.md")
+        report = self.sync(box)
+        self.assertEqual((checkout / "skills/unslop/SKILL.md").read_text(), "v2 fix\n")
+        self.assertEqual((checkout / "tests/motion.test.ts").read_text(), "test\n")
+        self.assertEqual(git("-C", str(checkout), "status", "--porcelain"), "M  config/AGENTS.md")
+        self.assertEqual(report["index"], ["reset to HEAD from an older commit: skills/unslop/SKILL.md and its file, tests/motion.test.ts and its file"])
+        self.assertIn("reset to HEAD from an older commit", (box / ".local/share/prime-sync/sync.log").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

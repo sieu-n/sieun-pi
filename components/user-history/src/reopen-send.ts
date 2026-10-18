@@ -82,6 +82,19 @@ export async function reopenSession(catalog: ReopenCatalog, box: ReopenBox, sess
   return root !== null && await box.adopt(root) > 0;
 }
 
+/**
+ * The owner's unarchive of a root whose file is on another box. This box writes the active state only into its own files (ThreadHub
+ * setSessionState), so on 10-18 the app's Unarchive answered ok for the Mac's runner reviewer (01a11d25) and its file stayed archived. A create
+ * on its own daemon opens it there and writes the active state. A root that box already runs needs nothing. False for a session on this box.
+ */
+export async function unarchiveOnItsBox(catalog: ReopenCatalog, box: ReopenBox, session: string): Promise<boolean> {
+  if (!catalog.hostOf(session)) return false;
+  try { return await reopenSession(catalog, box, session); } catch (error) {
+    if (/already.active/i.test(error instanceof Error ? error.message : String(error))) return true;
+    throw error;
+  }
+}
+
 /** The root id of a subagent file `<agentDir>/session-artifacts/<root>/sub-.../<id>.jsonl`, else null. */
 export function treeRoot(agentDir: string, file: string | undefined): string | null {
   if (!file) return null;

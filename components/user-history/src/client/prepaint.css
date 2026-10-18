@@ -1,0 +1,8 @@
+/* The chat's still view from the page shell (src/prepaint.ts): it covers the page until the app shows the chat (prepaint-swap.ts). */
+#prepaint { position: fixed; inset: 0; z-index: 1000; background: var(--bg); }
+#prepaint .app { --sidebar: var(--prepaint-sidebar, 260px); }
+#prepaint .side { width: var(--prepaint-board, 320px); }
+html:not([data-prepaint-board]) #prepaint .side { display: none; }
+@container app (max-width: 899px) {
+  #prepaint .sidebar, #prepaint .side { display: none; }
+}

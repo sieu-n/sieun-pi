@@ -2,6 +2,7 @@
 """One prime-sync run: make this box's Prime setup match every other box's.
 
 1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its live edits carried onto the new bytes.
+   First each shared index entry that holds an older committed version of its path goes back to HEAD's, with its file when the file holds it too.
 2. Every home link in install-manifest.json points at the checkout, so skills, the global AGENTS.md,
    pstack-models.json and the extensions match the commit. A copy in a link's place is deleted.
 3. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
@@ -260,6 +261,43 @@ def move_checkout(checkout: Path, head: str, target: str, remote: str) -> str:
 
 
 Entry = tuple[str, str]
+
+
+def heal_index(checkout: Path) -> list[str]:
+    """Put each shared index entry that holds an older committed version of its path back to HEAD's.
+
+    A commit built in a private index and moved onto main with update-ref leaves the shared index at the commit's parent for its paths.
+    faa58cd5 did so at 08:26Z on 10-18. A later git command that copies the index into the worktree (a checkout or restore of a path, a
+    stash that keeps the index, a failed merge) then wrote faa58cd5^'s bytes over ThroughputLine.svelte, WorkRow.svelte, app.css and
+    clock.svelte.ts and deleted chat-idle-motion.test.ts, and they stayed so until 12:45Z. A file on disk that holds the same older version
+    takes HEAD's bytes too. A staged or unstaged live edit, bytes no commit of the path has, stays as it is."""
+    if rev(checkout, "HEAD") is None:
+        return []
+    raw = git(checkout, "diff-index", "--cached", "-z", "--no-renames", "HEAD").split("\0")
+    healed = []
+    for meta, rel in zip(raw[0::2], raw[1::2]):
+        head_mode, index_mode, head_blob, index_blob, status = meta.lstrip(":").split(" ")
+        if status == "U" or "160000" in (head_mode, index_mode) or index_blob not in earlier_blobs(checkout, rel) - {head_blob}:
+            continue
+        head = None if head_mode == "000000" else (head_mode, head_blob)
+        staged = None if index_mode == "000000" else (index_mode, index_blob)
+        if disk_state(checkout, rel) == staged:
+            if head is None:
+                (checkout / rel).unlink()
+            else:
+                (checkout / rel).parent.mkdir(parents=True, exist_ok=True)
+                write_file(checkout / rel, head[0], blob(checkout, head[1]))
+            healed.append(f"{rel} and its file")
+        else:
+            healed.append(rel)
+        set_index(checkout, rel, head)
+    return [f"reset to HEAD from an older commit: {', '.join(healed)}"] if healed else []
+
+
+def earlier_blobs(checkout: Path, rel: str) -> set[str]:
+    """Every blob the path held in HEAD's history, with the all-zero id for a commit that added or deleted it."""
+    rows = git(checkout, "log", "--format=", "--raw", "--no-abbrev", "HEAD", "--", rel).splitlines()
+    return {blob_id for row in rows if row.startswith(":") for blob_id in row.split("\t")[0].split(" ")[2:4]}
 
 
 def changed_paths(checkout: Path, old: str, new: str) -> list[tuple[str, Entry | None, Entry | None]]:
@@ -741,7 +779,8 @@ def run() -> dict:
         except BlockingIOError:
             report["skipped"] = "another run holds run.lock"
             return report
-        steps = [("code", lambda: pull_checkout(config["checkout"])),
+        steps = [("index", lambda: heal_index(config["checkout"])),
+                 ("code", lambda: pull_checkout(config["checkout"])),
                  ("links", lambda: link_manifest(config["checkout"], HOME, config["agentDir"])),
                  ("settings", lambda: apply_settings(config["checkout"], config["agentDir"])),
                  ("state", lambda: sync_state(config))]
@@ -761,7 +800,7 @@ def run() -> dict:
         except Exception as error:
             report["watch"] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("index", "links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report

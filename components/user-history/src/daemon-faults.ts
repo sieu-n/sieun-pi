@@ -23,7 +23,7 @@ export interface DaemonFault {
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 const SUPERVISOR = /^\[(\S+Z)\] supervisor: Supervisor command (\w+) failed: (?:Error: )?(.*)$/;
-const OPEN = /^open ([0-9a-f]{8}) (?:live|saved) \d+ messages: (.*), total (\d+)ms$/;
+const OPEN = /^open ([0-9a-f]{8})(?: on ([\w.-]+))? (?:live|saved) \d+ messages: (.*), total (\d+)ms$/;
 const WORKER_START = /^daemon (create|resume|reload) (.+?): (answered|refused) in ([\d.]+) s(?:: (.*))?$/;
 /**
  * A create refused because a session of its name exists: an earlier create of the same job that the daemon finished though its caller lost
@@ -42,7 +42,7 @@ const OWN_STOP = /Prime Agent daemon client closed before the operation complete
  * An agent message the outbox held while its target's worker stopped or started (src/agent-outbox.ts). The wait counts once it passes
  * SLOW_MS, as a send that slow would; the refusals before it are no fault of their own, since the outbox delivered each such message.
  */
-const OUTBOX_MOVED = /^outbox ([0-9a-f]{8}): m-\S+ went after its target's worker was (\w+) for (\d+) s$/;
+const OUTBOX_MOVED = /^outbox ([0-9a-f]{8})(?: on [\w.-]+)?: m-\S+ went after its target's worker was (\w+) for (\d+) s$/;
 /**
  * The service.log lines whose calls are opens, status reads or sends, by their prefix. Others, such as the catalog's copies of the Mac's
  * session files (591 "read ECONNRESET" lines from 11:15Z on 10-18) and the session list, are background reads outside the rule.
@@ -51,10 +51,20 @@ const PREFIXED = /^(idle unload|wakes: wake|reopen|briefs: child|outbox|pin|chat
 const FILE_READ = /The session file on [\w.-]+ (?:did not read|is gone)/;
 const SESSION_IN = /\b(01[0-9a-f]{6})(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/;
 const SOCKET = /Socket: \S*\/hosts\/([\w.-]+)\.sock\b/;
+/**
+ * The box an outbox or open line names after its session (`outbox 01a11d25 on mac: ...`). Before, only a timeout's Socket named one, so on
+ * 10-18 the refusals and waits of Mac sessions 01a11d25, 01a10810, 01a10db4, 01a11ba8 and 01a14ec1 were booked on us-metal02.
+ */
+const ON_BOX = /^(?:outbox|open) [0-9a-f]{8} on ([\w.-]+)[: ]/;
 /** Calls outside the owner's rule: stopping an idle session and the catalog's own lists. */
 const OTHER_CALLS = new Set(["kill", "list", "cron_list"]);
-/** Supervisor answers that are a caller's stale id or a close already under way, not a daemon that failed. */
-const STALE = /Unknown active session|is closing/;
+/**
+ * Supervisor answers that are a caller's stale id, a close already under way, or a worker that is stopping or starting, not a daemon that
+ * failed. The chat service waits out a moving worker and sends or attaches once more (src/worker-move.ts, src/agent-outbox.ts), and its own
+ * line counts a wait over SLOW_MS: at 12:46:22Z on 10-18 the supervisor refused a send_message with "Session worker is stopping" that the outbox
+ * waited out with no line, and the refusal alone made the minute dirty.
+ */
+const STALE = /Unknown active session|is closing|Session worker is (?:stopping|starting)/;
 
 /** The short reason of a daemon error, or undefined when the text is no daemon or connection failure, or one for a call outside the rule. */
 export function faultReason(text: string): string | undefined {
@@ -74,7 +84,7 @@ export function faultReason(text: string): string | undefined {
   return undefined;
 }
 
-const hostOf = (text: string, local: string): string => SOCKET.exec(text)?.[1] ?? local;
+const hostOf = (text: string, local: string): string => SOCKET.exec(text)?.[1] ?? ON_BOX.exec(text)?.[1] ?? local;
 
 /** What a prefixed service.log line did, in the flag's words. */
 const ACTIONS: Record<string, string> = { "idle unload": "an idle check", "wakes: wake": "a wake's send", reopen: "a send", "briefs: child": "a brief's send",
@@ -86,6 +96,8 @@ const ACTIONS: Record<string, string> = { "idle unload": "an idle check", "wakes
  */
 export function readServiceFaults(lines: readonly string[], local: string): DaemonFault[] {
   const faults: DaemonFault[] = [];
+  // A job's wake opens the job first, and a failed open writes its line just before the wake's (`job 01a14efc: wake: ...`), which names no box.
+  const opened = new Map<string, string>();
   let at = NaN;
   for (const raw of lines) {
     const stamped = STAMPED.exec(raw);
@@ -94,13 +106,14 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     const text = stamped ? stamped[2]! : raw;
     let found: RegExpExecArray | null;
     if ((found = OPEN.exec(text))) {
-      const marks = found[2]!;
+      const marks = found[3]!;
+      opened.set(found[1]!, hostOf(text, local));
       const failed = /(?:^|, )failed: (.*)$/.exec(marks)?.[1];
       const reason = failed === undefined || /This thread was closed while it was/.test(failed) ? undefined : faultReason(failed) ?? failed.slice(0, 80);
       const tried = /(?:^|, )(?:queue|attach) \d+ms/.test(marks);
-      const slow = tried && Number(found[3]) > SLOW_MS;
+      const slow = tried && Number(found[4]) > SLOW_MS;
       if (reason || slow) faults.push({ at, host: hostOf(text, local), session: found[1]!,
-        what: `opening it ${reason ? `failed, ${reason}` : `took ${Math.round(Number(found[3]) / 1000)} s`}` });
+        what: `opening it ${reason ? `failed, ${reason}` : `took ${Math.round(Number(found[4]) / 1000)} s`}` });
       continue;
     }
     if ((found = WORKER_START.exec(text))) {
@@ -116,7 +129,7 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
       continue;
     }
     if ((found = OUTBOX_MOVED.exec(text))) {
-      if (Number(found[3]) * 1000 > SLOW_MS) faults.push({ at, host: local, session: found[1]!, what: `an outbox send waited ${found[3]} s while its worker was ${found[2]}` });
+      if (Number(found[3]) * 1000 > SLOW_MS) faults.push({ at, host: hostOf(text, local), session: found[1]!, what: `an outbox send waited ${found[3]} s while its worker was ${found[2]}` });
       continue;
     }
     const prefix = PREFIXED.exec(text);
@@ -125,7 +138,9 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     const reason = prefix && !FILE_READ.test(text) ? faultReason(text) : undefined;
     if (!prefix || !reason) continue;
     const session = SESSION_IN.exec(text)?.[1];
-    faults.push({ at, host: hostOf(text, local), ...session ? { session } : {}, what: `${prefix[2] ? `a job's ${prefix[2]}` : ACTIONS[prefix[1]!]} failed, ${reason}` });
+    const wakeOf = prefix[2] === "wake" ? /^job ([0-9a-f]{8})/.exec(text)?.[1] : undefined;
+    const host = SOCKET.exec(text)?.[1] ?? ON_BOX.exec(text)?.[1] ?? (wakeOf ? opened.get(wakeOf) : undefined) ?? local;
+    faults.push({ at, host, ...session ? { session } : {}, what: `${prefix[2] ? `a job's ${prefix[2]}` : ACTIONS[prefix[1]!]} failed, ${reason}` });
   }
   return faults;
 }

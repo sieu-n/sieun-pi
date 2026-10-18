@@ -46,6 +46,8 @@ export interface OutboxDeps {
   /** The thread's queued, sending and failed entries changed; `left` is the one that was just delivered. */
   changed(threadId: string, outbox: OutboxEntry[], left?: OutboxEntry): void;
   log(line: string): void;
+  /** How a line names the thread: its short id, and for an agent message to another box's session the box (`01a11d25 on mac`). */
+  where?: (threadId: string) => string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   keepMs?: number;
@@ -135,13 +137,15 @@ export class Outbox {
     await Promise.allSettled([...this.writes.values()]);
   }
 
+  private where(threadId: string): string { return this.deps.where?.(threadId) ?? threadId.slice(0, 8); }
+
   private lane(threadId: string): Stored[] {
     return [...this.entries.values()].filter(entry => entry.threadId === threadId).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
   }
 
   private kick(threadId: string): void {
     if (this.closed || this.lanes.has(threadId)) return;
-    const run = this.drain(threadId).catch(error => this.deps.log(`outbox ${threadId.slice(0, 8)}: ${message(error)}`))
+    const run = this.drain(threadId).catch(error => this.deps.log(`outbox ${this.where(threadId)}: ${message(error)}`))
       .finally(() => { this.lanes.delete(threadId); if (this.lane(threadId).some(entry => entry.state === "queued" || entry.state === "sending")) this.kick(threadId); });
     this.lanes.set(threadId, run);
   }
@@ -156,7 +160,7 @@ export class Outbox {
     if (entry.sentAt !== undefined) {
       const copy = await this.deps.copy(entry, entry.sentAt).catch(() => "unknown" as const);
       if (copy === "landed" || copy === "queued") {
-        this.deps.log(`outbox ${entry.threadId.slice(0, 8)}: ${entry.id} is ${copy} from the send at ${new Date(entry.sentAt).toISOString()}; not sent again`);
+        this.deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} is ${copy} from the send at ${new Date(entry.sentAt).toISOString()}; not sent again`);
         return this.finish(entry, "delivered");
       }
       if (copy === "unknown") { await this.sleep(backoff(entry.attempts)); return; }
@@ -171,7 +175,7 @@ export class Outbox {
       const final = this.deps.final(error);
       if (final !== null) return this.finish(current, "failed", final);
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
-      if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${current.threadId.slice(0, 8)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
+      if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
       current = this.update(current, { state: "queued" });
       if (!this.closed) await this.sleep(backoff(current.attempts));
     }

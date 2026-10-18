@@ -1,9 +1,9 @@
 // Guards the 10-18 thread open incident: a thread snapshot carried about 1,000 messages (up to 1.28 MB), Show earlier read the AI harness chat's whole 171 MB session file, and the owner waited 6 to 52 s for a thread to show.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
@@ -41,8 +41,9 @@ function bytesRead(): number {
   return Number(/rchar: (\d+)/.exec(readFileSync("/proc/self/io", "utf8"))![1]);
 }
 
-test("thread open: the first frame holds the newest page and older pages read only their own bytes, never the whole session file", { skip: !existsSync("/proc/self/io") }, async () => {
+test("thread open: the first frame holds the newest page and older pages read only their own bytes, never the whole session file", { skip: !existsSync("/proc/self/io") }, async t => {
   const file = await sessionFile();
+  t.after(() => rm(dirname(file), { recursive: true, force: true }));
   const size = readFileSync(file).length;
   const catalog = { summary: async (id: string) => ({ sessionId: id, sessionFile: file, cwd: "/", lifecycle: "saved", messageCount: MESSAGES }), hostOf: () => null } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));

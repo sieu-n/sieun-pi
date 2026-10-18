@@ -24,22 +24,45 @@ export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] =>
   openGoals(board?.plan ?? []).filter(goal => !goal.target && !/\bdone when\b/i.test(goal.note ?? ""));
 /** The goal the alert bridge files firing alerts under (ALERT_GOAL in alert-bridge.ts). */
 export const ALERT_GOAL_TEXT = "Firing prod alerts";
+/** The steps the alert bridge filed on one chat's board (alert-bridge.json), and those whose alert still fires. */
+export interface AlertSteps { filed: ReadonlySet<string>; firing: ReadonlySet<string> }
+/** One chat's AlertSteps from the bridge's saved state; an unreadable state gives none, so nothing counts as firing. */
+export function alertSteps(state: unknown, chat: string): AlertSteps {
+  const filed = new Set<string>(); const firing = new Set<string>();
+  const rules = typeof state === "object" && state !== null ? (state as { rules?: unknown }).rules : undefined;
+  if (typeof rules === "object" && rules !== null) for (const rule of Object.values(rules as Record<string, unknown>)) {
+    const tracked = rule as { chat?: unknown; step?: unknown; resolvedAt?: unknown };
+    if (tracked?.chat !== chat || typeof tracked.step !== "string") continue;
+    filed.add(tracked.step);
+    if (tracked.resolvedAt === undefined || tracked.resolvedAt === null) firing.add(tracked.step);
+  }
+  return { filed, firing };
+}
 /**
- * The open steps that hold a standing risk instead of finishable work: each open step under an open "Firing prod alerts" goal. The owner on
- * 10-18 (c110): "stop being paranoid in plan under p45, p221. these should be modeled separately, like in a doc tracking all the known vps infra
- * risks and a duty that checks these." ops guy's p221 held 9 such open steps, like p315 "us-metal01 filesystem fills within 30 days".
+ * The open steps that hold a standing risk instead of finishable work. The owner on 10-18 (c110): "stop being paranoid in plan under p45, p221.
+ * these should be modeled separately, like in a doc tracking all the known vps infra risks and a duty that checks these." ops guy's p221 held 9
+ * such open steps, like p315 "us-metal01 filesystem fills within 30 days". A step the alert bridge filed whose alert still fires is work with
+ * a fixable cause, not a risk: VP of CI's p273 "CI history ingest has not read GitHub for 15 min" read as a risk 12 check-ins in a row on
+ * 10-18. So a risk is an open leaf step under "Firing prod alerts" that no firing alert holds, or a bridge step anywhere (Crawler VP files
+ * them under p146) whose alert resolved while the step stayed open.
  */
-export function planRiskSteps(board: ChatBoard | null): PlanItem[] {
+export function planRiskSteps(board: ChatBoard | null, alerts: AlertSteps = { filed: new Set(), firing: new Set() }): PlanItem[] {
   const found: PlanItem[] = [];
-  for (const goal of openGoals(board?.plan ?? [])) if (goal.text.trim() === ALERT_GOAL_TEXT) walkItems(goal.children, item => { if (OPEN.has(item.status) && !item.children.length) found.push(item); });
+  for (const goal of openGoals(board?.plan ?? [])) {
+    const underAlerts = goal.text.trim() === ALERT_GOAL_TEXT;
+    walkItems(goal.children, item => {
+      if (!OPEN.has(item.status) || item.children.length || alerts.firing.has(item.id)) return;
+      if (underAlerts || alerts.filed.has(item.id)) found.push(item);
+    });
+  }
   return found;
 }
 export const noDoneLineLine = (goals: readonly PlanItem[]): string =>
   `${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")} ${goals.length === 1 ? "has" : "have"} no done line: give each a note that starts with "Done when" ` +
   "and the check the owner would make by hand, or a target (board skill, references/plan-and-duties.md)";
 export const riskStepsLine = (steps: readonly PlanItem[]): string =>
-  `${plural(steps.length, "open step")} under "${ALERT_GOAL_TEXT}" hold standing risks (${steps.slice(0, 5).map(step => step.id).join(", ")}${steps.length > 5 ? " and more" : ""}): ` +
-  "move each to the chat's wiki risk page with a duty metric that checks it, close the goal, and get the alert bridge to message the owner instead of filing steps (board skill, references/plan-and-duties.md)";
+  `${plural(steps.length, "open step")} hold standing risks or resolved alerts (${steps.slice(0, 5).map(step => step.id).join(", ")}${steps.length > 5 ? " and more" : ""}): ` +
+  "close each whose alert resolved, and move each standing risk to the chat's wiki risk page with a duty metric that checks it (board skill, references/plan-and-duties.md)";
 
 /** The open goals with no step under them: a step filed as a goal. */
 export const looseGoals = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !goal.children.length);

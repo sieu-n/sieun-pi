@@ -45,8 +45,10 @@ export interface InterruptedReport {
   checked_at: string;
   /** Each box the pass did not finish and why, such as a SIGTERM from the caller's timeout while it read another box. `host` null is this box. */
   incomplete?: { host: string | null; error: string }[];
-  /** Cut runs whose turn an archive with no recorded cause stopped: Prime's archive line has no cause, so they are reported and never resumed. */
+  /** Cut runs whose turn an archive stopped with no recorded cause, or with one that gives no leave to continue (`error` names it). Never resumed. */
   unresolved?: UnresolvedStop[];
+  /** Cut runs a record says were stopped on purpose: an rlm ledger delete, the chat's delete or archive, or a stop reason on the archive line. */
+  stopped?: RecordedStop[];
 }
 
 /** What decides whether a run or an unresolved stop belongs to the chats' jobs. */
@@ -60,5 +62,16 @@ export interface UnresolvedStop {
   head_session_id: string;
   archived_at?: string;
   error: string;
+  host?: string;
+}
+
+export interface RecordedStop {
+  id: string;
+  name: string;
+  session_id: string;
+  head: string;
+  head_session_id: string;
+  stopped_at?: string | null;
+  stopped_by: string;
   host?: string;
 }

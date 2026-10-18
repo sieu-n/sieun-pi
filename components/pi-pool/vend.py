@@ -117,10 +117,11 @@ USAGE = """usage: pi-pool [command]
   prod [set <json> | clear]      the trees and sessions on prod work, whose turns run at once:
                                   set takes {"trees": {id: why}, "sessions": {id: why}, "until": epoch sec}
   queue [--json]                 working and queued turns
-  snapshot --json [--thread <session> <model>]...
+  snapshot --json [--thread <session> <model>]... [--tree <session>]...
                                   queue --json, config, and per thread who --json and ls --json for
                                   each provider, as one JSON object of {code, out, err} parts, each
-                                  what the separate command prints; "" for no session or model
+                                  what the separate command prints; "" for no session or model;
+                                  per --tree the class and label its record holds, null for none
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
