@@ -18,7 +18,8 @@ export type Host = {
   token: string;
   daemonSocket: string;
   ssh: string | null;
-  roles: Partial<Record<HostRole, { port: number }>>;
+  /** `url` is set for a service behind tailscale serve; without it the service answers on http://<address>:<port>. */
+  roles: Partial<Record<HostRole, { port: number; url?: string }>>;
 };
 export type HostsRegistry = { version: 1; hosts: Host[] };
 
@@ -55,7 +56,9 @@ function parseHost(value: unknown, at: string): Host {
     if (!(ROLES as readonly string[]).includes(role)) throw new Error(`${at}.roles.${role}: unknown role (${ROLES.join(", ")})`);
     const port = isRecord(spec) ? spec.port : undefined;
     if (typeof port !== "number" || !Number.isInteger(port)) throw new Error(`${at}.roles.${role}.port: needs a port number`);
-    roles[role as HostRole] = { port };
+    const url = isRecord(spec) ? spec.url : undefined;
+    if (url !== undefined && (typeof url !== "string" || !/^https?:\/\//.test(url))) throw new Error(`${at}.roles.${role}.url: needs an http(s) URL`);
+    roles[role as HostRole] = url === undefined ? { port } : { port, url: url.replace(/\/+$/, "") };
   }
   return { name, hostname: text("hostname"), address: text("address"), relayPort, token, daemonSocket, ssh, roles };
 }
@@ -92,10 +95,11 @@ export function hostNamed(registry: HostsRegistry, name: string): Host {
   return host;
 }
 
-/** The http URL of the service that holds `role`, such as the pool holder's http://<address>:7781. */
+/** The URL of the service that holds `role`: its roles entry's url when set, else http://<address>:<port>, such as the pool holder's :7781. */
 export function roleUrl(registry: HostsRegistry, role: HostRole): string | null {
   const host = registry.hosts.find(candidate => candidate.roles[role]);
-  return host ? `http://${host.address}:${host.roles[role]!.port}` : null;
+  const spec = host?.roles[role];
+  return host && spec ? spec.url ?? `http://${host.address}:${spec.port}` : null;
 }
 
 export async function hostToken(host: Host, configDir = CONFIG_DIR): Promise<string> {

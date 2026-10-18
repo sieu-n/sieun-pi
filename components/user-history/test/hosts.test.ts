@@ -47,6 +47,9 @@ test("parseHosts refuses a role on two hosts, a duplicate name and a token that 
   assert.throws(() => parseHosts({ version: 1, hosts: [host, host] }), /listed twice/);
   assert.throws(() => parseHosts({ version: 1, hosts: [{ ...host, token: "abc" }] }), /file:<path>/);
   assert.equal(roleUrl(parseHosts({ version: 1, hosts: [host] }), "wiki"), "http://100.1.1.1:1");
+  assert.equal(roleUrl(parseHosts({ version: 1, hosts: [{ ...host, roles: { wiki: { port: 1, url: "https://box.ts.net:5176/" } } }] }), "wiki"), "https://box.ts.net:5176");
+  assert.equal(roleUrl(parseHosts({ version: 1, hosts: [host] }), "chat"), null);
+  assert.throws(() => parseHosts({ version: 1, hosts: [{ ...host, roles: { wiki: { port: 1, url: "box" } } }] }), /http\(s\) URL/);
 });
 
 test("selfHost matches the short hostname, so a .local suffix still finds this machine", () => {
