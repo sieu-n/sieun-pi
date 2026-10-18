@@ -1,3 +1,4 @@
+import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { targetOp } from "./shared/chat-board.ts";
 import type { MetricResult } from "./shared/chat-duties.ts";
 import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
@@ -8,7 +9,8 @@ const walk = (items: readonly PlanItem[], visit: (item: PlanItem) => void): void
  * The board ops that write a duty run's measures into the goals they measure: a top-level goal with a target, where the goal or an item under it
  * fixes `<dutyId>/<key>`, and that metric has the goal's target and direction, gets its target's current, measuredAt and source from the run when
  * the run is newer than the target's reading. On 10-18 the AI harness chat's p453 still read 25.7% from 10-16 06:27Z while the newest measure
- * said 29.7%, so the check-in pushed on a two-day-old number and the board showed it.
+ * said 29.7%, so the check-in pushed on a two-day-old number and the board showed it. A push step's link (`GOAL_PUSH_LINK`) names the job that
+ * owns the number, not a measure of it, as in `goalNumber`: on 10-18 the check-in wrote its goal_gaps 3 into VP of CI's p75 over d3's 1.
  */
 export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: number, metrics: Readonly<Record<string, MetricResult>>): BoardOp[] {
   const ops: BoardOp[] = [];
@@ -19,7 +21,7 @@ export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: numb
     if (Number.isFinite(measured) && measured >= at) continue;
     let reading: { key: string; value: number } | undefined;
     walk([goal], item => {
-      if (reading || !item.duty?.startsWith(`${dutyId}/`)) return;
+      if (reading || item.duty === GOAL_PUSH_LINK || !item.duty?.startsWith(`${dutyId}/`)) return;
       const key = item.duty.slice(dutyId.length + 1);
       const result = metrics[key];
       if (result && result.value >= 0 && result.target === target.target && result.op === targetOp(target)) reading = { key, value: result.value };
