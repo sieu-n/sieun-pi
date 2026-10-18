@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -14,7 +14,7 @@ import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
 import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import type { Host } from "./hosts.ts";
-import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -67,21 +67,26 @@ function messageTitle(first: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 100);
 }
 
+/** What a session file's daemon row says about its writes: a new message or write changes it, so a read that found nothing waits for it to change. */
+type FileRow = Pick<SessionSummary, "sessionFile"> & Partial<Pick<SessionSummary, "modified" | "messageCount" | "lastActivityAt">>;
+const writeKey = (row: FileRow): string => `${row.modified ?? ""}|${row.messageCount ?? ""}|${row.lastActivityAt ?? ""}`;
+
 /**
- * Session files that held no first user message when read, with their size then, or Infinity for one scanned past FIRST_MESSAGE_SCAN_BYTES. Measured 10-13 on the live list: 498 of 1,372 rows, mostly
- * subagent sessions, were read again on every projection, about 560 MB and half of the service's main-thread time. One with none in its first
- * FIRST_MESSAGE_SCAN_BYTES never gets one; one read to its end is read again only after it grows.
+ * Session files that held no first user message when read, with the row's `writeKey` then, or null for one scanned past FIRST_MESSAGE_SCAN_BYTES
+ * (it never gets one). Measured 10-13 on the live list: 498 of 1,372 rows, mostly subagent sessions, were read again on every projection, about
+ * 560 MB and half of the service's main-thread time. Measured 10-18: a stat per such row on every projection, and a failed open for each of the
+ * other box's rows with no local copy yet, still took 1.3 s of every 20 s of the service's main thread, so a file is read again only once its
+ * row changes.
  */
-const noFirst = new Map<string, number>();
-function storedFirst(sessionFile: string): string | undefined {
-  const readAt = noFirst.get(sessionFile);
-  if (readAt === Infinity) return "";
-  let size: number;
-  try { size = statSync(sessionFile).size; } catch { return undefined; }
-  if (readAt === size) return undefined;
-  const first = fileFirstMessage(sessionFile);
-  if (first) noFirst.delete(sessionFile);
-  else noFirst.set(sessionFile, first === "" ? Infinity : size);
+const noFirst = new Map<string, string | null>();
+function storedFirst(row: FileRow & { sessionFile: string }): string | undefined {
+  const readAt = noFirst.get(row.sessionFile);
+  if (readAt === null) return "";
+  const key = writeKey(row);
+  if (readAt === key) return undefined;
+  const first = fileFirstMessage(row.sessionFile);
+  if (first) noFirst.delete(row.sessionFile);
+  else noFirst.set(row.sessionFile, first === "" ? null : key);
   return first;
 }
 
@@ -90,13 +95,24 @@ const fileTitles = new Map<string, string>();
 
 /** The raw first user message of each session file, cut to 2000 characters, for derived display names. */
 const fileFirsts = new Map<string, string>();
-/** The first task text of a session: the stored first user message, else the daemon's `firstMessage`. Empty when there is none yet. */
-export function firstTask(row: Pick<SessionSummary, "firstMessage" | "sessionFile">): string {
+/** Session files with no task in the file or beside it, with the row's `writeKey` then: neither is read again until the row changes. */
+const noTask = new Map<string, string>();
+/**
+ * The first task text of a session: a subagent's spawn prompt, else the stored first user message, else the daemon's `firstMessage`. Empty when
+ * there is none yet. A subagent's prompt is read first: its file holds no user message, and on 10-18 scanning up to FIRST_MESSAGE_SCAN_BYTES of
+ * each one for none took 40% of the first projection after a restart.
+ */
+export function firstTask(row: Pick<SessionSummary, "firstMessage"> & Partial<Pick<SessionSummary, "parentSessionId">> & FileRow): string {
   if (row.sessionFile) {
     const cached = fileFirsts.get(row.sessionFile);
     if (cached !== undefined) return cached;
-    const first = storedFirst(row.sessionFile) || subagentPrompt(row.sessionFile);
-    if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); return cut; }
+    const key = writeKey(row);
+    if (noTask.get(row.sessionFile) !== key) {
+      const file = { ...row, sessionFile: row.sessionFile };
+      const first = row.parentSessionId ? subagentPrompt(row.sessionFile) || storedFirst(file) : storedFirst(file) || subagentPrompt(row.sessionFile);
+      if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); noTask.delete(row.sessionFile); return cut; }
+      noTask.set(row.sessionFile, key);
+    }
   }
   return row.firstMessage === NO_MESSAGES ? "" : taskText(row.firstMessage ?? "");
 }
@@ -112,14 +128,14 @@ function subagentPrompt(sessionFile: string): string {
   } catch { return ""; }
 }
 
-function storedTitle(sessionFile: string | undefined): string | undefined {
-  if (!sessionFile) return undefined;
-  const cached = fileTitles.get(sessionFile);
+function storedTitle(row: FileRow): string | undefined {
+  if (!row.sessionFile) return undefined;
+  const cached = fileTitles.get(row.sessionFile);
   if (cached !== undefined) return cached;
-  const first = storedFirst(sessionFile);
+  const first = storedFirst({ ...row, sessionFile: row.sessionFile });
   if (first === undefined) return undefined;
   const title = messageTitle(first);
-  fileTitles.set(sessionFile, title);
+  fileTitles.set(row.sessionFile, title);
   return title;
 }
 
@@ -128,10 +144,10 @@ function storedTitle(sessionFile: string | undefined): string | undefined {
  * `firstMessage` is used only until the file has a user message: for a live thread it is the first user message still in memory, which after a
  * compaction or a resume is a later message, so a title built from it changes.
  */
-export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMessage"> & { cwd?: string; sessionFile?: string }): string {
+export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMessage"> & FileRow & { cwd?: string }): string {
   const name = row.sessionName?.replace(/\s+/g, " ").trim();
   if (name) return name;
-  const text = storedTitle(row.sessionFile) ?? messageTitle(row.firstMessage ?? "");
+  const text = storedTitle(row) ?? messageTitle(row.firstMessage ?? "");
   return text || (row.cwd ? basename(row.cwd) : "") || "New chat";
 }
 
@@ -417,6 +433,19 @@ export function rosterOverlay(scanned: readonly SessionSummary[], live: readonly
   return scanned.map(row => liveByKey.get(key(row)) ?? row);
 }
 
+/**
+ * `unreadCount` kept per messages array and read marker. The hub replaces a chat's array on each new message, and on 10-18 counting every unread
+ * chat's feed again on each projection took 10% of it.
+ */
+const unreadCounts = new WeakMap<readonly ThreadMessage[], { since: number; count: number }>();
+function unreadOf(messages: readonly ThreadMessage[], since: number): number {
+  const known = unreadCounts.get(messages);
+  if (known?.since === since) return known.count;
+  const count = unreadCount(messages, since);
+  unreadCounts.set(messages, { since, count });
+  return count;
+}
+
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
@@ -446,6 +475,11 @@ export class Catalog {
   private ratesTimer: ReturnType<typeof setTimeout> | undefined;
   private summaries = new Map<string, SessionSummary>();
   private childSummaries: SessionSummary[] = [];
+  /**
+   * Each subagent session id's row, the resident copy over a saved one, else the first listed. On 10-18 a filter of every child row per chat
+   * agent on each projection took 12% of its time.
+   */
+  private childById = new Map<string, SessionSummary>();
   /** Children's cut ends (`SessionCuts`), read after each list. */
   readonly cuts = new SessionCuts();
   private cutsReading = false;
@@ -638,6 +672,11 @@ export class Catalog {
     }
     this.summaries = next;
     this.childSummaries = children;
+    this.childById = new Map();
+    for (const row of children) {
+      const existing = this.childById.get(row.sessionId);
+      if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) this.childById.set(row.sessionId, row);
+    }
     this.listed = true;
     const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
@@ -710,7 +749,7 @@ export class Catalog {
       const forYou = links?.board?.todos.filter(todo => !todo.done).length ?? 0;
       if (forYou) row.forYou = forYou;
       if (row.unread && links?.messages.length) {
-        const count = unreadCount(links.messages, Math.max(state?.baseline ?? 0, state?.sessions[row.id]?.timestamp ?? 0));
+        const count = unreadOf(links.messages, Math.max(state?.baseline ?? 0, state?.sessions[row.id]?.timestamp ?? 0));
         if (count) row.unreadCount = count;
       }
     }
@@ -822,10 +861,7 @@ export class Catalog {
   }
 
   private find(sessionId: string): SessionSummary | undefined {
-    const top = this.summaries.get(sessionId);
-    if (top) return top;
-    const children = this.childSummaries.filter(row => row.sessionId === sessionId);
-    return children.find(row => row.activeSessionId !== undefined) ?? children[0];
+    return this.summaries.get(sessionId) ?? this.childById.get(sessionId);
   }
 
   /** The last activity of each session the daemon lists below `sessionId` at any depth, in epoch ms, NaN for one with none. */

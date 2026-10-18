@@ -1,5 +1,5 @@
 import { watch as watchDir, type FSWatcher } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { applyBoardOp, emptyBoard, linkStepSessions, nextIds, parseBoard } from "./shared/chat-board.ts";
@@ -25,6 +25,23 @@ export class BoardStore {
   async read(id: string): Promise<ChatBoard | null> {
     try { return await readJsonFile(this.file(id)); }
     catch (error) { if (missing(error)) return null; throw error; }
+  }
+
+  /** Each board's last parse for `view`, with the file's inode, mtime and size then. */
+  private readonly views = new Map<string, { key: string; board: ChatBoard | null }>();
+  /**
+   * The board for a reader that never changes it, parsed again only once its file changed: a write replaces the file by rename. The catalog
+   * reads every chat's board on each projection, and on 10-18 parsing them took 13% of it.
+   */
+  async view(id: string): Promise<ChatBoard | null> {
+    let key: string;
+    try { const info = await stat(this.file(id).path, { bigint: true }); key = `${info.ino}:${info.mtimeNs}:${info.size}`; }
+    catch (error) { if (missing(error)) return null; throw error; }
+    const known = this.views.get(id);
+    if (known?.key === key) return known.board;
+    const board = await this.read(id);
+    this.views.set(id, { key, board });
+    return board;
   }
 
   /** Applies the ops in order, all or none: a refused op (BoardError) leaves the file as it was. No ops reads the board. */

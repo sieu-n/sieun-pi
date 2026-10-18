@@ -70,6 +70,21 @@ export function agentContacts(messages: readonly ThreadMessage[], since: number)
   return contacts;
 }
 
+/**
+ * The sessions a transcript created and every agent message in it, read once per messages array. The hub replaces a chat's array on each new
+ * message, and the catalog asks for every chat on every projection: on 10-18 these two scans of about 1,000 messages per chat took 30% of
+ * chatAgents.
+ */
+const transcriptReads = new WeakMap<readonly ThreadMessage[], { created: string[]; contacts: Contact[] }>();
+function transcriptLinks(messages: readonly ThreadMessage[]): { created: string[]; contacts: Contact[] } {
+  let read = transcriptReads.get(messages);
+  if (!read) {
+    read = { created: createdSessions(messages).map(created => created.sessionId), contacts: agentContacts(messages, -Infinity) };
+    transcriptReads.set(messages, read);
+  }
+  return read;
+}
+
 /** A name in the owner's style: plain words with spaces. Empty, "Untitled" and kebab-case or snake_case names get a derived display name. */
 export const needsDisplayName = (name: string): boolean => {
   const trimmed = name.trim();
@@ -147,12 +162,25 @@ export function derivedName(first: string): string {
 const plainName = (name: string): string => name.replace(/[*`]+/g, " ").replace(/^[\s#_~>]+|[\s_~]+$/g, "").replace(/\s+/g, " ").trim();
 const squash = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
 /**
+ * `squash(text)` cut to its first `length` characters, squashing only as much of the text as that needs: a first task runs to 2,000 characters,
+ * and on 10-18 squashing each one whole for every row a chat's agents named took 9% of a catalog projection.
+ */
+function squashedHead(text: string, length: number): string {
+  for (let read = 2 * length + 16; ; read *= 2) {
+    const head = squash(text.slice(0, read));
+    if (read >= text.length || head.length > length) return head.slice(0, length);
+  }
+}
+/**
  * Whether a row's name is a title the catalog took from its first message, not one the owner gave: longer than six words, or three or more words
  * that open the first message.
  */
 export function titledFromMessage(name: string, first: string | undefined): boolean {
   const words = name.trim().split(/\s+/).length;
-  return words > 6 || (words >= 3 && first !== undefined && squash(first).startsWith(squash(name)));
+  if (words > 6) return true;
+  if (words < 3 || first === undefined) return false;
+  const opening = squash(name);
+  return squashedHead(first, opening.length) === opening;
 }
 /** A name the chat server made up ("chat-e15f") or the daemon's "Untitled": it names no topic. */
 const generatedName = (name: string): boolean => !name || /^untitled$/i.test(name) || /^chat-[0-9a-f]{4}$/i.test(name);
@@ -188,6 +216,29 @@ function walk(items: readonly PlanItem[], visit: (item: PlanItem) => void): void
 }
 
 /**
+ * Looks a row up by session id or name, as the first row that has either, the way `rows.find` would. The index is built once per rows array,
+ * which every chat of one catalog projection shares: on 10-18 a linear find per open plan step over 2,582 rows took 45% of chatAgents and a
+ * fifth of the chat service's main thread.
+ */
+const rowIndexes = new WeakMap<readonly AgentRow[], { byId: Map<string, number>; byName: Map<string, number> }>();
+function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undefined {
+  let index = rowIndexes.get(rows);
+  if (!index) {
+    index = { byId: new Map(), byName: new Map() };
+    for (const [at, entry] of rows.entries()) {
+      if (!index.byId.has(entry.row.id)) index.byId.set(entry.row.id, at);
+      if (!index.byName.has(entry.row.name)) index.byName.set(entry.row.name, at);
+    }
+    rowIndexes.set(rows, index);
+  }
+  const { byId, byName } = index;
+  return who => {
+    const at = Math.min(byId.get(who) ?? Infinity, byName.get(who) ?? Infinity);
+    return at === Infinity ? undefined : rows[at];
+  };
+}
+
+/**
  * Every thread linked to a chat, running first, then by latest activity: its subagents (the hub's snapshots joined with the daemon's sessions
  * under it), the roots it started with rlm.create_session (the registry and the handles in its transcript), the owners of its open plan steps,
  * and the threads it exchanged agent messages with in the last CONTACT_WINDOW_MS. One row per thread, linked the strongest way it is. A row is
@@ -206,7 +257,7 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     const raw = who.replace(/^(?:child|sibling|parent):/, "").replace(/^thread:/, "").trim();
     return bySession.get(raw) ?? byName.get(raw);
   };
-  const rowOf = (who: string): AgentRow | undefined => input.rows.find(entry => entry.row.id === who || entry.row.name === who);
+  const rowOf = rowFinder(input.rows);
   const link = (draft: Draft, how: AgentLink) => { if (LINK_RANK[how] < LINK_RANK[draft.link]) draft.link = how; };
 
   const sessions = new Map(input.childSessions.map(session => [session.childId ?? session.sessionId, session]));
@@ -242,7 +293,8 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     index(draft);
     return draft;
   };
-  const roots = new Set([...input.roots, ...createdSessions(input.messages).map(created => created.sessionId)]);
+  const transcript = transcriptLinks(input.messages);
+  const roots = new Set([...input.roots, ...transcript.created]);
   for (const root of roots) { const entry = rowOf(root); if (entry) thread(entry, "root"); }
 
   // Owners of open steps join the list; then every step of a listed thread, done ones included, is counted on it. A step's stored session id
@@ -275,7 +327,8 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
   }
 
   const since = input.now - CONTACT_WINDOW_MS;
-  for (const contact of agentContacts(input.messages, since)) {
+  for (const contact of transcript.contacts) {
+    if (contact.at < since) continue;
     let draft = find(contact.who);
     if (!draft) {
       const raw = contact.who.replace(/^(?:child|sibling|parent):/, "").trim();

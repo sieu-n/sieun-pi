@@ -1005,7 +1005,7 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id)) return { children: [], board: null, roots: [], messages: [] };
     const state = this.threads.state?.(id);
-    const board = state?.board !== undefined ? state.board : await this.source.board(id).catch(() => null);
+    const board = state?.board !== undefined ? state.board : await (this.source.boardView ?? this.source.board).call(this.source, id).catch(() => null);
     const name = state?.info?.name?.trim();
     const roots = this.source.registry ? await this.source.registry.rootsOf(name ? [id, name] : [id]).catch(() => []) : [];
     return { children: this.children.get(id) ?? state?.children ?? [], board, roots, messages: state?.messages ?? [] };

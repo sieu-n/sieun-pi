@@ -40,6 +40,8 @@ export function fileOrigin(sessionFile: string): { origin: ThreadOrigin; final: 
 }
 
 const HEAD_SCAN_BYTES = 4 * 1024 * 1024;
+/** A listed session as the resolver reads it: its file, and the daemon row's fields that change when the file is written. */
+type OriginRow = { sessionId: string; sessionFile?: string; modified?: string; messageCount?: number; lastActivityAt?: string };
 const TYPE = /^\{"type":"([a-z_]+)"/;
 /** The entry type of one JSONL line. The session writer puts `type` first, so the line is not parsed. */
 function entryType(line: string): string | undefined { return TYPE.exec(line)?.[1]; }
@@ -53,9 +55,15 @@ function entryType(line: string): string | undefined { return TYPE.exec(line)?.[
  */
 export class ThreadOrigins {
   private readonly decided = new Map<string, ThreadOrigin>();
+  /**
+   * Files whose head did not decide yet (still being written, or not on this disk, as the other box's rows with no local copy), with the row's
+   * write key and the answer then: one is read again only once its row changes. On 10-18 opening them again on every projection took 1.1 s of
+   * every 20 s of the chat service's main thread.
+   */
+  private readonly undecided = new Map<string, { key: string; origin: ThreadOrigin }>();
   constructor(private readonly created: Pick<IdIndex, "ids">, private readonly cleanRoom?: Pick<IdIndex, "ids">) {}
 
-  async resolver(chats: ReadonlySet<string>): Promise<(row: { sessionId: string; sessionFile?: string }) => ThreadOrigin> {
+  async resolver(chats: ReadonlySet<string>): Promise<(row: OriginRow) => ThreadOrigin> {
     const own = new Set(await this.created.ids().catch(() => []));
     const tests = new Set(await this.cleanRoom?.ids().catch(() => []) ?? []);
     return row => {
@@ -64,8 +72,12 @@ export class ThreadOrigins {
       if (!row.sessionFile) return "user";
       const known = this.decided.get(row.sessionFile);
       if (known) return known;
+      const key = `${row.modified ?? ""}|${row.messageCount ?? ""}|${row.lastActivityAt ?? ""}`;
+      const pending = this.undecided.get(row.sessionFile);
+      if (pending?.key === key) return pending.origin;
       const { origin, final } = fileOrigin(row.sessionFile);
-      if (final) this.decided.set(row.sessionFile, origin);
+      if (final) { this.decided.set(row.sessionFile, origin); this.undecided.delete(row.sessionFile); }
+      else this.undecided.set(row.sessionFile, { key, origin });
       return origin;
     };
   }
