@@ -21,6 +21,7 @@ import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
+import { boardDelta, boardStep, type BoardStep } from "./shared/board-delta.ts";
 import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
 import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
@@ -115,7 +116,32 @@ class Thread {
     }
     if (messages.length) this.lastSent.set(listener, formatCursor({ kind: "message", key: messageKey(messages, messages.length - 1) }));
     if (children) listener({ type: "children", children: held });
-    if (board && this.state.board && have?.board !== boardKey(this.state.board)) listener({ type: "board", board: this.state.board });
+    if (board) { if (have?.board) this.boardHeld.set(listener, have.board); this.sendBoard(listener); }
+  }
+  /** Listeners that take board deltas (`delta: true` on the feed), and the `boardKey` of the board each listener holds. */
+  readonly deltas = new WeakSet<Listener>();
+  private readonly boardHeld = new WeakMap<Listener, string>();
+  /** The board changes since the thread opened, oldest first, so a page that holds an earlier board gets one delta (`boardDelta`). */
+  private boardSteps: { from: string; to: string; step: BoardStep }[] = [];
+  /**
+   * The board to a listener: nothing when it holds this board, the items that changed since the one it holds when it takes deltas and the
+   * thread saw every change since, and the whole board otherwise. On 10-18 every change sent the whole board, 456 KB for 01a1164b.
+   */
+  private sendBoard(listener: Listener): void {
+    const board = this.state.board;
+    if (!board) return;
+    const key = boardKey(board), held = this.boardHeld.get(listener);
+    if (held === key) return;
+    const from = held === undefined || !this.deltas.has(listener) ? -1 : this.boardSteps.findIndex(step => step.from === held);
+    listener(from < 0 ? { type: "board", board } : boardDelta(held!, board, this.boardSteps.slice(from).map(step => step.step)));
+    this.boardHeld.set(listener, key);
+  }
+  private boardChanged(before: ChatBoard | null | undefined, after: ChatBoard): void {
+    const step = before ? boardStep(before, after) : null;
+    const from = before ? boardKey(before) : "";
+    if (!step || this.boardSteps.at(-1)?.to !== from) this.boardSteps = [];
+    if (step) this.boardSteps.push({ from, to: boardKey(after), step });
+    if (this.boardSteps.length > BOARD_STEPS) this.boardSteps.shift();
   }
   /** The messages after the one `cursor` names, when the thread holds it and at most a page follows it; null otherwise. */
   private after(cursor: string): ThreadMessage[] | null {
@@ -135,9 +161,11 @@ class Thread {
   }
   broadcast(event: ThreadEvent): void {
     const children = this.state.children;
+    if (event.type === "board") this.boardChanged(this.state.board, event.board);
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) {
       if (event.type === "snapshot") this.send(listener, false, this.state.children.length > 0 || children.length > 0);
+      else if (event.type === "board") this.sendBoard(listener);
       else listener(event);
     }
     if (this.state.children !== children) this.onChildren(this, children);
@@ -182,6 +210,8 @@ const MAX_LIVE = 8;
 const MAX_SAVED = 16;
 const IDLE_MS = 3 * 60 * 1000;
 const UPDATE_COALESCE_MS = 40;
+/** The board changes a thread keeps for `Thread.sendBoard`: a page that holds an older board than these gets the whole board. */
+const BOARD_STEPS = 64;
 /**
  * The id to attach, or undefined when the session must be opened from its saved file. A worker that died leaves its sessions listed with the dead
  * worker's active id and workerState "failed"; attaching that id fails with "Session worker is failed" forever, while opening the saved file
@@ -887,9 +917,10 @@ export class ThreadHub {
    * the newest page at once, from what the thread holds or from the session file, and the live snapshot when the attach lands.
    */
   /** `have` is what a reconnecting page holds (chat-socket.ts `ThreadHave`): it gets the messages after its newest, and the board only when it changed. */
-  async subscribe(id: string, listener: Listener, background = false, have?: ThreadHave): Promise<() => void> {
+  async subscribe(id: string, listener: Listener, background = false, have?: ThreadHave, delta = false): Promise<() => void> {
     const thread = await this.start(id, background, true);
     thread.listeners.add(listener);
+    if (delta) thread.deltas.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
     thread.send(listener, true, undefined, have === undefined, have);

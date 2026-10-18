@@ -1,3 +1,4 @@
+import type { BoardDelta } from "./board-delta.ts";
 import type { OutboxEntry } from "./outbox.ts";
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -237,6 +238,8 @@ export type ThreadEvent =
   | { type: "queue"; queue: QueueState }
   | { type: "children"; children: ChildAgent[] }
   | { type: "board"; board: ChatBoard }
+  /** Only to a feed that asked for deltas (`delta: true`): the board items that changed since the board the page holds (shared/board-delta.ts). */
+  | BoardDelta
   | { type: "wait"; wait: ChatWait | null }
   /** The thread's queued, sending and failed owner sends; a send just delivered is listed once as "delivered", then dropped. */
   | { type: "outbox"; outbox: OutboxEntry[] }

@@ -13,7 +13,7 @@ export const BOOT_SUBS = { thread: 1, sessions: 2 } as const;
 export const bootFeedScript = `(function(){try{
 var raw=decodeURIComponent(location.hash.slice(1)),at=raw.lastIndexOf("@"),id=at>0&&/^\\d+$/.test(raw.slice(at+1))?raw.slice(0,at):raw;
 if(!id)id=new URLSearchParams(location.search).get("t");
-var subs=[];if(id)subs.push({sub:${BOOT_SUBS.thread},feed:"thread",id:id});subs.push({sub:${BOOT_SUBS.sessions},feed:"sessions",delta:true});
+var subs=[];if(id)subs.push({sub:${BOOT_SUBS.thread},feed:"thread",id:id,delta:true});subs.push({sub:${BOOT_SUBS.sessions},feed:"sessions",delta:true});
 var url=new URL("api/ws",document.baseURI);url.protocol=url.protocol==="https:"?"wss:":"ws:";
 url.searchParams.set("token",document.body.dataset.chatToken||"");url.searchParams.set("subs",JSON.stringify(subs));
 var socket=new WebSocket(url),boot={socket:socket,subs:subs,frames:[]};

@@ -1,5 +1,6 @@
+import { applyBoardDelta } from "./board-delta.ts";
 import { keyIndex, parseCursor } from "./message-key.ts";
-import type { AssistantMessage, ChatBoard, ChildAgent, ProjectedSessionEvent, ThreadEvent, ThreadMessage, ThreadSnapshot, ThreadState, ToolRun } from "./types.ts";
+import type { AssistantMessage, ChildAgent, ProjectedSessionEvent, ThreadEvent, ThreadMessage, ThreadSnapshot, ThreadState, ToolRun } from "./types.ts";
 
 export function runStartedAtFromMessages(messages: readonly ThreadMessage[]): number | null {
   let startedAt: number | null = null;
@@ -80,8 +81,7 @@ function applySessionEvent(state: ThreadState, event: ProjectedSessionEvent, now
   }
 }
 
-/** A board's revision as a reconnecting page names it (`ThreadHave.board`). */
-export const boardKey = (board: ChatBoard): string => `${board.rev}|${board.updatedAt}`;
+export { boardKey } from "./board-delta.ts";
 
 /** A snapshot with `after` holds only the messages after that one: the held messages up to it come first, with the held `older` cursor. */
 function withHeld(state: ThreadState, snapshot: ThreadSnapshot): ThreadSnapshot {
@@ -106,6 +106,7 @@ export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = D
     case "queue": return { ...state, queue: event.queue };
     case "children": return { ...state, children: event.children };
     case "board": return { ...state, board: event.board };
+    case "board-delta": { const board = state.board && applyBoardDelta(state.board, event); return board ? { ...state, board } : state; }
     case "wait": return { ...state, wait: event.wait };
     case "outbox": return { ...state, outbox: event.outbox };
     case "status": return { ...state, connection: event.connection, ...(event.error === undefined ? {} : { error: event.error }) };

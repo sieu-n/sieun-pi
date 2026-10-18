@@ -418,7 +418,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
     try {
       const id = threadId(feed.id);
-      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)), false, feed.have);
+      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)), false, feed.have, feed.delta === true);
       pushSide(id, side => send("side", side));
       return stop;
     } catch (error) {
@@ -739,6 +739,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             json(res, 200, await backend.threads.olderPage(id, cursor)); return;
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
+          // A page that missed a board delta asks for the whole board once (shared/board-delta.ts BoardFollower).
+          if (action === "board") { json(res, 200, { board: backend.threads.state(id)?.board ?? await backend.boards.view(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
           if (action === "prompt") {
             const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);
