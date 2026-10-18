@@ -88,10 +88,17 @@ function diffRow(before: SessionRow, after: SessionRow): SessionRowPatch {
 }
 
 const rowJson = new WeakMap<SessionsEvent, Map<string, string>>();
+/** Each row object's JSON: the catalog hands out an unchanged row as the same object in each event (`KeptRow` in src/chat-catalog.ts) and never changes a row it sent. */
+const rowText = new WeakMap<SessionRow, string>();
+function textOf(row: SessionRow): string {
+  let text = rowText.get(row);
+  if (text === undefined) { text = JSON.stringify(row); rowText.set(row, text); }
+  return text;
+}
 /** Each row's JSON, computed once per catalog event and shared by every socket that gets it. */
 function jsonOf(event: SessionsEvent): Map<string, string> {
   let rows = rowJson.get(event);
-  if (!rows) { rows = new Map(event.sessions.map(row => [row.id, JSON.stringify(row)])); rowJson.set(event, rows); }
+  if (!rows) { rows = new Map(event.sessions.map(row => [row.id, textOf(row)])); rowJson.set(event, rows); }
   return rows;
 }
 

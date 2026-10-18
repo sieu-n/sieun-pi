@@ -152,6 +152,17 @@ export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMes
   return text || (row.cwd ? basename(row.cwd) : "") || "New chat";
 }
 
+/**
+ * A row as the last projection built it, with what it was built from: the daemon's summary object (the copy keeps an unchanged row's object
+ * across roster updates), the read marker, labels, schedule, subtree numbers, origin, box and the owner's archive. On 10-18 a scratch serve
+ * on this box's 562 rows and the Mac's 3,123 spent 33.8 s of a 131 s profile in project(), most of it building the same 3,700 rows again for
+ * each roster update that changed two of them.
+ */
+type KeptRow = { key: readonly unknown[]; row: SessionRow };
+const sameKey = (left: readonly unknown[], right: readonly unknown[]): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
+/** Each projected row's entry for `chatAgents`, so a kept row keeps its entry and its first task is not looked up again. */
+const agentRowOf = new WeakMap<SessionRow, AgentRow>();
+
 export function isTopLevel(row: SessionSummary): boolean {
   return row.runtimeKind !== "subagent" && typeof row.rlmChildId !== "string" && !(typeof row.rlmDepth === "number" && row.rlmDepth > 0);
 }
@@ -253,6 +264,8 @@ export interface Subtree { cost?: number; running: number; total: number }
  */
 export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, SessionSummary[]>): Subtree {
   let cost = row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
+  // Most of the 3,700 rows have no subagent, and the catalog asks for each of them on every projection.
+  if (!children.has(row.sessionId)) return { ...(cost !== undefined ? { cost } : {}), running: 0, total: 0 };
   let running = 0;
   let total = 0;
   const seen = new Set<string>([row.sessionId]);
@@ -486,6 +499,8 @@ export class Catalog {
   /** This box's sessions, kept the way every other box's are (`SessionPeer`): the roster stream keeps them current, and no page waits on a list. */
   private readonly peer: SessionPeer;
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
+  /** The rows the last projection built, by session id, that the next one may reuse (`KeptRow`). */
+  private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
@@ -651,25 +666,43 @@ export class Catalog {
     // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
     const listed = [...this.summaries.values()].filter(row => isListed(row, this.hostOf(row.sessionId) ? () => true : undefined));
     const selfName = this.hosts?.selfName ?? null;
+    const kept = new Map<string, KeptRow>();
     const rows = listed
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
+        const chat = chats?.has(row.sessionId) === true;
+        const working = isWorking(row, subtree);
+        const origin = originOf(row);
+        const host = this.hostOf(row.sessionId) ?? selfName;
+        const archived = archivedByOwner?.has(row.sessionId) === true;
+        const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
+          archived, this.heldLifecycle.get(row.sessionId)];
+        const before = this.keptRows.get(row.sessionId);
+        // A chat row gets its agents and counts written onto it below, and a working row's pulse follows its running subagents, so both are built again.
+        if (!chat && !working && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); return before.row; }
         const checkIn = checkIns?.get(row.sessionId);
         const brief = briefs?.get(row.sessionId);
-        const projected = this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
-          ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
-          ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
-        const host = this.hostOf(row.sessionId) ?? selfName;
-        const tagged = host ? { ...projected, host } : projected;
+        const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
+          ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
+          ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
+        if (host) projected.host = host;
         // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
-        return archivedByOwner?.has(row.sessionId) ? { ...tagged, archived: true } : tagged;
-      })
-      .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
+        if (archived) projected.archived = true;
+        if (!chat && !working) kept.set(row.sessionId, { key, row: projected });
+        return projected;
+      });
+    this.keptRows = kept;
+    const at = new Map(rows.map(row => [row, Date.parse(row.lastActivityAt ?? row.created ?? "")]));
+    rows.sort((left, right) => at.get(right)! - at.get(left)!);
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
-    const agentRows: AgentRow[] = rows.map(row => { const first = firstTask(this.summaries.get(row.id) ?? {}); return first ? { row, first } : { row }; });
+    const agentRows: AgentRow[] = rows.map(row => {
+      let entry = agentRowOf.get(row);
+      if (!entry) { const first = firstTask(this.summaries.get(row.id) ?? {}); entry = first ? { row, first } : { row }; agentRowOf.set(row, entry); }
+      return entry;
+    });
     const now = Date.now();
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {

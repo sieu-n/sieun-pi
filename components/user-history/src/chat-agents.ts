@@ -196,6 +196,19 @@ function kebabWords(name: string): string {
  * from that title.
  */
 export function displayName(name: string, first: string | undefined): string {
+  let byFirst = displayNames.get(name);
+  if (!byFirst) { byFirst = new Map(); displayNames.set(name, byFirst); }
+  let shown = byFirst.get(first);
+  if (shown === undefined) { shown = nameFor(name, first); byFirst.set(first, shown); }
+  return shown;
+}
+/**
+ * `displayName` by name and first task. It is a pure function of the two, and every chat asked it again for each of its agents on each
+ * catalog projection: 2.9 s of a 131 s scratch-serve profile on 10-18. Both strings come from the daemon's rows and the first-task cache, so
+ * the map grows only with the sessions this service has seen.
+ */
+const displayNames = new Map<string, Map<string | undefined, string>>();
+function nameFor(name: string, first: string | undefined): string {
   const plain = plainName(name);
   if (!generatedName(plain) && needsDisplayName(plain)) return kebabWords(plain);
   const titled = !generatedName(plain) && titledFromMessage(plain, first);
@@ -358,8 +371,8 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
       link: draft.link, state, ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: new Date(at).toISOString() } : {}), steps: draft.steps,
       ...(draft.subagents ? { subagentsRunning: draft.subagents } : {}), ...(draft.total ? { subagentsTotal: draft.total } : {}) };
   });
-  const at = (agent: ChatAgent) => atOf(agent.lastActivityAt);
-  return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at(right) - at(left));
+  const at = new Map(agents.map(agent => [agent, atOf(agent.lastActivityAt)]));
+  return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at.get(right)! - at.get(left)!);
 }
 
 /**
