@@ -1,5 +1,5 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
-import { coversStep, planJob } from "./shared/chat-board.ts";
+import { coversStep } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import type { CiRun, WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
@@ -9,8 +9,8 @@ import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS,
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
  * the agent swarm"): every open leaf step is moved by a live owner now, or held by an open For you todo, or parked by an owner correction in
  * force. Every other open step is stuck. A wait on CI, a release, another thread, an event or a time is stuck when nobody is moving it: no job of
- * this chat, no session asleep on a board.wake for that run, that land or that thread (`wakeMover`), and no turn or start of its owner waiting
- * in pi-pool's queue or the fleet budget (`outsideMover`).
+ * this chat, no session asleep on a board.wake for that run, that land or that thread (`wakeMover`), and no turn of its owner waiting in
+ * pi-pool's queue (`outsideMover`).
  * The stuck count and the share of open steps in the end state are the check-in's second KPI, after its goals (`goal_gaps`, src/checkin-goals.ts:
  * each open goal's number moves on pace with a live job that owns it), and the headline KPI of the Chat system duty.
  *
@@ -111,11 +111,10 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
 }
 
 /**
- * What moves steps from outside this chat's job facts: the pending board.wakes (`wakeWatches`), pi-pool's queue places by session id (queued
- * turns), and the labels that wait in the fleet budget (`FleetBudget.queued`): the job names of this chat whose start or send-back waits
- * there, and the session ids whose due wake has its place there (`FleetBudget.place`). Absent: none.
+ * What moves steps from outside this chat's job facts: the pending board.wakes (`wakeWatches`) and pi-pool's queue places by session id
+ * (queued turns). Absent: none.
  */
-export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>; starting?: ReadonlySet<string>;
+export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>;
   /** Every CI run the cache holds by id (`Train.all`), for a step whose wait names a run that is queued or running (`runMover`). Absent: none. */
   runs?: ReadonlyMap<string, CiRun> }
 
@@ -131,9 +130,9 @@ export function runMover(item: Pick<PlanItem, "waitFor">, owner: JobFact | undef
 }
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
- * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names), or its job's
- * start or its owner's due wake waiting in the fleet budget. Each of those goes on by itself once its wake, slot or budget comes. launch main bro 10-15 19:16Z read 18 of 19 steps stuck while the budget held its starts and the queue held
- * its jobs' turns, so the check-in asked for owners it could not start.
+ * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names). Each of those
+ * goes on by itself once its wake or slot comes. launch main bro 10-15 19:16Z read 18 of 19 steps stuck while the queue held its jobs' turns,
+ * so the check-in asked for owners it could not start.
  */
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>): string | undefined {
@@ -148,10 +147,6 @@ export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, mo
   if (mine && [...self].some(id => queued.has(id))) return `the chat's own turn ${slot}`;
   const target = queued.size ? waitTarget(item.waitFor, rows, self) : undefined;
   if (target && queued.has(target.id)) return `its wait is on ${target.name}, whose turn ${slot}`;
-  const job = planJob(item.job);
-  if (job !== undefined && movers.starting?.has(job)) return `its job ${job} waits for the fleet budget to start`;
-  const waking = [item.sessionId, stepOwner(item)].find(id => id !== undefined && movers.starting?.has(id));
-  if (waking) return `its owner ${item.job ?? waking.slice(0, 8)} has a due wake in the fleet budget's line`;
   return undefined;
 }
 

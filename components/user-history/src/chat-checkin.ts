@@ -77,8 +77,6 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   asleep?: ReadonlySet<string>;
   /** The board.wakes the service still owes (`pendingWakes`): a step whose owner session, run, land or thread one of them watches is moving (`wakeMover`). Not given: none. */
   wakes?: readonly Wake[];
-  /** The job names of this chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`): their steps are moving. Not given: none. */
-  starting?: readonly string[];
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[];
   /** The duty metric verdicts and PR states that say an item is done (`looksDone`) and that a merge moved work (`noProgress`). Not given: nothing looks done. */
@@ -149,7 +147,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
-  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []), ...(context.train?.all ? { runs: context.train.all } : {}) };
+  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, ...(context.train?.all ? { runs: context.train.all } : {}) };
   const doneFacts = context.doneFacts ?? NO_FACTS;
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);

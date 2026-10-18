@@ -315,8 +315,6 @@ export const plural = (count: number, word: string) => `${count} ${word}${count 
 export const clip = (text: string, max = 60) => text.length > max ? text.slice(0, max - 1) + "…" : text;
 export const quote = (text: string) => `"${clip(text)}"`;
 export const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `${clip(fact.name, 40)} thread` : `job ${fact.name}`;
-/** "p7 (usage backend thread)" for an owner with a plan item, else "job api-audit" or "usage backend thread". */
-const factLabel = (fact: JobFact) => fact.item ? `${fact.item.id} (${ownerLabel(fact)})` : ownerLabel(fact);
 export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed", unstarted: "not started" };
 /** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
 export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` : STATE_WORD[fact.state];
