@@ -275,6 +275,10 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
   }
   for (const session of input.childSessions) {
     if ((session.childId && bySession.has(session.sessionId)) || drafts.some(draft => draft.sessionId === session.sessionId)) continue;
+    // One row per child id, also when the daemon lists two sessions of one child (a resumed job): two rows under one key threw
+    // each_key_duplicate in the board panel on every switch to the AI harness chat (10-18, child:sub-3945faa4 at rows 0 and 134).
+    const listed = session.childId ? drafts.find(draft => draft.childId === session.childId) : undefined;
+    if (listed) { if (!listed.sessionId) { listed.sessionId = session.sessionId; bySession.set(session.sessionId, listed); } continue; }
     const name = session.name ?? "";
     index({ key: "child:" + (session.childId ?? session.sessionId), sessionId: session.sessionId, ...(session.childId ? { childId: session.childId } : {}),
       name: displayName(name, session.first), job: name || session.sessionId, sender: name || session.sessionId, link: "subagent", working: session.running, failed: session.failed, ended: !session.running,
