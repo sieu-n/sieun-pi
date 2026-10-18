@@ -110,7 +110,7 @@ test("skill_map compares HEAD's skill folders with HEAD's map, so an uncommitted
 });
 
 test("skill_paths runs check-skill-paths.mjs over a git archive of HEAD with GIT_DIR on the repo, and cleans up", async () => {
-  const calls: { file: string; args: readonly string[]; cwd?: string; env?: Record<string, string> }[] = [];
+  const calls: { file: string; args: readonly string[]; cwd: string | undefined; env: Record<string, string> | undefined }[] = [];
   const run = (stdout: string): Deps => ({
     ...deps("linux"),
     exec: async (file, args, options) => {
