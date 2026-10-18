@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { LOAD_WAIT_REASON, loadWaitGuard, loadWaitLoop } from "../src/load-wait.ts";
+import { LOAD_WAIT_NOTE, loadWaitLoop, loadWaitNote } from "../src/load-wait.ts";
 
 // The 5 scripts behind the 8 load-wait loops killed 10-13 00:32 KST, pinned verbatim, and the proxy census watcher that loops and sleeps
 // without reading load.
@@ -17,12 +17,13 @@ test("loadWaitLoop: every 10-12 load gate script is a load wait; a load read, a 
   assert.equal(loadWaitLoop("until [ $(sysctl -n vm.loadavg | awk '{print int($2)}') -lt 20 ]; do sleep 60; done; npm run build"), true, "the shell form");
 });
 
-test("loadWaitGuard: kernel code that writes or runs a load gate is refused with the reason; other code and tools pass", async () => {
+test("loadWaitNote: kernel code that writes or runs a load gate runs and gets the c47 note; other code and tools get none", async () => {
   const script = await fixture("gate-wait.py");
   const write = `open('/tmp/gate-wait.py','w').write(${JSON.stringify(script)})\nh = bash('python3 -u /tmp/gate-wait.py')`;
-  assert.deepEqual(loadWaitGuard("ipython", { code: write }), { block: true, reason: LOAD_WAIT_REASON });
-  assert.deepEqual(loadWaitGuard("bash", { command: "while [ $(uptime | awk '{print int($10)}') -gt 30 ]; do sleep 60; done" }), { block: true, reason: LOAD_WAIT_REASON });
-  assert.equal(loadWaitGuard("ipython", { code: "r = await bash('npx svelte-check')" }), undefined);
-  assert.equal(loadWaitGuard("edit", { code: script }), undefined);
-  assert.match(LOAD_WAIT_REASON, /c47, c43/);
+  assert.equal(loadWaitNote("ipython", { code: write }), LOAD_WAIT_NOTE);
+  assert.equal(loadWaitNote("bash", { command: "while [ $(uptime | awk '{print int($10)}') -gt 30 ]; do sleep 60; done" }), LOAD_WAIT_NOTE);
+  assert.equal(loadWaitNote("ipython", { code: "r = await bash('npx svelte-check')" }), undefined);
+  assert.equal(loadWaitNote("edit", { code: script }), undefined);
+  assert.match(LOAD_WAIT_NOTE, /c47, c43/);
+  assert.doesNotMatch(LOAD_WAIT_NOTE, /Refused/);
 });

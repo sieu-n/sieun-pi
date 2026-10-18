@@ -18,7 +18,7 @@ import { IdIndex } from "../src/id-index.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
-import { loadWaitGuard } from "../src/load-wait.ts";
+import { LOAD_WAIT_NOTE, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
@@ -260,14 +260,13 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
     return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
+  /** Tool calls that hold a load-wait loop: each one runs, and its result gets LOAD_WAIT_NOTE. */
+  const loadWaitCalls = new Set<string>();
   pi.on("tool_call", async (event, ctx) => {
     try {
       const blocked = chatGuard({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked });
       if (blocked) return blocked;
-      if (marked || job || underChat) {
-        const loadWait = loadWaitGuard(event.toolName, event.input);
-        if (loadWait) return loadWait;
-      }
+      if ((marked || job || underChat) && loadWaitNote(event.toolName, event.input)) loadWaitCalls.add(event.toolCallId);
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
@@ -287,12 +286,13 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // (AI harness 10-14: the 15:01 check-in started skill rules land, stale tree guard land and skill rewrite land this way, so the 17:01
   // check-in read their steps as held by other threads and closed them before their runs went green).
   pi.on("tool_result", async (event, ctx) => {
+    const loadWait = loadWaitCalls.delete(event.toolCallId);
     try {
-      if (event.toolName !== "ipython") return;
-      const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
-      if (!rootChat) return;
-      await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat, await rootChatId(ctx));
+      const rootChat = event.toolName === "ipython" &&
+        createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
+      if (rootChat) await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat, await rootChatId(ctx));
     } catch { /* the literal names tool_call registered */ }
+    return loadWait ? { content: [...event.content, { type: "text", text: `\n${LOAD_WAIT_NOTE}` }] } : undefined;
   });
   pi.registerFlag("agent-chat-socket", {
     description: "Native daemon socket for browser chat",

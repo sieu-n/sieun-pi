@@ -2,7 +2,8 @@
  * A job that polls the Mac's load or free memory and sleeps until it drops is an invented wait (c47) on a number no measurement backs (c43).
  * 10-13 00:30 KST: 8 such loops (gate-waiter.py, load_gate.py, gate.py, gate-wait.py, part-5-waiter.py) held 8 jobs of frontend bro and SEO guy
  * "working" for 2 min to 1 h 51 min, waiting for load1 under 20 or 30 and free memory at 30% or 20%. load1 stayed 33 to 311 from 13:33Z, so none
- * ran its check, and each job kept its worker and Python kernel the whole time. The chat extension refuses such code before it runs.
+ * ran its check, and each job kept its worker and Python kernel the whole time. Such code runs, and the chat extension adds LOAD_WAIT_NOTE to its
+ * tool result (owner 10-18: "all these should be modeled as a soft cap").
  */
 
 /** Reads the machine's load average or memory pressure: Python, Node, sysctl, uptime or macOS memory_pressure. */
@@ -20,12 +21,12 @@ export function loadWaitLoop(code: string): boolean {
   return LOAD_READ.test(text) && LOOP.test(text) && SLEEP.test(text) && THRESHOLD.test(text) && EXIT.test(text);
 }
 
-export const LOAD_WAIT_REASON = "Refused: this code waits in a loop for the Mac's load or free memory to drop. No measurement backs that wait " +
-  "(c47, c43), and on 10-12 load stayed above 30 for hours, so 8 jobs sat 2 min to 1 h 51 min and never ran their check. Run the check, " +
-  "build or browser walk now. If it fails, report the failure with the load and memory you measured at that moment.";
+export const LOAD_WAIT_NOTE = "Note (c47, c43): this code waits in a loop for the Mac's load or free memory to drop. It ran, but no measurement " +
+  "backs that wait, and on 10-12 load stayed above 30 for hours, so 8 jobs sat 2 min to 1 h 51 min and never ran their check. Run the check, " +
+  "build or browser walk now instead. If it fails, report the failure with the load and memory you measured at that moment.";
 
-/** The tool_call decision for code a chat or its job runs: an ipython cell or a bash command that holds a load-wait loop is refused. */
-export function loadWaitGuard(toolName: string, input: Record<string, unknown>): { block: true; reason: string } | undefined {
+/** The note for code a chat or its job runs: an ipython cell or a bash command that holds a load-wait loop gets LOAD_WAIT_NOTE on its result. */
+export function loadWaitNote(toolName: string, input: Record<string, unknown>): string | undefined {
   const code = toolName === "ipython" ? input.code : toolName === "bash" ? input.command : undefined;
-  return typeof code === "string" && loadWaitLoop(code) ? { block: true, reason: LOAD_WAIT_REASON } : undefined;
+  return typeof code === "string" && loadWaitLoop(code) ? LOAD_WAIT_NOTE : undefined;
 }
