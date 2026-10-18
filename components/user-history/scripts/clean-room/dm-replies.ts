@@ -129,17 +129,20 @@ export function toldCalls(file: string): Told[] {
 }
 
 /**
- * A wake-up turn's messages are routine unless one asks a question, one quotes an older owner message for the first time to bring its result,
- * or the turn is the first wake-up to message him since his latest message, which needs no quote because nothing came after it.
+ * A wake-up turn's messages are routine unless one asks a question, one links a wiki page, one quotes an older owner message for the first time
+ * to bring its result, or the turn is the first wake-up to message him since his latest message without quoting an older one, which needs no
+ * quote because nothing came after it. Run-3 failed f on this judge: its wiki page answer to the follow-up came after a turn that quoted the
+ * first message to bring its three results.
  */
 export function routineWakes(calls: readonly Told[]): Told[][] {
   const byTurn = new Map<number, Told[]>();
   for (const call of calls) if (call.starter.kind !== "owner") byTurn.set(call.turn, [...byTurn.get(call.turn) ?? [], call]);
   return [...byTurn.values()].filter(group => {
-    if (group.some(call => call.question || (call.replyTo && !call.quoteFault))) return false;
+    if (group.some(call => call.question || call.wikiPages.length || (call.replyTo && !call.quoteFault))) return false;
     if (group.some(call => call.replyTo)) return true;
     const first = group[0]!;
-    return calls.some(call => call.starter.kind !== "owner" && call.lastOwner === first.lastOwner && call.turn < first.turn);
+    return calls.some(call => call.starter.kind !== "owner" && call.lastOwner === first.lastOwner && call.turn < first.turn &&
+      !byTurn.get(call.turn)!.some(other => other.replyTo && !other.quoteFault));
   });
 }
 
