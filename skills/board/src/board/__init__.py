@@ -83,6 +83,10 @@ def _chat_id(chat: str | None) -> str:
     raise LookupError("No chat found: RLM_SESSION_DIR is not under session-artifacts. Pass chat=<chat session id>.")
 
 
+class NoBoard(LookupError):
+    """The chat has no board file yet: a fresh chat before its first chat_board write, or a root job's own id."""
+
+
 def _load(chat: str | None) -> tuple[str, dict]:
     chat_id = _chat_id(chat)
     if not _ID.match(chat_id):
@@ -90,13 +94,13 @@ def _load(chat: str | None) -> tuple[str, dict]:
     if _chat_host():
         raw = _call(f"api/agent/board?chat={urllib.parse.quote(chat_id)}")
         if raw is None:
-            raise LookupError(f"No board for {chat_id} on the chat host. A root job started with create_session has its own id; pass chat=<chat session id>.")
+            raise NoBoard(f"No board for {chat_id} on the chat host. A root job started with create_session has its own id; pass chat=<chat session id>.")
         return chat_id, json.loads(raw)
     path = _agent_dir() / "browser-chat" / "boards" / f"{chat_id}.json"
     try:
         return chat_id, json.loads(path.read_text())
     except FileNotFoundError:
-        raise LookupError(f"No board for {chat_id} at {path}. A root job started with create_session has its own id; pass chat=<chat session id>.") from None
+        raise NoBoard(f"No board for {chat_id} at {path}. A root job started with create_session has its own id; pass chat=<chat session id>.") from None
 
 
 def _walk(items: list, depth: int = 0, above: tuple = ()):
@@ -170,7 +174,10 @@ def _scratch_line(note: dict, depth: int) -> str:
 
 def open(chat: str | None = None) -> str:  # noqa: A001
     """The open checklist, the same view chat_board shows: open goals and steps, open todos, and a count of the rest."""
-    chat_id, board = _load(chat)
+    try:
+        chat_id, board = _load(chat)
+    except NoBoard as error:
+        return _Text(f"{error} A fresh chat has no board until its first chat_board write, so its plan and todos are empty.")
     lines = [f"Chat thread:{chat_id}, board rev {board['rev']}. Open plan (goals and steps not done):"]
     hidden = 0
 
