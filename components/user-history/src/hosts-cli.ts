@@ -16,7 +16,8 @@ const USAGE = `usage: sieun-pi hosts <command>
                                            prints that session's messages, read through the relay
   daemon <host> list [--all 1]             prints that host's daemon list as {"sessions": [...]}, like prime-agent list --json
   daemon <host> send <session> <message>   sends the message to that session on that host's daemon and prints the daemon's answer
-  bridge                                   keeps ~/.local/state/sieun-pi/hosts/<host>.sock open for every other host`;
+  bridge                                   keeps ~/.local/state/sieun-pi/hosts/<host>.sock open for every other host whose socket
+                                           no process answers, and exits 0 when the chat service serves them all`;
 
 function flags(argv: string[]): { rest: string[]; values: Map<string, string> } {
   const values = new Map<string, string>();
@@ -156,8 +157,11 @@ export async function runHostsCommand(argv: string[]): Promise<void> {
     } finally { await close(); }
   } else if (command === "bridge") {
     const bridge = new HostBridge(registry, { log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
-    await bridge.start();
-    for (const host of registry.hosts) process.stderr.write(`${host.name}: ${bridge.socketPath(host.name)}\n`);
+    const { live } = await bridge.start();
+    for (const name of live) process.stdout.write(`${name}: ${bridge.socketPath(name)} already answers, so the chat service serves it and this bridge leaves it alone\n`);
+    const opened = registry.hosts.filter(host => !live.includes(host.name) && host.name !== selfHost(registry)?.name);
+    if (!opened.length) return;
+    for (const host of registry.hosts) if (!live.includes(host.name)) process.stderr.write(`${host.name}: ${bridge.socketPath(host.name)}\n`);
     await new Promise<void>(resolve => { for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => resolve()); });
     await bridge.close();
   } else throw new Error(`unknown command ${command}\n${USAGE}`);

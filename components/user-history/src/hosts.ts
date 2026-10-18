@@ -1,6 +1,6 @@
-import { chmod, mkdir, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { Agent, request as httpRequest } from "node:http";
-import { createServer, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { DELTA_HEADER, decodeLineDeltas } from "../../prime-relay/line-delta.ts";
@@ -232,15 +232,26 @@ export async function openDaemonTunnel(host: Host, timeoutMs = 10_000): Promise<
   });
 }
 
+/** Whether a process answers at the unix socket `path`; a file left behind by a dead process refuses the connection. */
+function answers(path: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const probe = createConnection(path);
+    probe.once("connect", () => { probe.destroy(); resolve(true); });
+    probe.once("error", () => resolve(false));
+  });
+}
+
 /**
  * One local socket per remote host, each connection tunneled to that host's relay, so `new DaemonClient(bridge.socketPath(name))`
  * talks to the remote daemon unchanged. The self host maps to its own daemon socket and gets no bridge.
+ * Start leaves a socket that answers to its owner unless `replaceLive` is set, as the chat service sets it, and close removes only a socket
+ * this bridge put there: `sieun-pi hosts bridge` run while the chat service was up would have deleted the live mac.sock on start and on exit.
  */
 export class HostBridge {
-  private readonly servers = new Map<string, Server>();
+  private readonly servers = new Map<string, { server: Server; ino: number }>();
   /** Open tunnels; close ends them, since a server's close waits for every connection and an attached thread's never ends on its own. */
   private readonly sockets = new Set<Socket>();
-  constructor(private readonly registry: HostsRegistry, private readonly options: { dir?: string; self?: Host | null; log?: (line: string) => void } = {}) {}
+  constructor(private readonly registry: HostsRegistry, private readonly options: { dir?: string; self?: Host | null; replaceLive?: boolean; log?: (line: string) => void } = {}) {}
 
   private get dir(): string { return this.options.dir ?? BRIDGE_DIR; }
   private get self(): Host | null { return this.options.self === undefined ? selfHost(this.registry) : this.options.self; }
@@ -250,17 +261,23 @@ export class HostBridge {
     return host.name === this.self?.name ? host.daemonSocket : join(this.dir, `${host.name}.sock`);
   }
 
-  async start(): Promise<void> {
+  /** Opens a socket for every other host and returns the hosts it left to a live socket, which another process serves. */
+  async start(): Promise<{ live: string[] }> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    const live: string[] = [];
     for (const host of this.registry.hosts) {
       if (host.name === this.self?.name || this.servers.has(host.name)) continue;
       const path = join(this.dir, `${host.name}.sock`);
-      await rm(path, { force: true });
+      if (!this.options.replaceLive && await answers(path)) { live.push(host.name); continue; }
+      // The server listens on a name of its own and is renamed into place, since Node unlinks the path a server listened on when it closes.
+      const own = `${path}.${process.pid}`;
+      await rm(own, { force: true });
       const server = createServer(client => {
         this.sockets.add(client);
         client.once("close", () => this.sockets.delete(client));
         client.pause();
         openDaemonTunnel(host).then(remote => {
+          if (client.destroyed) { remote.destroy(); return; }
           const decoder = decodeLineDeltas();
           client.pipe(remote);
           remote.pipe(decoder).pipe(client);
@@ -278,16 +295,23 @@ export class HostBridge {
           client.destroy();
         });
       });
-      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(path, () => { server.off("error", reject); resolve(); }); });
-      await chmod(path, 0o600);
-      this.servers.set(host.name, server);
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(own, () => { server.off("error", reject); resolve(); }); });
+      await chmod(own, 0o600);
+      const { ino } = await stat(own);
+      await rename(own, path);
+      this.servers.set(host.name, { server, ino });
     }
+    return { live };
   }
 
   async close(): Promise<void> {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    await Promise.all([...this.servers.entries()].map(([name, server]) => new Promise<void>(resolve => server.close(() => resolve())).then(() => rm(join(this.dir, `${name}.sock`), { force: true }))));
+    await Promise.all([...this.servers.entries()].map(async ([name, { server, ino }]) => {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      const path = join(this.dir, `${name}.sock`);
+      if ((await stat(path).catch(() => null))?.ino === ino) await rm(path, { force: true });
+    }));
     this.servers.clear();
   }
 }

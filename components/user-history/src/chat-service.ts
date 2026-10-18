@@ -262,7 +262,7 @@ async function startHosts(primary: boolean): Promise<{ bridge: { close(): Promis
   if (!(await access(HOSTS_FILE).then(() => true, () => false))) return null;
   try {
     const registry = await loadHosts();
-    const bridge = new HostBridge(registry, { log });
+    const bridge = new HostBridge(registry, { log, replaceLive: true });
     if (primary) await bridge.start();
     log(`hosts: ${registry.hosts.map(host => host.name).join(", ")} from ${HOSTS_FILE}${primary ? ", bridges open" : ""}`);
     return { bridge: primary ? bridge : null, catalogs: new HostCatalogs(registry, bridge, undefined, log, primary) };
