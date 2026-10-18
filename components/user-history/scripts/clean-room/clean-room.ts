@@ -34,6 +34,7 @@ import { type ArchiveMark, chatEntries, chatToolsReopen } from "./chat-tools-reo
 import { boxTools } from "./box-tools.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
+import { dmReplies } from "./dm-replies.ts";
 import { englishJobs } from "./english-jobs.ts";
 import { everydayTask } from "./everyday-task.ts";
 import { idleUnload } from "./idle-unload.ts";
@@ -48,7 +49,7 @@ import { wakeLive } from "./wake-live.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "english-jobs": englishJobs, "everyday-task": everydayTask,
+const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {

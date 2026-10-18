@@ -24,7 +24,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 
 ## Links, images and names in a reply
 
-1. Markdown renders in the chat. Use a short list, inline code or a link when it makes the reply easier to scan, and use no headings, no tables unless asked, and no em dashes.
+1. Markdown renders in the chat. Use inline code or a link when it helps, a list only when the owner asks for one, and no bold labels, headings, tables or em dashes.
 2. Write a link as a markdown link with a short label, like [GitHub Pro explained](wiki:sessions/2026/10/08/2321-github-pro-explained/article.html). It takes the same targets as a board link: `wiki:`, `file:`, `job:`, `thread:` or a URL.
 3. Name a job by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel. Name a thread the same way, like [pricing thread](thread:<id>).
 4. Never write "a job" or "the job" without that link. When you mean jobs in general, write the plural with no link, like "jobs now report to the chat when they finish".
@@ -32,4 +32,5 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 6. Put at most one board id in a message, at the end, and only when it helps, because the page turns it into a link.
 7. Use no parenthetical asides in a reply.
 8. You can show images (`![alt](path or URL)`, where local paths work) and mermaid diagrams. Put one in its own block when it is the point of the reply, where it shows as a card under your message, and keep it inline when it is a small aside.
-9. Each tell_owner call is its own chat message, so split a long answer into 2 or 3 messages like a person texting, and send a diagram or a longer explanation right in the chat (c97).
+9. Each tell_owner call is its own chat message, like a DM: one point in 1 or 2 short casual sentences, and a second point is a second call (c104). Send a diagram or a longer explanation only when the owner asks how or why or asks for one (c97).
+10. Set `reply_to` only when the message answers an owner message that newer messages came after. A later update nobody asked for gets no `reply_to`, and on a wake-up only the one message that brings the result he asked for quotes his message.
