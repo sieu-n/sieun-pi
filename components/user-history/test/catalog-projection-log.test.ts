@@ -10,6 +10,7 @@ import { ThreadOrigins } from "../src/thread-origin.ts";
 test("projectionLine gives the count, median, 90th percentile and longest wall time", () => {
   assert.equal(projectionLine([]), null);
   assert.equal(projectionLine([30, 10, 20, 40, 50, 60, 70, 80, 90, 210.4]), "catalog: 10 projections in 60 s, median 50 ms, p90 90 ms, max 210 ms");
+  assert.equal(projectionLine([30], 60_000, 0.634), "catalog: 1 projections in 60 s, median 30 ms, p90 30 ms, max 30 ms, main thread 63% busy");
 });
 
 test("the catalog logs one line a minute on the projections it ran", async (t: TestContext) => {
@@ -36,7 +37,7 @@ test("the catalog logs one line a minute on the projections it ran", async (t: T
   t.mock.timers.tick(PROJECTION_LOG_MS);
   const logged = lines.filter(line => line.includes("projections in"));
   assert.equal(logged.length, 1);
-  assert.match(logged[0]!, /catalog: [23] projections in 60 s, median \d+ ms, p90 \d+ ms, max \d+ ms\n$/);
+  assert.match(logged[0]!, /catalog: [23] projections in 60 s, median \d+ ms, p90 \d+ ms, max \d+ ms, main thread \d+% busy\n$/);
   t.mock.timers.tick(PROJECTION_LOG_MS);
   assert.equal(lines.filter(line => line.includes("projections in")).length, 1, "a minute with no projection logs nothing");
 });
