@@ -15,7 +15,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler) and a row with `byDesign`
  *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail starts with the probe's `shared` text comes from a service both hosts use, such as Google on Virev, so it is no box gap.
- * - `mac_behind_box`: commits on the box's auto-sns-agent sieun/dev, the shared tip since 10-18 11:23Z, that the Mac's sieun/dev lacks.
+ * - `mac_behind_box`: commits on the box's auto-sns-agent sieun/dev, the shared tip since 10-18 11:23Z, that the Mac's sieun/dev lacks, counting
+ *   only those the Mac's follower has had a full turn to take (see followWindowS).
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
@@ -314,18 +315,48 @@ async function outsideSsh(): Promise<{ ssh: string; control: string }> {
   return { ssh: `${ssh} (${address}:22)`.replace(/^open \(.*/, "open"), control };
 }
 
+/** launchd's ai.virev.asa-tip-sync job, which runs the Mac's follower every StartInterval seconds. */
+const FOLLOW_PLIST = join(HERE, "../../../../deploy/mac/ai.virev.asa-tip-sync.plist");
+/** The longest follower run: its sync.log on 10-18 from 12:29:39Z to 12:34:04Z has fast-forward runs ending 65 to 68 s apart under StartInterval 60. */
+const FOLLOW_RUN_S = 8;
+
+/**
+ * How long ago a box commit must have landed for a working follower to hold it. A commit that lands just after a run fetched waits for the next
+ * run, which starts StartInterval after the last one ended, and is on the Mac when that run ends: one interval and two runs.
+ */
+export function followWindowS(plist: string): number | undefined {
+  const interval = Number(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist)?.[1]);
+  return interval > 0 ? interval + 2 * FOLLOW_RUN_S : undefined;
+}
+
+const reflogDate = (ms: number): string => new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, " +0000");
+const shortIds = (text: string): string[] => text.split("\n").filter(Boolean).map(id => id.slice(0, 10));
+
 /**
  * Commits on the box's sieun/dev that the Mac's sieun/dev lacks. Since 10-18 11:23Z the box holds the shared tip and the Mac follows it. Counted
- * on the box when it holds the Mac tip, else on the Mac when the Mac holds the box tip. Commits only the Mac has are named but not counted.
+ * on the box when it holds the Mac tip, else on the Mac when the Mac holds the box tip. Only commits sieun/dev held `windowS` before `readAt` (the
+ * reflog) count, since the follower has not had its turn on newer ones; those and the commits only the Mac has are named but not counted.
  */
-async function macBehind(boxTip: string | undefined, mac: Checkout): Promise<{ behind: number; excerpt: string } | { error: string }> {
-  if (!boxTip) return { error: `the box has no sieun/dev in ${REPO}` };
+export async function macBehind(repo: string, boxTip: string | undefined, mac: Checkout, readAt: number, windowS: number | undefined):
+  Promise<{ behind: number; excerpt: string } | { error: string }> {
+  if (!boxTip) return { error: `the box has no sieun/dev in ${repo}` };
   if (!mac.tip) return { error: `the Mac gave no sieun/dev tip: ${mac.error ?? "no answer"}` };
+  if (!windowS) return { error: `no StartInterval in ${FOLLOW_PLIST}, so the follower's turn is unknown` };
+  const git = (...args: string[]) => exec("git", ["-C", repo, ...args]);
   const where = `box ${boxTip.slice(0, 10)}, Mac ${mac.tip.slice(0, 10)}`;
-  const counts = await exec("git", ["-C", REPO, "rev-list", "--left-right", "--count", `${boxTip}...${mac.tip}`]).then(text => text.trim().split(/\s+/).map(Number), () => undefined);
-  const [behind, ahead] = counts?.length === 2 ? counts as [number, number] : mac.boxOnly !== undefined ? [mac.boxOnly, mac.macOnly ?? 0] : [undefined, undefined];
-  if (behind === undefined) return { error: `neither checkout holds the other's tip (${where}), so the count needs a fetch this read-only run does not do` };
-  return { behind, excerpt: `auto-sns-agent sieun/dev: ${where}; the Mac lacks ${behind} of the box's commits${ahead ? ` and holds ${ahead} the box lacks` : ""}${counts ? "" : " (counted on the Mac)"}` };
+  const counts = await git("rev-list", "--left-right", "--count", `${boxTip}...${mac.tip}`).then(text => text.trim().split(/\s+/).map(Number), () => undefined);
+  if (counts?.length !== 2) {
+    if (mac.boxOnly === undefined) return { error: `neither checkout holds the other's tip (${where}), so the count needs a fetch this read-only run does not do` };
+    return { behind: mac.boxOnly, excerpt: `auto-sns-agent sieun/dev: ${where}; the Mac lacks ${mac.boxOnly} of the box's commits${mac.macOnly ? ` and holds ${mac.macOnly} the box lacks` : ""} (counted on the Mac, with no follow window)` };
+  }
+  const [, ahead] = counts as [number, number];
+  const due = await git("rev-parse", "--verify", "-q", `sieun/dev@{${reflogDate(readAt - windowS * 1000)}}`).then(text => text.trim(), () => undefined);
+  const missing = shortIds(await git("rev-list", boxTip, `^${mac.tip}`));
+  const late = due ? new Set(shortIds(await git("rev-list", due, `^${mac.tip}`))) : new Set(missing);
+  const fresh = missing.filter(id => !late.has(id));
+  return { behind: late.size, excerpt: `auto-sns-agent sieun/dev: ${where}; the Mac lacks ${late.size} of the box's commits older than ${windowS} s` +
+    `${fresh.length ? `, plus ${fresh.length} newer the follower has not had its turn on (${fresh.slice(0, 6).join(", ")}${fresh.length > 6 ? ", ..." : ""})` : ""}` +
+    `${ahead ? `, and holds ${ahead} the box lacks` : ""}` };
 }
 
 const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
@@ -354,7 +385,8 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   }
 
   if (!(mac instanceof Error)) {
-    const count = await macBehind(boxTip, mac.checkout);
+    const windowS = await readFile(FOLLOW_PLIST, "utf8").then(followWindowS, () => undefined);
+    const count = await macBehind(REPO, boxTip, mac.checkout, at, windowS);
     if ("behind" in count) {
       metrics.mac_behind_box = count.behind;
       flagged.push({ at, kind: "checkout", excerpt: count.excerpt });

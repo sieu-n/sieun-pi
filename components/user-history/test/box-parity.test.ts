@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
+import { compareVersions, containerLimits, foldName, followWindowS, judgeRows, type LimitContext, macBehind, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
   from "../scripts/duties/box-parity.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, checkout: {}, versions: {}, ms: 1 });
@@ -147,3 +147,31 @@ test("the probe reads files on the Mac side and refuses calls there", () => {
   assert.deepEqual(out.values.skill, ["ok", 'set:["a"]', "absent"]);
   assert.match(out.values.call![0]!, /^fail: run is not a read/);
 });
+
+test("macBehind counts only box commits the Mac's follower has had a full turn to take", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "box-parity-git-"));
+  const now = Date.parse("2026-10-18T12:35:00Z");
+  const git = (args: string[], landedS?: number) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
+      ...(landedS === undefined ? {} : { GIT_COMMITTER_DATE: `@${Math.round(now / 1000) - landedS} +0000` }) } }).trim();
+  git(["init", "-q", "-b", "sieun/dev"]);
+  const land = (name: string, agoS: number) => {
+    const id = git(["commit-tree", "-m", name, ...(name === "a" ? [] : ["-p", git(["rev-parse", "sieun/dev"])]), git(["mktree"])], agoS);
+    git(["update-ref", "-m", `land ${name}`, "refs/heads/sieun/dev", id], agoS);
+    return id;
+  };
+  const a = land("a", 300);
+  const b = land("b", 200);
+  const window = followWindowS("<key>StartInterval</key><integer>60</integer>");
+  assert.equal(window, 76);
+  const fresh = land("c", 20);
+  const young = await macBehind(repo, fresh, { tip: b }, now, window);
+  assert.ok("behind" in young && young.behind === 0, JSON.stringify(young));
+  assert.match(young.excerpt, new RegExp(`plus 1 newer the follower has not had its turn on \\(${fresh.slice(0, 10)}\\)`));
+  const old = await macBehind(repo, fresh, { tip: a }, now, window);
+  assert.ok("behind" in old && old.behind === 1, JSON.stringify(old));
+  const later = await macBehind(repo, fresh, { tip: b }, now + 100_000, window);
+  assert.ok("behind" in later && later.behind === 1 && !later.excerpt.includes("newer"), JSON.stringify(later));
+  assert.equal(followWindowS("<plist></plist>"), undefined);
+});
+
