@@ -566,17 +566,23 @@
   {
    "crawler": "GET /api/live/douyin/profile",
    "group": "xiaohongshu_douyin",
-   "portal": []
+   "portal": [
+    "GET /v1/douyin/live/profile"
+   ]
   },
   {
    "crawler": "GET /api/live/douyin/posts",
    "group": "xiaohongshu_douyin",
-   "portal": []
+   "portal": [
+    "GET /v1/douyin/live/profile/posts"
+   ]
   },
   {
    "crawler": "GET /api/live/douyin/related",
    "group": "xiaohongshu_douyin",
-   "portal": []
+   "portal": [
+    "GET /v1/douyin/live/post/related"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/adlibrary/company/ads",
@@ -1066,12 +1072,16 @@
   {
    "crawler": "GET /api/douyin/profile/{sec_uid}",
    "group": "xiaohongshu_douyin",
-   "portal": []
+   "portal": [
+    "GET /v1/douyin/profile"
+   ]
   },
   {
    "crawler": "GET /api/douyin/posts/{sec_uid}",
    "group": "xiaohongshu_douyin",
-   "portal": []
+   "portal": [
+    "GET /v1/douyin/posts"
+   ]
   },
   {
    "crawler": "POST /api/meta-ads/search",
