@@ -638,18 +638,29 @@ class Cli(unittest.TestCase):
     def test_who_and_ls_show_priority_and_wait(self):
         state = empty_state()
         put(state, KEY, on="x", priority="low")
-        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 300, "since": NOW}}
-        accounts = [acct("x", five=100), acct("y", five=60)]
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 1500, "since": NOW}}
+        state["providers"][P]["admissions"] = {"y": [[NOW, put(state, tree_key("busy"), on="y").key]]}
+        accounts = [acct("x", five=100), acct("y", five=40, tier="max 5x")]
         _, out, _ = self.run_cli(state, accounts, ["who", "--json"])
         who = json.loads(out)
-        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 300)}))
+        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500)}))
         _, out, _ = self.run_cli(state, accounts, ["ls", "--json"])
         ls = json.loads(out)
-        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 300)}))
+        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500)}))
         self.assertNotIn("force", ls["rows"][0])
         rc, out, _ = self.run_cli(state, accounts, ["ls"])
         self.assertEqual(rc, 0)
         self.assertIn("priority low  waits for y", out)
+
+    def test_who_shows_no_wait_when_the_next_request_gets_an_account_1018(self):
+        """10-18 16:21Z: `who` printed 01a14eb4's backoff to 16:47Z on the Virev seat
+        while its next request would have entered claude4."""
+        state = empty_state()
+        put(state, KEY, on="x", priority="high")
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 1500, "since": NOW - 600, "backoff": True}}
+        _, out, _ = self.run_cli(state, [acct("x", five=100, limited_until=NOW + 600), acct("y", five=100), acct("z", five=5)], ["who", "--json"])
+        who = json.loads(out)["providers"][P]
+        self.assertEqual((who["wait"], who["label"]), (None, "z@x"))
 
     def test_ls_counts_a_tree_that_backs_off_on_an_account_as_waiting_for_it(self):
         """10-18 16:04Z: 01a14eaf backed off to 16:45Z on the Virev seat while every

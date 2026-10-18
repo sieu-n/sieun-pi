@@ -273,8 +273,8 @@ Rows carry `label`: the email, or `email (organization)` when two accounts share
 label, a unique id prefix, or an email only one account has; a shared email exits with the
 labels to choose from.
 
-`ls --json` names the pool `pin`, the tree's `priority` and its `wait` (`{account, slot_at}`
-or null; `who --json` carries the same `wait` per provider and `priority` at the top). Its
+`ls --json` names the pool `pin`, the tree's `priority` and the `wait` its next request gets (`{account, slot_at}`
+or null, never a stale record on file; `who --json` carries the same `wait` per provider and `priority` at the top). Its
 rows carry `usable` (the account takes this tree now), `serves` (a tree already on it stays),
 `score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting` (the other trees whose wait
 names the account, a backoff included), and

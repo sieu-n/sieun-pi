@@ -13,11 +13,11 @@ def tree_view(state, key, provider, accounts, f, cfg, now):
     return accounts, tree, sched.book_for(state, provider, key, cfg, now), state["providers"][provider]["cooldowns"]
 
 
-def wait_view(tree, d):
-    """The tree's wait as {account, slot_at}: the one on file, else the one the
-    next request would get; None when it does not wait."""
-    if tree.wait:
-        return {"account": tree.wait[0], "slot_at": math.ceil(tree.wait[1])}
+def wait_view(d):
+    """The wait the tree's next request gets as {account, slot_at}; None when that
+    request gets an account. The wait on file can be stale: on 10-18 at 16:21Z
+    `who` printed 01a14eb4's backoff to 16:47Z on the Virev seat while its next
+    request would have entered claude4, and resume_paused.py held it for that."""
     if isinstance(d, sched.Wait):
         return {"account": d.slot_account.id, "slot_at": math.ceil(d.slot_at)}
     return None
@@ -50,7 +50,7 @@ def cmd_ls(rest):
     pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
            "pin": {"id": pin_account.id, "email": pin_account.email, "label": pin_account.label} if pin_account else None,
-           "priority": tree.priority, "wait": wait_view(tree, d) if key else None,
+           "priority": tree.priority, "wait": wait_view(d) if key else None,
            "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
@@ -227,7 +227,7 @@ def cmd_who(rest):
             "pinned": bool(tree.pin),
             "shadowed": list(d.shadowed) if d is not None and d.shadowed else None,
             "at": tree.current_at or None,
-            "wait": wait_view(tree, d),
+            "wait": wait_view(d),
             "moves_today": len([t for t in tree.moves if now - t < sched.MOVE_WINDOW_SEC]),
             # What the session's requests actually use: its last vend, else what the
             # next vend resolves to. The extension's footer status shows this.
