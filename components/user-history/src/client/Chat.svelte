@@ -32,7 +32,7 @@
   import { labels } from "./labels.ts";
   import { rowModelId } from "./accounts.ts";
   import { copyPermalink, revealLine, revealMessage } from "./permalink.ts";
-  import { earlierTop, keepPlace, nearTop, windowStart } from "./feed-window.ts";
+  import { earlierTop, FIRST_ITEMS, keepPlace, nearTop, windowStart } from "./feed-window.ts";
   import { childUsage } from "./thread-side.svelte.ts";
 
   /**
@@ -51,12 +51,7 @@
   /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
   const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
-  /**
-   * The feed draws its newest FIRST_ITEMS items, and MORE_ITEMS earlier ones each time the owner scrolls near the top (feed-window.ts). On
-   * 10-18 a switch back to AI harness drew all of its 122 items and showed them 45 to 77 ms after the click; 30 items fill more than two
-   * screens of bubbles on the owner's 1440x900 window.
-   */
-  const FIRST_ITEMS = 30;
+  /** The feed draws its newest FIRST_ITEMS items, and MORE_ITEMS earlier ones each time the owner scrolls near the top (feed-window.ts). */
   const MORE_ITEMS = 30;
   let top = $state<string | null>(null);
   const keys = $derived(feed.map(item => item.id));

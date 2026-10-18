@@ -49,7 +49,7 @@
 {/snippet}
 
 {#each shown as item, index (item.id)}
-  {#if stampBefore(item, start + index)}<div class="stamp">{stamp(item.at)}</div>{/if}
+  {#if stampBefore(item, start + index)}<div class="stamp" data-stamp={item.at}>{stamp(item.at)}</div>{/if}
   {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
     <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
   {:else if item.kind === "user"}

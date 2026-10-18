@@ -5,8 +5,8 @@ import { register } from "tsx/esm/api";
 register();
 const { compileAndPack } = await import("./chat-assets.ts");
 try {
-  const { js, css } = await compileAndPack();
-  parentPort.postMessage({ ok: true, js, css });
+  const { js, css, prepaint } = await compileAndPack();
+  parentPort.postMessage({ ok: true, js, css, prepaint });
 } catch (error) {
   parentPort.postMessage({ ok: false, error: error instanceof Error ? error.message : String(error) });
 }

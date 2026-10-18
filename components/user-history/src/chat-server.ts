@@ -23,6 +23,7 @@ import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets, parseUrlSubscriptions } from "./chat-socket.ts";
 import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
 import { agentsView, parseSessionsHave, SessionsDiff, withoutAgents, withoutArchived } from "./shared/sessions-delta.ts";
+import { prepaintHash, prepaintHtml } from "./prepaint.ts";
 import { childLabels, wireEvent } from "./first-page.ts";
 import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
@@ -49,7 +50,7 @@ import { timeRead } from "./chat-latency.ts";
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + " " + prepaintHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /**
  * The chat files a box without the chat role reads through the service: the corrections ledger and send log for the board skill, and the
@@ -74,7 +75,8 @@ function remoteWorkspace(input: string, host: string): string {
 /**
  * The page shell, in two parts. `shellHead` goes out at once: the script and style by their hashed names (`assetName`), so a later load
  * reads them from the browser's cache, and the inline boot script, which opens the feeds socket while app.js is still on its way
- * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load. `data-chats`
+ * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load; a preload above
+ * app.js asks for it first, since the chat's still view (prepaint.ts) paints once it arrives. `data-chats`
  * names the chats, so a thread URL paints its chat view from the snapshot instead of waiting for the sessions list to say it is a chat
  * (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
  */
@@ -86,6 +88,7 @@ export function shellHead(csrfToken: string, version: string, wiki: string | nul
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Prime Agent chat</title>
+<link rel="preload" href="${escapeAttribute(assets.css)}" as="style">
 <script type="module" src="${escapeAttribute(assets.js)}"></script>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
@@ -102,11 +105,12 @@ export function shellHead(csrfToken: string, version: string, wiki: string | nul
 
 /**
  * The rest of the shell, with the first frames of the thread the URL names (`?t=`) in the shape its feed sends them, so the page paints the
- * thread with no request of its own. app.js is a module script, so it runs only once this part has arrived.
+ * thread with no request of its own. app.js is a module script, so it runs only once this part has arrived. `prepaint` is the chat's still
+ * view (prepaint.ts), which paints before app.js arrives.
  */
-export function shellTail(thread: { id: string; json: string } | null = null): string {
+export function shellTail(thread: { id: string; json: string } | null = null, prepaint = ""): string {
   const inline = thread ? `<script type="application/json" id="boot-thread" data-id="${escapeAttribute(thread.id)}">${thread.json}</script>\n` : "";
-  return `${inline}<div id="app"></div>
+  return `${inline}${prepaint}<div id="app"></div>
 </body>
 </html>
 `;
@@ -493,6 +497,18 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     });
     try { return await Promise.race([frames, late]); } finally { clearTimeout(timer); }
   }
+  /** The still view of chat `id` from its first page, kept while the page is the same text; empty when the build has no server half or the render throws. */
+  let prepainted: { json: string; html: string } | null = null;
+  function prepaintFor(built: ClientBundle, id: string, json: string): string {
+    if (prepainted?.json === json) return prepainted.html;
+    let html = "";
+    try {
+      const page = built.prepaint?.prepaintLines(id, json);
+      if (page) html = prepaintHtml(page);
+    } catch (error) { process.stderr.write(`${new Date().toISOString()} shell ${id.slice(0, 8)}: no still view: ${error instanceof Error ? error.message : String(error)}\n`); }
+    prepainted = { json, html };
+    return html;
+  }
   /**
    * The shell goes out as a packed stream: its head is flushed at once, so the browser fetches app.js and opens the socket while the server
    * still reads the thread's first page, and the tail with that page follows (brotli at quality 5 packs it in about a millisecond).
@@ -623,7 +639,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const html = startHtml(req, res);
             html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
             const found = await frames;
-            html.end(shellTail(id && found ? { id, json: found } : null));
+            html.end(shellTail(id && found ? { id, json: found } : null, id && found && [...chats].includes(id) ? prepaintFor(built, id, found) : ""));
             return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }
