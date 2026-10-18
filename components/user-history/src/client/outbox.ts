@@ -134,6 +134,8 @@ export class PageOutbox {
   /** Sends whose write to storage failed (private mode, full disk); they still go, from memory. */
   private readonly unsaved = new Set<string>();
   private writes: Promise<void> = Promise.resolve();
+  /** Submits whose first write to storage has not settled. */
+  private storing = 0;
 
   constructor(private readonly deps: OutboxDeps) {}
 
@@ -155,12 +157,15 @@ export class PageOutbox {
     const entry: PageSend = { ...send, state: "posting" };
     this.view = reduceOutbox(this.view, { type: "submit", send: entry });
     this.deps.onChange(this.view);
+    this.storing++;
     const write = this.writes.then(() => this.deps.storage.add(entry)).catch(error => {
       this.unsaved.add(entry.id);
       this.deps.log?.(`outbox: keep ${entry.id}: ${errorText(error)}`);
     });
     this.writes = write;
     await write;
+    this.storing--;
+    this.deps.onChange(this.view);
     this.due.add(entry.id);
     this.kick(entry.threadId);
   }
@@ -201,8 +206,11 @@ export class PageOutbox {
     await this.submit({ id: newId, threadId: send.threadId, text: send.text, images: send.images, at });
   }
 
-  /** Sends the server does not hold yet; a reload now would post them again from storage, but the page offers it instead. */
-  hasUnsent(): boolean { return this.view.sends.some(send => send.state === "posting"); }
+  /**
+   * True while a send lives only in this page: its write to storage has not landed, or failed, and the server does not hold it yet. A reload
+   * onto new client code waits for this; any other send is posted again from storage after the reload.
+   */
+  onlyInPage(): boolean { return this.storing > 0 || this.view.sends.some(send => this.unsaved.has(send.id) && send.state === "posting"); }
 
   private kick(threadId: string): void {
     this.wakers.get(threadId)?.();

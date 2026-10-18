@@ -58,11 +58,10 @@ test("a send the server cannot take yet goes again with the same id until it is 
   const errors = [new TypeError("fetch failed"), new HttpError(503, "Service Unavailable"), new HttpError(504, 'Timed out after 30000ms waiting for the Prime Agent daemon response to "attach"')];
   const tab = page(memoryStorage(), (_send, call) => errors[call - 1] ?? "queued");
   await tab.outbox.submit(send("b1"));
-  assert.equal(tab.outbox.hasUnsent(), true);
+  assert.equal(tab.view().sends[0]?.state, "posting");
   await tab.outbox.idle();
   assert.deepEqual(tab.posted, ["b1", "b1", "b1", "b1"]);
   assert.equal(tab.view().sends[0]?.state, "held");
-  assert.equal(tab.outbox.hasUnsent(), false);
   assert.equal(pendingOf(tab.view())["t1"]?.[0]?.failed, undefined);
 });
 
@@ -159,4 +158,15 @@ test("a second tab does not write back a send the first tab finished", async () 
   await two.outbox.server([entry(two.view().sends[0]!, "queued")]);
   await two.outbox.idle();
   assert.equal(storage.sends.size, 0);
+});
+
+test("a reload onto new client code waits only for a send that is in no storage yet, and not for one storage holds", async () => {
+  const kept = page(memoryStorage(), () => "hang");
+  await kept.outbox.submit(send("r1"));
+  assert.equal(kept.view().sends[0]?.state, "posting");
+  assert.equal(kept.outbox.onlyInPage(), false);
+  const broken = { ...memoryStorage(), add: async () => { throw new Error("QuotaExceededError"); } };
+  const unsaved = page(broken, () => "hang");
+  await unsaved.outbox.submit(send("r2"));
+  assert.equal(unsaved.outbox.onlyInPage(), true);
 });

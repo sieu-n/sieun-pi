@@ -1,5 +1,5 @@
 import { api, ApiError, requestId } from "./api.ts";
-import { hasUnsentDrafts } from "./drafts.ts";
+import { saveDrafts } from "./drafts.ts";
 import { buildReload, onLeave } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
@@ -72,7 +72,7 @@ class Store {
     storage: typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage(),
     post: send => api.prompt(send.threadId, { message: send.text, images: send.images, mode: "steer", requestId: send.id }),
     status: error => error instanceof ApiError ? error.status : null,
-    onChange: view => { this.pendingSends = pendingOf(view); },
+    onChange: view => { this.pendingSends = pendingOf(view); this.idle(); },
     log: line => console.warn(line),
   });
   /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
@@ -128,21 +128,35 @@ class Store {
     if (!this.archivedWanted && id && !this.created.has(id) && this.archivedCount > 0 && this.daemon !== "unknown" && !this.sessions.some(row => row.id === id)) this.wantArchived();
   }
 
-  private updateOffered = false;
-  /** A restarted service with new client code: `buildReload` picks a reload now, one when the owner leaves the page, or a Reload offer. */
+  /** Set once the service runs client code this page lacks; the page then reloads at its first chance (see `buildReload`). */
+  private newBuild = false;
+  private reloadPlanned = false;
+  /** Prompts outside the outbox whose POST has not answered; a reload now would drop them. */
+  private posting = 0;
   private onBuild(version: string): void {
-    if (!version || version === document.body.dataset.build || this.updateOffered) return;
-    this.updateOffered = true;
-    const unsent = () => this.pending !== null || hasUnsentDrafts() || this.outbox.hasUnsent();
-    const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), unsent: unsent() });
-    if (plan === "now") location.reload();
-    else if (plan === "on-leave") onLeave(() => { if (unsent()) this.offerReload(); else location.reload(); });
-    else this.offerReload();
+    if (!version || version === document.body.dataset.build) return;
+    this.newBuild = true;
+    this.planReload();
   }
 
-  private offerReload(): void {
-    this.toast("A new version of this page is ready.", "info", { label: "Reload", run: () => location.reload() }, null);
+  private busy(): boolean { return this.pending !== null || this.posting > 0 || this.outbox.onlyInPage(); }
+
+  /** Plans the reload onto new client code; a busy page plans again from `idle` once it is not. */
+  private planReload(): void {
+    if (!this.newBuild || this.reloadPlanned) return;
+    const plan = buildReload({ hidden: document.visibilityState === "hidden", focused: document.hasFocus(), busy: this.busy() });
+    if (plan === "wait") return;
+    this.reloadPlanned = true;
+    if (plan === "now") this.reloadNow();
+    else onLeave(() => this.reloadNow());
   }
+
+  private reloadNow(): void {
+    if (this.busy() || !saveDrafts()) { this.reloadPlanned = false; return; }
+    location.reload();
+  }
+
+  private idle(): void { if (!this.busy()) this.planReload(); }
 
   retry(): void {
     this.sessionsStop?.();
@@ -378,8 +392,11 @@ class Store {
   }
 
   async send(id: string, message: string, images: ImageInput[], mode: SendMode): Promise<boolean> {
-    const result = await this.run(api.prompt(id, { message, images, mode, requestId: requestId() }));
-    return result !== undefined;
+    this.posting++;
+    try {
+      const result = await this.run(api.prompt(id, { message, images, mode, requestId: requestId() }));
+      return result !== undefined;
+    } finally { this.posting--; this.idle(); }
   }
 
   /**
@@ -439,7 +456,7 @@ class Store {
   async createChat(input: Omit<PendingChat, "startedAt">): Promise<string | null> {
     this.pending = { ...input, startedAt: Date.now() };
     const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
-    if (!result) { this.pending = null; return null; }
+    if (!result) { this.pending = null; this.idle(); return null; }
     if (result.notice) this.toast(result.notice);
     if (input.slack) void this.loadSlack();
     this.created.add(result.id);
@@ -447,6 +464,7 @@ class Store {
     if (input.kind === "chat") await this.awaitRow(result.id);
     this.select(result.id);
     this.pending = null;
+    this.idle();
     return result.id;
   }
 
