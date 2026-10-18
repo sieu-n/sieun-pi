@@ -4,11 +4,10 @@ import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
-import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withMessageIds } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
-import { TELL_OWNER_TOOL } from "../src/chats.ts";
+import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
@@ -315,6 +314,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
         const socketPath = pi.getFlag("agent-chat-socket");
         const port = pi.getFlag("agent-chat-port");
         const dataDir = pi.getFlag("agent-chat-data-dir");
+        const { ensureChatService } = await import("../src/chat-service.ts");
         const service = await ensureChatService({
           ...(typeof socketPath === "string" ? { socketPath } : {}),
           ...(typeof port === "string" ? { port: Number(port) } : {}),
