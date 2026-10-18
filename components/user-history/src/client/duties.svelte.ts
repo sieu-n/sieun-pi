@@ -6,7 +6,7 @@ import { dutyState, judgedRun, missStreak } from "./duty-card.ts";
 export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
 export const dutiesApi = {
-  view: (id: string) => get<{ duties: DutyView[] }>(route(id)),
+  view: (id: string) => get<{ duties: DutyView[] }>(route(id), 60_000),
   act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }, undefined, OWNER_UI_HEADERS),
 };
 
@@ -67,7 +67,9 @@ const POLL_MS = 30_000;
 /**
  * One chat's duties for the board panel: loaded when the chat opens, again every 30 s while the panel shows, and after an action. A thread
  * that is not a chat, or a server without duties, reads as none (404). A failed or timed-out poll keeps the last duties, since on 10-18 each
- * chat release restarted the box chat (05:38, 05:41 and 05:44Z) and the poll that hit the restart emptied the card until the next one.
+ * chat release restarted the box chat (05:38, 05:41 and 05:44Z) and the poll that hit the restart emptied the card until the next one. A
+ * poll waits 60 s, since at 06:02Z on 10-18 the box chat ran at 430% CPU and its duties answer took 9 to 18 s locally and passed the 20 s
+ * default through the tailnet proxy twice in a row, so the card never showed.
  */
 export class ChatDuties {
   views = $state.raw<DutyView[]>([]);
