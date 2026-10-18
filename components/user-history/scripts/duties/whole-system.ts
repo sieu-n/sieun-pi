@@ -16,6 +16,7 @@ import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
+import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
@@ -133,7 +134,8 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
  * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
- * failed or ran over 30 s on any box (src/daemon-faults.ts). Supporting: queue holds and open steps nobody
+ * failed or ran over 30 s on any box (src/daemon-faults.ts), leaving out a timed-out send or status read whose session waited for a pi-pool
+ * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts). Supporting: queue holds and open steps nobody
  * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
@@ -388,6 +390,8 @@ export interface Inputs {
   named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   /** Opens, status reads, sends and worker starts that failed or ran over SLOW_MS, from service.log and the supervisor's log (src/daemon-faults.ts). */
   daemonFaults?: readonly DaemonFault[];
+  /** Timed-out sends and status reads the session's file showed waiting for a pi-pool slot and going through, left out of daemonFaults. */
+  slotWaits?: readonly SlotWaitTimeout[];
   /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
   workerMisses?: readonly number[];
   /** Sends that met a target over the daemon's pending message limit and waited in the agent outbox: detail, never a dirty minute (owner c98). */
@@ -480,6 +484,7 @@ export function measure(input: Inputs): PrecheckOutput {
   let offlineAny = 0, offlineFaults = 0;
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
+  const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
   const dirty: string[] = [];
   const busy: string[] = [];
@@ -592,6 +597,7 @@ export function measure(input: Inputs): PrecheckOutput {
     held_min_30: held,
     queued_free_slot_min_30: freeSlot,
     daemon_fail_min_30: daemonFail,
+    slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
     unwatched_min_30: unwatched,
     unknown_min_30: unknownMin,
@@ -612,6 +618,12 @@ export function measure(input: Inputs): PrecheckOutput {
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
+  for (const wait of slotWaits) {
+    const fault = wait.fault;
+    flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +
+      `while it waited for a pi-pool slot from ${clock(wait.slotFrom)}, and ${wait.how === "landed" ? "the outbox found its message landed" : "its worker wrote"} ` +
+      `${Math.round((wait.deliveredAt - wait.sentAt) / 1000)} s after it went; a queue wait, not a daemon fault.` });
+  }
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
@@ -918,9 +930,12 @@ async function main(): Promise<void> {
   const serviceLines = await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES);
   const box = watch.at(-1)?.host ?? hostname();
   const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
-  const daemonFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box))]
+  const allFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box))]
     .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE);
   const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
+  const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]);
+  const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
+  const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const result = measure({
     now, watch, day,
     log: readServiceLog(serviceLines),
@@ -928,7 +943,8 @@ async function main(): Promise<void> {
     daemonFaults,
     workerMisses: workerPolls,
     queueOverruns,
-    listed: listedSessions(await catalogCopies(dataDir), [...daemonFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]),
+    slotWaits,
+    listed,
     chats,
     cut: cutJobsHoldingWork(cut, boards, pausedChats),
     boards,

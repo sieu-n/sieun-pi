@@ -19,6 +19,10 @@ export interface DaemonFault {
   /** A create's session title, which names its chat. */
   title?: string;
   what: string;
+  /** The daemon command whose answer timed out and how long the service waited, from a "Timed out after <ms>ms ... to "<call>"" line. */
+  timedOut?: { call: string; ms: number };
+  /** The outbox's id of the message a send carried (`m-<uuid>`), which its "is landed" line names (src/slot-wait-timeouts.ts). */
+  message?: string;
 }
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
@@ -66,10 +70,13 @@ const OTHER_CALLS = new Set(["kill", "list", "cron_list"]);
  */
 const STALE = /Unknown active session|is closing|Session worker is (?:stopping|starting)/;
 
+const TIMED_OUT = /Timed out after (\d+)ms waiting for the Prime Agent daemon response to "(\w+)"/;
+const MESSAGE_ID = /\b(m-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/;
+
 /** The short reason of a daemon error, or undefined when the text is no daemon or connection failure, or one for a call outside the rule. */
 export function faultReason(text: string): string | undefined {
   let found: RegExpExecArray | null;
-  if ((found = /Timed out after (\d+)ms waiting for the Prime Agent daemon response to "(\w+)"/.exec(text)))
+  if ((found = TIMED_OUT.exec(text)))
     return OTHER_CALLS.has(found[2]!) ? undefined : `${found[2]} timed out after ${Number(found[1]) / 1000} s`;
   if ((found = /Timed out after (\d+)ms waiting for the Prime Agent daemon handshake/.exec(text))) return `the handshake timed out after ${Number(found[1]) / 1000} s`;
   if ((found = /Timed out waiting for daemon worker response to (\w+)/.exec(text))) return OTHER_CALLS.has(found[1]!) ? undefined : `${found[1]} timed out in its worker`;
@@ -160,7 +167,10 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     const session = SESSION_IN.exec(text)?.[1];
     const wakeOf = prefix[2] === "wake" ? /^job ([0-9a-f]{8})/.exec(text)?.[1] : undefined;
     const host = SOCKET.exec(text)?.[1] ?? ON_BOX.exec(text)?.[1] ?? (wakeOf ? opened.get(wakeOf) : undefined) ?? local;
-    faults.push({ at, host, ...session ? { session } : {}, what: `${prefix[2] ? `a job's ${prefix[2]}` : ACTIONS[prefix[1]!]} failed, ${reason}` });
+    const timed = TIMED_OUT.exec(text);
+    const message = MESSAGE_ID.exec(text)?.[1];
+    faults.push({ at, host, ...session ? { session } : {}, what: `${prefix[2] ? `a job's ${prefix[2]}` : ACTIONS[prefix[1]!]} failed, ${reason}`,
+      ...timed ? { timedOut: { call: timed[2]!, ms: Number(timed[1]) } } : {}, ...message ? { message } : {} });
   }
   return faults;
 }
@@ -181,7 +191,9 @@ export function readSupervisorFaults(lines: readonly string[], local: string): D
 }
 
 /** A session a box's catalog copy lists: the chat at the root of its tree and its own name. */
-export interface ListedSession { root: string; name?: string; rootName?: string }
+export interface ListedSession { root: string; name?: string; rootName?: string;
+  /** The session's file on its own box, which src/slot-wait-timeouts.ts reads for a timed-out send's delivery. */
+  file?: string }
 
 const ROOT_IN_PATH = /\/session-artifacts\/([0-9a-f-]{36})\/|\/sessions\/([0-9a-f-]{36})\.jsonl$/;
 
@@ -191,7 +203,7 @@ const ROOT_IN_PATH = /\/session-artifacts\/([0-9a-f-]{36})\/|\/sessions\/([0-9a-
  * 10-18, so this looks up the few ids a window's faults name by text search instead of parsing every row.
  */
 export function listedSessions(texts: readonly string[], shorts: Iterable<string>): Map<string, ListedSession> {
-  const row = (id: string): { root: string; name?: string } | undefined => {
+  const row = (id: string): ListedSession | undefined => {
     for (const text of texts) {
       const at = text.indexOf(`"sessionId":"${id}`);
       if (at < 0) continue;
@@ -200,7 +212,7 @@ export function listedSessions(texts: readonly string[], shorts: Iterable<string
       const root = file ? ROOT_IN_PATH.exec(file) : null;
       if (!root) continue;
       const name = /"sessionName":"((?:[^"\\]|\\.)*)"/.exec(slice)?.[1];
-      return { root: root[1] ?? root[2]!, ...name ? { name: JSON.parse(`"${name}"`) as string } : {} };
+      return { root: root[1] ?? root[2]!, file: JSON.parse(`"${file}"`) as string, ...name ? { name: JSON.parse(`"${name}"`) as string } : {} };
     }
     return undefined;
   };
