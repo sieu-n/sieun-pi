@@ -117,6 +117,10 @@ USAGE = """usage: pi-pool [command]
   prod [set <json> | clear]      the trees and sessions on prod work, whose turns run at once:
                                   set takes {"trees": {id: why}, "sessions": {id: why}, "until": epoch sec}
   queue [--json]                 working and queued turns
+  snapshot --json [--thread <session> <model>]...
+                                  queue --json, config, and per thread who --json and ls --json for
+                                  each provider, as one JSON object of {code, out, err} parts, each
+                                  what the separate command prints; "" for no session or model
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
@@ -149,6 +153,7 @@ def cli(args):
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue, "prod": pool.turns.cmd_prod,
         "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
+        "snapshot": lambda rest: pool.snapshot.cmd_snapshot(rest, cli),
     }
     if cmd in handlers:
         return handlers[cmd](rest)

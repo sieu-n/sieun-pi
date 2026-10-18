@@ -7,7 +7,7 @@ import importlib.util, os, sys
 
 from . import base, registry, sched, vending, remote
 
-LAZY = ("status_view", "commands", "limit_resets", "signin", "session_cmds", "turns", "usage", "hookd")
+LAZY = ("status_view", "commands", "limit_resets", "signin", "session_cmds", "turns", "usage", "hookd", "snapshot")
 PACKAGE = sys.modules[__name__]
 
 

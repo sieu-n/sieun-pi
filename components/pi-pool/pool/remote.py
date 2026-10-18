@@ -17,7 +17,7 @@ OFF_ENV = "PI_POOL_REMOTE"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
 # A sign-in runs where its browser is and files the login with the holder (file-login).
 LOCAL_COMMANDS = {"admit", "release", "owner-turn", "prod", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
-                  "login", "hookd"}
+                  "login", "hookd", "snapshot"}
 # watch holds a terminal open and token hands out a credential; run them on the machine that holds the accounts.
 HOLDER_ONLY = {"watch", "token"}
 # Prime gives the token hook 10 s (vend.log_when_killed); answer before that so the hook can log why.
