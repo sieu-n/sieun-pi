@@ -7,7 +7,7 @@ import { parseWake } from "./wakes.ts";
 import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
 import { otherBoxRoots, reopenSibling, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { getAgentDir } from "prime-agent";
-import { reopenSession } from "./reopen-send.ts";
+import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
@@ -1013,6 +1013,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         }
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
+          await unarchiveOnItsBox(backend.catalog, { agentDir: getAgentDir() }, id);
           await backend.threads.unarchive(id);
           if (await backend.chats.restore(id)) await backend.catalog.notify();
           break;

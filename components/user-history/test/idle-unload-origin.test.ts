@@ -12,7 +12,7 @@ import { ChatReadState } from "../src/chat-read-state.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
-import { type DaemonAnswer, IdleUnloader, KILL_ORIGIN, idleKillCommand, unloadRequest } from "../src/idle-unload.ts";
+import { type DaemonAnswer, IdleUnloader, KILL_ORIGIN, NO_BARE_KILL, idleKillCommand, unloadRequest } from "../src/idle-unload.ts";
 
 const MIN = 60_000;
 const OLD = ["attach_snapshot", "event_sequence", "delete_rlm_subagent", "abort_and_send_queued"];
@@ -70,13 +70,13 @@ function idleRow(activeSessionId: string): SessionSummary {
     messageCount: 1, lastActivityAt: new Date(Date.now() - 11 * MIN).toISOString(), sessionActions: { queuedCount: 0, steering: [], followUps: [] } } as SessionSummary;
 }
 
-function unloaderOn(client: DaemonClient, row: SessionSummary, stopped: string[]): IdleUnloader {
+function unloaderOn(client: DaemonClient, row: SessionSummary, stopped: string[], restorable = true, logs: string[] = []): IdleUnloader {
   return new IdleUnloader({
     rows: () => [row], localRows: () => [], idleMs: () => 10 * MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
     waking: async () => new Set(), own: async () => new Map(), restNow: async () => false, title: () => null,
-    request: (stop, type) => unloadRequest(client, stop.activeSessionId!, type),
+    request: (stop, type) => unloadRequest(client, stop.activeSessionId!, type, restorable),
     stopped: async stop => { stopped.push(stop.sessionId); },
-    log: () => {}, now: () => Date.now(),
+    log: line => { logs.push(line); }, now: () => Date.now(),
   });
 }
 
@@ -228,4 +228,34 @@ test("on a kill_origin daemon an idle stop with no archive leaves the thread lis
     assert.equal(row?.archived, false);
     assert.equal(row?.status, "saved");
   } finally { await f.close(); }
+});
+
+// 10-18 12:53:05Z: the sweep's bare kill archived the Mac's runner reviewer (01a11d25), whose file this box cannot rewrite as active.
+test("another box's session under a daemon without kill_origin is never killed, and is not asked again until its row changes", async t => {
+  const path = join(await privateDir(t), "daemon.sock");
+  const daemon = await fakeDaemon(path, OLD);
+  const client = await connected(path);
+  try {
+    const stopped: string[] = [], logs: string[] = [];
+    const unloader = unloaderOn(client, idleRow("w1"), stopped, false, logs);
+    for (let sweep = 0; sweep < 2; sweep++) { await unloader.sweep(); await unloader.settled(); }
+    assert.deepEqual(daemon.sent.map(command => command.type), ["get_state"], "one look, no kill, and the second sweep skips the row");
+    assert.deepEqual(stopped, []);
+    assert.equal(logs.filter(line => line.includes(NO_BARE_KILL)).length, 1);
+  } finally { client.close(); await daemon.close(); }
+});
+
+test("a kill_origin daemon still gets the idle kill for another box's session", async t => {
+  const path = join(await privateDir(t), "daemon.sock");
+  const daemon = await fakeDaemon(path, NEW);
+  const client = await connected(path);
+  try {
+    const stopped: string[] = [];
+    const unloader = unloaderOn(client, idleRow("w1"), stopped, false);
+    await unloader.sweep();
+    await unloader.settled();
+    assert.deepEqual(daemon.sent.map(command => command.type), ["get_state", "kill"]);
+    assert.equal(daemon.kills()[0]!.origin, "idle_unload");
+    assert.equal(stopped.length, 1);
+  } finally { client.close(); await daemon.close(); }
 });

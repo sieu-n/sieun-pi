@@ -122,16 +122,25 @@ export function idleKillCommand(activeSessionId: string, hello: { serverCapabili
 export type UnloadClient = Pick<DaemonClient, "hello" | "waitForHello" | "request">;
 
 /**
+ * The idle unload's answer, in place of a kill, for a session whose daemon lists no KILL_ORIGIN and whose box cannot restore it. A bare kill
+ * writes the archived state, and the service rewrites it as active only for a file on its own box. On 10-18 at 12:53:05Z such a kill archived
+ * the Mac's runner reviewer root (01a11d25), which gates land 39, and 159 Mac sessions that day, so sends to them read 'No sibling matches'.
+ * The daemon's own idle eviction passivates them instead (Mac daemon.sock.bab13329.log: "Evicted idle worker ... root=01a11d25").
+ */
+export const NO_BARE_KILL = "Left to its daemon's idle eviction: that daemon has no kill_origin, so a kill would archive a session this box cannot restore.";
+
+/**
  * `get_state` or the idle kill for an active session. The kill reads the hello of the connection it goes out on, since `DaemonClient.connect`
  * drops the last one and a reconnect may meet another Prime build. In prime-agent 0.9.8 `request` reaches its socket write with no await once a
  * hello is held, so no reconnect falls between the read and the send. It is never replayed onto a later connection (`recoverable: false`).
  */
-export async function unloadRequest(client: UnloadClient, activeSessionId: string, type: "get_state" | "kill"): Promise<DaemonAnswer> {
+export async function unloadRequest(client: UnloadClient, activeSessionId: string, type: "get_state" | "kill", restorable = true): Promise<DaemonAnswer> {
   try {
     if (type === "get_state") return await client.request({ type, activeSessionId }, 30_000, { recoverable: false });
     if (!client.hello) await client.waitForHello();
     const hello = client.hello;
     if (!hello) return { success: false, error: "The daemon connection closed before its hello; the kill was not sent." };
+    if (!restorable && !(hello.serverCapabilities ?? []).includes(KILL_ORIGIN)) return { success: false, error: NO_BARE_KILL };
     return await client.request(idleKillCommand(activeSessionId, hello), 30_000, { recoverable: false });
   } catch (error) {
     return { success: false, error: String(error) };
@@ -173,7 +182,7 @@ function stateBusy(data: unknown): boolean {
   const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
   return state.isSessionActive !== false || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true;
 }
-const unknownActive = (error: string): boolean => /Unknown active session/.test(error);
+const skipUntilRowChanges = (error: string): boolean => /Unknown active session/.test(error) || error === NO_BARE_KILL;
 
 /**
  * Runs the idle unload once a minute without letting one slow kill hold up the rest. Up to 10-18 every kill of a sweep waited for the one
@@ -260,8 +269,8 @@ export class IdleUnloader {
   private async stopNow(row: SessionSummary, chats: ReadonlySet<string>): Promise<boolean> {
     const source = this.source;
     const failed = (answer: { error: string }): false => {
-      if (unknownActive(answer.error)) this.gone.add(goneKey(row));
-      source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${answer.error}${unknownActive(answer.error) ? "; skipped until its row changes" : ""}`);
+      if (skipUntilRowChanges(answer.error)) this.gone.add(goneKey(row));
+      source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${answer.error}${skipUntilRowChanges(answer.error) ? "; skipped until its row changes" : ""}`);
       return false;
     };
     const since = source.now();
