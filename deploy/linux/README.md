@@ -14,6 +14,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `wiki-box-commit.timer` | `wiki-box-commit.mjs` every 5 minutes on the wiki host, which pushes the wiki pages written there to a `ci/wiki-box-<stamp>` object. |
 | `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
 | `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
+| `ci-cache.service` | The one GitHub Actions poller for auto-sns-agent, `scripts/dev/ci-cache.mjs poll` from a copy in `~/.local/share/ci-cache`, which writes `~/.cache/virev/ci-runs.json` for `ci-run-status`, the gh shim and `board.wake(run=)`. |
 | `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
 The daemon has its own unit, so a chat restart never stops a running agent. The chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` and `KillMode=process` for the same reason.
@@ -70,6 +71,9 @@ One wiki serves every box. On the host with the `wiki` role, which is us-metal02
 Its pages are committed from that checkout: `wiki-box-commit.timer` runs `scripts/repo/agent/wiki-box-commit.mjs` from auto-sns-agent every 5 minutes, installed as a copy in `~/.local/share/wiki-box-commit` with `doc-only-paths.mjs`, the way the Mac installs devserver-heal. It pushes every wiki page that differs from `origin/sieun/dev` as a `ci/wiki-box-<stamp>` object, and the Mac's `ai.virev.wiki-land` lands the newest one on its `sieun/dev` with `land-wiki-objects.mjs`. One run reads `git status` of the whole content folder in about 16 s (measured 10-18).
 The wiki serves the content folder of that checkout. Its `apps/llm-wiki` is in the pm2 dev stack (`scripts/dev/dev-apps.cjs`), so `pnpm dev` and `pnpm dev:status` cover it, as on the Mac.
 Check with `ss -tlnp` that 5182 and 5176 listen on 127.0.0.1 only.
+
+One CI cache poller runs, on us-metal02, so the sieu-n token's 5,000 calls an hour are spent once. Install it from an auto-sns-agent commit with `git archive <sha> scripts/dev/{ci-cache.mjs,ci-run-status.mjs,ci-run-status.sh,gh-cache-shim.mjs,gh-run-watch.sh,infra-rerun.mjs,release-runner-toggle.mjs} scripts/ci/{probe-family.mjs,runner-lost.mjs} scripts/repo/agent/probe-attempt.mjs` unpacked into `~/.local/share/ci-cache`, then change its `REAL_GH` line to `/home/sieun/.local/opt/gh-2.89.0/bin/gh`, since the code names the Mac's `/opt/homebrew/bin/gh`. `~/.local/bin/ci-run-status` and the gh shim in `~/.local/bin/gh` run that copy too. The release toggle and the infra rerun watcher run inside the poller, so `release-runner.enabled` and `infra-rerun.enabled` sit in the box's `~/.cache/virev`.
+The Mac keeps a read copy for its own readers. `deploy/mac/ci-cache-mirror.mjs`, installed in `~/.local/share/ci-cache-mirror` and run by `deploy/mac/ai.virev.ci-cache-mirror.plist`, copies the cache through the box's relay every 15 s, with `~/.cache/virev` in the relay's `roots`, and hands the Mac's `ci-wants` to the box over ssh.
 
 The watchdog code is not in this repository. Copy `watchdog.py`, `cron_cycle.py`, `repl_guard.py` and `repl-guard.patch` from the Mac's `~/.prime/agent/watchdog`, without its state and logs. The timer gives it the Linux daemon socket through `PRIME_AGENT_DAEMON_SOCK`.
 
