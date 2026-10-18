@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { IdIndex } from "./id-index.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
@@ -14,7 +15,7 @@ import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, 
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
-import { withHeldTurns } from "./held-turns.ts";
+import { withHeldTurns, withThreadPoolWaits } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -1269,7 +1270,8 @@ export class Chats {
     const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
-    const facts = withQueuePlaces(threads.map(fact => {
+    const pooled = await withThreadPoolWaits(threads, join(this.source.home ?? homedir(), ".prime", "agent", "sessions"));
+    const facts = withQueuePlaces(pooled.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
