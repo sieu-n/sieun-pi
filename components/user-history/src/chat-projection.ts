@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
+import { TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import type { AssistantMessage, ChildAgent, ImagePart, ModelInfo, ProjectedSessionEvent, TextPart, ThinkingPart, ThreadInfo, ThreadMessage, ToolCallPart, ToolResultMessage } from "./shared/types.ts";
 
 export const TEXT_LIMIT = 600;
@@ -42,6 +43,12 @@ export class ImageStore {
     return entry;
   }
 }
+
+/**
+ * A tool argument is a preview cut at ARGUMENT_LIMIT, except the text of a `tell_owner` call: the chat feed shows it as the owner's bubble and
+ * has no fetch for the rest, so a cut there showed a 626-character message ending in "- *" as an empty bullet (owner screenshot, 10-18).
+ */
+const argumentLimit = (tool: string, key: string): number => tool === TELL_OWNER_TOOL && key === "text" ? USER_TEXT_LIMIT : ARGUMENT_LIMIT;
 
 function clip(text: string, limit: number): { text: string; truncated: boolean } {
   return text.length > limit ? { text: text.slice(0, limit), truncated: true } : { text, truncated: false };
@@ -91,8 +98,9 @@ export class Projector {
         let truncated = false;
         const args: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(isRecord(part.arguments) ? part.arguments : {})) {
-          if (typeof value === "string" && value.length > ARGUMENT_LIMIT) { args[key] = value.slice(0, ARGUMENT_LIMIT); truncated = true; }
-          else if (JSON.stringify(value).length > ARGUMENT_LIMIT) { args[key] = JSON.stringify(value).slice(0, ARGUMENT_LIMIT); truncated = true; }
+          const limit = argumentLimit(part.name, key);
+          if (typeof value === "string" && value.length > limit) { args[key] = value.slice(0, limit); truncated = true; }
+          else if (JSON.stringify(value).length > limit) { args[key] = JSON.stringify(value).slice(0, limit); truncated = true; }
           else args[key] = value;
         }
         return [{ type: "toolCall", id: part.id, name: part.name, arguments: args, ...(truncated ? { truncated: true } : {}) }];
