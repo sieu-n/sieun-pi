@@ -52,6 +52,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 4. `references/owner.md` covers owner todos, review asks, logins, and links, images and diagrams in a reply.
 5. `references/corrections.md` covers what to do when the owner corrects how a chat works.
 6. `references/clean-room.md` covers the clean-room run that closes a harness, skill or tool change.
+7. `references/plan-and-duties.md` covers what goes in the plan, in duties and on a risk page, and the fix when the owner asks to fix plan and duties.
 
 ## Plan shape
 
@@ -62,6 +63,12 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 5. A step's `job` names its owner, which is a job name or another thread as `thread:<id>` or its session name.
 6. A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.
 7. Keep a few area goals, at most 6 open, and move a step filed in the wrong place with plan_update `parent`.
+
+## Plan and duties
+
+The plan holds only work that can finish, from the owner's requests, and every step of it gets done with no owner step except a blocker in For you. Duties hold the long-term upkeep of things easy to break, measured the way the owner would check by hand. A standing risk lives on a wiki risk page that a duty checks, never as a plan step. A goal reaches its done line, leaves the plan and becomes a duty metric that sends it back when it slips.
+
+When the owner says "fix plan and duties based on the board skill and pursue completion of plans", follow [plan-and-duties](references/plan-and-duties.md) in that turn.
 
 ## Upkeep
 
