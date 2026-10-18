@@ -9,7 +9,7 @@ import { createRelay } from "../../prime-relay/relay.mjs";
 import { Catalog } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { applyRosterUpdate, HostCatalogs, MIRROR_DIR, rosterMerge } from "../src/host-catalogs.ts";
+import { agentIdOf, applyRosterUpdate, HostCatalogs, liveAgents, MIRROR_DIR, rosterMerge } from "../src/host-catalogs.ts";
 import { HostBridge, parseHosts } from "../src/hosts.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
 
@@ -113,6 +113,11 @@ test("roster updates move the rows with no list: a new session joins, a changed 
   assert.equal(stopped.rows.get("/s/c.jsonl")?.messageCount, 3, "a saved row keeps what the list said");
   assert.equal(applyRosterUpdate(start, new Map(), { removed: ["a"] }).rows.get("/s/a.jsonl")?.activeSessionId, undefined, "a top-level agent id is its session id");
   assert.equal(applyRosterUpdate(start, new Map(), { removed: ["parent#7"] }).unknown, true);
+  const child = row("k", true, { sessionFile: "/s/k.jsonl", runtimeKind: "subagent", rlmChildId: "7", parentSessionPath: "/s/a.jsonl" });
+  const withChild = new Map([...start, ["/s/k.jsonl", child]]);
+  assert.equal(agentIdOf(child), "/s/a.jsonl#7");
+  const removedChild = applyRosterUpdate(withChild, liveAgents(withChild), { removed: ["/s/a.jsonl#7"] });
+  assert.deepEqual([removedChild.unknown, removedChild.rows.get("/s/k.jsonl")?.activeSessionId], [false, undefined], "a subagent listed live at connect is found by its roster id");
   assert.equal(applyRosterUpdate(start, new Map(), { changed: [], resync: true }).unknown, true);
 });
 

@@ -10,6 +10,8 @@ export const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
 const RECONNECT_MS = 5000;
 /** Roster updates come up to 116 a minute (10-12); the catalog lays them into one frame per this wait. */
 const CHANGE_DEBOUNCE_MS = 300;
+/** Updates the rows cannot place within this wait share one roster list. */
+const CATCH_UP_MS = 1000;
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
   "workerState", "workerPid"] as const;
 
@@ -32,6 +34,25 @@ export function rosterMerge(rows: ReadonlyMap<string, SessionSummary>, live: rea
   return next;
 }
 
+/**
+ * The roster's agent id for a row, as the daemon forms it (rosterAgentIdForSummary): a subagent is its parent's session path and child id, any
+ * other session its session id. The daemon canonicalizes the parent path; the listed path is the same string on both boxes today.
+ */
+export function agentIdOf(row: Pick<SessionSummary, "runtimeKind" | "rlmChildId" | "sessionId" | "parentSessionPath" | "parentActiveSessionId">): string {
+  if (row.runtimeKind === "subagent" && row.rlmChildId) {
+    const parent = row.parentSessionPath ?? row.parentActiveSessionId;
+    return parent ? `${parent}#${row.rlmChildId}` : row.rlmChildId;
+  }
+  return row.sessionId;
+}
+
+/** Every live row's agent id to its row key, so a later removal finds its row. */
+export function liveAgents(rows: ReadonlyMap<string, SessionSummary>): Map<string, string> {
+  const agents = new Map<string, string>();
+  for (const [key, row] of rows) if (row.activeSessionId !== undefined) agents.set(agentIdOf(row), key);
+  return agents;
+}
+
 /** One `roster_update`: the agents whose summary changed, and the agent ids that left the roster. */
 export type RosterUpdate = { changed?: { agentId: string; status?: string; summary: Partial<SessionSummary> & { sessionId: string } }[]; removed?: string[]; resync?: true };
 
@@ -49,7 +70,7 @@ export function applyRosterUpdate(rows: ReadonlyMap<string, SessionSummary>, age
     agents.set(entry.agentId, key);
   }
   for (const agentId of update.removed ?? []) {
-    const key = agents.get(agentId) ?? (next.has(`id:${agentId}`) ? `id:${agentId}` : [...next.entries()].find(([, row]) => row.sessionId === agentId)?.[0]);
+    const key = agents.get(agentId) ?? [...next.entries()].find(([, row]) => agentIdOf(row) === agentId)?.[0];
     const row = key === undefined ? undefined : next.get(key);
     if (key === undefined || !row) { unknown = true; continue; }
     next.set(key, saved(row));
@@ -68,9 +89,12 @@ type Remote = {
   agents: Map<string, string>;
   /** False until the full list of this connection landed; roster updates before it wait for that list. */
   listed: boolean;
+  /** A full list landed at least once since this service started; the rows then stay, as saved ones while the box is down. */
+  everListed: boolean;
   connecting?: Promise<void> | undefined;
   listing?: Promise<void> | undefined;
   changeTimer?: ReturnType<typeof setTimeout> | undefined;
+  catchUpTimer?: ReturnType<typeof setTimeout> | undefined;
   reconnectTimer?: ReturnType<typeof setTimeout> | undefined;
   error?: string | undefined;
 };
@@ -91,7 +115,7 @@ export class HostCatalogs {
     private readonly log: (line: string) => void = () => {}) {
     for (const host of registry.hosts) {
       if (host.name === self?.name) continue;
-      const remote: Remote = { host, client: new DaemonClient(bridge.socketPath(host.name)), subscribed: false, rows: new Map(), agents: new Map(), listed: false };
+      const remote: Remote = { host, client: new DaemonClient(bridge.socketPath(host.name)), subscribed: false, rows: new Map(), agents: new Map(), listed: false, everListed: false };
       remote.client.onMessage(message => { if (message.type === "roster_update") this.onRoster(remote, message as RosterUpdate); });
       remote.client.onClose(error => {
         remote.subscribed = false;
@@ -103,6 +127,9 @@ export class HostCatalogs {
       this.remotes.set(host.name, remote);
     }
   }
+
+  /** True once every other box answered one full list since this service started; before that a session missing from the rows may be on one. */
+  allListed(): boolean { return [...this.remotes.values()].every(remote => remote.everListed); }
 
   /** The name the rows of this box carry; null when this machine is not in hosts.json. */
   get selfName(): string | null { return this.self?.name ?? null; }
@@ -122,7 +149,13 @@ export class HostCatalogs {
     const { rows, unknown } = applyRosterUpdate(remote.rows, remote.agents, update);
     remote.rows = rows;
     this.changed(remote);
-    if (unknown) void this.refresh(remote, false).catch(() => {});
+    if (unknown) this.catchUp(remote);
+  }
+
+  /** One roster list for the updates of the next second that the rows could not place. */
+  private catchUp(remote: Remote): void {
+    if (this.closed || remote.catchUpTimer) return;
+    remote.catchUpTimer = setTimeout(() => { remote.catchUpTimer = undefined; void this.refresh(remote, false).catch(() => {}); }, CATCH_UP_MS);
   }
 
   private changed(remote: Remote): void {
@@ -169,13 +202,15 @@ export class HostCatalogs {
         };
         const started = Date.now();
         if (full || !remote.listed) {
-          remote.agents.clear();
           remote.rows = new Map((await list(true)).map(row => [rowKey(row), row]));
+          remote.agents = liveAgents(remote.rows);
           remote.listed = true;
+          remote.everListed = true;
           this.counts.full++;
           this.log(`hosts: ${remote.host.name}: full list answered in ${((Date.now() - started) / 1000).toFixed(1)} s, ${remote.rows.size} rows`);
         } else {
           remote.rows = rosterMerge(remote.rows, await list(false));
+          remote.agents = liveAgents(remote.rows);
           this.counts.roster++;
         }
         this.changed(remote);
@@ -257,6 +292,7 @@ export class HostCatalogs {
     this.closed = true;
     for (const remote of this.remotes.values()) {
       clearTimeout(remote.changeTimer);
+      clearTimeout(remote.catchUpTimer);
       clearTimeout(remote.reconnectTimer);
       remote.client.close();
     }

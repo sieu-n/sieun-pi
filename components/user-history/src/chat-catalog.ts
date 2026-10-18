@@ -766,6 +766,8 @@ export class Catalog {
   async summary(sessionId: string): Promise<SessionSummary | undefined> {
     let summary = this.find(sessionId);
     if (!summary) { await this.refresh(); summary = this.find(sessionId); }
+    // Until every other box listed once, a session this box lacks may run there: the service start's adopt would forget a chat on the Mac.
+    if (!summary && this.hosts && !this.hosts.allListed()) throw new Error(`Session ${sessionId.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
     if (!summary || this.heldLifecycle.get(sessionId) !== "archived") return summary;
     const { activeSessionId: _activeSessionId, ...saved } = summary;
     return { ...saved, lifecycle: "archived" };
@@ -776,6 +778,9 @@ export class Catalog {
     const row = this.find(sessionId);
     return row ? sessionTitle(row) : null;
   }
+
+  /** The other boxes' rows, live ones only from a box whose daemon answers now; empty without hosts.json. */
+  remoteRows(): readonly SessionSummary[] { return this.hosts?.rows() ?? []; }
 
   /** The daemon's rows from the last list as it sent them, live roster rows laid over; empty before the first full list. */
   daemonRows(): readonly SessionSummary[] {

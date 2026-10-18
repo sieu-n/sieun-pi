@@ -279,7 +279,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     const done = new Set<string>();
     const stop = async (row: SessionSummary): Promise<boolean> => {
       if (done.has(row.sessionId)) return true;
-      const response = await catalog.client.request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
+      const response = await catalog.clientFor(row.activeSessionId!).request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
       if (!response.success) { dutyLog(`idle unload: ${row.sessionId.slice(0, 8)}: ${response.error}`); return false; }
       done.add(row.sessionId);
       // The daemon's kill writes the archived state, which would hide the chat until the next service start unarchived it (Chats.adopt).
@@ -288,7 +288,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     };
     const now = Date.now();
     const wakingNow = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
-    for (const row of unloadPlan(catalog.daemonRows(), { attached, pool, now, idleMs: minutes === "off" ? null : minutes * 60_000, chats: chatIds, waking: wakingNow })) {
+    // Every box's idle sessions stop from here, since the chat service is the one place that knows which chats a tab or the pool holds.
+    for (const row of unloadPlan([...catalog.daemonRows(), ...catalog.remoteRows()], { attached, pool, now, idleMs: minutes === "off" ? null : minutes * 60_000, chats: chatIds, waking: wakingNow })) {
       if (await stop(row)) stopped.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
     }
     if (stopped.length) dutyLog(`idle unload: stopped ${stopped.length} idle sessions: ${stopped.join(", ")}`);
