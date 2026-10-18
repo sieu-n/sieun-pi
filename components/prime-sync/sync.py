@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -49,6 +50,14 @@ GIT_ENV = git_env()
 
 class Skip(Exception):
     """This step leaves everything as it is this run; the next run tries again."""
+
+
+class Alert(Skip):
+    """Like Skip, but the run reports it as an alert and exits 1, because a person has to fix origin/main."""
+
+
+MAX_DROP_SHARE = 0.05
+DECLARED = re.compile(r"^Deletes: (\d+) files? on purpose\.?\s*$", re.M)
 
 
 def git(repo: Path, *args: str, check: bool = True, input: bytes | None = None, timeout: int = 120) -> str:
@@ -116,6 +125,7 @@ def pull_checkout(checkout: Path) -> str:
         return f"at {head[:7]}"
     if _ancestor(checkout, remote, head):
         return f"ahead of origin/main {remote[:7]} at {head[:7]}"
+    check_drop(checkout, head, remote)
     if _ancestor(checkout, head, remote):
         move_checkout(checkout, head, remote)
         return f"pulled {head[:7]}..{remote[:7]}"
@@ -124,6 +134,29 @@ def pull_checkout(checkout: Path) -> str:
     if not count:
         return f"pulled {head[:7]}..{remote[:7]}, whose local commits origin/main already holds"
     return f"rebased {count} local commits from {head[:7]} onto origin/main {remote[:7]} as {target[:7]}"
+
+
+def _paths(checkout: Path, *args: str) -> list[str]:
+    return [path for path in git(checkout, *args).split("\0") if path]
+
+
+def check_drop(checkout: Path, head: str, remote: str) -> None:
+    """Refuse to move onto an origin/main that drops more than 5% of the tracked files since the checkout's base with it,
+    unless its commits declare as many with `Deletes: <n> files on purpose` lines.
+    On 10-18 at 05:34Z, 5557c587a deleted all 712 files of main, and every box moved onto it within a minute."""
+    base = git(checkout, "merge-base", head, remote, check=False)
+    if not base:
+        return
+    dropped = len(_paths(checkout, "diff-tree", "-r", "-z", "--no-renames", "--diff-filter=D", "--name-only", base, remote))
+    total = len(_paths(checkout, "ls-tree", "-r", "-z", "--name-only", base))
+    if dropped <= total * MAX_DROP_SHARE:
+        return
+    messages = git(checkout, "log", "--format=%B%x00", f"{base}..{remote}").split("\0")
+    declared = sum(max((int(n) for n in DECLARED.findall(message)), default=0) for message in messages)
+    if declared >= dropped:
+        return
+    raise Alert(f"origin/main {remote[:9]} drops {dropped} of {total} tracked files since {base[:9]}, over {MAX_DROP_SHARE:.0%}, "
+                f"and its commits declare {declared} with Deletes: lines, so the checkout stays at {head[:9]}")
 
 
 def replay(checkout: Path, head: str, remote: str) -> tuple[str, int]:
@@ -478,12 +511,14 @@ def run() -> dict:
         for name, step in steps:
             try:
                 report[name] = step()
+            except Alert as reason:
+                report[name] = f"alert: {reason}"
             except Skip as reason:
                 report[name] = f"skipped: {reason}"
             except Exception as error:
                 report[name] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report
@@ -492,4 +527,4 @@ def run() -> dict:
 if __name__ == "__main__":
     result = run()
     print(json.dumps(result, indent=2))
-    sys.exit(1 if any(isinstance(value, str) and value.startswith("error:") for value in result.values()) else 0)
+    sys.exit(1 if any(isinstance(value, str) and value.startswith(("error:", "alert:")) for value in result.values()) else 0)

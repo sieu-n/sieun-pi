@@ -36,6 +36,8 @@ function repo(t) {
   write("components/chats.ts", "fallback on\n");
   write("components/pool.ts", "one account\n");
   write("components/virev/index.mjs", "virev\n");
+  // 40 more files keep a one-file delete under the 5% limit of mass-delete.mjs.
+  for (let i = 0; i < 40; i++) write(`docs/note-${i}.md`, `${i}\n`);
   git(["add", "-A"]);
   git(["commit", "-q", "-m", "base"]);
   return { dir, run, git, write, privateCommit, show: (spec) => git(["show", spec]) };
@@ -78,7 +80,7 @@ test("a shared-index commit cannot undo a move another session committed (baac96
   assert.match(refused.stderr, /git update-index --force-remove -- "components\/virev\/index\.mjs"/);
   assert.equal(r.git(["rev-parse", "HEAD"]), move);
   r.git(["commit", "-q", "-m", "user-history", "--", "components/chats.ts"]);
-  assert.equal(r.git(["ls-tree", "-r", "--name-only", "HEAD"]).split("\n").sort().join(","),
+  assert.equal(r.git(["ls-tree", "-r", "--name-only", "HEAD", "components"]).split("\n").sort().join(","),
     "components/chats.ts,components/global-rules/index.mjs,components/pool.ts");
 });
 

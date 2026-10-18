@@ -77,10 +77,10 @@ class PrimeSyncTests(unittest.TestCase):
     def ledger(self, home):
         return [c["id"] for c in json.loads((home / ".prime/agent/browser-chat/corrections.json").read_text())["corrections"]]
 
-    def sync(self, home):
+    def sync(self, home, code=0):
         env = {**ENV, "HOME": str(home), "PRIME_SYNC_SETTLE": "0"}
         result = subprocess.run(["python3", "-B", str(SYNC)], env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
     def test_two_boxes_converge_and_edits_and_deletes_travel(self):
@@ -206,6 +206,36 @@ class PrimeSyncTests(unittest.TestCase):
         self.assertIn("could not move", self.sync(box)["code"])
         self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
         self.assertEqual((checkout / "new.txt").read_text(), "mine\n")
+
+    def test_a_main_that_drops_the_tree_is_refused_with_an_alert(self):
+        # 5557c587a on 10-18: a private index built from an empty tree kept one new file and deleted the other 712.
+        box = self.box("box", [], [])
+        checkout = box / "src/sieun-pi"
+        self.sync(box)
+        head = git("-C", str(checkout), "rev-parse", "HEAD")
+        index = {**ENV, "GIT_INDEX_FILE": str(self.root / "private-index")}
+        subprocess.run(["git", "-C", str(self.seed), "read-tree", "--empty"], env=index, check=True)
+        (self.seed / "duty.ts").write_text("duty\n")
+        subprocess.run(["git", "-C", str(self.seed), "add", "duty.ts"], env=index, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(self.seed), "commit", "-q", "-m", "fix: a duty"], env=index, check=True)
+        git("-C", str(self.seed), "push", "-q", "origin", "main")
+        report = self.sync(box, code=1)
+        self.assertTrue(report["code"].startswith("alert: origin/main"), report["code"])
+        self.assertIn("drops 4 of 4 tracked files", report["code"])
+        self.assertEqual(git("-C", str(checkout), "rev-parse", "HEAD"), head)
+        self.assertEqual((box / ".prime/agent/skills/unslop/SKILL.md").read_text(), "v1\n")
+        self.assertIn("alert: origin/main", (box / ".local/share/prime-sync/sync.log").read_text())
+
+        git("-C", str(self.seed), "checkout", "HEAD^", "--", ".")
+        self.commit(self.seed, "fix(repo): restore every file the duty commit deleted")
+        self.assertTrue(self.sync(box)["code"].startswith("pulled"))
+        self.assertTrue((checkout / "duty.ts").exists())
+
+        git("-C", str(self.seed), "rm", "-q", "-r", "skills")
+        (self.seed / "install-manifest.json").write_text(json.dumps({"version": 1, "entries": []}))
+        self.commit(self.seed, "chore: drop the unslop skill\n\nDeletes: 1 files on purpose")
+        self.assertTrue(self.sync(box)["code"].startswith("pulled"))
+        self.assertFalse((checkout / "skills/unslop").exists())
 
 
 if __name__ == "__main__":

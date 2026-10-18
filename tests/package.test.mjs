@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { reapServeOnExit } from "../components/user-history/test/serve-reaper.mjs";
+import { reapServeOnExit } from "./serve-reaper.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 function run(command, args, options = {}) {
