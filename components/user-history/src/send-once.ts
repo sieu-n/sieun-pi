@@ -127,6 +127,8 @@ interface Unconfirmed { since: number; texts: string[] }
 /** `deliver` with the timed-out-send check; one instance per service, shared by the wakes, the brief keeper and the alert bridge. */
 export class SendOnce {
   private record: Promise<Map<string, Unconfirmed>> | null = null;
+  private writing: Promise<void> = Promise.resolve();
+  private writes = 0;
   private readonly now: () => number;
   private readonly deps: SendOnceDeps;
   constructor(deps: SendOnceDeps) { this.deps = deps; this.now = deps.now ?? Date.now; }
@@ -155,7 +157,8 @@ export class SendOnce {
     await this.save(record => record.set(key, { since, texts }));
     try {
       const result = await this.deps.send(session, text);
-      await this.settle(key);
+      // A confirmed send counts as sent even if its record cannot be cleared; a stale record only costs a look before the next same send.
+      await this.settle(key).catch(error => this.deps.log(`send once: record for ${session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       return result;
     } catch (error) {
       if (!isSendTimeout(error)) {
@@ -193,12 +196,20 @@ export class SendOnce {
     if ((await this.load()).has(key)) await this.save(record => record.delete(key));
   }
 
+  /**
+   * One write at a time, each through its own temp file. 10-18 00:18:54Z two sends settled at once, both wrote the one `.tmp`, the second
+   * rename failed with ENOENT, and the wake to 01a14c40 whose send had landed at 00:18:51Z was kept and landed again at 00:19:29Z.
+   */
   private async save(change: (record: Map<string, Unconfirmed>) => void): Promise<void> {
-    const record = await this.load();
-    change(record);
-    const tmp = `${this.deps.file}.tmp`;
-    await writeFile(tmp, JSON.stringify(Object.fromEntries(record)), { mode: 0o600 });
-    await rename(tmp, this.deps.file);
+    const write = this.writing.then(async () => {
+      const record = await this.load();
+      change(record);
+      const tmp = `${this.deps.file}.${process.pid}.${++this.writes}.tmp`;
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(record)), { mode: 0o600 });
+      await rename(tmp, this.deps.file);
+    });
+    this.writing = write.catch(() => {});
+    return write;
   }
 }
 

@@ -179,6 +179,18 @@ test("send once: a send the daemon refuses outright leaves no record, so the nex
   assert.equal(daemon.state.sends, 1);
 });
 
+test("send once: sends that settle at once all write the record, and a confirmed send is never kept for a resend", async () => {
+  // 10-18 00:18:54Z: two settles raced on one .tmp, the rename failed with ENOENT, and a landed wake to 01a14c40 went again at 00:19:29Z.
+  const daemon = await slowDaemon();
+  daemon.state.mode = "ok";
+  const sessions = Array.from({ length: 12 }, (_, i) => SESSION.slice(0, -2) + String(i).padStart(2, "0"));
+  const results = await Promise.all(sessions.map(session => daemon.once.deliver(session, "[wake] at once")));
+  assert.deepEqual(results, sessions.map(() => "sent"));
+  assert.equal(daemon.state.sends, 12);
+  assert.deepEqual(JSON.parse(await readFile(join(daemon.agentDir, "unconfirmed-sends.json"), "utf8")), {});
+  assert.deepEqual((await readdir(daemon.agentDir)).filter(name => name.endsWith(".tmp")), []);
+});
+
 test("send once: the record of a timed-out send outlives a service restart", async () => {
   const daemon = await slowDaemon();
   daemon.state.mode = "queues";
