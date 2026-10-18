@@ -76,6 +76,11 @@ function fixture(t) {
   git("checkout", "-q", "-b", "side", c1);
   const side = commit("side");
   git("checkout", "-q", "main");
+  const origin = path.join(dir, "origin.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", "-b", "main", origin], { env: cleanEnv }).status, 0);
+  git("remote", "add", "origin", origin);
+  const publish = (ref = "main") => git("push", "-q", "origin", `${ref}:main`);
+  publish();
   const env = (args, extra = {}) => {
     const control = Object.fromEntries(Object.entries(extra).filter(([key]) => BUILD_CONTROLS.includes(key)));
     writeFileSync(path.join(dir, "controls", `${id(args[0])}.json`), JSON.stringify(control));
@@ -93,7 +98,7 @@ function fixture(t) {
   const current = () => readlinkSync(path.join(home, "current"));
   const kicked = () => (existsSync(kicks) ? readFileSync(kicks, "utf8").trim().split("\n") : []);
   const seen = (sha, step) => JSON.parse(readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.json`), "utf8"));
-  return { dir, repo, home, c1, c2, c3, c4, side, env, release, releaseAsync, current, kicked, seen };
+  return { dir, repo, home, c1, c2, c3, c4, side, git, write, commit, publish, env, release, releaseAsync, current, kicked, seen };
 }
 
 const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 7)}`);
@@ -125,24 +130,106 @@ test("on a Linux host the release restarts the systemd user unit instead", (t) =
   assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
 });
 
-test("an older release behind the lock of a newer one that holds it exits 0 at once and leaves current alone", async (t) => {
+test("a release whose commit the in-flight release holds waits for it, then exits 0 with nothing built and one restart", async (t) => {
   // 10-18 11:25Z: three jobs queued da7e7e0c3 behind the release of 8957c594a, which held it already.
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
   while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
-  for (const sha of [f.c2, f.c3]) {
-    const older = await f.releaseAsync([sha]);
-    assert.equal(older.status, 0, older.stderr);
-    assert.match(older.stderr, new RegExp(`${sha.slice(0, 7)} is already in the release of ${f.c3.slice(0, 7)} that pid \\d+ runs now`));
-    assert.doesNotMatch(older.stderr, /waiting for the release of/);
-  }
+  const [older, same] = await Promise.all([f.releaseAsync([f.c2]), f.releaseAsync([f.c3])]);
   const won = await newer;
   assert.equal(won.status, 0, won.stderr);
-  assert.doesNotMatch(won.stderr, /restart left to/);
+  for (const [sha, result] of [[f.c2, older], [f.c3, same]]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /waiting for the release of/);
+    assert.doesNotMatch(result.stderr, /is already in the release of/);
+    assert.match(result.stderr, new RegExp(`${sha.slice(0, 7)} (already live|is already) in ${id(f.c3)}`));
+    assert.equal(result.stdout.trim(), id(f.c3));
+  }
   assert.equal(f.current(), id(f.c3));
   assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
   assert.equal(f.kicked().length, 1);
+  assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+});
+
+test("a waiter whose commit the in-flight release holds goes live itself when that release fails", async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500", TEST_FAIL: "1" });
+  while (!existsSync(path.join(f.home, "release.lock"))) await new Promise((done) => setTimeout(done, 20));
+  const older = await f.releaseAsync([f.c2]);
+  const failed = await newer;
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.equal(older.status, 0, older.stderr);
+  assert.equal(older.stdout.trim(), id(f.c2));
+  assert.equal(f.current(), id(f.c2));
+  assert.ok(existsSync(path.join(f.home, id(f.c2), "release.json")));
+  assert.equal(f.kicked().length, 1);
+});
+
+test("a commit that --no-kickstart put in current makes the restart when it is released again", (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
+  assert.equal(f.kicked().length, 1);
+  const quiet = f.release([f.c3, "--no-kickstart"]);
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.equal(f.kicked().length, 1);
+  for (const sha of [f.c3, f.c2]) {
+    const again = f.release([sha]);
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(again.stdout.trim(), id(f.c3));
+    assert.equal(f.kicked().length, 2, sha);
+  }
+  assert.match(f.release([f.c3]).stderr, /already live in/);
+  assert.equal(f.kicked().length, 2);
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(existsSync(path.join(f.home, "release.lock")), false);
+});
+
+test("the same commit released again installs the live release's units when the installed ones differ", (t) => {
+  const f = fixture(t);
+  f.write("deploy/linux/sieun-pi-chat.service", "[Service]\nExecStart=serve\n");
+  const c5 = f.commit("five");
+  f.publish();
+  const units = path.join(f.dir, "units");
+  const extra = { SIEUN_PI_CHAT_SERVICE_MANAGER: "systemd", SIEUN_PI_CHAT_UNIT_DIR: units };
+  const install = ["--user daemon-reload", "--user stop sieun-pi-chat.service", "--user start sieun-pi-chat.service"];
+  assert.equal(f.release([c5], extra).status, 0);
+  assert.deepEqual(f.kicked(), install);
+  assert.match(f.release([c5], extra).stderr, /already live in/);
+  assert.deepEqual(f.kicked(), install);
+  writeFileSync(path.join(units, "sieun-pi-chat.service"), "[Service]\nExecStart=edited\n");
+  const again = f.release([c5], extra);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(readFileSync(path.join(units, "sieun-pi-chat.service"), "utf8"), "[Service]\nExecStart=serve\n");
+  assert.deepEqual(f.kicked(), [...install, ...install]);
+  assert.equal(f.current(), id(c5));
+});
+
+test("a commit missing from origin main is refused with push first, and a built release still rolls back offline", (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
+  const local = f.commit("local");
+  for (const sha of [local, f.side]) {
+    const refused = f.release([sha]);
+    assert.equal(refused.status, 4, refused.stderr);
+    assert.match(refused.stderr, new RegExp(`${sha.slice(0, 7)} is not on origin/main; push it to main first`));
+    assert.equal(existsSync(path.join(f.home, id(sha))), false);
+  }
+  assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
+  f.git("remote", "set-url", "origin", path.join(f.dir, "gone.git"));
+  const offline = f.release([f.c4]);
+  assert.equal(offline.status, 4, offline.stderr);
+  assert.match(offline.stderr, /could not fetch origin main/);
+  const unbuilt = f.release([f.c2, "--rollback"]);
+  assert.equal(unbuilt.status, 4, unbuilt.stderr);
+  assert.equal(f.current(), id(f.c3));
+  const back = f.release([id(f.c1), "--rollback"]);
+  assert.equal(back.status, 0, back.stderr);
+  assert.equal(f.current(), id(f.c1));
+  assert.equal(f.kicked().length, 1);
+  assert.deepEqual(f.git("for-each-ref", "refs/release-chat"), "");
 });
 
 test("a commit the live release already holds exits 0 with nothing built, flipped or restarted", (t) => {
@@ -175,8 +262,11 @@ test("going back to an older or unrelated commit needs --rollback, and an older 
   assert.equal(f.release([f.c3, "--no-kickstart"]).status, 0);
   const kept = f.release([f.c1]);
   assert.equal(kept.status, 0, kept.stderr);
-  assert.match(kept.stderr, /already live in/);
+  assert.match(kept.stderr, new RegExp(`${f.c1.slice(0, 7)} is already in ${id(f.c3)}`));
   assert.equal(f.current(), id(f.c3));
+  assert.equal(f.kicked().length, 1);
+  f.git("merge", "-q", "-s", "ours", "--no-edit", "side");
+  f.publish();
   const refused = f.release([f.side, "--no-kickstart"]);
   assert.equal(refused.status, 3);
   assert.match(refused.stderr, /Pass --rollback/);
@@ -185,7 +275,7 @@ test("going back to an older or unrelated commit needs --rollback, and an older 
   assert.match(back.stderr, /built already/);
   assert.equal(back.stdout.trim(), id(f.c1));
   assert.equal(f.current(), id(f.c1));
-  assert.equal(f.kicked().length, 1);
+  assert.equal(f.kicked().length, 2);
 });
 
 test("a failed typecheck or test leaves current and the folders as they were", (t) => {
@@ -301,7 +391,7 @@ test("a release that finds its commit live once it takes the lock still makes th
   rmSync(lock);
   const result = await waiter;
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, new RegExp(`${f.c2.slice(0, 7)} already live in ${id(f.c3)}; nothing to do`));
+  assert.match(result.stderr, new RegExp(`${f.c2.slice(0, 7)} is already in ${id(f.c3)}`));
   assert.equal(result.stdout.trim(), id(f.c3));
   assert.equal(f.current(), id(f.c3));
   assert.equal(readFileSync(path.join(units, "sieun-pi-chat.service"), "utf8"), "[Service]\n");
