@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,20 +9,15 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * apps_picked, is how many of the 6 Prospect apps have an owner pick in the 5180 demo's Staging line (apps/virev-demo/lines/staging.json in
  * auto-sns-agent). open_review_max_h is the age of the oldest open review todo the chat put on For you that the chat can still fix (no tap
  * answers yet, or answered and still open); one with tap answers and no reply only waits on the owner and goes to owner_held_review_max_h, run
- * detail. demo_ci_ok is whether the last verify-dev run on sieun/dev that ran the virev-demo turbo tasks passed them: the runs and their jobs
- * come from the local CI cache (`CI_CACHE`, no GitHub call) and the receipt lines from the monorepo lint job's log (one gh call per run read).
- * Run detail, not judged: source_errors, owner_held_review_max_h and each tab's 0 to 100% status (`tabs`), the owner's "report status (in
+ * detail. Run detail, not judged: owner_held_review_max_h and each tab's 0 to 100% status (`tabs`), the owner's "report status (in
  * 0%-100%) of each tab". An unreadable Staging line or board fails the run, since neither the headline nor the reviews can be read without it.
- * An unreadable cache or log, or no run that ran both tasks, leaves demo_ci_ok out of the output (not measured, so the runner judges the other
- * metrics) with a source flag. On 10-18 00:30Z a GitHub 403 rate limit on `gh run list` scored demo_ci_ok 0 while run 39076957943 on sieun/dev
- * had passed both tasks. No model call, no browser.
+ * It reads no CI: 5180 demo work stays on disk and never goes to sieun/dev (owner 10-18: "no need to push at all even. why check for CI?").
+ * No model call, no browser.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 export const CHAT_ID = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
 const BOARD = join(homedir(), ".prime/agent/browser-chat/boards", `${CHAT_ID}.json`);
-/** The CI cache that launchd ai.virev.ci-cache rewrites from GitHub every 30 s for sieu-n/auto-sns-agent, with each run's jobs and steps. */
-export const CI_CACHE = join(homedir(), ".cache/virev/ci-runs.json");
 export const LINE_FILE = "apps/virev-demo/lines/staging.json";
 /** The 6 Prospect apps: their key in the Staging line and the word todos and plan steps use for them. */
 export const APPS = [
@@ -31,24 +25,14 @@ export const APPS = [
   { key: "email", word: "Email" }, { key: "creators", word: "Creators" }, { key: "connections", word: "Connections" },
 ] as const;
 export const SHIPPED = "shipped";
-export const CI_BRANCH = "sieun/dev";
-/** checks.yml runs virev-demo#check and virev-demo#test:unit in this job and step when the classify step sets virev_demo. */
-export const LINT_JOB = "checks / monorepo / lint";
-export const LINT_STEP = "js / lint + typecheck + unit";
-export const DEMO_TASKS = ["virev-demo#check", "virev-demo#test:unit"] as const;
 const HOUR_MS = 3_600_000;
 
 export interface StagingLine { apps?: Record<string, { variant?: string; at?: string }>; log?: { at?: string }[] }
 export interface BoardTodo { id: string; text?: string; done?: boolean; from?: string; at?: string; step?: string; reply?: string; choices?: string[] }
 export interface BoardItem { id: string; text?: string; status?: string; job?: string; children?: BoardItem[] }
 export interface Board { plan?: BoardItem[]; todos?: BoardTodo[] }
-export interface CacheJob { id?: number; name?: string; steps?: { name?: string; conclusion?: string }[] }
-export interface CacheRun { run?: { id?: number; path?: string; head_branch?: string; status?: string; created_at?: string }; jobs?: CacheJob[] }
-export interface CiCache { fetchedAt?: string; runs?: Record<string, CacheRun> }
-export interface DemoTask { ok: boolean; receipt: string }
 
-export type Exec = (file: string, args: readonly string[], cwd: string) => Promise<string>;
-export interface StagingDeps { exec: Exec; now: () => number; read: (path: string) => Promise<string>; repo: string; board: string; ciCache: string }
+export interface StagingDeps { now: () => number; read: (path: string) => Promise<string>; repo: string; board: string }
 
 const mentions = (text: string | undefined, word: string): boolean => new RegExp(`\\b${word}\\b`).test(text ?? "");
 
@@ -130,35 +114,6 @@ export function tabStatus(plan: readonly BoardItem[], app: { key: string; word: 
   return { key: app.key, word: app.word, pct, picked: app.picked, done, open };
 }
 
-/** The lint job's id when it ran the lint + typecheck + unit step to an end (success or failure), else null (skipped, cancelled). */
-export function lintJob(jobs: readonly CacheJob[]): number | null {
-  const job = jobs.find(candidate => candidate.name === LINT_JOB
-    && candidate.steps?.some(step => step.name === LINT_STEP && (step.conclusion === "success" || step.conclusion === "failure")));
-  return job?.id ?? null;
-}
-
-/** The completed verify-dev runs on CI_BRANCH in the CI cache, newest first. */
-export function branchRuns(cache: CiCache): CacheRun[] {
-  return Object.values(cache.runs ?? {})
-    .filter(entry => entry.run?.path?.endsWith("/verify-dev.yml") && entry.run.head_branch === CI_BRANCH && entry.run.status === "completed")
-    .sort((a, b) => Date.parse(b.run!.created_at ?? "") - Date.parse(a.run!.created_at ?? ""));
-}
-
-/**
- * The two virev-demo task results from the receipt lines scripts/ci/turbo-run.mjs prints in the job log, or null when the classify step left
- * virev-demo out (no receipt). "exit 0" and a cache hit pass (turbo caches only a task that exited 0); "failed with exit N" and "not run" fail.
- */
-export function demoSteps(log: string): Record<string, DemoTask> | null {
-  const result: Record<string, DemoTask> = {};
-  for (const line of log.split("\n")) {
-    const match = /turbo task (\S+): (.*)$/.exec(line.trimEnd());
-    if (!match || !(DEMO_TASKS as readonly string[]).includes(match[1]!)) continue;
-    const receipt = match[2]!;
-    result[match[1]!] = { ok: /, exit 0$/.test(receipt) || receipt.startsWith("not executed in this run, cache hit"), receipt };
-  }
-  return DEMO_TASKS.every(task => result[task]) ? result : null;
-}
-
 export interface StagingOutput extends PrecheckOutput { tabs: TabStatus[] }
 
 export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> {
@@ -167,10 +122,8 @@ export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> 
   // Targets in apps-reach-staging.duty.json and their sources. apps_picked at least 6 is the headline: the 6 Prospect apps (board goal p14
   // targets 6) and the owner's "get an accepted version of each app in the prospects view". open_review_max_h at most 48: the review limit the
   // duty has held since 10-12; incident, the board went from t5 (2026-10-09T12:38Z) to t11 (2026-10-12T05:55Z), 65 h with nothing to pick, and
-  // on 2026-10-12T13:34Z the owner asked "what should i review?". demo_ci_ok at least 1 is a yes or no check, set only when a run answers it.
-  // source_errors and owner_held_review_max_h are run detail.
-  const metrics: Record<string, number> = { apps_picked: 0, open_review_max_h: 0, owner_held_review_max_h: 0, source_errors: 0 };
-  const sourceError = (excerpt: string) => { metrics.source_errors! += 1; flagged.push({ at, kind: "source", excerpt }); };
+  // on 2026-10-12T13:34Z the owner asked "what should i review?". owner_held_review_max_h is run detail.
+  const metrics: Record<string, number> = { apps_picked: 0, open_review_max_h: 0, owner_held_review_max_h: 0 };
   const message = (error: unknown) => error instanceof Error ? error.message : String(error);
   const readJson = async <T>(path: string, what: string): Promise<T> => {
     try { return JSON.parse(await deps.read(path)) as T; } catch (error) { throw new Error(`${what} ${path}: ${message(error)}`); }
@@ -203,37 +156,13 @@ export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> 
       `${tab.done.length} of ${tab.done.length + tab.open.length} board steps done${tab.open.length ? `; open: ${tab.open.join(", ")}` : ""}` });
   }
 
-  try {
-    const cache = await readJson<CiCache>(deps.ciCache, "CI cache");
-    const runs = branchRuns(cache);
-    let found = false;
-    for (const { run, jobs } of runs) {
-      const job = lintJob(jobs ?? []);
-      if (job === null) continue;
-      const tasks = demoSteps(await deps.exec("gh", ["api", `repos/{owner}/{repo}/actions/jobs/${job}/logs`], deps.repo));
-      if (!tasks) continue;
-      found = true;
-      metrics.demo_ci_ok = Object.values(tasks).every(task => task.ok) ? 1 : 0;
-      flagged.push({ at, kind: metrics.demo_ci_ok ? "demo_ci" : "demo_ci_failed",
-        excerpt: `verify-dev run ${run!.id} on ${CI_BRANCH} (${run!.created_at}, CI cache read ${cache.fetchedAt}), job ${job}: ` +
-          Object.entries(tasks).map(([task, { receipt }]) => `${task} ${receipt}`).join("; ") });
-      break;
-    }
-    if (!found) sourceError(`none of the ${runs.length} completed verify-dev runs on ${CI_BRANCH} in the CI cache ran both virev-demo turbo tasks in ${LINT_JOB}; demo_ci_ok is not measured`);
-  } catch (error) { sourceError(`verify-dev on ${CI_BRANCH}: ${message(error)}; demo_ci_ok is not measured`); }
   return { metrics, flagged, tabs };
 }
-
-const exec: Exec = (file, args, cwd) => new Promise((resolve, reject) => {
-  // No timeout of its own: the runner's precheck timeout ends a hung run. No buffer limit either: the lint job logs measured 2026-10-15 run
-  // 2.0 to 2.1 MB, past Node's 1 MB default.
-  execFile(file, [...args], { cwd, encoding: "utf8", maxBuffer: Infinity }, (error, stdout) => error ? reject(error) : resolve(stdout));
-});
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("apps-reach-staging: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const result = await measureStaging({ exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO, board: BOARD, ciCache: CI_CACHE });
+  const result = await measureStaging({ now: Date.now, read: path => readFile(path, "utf8"), repo: REPO, board: BOARD });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
