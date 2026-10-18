@@ -120,7 +120,7 @@ function hookRuns(parents: ReadonlySet<number>): { pid: number; session: string 
  * read: on 10-18 a run that read every /proc entry each 20 ms held 0.5 of a core for its whole 40-minute window on us-metal02.
  */
 export function linuxHookRuns(parents: ReadonlySet<number>): { pid: number; session: string }[] {
-  return descendants(parents).flatMap(pid => {
+  const runs = descendants(parents).flatMap(pid => {
     try {
       const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
       const at = argv.findIndex(arg => arg.endsWith("pi-pool/bin/pi-pool-token"));
@@ -129,6 +129,12 @@ export function linuxHookRuns(parents: ReadonlySet<number>): { pid: number; sess
       return session ? [{ pid, session }] : [];
     } catch { return []; }
   });
+  // A hook's shell forking a command shows the hook's argv in the child until its exec, so a run under another run is that same run.
+  const pids = new Set(runs.map(run => run.pid));
+  return runs.filter(run => !pids.has(parentPid(run.pid)));
+}
+function parentPid(pid: number): number {
+  try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]); } catch { return 0; }
 }
 function macHookRuns(): { pid: number; session: string }[] {
   let out: string;
