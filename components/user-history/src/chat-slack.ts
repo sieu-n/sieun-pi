@@ -3,6 +3,7 @@ import type { ChatBackend } from "./chat-backend.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { runCommand, type Runner } from "./chat-remote.ts";
 import { chatLines } from "./shared/chat-feed.ts";
+import { keyIndex } from "./shared/message-key.ts";
 import { channelName, channelNameError, parseChannelRef } from "./shared/slack-channel.ts";
 import type { SlackChannelOption, SlackChatInput, SlackChatLink, SlackInput, SlackView, ThreadEvent, ThreadMessage } from "./shared/types.ts";
 
@@ -243,12 +244,12 @@ export function outboundLines(messages: readonly ThreadMessage[]): { key: string
   const out: { key: string; text: string; at: number }[] = [];
   for (const line of chatLines(messages)) {
     if (line.kind !== "agent" || line.streaming) continue;
-    const match = /^m(\d+)(?:-t(\d+))?$/.exec(line.id);
-    const message = match ? messages[Number(match[1])] : undefined;
+    const match = /^m(\d+)\.(\d+)(?:-t(\d+))?$/.exec(line.id);
+    const message = match ? messages[keyIndex(messages, { at: Number(match[1]), n: Number(match[2]) })] : undefined;
     if (!match || !message) continue;
     let suffix = "text";
-    if (match[2] !== undefined) {
-      const part = message.role === "assistant" ? message.content[Number(match[2])] : undefined;
+    if (match[3] !== undefined) {
+      const part = message.role === "assistant" ? message.content[Number(match[3])] : undefined;
       if (part?.type !== "toolCall") continue;
       suffix = part.id;
     }

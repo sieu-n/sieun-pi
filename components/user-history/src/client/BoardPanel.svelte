@@ -34,8 +34,8 @@
    * ops and the ops themselves; it resolves false when
    * the server refused them.
    */
-  let { id, board, agents, now, checkIn, onjob, onagent, previewJob, apply }: {
-    id: string; board: ChatBoard | null; agents: readonly ChatAgent[]; now: number; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; onagent: (agent: ChatAgent) => void;
+  let { id, board, agents, now, checkIn, settled = true, onjob, onagent, previewJob, apply }: {
+    id: string; board: ChatBoard | null; agents: readonly ChatAgent[]; now: number; checkIn: { text: string; on: boolean }; settled?: boolean; onjob: (name: string) => void; onagent: (agent: ChatAgent) => void;
     previewJob: (owner: string) => string | undefined; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
   } = $props();
 
@@ -52,9 +52,12 @@
   /** The chat's duties (src/shared/chat-duties.ts), the built-in check-in first, polled while the panel shows. */
   const duties = new ChatDuties();
   $effect(() => duties.watch(id));
-  /** The check-in duty's cadence is the header's Check-in setting: a change there reloads the card at once. */
+  /**
+   * The check-in duty's cadence is the header's Check-in setting: a change there reloads the card at once. Until the chat's snapshot and board land
+   * (`settled`) the text is the row's guess, and their correcting it is no change.
+   */
   let checkInSeen = "";
-  $effect(() => { const text = checkIn.text; if (checkInSeen && text !== checkInSeen) void duties.load(); checkInSeen = text; });
+  $effect(() => { const text = checkIn.text; if (!settled) { checkInSeen = ""; return; } if (checkInSeen && text !== checkInSeen) void duties.load(); checkInSeen = text; });
   const dutiesOpen = $derived(ui.boardCards.duties ?? true);
 
   const todos = $derived(groupTodos(board?.todos ?? []));

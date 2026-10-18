@@ -2,6 +2,7 @@ import { ApiError, get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
 import { dutyState, judgedRun, missStreak } from "./duty-card.ts";
+import { ThreadCache } from "./thread-side.svelte.ts";
 
 export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
@@ -65,40 +66,43 @@ export const metricValue = (value: number, unit = ""): string => `${Math.round(v
 
 const POLL_MS = 30_000;
 /**
- * One chat's duties for the board panel: loaded when the chat opens, again every 30 s while the panel shows, and after an action. A thread
+ * One chat's duties for the board panel: pushed on the thread feed (`dutiesFeed`), asked again every 30 s while the panel shows, and after an action. A thread
  * that is not a chat, or a server without duties, reads as none (404). A failed or timed-out poll keeps the last duties, since on 10-18 each
  * chat release restarted the box chat (05:38, 05:41 and 05:44Z) and the poll that hit the restart emptied the card until the next one. A
  * poll waits 60 s, since at 06:02Z on 10-18 the box chat ran at 430% CPU and its duties answer took 9 to 18 s locally and passed the 20 s
  * default through the tailnet proxy twice in a row, so the card never showed.
  */
 export class ChatDuties {
-  views = $state.raw<DutyView[]>([]);
   error = $state<string | null>(null);
-  private chat = "";
+  private chat = $state("");
+  /** The chat's duties from the last answer for it, so a switch back paints the card with no request. */
+  get views(): DutyView[] { return dutyCache.value(this.chat) ?? NO_DUTIES; }
 
   watch(chat: string): () => void {
     this.chat = chat;
-    this.views = [];
     this.error = null;
-    void this.load();
+    void dutyCache.ensure(chat);
     const timer = setInterval(() => { void this.load(); }, POLL_MS);
     return () => clearInterval(timer);
   }
 
-  async load(): Promise<void> {
-    const chat = this.chat;
-    try { const { duties } = await dutiesApi.view(chat); if (chat === this.chat) this.views = duties; }
-    catch (error) { if (chat === this.chat && error instanceof ApiError && error.status === 404) this.views = []; }
-  }
+  load(): Promise<void> { return dutyCache.load(this.chat); }
 
   async act(duty: string, action: DutyAction, schedule?: DutySchedule): Promise<void> {
     const chat = this.chat;
     try {
       const { duties } = await dutiesApi.act(chat, duty, action, schedule);
+      dutyCache.set(chat, duties);
       if (chat !== this.chat) return;
-      this.views = duties;
       this.error = null;
-      if (action === "run") for (const delay of [3_000, 15_000, 60_000]) setTimeout(() => { if (chat === this.chat) void this.load(); }, delay);
+      if (action === "run") for (const delay of [3_000, 15_000, 60_000]) setTimeout(() => { void dutyCache.load(chat); }, delay);
     } catch (error) { if (chat === this.chat) this.error = error instanceof Error ? error.message : String(error); }
   }
 }
+
+const NO_DUTIES: DutyView[] = [];
+/** Each chat's duties: a 404 (a thread that is not a chat, a server without duties) reads as none, and a failed poll keeps the last ones. */
+const dutyCache = new ThreadCache<DutyView[]>(chat => dutiesApi.view(chat).then(body => body.duties),
+  error => error instanceof ApiError && error.status === 404 ? NO_DUTIES : undefined);
+/** The thread feed pushes a chat's duties after its snapshot (shared/thread-side.ts), so the card asks for none at a switch. */
+export const dutiesFeed = { expect: (chat: string) => dutyCache.expect(chat), drop: (chat: string) => dutyCache.drop(chat), set: (chat: string, duties: DutyView[]) => dutyCache.set(chat, duties) };

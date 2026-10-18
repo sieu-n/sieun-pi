@@ -4,6 +4,7 @@ import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { PromptView } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
+import type { ThreadSide } from "../shared/thread-side.ts";
 import { applySessionsDelta } from "../shared/sessions-delta.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
@@ -57,8 +58,10 @@ export const api = {
       onEvent({ type: "sessions", sessions: rows, tags: frame.tags, daemon: frame.daemon, ...(frame.error !== undefined ? { error: frame.error } : {}) });
     }, onError);
   },
-  threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void): () => void {
+  /** `onSide` gets the feed's `side` frames: what the view shows beside the messages, pushed after the snapshot (shared/thread-side.ts). */
+  threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void, onSide: (side: ThreadSide) => void = () => {}): () => void {
     const stop = subscribeFeed({ feed: "thread", id }, (event, data) => {
+      if (event === "side") { onSide(data as ThreadSide); return; }
       if (event !== "thread") return;
       const parsed = data as ThreadEvent;
       if (parsed.type === "status" && parsed.connection === "closed" && parsed.error) stop();

@@ -116,6 +116,7 @@ function unmount(root: HTMLElement): void {
 export function diagrams(node: HTMLElement, params: { html: string; live: boolean; eager?: boolean }) {
   listen();
   let live = params.live;
+  let html = params.html;
   const eager = params.eager === true;
   const observer = new IntersectionObserver(entries => {
     for (const item of entries) {
@@ -131,7 +132,13 @@ export function diagrams(node: HTMLElement, params: { html: string; live: boolea
   };
   requestAnimationFrame(scan);
   return {
-    update(next: { html: string; live: boolean; eager?: boolean }) { live = next.live; requestAnimationFrame(scan); },
+    update(next: { html: string; live: boolean; eager?: boolean }) {
+      // Every feed rebuild hands each bubble a new params object; only a new text or the end of a stream has blocks to scan.
+      if (next.html === html && next.live === live) return;
+      html = next.html;
+      live = next.live;
+      requestAnimationFrame(scan);
+    },
     destroy() { observer.disconnect(); unmount(node); },
   };
 }

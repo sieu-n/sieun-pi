@@ -18,10 +18,12 @@
   import ThreadTitle from "./ThreadTitle.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { labels } from "./labels.ts";
+  import { rowModelId } from "./accounts.ts";
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
   import { parentChatOf } from "./jobs.ts";
   import { revealMessage } from "./permalink.ts";
+  import { earlierTop, keepPlace, nearTop, windowStart } from "./feed-window.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
   /** A job of a chat (its session is listed under a chat row, or an open chat started it) gets a way back to the chat with its drawer open. */
@@ -42,6 +44,27 @@
     const last = turns.at(-1);
     return last && last.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
   });
+  /** The view draws the newest FIRST_TURNS turns and MORE_TURNS earlier ones each time the owner scrolls near the top (feed-window.ts). */
+  const FIRST_TURNS = 20;
+  const MORE_TURNS = 20;
+  let top = $state<string | null>(null);
+  const keys = $derived(shown.map(turn => turn.key));
+  const start = $derived(windowStart(keys, top, FIRST_TURNS));
+  const drawn = $derived(start ? shown.slice(start) : shown);
+  const hasEarlier = $derived(start > 0 || thread?.older !== undefined);
+  let growing = false;
+  async function earlier(): Promise<void> {
+    const node = scroller;
+    if (growing || !node || !hasEarlier) return;
+    growing = true;
+    try {
+      await keepPlace(node, async () => {
+        top = keys[start] ?? null;
+        if (start === 0) await store.loadOlder(id);
+        top = earlierTop(keys, start, MORE_TURNS) ?? top;
+      });
+    } finally { growing = false; }
+  }
   const context = $derived(thread?.info.context ?? null);
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
   const childAlert = $derived.by(() => {
@@ -90,11 +113,12 @@
   function onScroll(): void {
     if (!scroller) return;
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    if (!pinned && nearTop(scroller)) void earlier();
   }
   $effect(() => {
     if (!hasState) return;
     untrack(() => {
-      requestAnimationFrame(() => { if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-paint:" + id, "thread-open:" + id); });
+      requestAnimationFrame(() => { if (performance.getEntriesByName("thread-switch:" + id, "mark").length) performance.measure("thread-paint:" + id, "thread-switch:" + id); });
       let frames = 0;
       const step = () => { if (pinned) scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
       requestAnimationFrame(step);
@@ -110,6 +134,7 @@
   $effect(() => {
     void shown;
     if (untrack(() => pinned)) void tick().then(scrollToBottom);
+    void tick().then(() => { if (scroller && scroller.scrollHeight <= scroller.clientHeight) void earlier(); });
   });
 
   /** A link to a message in this thread (`#<id>@<ms>`): scroll to it and flash it; a link to nothing says so. */
@@ -119,11 +144,15 @@
     if (!target || target.id !== id || !messages.length || !node) return;
     untrack(() => {
       pinned = false;
-      void tick().then(() => {
+      void (async () => {
+        while (store.jump === target && (messages[0]?.timestamp ?? 0) > target.at && thread?.older !== undefined && await store.loadOlder(id)) { /* next page */ }
+        const index = shown.findLastIndex(turn => turn.startedAt <= target.at);
+        if (index >= 0 && index < start) top = keys[Math.max(0, index - 1)] ?? null;
+        await tick();
         if (store.jump !== target) return;
         if (!revealMessage(node, target.at)) store.toast("That link points at a message this thread does not have.", "info");
         store.jump = null;
-      });
+      })();
     });
   });
 
@@ -136,11 +165,6 @@
 
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
   const stop = () => { void store.run(api.abort(id)); };
-  let loadingOlder = $state(false);
-  async function showOlder(): Promise<void> {
-    loadingOlder = true;
-    try { await store.loadOlder(id); } finally { loadingOlder = false; }
-  }
 </script>
 
 <div class="thread">
@@ -200,9 +224,9 @@
   {:else}
     <div class="scroller" bind:this={scroller} onscroll={onScroll}>
       <div class="column" bind:this={column}>
-        {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
-        {#each shown as turn, index (turn.key)}
-          <Turn {turn} threadId={id} latest={index === shown.length - 1} />
+        {#if hasEarlier}<div class="older muted" aria-live="polite">{entry?.olderLoading ? "Loading earlier messages" : ""}</div>{/if}
+        {#each drawn as turn, index (turn.key)}
+          <Turn {turn} threadId={id} latest={index === drawn.length - 1} />
         {/each}
         {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
       </div>
@@ -219,7 +243,7 @@
         <Composer draftKey={id} threadId={id} {busy} placeholder={saved ? "Reply to resume this thread" : "Ask for follow-up changes"}
           acceptsImages={thread.info.model?.input.includes("image") ?? true} focusOnMount={!narrow} {send} {stop}>
           {#snippet left()}
-            <AccountChip threadId={id} model={thread.info.model ? thread.info.model.id + " " + thread.info.model.name : row?.model} />
+            <AccountChip threadId={id} model={thread.info.model ? thread.info.model.id + " " + thread.info.model.name : rowModelId(row?.model)} />
             {#if context && thread}
               <ContextMeter threadId={id} {context} usage={thread.info.usage} {messages} live={!saved} />
             {/if}
@@ -261,10 +285,10 @@
   .center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; }
   .error-card { display: flex; flex-direction: column; gap: 10px; max-width: 420px; align-items: flex-start; }
   .error-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--danger); }
-  .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 20px 24px; }
   .empty { padding: 48px 0; text-align: center; }
-  .older { display: block; margin: 8px auto; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: var(--text-muted); }
+  .older { min-height: 24px; padding: 4px 12px; text-align: center; font-size: 12.5px; }
   .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
   .jump-go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px 0 0 999px; }
   .jump-close { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 3px; border-radius: 50%; color: var(--text-faint); }

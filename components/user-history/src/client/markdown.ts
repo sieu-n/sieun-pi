@@ -273,7 +273,17 @@ function isLoneImage(token: Token): boolean {
   const parts = ((token as { tokens?: Token[] }).tokens ?? []).filter(part => !(part.type === "text" && !part.raw.trim()));
   return parts.length === 1 && parts[0]!.type === "image";
 }
+const blockCache = new Map<string, BubbleBlock[]>();
+/** Cached by text like `renderMarkdown`: every feed rebuild (each streamed delta, each snapshot) splits every bubble again otherwise. */
 export function bubbleBlocks(text: string): BubbleBlock[] {
+  const cached = blockCache.get(text);
+  if (cached) return cached;
+  const blocks = splitBlocks(text);
+  blockCache.set(text, blocks);
+  if (blockCache.size > CACHE_LIMIT) blockCache.delete(blockCache.keys().next().value!);
+  return blocks;
+}
+function splitBlocks(text: string): BubbleBlock[] {
   const blocks: BubbleBlock[] = [];
   let prose = "";
   const flush = () => { if (prose.trim()) blocks.push({ kind: "prose", text: prose }); prose = ""; };

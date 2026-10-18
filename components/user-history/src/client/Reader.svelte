@@ -16,6 +16,7 @@
   import { diffLines, reportWikiPage, wikiUrl, type ReaderView } from "./reader.ts";
   import { mentionIndex } from "./board.ts";
   import type { ChildUsage } from "../shared/types.ts";
+  import { childUsage } from "./thread-side.svelte.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./icons.ts";
@@ -57,7 +58,8 @@
   const latest = $derived(reports[0] ?? null);
   const earlier = $derived(reports.slice(1));
   let earlierOpen = $state(false);
-  let usage = $state<ChildUsage[]>([]);
+  const NO_USAGE: ChildUsage[] = [];
+  const usage = $derived(thread ? childUsage.value(thread) ?? NO_USAGE : NO_USAGE);
   const message = $derived.by((): ChatLine | null => {
     if (view.kind !== "message" || !lines.length) return null;
     const at = anchorStamp(lines.map(line => line.at), view.at);
@@ -84,9 +86,7 @@
   $effect(() => {
     const id = thread;
     if (!id || !jobOf) return;
-    let cancelled = false;
-    api.childUsage(id).then(entries => { if (!cancelled) usage = entries; }, () => {});
-    return () => { cancelled = true; };
+    untrack(() => void childUsage.ensure(id));
   });
   const jobSession = $derived.by(() => {
     if (!jobOf || !snapshot) return null;

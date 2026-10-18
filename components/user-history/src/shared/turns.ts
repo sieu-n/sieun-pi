@@ -1,3 +1,4 @@
+import { messageKey } from "./message-key.ts";
 import type { AssistantMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, ThinkingPart, ThreadMessage, ToolCallPart, ToolResultMessage, ToolRun, UserMessage } from "./types.ts";
 
 export type SystemMessage = BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage;
@@ -129,8 +130,9 @@ function addAssistant(turn: Turn, message: AssistantMessage, index: number, resu
   turn.endedAt = Math.max(turn.endedAt, message.timestamp);
 }
 
-function openTurn(index: number, timestamp: number): Turn {
-  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, failure: null, startedAt: timestamp, endedAt: timestamp, live: false };
+/** `key` names the turn by its first message (`messageKey`), so a turn keeps its key when an older page loads in front of it. */
+function openTurn(key: string, timestamp: number): Turn {
+  return { key, prompt: null, trigger: null, work: [], reply: null, failure: null, startedAt: timestamp, endedAt: timestamp, live: false };
 }
 
 export function toolResults(messages: readonly ThreadMessage[]): Map<string, ToolResultMessage> {
@@ -146,6 +148,7 @@ export function toolResults(messages: readonly ThreadMessage[]): Map<string, Too
  */
 export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
   const results = toolResults(messages);
+  const turnKey = (index: number): string => { const { at, n } = messageKey(messages, index); return `turn-${at}.${n}`; };
   const turns: Turn[] = [];
   let current: Turn | undefined;
   let run: Turn | undefined;
@@ -153,7 +156,7 @@ export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
   messages.forEach((message, index) => {
     const trigger = message.role === "custom" && isPromptCustom(message);
     if (message.role === "user" || (trigger && settled && (!current || opensTurn(message)))) {
-      current = run = openTurn(index, message.timestamp);
+      current = run = openTurn(turnKey(index), message.timestamp);
       if (message.role === "user") current.prompt = { message, index };
       else if (message.role === "custom") current.trigger = { message, index };
       turns.push(current);
@@ -161,13 +164,13 @@ export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
       return;
     }
     if (trigger && settled && current) {
-      run = openTurn(index, message.timestamp);
+      run = openTurn(turnKey(index), message.timestamp);
       run.trigger = { message, index };
       current.work.push({ kind: "exchange", turn: run, messageIndex: index });
       settled = false;
       return;
     }
-    if (!current || !run) { current = run = openTurn(index, message.timestamp); turns.push(current); }
+    if (!current || !run) { current = run = openTurn(turnKey(index), message.timestamp); turns.push(current); }
     if (message.role === "assistant") { addAssistant(run, message, index, results, false); settled = message.stopReason !== "toolUse"; }
     else if (message.role === "toolResult") run.endedAt = Math.max(run.endedAt, message.timestamp);
     else if (message.role === "custom" && trigger) run.work.push({ kind: "trigger", message, messageIndex: index });
@@ -185,7 +188,7 @@ function withRuns(turn: Turn, tools: readonly ToolRun[]): Turn {
 export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | null, tools: readonly ToolRun[], messageCount: number, running = false): Turn | null {
   const toolRunning = tools.some(run => run.status === "running");
   if (!streaming && !toolRunning && !running) return null;
-  const turn: Turn = { ...withRuns(last ?? openTurn(messageCount, streaming?.timestamp ?? Date.now()), tools), live: true };
+  const turn: Turn = { ...withRuns(last ?? openTurn("turn-live", streaming?.timestamp ?? Date.now()), tools), live: true };
   const exchange = lastExchange(turn);
   if (exchange) {
     const liveExchange: Exchange = { ...exchange, turn: { ...exchange.turn, live: true } };

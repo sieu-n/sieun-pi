@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api } from "./api.ts";
+  import { untrack } from "svelte";
   import { store } from "./store.svelte.ts";
   import { duration } from "./format.ts";
   import { modelShort, money } from "./organize.ts";
@@ -8,6 +8,7 @@
   import type { ChildAgent, ChildPulse, ChildStatus, ChildUsage } from "../shared/types.ts";
   import { childDetail, childName, isActiveChild } from "./children.ts";
   import StatusMark from "./StatusMark.svelte";
+  import { childUsage } from "./thread-side.svelte.ts";
 
   /**
    * Subagents grouped Running, Failed, Done, Cancelled. Each row says what the child is doing now (its native activity and latest recap) or how it
@@ -30,14 +31,16 @@
   let query = $state("");
   let scope = $state<Scope>("all");
   let scrollTop = $state(0);
-  let usage = $state<ChildUsage[] | null>(null);
+  const usage = $derived(childUsage.value(threadId) ?? null);
   let usageError = $state(false);
 
+  const childCount = $derived(children.length);
+  let loaded = false;
   $effect(() => {
-    void children.length;
-    let cancelled = false;
-    api.childUsage(threadId).then(entries => { if (!cancelled) { usage = entries; usageError = false; } }, () => { if (!cancelled) usageError = true; });
-    return () => { cancelled = true; };
+    void childCount;
+    const changed = loaded;
+    loaded = true;
+    untrack(() => { (changed ? childUsage.load(threadId, true) : childUsage.ensure(threadId)).then(() => { usageError = childUsage.value(threadId) === undefined; }, () => {}); });
   });
   const usageOf = $derived.by(() => {
     const byId = new Map<string, ChildUsage>();

@@ -34,7 +34,10 @@
   import { tooltip } from "./ui/tooltip.ts";
   import { longpress } from "./ui/longpress.ts";
   import { labels } from "./labels.ts";
+  import { rowModelId } from "./accounts.ts";
   import { copyPermalink, revealLine, revealMessage } from "./permalink.ts";
+  import { earlierTop, keepPlace, nearTop, windowStart } from "./feed-window.ts";
+  import { childUsage } from "./thread-side.svelte.ts";
 
   /**
    * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board in a side
@@ -52,6 +55,40 @@
   /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
   const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
+  /**
+   * The feed draws its newest FIRST_ITEMS items, and MORE_ITEMS earlier ones each time the owner scrolls near the top (feed-window.ts). On
+   * 10-18 a switch back to AI harness drew all of its 122 items and showed them 45 to 77 ms after the click; 30 items fill more than two
+   * screens of bubbles on the owner's 1440x900 window.
+   */
+  const FIRST_ITEMS = 30;
+  const MORE_ITEMS = 30;
+  let top = $state<string | null>(null);
+  const keys = $derived(feed.map(item => item.id));
+  const start = $derived(windowStart(keys, top, FIRST_ITEMS));
+  const shown = $derived(start ? feed.slice(start) : feed);
+  const hasEarlier = $derived(start > 0 || thread?.older !== undefined);
+  let growing = false;
+  /** Draws the earlier items, after loading the older page when every loaded item already shows; true when anything was added. */
+  async function earlier(): Promise<boolean> {
+    const node = scroller;
+    if (growing || !node || !hasEarlier) return false;
+    growing = true;
+    let grew = false;
+    try {
+      await keepPlace(node, async () => {
+        top = keys[start] ?? null;
+        if (start === 0) await store.loadOlder(id);
+        const next = earlierTop(keys, start, MORE_ITEMS);
+        if (next !== null) { top = next; grew = true; }
+      });
+    } finally { growing = false; }
+    if (grew && scroller && !pinned && nearTop(scroller)) void earlier();
+    return grew;
+  }
+  /** Shows the loaded items from `index` on (with a few above it for context), for a link or a quote that points above the drawn ones. */
+  function showFrom(index: number): void {
+    if (index >= 0 && index < start) top = keys[Math.max(0, index - 3)] ?? null;
+  }
   /** Three dots while the chat answers the owner and no reply text has started. A turn a job or a check-in started shows nothing until a tell_owner lands. */
   const busy = $derived(thread ? isThreadBusy({ ...thread, children: [] }) : false);
   const typing = $derived(busy && thread !== null && turnStarter(thread.messages) === "owner" && !feed.some(item => item.kind === "agent" && item.streaming));
@@ -76,12 +113,17 @@
   const EMPTY_CHILDREN: ChildAgent[] = [];
   const children = $derived(thread?.children ?? EMPTY_CHILDREN);
   const started = $derived(createdSessions(thread?.messages ?? []));
-  let usage = $state<ChildUsage[]>([]);
+  const NO_USAGE: ChildUsage[] = [];
+  const usage = $derived(childUsage.value(id) ?? NO_USAGE);
+  /** Pushed on the thread feed (store.side), and asked again when a job starts or ends while the chat shows; the cache keeps one request in flight. */
+  const childCount = $derived(thread ? children.length : null);
+  let countSeen: number | null = null;
   $effect(() => {
-    void children.length;
-    let cancelled = false;
-    api.childUsage(id).then(entries => { if (!cancelled) usage = entries; }, () => {});
-    return () => { cancelled = true; };
+    const count = childCount;
+    if (count === null) return;
+    // The children come as their own event after the snapshot, so the first count that is not 0 is where the chat stands, not a change.
+    untrack(() => void (countSeen === null ? childUsage.ensure(id) : count !== countSeen ? childUsage.load(id, true) : undefined));
+    if (count || countSeen !== null) countSeen = count;
   });
   const jobs = $derived(jobViews(children, started, usage, sessionId => store.session(sessionId)));
   const runningCount = $derived(jobs.filter(isActiveJob).length);
@@ -89,7 +131,8 @@
   const hasOpenStep = (items: readonly PlanItem[]): boolean => items.some(item => item.status === "todo" || item.status === "doing" || item.status === "blocked" || hasOpenStep(item.children));
   /** The server's check-in tick runs every 15 minutes by default while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
   const checkIn = $derived.by(() => {
-    if (runningCount || hasOpenStep(board?.plan ?? [])) return checkInStatus(row?.checkIn, clock.now);
+    // Before the snapshot nothing says the chat is idle, so the row's check-in shows; the board panel reloads duties when this text changes.
+    if (!thread || runningCount || hasOpenStep(board?.plan ?? [])) return checkInStatus(row?.checkIn, clock.now);
     return { text: "Check-in paused, nothing open", on: false };
   });
 
@@ -222,8 +265,13 @@
   function onScroll(): void {
     if (!scroller) return;
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    if (!pinned && nearTop(scroller)) void earlier();
   }
   const hasState = $derived(thread !== null);
+  $effect(() => {
+    if (!hasState) return;
+    untrack(() => requestAnimationFrame(() => { if (performance.getEntriesByName("thread-switch:" + id, "mark").length) performance.measure("thread-paint:" + id, "thread-switch:" + id); }));
+  });
   $effect(() => {
     if (!hasState) return;
     untrack(() => {
@@ -243,6 +291,8 @@
     void feed;
     void typing;
     if (untrack(() => pinned)) void tick().then(scrollToBottom);
+    // A feed shorter than the view has no scroll to load earlier items with, so it draws them until it fills the view.
+    void tick().then(() => { if (scroller && scroller.scrollHeight <= scroller.clientHeight) void earlier(); });
   });
 
   /** Leaving the chat (another thread, or the tab going hidden) marks it read, so its row's dot clears. */
@@ -259,11 +309,15 @@
     if (!target || target.id !== id || !feed.length || !node) return;
     untrack(() => {
       pinned = false;
-      void tick().then(() => {
+      void (async () => {
+        // A link older than the loaded pages loads them until it is in them (contract: load older pages until the oldest is at or before it).
+        while (store.jump === target && (feed[0]?.at ?? 0) > target.at && thread?.older !== undefined && await store.loadOlder(id)) { /* next page */ }
+        showFrom(feed.findLastIndex(item => item.at <= target.at));
+        await tick();
         if (store.jump !== target) return;
         if (!revealMessage(node, target.at)) store.toast("That link points at a message this chat does not have.", "info");
         store.jump = null;
-      });
+      })();
     });
   });
   async function copyLink(at: number): Promise<void> {
@@ -276,17 +330,19 @@
    * "See reply", which scrolls to the first answer and on each further click to the next one.
    */
   const shownReply = new Map<string, number>();
-  function goToLine(line: string): void {
+  async function goToLine(line: string): Promise<void> {
     if (!scroller) return;
     pinned = false;
-    if (!revealLine(scroller, line)) store.toast("That message is not in this chat any more.", "info");
+    showFrom(keys.indexOf(line));
+    await tick();
+    if (scroller && !revealLine(scroller, line)) store.toast("That message is not in this chat any more.", "info");
   }
   function seeReply(item: Extract<ChatItem, { kind: "user" }>): void {
     const replies = item.replies ?? [];
     if (!replies.length) return;
     const next = (shownReply.get(item.id) ?? -1) + 1;
     shownReply.set(item.id, next % replies.length);
-    goToLine(replies[next % replies.length]!);
+    void goToLine(replies[next % replies.length]!);
   }
   /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply and Copy link. */
   let pressed = $state<{ anchor: HTMLElement; at: number; text: string } | null>(null);
@@ -294,11 +350,6 @@
   const closeMenu = () => { pressed = null; };
 
   const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
-  let loadingOlder = $state(false);
-  async function showOlder(): Promise<void> {
-    loadingOlder = true;
-    try { await store.loadOlder(id); } finally { loadingOlder = false; }
-  }
 </script>
 
 {#snippet actions(at: number, text: string)}
@@ -309,12 +360,12 @@
 {/snippet}
 
 {#snippet replyQuote(quote: ReplyQuote)}
-  <button type="button" class="quote reply-quote" aria-label="Show the message this answers" use:tooltip={"Show your message"} onclick={() => goToLine(quote.id)}>{ownerExcerpt(quote.text)}</button>
+  <button type="button" class="quote reply-quote" aria-label="Show the message this answers" use:tooltip={"Show your message"} onclick={() => void goToLine(quote.id)}>{ownerExcerpt(quote.text)}</button>
 {/snippet}
 
 {#snippet setup()}
+  <AccountChip threadId={id} model={thread?.info.model ? thread.info.model.id + " " + thread.info.model.name : rowModelId(row?.model)} />
   {#if thread}
-    <AccountChip threadId={id} model={thread.info.model ? thread.info.model.id + " " + thread.info.model.name : row?.model} />
     <ModelPicker label={modelLabel} {catalog} error={catalogError} current={thread.info.model} onopen={loadCatalog} onchoose={model => void chooseModel(model)}
       effort={thread.info.thinkingLevel} levels={thread.info.availableThinkingLevels} oneffort={chooseEffort} />
   {/if}
@@ -323,9 +374,9 @@
 {#snippet feedView()}
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
     <div class="column" bind:this={column}>
-      {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
-      {#each feed as item, index (item.id)}
-        {#if stampBefore(item, index)}<div class="stamp">{stamp(item.at)}</div>{/if}
+      {#if hasEarlier}<div class="older muted" aria-live="polite">{entry?.olderLoading ? "Loading earlier messages" : ""}</div>{/if}
+      {#each shown as item, index (item.id)}
+        {#if stampBefore(item, start + index)}<div class="stamp">{stamp(item.at)}</div>{/if}
         {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
           <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
         {:else if item.kind === "user"}
@@ -404,8 +455,24 @@
   </div>
 {/snippet}
 
+{#snippet chatPane()}
+  {#if !thread && entry?.error}
+    <div class="center">
+      <div class="card error-card">
+        <div class="error-title"><Icon name="alert" size={16} /> Could not open this chat</div>
+        <div class="muted">{entry.error}</div>
+        <button class="button" onclick={() => store.open(id)}>Retry</button>
+      </div>
+    </div>
+  {:else if !thread}
+    <div class="center muted"><span class="spinner"></span> Opening</div>
+  {:else}
+    {@render feedView()}
+  {/if}
+{/snippet}
+
 {#snippet boardView()}
-  <BoardPanel {id} {board} agents={row?.agents ?? EMPTY_AGENTS} now={minute} {checkIn} onjob={openStep} onagent={openAgent} {previewJob} apply={applyBoard} />
+  <BoardPanel {id} {board} agents={row?.agents ?? EMPTY_AGENTS} now={minute} {checkIn} settled={thread !== null && thread.board !== undefined} onjob={openStep} onagent={openAgent} {previewJob} apply={applyBoard} />
 {/snippet}
 
 <div class="chat">
@@ -437,47 +504,35 @@
     <div class="error-bar"><span>{entry.error}</span><button class="button small" onclick={() => store.open(id)}>Retry</button></div>
   {/if}
 
-  {#if !thread && entry?.error}
-    <div class="center">
-      <div class="card error-card">
-        <div class="error-title"><Icon name="alert" size={16} /> Could not open this chat</div>
-        <div class="muted">{entry.error}</div>
-        <button class="button" onclick={() => store.open(id)}>Retry</button>
-      </div>
-    </div>
-  {:else if !thread}
-    <div class="center muted"><span class="spinner"></span> Opening</div>
-  {:else}
-    <div class="body">
-      <div class="main">
-        {#if narrow}
-          <div class="switch" role="tablist" aria-label="Chat view">
-            <button type="button" role="tab" aria-selected={view === "chat"} class:on={view === "chat"} onclick={() => { view = "chat"; }}>Chat</button>
-            <button type="button" role="tab" aria-selected={view === "board"} class:on={view === "board"} onclick={() => { view = "board"; }}>Board{#if asks}<span class="dot" role="img" aria-label="{asks} waiting on you"></span>{/if}</button>
-          </div>
-          {#if view === "chat"}{@render feedView()}
-          {:else}<div class="pane">{@render boardView()}</div>{/if}
-        {:else}
-          {@render feedView()}
-        {/if}
-      </div>
-      {#if !narrow && ui.boardOpen}
-        <aside class="side" class:resizing aria-label="Board" bind:this={sideNode} style:width="{ui.boardWidth}px">
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-          <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
-            aria-valuemin={BOARD_MIN} aria-valuemax={boardMax()} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
-            onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}><span class="grip"><Icon name="grip" size={14} /></span></div>
-          <div class="pane">{@render boardView()}</div>
-        </aside>
-      {/if}
-      {#if drawerName !== null}
-        <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
-      {/if}
-      {#if planView}
-        <PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />
+  <div class="body">
+    <div class="main">
+      {#if narrow}
+        <div class="switch" role="tablist" aria-label="Chat view">
+          <button type="button" role="tab" aria-selected={view === "chat"} class:on={view === "chat"} onclick={() => { view = "chat"; }}>Chat</button>
+          <button type="button" role="tab" aria-selected={view === "board"} class:on={view === "board"} onclick={() => { view = "board"; }}>Board{#if asks}<span class="dot" role="img" aria-label="{asks} waiting on you"></span>{/if}</button>
+        </div>
+        {#if view === "chat"}{@render chatPane()}
+        {:else}<div class="pane">{@render boardView()}</div>{/if}
+      {:else}
+        {@render chatPane()}
       {/if}
     </div>
-  {/if}
+    {#if !narrow && ui.boardOpen}
+      <aside class="side" class:resizing aria-label="Board" bind:this={sideNode} style:width="{ui.boardWidth}px">
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
+          aria-valuemin={BOARD_MIN} aria-valuemax={boardMax()} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
+          onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}><span class="grip"><Icon name="grip" size={14} /></span></div>
+        <div class="pane">{@render boardView()}</div>
+      </aside>
+    {/if}
+    {#if drawerName !== null}
+      <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
+    {/if}
+    {#if planView}
+      <PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />
+    {/if}
+  </div>
   {#if lightbox}
     <Lightbox images={lightbox.images} index={lightbox.index} onclose={() => { lightbox = null; }} />
   {/if}
@@ -525,10 +580,10 @@
   .switch > button.on { background: var(--accent-soft); color: var(--accent-bold); font-weight: 600; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .dot.corner { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; }
-  .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
   .empty { padding: 48px 0; text-align: center; }
-  .older { align-self: center; margin: 4px 0; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: var(--text-muted); }
+  .older { align-self: center; min-height: 24px; padding: 4px 12px; font-size: 12.5px; }
   .stamp { align-self: center; margin: 10px 0 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }

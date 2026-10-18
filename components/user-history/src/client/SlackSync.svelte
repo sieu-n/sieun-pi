@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import SlackLogo from "./SlackLogo.svelte";
@@ -16,7 +17,8 @@
   const connected = $derived(view?.state === "on");
   const chatName = $derived(store.session(id)?.name ?? "");
   const tip = $derived(!connected ? "Connect Slack in Settings > Slack first" : link ? `In Slack as #${link.name}. Rename, open, or stop syncing` : "Connect to Slack: a channel for this chat");
-  $effect(() => { void id; void store.loadSlack(); });
+  /** Read once per page (store.start); a connect, rename or stop answers with the new view, so a chat switch asks for nothing. */
+  $effect(() => { if (store.slack === undefined) untrack(() => void store.loadSlack()); });
 
   const connect = (input: SlackConnectInput) => store.slackChat(id, { action: "connect", ...input });
   const rename = (name: string) => store.slackChat(id, { action: "rename", name });

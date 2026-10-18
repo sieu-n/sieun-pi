@@ -21,6 +21,21 @@ export function loadAccounts(id: string | null, options: { fresh?: boolean; mode
   return request;
 }
 
+/** A row's model (`<provider>/<id>`) as the model id the thread's info names, so the chip asks with one key before and after the snapshot. */
+export const rowModelId = (model: string | undefined): string | undefined => model === undefined ? undefined : model.slice(model.indexOf("/") + 1);
+
+/**
+ * The last answer for the thread and model at any age, else the thread's newest answer for another model (the feed judges a thread before its
+ * model is known), so a switch back paints the chip at once while `loadAccounts` refreshes it.
+ */
+export function cachedAccounts(id: string | null, model: string | null = null): AccountsView | undefined {
+  const exact = cache.get(key(id, model));
+  if (exact) return exact.view;
+  let newest: { at: number; view: AccountsView } | undefined;
+  for (const [name, entry] of cache) if (name.startsWith(key(id)) && (!newest || entry.at > newest.at)) newest = entry;
+  return newest?.view;
+}
+
 export function rememberAccounts(id: string | null, view: AccountsView, model: string | null = null): void {
   cache.set(key(id, model), { at: Date.now(), view });
 }

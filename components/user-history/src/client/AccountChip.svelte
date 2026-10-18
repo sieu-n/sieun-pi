@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { store } from "./store.svelte.ts";
-  import { loadAccounts, PROVIDER_LABEL, reasonText, resetText, resolvedAccount, threadProvider, windowLabel } from "./accounts.ts";
+  import { pushedAccounts } from "./thread-side.svelte.ts";
+  import { cachedAccounts, loadAccounts, PROVIDER_LABEL, reasonText, resetText, resolvedAccount, threadProvider, windowLabel } from "./accounts.ts";
   import type { AccountsView, NewChatAccount } from "../shared/types.ts";
   import UsageMeters from "./UsageMeters.svelte";
   import AccountPicker from "./AccountPicker.svelte";
@@ -36,8 +38,12 @@
   $effect(() => {
     const id = threadId;
     const forModel = modelId;
+    void pushedAccounts.revision;
     let cancelled = false;
     failed = false;
+    view = cachedAccounts(id, forModel) ?? view;
+    // The thread feed pushes this view after a new subscription (store.side); the chip asks only when none is coming.
+    if (id && untrack(() => pushedAccounts.isComing(id))) return;
     loadAccounts(id, { model: forModel }).then(result => { if (!cancelled) view = result; }, () => { if (!cancelled) failed = true; });
     return () => { cancelled = true; };
   });

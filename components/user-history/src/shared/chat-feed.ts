@@ -1,3 +1,4 @@
+import { messageKey } from "./message-key.ts";
 import { isPromptCustom, messageText, toolResults, triggerSummary } from "./turns.ts";
 import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
 
@@ -207,7 +208,7 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
   const told = toldTurns(messages, refused);
   let current: "reply" | "notes" = "reply";
   messages.forEach((message, index) => {
-    const id = "m" + index;
+    const id = lineId(messages, index);
     const { starter, turn } = track(message);
     current = starter === "owner" && !told.has(turn) ? "reply" : "notes";
     switch (message.role) {
@@ -230,6 +231,15 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
     }
   });
   return { lines, answer: links.answer, current };
+}
+
+/**
+ * A message's feed line id, `m<timestamp>.<n>` from its `messageKey`: an index would change when an older page is put in front, and every keyed
+ * bubble of the feed would draw again.
+ */
+export function lineId(messages: readonly ThreadMessage[], index: number): string {
+  const { at, n } = messageKey(messages, index);
+  return `m${at}.${n}`;
 }
 
 /**

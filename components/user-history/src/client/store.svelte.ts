@@ -2,11 +2,15 @@ import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
 import { buildReload, onLeave } from "./build-reload.ts";
 import { retryFeeds } from "./feeds.ts";
-import { messageKey } from "../shared/message-key.ts";
-import { prependOlder } from "./thread-pages.ts";
 import { applyThreadEvent, threadStateFromSnapshot } from "../shared/thread-state.ts";
+import { messageKey } from "../shared/message-key.ts";
+import { rememberAccounts } from "./accounts.ts";
+import { dutiesFeed } from "./duties.svelte.ts";
+import { childUsage, pushedAccounts } from "./thread-side.svelte.ts";
+import type { ThreadSide } from "../shared/thread-side.ts";
+import { keepOlder, newestPage, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
-import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
+import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
@@ -20,7 +24,15 @@ export interface PendingChat { cwd: string; host?: string; name?: string; kind?:
 const NEW_ROW_WAIT_MS = 3000;
 
 /** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
-type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
+/**
+ * `newest` is where the newest page of the last snapshot starts, so a thread left alone can drop the older pages loaded since. `olderLoading`
+ * is set while an older page is on its way.
+ */
+type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number;
+  newest: NewestPage | null; olderLoading: boolean };
+
+/** The next frame, or the next task in a hidden tab, which draws no frames. */
+const afterPaint = (run: () => void): void => { if (document.visibilityState === "hidden") setTimeout(run, 0); else requestAnimationFrame(run); };
 
 function bootJump(): { id: string; at: number } | null {
   const target = pageTarget();
@@ -59,12 +71,15 @@ class Store {
   /** The Slack bridge as the chat header and the new-chat screen show it; null when this instance runs none, undefined until read. */
   slack = $state.raw<SlackView | null | undefined>(undefined);
   private toastId = 0;
+  /** Threads with a read mark on its way: one in flight per thread (10-18: each switch sent it twice, and each took 10 to 27 s). */
+  private reading = new Set<string>();
   private sessionsStop: (() => void) | null = null;
 
   start(): void {
     void this.loadSlack();
     this.readHash();
     window.addEventListener("hashchange", () => this.readHash());
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (this.selectedId) this.seenAt.set(this.selectedId, this.hides); this.trimHidden(); } });
     this.sessionsStop = api.sessionsStream(event => {
       this.sessions = event.sessions;
       this.tags = event.tags;
@@ -99,8 +114,19 @@ class Store {
     const target = pageTarget();
     const search = searchFor(target?.id ?? null, location.search);
     if (search !== location.search) history.replaceState(history.state, "", location.pathname + search + location.hash);
-    this.selectedId = target?.id ?? null;
+    this.choose(target?.id ?? null);
     this.jump = target && target.at !== null ? { id: target.id, at: target.at } : null;
+  }
+
+  /**
+   * Selects a thread and opens it in the same moment, before the view mounts, so the view finds the feed's side frames expected and asks for
+   * none of them itself.
+   */
+  private choose(id: string | null): void {
+    if (this.selectedId) this.seenAt.set(this.selectedId, this.hides);
+    if (id && id !== this.selectedId) { performance.clearMarks("thread-switch:" + id); performance.mark("thread-switch:" + id); }
+    if (id) this.open(id);
+    this.selectedId = id;
   }
 
   /** Opens a thread, and with `at` lands on the message with that `timestamp` once the thread shows. */
@@ -108,7 +134,7 @@ class Store {
     const next = id ? hashFor(id, at) : "";
     const search = searchFor(id, location.search);
     if (location.hash !== next || location.search !== search) history.pushState(null, "", location.pathname + search + next);
-    this.selectedId = id;
+    this.choose(id);
     this.jump = id && at !== null ? { id, at } : null;
   }
 
@@ -139,10 +165,15 @@ class Store {
   thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
 
   private patch(id: string, change: Partial<ThreadEntry>): void {
-    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0 };
+    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0, newest: null, olderLoading: false };
     this.threads = { ...this.threads, [id]: { ...current, ...change } };
   }
 
+  /**
+   * Opens a thread. A new subscription brings the snapshot and, pushed right after it, everything the view draws beside the messages (job
+   * costs, a chat's duties, the account chip), so the view sends no request of its own. On 10-18 a switch sent the account and duties requests
+   * only after the snapshot landed, three round trips from Korea before the view was whole.
+   */
   open(id: string): void {
     const entry = this.threads[id];
     if (entry?.close && !entry.error) return;
@@ -151,26 +182,74 @@ class Store {
     if (entry?.error) retryFeeds();
     this.patch(id, { loading: true, error: null });
     performance.mark("thread-open:" + id);
+    // A subscribe answers a preview snapshot and the full newest page right behind it, often in one socket read: the preview paints first,
+    // and the full page and every event after it wait for the next frame, in order.
+    let painting = false;
+    let held: ThreadEvent[] | null = null;
     const close = api.threadStream(id, event => {
+      if (held) { held.push(event); return; }
+      if (event.type === "snapshot" && painting) {
+        held = [event];
+        afterPaint(() => { const events = held ?? []; held = null; for (const next of events) apply(next); });
+        return;
+      }
+      if (event.type === "snapshot") { painting = true; afterPaint(() => { painting = false; }); }
+      apply(event);
+    }, () => {
+      this.dropSide(id);
+      const current = this.threads[id];
+      if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
+    }, side => this.side(id, side));
+    const apply = (event: ThreadEvent) => {
       const current = this.threads[id];
       if (!current) return;
       if (event.type === "snapshot") {
-        performance.measure("thread-snapshot:" + id, "thread-open:" + id);
-        this.patch(id, { state: applyThreadEvent(current.state ?? threadStateFromSnapshot(event.snapshot), event), loading: false, error: null });
+        if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
+        const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
+        this.patch(id, { state: keepOlder(current.state, page), newest: newestPage(page), loading: false, error: null });
       }
-      else if (event.type === "status" && event.connection === "closed" && event.error) this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
+      else if (event.type === "status" && event.connection === "closed" && event.error) {
+        this.dropSide(id);
+        this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
+      }
       else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
-    }, () => {
-      const current = this.threads[id];
-      if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
-    });
+    };
+    this.expectSide(id);
     this.patch(id, { close });
   }
 
+  /** What the feed pushes beside a thread's messages after a new subscription: job costs, a chat's duties and the account chip's view. */
+  private side(id: string, side: ThreadSide): void {
+    if (side.childUsage) childUsage.set(id, side.childUsage);
+    if (side.duties) dutiesFeed.set(id, side.duties);
+    if (side.accounts) { rememberAccounts(id, side.accounts.view, side.accounts.model); pushedAccounts.landed(id); }
+  }
+
+  /** A new subscription: the view asks for none of what the feed pushes beside the messages, so the first paint costs one round trip. */
+  private expectSide(id: string): void {
+    childUsage.expect(id);
+    const row = this.session(id);
+    if (!row || row.chat) dutiesFeed.expect(id);
+    pushedAccounts.expect(id);
+  }
+
+  /** The subscription ended: what it did not push yet is asked for by the view. */
+  private dropSide(id: string): void {
+    childUsage.drop(id);
+    dutiesFeed.drop(id);
+    pushedAccounts.landed(id);
+  }
+
+  /**
+   * Leaving a thread. A chat keeps its subscription, so switching back paints the state it holds and needs no new snapshot (10-18: each
+   * switch back waited 2.5 to 16 s for one under a busy server). An open tab never holds a chat's session attached (chat-threads.ts
+   * `resting`). Any other thread closes it, since a listener keeps a plain thread attached on the server (`sweep`).
+   */
   release(id: string): void {
     const entry = this.threads[id];
-    if (!entry?.close) return;
+    if (!entry?.close || this.session(id)?.chat) return;
     entry.close();
+    this.dropSide(id);
     this.patch(id, { close: null });
   }
 
@@ -181,12 +260,12 @@ class Store {
     return api.part(id, messageKey(messages, index), part);
   }
 
-  private olderLoading = new Set<string>();
   /** The page before the oldest loaded message, put in front of it; true when it was. A session file that changed under the cursor (409) opens the thread again. */
   async loadOlder(id: string): Promise<boolean> {
-    const cursor = this.threads[id]?.state?.older;
-    if (cursor === undefined || this.olderLoading.has(id)) return false;
-    this.olderLoading.add(id);
+    const entry = this.threads[id];
+    const cursor = entry?.state?.older;
+    if (!entry || cursor === undefined || entry.olderLoading) return false;
+    this.patch(id, { olderLoading: true });
     try {
       const page = await api.olderPage(id, cursor);
       const current = this.threads[id];
@@ -197,8 +276,26 @@ class Store {
       if (error instanceof ApiError && error.status === 409) { this.threads[id]?.close?.(); this.patch(id, { close: null }); this.open(id); }
       else this.toast(error instanceof Error ? error.message : String(error));
       return false;
-    } finally { this.olderLoading.delete(id); }
+    } finally { this.patch(id, { olderLoading: false }); }
   }
+
+  /**
+   * A thread the owner did not open between the last two times the tab went hidden drops its older pages, so threads he scrolled through
+   * once do not stay in memory; a thread he goes back to keeps them. Its newest page and live state stay.
+   */
+  private trimHidden(): void {
+    this.hides++;
+    let threads = this.threads;
+    for (const [id, entry] of Object.entries(threads)) {
+      if (id === this.selectedId || !entry.state || this.hides - (this.seenAt.get(id) ?? 0) < 2) continue;
+      const state = trimToNewest(entry.state, entry.newest);
+      if (state !== entry.state) threads = { ...threads, [id]: { ...entry, state } };
+    }
+    if (threads !== this.threads) this.threads = threads;
+  }
+  private hides = 0;
+  /** The `hides` count when each thread was last open. */
+  private seenAt = new Map<string, number>();
 
   warm(id: string): void {
     if (this.threads[id]?.state) return;
@@ -215,8 +312,10 @@ class Store {
     if (!entry?.state || !row) return;
     const activity = Date.parse(row.lastActivityAt ?? "") || 0;
     if (!row.unread && entry.lastReadAt > 0 && entry.lastReadAt >= activity) return;
+    if (this.reading.has(id)) return;
+    this.reading.add(id);
     this.patch(id, { lastReadAt: Date.now() });
-    void api.read(id).catch(() => {});
+    void api.read(id).catch(() => {}).finally(() => this.reading.delete(id));
   }
 
   /** `ttl` null keeps the toast until its action runs or it is dismissed. */
@@ -276,8 +375,12 @@ class Store {
     this.pendingSends = left.length ? { ...rest, [id]: left } : rest;
   }
 
-  async loadSlack(): Promise<void> {
-    try { this.slack = await api.slack(); } catch { /* the header keeps its last view; Settings shows the error */ }
+  private slackLoad: Promise<void> | null = null;
+  /** One read in flight: the page start and a chat header that mounts before it answers share it. */
+  loadSlack(): Promise<void> {
+    this.slackLoad ??= api.slack().then(view => { this.slack = view; }, () => { /* the header keeps its last view; Settings shows the error */ })
+      .finally(() => { this.slackLoad = null; });
+    return this.slackLoad;
   }
 
   /** A chat's Slack dialog action (connect, rename, stop); false when the server refused (the error is a toast). */
