@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, nextState, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type HandData, type RefState, auditSql, classifyConfig, groupAudit, handExecs, isSessionProcess, nextState, oneOffs, parseRegistry, report } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -97,4 +97,16 @@ test("the prod B2 inventory exec is its declared unit, and the hand-run lane wri
   const f17 = reg.faults.find(fault => fault.id === "F17")!;
   assert.ok(lanes.every(lane => new RegExp(f17.match.box_exec_regex!).test(lane.command)));
   assert.ok(f17.designs.includes("01a11bd7-072f-7591-ad1d-f123c276cde5/p145"));
+});
+
+// Guards the d3 run after promote 12 on 10-18: the CI reds job's gate script copy read as 3 session writers, and an exited container as a hand-run one.
+test("a CI gate or test script in a session folder and an exited container are not hand-run processes", () => {
+  const session = "/home/sieun/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/18";
+  assert.equal(isSessionProcess(`bash ${session}/2110-verify-dev-39124241540-reds/data/metal/tree/apps/infra/metal/gates/ci-multirev-forward-tests.sh`), false);
+  assert.equal(isSessionProcess(`python3 ${session}/0900-x/data/test_controls.py`), false);
+  assert.equal(isSessionProcess(`node ${session}/0900-x/data/watch.test.mjs`), false);
+  assert.equal(isSessionProcess(`python3 ${session}/0900-x/data/watch_proxy.py --act`), true);
+  const left = oneOffs([{ name: "posts-backfill-handrun", status: "exited", service: "" }, { name: "virev-prod-remote-gw", status: "running", service: "" },
+    { name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }]);
+  assert.deepEqual(left.map(container => container.name), ["virev-prod-remote-gw"]);
 });

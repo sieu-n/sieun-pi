@@ -184,7 +184,8 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   return { containers, execs };
 }
 
-export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service);
+/** Running containers with no compose service; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
+export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service && container.status === "running");
 /** A one-shot script piped in on stdin (`python -`, `bash -s`), the way session tools read or set controls; session_loops_writing counts those tools. */
 const STDIN_SCRIPT = /\s(?:-|-s)$/;
 /** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
@@ -195,8 +196,16 @@ export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[]
 export function scriptOf(command: string): string | null {
   return command.split(/\s+/).find(part => /\.(?:py|mjs|js|ts|sh)$/.test(part)) ?? null;
 }
-export const isSessionProcess = (command: string): boolean =>
-  /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/bin\/)?(?:ba|z)?sh -c\b|^tar\b/.test(command) && scriptOf(command) !== null;
+/**
+ * A CI gate or test script: in a gates, tests or ci folder, or named ci-*, test_* or *.test.*. It writes to a test database, not prod or
+ * staging: on 10-18 the CI reds job's copy of apps/infra/metal/gates/ci-multirev-forward-tests.sh counted as 3 session writers.
+ */
+export const isCiOrTest = (script: string): boolean =>
+  /\/(?:gates|tests?|__tests__|ci)\/[^/]+$|\/(?:ci|tests?)[-_][^/]*$|\.(?:test|spec)\.\w+$|_tests?\.\w+$/.test(script);
+export const isSessionProcess = (command: string): boolean => {
+  const script = scriptOf(command);
+  return /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/bin\/)?(?:ba|z)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
+};
 
 export interface HandData {
   now: number;
