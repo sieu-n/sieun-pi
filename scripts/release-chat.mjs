@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,8 @@ or on Linux restarts the systemd user unit sieun-pi-chat.service. When the relea
 ~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 One release runs at a time: a second command waits for the first one's lock, then checks again.
 A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
-The build runs npm run typecheck and npm test of components/user-history inside the release before the flip.
+The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, with PATH and the locale from
+this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A release that ends while a newer one waits for the lock leaves the restart to it (restart.owed), so releases that pile up restart once.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback.`;
@@ -50,9 +51,9 @@ function git(repo, args) {
 
 const log = message => process.stderr.write(`release-chat: ${message}\n`);
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = gitEnv) {
   log(`${command} ${args.join(" ")} (in ${cwd})`);
-  const result = spawnSync(command, args, { cwd, stdio: ["ignore", process.stderr, process.stderr], env: gitEnv });
+  const result = spawnSync(command, args, { cwd, stdio: ["ignore", process.stderr, process.stderr], env });
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed (${result.signal ?? result.status})`);
 }
 
@@ -124,24 +125,45 @@ async function archive(repo, sha, into) {
   if (codes.some(code => code !== 0)) throw new Error(`git archive ${sha} | tar -x failed (${codes.join(", ")})`);
 }
 
+const CHECK_PASSES = /^(PATH|LANG|LANGUAGE|LC_[A-Z]+|TZ|TERM|USER|LOGNAME|SHELL)$/;
+const CHECK_DIRS = { HOME: "home", TMPDIR: "tmp", XDG_CONFIG_HOME: "config", XDG_DATA_HOME: "data", XDG_CACHE_HOME: "cache", XDG_STATE_HOME: "state", XDG_RUNTIME_DIR: "run" };
+
+/**
+ * The environment of the release's typecheck and tests: PATH and the locale from this process, and a HOME, TMPDIR and XDG dirs of their own under
+ * `root`, a fresh folder under /tmp rather than the caller's TMPDIR, kept short for the tests' unix sockets. A release started from an agent's shell carries its worker token, supervisor socket, session leases, RLM session dirs and API keys, and
+ * on 10-18 at 10:42Z the tests of release 39680d859 ran with all of them and the real HOME. The restart after the build keeps this process's env.
+ */
+function checkEnv(root) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => CHECK_PASSES.test(key)));
+  for (const [key, name] of Object.entries(CHECK_DIRS)) {
+    env[key] = join(root, name);
+    mkdirSync(env[key], { mode: 0o700 });
+  }
+  return { ...env, npm_config_update_notifier: "false" };
+}
+
 /** Builds release-<sha7> in a scratch folder and renames it into place, so a release folder that exists is complete. */
 async function build(options, home, sha, dir) {
   const scratch = join(home, `.building-${basename(dir)}-${process.pid}`);
   rmSync(scratch, { recursive: true, force: true });
   mkdirSync(scratch, { recursive: true });
+  const checks = mkdtempSync("/tmp/release-chat-");
   try {
     log(`git archive ${sha.slice(0, 7)} into ${scratch}`);
     await archive(options.repo, sha, scratch);
     symlinkSync(join(options.repo, "node_modules"), join(scratch, "node_modules"));
     symlinkSync(join(options.repo, "components/user-history/node_modules"), join(scratch, "components/user-history/node_modules"));
     const app = join(scratch, "components/user-history");
-    run("npm", ["run", "--silent", "typecheck"], app);
-    run("npm", ["run", "--silent", "test"], app);
+    const env = checkEnv(checks);
+    run("npm", ["run", "--silent", "typecheck"], app, env);
+    run("npm", ["run", "--silent", "test"], app, env);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
     renameSync(scratch, dir);
   } catch (error) {
     rmSync(scratch, { recursive: true, force: true });
     throw error;
+  } finally {
+    rmSync(checks, { recursive: true, force: true });
   }
 }
 
