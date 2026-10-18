@@ -540,7 +540,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const analytics = backend.usage;
           if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
           const query = url.searchParams;
-          if (route === "api/usage/summary") { json(res, 200, await analytics.summary()); return; }
           if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")), parseMetric(query.get("metric")))); return; }
           if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
         }
