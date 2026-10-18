@@ -1,4 +1,4 @@
-import { open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type JobFact, POOL_WAIT } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
@@ -87,11 +87,29 @@ async function tailOf(file: string): Promise<string> {
   } finally { await handle.close(); }
 }
 
-/** Each thread fact that is not working and whose transcript ends on a pool wait gets that wait as its error, which `poolWait` reads. */
-export async function withThreadPoolWaits(facts: readonly JobFact[], sessionsDir: string): Promise<JobFact[]> {
+/**
+ * Each fact of a thread or a sub-job of the chat whose transcript ends on a pool wait gets that wait as its error, which `poolWait` reads,
+ * whatever its state: a thread retrying its turn and a sub-job whose parent waits count as working. At 15:25, 15:40 and 15:55Z on 10-18 the
+ * check-in restarted 8 such sessions on release-e73e551, every one ending on "this session waits for its slot", because this read skipped
+ * working facts and every sub-job. A thread's transcript is `<agentDir>/sessions/<id>.jsonl`, a sub-job's `<agentDir>/sessions/<session id>.jsonl`
+ * when rlm.create_session started it, or `<agentDir>/session-artifacts/<chat>/sub-*\/<session id>.jsonl`.
+ */
+export async function withThreadPoolWaits(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined): Promise<JobFact[]> {
+  const artifacts = join(agentDir, "session-artifacts", chat);
+  const subs = (await readdir(artifacts).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
+  const tail = async (file: string): Promise<string> => tailOf(file).catch(() => "");
   return Promise.all(facts.map(async fact => {
-    if (!fact.key.startsWith("thread:") || fact.state === "working") return fact;
-    const wait = lastPoolWait(await tailOf(join(sessionsDir, `${fact.key.slice("thread:".length)}.jsonl`)).catch(() => ""));
+    if (fact.error !== undefined && POOL_WAIT.test(fact.error)) return fact;
+    let text = "";
+    if (fact.key.startsWith("thread:")) text = await tail(join(agentDir, "sessions", `${fact.key.slice("thread:".length)}.jsonl`));
+    else {
+      const session = fact.sessionId ?? sessionOf(fact.key);
+      if (!session) return fact;
+      // A job started with rlm.create_session is a root under sessions/; a spawned one sits under its chat's session-artifacts.
+      text = await tail(join(agentDir, "sessions", `${session}.jsonl`));
+      for (const sub of subs) { if (text) break; text = await tail(join(artifacts, sub, `${session}.jsonl`)); }
+    }
+    const wait = lastPoolWait(text);
     return wait ? { ...fact, error: wait } : fact;
   }));
 }

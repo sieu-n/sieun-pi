@@ -1274,9 +1274,11 @@ export class Chats {
     const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
-    const pooled = await withThreadPoolWaits(threads, join(this.source.home ?? homedir(), ".prime", "agent", "sessions"));
+    const pooled = await withThreadPoolWaits(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key));
     const facts = withQueuePlaces(pooled.map(fact => {
-      const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
+      // A thread's report to the chat counts like a job's: at 16:10Z on 10-18 the check-in restarted "wiki memory moves 10-18b" for "nothing
+      // moved" one minute after its 16:09Z report ("243 repo-fact memories are deleted ... 127 wiki-dream skill commits").
+      const lastMessage = said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
