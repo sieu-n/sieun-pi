@@ -117,7 +117,7 @@ export function resolutionSentence(provider: PoolProvider, now = Date.now()): st
 export const POOL_PRIORITY_LABEL: Record<PoolPriority, string> = { high: "High priority", normal: "Normal priority", low: "Low priority" };
 /** Why a thread has its pool class, for the tooltip on it. */
 export const POOL_PRIORITY_HINT = "The pool admits high threads first and holds low ones for the emptiest accounts. A chat is high, a job takes its chat's priority, " +
-  "and a duty or check-in run is low. The thread's priority label overrides it: High is high, Medium is normal, Low is low.";
+  "and a check-in job takes its chat's priority while every other duty run is low. The thread's priority label overrides it: High is high, Medium is normal, Low is low.";
 
 /** "3h 46m", "2d 5h", "12m", "<1m". */
 export function span(ms: number): string {

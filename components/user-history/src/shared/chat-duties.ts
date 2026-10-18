@@ -112,7 +112,7 @@ export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metri
  */
 export interface DutyView {
   duty: DutyCard; builtin?: "checkin"; schedule: DutySchedule; paused: boolean; nextAt: number | null; running: boolean; runs: DutyRunRecord[];
-  /** The chat's pool class from its sidebar label (`chatPoolPriority`): it picks the duty's morning band. The duty job itself always runs low. */
+  /** The chat's pool class from its sidebar label (`chatPoolPriority`): it picks the duty's morning band. Its duty job runs low, and a check-in job in this class. */
   priority: PoolPriority;
 }
 

@@ -322,8 +322,8 @@ export async function savedChat(file: string): Promise<{ name: string; cwd: stri
  */
 export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(job: DutyJobRef): Promise<void> }; rows: () => Promise<readonly SessionRow[]>;
   registry: JobRegistry; board: (chatId: string) => string;
-  /** Runs after the job is registered and before its brief, so its first request already carries its pool class (low). */
-  started?: (id: string) => Promise<void>;
+  /** Runs after the job is registered and before its brief, so its first request already carries its pool class (`dutyJobPriority`). */
+  started?: (id: string, chat: DutyChat, name: string) => Promise<void>;
   /**
    * Runs before the brief of a job whose run the turn queue admitted under its duty key, so the job's first turn takes that place and does not
    * queue again behind every turn that asked meanwhile. On 10-15 a duty key waited 1,604 s and then the d4 job's own first turn 2,083 s more
@@ -404,7 +404,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const { id, name } = await createOrAdopt(chat, planned, since);
       try {
         await input.registry.add([id], chat.name, chat.id);
-        await input.started?.(id);
+        await input.started?.(id, chat, name);
         if (admitted) await input.handoff?.(id).catch(error => input.log?.(`duty job ${name}: hand its queue place over: ${reason(error)}`));
         await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
       } catch (error) {

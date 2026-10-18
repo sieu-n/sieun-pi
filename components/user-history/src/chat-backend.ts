@@ -17,7 +17,7 @@ import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
-import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
+import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
@@ -181,7 +181,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
-    started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) });
+    started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))),
+    handoff: id => markOwnerTurn(id) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...scratch ? { tickMs: 0 } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: async (id, item) => {
