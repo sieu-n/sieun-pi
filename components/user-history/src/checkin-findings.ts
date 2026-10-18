@@ -41,7 +41,7 @@ export const looseGoalLine = (goal: PlanItem): string => goal.target
     "its number, or close it if its work shipped"
   : `${goal.id} ${quote(goal.text)} is a top-level item with no steps: move it under the goal it belongs to with plan_update parent, give it ` +
     "steps, or close it if its work shipped";
-export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.length} open goals, the limit is ${BOARD_LIMITS.openGoals}: fold goals of one area under one ` +
+export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.length} open goals, over the target of ${BOARD_LIMITS.openGoals}: fold goals of one area under one ` +
   `area goal (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")})`;
 
 /**

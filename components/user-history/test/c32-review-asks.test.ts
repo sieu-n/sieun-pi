@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, stepSig } from "../src/chat-checkin.ts";
 import { readyReviews } from "../src/checkin-steps.ts";
-import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan } from "../src/shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, nextIds, parseBoardOps, renderOpenPlan } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 // c32, repeated by the owner 10-14 01:42Z: "is any other tabs ready for review? keep listing them in FOR YOU with the links i need to check."
@@ -14,11 +14,15 @@ function run(board: ChatBoard, ops: unknown[], actor: BoardActor = "agent"): Cha
   for (const op of parseBoardOps(ops)) board = applyBoardOp(board, op as BoardOp, actor, T0, nextIds(board)).board;
   return board;
 }
-const refused = (board: ChatBoard, ops: unknown[], pattern: RegExp): void =>
-  assert.throws(() => run(board, ops), error => error instanceof BoardError && error.kind === "invalid" && pattern.test(error.message), JSON.stringify(ops));
+/** The ops are saved, and the last one's summary carries a flag that matches `pattern` (c32 is a soft rule, owner 10-18). */
+function flagged(board: ChatBoard, ops: unknown[], pattern: RegExp): void {
+  let summary = "";
+  for (const op of parseBoardOps(ops)) ({ board, summary } = applyBoardOp(board, op as BoardOp, "agent", T0, nextIds(board)));
+  assert.match(summary.split("\n").slice(1).join("\n"), pattern, JSON.stringify(ops));
+}
 const STAGING = "http://localhost:5180/app/connections?line=staging";
 
-test("c32: a todo that asks the owner to review, look at or pick something needs a link", () => {
+test("c32: a todo that asks the owner to review, look at or pick something with no link is flagged", () => {
   const board = emptyBoard(T0);
   for (const text of [
     "Look at the new Connections on Staging and say if it's good or what to change.",
@@ -26,7 +30,7 @@ test("c32: a todo that asks the owner to review, look at or pick something needs
     "Review Email on Staging and say good or what to change.",
     "Take a look at the list app and say what to change.",
     "Choose the inbox you like best.",
-  ]) refused(board, [{ op: "todo_add", text, choices: ["Good", "Needs changes"] }], /review, look at or pick.*links \[\{label, target\}\].*\(c32\)/s);
+  ]) flagged(board, [{ op: "todo_add", text, choices: ["Good", "Needs changes"] }], /review, look at or pick.*links \[\{label, target\}\].*\(c32\)/s);
 
   const linked = run(board, [{ op: "todo_add", text: "Look at the new Connections on Staging and say if it's good or what to change.",
     links: [{ label: "Connections on Staging", target: STAGING }], choices: ["Good", "Needs changes"] }]);
@@ -43,22 +47,22 @@ test("c32: a todo that asks the owner to review, look at or pick something needs
   assert.equal(run(board, [{ op: "todo_add", text: "Pick one of the Home versions." }], "owner").todos.length, 1, "the owner's own todo is his");
 });
 
-test("c32: a todo_update keeps the link rule, and links can be set or cleared on a todo", () => {
+test("c32: a todo_update keeps the link flag, and links can be set or cleared on a todo", () => {
   const board = run(emptyBoard(T0), [{ op: "todo_add", text: "Are the Staging pages ready for you this week?", choices: ["Yes", "Not yet"] }]);
-  refused(board, [{ op: "todo_update", id: "t1", text: "Look at the Staging Connections page and say good or what to change." }], /\(c32\)/);
+  flagged(board, [{ op: "todo_update", id: "t1", text: "Look at the Staging Connections page and say good or what to change." }], /\(c32\)/);
   const set = run(board, [{ op: "todo_update", id: "t1", text: "Look at the Staging Connections page and say good or what to change.", links: [{ label: "Connections", target: STAGING }] }]);
   assert.equal(set.todos[0]!.links!.length, 1);
-  refused(set, [{ op: "todo_update", id: "t1", links: [] }], /review, look at or pick/);
+  flagged(set, [{ op: "todo_update", id: "t1", links: [] }], /review, look at or pick/);
   const dismissed = run(run(emptyBoard(T0), [{ op: "todo_add", text: "Pick one.", links: [{ label: "x", target: STAGING }] }]), [{ op: "todo_update", id: "t1", done: true }]);
   assert.equal(dismissed.todos[0]!.done, true, "dismissing an ask is never refused");
 });
 
-test("c32: For you text in plain words; our internal names are refused with the fix", () => {
+test("c32: For you text in plain words; our internal names are flagged with the fix", () => {
   const board = emptyBoard(T0);
-  refused(board, [{ op: "todo_add", text: "Your temporary metal CI slots need the key lock first: buy GitHub Pro, then say go.", choices: ["Go", "Not yet"] }],
+  flagged(board, [{ op: "todo_add", text: "Your temporary metal CI slots need the key lock first: buy GitHub Pro, then say go.", choices: ["Go", "Not yet"] }],
     /uses "key lock".*plain words \(c32\)/s);
-  refused(board, [{ op: "todo_add", text: "The fix waits for the probe slots and the land flow. Is that ok with you?", choices: ["Yes", "No"] }], /"probe slots", "land flow"/);
-  refused(board, [{ op: "todo_add", text: "Should the check-in job fan out the duty fixes?", choices: ["Yes", "No"] }], /"check-in job".*"fan out"|"fan out".*"check-in job"/);
+  flagged(board, [{ op: "todo_add", text: "The fix waits for the probe slots and the land flow. Is that ok with you?", choices: ["Yes", "No"] }], /"probe slots", "land flow"/);
+  flagged(board, [{ op: "todo_add", text: "Should the check-in job fan out the duty fixes?", choices: ["Yes", "No"] }], /"check-in job".*"fan out"|"fan out".*"check-in job"/);
   for (const text of [
     "Look at the new Connections on Staging and say if it's good or what to change.",
     "Save a card on the Virev Internal org at api.virev.ai/settings/billing so the daily check can run.",

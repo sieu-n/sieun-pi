@@ -13,34 +13,35 @@ const definition = (metrics: unknown[]) => ({ name: "Chat system", ownerWords: "
   metrics, schedule: { kind: "daily", at: "07:00" }, precheck: { command: ["node", "-e", "0"], cwd: tmpdir() } });
 const metric = (key: string, headline = false) => ({ key, label: `Count of ${key.replace(/_/g, " ")}`, op: "<=", target: 0, ...(headline ? { headline: true } : {}) });
 
-test("a stored 38-metric duty (Chat system, 10-15) is judged on its headline plus the next 3 metrics, and its summary asks for a rework", () => {
+test("a stored 38-metric duty (Chat system, 10-15) is judged on all 38 metrics, headline first, and its summary asks for a rework", () => {
   const { duty, output, recordedVerdict } = fixture.chatSystem;
   assert.equal(duty.metrics.length, 38);
   assert.equal(recordedVerdict, "missed");
   const counted = verdictMetrics(duty.metrics).map(entry => entry.key);
-  assert.deepEqual(counted, ["end_state_pct", "stuck_steps", "corrections", "repeat_corrections"]);
+  assert.equal(counted.length, 38, "the shape is a soft target: no metric drops out of the verdict");
+  assert.equal(counted[0], "end_state_pct");
   const judged = judge(duty.metrics, output);
   assert.equal(judged.verdict, "missed");
-  assert.deepEqual(Object.keys(judged.metrics), counted, "the other 34 numbers stay in the precheck output");
-  assert.equal(judged.summary, "end_state_pct 69.1% (target at least 100%), stuck_steps 55 (target at most 0), corrections 3 (target at most 1), " +
-    "repeat_corrections 1 (target at most 0); this duty is over the shape limit (38 metrics, 1 headline), so the verdict counts only end_state_pct, " +
-    "stuck_steps, corrections, repeat_corrections; tell the chat to rework it with scripts/duties/add.ts: keep the one number the owner would ask about " +
-    'as the headline ("headline": true), keep up to 3 supporting numbers he can read, and leave the rest in the precheck output, where the run detail shows them');
-  const onTarget = judge(duty.metrics, { metrics: { ...output.metrics, end_state_pct: 100, stuck_steps: 0, corrections: 1, repeat_corrections: 0 } });
-  assert.equal(onTarget.verdict, "met", "off_brief 15 and blocked_on_others 13 still miss in the output, and the verdict is met");
-  assert.match(onTarget.summary, /^end_state_pct 100% \(on target\); all 4 on target; this duty is over the shape limit/);
+  assert.deepEqual(Object.keys(judged.metrics).sort(), [...counted].sort());
+  assert.match(judged.summary, /^end_state_pct 69\.1% \(target at least 100%\), /);
+  assert.ok(judged.summary.endsWith("; this duty is over the shape target of one headline and 3 more (38 metrics, 1 headline), and the verdict counts all of them; " +
+    "tell the chat to rework it with scripts/duties/add.ts: keep the one number the owner would ask about as the headline (\"headline\": true), keep up to 3 " +
+    "supporting numbers he can read, and leave the rest in the precheck output, where the run detail shows them"), judged.summary);
+  const fourFixed = judge(duty.metrics, { metrics: { ...output.metrics, end_state_pct: 100, stuck_steps: 0, corrections: 1, repeat_corrections: 0 } });
+  assert.equal(fourFixed.verdict, "missed", "off_brief 15 and blocked_on_others 13 still miss, and every metric counts");
+  assert.match(fourFixed.summary, /off_brief 15/);
 });
 
-test("a stored duty with no headline (Crawler pipeline, 11 metrics) is judged on its first 4 metrics in file order", () => {
+test("a stored duty with no headline (Crawler pipeline, 11 metrics) is judged on all 11, the first one leading", () => {
   const { duty, output } = fixture.crawlerPipeline;
-  assert.deepEqual(verdictMetrics(duty.metrics).map(entry => entry.key), duty.metrics.slice(0, 4).map(entry => entry.key));
+  assert.deepEqual(verdictMetrics(duty.metrics).map(entry => entry.key), duty.metrics.map(entry => entry.key));
   const judged = judge(duty.metrics, output);
-  assert.deepEqual(Object.keys(judged.metrics), duty.metrics.slice(0, 4).map(entry => entry.key));
-  assert.match(judged.summary, /; this duty is over the shape limit \(11 metrics, 0 headlines\), so the verdict counts only ig_reads_per_s, /);
+  assert.equal(Object.keys(judged.metrics).length, 11);
+  assert.match(judged.summary, /; this duty is over the shape target of one headline and 3 more \(11 metrics, 0 headlines\), and the verdict counts all of them; /);
   assert.match(shapeNote(duty.metrics)!, /rework it with scripts\/duties\/add\.ts/);
   const missing = { ...output.metrics };
   delete missing.paused_minutes;
-  assert.notEqual(judge(duty.metrics, { metrics: missing }).verdict, "error", "a number outside the counted 4 may be absent");
+  assert.match(judge(duty.metrics, { metrics: missing }).summary, /not measured: the precheck gave no value for paused_minutes/, "every metric counts, so a missing one is named");
 });
 
 test("a reshaped duty (CI system, 10-15) is judged on its headline and 3 supporting metrics; the other numbers its precheck reports never flip it", () => {

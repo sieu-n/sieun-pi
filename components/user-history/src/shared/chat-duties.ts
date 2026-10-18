@@ -18,9 +18,10 @@ export interface DutyMetric { key: string; label: string; op: "<=" | ">="; targe
 /** The duty's headline metric, or undefined when none is marked. */
 export const headlineMetric = <M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M | undefined => metrics.find(metric => metric.headline);
 /**
- * A duty's shape: one headline metric plus at most 3 supporting ones. The owner (10-15): "the Duties list should be reasonably set meaningful
- * things that are semantically meaningful (user can understand, manage)". On 10-15 26 of 30 duties missed their latest run while carrying 2
- * to 38 metrics each, and one missed metric of 38 made a duty off target. Any other number stays in the precheck output (the run detail).
+ * A duty's shape, a soft target: one headline metric plus at most 3 supporting ones. The owner (10-15): "the Duties list should be reasonably
+ * set meaningful things that are semantically meaningful (user can understand, manage)". On 10-15 26 of 30 duties missed their latest run while
+ * carrying 2 to 38 metrics each, and one missed metric of 38 made a duty off target. A duty over the shape keeps every metric in its verdict,
+ * and its run summary and card say to rework it (`shapeNote`); any other number belongs in the precheck output (the run detail).
  */
 export const MAX_DUTY_METRICS = 4;
 const SHAPE_FIX = 'keep the one number the owner would ask about as the headline ("headline": true), keep up to 3 supporting numbers he can read, ' +
@@ -32,15 +33,12 @@ export function dutyShapeProblem(metrics: readonly Pick<DutyMetric, "key" | "hea
     : !headlines.length ? "no headline metric"
     : headlines.length > 1 ? `${headlines.length} headlines, ${headlines.join(" and ")}`
     : null;
-  return problem && `metrics: a duty has one headline metric and at most 3 supporting ones; this one has ${problem}. Fix it: ${SHAPE_FIX}.`;
+  return problem && `metrics: a duty targets one headline metric and at most 3 supporting ones; this one has ${problem}. Fix it: ${SHAPE_FIX}.`;
 }
-/**
- * The metrics a run's verdict counts: all of a duty of good shape. A stored duty from before the shape rule counts its headline (the first
- * metric when none is marked) and the next 3 in file order, until its chat reworks it with scripts/duties/add.ts.
- */
+/** The metrics a run's verdict counts, every one, its headline first (the first metric when none is marked). */
 export function verdictMetrics<M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M[] {
   const lead = headlineMetric(metrics) ?? metrics[0];
-  return lead ? [lead, ...metrics.filter(metric => metric !== lead).slice(0, MAX_DUTY_METRICS - 1)] : [];
+  return lead ? [lead, ...metrics.filter(metric => metric !== lead)] : [];
 }
 /**
  * The precheck: `command` is an argv run in `cwd` with no shell (a first word `node` is this server's node). It gets the env STATE_FILE (its JSON
@@ -135,7 +133,7 @@ export const PRECHECK_TIMEOUT_MS = 120_000;
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const KEY = /^[a-z][a-z0-9_]{0,39}$/;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const str = (value: unknown, max: number): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= max;
+const str = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
 /** The latest daily slot at or before `now`, in this machine's local time. */
 export function dailySlot(at: string, now: number): number {
@@ -193,10 +191,9 @@ const show = (metric: DutyMetric, value: number): string => `${Math.round(value 
  */
 export function shapeNote(metrics: readonly Pick<DutyMetric, "key" | "headline">[]): string | null {
   if (!dutyShapeProblem(metrics)) return null;
-  const counted = verdictMetrics(metrics).map(metric => metric.key);
   const headlines = metrics.filter(metric => metric.headline).length;
-  return `this duty is over the shape limit (${metrics.length} metrics, ${headlines === 1 ? "1 headline" : `${headlines} headlines`}), so the verdict counts only ` +
-    `${counted.join(", ")}; tell the chat to rework it with scripts/duties/add.ts: ${SHAPE_FIX}`;
+  return `this duty is over the shape target of one headline and 3 more (${metrics.length} metrics, ${headlines === 1 ? "1 headline" : `${headlines} headlines`}), ` +
+    `and the verdict counts all of them; tell the chat to rework it with scripts/duties/add.ts: ${SHAPE_FIX}`;
 }
 
 /**
@@ -242,12 +239,13 @@ export function errorStreak(runs: readonly DutyRunRecord[]): number {
   return count;
 }
 
-/** A duty schedule from a file or a request: `{ kind: daily, at: HH:MM }` or `{ kind: every, minutes }` with 5 or more whole minutes. Throws otherwise. */
+/** A duty schedule from a file or a request: `{ kind: daily, at: HH:MM }` or `{ kind: every, minutes }` with a whole number of minutes, 1 or more. Throws otherwise. */
 export function parseSchedule(schedule: unknown): DutySchedule {
   if (isRecord(schedule) && schedule.kind === "daily" && typeof schedule.at === "string" && HHMM.test(schedule.at)) return { kind: "daily", at: schedule.at };
-  if (isRecord(schedule) && schedule.kind === "every" && typeof schedule.minutes === "number" && Number.isInteger(schedule.minutes) && schedule.minutes >= 5 &&
-    schedule.minutes <= 7 * 24 * 60) return { kind: "every", minutes: schedule.minutes };
-  throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080).");
+  if (isRecord(schedule) && schedule.kind === "every" && typeof schedule.minutes === "number" && Number.isInteger(schedule.minutes) && schedule.minutes >= 1) {
+    return { kind: "every", minutes: schedule.minutes };
+  }
+  throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } with a whole number of minutes.");
 }
 
 /**
@@ -257,14 +255,14 @@ export function parseSchedule(schedule: unknown): DutySchedule {
 export function parseDutyInput(value: unknown, id: string, now: number, schedule?: DutySchedule): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
   const { name, ownerWords, goal, metrics, precheck, onMiss, boardGoal } = value;
-  if (!str(name, 80)) throw new Error("name: 1 to 80 characters.");
-  if (!str(ownerWords, 4000)) throw new Error("ownerWords: the owner's words, verbatim.");
-  if (!str(goal, 400)) throw new Error("goal: what good means, in plain words.");
-  if (!str(onMiss, 1000)) throw new Error("onMiss: what the duty job does about a miss.");
+  if (!str(name)) throw new Error("name: the system the duty looks after, in plain words.");
+  if (!str(ownerWords)) throw new Error("ownerWords: the owner's words, verbatim.");
+  if (!str(goal)) throw new Error("goal: what good means, in plain words.");
+  if (!str(onMiss)) throw new Error("onMiss: what the duty job does about a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
   if (!Array.isArray(metrics) || !metrics.length) throw new Error("metrics: at least one, with the headline marked.");
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
-    if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
+    if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
     const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}),
       ...(metric.headline === true ? { headline: true as const } : {}) };
@@ -274,7 +272,7 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   if (parsedMetrics.length === 1) parsedMetrics[0]!.headline = true;
   const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
-    !str(precheck.cwd, 1024)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
+    !str(precheck.cwd)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
   const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? Math.min(precheck.timeoutMs, PRECHECK_TIMEOUT_MS) : PRECHECK_TIMEOUT_MS;
   return { id, name: name.trim(), ownerWords, goal: goal.trim(), metrics: parsedMetrics, schedule: parsedSchedule,
     precheck: { command: precheck.command as string[], cwd: precheck.cwd, timeoutMs }, onMiss: onMiss.trim(), ...(boardGoal ? { boardGoal } : {}),

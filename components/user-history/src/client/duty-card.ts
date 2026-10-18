@@ -7,7 +7,7 @@ import { headlineLabel, metricText } from "./duty-cadence.ts";
  * What a duty's card shows so the owner sees the system push (owner 10-15: "the duty system is actively pushing for code changes fixing and
  * trying to be green"): the headline metric first, one miss line per missed metric with its streak, whether it is stuck and its fix job, and the
  * labels of the metrics on target. Every verdict is the run's after-job measure when it has one (`effectiveRun`), over the duty's counted
- * metrics only (`verdictMetrics`): runs from before the shape rule still hold all 38 Chat system numbers, and the rest stay in the run detail.
+ * metrics (`verdictMetrics`), which are all of them, headline first.
  */
 
 /** A missed metric's fix: its job and whether that job works now, or none, which is the gap the owner must see. */
@@ -85,13 +85,13 @@ export const missStreak = (runs: readonly DutyRunRecord[], metrics: readonly Dut
   return count;
 };
 
-/** "This duty has 38 metrics, over the limit of one headline and 3 more. The card counts only the first 4 until its chat reworks it." */
+/** "This duty has 38 metrics, over the target of one headline and 3 more. Its chat should rework it." */
 function shapeLine(metrics: readonly DutyMetric[]): string | null {
   if (!shapeNote(metrics)) return null;
   const headlines = metrics.filter(metric => metric.headline).length;
-  const has = metrics.length > MAX_DUTY_METRICS ? `${metrics.length} metrics, over the limit of one headline and ${MAX_DUTY_METRICS - 1} more`
-    : headlines ? `${headlines} headline metrics, over the limit of one` : "no headline metric";
-  return `This duty has ${has}. The card counts only ${verdictMetrics(metrics).length === 1 ? "the first one" : `the first ${verdictMetrics(metrics).length}`} until its chat reworks it.`;
+  const has = metrics.length > MAX_DUTY_METRICS ? `${metrics.length} metrics, over the target of one headline and ${MAX_DUTY_METRICS - 1} more`
+    : headlines ? `${headlines} headline metrics, over the target of one` : "no headline metric";
+  return `This duty has ${has}. Its chat should rework it.`;
 }
 
 const missText = (metric: DutyMetric, value: number): string =>

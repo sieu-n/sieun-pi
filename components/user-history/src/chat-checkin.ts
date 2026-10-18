@@ -35,8 +35,6 @@ export const RETRY_BACKOFF_MS: readonly number[] = [5 * 60_000, 10 * 60_000, 20 
 /** Whether retry number `attempts` (0 for the first) is due: its wait has passed since `since` (the failure, or the last retry). */
 export const retryDue = (attempts: number, since: number, now: number): boolean =>
   now - since >= RETRY_BACKOFF_MS[Math.min(attempts, RETRY_BACKOFF_MS.length - 1)]!;
-/** The open steps the duty job's brief lists, oldest change first. */
-const MAX_OPEN = 30;
 /** What the last check-in saw for one chat: when it ran, and each plan item's last change. */
 export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
   /** When this chat's memory began (its first check-in, kept across runs): the no-progress check needs a full hour of it. */
@@ -278,7 +276,6 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     const note = item.note ? `; note: "${clip(item.note.replace(/\s+/g, " "), 300)}"` : "";
     return `${item.id} (${cls}) ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - view.changedAt)} ago${note}`;
   });
-  const listed = open.length > MAX_OPEN ? [...open.slice(0, MAX_OPEN - 1), `and ${open.length - MAX_OPEN + 1} more`] : open;
   const section = (head: string, lines: readonly string[]) => lines.length ? [`### ${head}\n${lines.map(line => `- ${line}`).join("\n")}`] : [];
   /** A goal to fold is listed once, under Goals to fold. */
   const folded = new Set(precheck.fold.map(fold => fold.goal.id));
@@ -313,14 +310,14 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
     ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
       precheck.stalled.map(stalledLine)),
-    ...section("Stale steps (update or close each in this run: the job's result, the next action, done or dropped; the board refuses a later waitUntil)", stale.map(slice => slice.excerpt)),
+    ...section("Stale steps (update or close each in this run: the job's result, the next action, done or dropped; a later waitUntil is no answer, and the board flags it (c47))", stale.map(slice => slice.excerpt)),
     ...section("Steps whose class needs action", act),
     ...section("Look done (a met metric or target, or merged PRs: close each)", precheck.done.filter(found => !folded.has(found.item.id)).map(lookDoneLine)),
     ...section("Owned by another thread by an owner ruling", precheck.scope.map(scopeLine)),
     ...section("Job ends the board does not show", ended),
     ...section("Other facts", precheck.facts),
     ...section("Jobs", facts.map(fact => jobLine(fact, now))),
-    ...section("Every open step, oldest change first", listed),
+    ...section("Every open step, oldest change first", open),
   ].join("\n\n") || "The board has no open step and no job.";
 }
 

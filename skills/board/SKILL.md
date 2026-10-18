@@ -68,7 +68,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 ## Upkeep
 
 1. Make the board match reality in the same turn a job starts, ends or replies, with real statuses and notes with links.
-2. When a step's waitUntil passes or its job ends, act on it in that turn: record the job's result, do the next action, or close it done or dropped. Never leave an old wait showing (c44), and never wait again, because the board refuses a later waitUntil (c47).
+2. When a step's waitUntil passes or its job ends, act on it in that turn: record the job's result, do the next action, or close it done or dropped. Never leave an old wait showing (c44), and never wait again: a later waitUntil is no answer, and the board flags it (c47).
 3. When plan_add says an open goal covers the same area, put the work under that goal unless it is a separate area (c44).
 4. When this chat's duty runs a goal's work, or every open step of a goal rides another goal's job, fold the goal in the same turn (c46). Move each open step under the goal or job that ships it with plan_update `parent`, then close the goal with a note that names the duty or goal holding its work.
 5. When a step moves to another thread for good, remove it with plan_remove and name its new owner in its goal's note, because that thread tracks it on its own board (c8).
@@ -80,16 +80,16 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 
 ## chat_board ops
 
-Ops apply in order, all or none. A refused op returns the reason and the fix.
+Ops apply in order, all or none. A malformed op, an id that is not on the board, or an op only the owner may make refuses the whole batch with the reason and the fix. Text, lists and counts have soft targets (BOARD_LIMITS), and the c32 todo checks and c47 wait checks are flags too: the op is saved and its summary gets one more line that says what to fix, so fix it in the same turn.
 
 1. `plan_set {items:[{text,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?,children?}]}` replaces the plan. An item that keeps its id keeps its go, kind, requirements, target and duty when you leave them out.
 2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. New work goes under the goal it belongs to.
 3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements, target or duty. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
-5. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
+5. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board flags it otherwise (c32).
 6. `todo_update {id,text?,done?,links?,choices?}` edits a todo, and its `links` replaces the list. `choices` gives an open ask tap answers in place, or `null` clears them, so a free-text review the owner has left open gets a one-tap answer without a re-post that resets its age. Only the owner answers a todo. `todo_remove {id}` removes it.
 
-A link is `{label,target}`, up to 5 per todo. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
+A link is `{label,target}`, about 5 at most per todo. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
 
 A step keeps its agent's thread id in `sessionId`, so the link survives when the job is deleted or renamed. Set it to a session id, `thread:<id>` or a chat URL. A `job` that names a thread sets it too, and a new job clears the old one. The checklist and `board.get(id)` show it as `thread:<id>` next to the job.
 

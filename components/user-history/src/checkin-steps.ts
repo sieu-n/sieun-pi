@@ -491,7 +491,7 @@ function actLine(view: StepView, now: number): string | null {
   const head = `${item.id} ${quote(item.text)}`;
   if (cls === "due") {
     const until = Date.parse(item.waitUntil!);
-    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it now (check whether what it waited for happened, then do the next action); the board refuses a later waitUntil (c47)`;
+    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it now (check whether what it waited for happened, then do the next action); a later waitUntil is no answer, and the board flags it (c47)`;
   }
   if (cls === "stale-chase") {
     const on = item.waitFor !== undefined ? `waits for ${quote(item.waitFor)}` : `waits on ${owner ? ownerLabel(owner) : "its owner"}`;

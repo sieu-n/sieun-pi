@@ -16,10 +16,12 @@ export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add",
 export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
   "(plan_update {id, note}).";
 /**
- * `openGoals` is the number of open goals past which the check-in asks the chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
+ * Soft targets for board text and counts (owner 10-18: "all these should be modeled as a soft cap"): an agent's op over one still applies, and
+ * its summary ends with a flag that names the target (`softFlags`). `openGoals` is the number of open goals past which the check-in asks the
+ * chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
  */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openGoals: 6, links: 5, label: 120,
-  requirements: 30, choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
+export const BOARD_LIMITS = { text: 500, note: 2000, waitFor: 200, planItems: 500, todos: 100, openGoals: 6, links: 5, label: 120,
+  requirements: 30, choices: { min: 2, max: 4, text: 80 } } as const;
 const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 /** The open goals: top-level plan items that are todo, doing or blocked. */
 export const openGoals = (plan: readonly PlanItem[]): PlanItem[] => plan.filter(item => OPEN_STATUSES.has(item.status));
@@ -62,11 +64,10 @@ function walk<T extends Tree<T>>(items: readonly T[], visit: (item: T, depth: nu
 }
 function count<T extends Tree<T>>(items: readonly T[]): number { let total = 0; walk(items, () => { total++; }); return total; }
 /**
- * The open items that BOARD_LIMITS.planItems caps. Done and dropped items stay in the file but out of the agent's open plan, and counting them
- * filled the Crawler VP's board on 10-15 (500 items, 312 closed), so every plan_add failed and the alert bridge retried 18 firings every tick.
+ * The open items that BOARD_LIMITS.planItems targets. Done and dropped items stay in the file but out of the agent's open plan. When this was a
+ * refusal it filled the Crawler VP's board on 10-15 (500 items, 312 closed), so every plan_add failed and the alert bridge retried 18 firings every tick.
  */
 const openCount = (items: readonly PlanItem[]): number => { let total = 0; walk(items, item => { if (OPEN_STATUSES.has(item.status)) total++; }); return total; };
-const PLAN_FULL = `The open plan holds at most ${BOARD_LIMITS.planItems} goals and steps; mark finished ones done or dropped first.`;
 /** The item `id` with the chain of items above it, outermost first; null when no item has that id. */
 function find<T extends Tree<T>>(items: readonly T[], id: string, above: T[] = []): { item: T; ancestors: T[] } | null {
   for (const item of items) {
@@ -108,17 +109,17 @@ function map<T extends Tree<T>>(items: readonly T[], id: string, change: (item: 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function invalid(message: string): never { throw new BoardError("invalid", message); }
-function str(value: unknown, field: string, max: number, required = true): string {
-  if (typeof value !== "string" || value.length > max) invalid(`${field} must be text up to ${max} characters.`);
-  if (required && !value.trim()) invalid(`${field} cannot be empty.`);
+function str(value: unknown, field: string): string {
+  if (typeof value !== "string") invalid(`${field} must be text.`);
+  if (!value.trim()) invalid(`${field} cannot be empty.`);
   return value;
 }
-function optStr(value: unknown, field: string, max: number): string | undefined { return value === undefined ? undefined : str(value, field, max); }
+function optStr(value: unknown, field: string): string | undefined { return value === undefined ? undefined : str(value, field); }
 function dutyLinkValue(value: unknown): string {
   if (typeof value !== "string" || !parseDutyLink(value)) invalid(`${DUTY_LINK_SHAPE}.`);
   return value;
 }
-function nullableStr(value: unknown, field: string, max: number): string | null | undefined { return value === null ? null : optStr(value, field, max); }
+function nullableStr(value: unknown, field: string): string | null | undefined { return value === null ? null : optStr(value, field); }
 function status(value: unknown): PlanStatus | undefined {
   if (value === undefined) return undefined;
   if (!PLAN_STATUSES.includes(value as PlanStatus)) invalid(`status must be one of ${PLAN_STATUSES.join(", ")}.`);
@@ -149,14 +150,14 @@ const waits = (input: { waitUntil?: string; waitFor?: string }): Pick<PlanItem, 
 
 function planInput(value: unknown): PlanItemInput {
   if (!isRecord(value)) invalid("Each plan item must be an object with text.");
-  const input: PlanItemInput = { text: str(value.text, "text", BOARD_LIMITS.text) };
+  const input: PlanItemInput = { text: str(value.text, "text") };
   if (value.id !== undefined) input.id = id(value.id);
   const s = status(value.status); if (s) input.status = s;
-  const job = optStr(value.job, "job", 200); if (job !== undefined) input.job = job;
+  const job = optStr(value.job, "job"); if (job !== undefined) input.job = job;
   const session = parseSessionId(value.sessionId); if (session) input.sessionId = session;
-  const note = optStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) input.note = note;
+  const note = optStr(value.note, "note"); if (note !== undefined) input.note = note;
   const until = optWaitUntil(value.waitUntil); if (until !== undefined) input.waitUntil = until;
-  const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) input.waitFor = event;
+  const event = optStr(value.waitFor, "waitFor"); if (event !== undefined) input.waitFor = event;
   if (value.target !== undefined) input.target = goalTarget(value.target);
   if (value.duty !== undefined) input.duty = dutyLinkValue(value.duty);
   Object.assign(input, gates(value));
@@ -168,7 +169,7 @@ function planInput(value: unknown): PlanItemInput {
 }
 
 type Gates = Pick<PlanItem, "go" | "kind" | "requirements">;
-/** A plan op's gate fields: `go` only "needed" (it never clears), `kind` only "build", `requirements` a list of 1 to 30 lines. */
+/** A plan op's gate fields: `go` only "needed" (it never clears), `kind` only "build", `requirements` a list of one or more lines. */
 function gates(value: Record<string, unknown>): Gates {
   const out: Gates = {};
   if (value.go !== undefined) { if (value.go !== "needed") invalid('go must be "needed"; once a step needs the owner\'s go, it keeps needing it.'); out.go = "needed"; }
@@ -177,14 +178,13 @@ function gates(value: Record<string, unknown>): Gates {
   return out;
 }
 function requirements(value: unknown): Requirement[] {
-  const max = BOARD_LIMITS.requirements;
-  if (!Array.isArray(value) || !value.length || value.length > max) invalid(`requirements must be a list of 1 to ${max} lines {text, status, evidence?, note?}.`);
+  if (!Array.isArray(value) || !value.length) invalid("requirements must be a list of lines {text, status, evidence?, note?}; null clears it.");
   return value.map(line => {
     if (!isRecord(line)) invalid("Each requirement must be an object with text and status.");
     if (!REQUIREMENT_STATUSES.includes(line.status as RequirementStatus)) invalid(`A requirement's status must be one of ${REQUIREMENT_STATUSES.join(", ")}.`);
-    const out: Requirement = { text: str(line.text, "requirement text", BOARD_LIMITS.text), status: line.status as RequirementStatus };
-    const evidence = optStr(line.evidence, "requirement evidence", BOARD_LIMITS.note); if (evidence !== undefined) out.evidence = evidence;
-    const note = optStr(line.note, "requirement note", BOARD_LIMITS.note); if (note !== undefined) out.note = note;
+    const out: Requirement = { text: str(line.text, "requirement text"), status: line.status as RequirementStatus };
+    const evidence = optStr(line.evidence, "requirement evidence"); if (evidence !== undefined) out.evidence = evidence;
+    const note = optStr(line.note, "requirement note"); if (note !== undefined) out.note = note;
     return out;
   });
 }
@@ -199,7 +199,7 @@ function goalTarget(value: unknown): GoalTarget {
     if (typeof n !== "number" || !Number.isFinite(n) || n < 0) invalid(`target.${field} must be a non-negative number.`);
     return n;
   };
-  const out: GoalTarget = { metric: str(value.metric, "target.metric", BOARD_LIMITS.label), target: amount("target"), unit: str(value.unit, "target.unit", 40) };
+  const out: GoalTarget = { metric: str(value.metric, "target.metric"), target: amount("target"), unit: str(value.unit, "target.unit") };
   const measured = ["current", "measuredAt", "source"].filter(field => value[field] !== undefined && value[field] !== null);
   if (measured.length && measured.length < 3) invalid("A measurement is target.current, target.measuredAt and target.source together: give all three, or none for a goal not measured yet.");
   if (measured.length) {
@@ -207,7 +207,7 @@ function goalTarget(value: unknown): GoalTarget {
     const at = typeof value.measuredAt === "string" && /^\d{4}-\d{2}-\d{2}/.test(value.measuredAt) ? Date.parse(value.measuredAt) : NaN;
     if (!Number.isFinite(at)) invalid("target.measuredAt must be an ISO date-time such as 2026-10-09T09:00:00+09:00.");
     out.measuredAt = new Date(at).toISOString();
-    out.source = str(value.source, "target.source", BOARD_LIMITS.waitFor);
+    out.source = str(value.source, "target.source");
   }
   if (value.cadence !== undefined && value.cadence !== null) { if (value.cadence !== "daily") invalid('target.cadence must be "daily".'); out.cadence = "daily"; }
   if (value.direction !== undefined && value.direction !== null) {
@@ -299,20 +299,17 @@ export function sameAreaGoal(plan: readonly PlanItem[], text: string): PlanItem 
 const TARGET_FORMS = "job:<name>, thread:<sessionId> or thread:<sessionId>@<ms>, wiki:<path>, file:<absolute path>, or an http(s) URL";
 function links(value: unknown): ArtifactLink[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > BOARD_LIMITS.links) invalid(`links must be a list of up to ${BOARD_LIMITS.links} {label, target}.`);
+  if (!Array.isArray(value)) invalid("links must be a list of {label, target}.");
   return value.map(link => {
     if (!isRecord(link)) invalid("Each link must be an object with a target.");
-    const target = normalizeArtifactTarget(str(link.target, "link target", 2048)) ?? invalid(`A link target must be ${TARGET_FORMS}.`);
-    const label = link.label === undefined || link.label === "" ? target : str(link.label, "link label", BOARD_LIMITS.label);
-    return { label: label.slice(0, BOARD_LIMITS.label), target };
+    const target = normalizeArtifactTarget(str(link.target, "link target")) ?? invalid(`A link target must be ${TARGET_FORMS}.`);
+    const label = link.label === undefined || link.label === "" ? target : str(link.label, "link label");
+    return { label, target };
   });
 }
 function choices(value: unknown): string[] {
-  const { min, max, text } = BOARD_LIMITS.choices;
-  if (!Array.isArray(value) || value.length < min || value.length > max) invalid(`choices must be a list of ${min} to ${max} answers, your recommendation first.`);
-  const list = value.map(choice => str(choice, "choice", text).trim());
-  if (new Set(list).size !== list.length) invalid("choices must differ from each other.");
-  return list;
+  if (!Array.isArray(value)) invalid("choices must be a list of answers, your recommendation first.");
+  return value.map(choice => str(choice, "choice").trim());
 }
 
 /**
@@ -332,23 +329,53 @@ const REVIEW_ASK = /\b(?:review|look\s+(?:at|over|through)|(?:take|have)\s+a\s+l
 const HTTP_URL = /https?:\/\/\S/i;
 export const reviewAskWithoutLink = (todo: Pick<OwnerTodo, "text" | "links">): boolean =>
   REVIEW_ASK.test(todo.text) && !todo.links?.length && !HTTP_URL.test(todo.text);
-export const REVIEW_LINK_ERROR = "Refused, nothing changed. This todo asks the owner to review, look at or pick something, so it carries what he opens: " +
+export const REVIEW_LINK_FLAG = "This todo asks the owner to review, look at or pick something, so it should carry what he opens: " +
   "add links [{label, target}] with each exact page, like {label: \"Connections on Staging\", target: \"http://localhost:5180/app/connections?line=staging\"}, " +
-  "or put the URL in the text. \"Links are in the chat\" is not enough (c32).";
+  "or put the URL in the text, with todo_update. \"Links are in the chat\" is not enough (c32).";
 /**
- * The refusal for a todo whose text uses our internal terms (`jargonTerms`), or null (c32, owner 10-09: "unslop easy word"). Links, URLs and
+ * The flag for a todo whose text uses our internal terms (`jargonTerms`), or null (c32, owner 10-09: "unslop easy word"). Links, URLs and
  * page paths stay: they are what the owner opens.
  */
 export function todoJargon(text: string): string | null {
   const terms = jargonTerms(text);
-  return terms.length ? `Refused, nothing changed. For you is read by the owner in one pass, and this todo uses ${terms.map(term => `"${term}"`).join(", ")}: ` +
-    `${JARGON_HINT} (c32).` : null;
+  return terms.length ? `For you is read by the owner in one pass, and this todo uses ${terms.map(term => `"${term}"`).join(", ")}: ` +
+    `reword it with todo_update; ${JARGON_HINT} (c32).` : null;
 }
-function checkAgentTodo(todo: OwnerTodo): void {
-  if (leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
+/** The c32 and c47 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open. The todo is saved either way. */
+function todoFlags(todo: OwnerTodo): string[] {
   const jargon = todoJargon(todo.text);
-  if (jargon) invalid(jargon);
-  if (reviewAskWithoutLink(todo)) invalid(REVIEW_LINK_ERROR);
+  return [...leaveAsk(todo) ? [LEAVE_ASK_FLAG] : [], ...jargon ? [jargon] : [], ...reviewAskWithoutLink(todo) ? [REVIEW_LINK_FLAG] : []];
+}
+
+/** The parts of an agent's op over a soft target in BOARD_LIMITS: long text, many links or requirements, a choice list off 2 to 4. */
+function softFlags(op: BoardOp): string[] {
+  const flags: string[] = [];
+  const long = (what: string, value: string | null | undefined, max: number) => {
+    if (typeof value === "string" && value.length > max) flags.push(`${what} is ${value.length} characters, over the ${max} target`);
+  };
+  const lines = (list: readonly Requirement[] | null | undefined) => {
+    if (!list) return;
+    if (list.length > BOARD_LIMITS.requirements) flags.push(`requirements has ${list.length} lines, over the ${BOARD_LIMITS.requirements} target`);
+    list.forEach((line, index) => { long(`requirement ${index + 1} text`, line.text, BOARD_LIMITS.text); long(`requirement ${index + 1} evidence`, line.evidence, BOARD_LIMITS.note); long(`requirement ${index + 1} note`, line.note, BOARD_LIMITS.note); });
+  };
+  const target = (value: GoalTarget | null | undefined) => { if (value) { long("target.metric", value.metric, BOARD_LIMITS.label); long("target.source", value.source, BOARD_LIMITS.waitFor); } };
+  const item = (input: { text?: string; note?: string | null; waitFor?: string | null; requirements?: readonly Requirement[] | null; target?: GoalTarget | null }) => {
+    long("text", input.text, BOARD_LIMITS.text); long("note", input.note, BOARD_LIMITS.note); long("waitFor", input.waitFor, BOARD_LIMITS.waitFor);
+    lines(input.requirements); target(input.target);
+  };
+  const todo = (input: { text?: string; choices?: readonly string[] | null; links?: readonly ArtifactLink[] }) => {
+    long("text", input.text, BOARD_LIMITS.text);
+    const { min, max, text } = BOARD_LIMITS.choices;
+    if (input.choices && (input.choices.length < min || input.choices.length > max)) flags.push(`${input.choices.length} choices, off the ${min} to ${max} target`);
+    input.choices?.forEach((choice, index) => long(`choice ${index + 1}`, choice, text));
+    if (input.choices && new Set(input.choices).size !== input.choices.length) flags.push("two choices are the same");
+    if (input.links && input.links.length > BOARD_LIMITS.links) flags.push(`${input.links.length} links, over the ${BOARD_LIMITS.links} target`);
+    input.links?.forEach((link, index) => long(`link ${index + 1} label`, link.label, BOARD_LIMITS.label));
+  };
+  if (op.op === "plan_set") walkInputs(op.items, item);
+  else if (op.op === "plan_add" || op.op === "plan_update") item(op);
+  else if (op.op === "todo_add" || op.op === "todo_update") todo(op);
+  return flags.length ? [`Saved over a soft target: ${flags.join("; ")}. Shorten it if a shorter one says the same.`] : [];
 }
 
 /**
@@ -387,13 +414,13 @@ export function parseBoardOp(value: unknown): BoardOp {
       if (!Array.isArray(value.items)) invalid("plan_set needs items, a list of plan items.");
       return { op: "plan_set", items: value.items.map(planInput) };
     case "plan_add": {
-      const op: BoardOp = { op: "plan_add", text: str(value.text, "text", BOARD_LIMITS.text) };
+      const op: BoardOp = { op: "plan_add", text: str(value.text, "text") };
       if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
       const s = status(value.status); if (s) op.status = s;
-      const job = optStr(value.job, "job", 200); if (job !== undefined) op.job = job;
+      const job = optStr(value.job, "job"); if (job !== undefined) op.job = job;
       const session = parseSessionId(value.sessionId); if (session) op.sessionId = session;
       const until = optWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
-      const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
+      const event = optStr(value.waitFor, "waitFor"); if (event !== undefined) op.waitFor = event;
       if (value.target !== undefined) op.target = goalTarget(value.target);
       if (value.duty !== undefined) op.duty = dutyLinkValue(value.duty);
       return Object.assign(op, gates(value));
@@ -401,13 +428,13 @@ export function parseBoardOp(value: unknown): BoardOp {
     case "plan_update": {
       const op: BoardOp = { op: "plan_update", id: id(value.id) };
       if (value.parent !== undefined) op.parent = value.parent === null ? null : id(value.parent, "parent");
-      const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
+      const text = optStr(value.text, "text"); if (text !== undefined) op.text = text;
       const s = status(value.status); if (s) op.status = s;
-      const job = nullableStr(value.job, "job", 200); if (job !== undefined) op.job = job;
+      const job = nullableStr(value.job, "job"); if (job !== undefined) op.job = job;
       const session = parseSessionId(value.sessionId); if (session !== undefined) op.sessionId = session;
-      const note = nullableStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) op.note = note;
+      const note = nullableStr(value.note, "note"); if (note !== undefined) op.note = note;
       const until = nullableWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
-      const event = nullableStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
+      const event = nullableStr(value.waitFor, "waitFor"); if (event !== undefined) op.waitFor = event;
       if (value.target !== undefined) op.target = value.target === null ? null : goalTarget(value.target);
       if (value.duty !== undefined) op.duty = value.duty === null ? null : dutyLinkValue(value.duty);
       const set = gates({ go: value.go, kind: value.kind ?? undefined, requirements: value.requirements ?? undefined });
@@ -416,20 +443,20 @@ export function parseBoardOp(value: unknown): BoardOp {
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
     case "scratch_add": case "scratch_update": case "scratch_remove": return invalid(SCRATCHPAD_REMOVED);
     case "todo_add": {
-      const op: BoardOp = { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
-      if (value.choices !== undefined) op.choices = choices(value.choices);
+      const op: BoardOp = { op: "todo_add", text: str(value.text, "text") };
+      if (value.choices !== undefined) { const list = choices(value.choices); if (list.length) op.choices = list; }
       if (value.step !== undefined) op.step = id(value.step, "step");
       const list = links(value.links); if (list?.length) op.links = list;
       return op;
     }
     case "todo_update": {
       const op: BoardOp = { op: "todo_update", id: id(value.id) };
-      const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
+      const text = optStr(value.text, "text"); if (text !== undefined) op.text = text;
       const list = links(value.links); if (list) op.links = list;
       if (value.choices === null) op.choices = null; else if (value.choices !== undefined) op.choices = choices(value.choices);
       if (value.done !== undefined) { if (typeof value.done !== "boolean") invalid("done must be true or false."); op.done = value.done; }
       if (value.reply === null) op.reply = null;
-      else if (value.reply !== undefined) op.reply = str(value.reply, "reply", BOARD_LIMITS.reply);
+      else if (value.reply !== undefined) op.reply = str(value.reply, "reply");
       return op;
     }
     case "todo_remove": return { op: "todo_remove", id: id(value.id) };
@@ -438,7 +465,7 @@ export function parseBoardOp(value: unknown): BoardOp {
 }
 
 export function parseBoardOps(value: unknown): BoardOp[] {
-  if (!Array.isArray(value) || value.length > BOARD_LIMITS.ops) invalid(`ops must be a list of up to ${BOARD_LIMITS.ops} board ops.`);
+  if (!Array.isArray(value)) invalid("ops must be a list of board ops.");
   return value.map(parseBoardOp);
 }
 
@@ -446,19 +473,32 @@ const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…"
 
 /**
  * Applies one op. The board is not mutated; the result has `rev + 1` and `updatedAt: now`. `summary` is one plain sentence in the actor's
- * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result.
+ * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result. An agent's summary
+ * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo or a c47 wait.
  */
 export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
   if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
-  const done = (next: Partial<ChatBoard>, summary: string) => {
+  const done = (next: Partial<ChatBoard>, summary: string, extra: readonly string[] = []) => {
     if (next.plan) {
       const closed = reclose(next.plan);
       if (closed.ids.length) { next = { ...next, plan: closed.plan }; summary += `, closed ${closed.ids.join(", ")} again now that no open step is left under ${closed.ids.length === 1 ? "it" : "them"}`; }
     }
-    if (actor === "agent" && next.plan) { checkWaitPushes(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
-    return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) };
+    const flags: string[] = [...extra];
+    if (actor === "agent") {
+      flags.push(...softFlags(op));
+      if (next.plan) {
+        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan));
+        const open = openCount(next.plan);
+        if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
+        next = { ...next, plan: markMerges(next.plan) };
+      }
+      if (next.todos && next.todos.length > BOARD_LIMITS.todos && next.todos.length > board.todos.length) {
+        flags.push(`The todo list has ${next.todos.length} items, over the ${BOARD_LIMITS.todos} target; remove done ones.`);
+      }
+    }
+    return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: [voice(summary), ...flags].join("\n") };
   };
   const unknown = (what: string, missing: string): never => { throw new BoardError("unknown", `No ${what} ${missing} on the board. Read it again with no ops.`); };
   switch (op.op) {
@@ -484,11 +524,9 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
           children: (input.children ?? []).map(build) };
       };
       const plan = op.items.map(build);
-      if (openCount(plan) > BOARD_LIMITS.planItems) invalid(PLAN_FULL);
       return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
-      if (openCount(board.plan) >= BOARD_LIMITS.planItems) invalid(PLAN_FULL);
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) measuredBy(op.target, now);
@@ -562,14 +600,12 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         `removed ${item.id} ${quote(item.text)}${removed > 1 ? ` and its ${removed - 1} ${removed === 2 ? "step" : "steps"}` : ""}`);
     }
     case "todo_add": {
-      if (board.todos.length >= BOARD_LIMITS.todos) invalid(`The todo list holds at most ${BOARD_LIMITS.todos} items; remove done ones first.`);
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}),
         ...(op.links ? { links: op.links } : {}), from: actor, at: now };
-      if (actor === "agent") checkAgentTodo(todo);
       return done({ todos: [...board.todos, todo] },
         `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.step ? ` for ${todo.step}` : ""}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}` +
-        `${todo.links ? ` with ${todo.links.length === 1 ? "a link" : `${todo.links.length} links`}` : ""}`);
+        `${todo.links ? ` with ${todo.links.length === 1 ? "a link" : `${todo.links.length} links`}` : ""}`, actor === "agent" ? todoFlags(todo) : []);
     }
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
@@ -594,7 +630,6 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         if (op.choices?.length) next.choices = op.choices; else delete next.choices;
         parts.push(op.choices?.length ? `offered ${op.choices.map(quote).join(" / ")} on ${parts.length ? "it" : quote(next.text)}` : `cleared the choices on ${parts.length ? "it" : quote(next.text)}`);
       }
-      if (actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined || newChoices)) checkAgentTodo(next);
       // The first part names the todo, later parts say "it".
       const label = () => parts.length ? "it" : quote(next.text);
       // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.
@@ -603,7 +638,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.reply === null) { delete next.reply; delete next.answeredBy; if (todo.reply) parts.push(`cleared the answer on ${label()}`); }
       else if (chose) { next.reply = op.reply!; next.answeredBy = "owner"; parts.push(`chose ${quote(op.reply!)} for ${quote(next.text)}`); }
       else if (op.reply !== undefined && op.reply !== todo.reply) { next.reply = op.reply; next.answeredBy = "owner"; parts.push(parts.length ? `answered: ${op.reply}` : `answered ${label()}: ${op.reply}`); }
-      return done({ todos: board.todos.map(entry => entry.id === op.id ? next : entry) }, parts.length ? parts.join(" and ") : `left ${quote(todo.text)} as it was`);
+      return done({ todos: board.todos.map(entry => entry.id === op.id ? next : entry) }, parts.length ? parts.join(" and ") : `left ${quote(todo.text)} as it was`,
+        actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined || newChoices) ? todoFlags(next) : []);
     }
     case "todo_remove": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
@@ -825,7 +861,7 @@ export function stepGoWait(item: Pick<PlanItem, "text" | "waitFor">): GoWait | n
   if (namesProduction(scope)) return null;
   return (item.waitFor ? goWait(item.waitFor, { cued: true, scope }) : null) ?? goWait(item.text, { scope });
 }
-/** The fix for a wait for leave, said the same way by the board refusal, the check-in and the brief check. */
+/** The fix for a wait for leave, said the same way by the board flag, the check-in and the brief check. */
 export const GO_WAIT_FIX = "Staging, sieun/dev, ci/ and other GitHub pushes and staging lands need nobody's go or word (c47, c50; the owner 10-12: " +
   "\"NEVER wait for something, or ask for my permission to push to Github etc.\"). Do the next action now: push or land it yourself, and if a land " +
   "is busy, push to a ci/ ref and go on. " + (releaseGo.preapproval
@@ -845,7 +881,7 @@ export const leaveAsk = (todo: Pick<OwnerTodo, "text" | "choices">): boolean =>
   !!todo.choices?.some(choice => APPROVE.test(choice)) && !PR_MERGE(todo.text) && !KEEPS_OWNER_OK.test(todo.text) &&
   todo.text.split(/(?<=[.!?;])\s+|\n+/).some(sentence => sentence.trim().endsWith("?") && LEAVE_ASK.test(sentence) && !namesProduction(sentence) &&
     (LEAVE_MOVE.test(sentence) || THREAD_GO.test(sentence)));
-export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-production move. ${GO_WAIT_FIX} Do it, and tell the owner what shipped in a chat message.`;
+export const LEAVE_ASK_FLAG = `This todo asks the owner for leave on a non-production move. ${GO_WAIT_FIX} Do it, remove the todo with todo_remove, and tell the owner what shipped in a chat message.`;
 /**
  * Whether the owner's standing go (`releaseGo`, c74) covers a text: it merges, pushes to main or master, promotes or names another production
  * target, and it names no outside send or public release (c37), which keep their todo.
@@ -912,35 +948,39 @@ export function requirementGaps(goal: Pick<PlanItem, "requirements">): string | 
 }
 
 /**
- * c47 reopened 10-12 (owner: "stop making up these bullshit rules on waiting", then "NEVER wait for something"): the agent may not move a step's
- * waitUntil later. That day Crawler VP moved p42, p46 and p47 later 2 to 3 times with fresh waitFor words, and they sat through 12 to 17 check-ins.
+ * c47 reopened 10-12 (owner: "stop making up these bullshit rules on waiting", then "NEVER wait for something"): a step's waitUntil moved later
+ * is flagged. That day Crawler VP moved p42, p46 and p47 later 2 to 3 times with fresh waitFor words, and they sat through 12 to 17 check-ins.
  * An earlier time, a cleared wait and a first wait pass, and so does a step the owner holds on an open For you todo.
  */
-function checkWaitPushes(before: ChatBoard, plan: readonly PlanItem[]): void {
+function waitPushes(before: ChatBoard, plan: readonly PlanItem[]): string[] {
   const was = new Map<string, PlanItem>();
   walk(before.plan, item => was.set(item.id, item));
+  const flags: string[] = [];
   walk(plan, item => {
     const prior = was.get(item.id);
     if (!prior?.waitUntil || !item.waitUntil || Date.parse(item.waitUntil) <= Date.parse(prior.waitUntil)) return;
     if (before.todos.some(todo => !todo.done && coversStep(todo, item))) return;
-    throw new BoardError("forbidden", `${item.id} ${quote(item.text)} already waits until ${prior.waitUntil}` +
+    flags.push(`${item.id} ${quote(item.text)} already waited until ${prior.waitUntil}` +
       `${prior.waitFor ? ` for ${quote(prior.waitFor)}` : ""}, and a later waitUntil is a new wait the owner did not ask for (c47). Act on the step in ` +
       "this run: check whether what it waits for already happened, do its next action yourself, or start a job that removes the blocker. If only the " +
-      `owner can unblock it, add a For you todo with step "${item.id}" first. If nothing you can do moves it, clear waitUntil with null, mark it ` +
+      `owner can unblock it, add a For you todo with step "${item.id}". If nothing you can do moves it, clear waitUntil with null, mark it ` +
       "blocked and name the blocker in its note.");
   });
+  return flags;
 }
 /** The agent's plan change against waits for leave (c47): an open step whose text or waitFor is new or changed and waits on someone's go (`stepGoWait`). */
-function checkGoWaits(before: ChatBoard, plan: readonly PlanItem[]): void {
+function goWaits(before: ChatBoard, plan: readonly PlanItem[]): string[] {
   const was = new Map<string, PlanItem>();
   walk(before.plan, item => was.set(item.id, item));
+  const flags: string[] = [];
   walk(plan, item => {
     const prior = was.get(item.id);
     if (!OPEN_STATUSES.has(item.status) || (prior && prior.text === item.text && prior.waitFor === item.waitFor)) return;
     const wait = stepGoWait(item);
-    if (wait) throw new BoardError("forbidden", `${item.id} ${quote(item.text)} ${goWaitText(wait)}. ${GO_WAIT_FIX} Set the step to that action, and give it a waitFor ` +
+    if (wait) flags.push(`${item.id} ${quote(item.text)} ${goWaitText(wait)}. ${GO_WAIT_FIX} Set the step to that action, and give it a waitFor ` +
       "only for a real event the action needs, like a run's result.");
   });
+  return flags;
 }
 /** The gate fields that are set, for a stored plan item. */
 const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });
@@ -954,7 +994,6 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 
 /** Where the agent reads what the open checklist leaves out: the board Python skill. */
 export const BOARD_PY_CALLS = "board.get(id), board.done(), board.todos(all=True)";
-const clip = (text: string, max: number): string => text.length > max ? text.slice(0, max - 1) + "…" : text;
 const MARKS: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
 
 /**
@@ -976,13 +1015,13 @@ export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, chec
       const marks = [
         ...(item.job ? [`job ${item.job}${item.sessionId && item.sessionId !== item.job ? ` (thread:${item.sessionId})` : ""}`] : item.sessionId ? [`thread:${item.sessionId}`] : []),
         ...(item.waitUntil ? [`waits until ${item.waitUntil}`] : []),
-        ...(item.waitFor ? [`waits for ${clip(item.waitFor, 60)}`] : []),
+        ...(item.waitFor ? [`waits for ${item.waitFor}`] : []),
         ...(isBuildStep(item) ? ["build"] : []),
         ...(needsGo(item) ? [go ? `owner's go on ${go.id}` : "needs owner's go"] : []),
         ...(item.target ? [targetText(item.target)] : []),
         ...(item.duty ? [`fixes ${item.duty}`] : []),
       ];
-      lines.push(`${"  ".repeat(depth + 1)}${MARKS[item.status]} ${item.id} ${clip(item.text, 110)}${marks.length ? ` (${marks.join(", ")})` : ""}`);
+      lines.push(`${"  ".repeat(depth + 1)}${MARKS[item.status]} ${item.id} ${item.text}${marks.length ? ` (${marks.join(", ")})` : ""}`);
       visit(item.children, depth + 1);
     }
   };
@@ -993,7 +1032,7 @@ export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, chec
   for (const todo of open) {
     const offered = todo.choices ? `, choices: ${todo.choices.map(choice => quote(choice)).join(" / ")}` : "";
     const linked = todo.links?.length ? `, links: ${todo.links.map(link => link.target).join(" ")}` : "";
-    lines.push(`  [ ] ${todo.id} ${clip(todo.text, 160)} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}${linked}`);
+    lines.push(`  [ ] ${todo.id} ${todo.text} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}${linked}`);
   }
   const left = [`${hidden.steps} done or dropped steps`, `${board.todos.length - open.length} answered todos`,
     `${hidden.notes} step notes and requirements`];

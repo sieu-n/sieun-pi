@@ -43,8 +43,8 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resu
     assert.equal((await post("chat1", { duty: "d1", action: "resume" })).body.duties[0]!.duty.status, "active");
     const moved = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 2880 } });
     assert.deepEqual([moved.status, moved.body.duties[0]!.schedule, moved.body.duties[0]!.nextAt], [200, { kind: "every", minutes: 2880 }, now + 2880 * 60_000]);
-    const bad = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 2 } });
-    assert.deepEqual([bad.status, bad.body.error], [400, "schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080)."]);
+    const bad = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 0 } });
+    assert.deepEqual([bad.status, bad.body.error], [400, "schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } with a whole number of minutes."]);
     assert.equal((await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "daily", at: "23:07" } })).status, 200);
     const ran = await post("chat1", { duty: "d1", action: "run" });
     assert.equal(ran.body.duties[0]!.running, true);

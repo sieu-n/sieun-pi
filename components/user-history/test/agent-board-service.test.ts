@@ -46,10 +46,10 @@ test("slack green guy p71 (10-15 19:18 KST): a session's chat_board write is jud
     identity: { pid: process.pid, instanceId: "i", socketPath: "/none" }, onStop: async () => {} });
   const tool = boardTool(await sessionDir(server.url));
   try {
-    await assert.rejects(tool.execute("c1", { ops: [{ op: "plan_add", text: "Push the fix to sieun/dev", waitFor: "Fable's go for our slot" }] }, undefined, undefined, ctx),
-      /waits for another thread's go, word or slot/, "the service applies the board's c47 check");
+    const flagged = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Push the fix to sieun/dev", waitFor: "Fable's go for our slot" }] }, undefined, undefined, ctx);
+    assert.match(flagged.content[0]!.text, /waits for another thread's go, word or slot/, "the service applies the board's c47 flag");
     const moved = await tool.execute("c2", { ops: MOVE }, undefined, undefined, ctx);
-    assert.match(moved.content[0]!.text, /^Updated p1 .*\nBoard rev 2: /);
+    assert.match(moved.content[0]!.text, /^Updated p1 .*\nBoard rev 3: /);
     assert.equal((await boards.read(CHAT))!.plan[0]!.status, "doing", "the write landed in the service's store");
   } finally { await server.close(); }
 });

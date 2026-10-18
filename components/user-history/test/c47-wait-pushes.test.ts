@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
 import { classLine } from "../src/checkin-steps.ts";
-import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps } from "../src/shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, nextIds, parseBoardOps } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 /**
@@ -17,6 +17,12 @@ function run(board: ChatBoard, ops: unknown[], actor: BoardActor = "agent"): Cha
   for (const op of parseBoardOps(ops)) board = applyBoardOp(board, op as BoardOp, actor, T1, nextIds(board)).board;
   return board;
 }
+/** The board after `ops` and the last op's summary, with its flag lines. */
+function summarize(board: ChatBoard, ops: unknown[]): { board: ChatBoard; summary: string } {
+  let summary = "";
+  for (const op of parseBoardOps(ops)) ({ board, summary } = applyBoardOp(board, op as BoardOp, "agent", T1, nextIds(board)));
+  return { board, summary };
+}
 const stepOf = (board: ChatBoard, id: string) => board.plan.flatMap(goal => [goal, ...goal.children]).find(item => item.id === id)!;
 /** p2 has p42's 11:08Z state: it waits for land 32b on staging until 13:30Z. */
 function crawler(): ChatBoard {
@@ -29,13 +35,18 @@ function crawler(): ChatBoard {
 const PUSH = { op: "plan_update", id: "p2", waitFor: "Fable's 32b-on-staging announcement (about 14:15Z), then lab compose additions pushes the combined PROBE B",
   waitUntil: "2026-10-12T14:30:00.000Z" };
 
-test("c47: the agent cannot move a step's waitUntil later, even with new waitFor words; the refusal says what to do instead", () => {
-  assert.throws(() => run(crawler(), [PUSH]), error => error instanceof BoardError && error.kind === "forbidden" &&
-    /p2 .* already waits until 2026-10-12T13:30:00\.000Z/.test(error.message) && /\(c47\)/.test(error.message) &&
-    /check whether what it waits for already happened/.test(error.message) && /For you todo with step "p2"/.test(error.message));
-  assert.throws(() => run(crawler(), [{ op: "plan_set", items: [{ id: "p1", text: "B2 storage costs and metrics", children: [
-    { id: "p2", text: "Add B2 storage metrics", status: "doing", waitUntil: "2026-10-12T15:00:00Z" }] }] }]),
-  error => error instanceof BoardError && /already waits until/.test(error.message), "plan_set cannot move it later either");
+test("c47: a step's waitUntil moved later is saved and flagged, even with new waitFor words; the flag says what to do instead", () => {
+  const pushed = summarize(crawler(), [PUSH]);
+  assert.equal(stepOf(pushed.board, "p2").waitUntil, "2026-10-12T14:30:00.000Z", "the later wait is saved");
+  const flag = pushed.summary.split("\n")[1] ?? "";
+  assert.match(flag, /^p2 .* already waited until 2026-10-12T13:30:00\.000Z/);
+  assert.match(flag, /\(c47\)/);
+  assert.match(flag, /check whether what it waits for already happened/);
+  assert.match(flag, /For you todo with step "p2"/);
+  const set = summarize(crawler(), [{ op: "plan_set", items: [{ id: "p1", text: "B2 storage costs and metrics", children: [
+    { id: "p2", text: "Add B2 storage metrics", status: "doing", waitUntil: "2026-10-12T15:00:00Z" }] }] }]);
+  assert.match(set.summary, /already waited until/, "plan_set is flagged the same way");
+  assert.doesNotMatch(summarize(crawler(), [{ ...PUSH, waitUntil: "2026-10-12T13:15:00Z" }]).summary, /already waited until/, "an earlier time is no flag");
 });
 
 test("c47: an earlier waitUntil, a cleared wait, a first wait and a wait the owner holds on a For you todo still apply", () => {
@@ -61,5 +72,5 @@ test("c47: the check-in tells the chat to act on a due or stalled step, never to
   assert.doesNotMatch(text, /new waitUntil|slot forward/);
   const skill = await readFile(new URL("../../../skills/board/SKILL.md", import.meta.url), "utf8");
   assert.doesNotMatch(skill, /give it a new waitUntil/);
-  assert.match(skill, /the board refuses a later waitUntil \(c47\)/);
+  assert.match(skill, /a later waitUntil is no answer, and the board flags it \(c47\)/);
 });

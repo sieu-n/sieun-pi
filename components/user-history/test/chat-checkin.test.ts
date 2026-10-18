@@ -131,7 +131,7 @@ test("check-in precheck: due, stale-chase and orphan steps keep their class line
   assert.deepEqual(classes(first), ["p7 (waiting)", "p9 (live)", "p12 (orphan)"]);
   const at = start + 2 * STEP_STALE_MS;
   const due = checkInPrecheck(first.memory, [], plan, at, self);
-  assert.deepEqual(actLines(due, at), [`p7 "Check the load" is due since ${clockTime(Date.parse(until))}: act on it now (check whether what it waited for happened, then do the next action); the board refuses a later waitUntil (c47)`,
+  assert.deepEqual(actLines(due, at), [`p7 "Check the load" is due since ${clockTime(Date.parse(until))}: act on it now (check whether what it waited for happened, then do the next action); a later waitUntil is no answer, and the board flags it (c47)`,
     'p9 "Revoke the old app" waits for "Promote 5 green" for 4 h: chase it now; after 24 h make it a For you todo or replan',
     'p12 "Move the notices" has no live owner: start a job, take it yourself, or ask the owner in For you']);
   assert.equal(actLines(checkInPrecheck(due.memory, [], plan, at + 15 * MIN, self), at + 15 * MIN).length, 3, "again at the next run");
@@ -163,7 +163,7 @@ test("check-in precheck: a stale chase names the thread its waitFor names, never
   assert.equal(waitTarget("the release owner old one", context.rows, new Set(context.self))?.id, "s-rel", "an archived thread is never the target");
 });
 
-test("check-in precheck: a note-only edit is no change, a step the chat owns is the chat's, only leaf steps are listed, at most 30, with the jobs", () => {
+test("check-in precheck: a note-only edit is no change, a step the chat owns is the chat's, only leaf steps are listed, every one, with the jobs", () => {
   const now = 10 * STEP_STALE_MS;
   const self = { self: ["c-self", "chat-6394"] };
   const plan = (note: string) => board([step("p1", "Goal", "doing", { children: [
@@ -185,8 +185,8 @@ test("check-in precheck: a note-only edit is no change, a step the chat owns is 
   assert.deepEqual(jobFacts([], own, rows, "c-self").map(fact => fact.key), ["thread:s-2"], "the chat's own row is no job");
   const many = board(Array.from({ length: 35 }, (_, index) => step(`p${index + 1}`, `Step ${index + 1}`, "todo")));
   const listed = section(checkInPrecheckText(checkInPrecheck(undefined, [], many, now), [], [], now), "Every open step, oldest change first");
-  assert.equal(listed.length, 30);
-  assert.equal(listed[29], "and 6 more");
+  assert.equal(listed.length, 35, "the detail lists every open step");
+  assert.equal(listed[34], 'p35 (orphan) "Step 35" todo, no owner, last change 0 min ago');
   assert.equal(checkInPrecheckText(checkInPrecheck(undefined, [], board([]), now), [], [], now), "The board has no open step and no job.");
 });
 
@@ -297,8 +297,8 @@ test("feed: a [check-in] or [job] line from the server folds into updates and st
 });
 
 test("check-in setting: the interval range, the pause ends, the next run, the board line, and the file", async () => {
-  for (const minutes of [1, 5, 15, 30, 60, 240, 7]) assert.equal(validCheckInEvery(minutes * 60_000), true, `${minutes} min`);
-  for (const ms of [0, 30_000, 241 * 60_000, 90_000, Number.NaN, "300000"]) assert.equal(validCheckInEvery(ms), false, String(ms));
+  for (const minutes of [1, 5, 15, 30, 60, 240, 241, 7, 24 * 60]) assert.equal(validCheckInEvery(minutes * 60_000), true, `${minutes} min`);
+  for (const ms of [0, 30_000, 90_000, Number.NaN, "300000"]) assert.equal(validCheckInEvery(ms), false, String(ms));
   const now = new Date(2026, 9, 8, 14, 30).getTime();
   assert.equal(pauseEnd("1h", now), now + 3_600_000);
   assert.equal(pauseEnd("tomorrow", now), new Date(2026, 9, 9, 9, 0).getTime());
@@ -464,7 +464,7 @@ test("c44: a step filed as a goal, a finished goal left open and too many open g
     "hand off or remove the rest; the owner should never have to tidy the plan)");
   assert.deepEqual(shape, ['p253 "Agents can\'t send emails or vendor ticket replies unless yo…" is a top-level item with no steps: move it under the goal ' +
     "it belongs to with plan_update parent, give it steps, or close it if its work shipped",
-    '7 open goals, the limit is 6: fold goals of one area under one area goal (p1 "Area 1", p2 "Area 2", p3 "Area 3", p4 "Area 4", p5 "Area 5", ' +
+    '7 open goals, over the target of 6: fold goals of one area under one area goal (p1 "Area 1", p2 "Area 2", p3 "Area 3", p4 "Area 4", p5 "Area 5", ' +
     'p6 "Chat system works well", p253 "Agents can\'t send emails or vendor ticket replies unless yo…")',
     'p86 "Watch the cache ratio" is open under closed p7: close it, or reopen p7 if the work is real']);
   assert.ok(text.indexOf("### Plan shape") < text.indexOf("### Look done"));

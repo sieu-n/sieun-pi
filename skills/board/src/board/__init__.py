@@ -53,10 +53,6 @@ def _load(chat: str | None) -> tuple[str, dict]:
         raise LookupError(f"No board for {chat_id} at {path}. A root job started with create_session has its own id; pass chat=<chat session id>.") from None
 
 
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 def _walk(items: list, depth: int = 0, above: tuple = ()):
     for item in items:
         yield item, depth, above
@@ -99,7 +95,7 @@ def _marks(item: dict) -> str:
     if item.get("waitUntil"):
         marks.append(f"waits until {item['waitUntil']}")
     if item.get("waitFor"):
-        marks.append(f"waits for {_clip(item['waitFor'], 60)}")
+        marks.append(f"waits for {item['waitFor']}")
     if item.get("kind") == "build" or re.match(r"build\b", item.get("text", "").strip(), re.I):
         marks.append("build")
     if item.get("go"):
@@ -109,9 +105,8 @@ def _marks(item: dict) -> str:
     return f" ({', '.join(marks)})" if marks else ""
 
 
-def _line(item: dict, depth: int, limit: int | None = 110) -> str:
-    text = item["text"] if limit is None else _clip(item["text"], limit)
-    return f"{'  ' * (depth + 1)}{_MARKS.get(item.get('status', 'todo'), '[?]')} {item['id']} {text}{_marks(item)}"
+def _line(item: dict, depth: int) -> str:
+    return f"{'  ' * (depth + 1)}{_MARKS.get(item.get('status', 'todo'), '[?]')} {item['id']} {item['text']}{_marks(item)}"
 
 
 def _todo_line(todo: dict) -> str:
@@ -173,7 +168,7 @@ def get(id: str, chat: str | None = None) -> str:  # noqa: A002
         if linked:
             lines.append("  todos on it:")
             lines += ["  " + _todo_line(todo) for todo in linked]
-        steps = [_line(step, depth, None) for step, depth, _ in _walk(item.get("children", []))]
+        steps = [_line(step, depth) for step, depth, _ in _walk(item.get("children", []))]
         if steps:
             lines.append("  steps:")
             lines += ["  " + step for step in steps]

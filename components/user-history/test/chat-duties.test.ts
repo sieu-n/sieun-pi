@@ -100,7 +100,7 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 - Split work by the job rules: one goal per job, one subagent per unit of output, and work of 1 to 3 tool calls stays inline. Start subagents with \`await rlm.spawn(brief, name=...)\`, all at once, each brief ending with \`await agent_message.send(report, receiver_role="parent")\`; end your turn, read each reply as it comes, and delete each subagent after its report. Work for another repository goes to \`await rlm.create_session(brief, name=..., cwd=...)\`.
 - Map the chat's work as a graph: one job or subagent per part, never steps piled on one old long-running session; when the findings list a session that carries too much, move its steps to new jobs per part. Heartbeats the check-in covers go: name each for the chat to delete.
 - You can message another thread yourself to chase it: \`await agent_message.send(text, receiver_role="sibling", receiver_name=<thread name>)\`. A job of the chat is its subagent, which that cannot reach: message it with \`await bash("cd ${join(import.meta.dirname, "..")} && node --import tsx scripts/job-steer.ts c1 " + shlex.quote(job_name) + " " + shlex.quote(text))\`.
-- Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`await bash("cd ${join(import.meta.dirname, "..")} && node --import tsx scripts/board-apply.ts c1 " + shlex.quote(json.dumps(ops)) + " --data-dir /data")\`, where ops is a list of chat_board ops like \`[{"op":"plan_update","id":"p4","status":"done","note":"live on production at 4f1c2a, checked on the live page"}]\`. It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note. A step whose run, probe, land or push has not finished green and landed stays open with its job, which is a live owner.
+- Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`await bash("cd ${join(import.meta.dirname, "..")} && node --import tsx scripts/board-apply.ts c1 " + shlex.quote(json.dumps(ops)) + " --data-dir /data")\`, where ops is a list of chat_board ops like \`[{"op":"plan_update","id":"p4","status":"done","note":"live on production at 4f1c2a, checked on the live page"}]\`. It checks and flags them as chat_board does and prints each op's summary with its flags; fix a flagged op in the same run. Close a step only on evidence you name in its note. A step whose run, probe, land or push has not finished green and landed stays open with its job, which is a live owner.
 - Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with \`await rlm.create_session(brief, name=..., cwd=...)\`, which registers the session as a job of the chat, and set the step's job to that name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.
 - Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go (a step whose only target is staging never needs one): never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the design before build.
 - Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
@@ -297,8 +297,9 @@ test("cadence: a standing duty takes every N minutes or a daily time (a moved da
 
   assert.equal(await duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 30 }, OWNER_UI), true);
   assert.deepEqual(changes.at(-1), { everyMs: 30 * 60_000 }, "the card's cadence writes the check-in setting the header's control writes");
-  await assert.rejects(duties.setSchedule("chat1", "checkin", { kind: "daily", at: "09:00" }, OWNER_UI), /every 1 to 240 minutes/);
-  await assert.rejects(duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 241 }, OWNER_UI), /every 1 to 240 minutes/);
+  await assert.rejects(duties.setSchedule("chat1", "checkin", { kind: "daily", at: "09:00" }, OWNER_UI), /every N whole minutes, 1 or more/);
+  assert.equal(await duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 241 }, OWNER_UI), true, "no top on the interval");
+  assert.deepEqual(changes.at(-1), { everyMs: 241 * 60_000 });
   assert.equal(await duties.setStatus("chat1", "checkin", "paused", OWNER_UI), true);
   assert.deepEqual(changes.at(-1), { pause: "forever" });
   views = await duties.view("chat1");
@@ -314,7 +315,9 @@ test("cadence: a standing duty takes every N minutes or a daily time (a moved da
   assert.equal(await duties.setSchedule("chat1", "d1", { kind: "every", minutes: 45 }, OWNER_UI), true);
   [d1] = await store.list("chat1");
   assert.deepEqual(d1!.schedule, { kind: "every", minutes: 45 });
-  assert.throws(() => parseSchedule({ kind: "every", minutes: 4 }), /5 to 10080/);
+  assert.deepEqual(parseSchedule({ kind: "every", minutes: 4 }), { kind: "every", minutes: 4 }, "any whole number of minutes");
+  assert.deepEqual(parseSchedule({ kind: "every", minutes: 20_160 }), { kind: "every", minutes: 20_160 });
+  for (const minutes of [0, 1.5, -5]) assert.throws(() => parseSchedule({ kind: "every", minutes }), /whole number of minutes/);
   await assert.rejects(duties.setSchedule("chat1", "d1", { kind: "daily", at: "25:00" }, OWNER_UI), /schedule/);
   assert.equal(await duties.setSchedule("chat1", "d9", { kind: "every", minutes: 45 }, OWNER_UI), false);
   const agent = { by: "agent", setter: "s-agent" } as const;

@@ -3,17 +3,17 @@ import { join } from "node:path";
 import { BoardStore } from "./chat-board-store.ts";
 import { jobNames } from "./limit-names.ts";
 import { BoardError, parseBoardOps } from "./shared/chat-board.ts";
-import { boardLimitRefusal } from "./shared/reply-lint.ts";
+import { boardLimitFlag } from "./shared/reply-lint.ts";
 import type { ChatBoard } from "./shared/types.ts";
 
 export interface AgentBoardWrite { board: ChatBoard | null; summaries: string[] }
 
-/** An agent's chat_board ops under every gate: the c43 limit check, then the board's own gates (go, Build, waits). */
+/** An agent's chat_board ops: the board applies them with its flags, and a c43 limit claim adds one more flag line. */
 export async function applyAgentOps(dataDir: string, sessionId: string, raw: unknown): Promise<AgentBoardWrite> {
   const ops = parseBoardOps(raw);
-  const refusal = boardLimitRefusal(ops) && boardLimitRefusal(ops, await jobNames(dataDir));
-  if (refusal) throw new BoardError("forbidden", refusal);
-  return new BoardStore(dataDir).apply(sessionId, ops, "agent");
+  const flag = boardLimitFlag(ops) && boardLimitFlag(ops, await jobNames(dataDir));
+  const write = await new BoardStore(dataDir).apply(sessionId, ops, "agent");
+  return flag ? { ...write, summaries: [...write.summaries, flag] } : write;
 }
 
 /**

@@ -28,7 +28,7 @@ import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 
@@ -146,7 +146,7 @@ function checkInActor(req: IncomingMessage): CheckInActor {
 function parseCheckInChange(body: Record<string, unknown>): CheckInChange {
   const change: CheckInChange = {};
   if (body.everyMs !== undefined) {
-    if (!validCheckInEvery(body.everyMs)) throw new RequestError(400, `Use whole minutes from ${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES}.`);
+    if (!validCheckInEvery(body.everyMs)) throw new RequestError(400, `Use whole minutes, ${CHECK_IN_MIN_MINUTES} or more.`);
     change.everyMs = body.everyMs;
   }
   if (body.pause !== undefined) {

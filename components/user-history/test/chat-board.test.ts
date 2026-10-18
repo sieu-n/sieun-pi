@@ -66,7 +66,9 @@ test("chat board: a step waits until a time or for an event; plan_add, plan_upda
   const set = run(emptyBoard(T0), parseBoardOps([{ op: "plan_set", items: [{ text: "Goal", children: [{ text: "Step", waitFor: "a slot" }] }] }]));
   assert.equal(set.board.plan[0]!.children[0]!.waitFor, "a slot");
   for (const bad of ["tomorrow", "09:00", 1, ""]) throwsKind(() => parseBoardOps([{ op: "plan_update", id: "p1", waitUntil: bad }]), "invalid");
-  throwsKind(() => parseBoardOps([{ op: "plan_add", text: "x", waitFor: "x".repeat(BOARD_LIMITS.waitFor + 1) }]), "invalid");
+  const long = run(emptyBoard(T0), parseBoardOps([{ op: "plan_add", text: "x", waitFor: "x".repeat(BOARD_LIMITS.waitFor + 1) }]));
+  assert.equal(long.board.plan[0]!.waitFor!.length, BOARD_LIMITS.waitFor + 1, "a long waitFor is saved whole");
+  assert.match(long.summaries[0]!, /\nSaved over a soft target: waitFor is 201 characters, over the 200 target\./);
 });
 
 test("chat board: plan_set keeps given ids, fills the rest without collisions, defaults status", () => {
@@ -95,7 +97,9 @@ test("chat board: the scratchpad is gone, so a scratch op is refused with the st
     [{ op: "todo_add", text: "Look at this", links: [{ label: "page", target: "wiki:sessions/a.md" }, { label: thread, target: thread }, { label: "r", target: "file:/Users/me/r.md" },
       { label: "browser to aside", target: "job:browser to aside" }] }]);
   throwsKind(() => parseBoardOps([{ op: "todo_add", text: "x", links: [{ label: "a", target: "ftp://x" }] }]), "invalid");
-  throwsKind(() => parseBoardOps([{ op: "todo_add", text: "x", links: Array.from({ length: 6 }, () => ({ target: "job:a" })) }]), "invalid");
+  const six = run(emptyBoard(T0), parseBoardOps([{ op: "todo_add", text: "x", links: Array.from({ length: 6 }, () => ({ target: "job:a" })) }]));
+  assert.equal(six.board.todos[0]!.links!.length, 6, "a sixth link is saved");
+  assert.match(six.summaries[0]!, /6 links, over the 5 target/);
 });
 
 test("chat board: a step added under a done goal reopens the goal and every done goal above it; a doing or todo goal is left alone", () => {
@@ -130,8 +134,11 @@ test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_ad
   const closed = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 600 }, (_, i) => ({ text: `g${i}`, status: i % 2 ? "done" as const : "dropped" as const })) }]).board;
   assert.equal(run(closed, [{ op: "plan_add", text: "601" }]).summaries[0], 'Added p601 "601"', "600 done and dropped items leave room, as on the Crawler VP's board on 10-15");
   const full = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 500 }, (_, i) => ({ text: `g${i}`, status: i % 2 ? "doing" as const : "todo" as const })) }]).board;
-  throwsKind(() => run(full, [{ op: "plan_add", text: "501" }]), "invalid");
-  throwsKind(() => run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 501 }, (_, i) => ({ text: `g${i}` })) }]), "invalid");
+  const over = run(full, [{ op: "plan_add", text: "501" }]);
+  assert.equal(over.board.plan.length, 501, "the 501st open item is saved");
+  assert.match(over.summaries[0]!, /\nThe open plan has 501 goals and steps, over the 500 target/);
+  assert.doesNotMatch(run(over.board, [{ op: "plan_update", id: "p1", status: "doing" }]).summaries[0]!, /over the 500 target/, "an op that adds no open item is not flagged");
+  assert.match(run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 501 }, (_, i) => ({ text: `g${i}` })) }]).summaries[0]!, /over the 500 target/);
 });
 
 test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; a chat may leave any number of asks open (c96)", () => {
@@ -142,9 +149,14 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
   assert.deepEqual(tapped.summaries, ['Owner chose "Wait for QA" for "Deploy now?"']);
   assert.equal(tapped.board.todos[0]!.done, true);
   assert.equal(run(board, [{ op: "todo_update", id: "t1", reply: "Only staging" }], "owner").summaries[0], 'Owner answered "Deploy now?": Only staging');
-  for (const choices of [["one"], ["a", "b", "c", "d", "e"], ["a", "a"], ["a", "x".repeat(81)], ["a", " "]]) {
-    throwsKind(() => parseBoardOps([{ op: "todo_add", text: "q", choices }]), "invalid");
+  const flagged: [string[], RegExp][] = [[["one"], /1 choices, off the 2 to 4 target/], [["a", "b", "c", "d", "e"], /5 choices, off the 2 to 4 target/],
+    [["a", "a"], /two choices are the same/], [["a", "x".repeat(81)], /choice 2 is 81 characters, over the 80 target/]];
+  for (const [choices, flag] of flagged) {
+    const asked = run(emptyBoard(T0), parseBoardOps([{ op: "todo_add", text: "q", choices }]));
+    assert.deepEqual(asked.board.todos[0]!.choices, choices, "the choices are saved as given");
+    assert.match(asked.summaries[0]!, flag);
   }
+  throwsKind(() => parseBoardOps([{ op: "todo_add", text: "q", choices: ["a", " "] }]), "invalid");
   const three = run(emptyBoard(T0), [{ op: "todo_add", text: "a" }, { op: "todo_add", text: "b" }, { op: "todo_add", text: "c" }]).board;
   assert.equal(run(three, [{ op: "todo_add", text: "d" }, { op: "todo_add", text: "e" }]).board.todos.filter(todo => !todo.done).length, 5);
 });
@@ -207,7 +219,7 @@ test("chat board: the owner may change todos, never the plan; unknown ids and ba
   assert.deepEqual(parseBoardOps([{ op: "plan_add", text: "a", parent: null }]), [{ op: "plan_add", text: "a" }]);
 });
 
-test("chat board: the open checklist shows this chat's target, open goals and steps with their marks, open todos, and counts the rest", () => {
+test("chat board: the open checklist shows this chat's target, open goals and steps in full with their marks, open todos, and counts the rest", () => {
   assert.equal(renderOpenPlan(null, "s-1"), "This chat: thread:s-1\nThe board is empty: no plan, no todos.");
   const long = "x".repeat(130);
   const { board } = run(emptyBoard(T0), [
@@ -221,7 +233,7 @@ test("chat board: the open checklist shows this chat's target, open goals and st
   const answered = run(board, [{ op: "todo_update", id: "t1", done: true, reply: "Yes" }], "owner").board;
   assert.equal(renderOpenPlan(answered, "s-1", "Check-in: every 15 min"), [
     "This chat: thread:s-1", "Check-in: every 15 min", "Board rev 7. Open plan (goals and steps not done):", "  [~] p1 Goal",
-    `    [ ] p3 ${"x".repeat(109)}… (job w7, waits for run 42 goes green)`,
+    `    [ ] p3 ${long} (job w7, waits for run 42 goes green)`,
     "Owner todos open:", '  [ ] t2 Deploy? (from agent, for p3), choices: "Go" / "Not yet"',
     "Not shown: 2 done or dropped steps, 1 answered todos, 0 step notes and requirements. Read them with board.get(id), board.done(), " +
       "board.todos(all=True) in Python."].join("\n"));

@@ -1,6 +1,6 @@
 import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause } from "./shared/types.ts";
+import { CHECK_IN_MIN_MINUTES, type CheckInPause } from "./shared/types.ts";
 
 /** A chat's check-in setting: its interval, its pause and who set them, read and written through `<data dir>/check-in-settings.json`, and the clock words its lines use. */
 
@@ -34,9 +34,9 @@ export class CheckInRefused extends Error {
 }
 export const DEFAULT_CHECK_IN: CheckInSetting = { everyMs: CHECK_IN_MS };
 
-/** An interval the owner may set: whole minutes from 1 to 240. */
+/** An interval the owner may set: whole minutes, 1 or more. */
 export const validCheckInEvery = (ms: unknown): ms is number =>
-  typeof ms === "number" && Number.isSafeInteger(ms) && ms % 60_000 === 0 && ms >= CHECK_IN_MIN_MINUTES * 60_000 && ms <= CHECK_IN_MAX_MINUTES * 60_000;
+  typeof ms === "number" && Number.isSafeInteger(ms) && ms % 60_000 === 0 && ms >= CHECK_IN_MIN_MINUTES * 60_000;
 
 /** When a pause the owner picks at `now` ends: in an hour, at the next 09:00 local time, or never. */
 export function pauseEnd(pause: CheckInPause, now: number): CheckInPausedUntil {
@@ -100,7 +100,7 @@ export function changeCheckIn(current: CheckInSetting, change: CheckInChange, no
   return { setting: { everyMs, pausedUntil: pauseEnd(change.pause, now), pausedBy: actor.by, setter: actor.setter } };
 }
 
-/** The chat_board `check_in` argument, parsed: `pause` "1h", "tomorrow" or null (resume), `every_minutes` a whole number from 1 to 240. Throws on anything else. */
+/** The chat_board `check_in` argument, parsed: `pause` "1h", "tomorrow" or null (resume), `every_minutes` a whole number, 1 or more. Throws on anything else. */
 export function parseChatCheckIn(value: unknown): CheckInChange {
   if (!isRecord(value)) throw new Error("check_in: give {pause} and/or {every_minutes}");
   const change: CheckInChange = {};
@@ -110,7 +110,7 @@ export function parseChatCheckIn(value: unknown): CheckInChange {
   }
   if ("every_minutes" in value) {
     const everyMs = typeof value.every_minutes === "number" ? value.every_minutes * 60_000 : NaN;
-    if (!validCheckInEvery(everyMs)) throw new Error(`check_in.every_minutes: a whole number from ${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES}`);
+    if (!validCheckInEvery(everyMs)) throw new Error(`check_in.every_minutes: a whole number, ${CHECK_IN_MIN_MINUTES} or more`);
     change.everyMs = everyMs;
   }
   if (change.pause === undefined && change.everyMs === undefined) throw new Error("check_in: give {pause} and/or {every_minutes}");

@@ -1,6 +1,6 @@
 import { type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyView, headlineMetric } from "../shared/chat-duties.ts";
 import { effectiveRun } from "../shared/duty-streak.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES } from "../shared/types.ts";
+import { CHECK_IN_MIN_MINUTES } from "../shared/types.ts";
 
 /** The Duties card's pure parts: the cadence editor's draft and its check, and what a check-in run found. */
 
@@ -10,16 +10,16 @@ export const cadenceDraft = (schedule: DutySchedule): CadenceDraft =>
   schedule.kind === "every" ? { kind: "every", minutes: schedule.minutes, at: "09:00" } : { kind: "daily", minutes: 60, at: schedule.at };
 
 /**
- * The schedule a draft asks for, or why it cannot be saved. The check-in runs every 1 to 240 minutes (its setting's range, shared with the
- * header's control) and has no daily time; another duty runs every 5 to 10080 minutes or daily at HH:MM.
+ * The schedule a draft asks for, or why it cannot be saved. The check-in runs every N whole minutes, 1 or more (its setting, shared with the
+ * header's control), and has no daily time; another duty runs every N whole minutes or daily at HH:MM.
  */
 export function cadenceSchedule(draft: CadenceDraft, builtin: boolean): DutySchedule | { error: string } {
   if (draft.kind === "daily") {
     if (builtin) return { error: "The check-in runs every N minutes." };
     return /^([01]\d|2[0-3]):[0-5]\d$/.test(draft.at) ? { kind: "daily", at: draft.at } : { error: "Give a time like 23:07." };
   }
-  const [min, max] = builtin ? [CHECK_IN_MIN_MINUTES, CHECK_IN_MAX_MINUTES] : [5, 7 * 24 * 60];
-  return Number.isInteger(draft.minutes) && draft.minutes >= min && draft.minutes <= max ? { kind: "every", minutes: draft.minutes } : { error: `Give ${min} to ${max} minutes.` };
+  return Number.isInteger(draft.minutes) && draft.minutes >= CHECK_IN_MIN_MINUTES ? { kind: "every", minutes: draft.minutes }
+    : { error: `Give a whole number of minutes, ${CHECK_IN_MIN_MINUTES} or more.` };
 }
 
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;

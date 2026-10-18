@@ -12,7 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
 import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
-import { type BoardOp, CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
+import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
 export interface CheckInDutyHost {
@@ -180,8 +180,8 @@ const flaggedSection = (flagged: readonly FlaggedSlice[]): string =>
 /** The check-in duty's cadence in minutes: `{ kind: every, minutes }` with a whole number the check-in setting takes. */
 function checkInMinutes(value: unknown): number {
   const minutes = typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "every" ? (value as { minutes?: unknown }).minutes : undefined;
-  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < CHECK_IN_MIN_MINUTES || minutes > CHECK_IN_MAX_MINUTES) {
-    throw new Error(`The check-in runs every ${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES} minutes.`);
+  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < CHECK_IN_MIN_MINUTES) {
+    throw new Error(`The check-in runs every N whole minutes, ${CHECK_IN_MIN_MINUTES} or more.`);
   }
   return minutes;
 }
@@ -464,7 +464,7 @@ export class Duties {
   }
 
   /**
-   * A new cadence: every N minutes or a daily time. The check-in duty takes whole minutes from CHECK_IN_MIN_MINUTES to CHECK_IN_MAX_MINUTES and
+   * A new cadence: every N minutes or a daily time. The check-in duty takes whole minutes from CHECK_IN_MIN_MINUTES up and
    * writes the chat's check-in setting (the header's control shows the change); a daily time is refused for it. A daily duty moved to a time
    * already past today waits for tomorrow's slot. Throws on a bad or refused schedule; false when the duty is unknown.
    */

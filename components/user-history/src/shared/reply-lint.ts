@@ -209,10 +209,10 @@ export function boardLimitClaims(ops: readonly BoardOp[], names: readonly string
   return ops.flatMap(texts).flatMap(text => typeof text === "string" ? unmeasuredLimits(proseLines(withoutNames(text, names))) : []).map(claim => `"${claim}"`);
 }
 
-/** The chat_board refusal for board text with limit claims, or null: the claims and the unmeasured hint. */
-export function boardLimitRefusal(ops: readonly BoardOp[], names: readonly string[] = []): string | null {
+/** The chat_board flag for board text with limit claims, or null: the claims and the unmeasured hint. The ops are saved either way. */
+export function boardLimitFlag(ops: readonly BoardOp[], names: readonly string[] = []): string | null {
   const claims = boardLimitClaims(ops, names);
-  return claims.length ? `Refused, nothing changed: a todo or plan step states a limit with no evidence ${claims.join(", ")}. Fix: ${UNMEASURED_HINT}.` : null;
+  return claims.length ? `Saved, but a todo or plan step states a limit with no evidence ${claims.join(", ")} (c43). Fix it with plan_update or todo_update: ${UNMEASURED_HINT}.` : null;
 }
 
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;

@@ -212,7 +212,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         `A job of the chat is its subagent, which that cannot reach: message it with \`${jobSteerCall(chat)}\`.`,
       `Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`${apply}\`, where ops is a list of ` +
         "chat_board ops like `[{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}]`. " +
-        "It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note. A step whose run, " +
+        "It checks and flags them as chat_board does and prints each op's summary with its flags; fix a flagged op in the same run. Close a step only on evidence you name in its note. A step whose run, " +
         "probe, land or push has not finished green and landed stays open with its job, which is a live owner.",
       "Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with " +
         "`await rlm.create_session(brief, name=..., cwd=...)`, which registers the session as a job of the chat, and set the step's job to that " +

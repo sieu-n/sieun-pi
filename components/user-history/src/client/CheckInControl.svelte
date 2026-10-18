@@ -11,10 +11,10 @@
   import { clockTime } from "./format.ts";
   import { tooltip } from "./ui/tooltip.ts";
   import { checkInApi, checkInButton, nextNine, pauseNow, previewCheckIn } from "./check-in.ts";
-  import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PRESET_MINUTES, type CheckInPause, type CheckInState } from "../shared/types.ts";
+  import { CHECK_IN_MIN_MINUTES, CHECK_IN_PRESET_MINUTES, type CheckInPause, type CheckInState } from "../shared/types.ts";
 
   /**
-   * The chat's check-in in the header: a button with the interval or the pause, and a panel to set the interval (presets or 1 to 240 minutes) or
+   * The chat's check-in in the header: a button with the interval or the pause, and a panel to set the interval (presets or any whole number of minutes) or
    * pause it for an hour, until 09:00, or until resumed. A change shows at once and rolls back with a toast when the server refuses it.
    */
   let { id }: { id: string } = $props();
@@ -30,7 +30,7 @@
   const paused = $derived(pause !== null);
   const button = $derived(current ? checkInButton(current, clock.now) : { word: "", value: "" });
   const customMinutes = $derived(Number(custom));
-  const customValid = $derived(Number.isInteger(customMinutes) && customMinutes >= CHECK_IN_MIN_MINUTES && customMinutes <= CHECK_IN_MAX_MINUTES);
+  const customValid = $derived(Number.isInteger(customMinutes) && customMinutes >= CHECK_IN_MIN_MINUTES);
 
   $effect(() => {
     void row?.checkIn;
@@ -93,7 +93,7 @@
         {/each}
       </div>
       <form class="custom" onsubmit={setCustom}>
-        <input type="number" inputmode="numeric" min={CHECK_IN_MIN_MINUTES} max={CHECK_IN_MAX_MINUTES} step="1" placeholder="Other, {CHECK_IN_MIN_MINUTES} to {CHECK_IN_MAX_MINUTES}"
+        <input type="number" inputmode="numeric" min={CHECK_IN_MIN_MINUTES} step="1" placeholder="Other, minutes"
           aria-label="Minutes between check-ins" bind:value={custom} />
         <span class="unit">min</span>
         <button type="submit" class="button small" disabled={!customValid}>Set</button>

@@ -1,6 +1,6 @@
 import { BOARD_LIMITS } from "../shared/chat-board.ts";
 import { ERROR_PAUSE_RUNS } from "../shared/chat-duties.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type PoolConfig } from "../shared/types.ts";
+import { CHECK_IN_MIN_MINUTES, type PoolConfig } from "../shared/types.ts";
 import { POOL_DEFAULTS, poolValue, type PoolKey } from "./pool-config.ts";
 
 /**
@@ -59,12 +59,12 @@ export function settingText({ setting, default: fallback }: Rule): string {
 }
 
 const CHAT_RULES: Rule[] = [
-  { id: "check-in-every", title: "Check-in interval", value: q(CHECK_IN_MS, "ms"), setting: { kind: "chat", where: `the chat's Check-in control (${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES} min)` },
+  { id: "check-in-every", title: "Check-in interval", value: q(CHECK_IN_MS, "ms"), setting: { kind: "chat", where: `the chat's Check-in control (${CHECK_IN_MIN_MINUTES} min or more)` },
     text: "How often the app runs a chat's check-in. A check-in with nothing open starts no job.", source: { file: USER_HISTORY + "checkin-settings.ts", symbol: "CHECK_IN_MS" } },
   { id: "open-goals", title: "Open goals", value: q(BOARD_LIMITS.openGoals, "count"), setting: CODE,
     text: "Past this many open goals the check-in asks the chat to fold goals of one area. New work goes under the goal it belongs to.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openGoals" } },
   { id: "plan-items", title: "Plan size", value: q(BOARD_LIMITS.planItems, "count"), setting: CODE,
-    text: "The most open goals and steps one plan holds. Done and dropped ones do not count.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.planItems" } },
+    text: "Past this many open goals and steps, a board op that adds one says so; the op still applies. Done and dropped ones do not count.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.planItems" } },
   { id: "step-stale", title: "Stale wait", value: q(STEP_STALE_MS, "ms"), setting: CODE,
     text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,

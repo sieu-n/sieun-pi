@@ -7,14 +7,15 @@ const record = (changes: Partial<DutyRunRecord>): DutyRunRecord => ({ duty: "che
 const view = (runs: DutyRunRecord[]): DutyView => ({ duty: { ...CHECK_IN_DUTY, status: "active" }, builtin: "checkin", schedule: { kind: "every", minutes: 15 }, paused: false,
   nextAt: null, running: false, runs, priority: "high" });
 
-test("duty cadence editor: the draft starts from the schedule; the check-in saves 1 to 240 minutes and no daily time; another duty 5 to 10080 minutes or HH:MM", () => {
+test("duty cadence editor: the draft starts from the schedule; the check-in saves any whole number of minutes and no daily time; another duty minutes or HH:MM", () => {
   assert.deepEqual(cadenceDraft({ kind: "every", minutes: 15 }), { kind: "every", minutes: 15, at: "09:00" });
   assert.deepEqual(cadenceDraft({ kind: "daily", at: "23:07" }), { kind: "daily", minutes: 60, at: "23:07" });
-  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 2, at: "" }, true), { kind: "every", minutes: 2 }, "the header's 1 to 240 range");
-  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 241, at: "" }, true), { error: "Give 1 to 240 minutes." });
+  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 2, at: "" }, true), { kind: "every", minutes: 2 });
+  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 241, at: "" }, true), { kind: "every", minutes: 241 }, "no top on the interval");
+  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 0, at: "" }, true), { error: "Give a whole number of minutes, 1 or more." });
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "09:00" }, true), { error: "The check-in runs every N minutes." });
-  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 2, at: "" }, false), { error: "Give 5 to 10080 minutes." });
-  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 1.5, at: "" }, false), { error: "Give 5 to 10080 minutes." });
+  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 2, at: "" }, false), { kind: "every", minutes: 2 });
+  assert.deepEqual(cadenceSchedule({ kind: "every", minutes: 1.5, at: "" }, false), { error: "Give a whole number of minutes, 1 or more." });
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "07:30" }, false), { kind: "daily", at: "07:30" });
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "7:30" }, false), { error: "Give a time like 23:07." });
 });

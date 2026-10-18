@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
 import { briefCheck, briefCheckNote } from "../src/shared/brief-check.ts";
-import { applyBoardOp, BoardError, emptyBoard, goWait, leaveAsk, nextIds, parseBoardOps, stepGoWait } from "../src/shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, goWait, leaveAsk, nextIds, parseBoardOps, stepGoWait } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 import { releaseGo } from "../src/shared/release-go.ts";
 
@@ -16,11 +16,19 @@ function run(board: ChatBoard, ops: unknown[], actor: BoardActor = "agent"): Cha
   for (const op of parseBoardOps(ops)) board = applyBoardOp(board, op as BoardOp, actor, T1, nextIds(board)).board;
   return board;
 }
-const refused = (board: ChatBoard, ops: unknown[], pattern: RegExp): void =>
-  assert.throws(() => run(board, ops), error => error instanceof BoardError && error.kind === "forbidden" && pattern.test(error.message), JSON.stringify(ops));
+/** The last op's summary after `ops`: its first line says what changed, and each line after it is a flag. */
+function summary(board: ChatBoard, ops: unknown[]): string {
+  let text = "";
+  for (const op of parseBoardOps(ops)) ({ board, summary: text } = applyBoardOp(board, op as BoardOp, "agent", T1, nextIds(board)));
+  return text;
+}
+/** The ops are saved, and the last one's summary carries a flag that matches `pattern` (c47 is a soft rule, owner 10-18). */
+const flagged = (board: ChatBoard, ops: unknown[], pattern: RegExp): void =>
+  assert.match(summary(board, ops).split("\n").slice(1).join("\n"), pattern, JSON.stringify(ops));
+const unflagged = (board: ChatBoard, ops: unknown[], message: string): void => assert.doesNotMatch(summary(board, ops), /\n/, message);
 const goal = (): ChatBoard => run(emptyBoard("2026-10-12T14:00:00.000Z"), [{ op: "plan_add", text: "Ship flow for other agents" }]);
 
-test("c47: the board refuses a non-production step that waits on another thread's go, word or slot, or on the owner's ok for a push", () => {
+test("c47: the board flags a non-production step that waits on another thread's go, word or slot, or on the owner's ok for a push", () => {
   const board = goal();
   const waits: [string, string][] = [
     ["Build: Convex webhook ledger", "Fable's 'land 32b ON STAGING' word (about 14:15 to 14:20Z); then push objects 0233fe1271 to a fresh ci ref"],
@@ -31,14 +39,17 @@ test("c47: the board refuses a non-production step that waits on another thread'
     ["Push the ci/ fix for the e2e test", "the owner's ok"],
     ["Land the Inbox fix on staging", "your go"],
   ];
-  for (const [text, waitFor] of waits) refused(board, [{ op: "plan_add", parent: "p1", text, waitFor, status: "blocked" }], /wait.*\(c47, c50; the owner 10-12/);
-  refused(board, [{ op: "plan_add", parent: "p1", text: "Push the stack to a ci/ ref after Fable's go" }], /another thread's go, word or slot \("Fable's go"\)/);
-  refused(board, [{ op: "plan_add", parent: "p1", text: "Land 32b on staging once the owner approves" }], /the owner's ok on a push or a staging land/);
+  for (const [text, waitFor] of waits) {
+    flagged(board, [{ op: "plan_add", parent: "p1", text, waitFor, status: "blocked" }], /wait.*\(c47, c50; the owner 10-12/);
+    assert.equal(run(board, [{ op: "plan_add", parent: "p1", text, waitFor, status: "blocked" }]).plan[0]!.children[0]!.waitFor, waitFor, "the step is saved");
+  }
+  flagged(board, [{ op: "plan_add", parent: "p1", text: "Push the stack to a ci/ ref after Fable's go" }], /another thread's go, word or slot \("Fable's go"\)/);
+  flagged(board, [{ op: "plan_add", parent: "p1", text: "Land 32b on staging once the owner approves" }], /the owner's ok on a push or a staging land/);
 });
 
-test("c47: production, real events, rule text and steps the change leaves alone pass the board", () => {
+test("c47: production, real events, rule text and steps the change leaves alone get no flag", () => {
   const board = goal();
-  const pass = (op: Record<string, unknown>) => assert.doesNotThrow(() => run(board, [{ op: "plan_add", parent: "p1", status: "blocked", ...op }]), JSON.stringify(op));
+  const pass = (op: Record<string, unknown>) => unflagged(board, [{ op: "plan_add", parent: "p1", status: "blocked", ...op }], JSON.stringify(op));
   pass({ text: "Ship: promote land 33 to prod tonight", waitFor: "Fable's go after staging checks out" });
   pass({ text: "Ship: merge it so Railway deploys the worker", waitFor: "the owner's go on t13 for #233" });
   pass({ text: "Ship: turn on the phone setup email", waitFor: "the owner's go on the reminder email ask in For you" });
@@ -50,12 +61,13 @@ test("c47: production, real events, rule text and steps the change leaves alone 
   // A step written before the check keeps working: a note edit or a status change does not trip it, a new wait does.
   const old: PlanItem = { id: "p2", text: "Re-push the combined run", status: "doing", waitFor: "Fable's 'on staging' word", children: [] };
   const legacy: ChatBoard = { ...board, plan: [{ ...board.plan[0]!, children: [old] }] };
-  assert.doesNotThrow(() => run(legacy, [{ op: "plan_update", id: "p2", note: "chased Fable at 14:20Z" }, { op: "plan_update", id: "p2", status: "blocked" }]));
-  refused(legacy, [{ op: "plan_update", id: "p2", waitFor: "Fable's go for our slot" }], /c47/);
-  assert.doesNotThrow(() => run(legacy, [{ op: "plan_update", id: "p2", waitFor: null }]), "clearing the wait is the fix");
+  unflagged(legacy, [{ op: "plan_update", id: "p2", note: "chased Fable at 14:20Z" }], "a note edit");
+  unflagged(legacy, [{ op: "plan_update", id: "p2", status: "blocked" }], "a status change");
+  flagged(legacy, [{ op: "plan_update", id: "p2", waitFor: "Fable's go for our slot" }], /c47/);
+  unflagged(legacy, [{ op: "plan_update", id: "p2", waitFor: null }], "clearing the wait is the fix");
 });
 
-test("c47: an agent todo that asks the owner's leave for a push, a staging land or another thread's slot is refused", () => {
+test("c47: an agent todo that asks the owner's leave for a push, a staging land or another thread's slot is saved and flagged", () => {
   const board = goal();
   const asks = [
     { text: "Go on staging the deep-walk fixes after the green land-31 probe? They let a year walk continue; prod stays unchanged.", choices: ["Go after green probe", "Not yet"] },
@@ -65,7 +77,7 @@ test("c47: an agent todo that asks the owner's leave for a push, a staging land 
   ];
   for (const ask of asks) {
     assert.equal(leaveAsk(ask), true, ask.text);
-    refused(board, [{ op: "todo_add", ...ask }], /asks the owner for leave on a non-production move/);
+    flagged(board, [{ op: "todo_add", ...ask }], /asks the owner for leave on a non-production move.*remove the todo with todo_remove/);
   }
   const keeps = [
     { text: "Can the release owner promote land 33 to prod tonight, once staging checks out?", choices: ["Yes, promote tonight", "Wait for me"] },
@@ -76,7 +88,7 @@ test("c47: an agent todo that asks the owner's leave for a push, a staging land 
   ];
   for (const ask of keeps) {
     assert.equal(leaveAsk(ask), false, ask.text);
-    assert.doesNotThrow(() => run(board, [{ op: "todo_add", ...ask }]), ask.text);
+    assert.doesNotMatch(summary(board, [{ op: "todo_add", ...ask }]), /asks the owner for leave/, ask.text);
   }
 });
 

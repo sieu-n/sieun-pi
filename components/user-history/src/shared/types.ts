@@ -288,9 +288,8 @@ export interface ChatBriefState { version: string | null; current: string; updat
 /** The pause the owner picks: an hour, until the next 09:00 local, or until resumed. */
 export type CheckInPause = "1h" | "tomorrow" | "forever";
 export const CHECK_IN_PAUSES: readonly CheckInPause[] = ["1h", "tomorrow", "forever"];
-/** The intervals the owner may set, in whole minutes; the control offers 1, 5, 15, 30 and 60 and takes any other in range. */
+/** The intervals the owner may set, in whole minutes; the control offers 1, 5, 15, 30 and 60 and takes any other whole number from 1 up. */
 export const CHECK_IN_MIN_MINUTES = 1;
-export const CHECK_IN_MAX_MINUTES = 240;
 export const CHECK_IN_PRESET_MINUTES: readonly number[] = [1, 5, 15, 30, 60];
 /** How a thread is linked to a chat, the strongest kept when several apply: its subagent, a root it started, a plan step's owner, a thread it exchanged agent messages with in the last day. */
 export type AgentLink = "subagent" | "root" | "step" | "message";

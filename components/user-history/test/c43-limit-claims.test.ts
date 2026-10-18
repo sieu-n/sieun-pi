@@ -74,7 +74,7 @@ test("c43: a For you todo that states an unmeasured limit is refused; t28 is the
   assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: "OK to switch census to us-08 now?" }]), []);
 });
 
-test("c43: the chat_board tool refuses todo_add t28 and writes nothing; a plain todo goes on the board", async () => {
+test("c43: the chat_board tool saves todo_add t28 and flags its limit with no evidence; a plain todo gets no flag", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "c43-todo-"));
   const tools = new Map<string, { execute: (...args: unknown[]) => Promise<{ content: { text: string }[] }> }>();
   const pi = { on() {}, registerFlag() {}, registerCommand() {}, registerTool(tool: { name: string }) { tools.set(tool.name, tool as never); },
@@ -82,9 +82,11 @@ test("c43: the chat_board tool refuses todo_add t28 and writes nothing; a plain 
   historyExtension(pi as never);
   const board = tools.get("chat_board")!;
   const ctx = { sessionManager: { getSessionId: () => "s-c43" } };
-  await assert.rejects(board.execute("c1", { ops: [{ op: "todo_add", text: TODO_T28, choices: ["Cut it", "Keep it"] }] }, undefined, undefined, ctx),
-    /a todo or plan step states a limit with no evidence "caps new profiles near 2,200 a minute\."/);
-  assert.equal(await new BoardStore(dataDir).read("s-c43"), null);
+  const flagged = await board.execute("c1", { ops: [{ op: "todo_add", text: TODO_T28, choices: ["Cut it", "Keep it"] }] }, undefined, undefined, ctx);
+  assert.match(flagged.content[0]!.text, /^Added a todo t1/);
+  assert.match(flagged.content[0]!.text, /Saved, but a todo or plan step states a limit with no evidence "caps new profiles near 2,200 a minute\." \(c43\)/);
+  assert.equal((await new BoardStore(dataDir).read("s-c43"))?.todos.length, 1, "the todo is on the board");
   const added = await board.execute("c2", { ops: [{ op: "todo_add", text: "OK to switch census to us-08 now?" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added a todo t1/);
+  assert.match(added.content[0]!.text, /^Added a todo t2/);
+  assert.doesNotMatch(added.content[0]!.text, /limit with no evidence/);
 });
