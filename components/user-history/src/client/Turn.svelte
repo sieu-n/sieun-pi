@@ -92,7 +92,7 @@
       <div class="stamp">{@render linkButton(prompt.message.timestamp)}{promptAt}</div>
     </div>
   {/if}
-  {#if (turn.trigger || own.work.length) && !(ui.viewMode === "read" && prompt)}
+  {#if (turn.trigger || own.work.length)}
     <WorkRow turn={own} {threadId} {nested} />
   {/if}
   {#if reply && (shownText || replyLive)}
@@ -139,8 +139,6 @@
   .turn { content-visibility: auto; contain-intrinsic-size: auto 120px; padding: 14px 0 22px; }
   :global(.turn) + .turn { border-top: 1px solid var(--border); }
   .turn.triggered { padding: 6px 0 10px; }
-  :global(:root[data-density="compact"]) .turn:not(.triggered, .nested) { padding: 8px 0 12px; }
-  :global(:root[data-density="compact"]) .prompt-row { margin: 6px 0 10px; }
   .turn.nested { content-visibility: visible; padding: 10px 0 0; }
   .fold { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 3px 0; font-size: 13px; line-height: 1.5; color: var(--text-faint); transition: color 0.12s; }
   .fold:hover { color: var(--text); }

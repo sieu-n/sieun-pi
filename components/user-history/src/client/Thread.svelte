@@ -2,13 +2,11 @@
   import { tick, untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { ui } from "./ui.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { buildTurns, liveTurn, messageText } from "../shared/turns.ts";
+  import { buildTurns, liveTurn } from "../shared/turns.ts";
   import type { ModelCatalog, ModelInfo, ThinkingLevel, ThreadMessage } from "../shared/types.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import ContextMeter from "./ContextMeter.svelte";
-  import { clockTime } from "./format.ts";
   import Turn from "./Turn.svelte";
   import Composer from "./Composer.svelte";
   import QueueChips from "./QueueChips.svelte";
@@ -44,22 +42,6 @@
     const last = turns.at(-1);
     return last && last.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
   });
-  const questions = $derived(turns.flatMap(turn => {
-    if (!turn.prompt) return [];
-    const content = turn.prompt.message.content;
-    return [{ key: turn.key, text: messageText(turn.prompt.message).trim(), skill: turn.prompt.message.skill ?? null,
-      images: typeof content === "string" ? [] : content.filter(part => part.type === "image"), at: clockTime(turn.prompt.message.timestamp) }];
-  }));
-  async function jumpTo(key: string): Promise<void> {
-    ui.setViewMode("default");
-    pinned = false;
-    await tick();
-    const target = document.getElementById(key);
-    target?.scrollIntoView({ block: "start" });
-    requestAnimationFrame(() => target?.scrollIntoView({ block: "start" }));
-    target?.classList.add("flash");
-    setTimeout(() => target?.classList.remove("flash"), 1200);
-  }
   const context = $derived(thread?.info.context ?? null);
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
   const childAlert = $derived.by(() => {
@@ -130,13 +112,12 @@
     if (untrack(() => pinned)) void tick().then(scrollToBottom);
   });
 
-  /** A link to a message in this thread (`#<id>@<ms>`): leave Questions for Default, scroll to it and flash it; a link to nothing says so. */
+  /** A link to a message in this thread (`#<id>@<ms>`): scroll to it and flash it; a link to nothing says so. */
   $effect(() => {
     const target = store.jump;
     const node = scroller;
     if (!target || target.id !== id || !messages.length || !node) return;
     untrack(() => {
-      if (ui.viewMode === "questions") ui.setViewMode("default");
       pinned = false;
       void tick().then(() => {
         if (store.jump !== target) return;
@@ -153,14 +134,6 @@
     return () => { document.removeEventListener("visibilitychange", onHidden); store.markRead(id); };
   });
 
-  const reading = $derived(ui.viewMode === "read");
-  /** Esc leaves Read for Default, except from a text field, where Esc keeps its own job (cancel a rename, stop a busy thread). */
-  function onReadKey(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || !reading || event.defaultPrevented) return;
-    if (event.target instanceof HTMLElement && event.target.closest("input, textarea, [contenteditable], dialog, [popover]")) return;
-    ui.setViewMode("default");
-  }
-
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
   const stop = () => { void store.run(api.abort(id)); };
   let loadingOlder = $state(false);
@@ -170,24 +143,16 @@
   }
 </script>
 
-<svelte:window onkeydown={onReadKey} />
-
-<div class="thread" class:read={reading}>
+<div class="thread">
   <header class="head">
-    {#if (!store.sidebarOpen || narrow) && !reading}
+    {#if !store.sidebarOpen || narrow}
       <button type="button" class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
     {/if}
-    {#if parentChat && !reading}
+    {#if parentChat}
       <button type="button" class="crumb" title="Back to {parentChat.chat.name}" onclick={() => store.openJob(parentChat.chat.id, parentChat.open)}><Icon name="chevronLeft" size={14} /><span class="crumb-name">{parentChat.chat.name}</span></button>
     {/if}
-    <ThreadTitle {id} {reading} />
+    <ThreadTitle {id} />
     <div class="controls">
-      <div class="segmented" role="radiogroup" aria-label="View">
-        <button type="button" role="radio" aria-checked={ui.viewMode === "default"} class:on={ui.viewMode === "default"} onclick={() => ui.setViewMode("default")}>Default</button>
-        <button type="button" role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
-        <button type="button" role="radio" aria-checked={reading} class:on={reading} use:tooltip={reading ? "Esc goes back to Default" : "Full window, only the conversation"} onclick={() => ui.setViewMode("read")}>Read</button>
-      </div>
-      {#if !reading}
       {#if thread?.children.length}
         {#if thread.children.length > MODAL_CHILDREN}
           <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} onclick={() => { agentsOpen = true; }}>
@@ -213,7 +178,6 @@
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
       {/if}
-      {/if}
     </div>
   </header>
   {#if thread?.connection === "reconnecting" || (entry?.loading && thread)}
@@ -236,29 +200,11 @@
   {:else}
     <div class="scroller" bind:this={scroller} onscroll={onScroll}>
       <div class="column" bind:this={column}>
-        {#if ui.viewMode === "questions"}
-          {#each questions as question (question.key)}
-            <button type="button" class="question" onclick={() => void jumpTo(question.key)}>
-              <span class="question-body">
-                {#if question.skill}<span class="question-skill">{question.skill}</span>{/if}
-                {#if question.text || !question.images.length}<span class="question-text">{question.text || "(empty)"}</span>{/if}
-                {#if question.images.length}
-                  <span class="question-images">
-                    {#each question.images as image, index (image.url + index)}<img src={image.url} alt="Attached {index + 1}" loading="lazy" />{/each}
-                  </span>
-                {/if}
-              </span>
-              <span class="question-meta">{question.at}</span>
-            </button>
-          {/each}
-          {#if !questions.length}<div class="empty muted">No questions in this thread yet.</div>{/if}
-        {:else}
-          {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
-          {#each shown as turn, index (turn.key)}
-            <Turn {turn} threadId={id} latest={index === shown.length - 1} />
-          {/each}
-          {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
-        {/if}
+        {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
+        {#each shown as turn, index (turn.key)}
+          <Turn {turn} threadId={id} latest={index === shown.length - 1} />
+        {/each}
+        {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
       </div>
     </div>
     <div class="foot">
@@ -305,14 +251,6 @@
   .child-alert.stalled { background: var(--warning); }
   .child-alert.failed { background: var(--danger); }
   .modal-list { padding: 12px 14px; }
-  .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
-  .question:hover { background: var(--bg-hover); }
-  .question-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
-  .question-images { display: flex; flex-wrap: wrap; gap: 6px; }
-  .question-images img { display: block; max-width: 160px; max-height: 120px; border-radius: var(--radius-small); }
-  .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
-  .question-text { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
   .column :global(.linked) { animation: linked 2s ease-out; border-radius: var(--radius); }
@@ -336,13 +274,6 @@
   .foot .column { padding: 4px 20px 8px; }
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-faint); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Read mode covers the sidebar; menus and dialogs still open above it in the top layer. */
-  .thread.read { position: fixed; inset: 0; z-index: 35; background: var(--bg); --column: 720px; }
-  .thread.read .head { height: 48px; padding: 0 14px; border-bottom-color: transparent; }
-  .thread.read :global(.title) { font-weight: 500; color: var(--text-muted); }
-  .thread.read .scroller { font-size: calc(var(--chat-text) * 1.1); line-height: 1.75; }
-  .thread.read .column { padding-top: 28px; padding-bottom: 64px; }
-  .thread.read .foot .column { padding-top: 4px; padding-bottom: 12px; }
   @container app (max-width: 899px) {
     .column { padding: 8px 12px 16px; }
     .foot .column { padding: 4px 10px 8px; }

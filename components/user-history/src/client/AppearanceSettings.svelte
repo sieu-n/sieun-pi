@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ACCENTS, applyAppearance, browserStorage, DENSITIES, loadAppearance, saveAppearance, TEXT_SIZES, THEMES, type Accent, type Appearance } from "./appearance.ts";
+  import { ACCENTS, applyAppearance, browserStorage, loadAppearance, saveAppearance, THEMES, type Accent, type Appearance } from "./appearance.ts";
 
   let appearance = $state<Appearance>(loadAppearance(browserStorage()));
   function set<K extends keyof Appearance>(field: K, value: Appearance[K]): void {
@@ -9,8 +9,6 @@
   }
 
   const THEME_LABELS = { system: "Match system", light: "Light", dark: "Dark" } as const;
-  const SIZE_LABELS = { small: "Small", normal: "Normal", large: "Large" } as const;
-  const DENSITY_LABELS = { comfortable: "Comfortable", compact: "Compact" } as const;
   const ACCENT_LABELS: Record<Accent, string> = { ocean: "Ocean", violet: "Violet", green: "Green", amber: "Amber", rose: "Rose", graphite: "Graphite" };
 </script>
 
@@ -32,24 +30,6 @@
         <button role="radio" aria-checked={appearance.accent === value} class="swatch" class:on={appearance.accent === value} data-swatch={value} onclick={() => set("accent", value)}>
           <span class="dot"></span>{ACCENT_LABELS[value]}
         </button>
-      {/each}
-    </div>
-  </div>
-
-  <div class="field">
-    <span class="label" id="appearance-size">Text size</span>
-    <div class="segmented" role="radiogroup" aria-labelledby="appearance-size">
-      {#each TEXT_SIZES as value (value)}
-        <button role="radio" aria-checked={appearance.textSize === value} class:on={appearance.textSize === value} onclick={() => set("textSize", value)}>{SIZE_LABELS[value]}</button>
-      {/each}
-    </div>
-  </div>
-
-  <div class="field">
-    <span class="label" id="appearance-density">Spacing</span>
-    <div class="segmented" role="radiogroup" aria-labelledby="appearance-density">
-      {#each DENSITIES as value (value)}
-        <button role="radio" aria-checked={appearance.density === value} class:on={appearance.density === value} onclick={() => set("density", value)}>{DENSITY_LABELS[value]}</button>
       {/each}
     </div>
   </div>
@@ -78,5 +58,4 @@
   .bubble.mine { background: var(--mine-bubble); border-bottom-right-radius: 5px; }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .preview-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 13px; }
-  :global(:root[data-density="compact"]) .bubble { padding: 5px 12px; }
 </style>

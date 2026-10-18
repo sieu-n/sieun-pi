@@ -545,8 +545,6 @@
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: calc(var(--chat-text) + 0.5px); line-height: 1.45; }
-  :global(:root[data-density="compact"]) .bubble { padding: 5px 12px; }
-  :global(:root[data-density="compact"]) .column { gap: 3px; }
   /* The owner's bubble is a light blue tint with normal text, calm next to the gray replies (owner, 10-08: "this blue is too blue"). */
   .bubble.mine { background: var(--mine-bubble); color: var(--text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }

@@ -13,8 +13,8 @@
   import { labels, threadTags } from "./labels.ts";
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
 
-  /** The header's left half, shared by the thread and chat views: the name (click to rename), the workspace, tags, priority and progress. `reading` keeps only the name. */
-  let { id, reading = false }: { id: string; reading?: boolean } = $props();
+  /** The header's left half, shared by the thread and chat views: the name (click to rename), the workspace, tags, priority and progress. */
+  let { id }: { id: string } = $props();
 
   const thread = $derived(store.thread(id)?.state ?? null);
   const row = $derived(store.session(id));
@@ -52,8 +52,8 @@
   {:else}
     <button type="button" class="title" aria-label="Rename thread {title}" onclick={startRename}>{title}</button>
   {/if}
-  {#if cwd && !reading}<span class="cwd">{shortPath(cwd)}</span>{/if}
-  {#if row && !reading}<span class="tags">
+  {#if cwd}<span class="cwd">{shortPath(cwd)}</span>{/if}
+  {#if row}<span class="tags">
     {#each rowTags as tag (tag.id)}
       <button type="button" class="tag-button" aria-label="Remove tag {tag.name}" onclick={() => void labels.setTag([id], tag.id, false)}><TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span></button>
     {/each}

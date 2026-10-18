@@ -417,8 +417,6 @@
   .chats-label { display: flex; align-items: center; gap: 5px; padding-top: 6px; }
   .link { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; color: inherit; text-decoration: none; min-width: 0; border-radius: var(--radius-small); }
   .link.tree { padding-left: 22px; }
-  :global(:root[data-density="compact"]) .link { padding-top: 2px; padding-bottom: 2px; }
-  :global(:root[data-density="compact"]) .group-label { padding-top: 8px; }
   .tree-toggle { position: absolute; left: 2px; top: 6px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; color: var(--text-faint); }
   .tree-toggle:hover { background: var(--bg-active); color: var(--text); }
   /* Job rows sit 14 px in from the chat's title, the mark column centered under its first letters; the open job's row stays marked while its drawer shows. */

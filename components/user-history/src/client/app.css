@@ -32,7 +32,7 @@
   --primary-edge: light-dark(rgba(6, 52, 79, 0.4), rgba(10, 34, 51, 0.28));
   --user-bubble: light-dark(#eef0f3, #26282f);
   --mine-bubble: light-dark(#dcebf7, #1f3a52);
-  /* Base text size; Settings > Appearance > Text size moves it (`data-text-size`). */
+  /* Base text size. */
   --chat-text: 15px;
   --danger: light-dark(#dc2626, #f87171);
   --danger-soft: light-dark(#fef2f2, rgba(220, 38, 38, 0.16));
@@ -55,8 +55,6 @@
  */
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
-:root[data-text-size="small"] { --chat-text: 14px; }
-:root[data-text-size="large"] { --chat-text: 16.5px; }
 /* An accent sets its base and bold tone; the soft, fill, button and tint tokens mix from them. `data-swatch` paints a picker dot. */
 [data-swatch="ocean"] { --accent: light-dark(#0077c0, #2e9fe6); }
 :root[data-accent="violet"], [data-swatch="violet"] { --accent: light-dark(#6d4fd8, #a08cf5); --accent-bold: light-dark(#5236b5, #c4b5fd); --accent-fill: #6d4fd8; }
@@ -94,7 +92,7 @@ a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 ::selection { background: var(--accent-soft); }
 
-/* Reply text. Spacing is in em so read mode's larger font scales it. Headings get more room above than below so each
+/* Reply text. Spacing is in em so it follows the font size. Headings get more room above than below so each
    one sits with the section it opens. */
 .prose { overflow-wrap: anywhere; line-height: 1.7; }
 .prose > :first-child { margin-top: 0; }
@@ -107,9 +105,6 @@ a { color: var(--accent); }
 .prose ul, .prose ol { padding-left: 1.5em; }
 .prose li { padding-left: 0.2em; }
 .prose li + li { margin-top: 0.4em; }
-:root[data-density="compact"] .prose { line-height: 1.55; }
-:root[data-density="compact"] .prose :is(p, ul, ol, blockquote, .table-wrap, .code-block) { margin-bottom: 0.65em; }
-:root[data-density="compact"] .prose li + li { margin-top: 0.15em; }
 .prose li::marker { color: var(--text-faint); }
 .prose li > ul, .prose li > ol { margin: 0.4em 0 0; }
 .prose li > p { margin: 0 0 0.5em; }

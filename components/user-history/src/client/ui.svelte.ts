@@ -1,7 +1,5 @@
 import { emptyRowFilter, ROW_FILTER_KEYS, type RowFilter, type SidebarSort, type SidebarView } from "./organize.ts";
 
-export type ViewMode = "default" | "questions" | "read";
-const VIEW_MODES: readonly ViewMode[] = ["default", "questions", "read"];
 export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 480;
 /** Dragging the sidebar edge narrower than this collapses the sidebar. */
@@ -46,7 +44,6 @@ export const boardMax = (): number => Math.max(BOARD_MIN, Math.floor((typeof win
 export const clampBoardWidth = (width: number): number => Math.round(Math.min(boardMax(), Math.max(BOARD_MIN, width)));
 
 class Ui {
-  viewMode = $state<ViewMode>(VIEW_MODES.find(mode => mode === stored("chat.viewMode")) ?? "default");
   sidebarWidth = $state(clampWidth(Number(stored("chat.sidebarWidth")) || 260));
   sidebarFilter = $state<RowFilter>(storedFilter());
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
@@ -97,7 +94,6 @@ class Ui {
   setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }
   setSidebarSort(sort: SidebarSort): void { this.sidebarSort = sort; store("chat.sidebarSort", sort); }
   setSidebarView(view: SidebarView): void { this.sidebarView = view; store("chat.sidebarView", view); }
-  setViewMode(mode: ViewMode): void { this.viewMode = mode; store("chat.viewMode", mode); }
   setSidebarWidth(width: number, persist: boolean): void {
     this.sidebarWidth = clampWidth(width);
     if (persist) store("chat.sidebarWidth", String(this.sidebarWidth));

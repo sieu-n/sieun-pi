@@ -5,7 +5,7 @@ export const SETTINGS_SECTIONS = [
   { id: "accounts", label: "Accounts", icon: "users", description: "The Claude and Codex accounts your chats share, and which one serves the next request." },
   { id: "usage", label: "Usage", icon: "chart", description: "Tokens and cost for every agent on this box." },
   { id: "new-chats", label: "New chats", icon: "message", description: "The model, effort and start skill every new chat begins with." },
-  { id: "appearance", label: "Appearance", icon: "palette", description: "Theme, accent color, text size and spacing. Saved in this browser and applied at once." },
+  { id: "appearance", label: "Appearance", icon: "palette", description: "Theme and accent color. Saved in this browser and applied at once." },
   { id: "remote", label: "Phone access", icon: "phone", description: "Open the chat from your phone, and keep it running on this Mac." },
   { id: "slack", label: "Slack", icon: "hash", description: "Mirror chats to Slack channels and reply from there." },
   { id: "hosts", label: "Hosts", icon: "server", description: "Every box that runs agents, with its CPU, memory and agent queue." },

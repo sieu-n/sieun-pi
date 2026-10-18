@@ -1,17 +1,13 @@
 /** The look the person picks in Settings > Appearance, saved per browser and applied as data attributes on <html> that app.css reads. */
 export const THEMES = ["system", "light", "dark"] as const;
 export const ACCENTS = ["ocean", "violet", "green", "amber", "rose", "graphite"] as const;
-export const TEXT_SIZES = ["small", "normal", "large"] as const;
-export const DENSITIES = ["comfortable", "compact"] as const;
 
 export type Theme = (typeof THEMES)[number];
 export type Accent = (typeof ACCENTS)[number];
-export type TextSize = (typeof TEXT_SIZES)[number];
-export type Density = (typeof DENSITIES)[number];
-export interface Appearance { theme: Theme; accent: Accent; textSize: TextSize; density: Density }
+export interface Appearance { theme: Theme; accent: Accent }
 
-/** Today's look: the OS scheme, the ocean accent, 15 px text, comfortable spacing. */
-export const DEFAULT_APPEARANCE: Readonly<Appearance> = { theme: "system", accent: "ocean", textSize: "normal", density: "comfortable" };
+/** Today's look: the OS scheme and the ocean accent. */
+export const DEFAULT_APPEARANCE: Readonly<Appearance> = { theme: "system", accent: "ocean" };
 export const APPEARANCE_KEY = "chat.appearance";
 
 const pick = <T extends string>(options: readonly T[], value: unknown, fallback: T): T => options.find(option => option === value) ?? fallback;
@@ -26,8 +22,6 @@ export function parseAppearance(raw: string | null): Appearance {
   return {
     theme: pick(THEMES, saved.theme, DEFAULT_APPEARANCE.theme),
     accent: pick(ACCENTS, saved.accent, DEFAULT_APPEARANCE.accent),
-    textSize: pick(TEXT_SIZES, saved.textSize, DEFAULT_APPEARANCE.textSize),
-    density: pick(DENSITIES, saved.density, DEFAULT_APPEARANCE.density),
   };
 }
 
@@ -51,7 +45,7 @@ export interface Page {
 }
 
 /**
- * Sets `data-theme`, `data-accent`, `data-text-size` and `data-density` on the root; a default value removes its attribute, so today's CSS
+ * Sets `data-theme` and `data-accent` on the root; a default value removes its attribute, so today's CSS
  * applies unchanged. Each `theme-color` meta gets the forced theme's color, or its own media scheme's for System, so the installed app's title
  * bar follows the Theme pick and not only the OS scheme.
  */

@@ -286,10 +286,6 @@
 
 <style>
   .board { display: flex; flex-direction: column; gap: 10px; padding: 10px 10px 20px; font-size: calc(var(--chat-text) - 2px); }
-  :global(:root[data-density="compact"]) .board { gap: 6px; padding: 6px 8px 14px; }
-  :global(:root[data-density="compact"]) .island-toggle { padding-top: 6px; padding-bottom: 6px; }
-  :global(:root[data-density="compact"]) .island-body { padding: 0 10px 8px; }
-  :global(:root[data-density="compact"]) .plan-item { padding-top: 1px; padding-bottom: 1px; }
   .island { border-radius: var(--radius); background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow-small); }
   /* The header: the title button stretches over the whole row (its ::after), so the chevron area folds too; the Open plan button sits above it. */
   .island-head { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 0; border-radius: var(--radius); }
