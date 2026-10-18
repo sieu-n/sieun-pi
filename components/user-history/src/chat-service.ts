@@ -21,8 +21,9 @@ import type { RemoteMode } from "./shared/types.ts";
  * `adopt`: which chats a serve acts on. `live` is every chat in its chats.json plus the session-file scan, `own` only the chats it created.
  * Unset: `live` for the main instance, `own` for any other, so a test or scratch serve never attaches, steers or reloads a live chat.
  * `scratch`: the serve only reads (`isScratch`); `--scratch` sets it, and a serve outside the live data dir is one without the flag.
+ * `liveReadsOnly`: a scratch serve may read the live daemon socket (`--live-reads-only`); without it the serve refuses that socket.
  */
-type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean; adopt?: "live" | "own"; scratch?: boolean };
+type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean; adopt?: "live" | "own"; scratch?: boolean; liveReadsOnly?: boolean };
 type Configuration = {
   port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string;
   /** The remote HTTPS origin: fixed for `custom`, the last tailnet name seen for `tailscale`. */
@@ -63,6 +64,11 @@ async function isLiveDirectory(directory: string): Promise<boolean> {
  */
 async function isScratch(options: Options, directory: string): Promise<boolean> {
   return options.scratch === true || !await isLiveDirectory(directory);
+}
+/** The live daemon's socket is the default one, which the service unit passes as `--socket /tmp/prime-agent-%U/daemon.sock`. */
+async function isLiveSocket(socketPath: string): Promise<boolean> {
+  const real = (path: string) => realpath(path).catch(() => resolve(path));
+  return await real(socketPath) === await real(await defaultSocket());
 }
 /**
  * The main instance starts the Prime Agent daemon when its socket does not answer (after a reboot nothing else starts it). Test and extra
@@ -339,9 +345,17 @@ async function serve(options: Options): Promise<void> {
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   const scratch = await isScratch(options, service.directory);
   if (scratch && options.adopt === "live") throw new Error("A scratch serve only reads, so it cannot adopt the live chats. Drop --adopt-live, or serve the live data dir without --scratch.");
+  if (options.liveReadsOnly && !scratch) throw new Error("--live-reads-only is for a scratch serve: add --scratch, or serve a copy of the data dir.");
+  // At 12:17Z on 10-18 a --scratch serve on a copy of browser-chat and the live socket opened 01a14d31, which its copied own-chats.json named,
+  // and reloaded its extension, which rebuilt the chat's Python kernel. The live socket takes an explicit flag, and even then only reads.
+  if (scratch && !options.liveReadsOnly && await isLiveSocket(service.config.socketPath)) {
+    throw new Error(`A scratch serve refuses the live daemon socket ${service.config.socketPath}. Point --socket at a fake daemon, or pass --live-reads-only to read the live sessions; the serve then still sends only reads (no attach, reload, restart, setting or message).`);
+  }
   // A scratch serve on the live dir still keeps off everything the main instance owns: the daemon, the bridges, Slack, Tailscale and login.
   const primary = service.primary && !scratch;
   if (scratch) process.stderr.write(`${new Date().toISOString()} scratch serve: it only reads; no wakes, briefs, check-ins, duties, job cleanup, archives, resumes, reopens, adopts or pool writes (${service.directory})\n`);
+  // Every daemon command of a scratch serve goes through a socket that passes only reads (src/read-only-daemon.ts).
+  const readOnly = scratch ? await (await import("./read-only-daemon.ts")).readOnlyDaemon(service.config.socketPath, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`)) : null;
   await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   const { DaemonKeeper } = await import("./chat-daemon.ts");
@@ -360,7 +374,7 @@ async function serve(options: Options): Promise<void> {
   // The other boxes in ~/.config/sieun-pi/hosts.json: the main instance opens a local socket per box, tunneled to its relay (src/hosts.ts), and
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
   const hosts = await startHosts(primary);
-  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory,
+  const backend = await createChatBackend({ socketPath: readOnly?.socketPath ?? service.config.socketPath, dataDir: service.directory,
     ownChatsOnly: adopt === "own", scratch, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = !scratch && runsSlack(primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
@@ -395,7 +409,7 @@ async function serve(options: Options): Promise<void> {
       finally {
         // Sends still out get their answers before the links close, so a refusal is recorded as one (Outbox.close with drain).
         await backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`));
-        stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close();
+        stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await hosts?.bridge?.close(); await server.close(); await readOnly?.close();
       }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
@@ -468,6 +482,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
     const flag = flags[index], value = flags[index + 1];
     if (flag === "--supervised") { options.supervised = true; index--; continue; }
     if (flag === "--scratch") { options.scratch = true; index--; continue; }
+    if (flag === "--live-reads-only") { options.liveReadsOnly = true; index--; continue; }
     if (flag === "--no-adopt" || flag === "--adopt-live") {
       const adopt = flag === "--no-adopt" ? "own" : "live";
       if (options.adopt && options.adopt !== adopt) throw new Error("Use --no-adopt or --adopt-live, not both.");
@@ -484,6 +499,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (options.supervised && command !== "serve") throw new Error("Use --supervised with chat serve.");
   if (options.adopt && command !== "start" && command !== "serve") throw new Error("Use --no-adopt or --adopt-live with chat start or serve.");
   if (options.scratch && command !== "serve") throw new Error("Use --scratch with chat serve.");
+  if (options.liveReadsOnly && command !== "serve") throw new Error("Use --live-reads-only with chat serve --scratch.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
   if (command === "open") {
     // When hosts.json puts the chat role on another box, the app is that box's chat; nothing starts here.
@@ -497,8 +513,8 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (command === "serve") { await serve(options); process.exit(process.exitCode ?? 0); }
   if (!["url", "status", "stop"].includes(command)) {
     if (!["help", "--help", "-h"].includes(command)) throw new Error("Unknown chat command: " + command);
-    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live] [--scratch]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n" +
-      "A serve outside ~/.prime/agent/browser-chat, or with --scratch, only reads: it sends no wake, check-in, duty, reopen or pool write. --no-adopt keeps any serve to its own chats.\n"); return;
+    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live] [--scratch [--live-reads-only]]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n" +
+      "A serve outside ~/.prime/agent/browser-chat, or with --scratch, only reads: it sends no wake, check-in, duty, reopen, attach, reload or pool write, and it refuses the live daemon socket unless --live-reads-only. --no-adopt keeps any serve to its own chats.\n"); return;
   }
   const service = await loadService(options, false);
   if (!service) {

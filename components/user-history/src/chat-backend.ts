@@ -164,7 +164,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
-      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")));
+      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), scratch);
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });

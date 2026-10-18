@@ -21,8 +21,8 @@ import { ARCHIVE_TICK_MS } from "../src/chat-archive-queue.ts";
 import { TICK_MS as WAKE_TICK_MS } from "../src/wakes.ts";
 
 const cli = fileURLToPath(new URL("../src/chat-service-cli.mjs", import.meta.url));
-/** The daemon commands a serve may send while it only reads: the session list, its roster stream, the heartbeat list, and a live thread's view. */
-const READS = new Set(["list", "roster_subscribe", "cron_list", "attach", "detach", "get_queue", "get_connection_state", "get_messages", "get_session_context", "get_state"]);
+/** The daemon commands a serve may send while it only reads: the session list, its roster stream, the heartbeat list and a session's state. No attach (scratch-serve-live-chat.test.ts). */
+const READS = new Set(["list", "roster_subscribe", "cron_list", "get_queue", "get_connection_state", "get_messages", "get_session_context", "get_state"]);
 /** The pi-pool commands that only read the pool. */
 const POOL_READS = new Set(["snapshot", "queue", "ls", "who", "config", "resolve"]);
 const CAPABILITIES = ["abort_and_send_queued", "acp_mcp_servers", "agent_roster", "authoritative_child_roster", "client_owned_sessions", "delete_rlm_subagent",

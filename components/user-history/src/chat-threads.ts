@@ -246,10 +246,14 @@ export class ThreadHub {
   private readonly outboxes = new Map<string, OutboxEntry[]>();
   private closed = false;
 
-  /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
+  /**
+   * `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat.
+   * `readOnly` (a scratch serve) opens every thread from its session file and never attaches or resumes one: at 12:17Z on 10-18 a scratch
+   * serve's attach of the live chat 01a14d31 ran its build-change reload, which rebuilt that chat's Python kernel.
+   */
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
     private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
-    private readonly firstPages = new FirstPages(null)) {
+    private readonly firstPages = new FirstPages(null), private readonly readOnly = false) {
     this.dormant = new Dormancy(idle);
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
@@ -448,7 +452,7 @@ export class ThreadHub {
    * service starts of 23:16Z, 23:34Z and 23:55Z on 10-17, because their tabs reopened the threads first.
    */
   private keepPinnedLive(): void {
-    if (this.closed) return;
+    if (this.closed || this.readOnly) return;
     const now = Date.now();
     for (const id of this.pinned) {
       if (this.threads.get(id)?.live || this.dormant.has(id) || this.pinning.has(id) || now < (this.pinRetry.get(id)?.at ?? 0)) continue;
@@ -780,7 +784,7 @@ export class ThreadHub {
       const mark = (label: string, from: number) => { marks.push(`${label} ${Math.round(performance.now() - from)}ms`); return performance.now(); };
       const summary = await this.summary(id);
       const at = mark("catalog", started);
-      const activeSessionId = attach ? liveSessionId(summary) : undefined;
+      const activeSessionId = attach && !this.readOnly ? liveSessionId(summary) : undefined;
       const board = this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
       const first = activeSessionId === undefined ? await this.savedSnapshot(summary)
         : await this.savedSnapshot(summary).catch(error => { marks.push(`no file page (${error instanceof Error ? error.message : String(error)})`); return null; });
@@ -1005,6 +1009,7 @@ export class ThreadHub {
    * line a dormant chat logs.
    */
   resume(id: string, background = false, trigger = "resume"): Promise<Thread> {
+    if (this.readOnly) return Promise.reject(new ThreadError(409, "A scratch serve only reads: it does not resume a thread."));
     this.dormant.wake(id, trigger);
     if (!background) this.attaches.promote(id);
     const running = this.resuming.get(id);

@@ -120,7 +120,7 @@ With `"delta":true` the sessions feed sends the whole list once and then `{"type
 ## Commands
 
 ```sh
-node src/chat-service-cli.mjs start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none]
+node src/chat-service-cli.mjs start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live] [--scratch [--live-reads-only]]
 npm run typecheck      # tsc and svelte-check
 npm test               # the incident and owner-rule tests, which every release-chat build runs
 ```
@@ -196,6 +196,8 @@ On macOS the main instance runs as the LaunchAgent `com.sieun.agent-chat` (`~/Li
 - Only the main instance does this. `SIEUN_PI_CHAT_START_DAEMON=1` turns it on for another instance, `0` turns it off. `chat status` prints whether the daemon answers.
 - Only the main instance adopts chats at start: it pins every chat in `chats.json`, sets its steering, reloads a stale extension and scans the session files for chats the index lost. Any other instance (`--data-dir`, a changed HOME) acts only on the chats it created, listed in `<data dir>/own-chats.json`, even if its `chats.json` is a copy of the live one. `--no-adopt` keeps any instance, the main one too, to its own chats. Tests pass `--no-adopt`.
 - A serve outside the live data dir (`~/.prime/agent/browser-chat` under the account's real home), or one started with `chat serve --scratch`, only reads. It starts no wakes, spawn briefs, check-ins, duties, job cleanup, duty archives, interrupted-job resumes, adopts, pool priority or turn-queue writes, usage publish, SDK update, Slack, Tailscale, daemon start or login item, and it refuses `--adopt-live`. On 10-18 a CPU profile serve on a copy of browser-chat woke 3 live jobs and relayed 2 wakes through their parents at 08:25Z. `test/scratch-serve-read-only.test.ts` runs a serve against a fake daemon socket and a fake pi-pool and fails on any command that acts on a session.
+- Every daemon command of a scratch serve goes through a socket in front of the daemon (`src/read-only-daemon.ts`) that passes only reads (`DAEMON_READS`: the session lists, the roster, the heartbeat lists and the `get_*` reads) and answers any other command with a failure. A scratch serve opens every thread from its session file and never attaches or resumes one, so it sends no attach, reload, restart, model or thinking set, steer or message. At 12:17Z on 10-18 a `--scratch` serve on a copy of browser-chat and the live socket opened 01a14d31, which its copied `own-chats.json` named, and its build-change reload rebuilt that chat's Python kernel.
+- A scratch serve refuses the live daemon socket (the default `/tmp/prime-agent-<uid>/daemon.sock`, compared by real path) unless it is started with `--live-reads-only`, and with that flag it still sends only reads. `test/scratch-serve-live-chat.test.ts` opens an owned chat on an older build against a fake daemon and fails on any attach or reload, and checks the live socket refusal.
 
 ## Mac app
 
