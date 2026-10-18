@@ -91,3 +91,40 @@ test("websearch_query searches once when Google answers the first time", async (
   assert.equal(outcome.status, "pass", JSON.stringify(outcome));
   assert.equal(calls.n, 1);
 });
+
+const skillMap = CHECKS.find(check => check.id === "skill_map")!;
+const skillPaths = CHECKS.find(check => check.id === "skill_paths")!;
+const LS_TREE = [".agents/skills/apps/web/SKILL.md", ".agents/skills/apps/web/inner/SKILL.md", ".agents/skills/repo/.hidden/x/SKILL.md", ".claude/skills-native/gh/SKILL.md"].join("\n");
+const gitDeps = (map: string): Deps => ({
+  ...deps("linux"),
+  list: async () => [{ name: "SKILL.md", kind: "file" }],
+  readFile: async () => "| `apps/uncommitted` |",
+  exec: async (file, args) => file === "git" && args[0] === "ls-tree" ? { code: 0, stdout: LS_TREE, stderr: "", ms: 0 }
+    : file === "git" && args[0] === "show" ? { code: 0, stdout: map, stderr: "", ms: 0 } : { code: 1, stdout: "", stderr: "unexpected", ms: 0 },
+});
+
+test("skill_map compares HEAD's skill folders with HEAD's map, so an uncommitted folder in the shared tree does not count", async () => {
+  assert.equal((await skillMap.run(gitDeps("| `apps/web` | x |\n| `gh` | y |\n"))).status, "pass");
+  const outcome = await skillMap.run(gitDeps("| `apps/web` | x |\n"));
+  assert.ok(outcome.status === "fail" && outcome.detail === "map lacks gh", JSON.stringify(outcome));
+});
+
+test("skill_paths runs check-skill-paths.mjs over a git archive of HEAD with GIT_DIR on the repo, and cleans up", async () => {
+  const calls: { file: string; args: readonly string[]; cwd?: string; env?: Record<string, string> }[] = [];
+  const run = (stdout: string): Deps => ({
+    ...deps("linux"),
+    exec: async (file, args, options) => {
+      calls.push({ file, args, cwd: options.cwd, env: options.env });
+      return { code: 0, stdout: file === "git" && args[0] === "rev-parse" ? "/repo/.git\n" : file === "node" ? stdout : "", stderr: "", ms: 0 };
+    },
+  });
+  assert.equal((await skillPaths.run(run("[]"))).status, "pass");
+  const node = calls.find(call => call.file === "node")!;
+  const archive = calls.find(call => call.file === "git" && call.args[0] === "archive")!;
+  assert.ok(archive.args.includes("HEAD") && archive.cwd === "/repo");
+  assert.deepEqual(node.env, { GIT_DIR: "/repo/.git", GIT_WORK_TREE: node.cwd });
+  assert.ok(node.cwd!.startsWith("/tmp/skill-paths-head-"));
+  assert.deepEqual(calls.at(-1)!.args, ["-rf", node.cwd, `${node.cwd}.tar`]);
+  const dead = await skillPaths.run(run('[{"file":"a/SKILL.md","line":1,"ref":"apps/x.ts"}]'));
+  assert.ok(dead.status === "fail" && dead.detail.includes("apps/x.ts"), JSON.stringify(dead));
+});
