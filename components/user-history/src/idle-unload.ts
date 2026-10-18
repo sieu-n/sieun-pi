@@ -1,4 +1,4 @@
-import type { SessionSummary } from "prime-agent";
+import type { DaemonClient, SessionSummary } from "prime-agent";
 
 /**
  * Stopping a session that sits idle, at the daemon's idleEvictionMinutes (10), because Prime's own sweeps fail under load: a worker sweep ends at
@@ -106,6 +106,38 @@ export function recyclePlan(quiet: readonly QuietWorker[], own: ReadonlyMap<numb
 /** A daemon's answer to one request, as `DaemonClient.request` resolves it. */
 export type DaemonAnswer = { success: true; data?: unknown } | { success: false; error: string };
 
+/**
+ * The `daemon_hello` server capability of a Prime that takes `origin: "idle_unload"` on a kill and records the stop as an idle unload. That
+ * Prime records a kill with no origin as the owner's stop, and a Prime without it ignores the field (mem.3, checked by metal agent runtime on
+ * 10-18), so only the capability tells the two apart.
+ */
+export const KILL_ORIGIN = "kill_origin";
+
+/** The kill the idle unload sends under `hello`: named as an idle unload to a daemon that lists KILL_ORIGIN, a bare kill to any other. */
+export function idleKillCommand(activeSessionId: string, hello: { serverCapabilities?: readonly string[] }) {
+  const capabilities: readonly string[] = hello.serverCapabilities ?? [];
+  return capabilities.includes(KILL_ORIGIN) ? { type: "kill" as const, activeSessionId, origin: "idle_unload" as const } : { type: "kill" as const, activeSessionId };
+}
+
+export type UnloadClient = Pick<DaemonClient, "hello" | "waitForHello" | "request">;
+
+/**
+ * `get_state` or the idle kill for an active session. The kill reads the hello of the connection it goes out on, since `DaemonClient.connect`
+ * drops the last one and a reconnect may meet another Prime build. In prime-agent 0.9.8 `request` reaches its socket write with no await once a
+ * hello is held, so no reconnect falls between the read and the send. It is never replayed onto a later connection (`recoverable: false`).
+ */
+export async function unloadRequest(client: UnloadClient, activeSessionId: string, type: "get_state" | "kill"): Promise<DaemonAnswer> {
+  try {
+    if (type === "get_state") return await client.request({ type, activeSessionId }, 30_000, { recoverable: false });
+    if (!client.hello) await client.waitForHello();
+    const hello = client.hello;
+    if (!hello) return { success: false, error: "The daemon connection closed before its hello; the kill was not sent." };
+    return await client.request(idleKillCommand(activeSessionId, hello), 30_000, { recoverable: false });
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
 /** What one sweep of `IdleUnloader` reads and calls. The chat backend wires it to the catalog, the hub and each box's daemon. */
 export interface UnloadSource {
   /** Every box's daemon rows, which the plan reads. */
@@ -125,7 +157,7 @@ export interface UnloadSource {
   own(pids: readonly number[]): Promise<ReadonlyMap<number, number>>;
   restNow(id: string, quietMs: number): Promise<boolean>;
   title(id: string): string | null;
-  /** `get_state` or `kill` for the row's active session, through the daemon of the row's box. */
+  /** `get_state` or the idle kill (`unloadRequest`) for the row's active session, through the daemon of the row's box. */
   request(row: SessionSummary, type: "get_state" | "kill"): Promise<DaemonAnswer>;
   /**
    * Runs after a kill succeeded: record the stop, and keep a chat or the owner's plain thread listed, since the kill writes the archived state.

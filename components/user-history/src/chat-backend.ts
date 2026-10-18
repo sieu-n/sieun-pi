@@ -25,7 +25,7 @@ import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord } from "./
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow } from "./cut-end.ts";
-import { IdleUnloader } from "./idle-unload.ts";
+import { IdleUnloader, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -329,8 +329,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     restNow: (id, quietMs) => threads.restNow(id, quietMs),
     title: id => catalog.title(id),
-    request: (row, type) => catalog.clientFor(row.activeSessionId!).request({ type, activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false })
-      .catch(error => ({ success: false as const, error: String(error) })),
+    request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type),
     stopped: async (row, isChat, since) => {
       await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
       // The daemon's kill writes the archived state, which would hide a chat until the next service start unarchived it (Chats.adopt) and the
