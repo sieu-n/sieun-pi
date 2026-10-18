@@ -7,7 +7,7 @@ Object.assign(globalThis, { document: { body: { dataset: {} } } });
 const { accountState, clockText, NEEDS_TERMS, resolutionSentence, STATE_LABEL, threadsText } = await import("../src/client/accounts.ts");
 
 const row = (extra: Partial<PoolAccount>): PoolAccount => ({
-  id: "a", email: "a@x", label: "a@x", usage: "", session_pct: 0, weekly_pct: 0, usable: false, reason: null, current: false, pinned: false, live: false, seat: false,
+  id: "a", email: "a@x", label: "a@x", usage: "", session_pct: 0, weekly_pct: 0, usable: false, reason: null, current: false, pinned: false, seat: false,
   score: null, tier: null, windows: [], usageAt: null, cooldownUntil: null, cooldownReason: null, limitedUntil: null, disabled: false, sessions: 0, ...extra });
 
 test("accounts: an account whose Consumer Terms are pending shows Needs terms, not Refused", () => {
