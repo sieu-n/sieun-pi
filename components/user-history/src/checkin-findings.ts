@@ -338,15 +338,24 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
  * The open top-level goals of a chat that has no active duty, in board order; none when the chat has one (duty proposals 10-12: five chats
  * held open goals with no duty and no metric flagged them). The built-in check-in is no duty here. A goal with an open todo linked to it or to
  * one of its steps is left out, because For you already asks: 'spec and monitoring system' (01a140fb) got this finding on p5 in 14 check-ins
- * in a row while t1, linked to p5, asked the owner from 10-16 04:54Z on whether to read the daily report every morning.
+ * in a row while t1, linked to p5, asked the owner from 10-16 04:54Z on whether to read the daily report every morning. Only a goal whose
+ * owner words ask for standing or repeated work counts (`asksStanding`), and never one whose own waitUntil ends it within a day: 'disk space
+ * change' (01a14cac) p1 "Measure how free disk space changes over 25 minutes", two readings and a wake, was flagged two runs in a row on 10-18.
  */
-export function goalsWithoutDuty(board: ChatBoard | null, duties: readonly DutyRef[]): PlanItem[] {
+export function goalsWithoutDuty(board: ChatBoard | null, duties: readonly DutyRef[], now = Date.now()): PlanItem[] {
   const active = duties.filter(duty => duty.status === "active" && duty.id !== CHECK_IN_DUTY_ID);
   if (active.some(duty => duty.chat === undefined)) return [];
   const asked = new Set((board?.todos ?? []).flatMap(todo => !todo.done && todo.step ? [todo.step] : []));
   const asks = (goal: PlanItem): boolean => { let found = false; walkItems([goal], item => { if (asked.has(item.id)) found = true; }); return found; };
-  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal) && !namesDuty(goal.note ?? "", active));
+  const endsSoon = (goal: PlanItem): boolean => { const until = Date.parse(goal.waitUntil ?? ""); return Number.isFinite(until) && until - now <= DAY_MS; };
+  return (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && !asks(goal) && !namesDuty(goal.note ?? "", active) && asksStanding(goal) && !endsSoon(goal));
 }
+const DAY_MS = 24 * 60 * 60_000;
+/** Words in the owner's words for a goal that ask for standing or repeated work: "keep a page updated", "every morning", "daily", "never one slow queue", "on its own". */
+const STANDING = /\b(?:daily|weekly|hourly|nightly|standing|never|whenever|every|each|always|on its own|by itself|any ?more|keeps?|kept|stays?|holds?|ongoing|continuous(?:ly)?|monitor(?:s|ing)?|watch(?:es|ing)?|track(?:s|ing)?|recurring|regularly|updated|up to date)\b/i;
+/** Whether a goal's own text or requirement lines (the owner's words) ask for standing or repeated work (`STANDING`). */
+export const asksStanding = (goal: Pick<PlanItem, "text" | "requirements">): boolean =>
+  [goal.text, ...(goal.requirements ?? []).map(line => line.text)].some(text => STANDING.test(text));
 /**
  * Whether a goal's note names an active duty as its cover, as "<name> duty" or "duty <name>", quoted or not, such as chat-057a's p1: "The
  * existing Whole system duty in the AI harness developer environment chat plus this chat's check-in watch this goal" (kept since 10-16).

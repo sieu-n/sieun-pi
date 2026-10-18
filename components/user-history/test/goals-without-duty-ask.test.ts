@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInDuties, type DutyRef, goalsToFold, goalsWithoutDuty } from "../src/checkin-findings.ts";
 import type { Duty } from "../src/shared/chat-duties.ts";
-import type { ChatBoard } from "../src/shared/types.ts";
+import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 // 'spec and monitoring system' (01a140fb): goals_without_duty flagged p5 in 14 check-ins in a row while t1, linked to p5, already asked the
 // owner on For you from 10-16 04:54Z whether to add the morning report read.
@@ -48,4 +48,15 @@ test("checkInDuties: the chat's own duties marked by their runs, then the active
   assert.deepEqual(read.map(item => `${item.id} ${item.name}${"unmeasured" in item && item.unmeasured ? " unmeasured" : ""}${"chat" in item && item.chat ? ` of ${item.chat.slice(0, 8)}` : ""}`),
     ["d1 Agents answer unmeasured", "d7 Whole system of 01a1164b"]);
   assert.deepEqual(goalsWithoutDuty(board057a(NOTE), read), [], "its own active duty covers every goal");
+});
+
+test("goals without duty: a one-off goal and a goal its own wait ends within a day are no standing work ('disk space change' p1, 10-18)", () => {
+  const NOW = Date.parse("2026-10-18T01:50:00Z");
+  const disk: PlanItem = { id: "p1", text: "Measure how free disk space changes over 25 minutes", status: "doing", job: "disk space check", waitUntil: "2026-10-18T02:09:56.000Z",
+    target: { metric: "disk free readings taken", target: 2, unit: "readings", current: 1, measuredAt: "2026-10-18T01:44:56.000Z", source: "df" }, children: [] };
+  const page: PlanItem = { id: "p2", text: "Research which of our linkedin index gaps matter most and keep a page with the top 10 updated", status: "doing", children: [] };
+  const boardOf = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), plan, todos: [] });
+  assert.deepEqual(goalsWithoutDuty(boardOf([disk, page]), [], NOW).map(goal => goal.id), ["p2"]);
+  assert.deepEqual(goalsWithoutDuty(boardOf([{ ...page, waitUntil: "2026-10-18T03:00:00.000Z" }]), [], NOW), [], "its own wait ends it within a day");
+  assert.deepEqual(goalsWithoutDuty(boardOf([{ id: "p1", text: "Measure free disk space every morning", status: "doing", children: [] }]), [], NOW).map(goal => goal.id), ["p1"]);
 });

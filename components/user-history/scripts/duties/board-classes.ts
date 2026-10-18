@@ -161,7 +161,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
       waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),
       fold: goalsToFold(board, facts, new Set([id, name]), chatDuties ?? []), load: oneSessionLoad(steps, rootsOf([id, name])),
-      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home)), chatDuties ?? []), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties) : [], end };
+      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home)), chatDuties ?? []), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties, now) : [], end };
     const { metrics: misses, flagged } = convergenceMisses(id, steps, findings, told, everyMs, now);
     result.push({ id, name, everyMs, open: steps.length, counts: classCounts(steps), misses, steps, flagged, end, kpi: endStateKpi(end) });
   }
