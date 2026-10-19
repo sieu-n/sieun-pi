@@ -130,11 +130,14 @@ export async function readDuties(dataDir: string, chat: string): Promise<DutyChe
 /**
  * PostHog answers 429 "Too many queries are running right now" when a project runs more queries at once than it allows: the first live run on
  * 10-19 sent the signup query beside 24 tile queries and lost it. So PostHog queries run TILE_CONCURRENCY at a time, the signup query before
- * the tiles, and a 429 waits RETRY_MS and tries again up to RETRIES times before it counts as a source error.
+ * the tiles, and a 429 waits RETRY_MS and tries again up to RETRIES times before it counts as a source error. A busy 502, 503 or 504 gets the
+ * same retry: on 10-19 at 14:40Z the Search traffic duty's PostHog read got 503 clickhouse_at_capacity and answered 200 eight minutes later
+ * (auto-sns-agent ed072b50b retries it there).
  */
 export const TILE_CONCURRENCY = 4;
 const RETRIES = 4;
 const RETRY_MS = 5_000;
+const BUSY = new Set([429, 502, 503, 504]);
 
 async function json<T>(deps: NumbersDeps, url: string, key: string, body?: unknown, extra: Record<string, string> = {}): Promise<{ status: number; data: T }> {
   const sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -142,7 +145,7 @@ async function json<T>(deps: NumbersDeps, url: string, key: string, body?: unkno
     const response = await deps.fetch(url, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...extra },
       ...body ? { body: JSON.stringify(body) } : {} });
     const text = await response.text();
-    if (response.status === 429 && attempt < RETRIES) { await sleep(RETRY_MS * (attempt + 1)); continue; }
+    if (BUSY.has(response.status) && attempt < RETRIES) { await sleep(RETRY_MS * (attempt + 1)); continue; }
     if (!response.ok) throw new Error(`${url.replace(/\?.*/, "")} gave HTTP ${response.status}: ${text.slice(0, 200)}`);
     return { status: response.status, data: JSON.parse(text) as T };
   }

@@ -29,12 +29,12 @@ async function dataDir(d2Error: boolean): Promise<string> {
 
 const account = (id: string, email: string, days = 1) => ({ id, email, created_at: new Date(NOW - days * 86_400_000).toISOString() });
 
-function fakeFetch(options: { supabaseDown?: boolean; tileError?: boolean; throttled?: number }): typeof fetch {
+function fakeFetch(options: { supabaseDown?: boolean; tileError?: boolean; throttled?: number; busyStatus?: number }): typeof fetch {
   let throttled = options.throttled ?? 0;
   return (async (input: string | URL | Request) => {
     const url = String(input);
     const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
-    if (url.includes("posthog") && throttled > 0) { throttled--; return reply(429, { detail: "Too many queries are running right now" }); }
+    if (url.includes("posthog") && throttled > 0) { throttled--; return reply(options.busyStatus ?? 429, { detail: "Too many queries are running right now" }); }
     if (url.includes("/auth/v1/admin/users")) return options.supabaseDown ? reply(503, { msg: "down" })
       : reply(200, { users: [account("a", "a@x.com"), account("b", "b@x.com"), account("q", "sg-qa-1@slack.green"), account("old", "o@x.com", 30)] });
     if (url.includes("/dashboards/")) return reply(200, { tiles: [{ insight: { id: 7, name: "Funnel", query: { kind: "InsightVizNode" } } }, { insight: null }] });
@@ -46,7 +46,7 @@ function fakeFetch(options: { supabaseDown?: boolean; tileError?: boolean; throt
   }) as typeof fetch;
 }
 
-const deps = (dir: string, options: { supabaseDown?: boolean; tileError?: boolean; throttled?: number } = {}): NumbersDeps =>
+const deps = (dir: string, options: { supabaseDown?: boolean; tileError?: boolean; throttled?: number; busyStatus?: number } = {}): NumbersDeps =>
   ({ fetch: fakeFetch(options), now: () => NOW, dataDir: dir, env, sleep: async () => {} });
 
 test("a clean day reads 0 numbers wrong, with QA accounts and QA signups left out of both sides", async () => {
@@ -104,6 +104,15 @@ test("a PostHog 429 waits and tries again instead of leaving the signup gap unme
   const dir = await dataDir(false);
   try {
     const output = await measureNumbers(deps(dir, { throttled: 2 }), CHAT);
+    assert.equal(output.metrics.signup_count_gap, 0);
+    assert.equal(output.metrics.numbers_wrong, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a PostHog 503 at capacity waits and tries again like a 429 (Search traffic duty, 10-19 14:40Z)", async () => {
+  const dir = await dataDir(false);
+  try {
+    const output = await measureNumbers(deps(dir, { throttled: 2, busyStatus: 503 }), CHAT);
     assert.equal(output.metrics.signup_count_gap, 0);
     assert.equal(output.metrics.numbers_wrong, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
