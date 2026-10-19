@@ -30,11 +30,6 @@ const STORE_BOX = "root@100.84.91.26";
 const BACKUP_DIR = "backups/code-health";
 /** The steps one code-health-daily.mjs run logs, in its order. */
 export const STEPS = REPOS.flatMap(repo => [`run ${repo}`, `missing ${repo}`]).concat(["load-ci", "load-tests", "page", "backup"]);
-/**
- * GitHub's artifact storage for sieu-n/auto-sns-agent was full on 2026-10-18 and its monthly quota resets on 2026-11-01, so until then a
- * failed load-tests step is reported and not counted.
- */
-export const ARTIFACTS_BLOCKED_UNTIL = Date.parse("2026-11-01T00:00:00+09:00");
 
 const kstDay = (ms: number): string => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date(ms));
 const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10);
@@ -97,16 +92,11 @@ export function lastRun(log: string): StepLine[] {
   return start < 0 ? [] : lines.slice(start);
 }
 
-/** The failed steps of a run, plus the expected steps it never logged once it has ended. A failed load-tests is left out until ARTIFACTS_BLOCKED_UNTIL. */
-export function failedSteps(run: StepLine[], running: boolean, now: number): { counted: string[]; excused: string[] } {
-  const counted: string[] = [];
-  const excused: string[] = [];
-  for (const line of run.filter(line => !line.ok)) {
-    const text = `${line.step}: ${line.error ?? "failed"}`.slice(0, 300);
-    (line.step === "load-tests" && now < ARTIFACTS_BLOCKED_UNTIL ? excused : counted).push(text);
-  }
-  if (!running) for (const step of STEPS) if (!run.some(line => line.step === step)) counted.push(`${step}: not logged by the run`);
-  return { counted, excused };
+/** The failed steps of a run, plus the expected steps it never logged once it has ended. */
+export function failedSteps(run: StepLine[], running: boolean): string[] {
+  const failed = run.filter(line => !line.ok).map(line => `${line.step}: ${line.error ?? "failed"}`.slice(0, 300));
+  if (!running) for (const step of STEPS) if (!run.some(line => line.step === step)) failed.push(`${step}: not logged by the run`);
+  return failed;
 }
 
 const HELPER = String.raw`
@@ -209,11 +199,10 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
       return { metrics, flagged };
     }
     if (!run.length) throw new Error("no run in the log yet");
-    const { counted, excused } = failedSteps(run, timer.running, now);
-    metrics.source_errors = counted.length;
-    flag("run", `last run started ${run[0]!.at ?? "at an unknown time"} with ${run.length} step lines, ${counted.length} failed`);
-    for (const text of counted) flag("failed_step", text);
-    for (const text of excused) flag("excused_step", `${text} (not counted until 2026-11-01: GitHub artifact storage is full)`);
+    const failed = failedSteps(run, timer.running);
+    metrics.source_errors = failed.length;
+    flag("run", `last run started ${run[0]!.at ?? "at an unknown time"} with ${run.length} step lines, ${failed.length} failed`);
+    for (const text of failed) flag("failed_step", text);
   } catch (error) { flag("source_error", `log ${LOG}: ${message(error)}`); }
   return { metrics, flagged };
 }
