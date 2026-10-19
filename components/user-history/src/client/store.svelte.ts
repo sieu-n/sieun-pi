@@ -14,7 +14,6 @@ import type { PendingSend } from "../shared/chat-feed.ts";
 import { indexedDbStorage, memoryStorage, PageOutbox, pendingOf } from "./outbox.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
-import { cacheBoard, cachedBoardKey, readCachedBoard } from "./board-cache.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
 import type { AgentsView } from "../shared/sessions-delta.ts";
@@ -292,9 +291,6 @@ class Store {
     // and the full page and every event after it wait for the next frame, in order.
     let painting = false;
     let held: ThreadEvent[] | null = null;
-    const follower = this.boardFollower(id);
-    const cachedKey = follower.board ? undefined : cachedBoardKey(id);
-    if (cachedKey) follower.seed(readCachedBoard(id));
     const close = api.threadStream(id, event => {
       if (held) { held.push(event); return; }
       if (event.type === "snapshot" && painting) {
@@ -309,10 +305,9 @@ class Store {
       const current = this.entries[id];
       if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
     }, side => this.side(id, side), () => {
-      // A reconnect names the newest message and the board this page holds, and gets only what came after them. A first subscribe names the
-      // board this browser kept (board-cache.ts), so an unchanged board sends nothing.
+      // A reconnect names the newest message and the board this page holds, and gets only what came after them.
       const state = this.threads[id]?.state;
-      if (!state?.messages.length) { const board = follower.key ?? cachedKey; return board ? { board } : undefined; }
+      if (!state?.messages.length) return undefined;
       return { last: formatCursor({ kind: "message", key: messageKey(state.messages, state.messages.length - 1) }), ...(state.board ? { board: this.boards.get(id)?.key ?? boardKey(state.board) } : {}) };
     });
     const apply = (event: ThreadEvent) => {
@@ -324,9 +319,7 @@ class Store {
         void this.outbox.resend(id);
         if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-snapshot:" + id, "thread-open:" + id);
         const page = current.state ? applyThreadEvent({ ...current.state, connection: "connected" }, event) : threadStateFromSnapshot(event.snapshot);
-        const kept = keepOlder(current.state, page);
-        const board = kept.board ?? follower.board;
-        this.patch(id, { state: board && !kept.board ? { ...kept, board } : kept, newest: event.snapshot.after !== undefined ? current.newest : newestPage(page), loading: false, error: null });
+        this.patch(id, { state: keepOlder(current.state, page), newest: event.snapshot.after !== undefined ? current.newest : newestPage(page), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) {
         this.dropSide(id);
@@ -345,11 +338,7 @@ class Store {
   private boardFollower(id: string): BoardFollower {
     let follower = this.boards.get(id);
     if (!follower) {
-      follower = new BoardFollower(() => api.boardNow(id), board => {
-        const current = this.entries[id];
-        if (current?.state) this.patch(id, { state: { ...current.state, board } });
-        void cacheBoard(id, board).catch(() => {});
-      });
+      follower = new BoardFollower(() => api.boardNow(id), board => { const current = this.entries[id]; if (current?.state) this.patch(id, { state: { ...current.state, board } }); });
       this.boards.set(id, follower);
     }
     return follower;

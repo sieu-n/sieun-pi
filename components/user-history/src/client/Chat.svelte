@@ -18,6 +18,8 @@
   import ChatComposer from "./ChatComposer.svelte";
   import ChatLines from "./ChatLines.svelte";
   import BoardPanel from "./BoardPanel.svelte";
+  import PlanView from "./PlanView.svelte";
+  import JobDrawer from "./JobDrawer.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
   import AccountChip from "./AccountChip.svelte";
   import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
@@ -26,7 +28,6 @@
   import { archivePrompt } from "./archive-confirm.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
-  import { lazy } from "./lazy.ts";
   import Lightbox from "./ui/Lightbox.svelte";
   import Floating from "./ui/Floating.svelte";
   import { tooltip } from "./ui/tooltip.ts";
@@ -440,10 +441,10 @@
       </aside>
     {/if}
     {#if drawerName !== null}
-      {#await lazy.JobDrawer() then { default: JobDrawer }}<JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />{/await}
+      <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
     {/if}
     {#if planView}
-      {#await lazy.PlanView() then { default: PlanView }}<PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />{/await}
+      <PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />
     {/if}
   </div>
   {#if lightbox}
