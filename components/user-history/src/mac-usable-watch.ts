@@ -7,6 +7,7 @@ import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts } from "./agent-states.ts";
+import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -179,6 +180,10 @@ export interface WatchLine {
   cpuMs: number;
   /** How slow the chat service on this box was to the owner since the last line (src/chat-latency.ts); absent on lines written before it. */
   chat?: ChatLatency;
+  /** This box's sessions in a tool call silent long enough to be judged soon (src/hung-calls.ts `callMarks`); absent when none. */
+  calls?: CallMark[];
+  /** This box's hung tool calls this minute (`hungCalls`), which `agents` counts as hung instead of working; absent when none. */
+  hung?: HungCall[];
 }
 
 /**
@@ -190,10 +195,10 @@ export interface WatchLine {
 export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number }
 
 /** The agents group of a memory reading and the session counts of `rows`, as one AgentLine. */
-export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[]): AgentLine {
+export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[], hung?: ReadonlySet<string>): AgentLine {
   const group = memory?.groups ? memory.groups.find(entry => entry.id === "agents") ?? { bytes: 0, swapBytes: 0 } : null;
   return { gb: group ? round(group.bytes / GB) : null, ...group?.swapBytes !== undefined ? { swapGb: round(group.swapBytes / GB) } : {},
-    ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...agentCounts(rows) };
+    ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...agentCounts(rows, hung) };
 }
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
@@ -217,7 +222,9 @@ export interface RawProcess { pid: number; bytes: number; started: number | null
  * A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, the kernel process alone (`own`, absent
  * from a relay installed before 10-18 07:5xZ), and its largest descendant that is no Prime process.
  */
-export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; own?: number; biggest: RawProcess | null }
+export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; own?: number; biggest: RawProcess | null;
+  /** The kernel's own CPU seconds and its commands' (descendants and reaped children), Linux only (src/hung-calls.ts). */
+  cpu_s?: number; work_cpu_s?: number }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
 /** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
@@ -256,7 +263,9 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
   title: (id: string) => string | null; cpuMs: number; usable?: HostUsable | null;
   /** The box's memory by group (host-stats.ts `memoryByGroup`), for `agents`; absent, the line has none. */
-  memory?: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null }): WatchLine {
+  memory?: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null;
+  /** The hung calls' sessions, which `agents` counts as hung. */
+  hung?: ReadonlySet<string> }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -287,7 +296,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
-    ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows) } : {},
+    ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
@@ -403,6 +412,8 @@ export interface WatchSource {
   host?: string;
   /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
   remotes?: () => readonly RemoteWatch[];
+  /** This box's tool call marks and hung calls (src/hung-calls.ts), shared with Settings > Hosts; absent, no call is judged. */
+  calls?: CallWatch;
 }
 /** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
 export interface RemoteWatch { name: string; rows: readonly unknown[];
@@ -460,8 +471,12 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
     })))]);
   const resumed = process.cpuUsage();
   const latency = takeLatency();
-  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory }),
-    ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {} };
+  const marks = source.calls ? callMarks(rows, footprints.kernels ?? [], at) : [];
+  const hung = source.calls ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
+  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory,
+    hung: new Set(hung.map(call => call.session)) }),
+    ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
+    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };
@@ -473,6 +488,16 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   await writeFile(draft, JSON.stringify(mark) + "\n");
   await rename(draft, lastSampleFile(source.dataDir));
   return measured;
+}
+
+/** Each session's name and chat tree, for a hung call's line. */
+function callNamer(rows: readonly unknown[], title: (id: string) => string | null): (session: string) => { name: string; root: string; tree: string } {
+  const byId = new Map(rows.map(parseRow).filter((row): row is Row => row !== null).map(row => [row.id, row] as const));
+  const tree = treeOf(byId, title);
+  return session => {
+    const row = byId.get(session);
+    return { name: row?.name ?? session.slice(0, 8), ...row ? tree(row) : { root: session, tree: title(session) ?? session.slice(0, 8) } };
+  };
 }
 
 /** The last line this box wrote: its time, and on Linux the schedstat reading its window ended at, so the next process carries both on. */
@@ -519,7 +544,10 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
     if (written() && source.rows().length) landed = true;
     else tick();
   };
-  const run = () => sample(source, stopping).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
+  // The tool call marks of the last PROGRESS_WINDOW_MS come back from this box's own lines, so a restart judges no call on fewer marks.
+  const seeded = source.calls ? readWatch(source.dataDir, now() - PROGRESS_WINDOW_MS, now())
+    .then(lines => source.calls!.seed(lines.filter(line => (line.host ?? null) === (source.host ?? null)))).catch(() => {}) : Promise.resolve();
+  const run = () => seeded.then(() => sample(source, stopping)).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
     .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
   const tick = () => {
     if (running) return;

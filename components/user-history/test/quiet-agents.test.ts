@@ -40,9 +40,9 @@ const evening = (agentGb: number, working: (at: number) => boolean, from = Date.
 const lastTurn = Date.parse("2026-10-18T23:20:30Z");
 
 test("a session in a provider retry wait is not working: 220 retry rows read 0 working and 220 waiting", () => {
-  assert.deepEqual(agentCounts(RETRY_ROWS), { working: 0, children: 0, retry: 220, idle: 8 });
+  assert.deepEqual(agentCounts(RETRY_ROWS), { working: 0, children: 0, retry: 220, idle: 8, hung: 0 });
   assert.deepEqual(agentCounts([streaming, row("parent", { activity: "working", isSessionActive: true, hasRunningRlmChildren: true }), row("stopped", { lifecycle: "archived" })]),
-    { working: 1, children: 1, retry: 0, idle: 0 });
+    { working: 1, children: 1, retry: 0, idle: 0, hung: 0 });
   const machine: MachineView = { platform: "linux", cpu: { percent: 18, cores: 80, load: [1, 1, 1] }, memory: { usedBytes: 124.5 * GB, totalBytes: 247.2 * GB,
     swapUsedBytes: 15.7 * GB, swapTotalBytes: 16 * GB, pressure: "normal", ...memory(101.26) } };
   const card: HostCard = { name: "us-metal02", address: "100.83.139.73", roles: [], self: true, state: "up", daemon: "answering", pingMs: null, machine,
@@ -54,7 +54,7 @@ test("the 23:46Z state reads red: Agent sessions held 101 GB 26 min after the la
   const lines = evening(101.26, at => at <= lastTurn);
   const latest = lines.at(-1)!;
   assert.equal(latest.working, 220, "the daemon's own activity count still reads them working");
-  assert.deepEqual(latest.agents, { gb: 101.26, swapGb: 6.6, cacheGb: 59.9, working: 0, children: 0, retry: 220, idle: 8 });
+  assert.deepEqual(latest.agents, { gb: 101.26, swapGb: 6.6, cacheGb: 59.9, working: 0, children: 0, retry: 220, idle: 8, hung: 0 });
   const output = measure({ now: RUN, watch: lines, log: { holds: [] }, chats: [], quietMs: 15 * MIN });
   assert.equal(output.metrics.quiet_agent_gb, 101.26);
   assert.equal(output.metrics.sleeping_gb, undefined);

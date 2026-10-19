@@ -17,6 +17,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } 
 import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
+import { CallWatch } from "./hung-calls.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, deletedFolders, dryLeftoverSource, endLeftovers, leftoverSource } from "./job-leftovers.ts";
@@ -87,6 +88,8 @@ export interface ChatBackend {
   poolPriorities?: PoolPriorities;
   /** Settings > This Mac > Agent queue: `pi-pool queue --json`, the queue switch and its two limits, and the daemon's idle unload time. Absent in tests that fake a backend. */
   agentQueue?: AgentQueue;
+  /** This box's hung tool calls from the watch's newest minute (src/hung-calls.ts), which Settings > Hosts counts as hung. Absent in tests that fake a backend. */
+  calls?: CallWatch;
   /**
    * Marks the owner's prompt to a thread as an owner turn in the Mac-wide turn queue (`pi-pool owner-turn`), right before it is sent, so it never
    * waits behind background work. It never rejects: a pool that fails is logged and the prompt goes as before. Absent in tests that fake a backend.
@@ -269,8 +272,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
   const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
+  const calls = new CallWatch();
   const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
+    queue: queueReading, log: dutyLog, calls, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
@@ -390,7 +394,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);
   let closed = false;
   return {
-    catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
+    catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
     drainSends: async () => { stopWakes(); await agentOutbox.close(); },
     prompt: async (id, via) => {

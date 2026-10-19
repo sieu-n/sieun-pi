@@ -12,6 +12,7 @@ import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
+import type { HungCall } from "../../src/hung-calls.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
@@ -408,6 +409,15 @@ export function quietAgents(lines: readonly WatchLine[], from: number, to: numbe
   return found;
 }
 
+/**
+ * The hung tool calls (src/hung-calls.ts) in the newest watch line of the window that judges them, or undefined when no line in the window was
+ * written by a watch that judges calls (lines before 10-19 12Z carry neither `calls` nor `hung`, and agents.hung).
+ */
+export function hungNow(lines: readonly WatchLine[], from: number): { at: number; calls: HungCall[] } | undefined {
+  const line = lines.findLast(entry => Date.parse(entry.at) >= from && entry.agents?.hung !== undefined);
+  return line ? { at: Date.parse(line.at), calls: line.hung ?? [] } : undefined;
+}
+
 export interface Inputs {
   now: number;
   /** The quiet window (src/quiet-minutes.ts) in ms; absent, QUIET_MINUTES. */
@@ -503,7 +513,8 @@ const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) +
 /** A box's AgentLine in the flag's words: its GB as Settings > Hosts shows them, then its sessions by state. */
 const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an unread number of" : agents.gb} GB` +
   (agents.swapGb ? ` (${agents.swapGb} GB of it in swap)` : "") + (agents.cacheGb !== undefined ? ` with ${agents.cacheGb} GB of file cache beside it` : "") +
-  `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents and ${agents.idle} idle`;
+  `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
+  (agents.hung ? `, ${agents.idle} idle and ${agents.hung} in a hung tool call` : ` and ${agents.idle} idle`);
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 /** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */
 const spans = (starts: readonly number[]): string => {
@@ -634,6 +645,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const worst = quiet.reduce<QuietMinute | undefined>((top, minute) => !top || minute.agents.gb >= top.agents.gb ? minute : top, undefined);
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
+  const hung = hungNow(input.watch, start);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length + poolHeld.length,
@@ -657,6 +669,7 @@ export function measure(input: Inputs): PrecheckOutput {
     unknown_min_30: unknownMin,
     stuck_duties: redDuties.length,
     cut_jobs_held: cutHeld.length,
+    ...hung ? { hung_calls: hung.calls.length } : {},
   };
   for (const [name, count] of perHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
@@ -690,6 +703,9 @@ export function measure(input: Inputs): PrecheckOutput {
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
+  for (const call of hung?.calls ?? []) flagged.push({ kind: "hung_call", chat: call.root, item: call.session, excerpt: `${call.tree}: ${call.name} (${call.session}) ` +
+    `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +
+    `${call.command ? ` (${call.command})` : ""}, at ${clock(hung!.at)}.` });
   const overruns = (input.queueOverruns ?? []).filter(entry => entry.at >= start && entry.at < start + WINDOW_MS);
   if (overruns.length) {
     const byTarget = new Map<string, QueueOverrun[]>();

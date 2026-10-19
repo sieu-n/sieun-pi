@@ -95,7 +95,7 @@ test("another box's watch line comes from its relay's answer, and a relay that f
     { now: BOX_RUN, chats: new Set(["lmb"]), title: () => null });
   assert.equal(read.workers, 1);
   assert.equal(read.workerGb, 0.31);
-  assert.deepEqual(read.agents, { gb: 0.4, working: 0, children: 0, retry: 0, idle: 1 }, "the Mac's Agent sessions are its feed's agents group, as its Hosts card shows");
+  assert.deepEqual(read.agents, { gb: 0.4, working: 0, children: 0, retry: 0, idle: 1, hung: 0 }, "the Mac's Agent sessions are its feed's agents group, as its Hosts card shows");
   assert.equal((read.usable as UsableReading).pressureLevel, 2);
   const failed = await hostWatchLine({ name: "mac", rows, read: async () => { throw new Error("relay mac answered 404 to /v1/watch"); } }, { now: BOX_RUN, chats: new Set(), title: () => null });
   assert.equal(failed.usable, null);

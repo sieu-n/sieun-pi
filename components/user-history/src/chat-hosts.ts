@@ -45,6 +45,8 @@ export interface HostsOptions {
   picks: () => Promise<NewChatPicks>;
   /** The daemon rows this service lists for a box, null for this box; none before the catalog's first list. */
   rows: (host: string | null) => readonly unknown[];
+  /** This box's hung tool calls' sessions (src/hung-calls.ts), counted as hung instead of working; absent, none. */
+  hung?: () => ReadonlySet<string>;
   load?: () => Promise<HostsRegistry>;
   selfMachine?: () => Promise<MachineView>;
   remote?: (host: Host) => Promise<HostStats>;
@@ -55,8 +57,11 @@ export const thisBox = (): string => hostname().split(".")[0]!.toLowerCase();
 
 /** Settings > Hosts and the New chat host picker: every box in hosts.json, this one first, each read once per call. */
 export function hostsView(options: HostsOptions): () => Promise<HostsView> {
-  const { selfQueue, title, picks, rows, load = loadHosts, selfMachine = machineView, remote = relayStats } = options;
-  const sessions = (host: string | null): AgentCounts | null => { const listed = rows(host); return listed.length ? agentCounts(listed) : null; };
+  const { selfQueue, title, picks, rows, load = loadHosts, selfMachine = machineView, remote = relayStats, hung } = options;
+  const sessions = (host: string | null): AgentCounts | null => {
+    const listed = rows(host);
+    return listed.length ? agentCounts(listed, host === null ? hung?.() : undefined) : null;
+  };
 
   async function selfCard(host: Host | null): Promise<HostCard> {
     const [machine, queue] = await Promise.all([selfMachine(), selfQueue()]);

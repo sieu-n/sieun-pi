@@ -46,6 +46,10 @@ if sys.platform == "darwin":
             return None
         return info.phys_footprint
 
+    def cpu_of(pid):
+        """None: the hung call marks (src/hung-calls.ts) read CPU on Linux only."""
+        return None
+
     def children(pid, buffer=(ctypes.c_int * 4096)()):
         count = lib.proc_listchildpids(pid, buffer, ctypes.sizeof(buffer))
         return list(buffer[:count]) if count > 0 else []
@@ -101,6 +105,13 @@ else:
                 return file.read().rsplit(b")", 1)[1].split()
         except (OSError, IndexError):
             return None
+
+    def cpu_of(pid):
+        """(own, reaped) CPU seconds of a process from /proc/<pid>/stat (utime plus stime, and cutime plus cstime of the children it reaped), or None."""
+        fields = stat(pid)
+        if fields is None:
+            return None
+        return (int(fields[11]) + int(fields[12])) / TICKS, (int(fields[13]) + int(fields[14])) / TICKS
 
     def footprint(pid):
         """Resident plus swapped bytes, the nearest Linux count to phys_footprint, of a process, or None when it is gone."""
@@ -199,6 +210,9 @@ def tree(root, kernels, seen):
             owner = kernel_of(pid, procargs(pid))
             if owner is not None:
                 kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "own": bytes_, "biggest": None}
+                used = cpu_of(pid)
+                if used is not None:
+                    kernel["cpu_s"], kernel["work_cpu_s"] = used[0], used[1]
                 kernels.append(kernel)
         elif kernel:
             args = procargs(pid)
@@ -206,6 +220,9 @@ def tree(root, kernels, seen):
             if SHARED.search(text):
                 stack.extend((child, False) for child in children(pid))
                 continue
+            used = cpu_of(pid) if "work_cpu_s" in kernel else None
+            if used is not None:
+                kernel["work_cpu_s"] += used[0] + used[1]
             if not PRIME.search(text) and (kernel["biggest"] is None or bytes_ > kernel["biggest"]["bytes"]):
                 kernel["biggest"] = {"pid": pid, "bytes": bytes_, "started": started(pid), "command": command(args)}
         if kernel:
