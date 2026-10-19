@@ -37,7 +37,7 @@ test("tab switches that did not run leave the metric out with a source error", (
 const entry = (role: string, timestamp: string, text: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ type: "message", timestamp, message: { role, content: [{ type: "text", text }], ...extra } });
 
-test("the extra wait is the box's wait less the Mac's own turn, in round trips, and a failed Mac turn is listed and left out", () => {
+test("the extra wait is the box's wait less the Mac's own turn, in round trips, and an error reply is timed and listed", () => {
   const session = [
     JSON.stringify({ type: "session", id: "x" }),
     entry("user", "2026-10-19T15:10:00.000Z", "chat page probe aaaa. Reply with exactly: ok"),
@@ -50,19 +50,19 @@ test("the extra wait is the box's wait less the Mac's own turn, in round trips, 
   const sends: SendTiming[] = [
     { marker: "chat page probe aaaa.", sentAt: 1_000, firstTokenAt: 1_000 + 2_000 + 380 },
     { marker: "chat page probe bbbb.", sentAt: 5_000, firstTokenAt: 5_000 + 3_000 + 190 },
-    { marker: "chat page probe cccc.", sentAt: 9_000, firstTokenAt: 9_500 },
+    { marker: "chat page probe cccc.", sentAt: 9_000, firstTokenAt: 9_000 + 100 + 950 },
     { marker: "chat page probe dddd.", sentAt: 9_000, firstTokenAt: 9_500 },
   ];
   const reading = replyExtra(sends, session, 190, at);
-  assert.equal(reading.value, 1.5);
-  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply", "reply", "reply_error", "reply_unmatched"]);
+  assert.equal(reading.value, 2);
+  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply", "reply", "reply_error", "reply", "reply_unmatched"]);
   assert.match(reading.flagged[0]!.excerpt, /first reply frame on the box 2380 ms after the send, the Mac's own turn 2000 ms, extra 380 ms = 2.00 round trips of 190 ms/);
   assert.match(reading.flagged[2]!.excerpt, /waits for its slot/);
 });
 
 const journal = (lines: string[]) => lines.map(line => `${line.slice(0, 32)} us-metal02 systemd[257985]: ${line.slice(33)}`).join("\n");
 
-test("a release counts as broken when the service exits after its restart or a message drops within the window", () => {
+test("a release counts as broken when the service exits after its restart within the window, and message drops do not count", () => {
   const text = journal([
     "2026-10-18T10:00:00.000000+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
     "2026-10-18T10:00:02.000000+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
@@ -76,16 +76,9 @@ test("a release counts as broken when the service exits after its restart or a m
     "2026-10-19T14:12:29.000000+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
     "2026-10-19T14:12:31.000000+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
   ]);
-  const log = [
-    "2026-10-19T12:47:10.000Z messages: 01a14e9a is not a session the daemon has or can reopen; message m-1 dropped",
-    "2026-10-19T13:30:00.000Z messages: 01a14e9a is not a session the daemon has or can reopen; message m-2 dropped",
-    "2026-10-19T14:12:40.000Z briefs: child mv-447 (sub-4cfce399) ended; record dropped",
-    "catalog: copy us-metal02: 1513 rows",
-  ].join("\n");
-  const reading = releaseBreaks(text, log, at);
-  assert.equal(reading.value, 2);
-  assert.deepEqual(reading.flagged.map(item => item.item ?? item.kind), ["2026-10-19T01:14:15.208Z", "2026-10-19T12:46:46.000Z", "releases"]);
+  const reading = releaseBreaks(text, at);
+  assert.equal(reading.value, 1);
+  assert.deepEqual(reading.flagged.map(item => item.item ?? item.kind), ["2026-10-19T01:14:15.208Z", "releases"]);
   assert.match(reading.flagged[0]!.excerpt, /1 break, first Main process exited, code=exited, status=1\/FAILURE/);
-  assert.match(reading.flagged[1]!.excerpt, /message m-1 dropped/);
-  assert.equal(reading.flagged[2]!.excerpt, "4 chat releases in 24 h, 2 with a break");
+  assert.equal(reading.flagged[1]!.excerpt, "4 chat releases in 24 h, 1 with a break");
 });

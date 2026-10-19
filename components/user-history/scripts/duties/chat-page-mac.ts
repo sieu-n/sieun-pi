@@ -15,12 +15,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   `ssh mac` that `timeout` on the box bounds, since the Mac has no `timeout`. It drives a headless Chromium there (c103) against the
  *   page's tailnet URL: each cold load is a new browser context, timed until the chat's lines show; each tab switch opens a chat that page has
  *   not opened yet and reads the app's own `thread-paint:<id>` measure, as p50 measured it (median 46 ms on 10-18).
- * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets `SENDS` no-op prompts through the chat
- *   service, the path the page uses. Per send, the extra wait is the time from the send to the first reply frame on the box, less the Mac's
+ * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets up to `SENDS` no-op prompts through the
+ *   chat service, the path the page uses. The first rides on the create call and is timed from its answer; the rest follow only when the
+ *   first turn ended without pi-pool's retry, since a new thread can wait 15 min and more for its slot (10-19 15:17Z). Per send, the extra wait is the time from the send to the first reply frame on the box, less the Mac's
  *   own time from its user entry to its reply entry in the session file, in Mac-to-box round trips (ping from the Mac). The reply is "ok",
  *   so the Mac's reply entry lands a few ms after its first token.
- * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error, which shows the
- *   owner a dead page, or the outbox drops a message, within `RELEASE_WINDOW_MS` of the release.
+ * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error within
+ *   `RELEASE_WINDOW_MS`, which leaves the owner's page on its red banner.
  * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
  */
 
@@ -35,8 +36,6 @@ const SWITCHES = 10;
 const SENDS = 3;
 /** On 10-19 the 01:14:15Z release crash-looped from 7 s after it to past 01:18:52Z (p72), so a break up to 10 min after a release is its break. */
 export const RELEASE_WINDOW_MS = 10 * 60_000;
-/** A new scratch thread waits for its pool slot before its first reply: 3 min on the Mac at 15:10Z and 10 min on the box at 15:08Z on 10-19. */
-const SLOT_WAIT_MS = 15 * 60_000;
 
 export interface BrowserLoad { shown?: number | null; banner?: string | null; error?: string }
 export interface BrowserSwitch { id: string; ms: number | null; lines?: number }
@@ -86,7 +85,8 @@ interface SessionEntry { type?: string; timestamp?: string; message?: { role?: s
 
 /**
  * Extra round trips per send: the box's wait from the send to the first reply frame, less the Mac's own wait from its user entry to its reply
- * entry, over the round trip. A send whose Mac turn errored, or whose entries are missing, is listed and left out.
+ * entry, over the round trip. A reply that is an error, such as pi-pool's slot wait, still crossed the same path, so it is timed and listed;
+ * a send whose entries are missing is listed and left out.
  */
 export function replyExtra(sends: readonly SendTiming[], macSession: string, rttMs: number, at: number): Reading {
   const reading: Reading = { flagged: [] };
@@ -96,10 +96,7 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
     const user = entries.findIndex(entry => entry.message?.role === "user" && JSON.stringify(entry.message.content).includes(send.marker));
     const reply = user < 0 ? undefined : entries.slice(user + 1).find(entry => entry.message?.role === "assistant");
     if (!reply) { reading.flagged.push({ at, kind: "reply_unmatched", excerpt: `${send.marker}: the Mac's session file has no ${user < 0 ? "user entry" : "reply"} for it` }); continue; }
-    if (reply.message?.stopReason === "error") {
-      reading.flagged.push({ at, kind: "reply_error", excerpt: `${send.marker}: the Mac's turn failed: ${reply.message.errorMessage ?? "no message"}`.slice(0, 600) });
-      continue;
-    }
+    if (reply.message?.stopReason === "error") reading.flagged.push({ at, kind: "reply_error", excerpt: `${send.marker}: the Mac's turn ended in an error, timed as its reply: ${reply.message.errorMessage ?? "no message"}`.slice(0, 600) });
     const own = Date.parse(reply.timestamp ?? "") - Date.parse(entries[user]!.timestamp ?? "");
     const seen = send.firstTokenAt - send.sentAt;
     const extra = seen - own;
@@ -116,21 +113,22 @@ const timeOf = (line: string): number => Date.parse(line.slice(0, line.indexOf("
 
 /**
  * Releases in the 24 h before `now` from `journalctl --user -u sieun-pi-chat -o short-iso-precise`, and the ones with a break: a "Main process
- * exited" after the release's restart, or a service log line that drops a message, before the next release or `RELEASE_WINDOW_MS`.
+ * exited" after the release's restart and before the next release or `RELEASE_WINDOW_MS`, which leaves the page on its red banner. The owner
+ * outbox keeps a send on disk and retries it across restarts, so a release loses no page message by itself; the agent outbox's "message ...
+ * dropped" lines are sends to sessions that are gone, 9 in the 24 h to 10-19 15:30Z and 4 of them away from any release, so they do not count.
  */
-export function releaseBreaks(journal: string, serviceLog: string, now: number): Reading {
+export function releaseBreaks(journal: string, now: number): Reading {
   const reading: Reading = { flagged: [] };
   const since = now - 24 * 3_600_000;
   const lines = journal.split("\n").filter(line => /^\d{4}-\d\d-\d\dT/.test(line));
   const stops = lines.filter(line => line.includes("Stopping sieun-pi-chat.service")).map(timeOf).filter(at => at >= since);
   const starts = lines.filter(line => line.includes("Started sieun-pi-chat.service")).map(timeOf);
   const exits = lines.filter(line => line.includes("Main process exited")).map(line => ({ at: timeOf(line), text: line.slice(line.indexOf("Main process")) }));
-  const drops = serviceLog.split("\n").filter(line => /^\d{4}-\d\d-\d\dT\S+ messages: .* message \S+ dropped$/.test(line)).map(line => ({ at: timeOf(line), text: line.slice(line.indexOf(" ") + 1) }));
   let broken = 0;
   stops.forEach((stop, index) => {
     const end = Math.min(stops[index + 1] ?? Infinity, stop + RELEASE_WINDOW_MS);
     const restart = starts.find(at => at >= stop) ?? stop;
-    const found = [...exits.filter(exit => exit.at > restart && exit.at < end), ...drops.filter(drop => drop.at >= stop && drop.at < end)];
+    const found = exits.filter(exit => exit.at > restart && exit.at < end);
     if (!found.length) return;
     broken++;
     reading.flagged.push({ at: stop, kind: "release_break", item: new Date(stop).toISOString(),
@@ -190,27 +188,33 @@ async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendT
     }
   };
   const marker = () => `chat page probe ${randomUUID().slice(0, 8)}.`;
+  const firstText = marker();
   const created = await post("api/threads", { requestId: randomUUID().replaceAll("-", ""), host: "mac", cwd: "/Users/sieunpark", kind: "thread", ...MODEL, thinkingLevel: "off",
-    name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: `${marker()} Reply with exactly: ok` });
+    name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: `${firstText} Reply with exactly: ok` });
+  const createdAt = Date.now();
   const id = String(created.id);
   const sends: SendTiming[] = [];
   try {
     ws.send(JSON.stringify({ type: "subscribe", sub: 1, feed: "thread", id }));
     const mine = (frame: Frame) => frame.event === "thread" && frame.sub === 1;
     const kind = (frame: Frame) => frame.data?.type === "event" ? frame.data.event?.type : undefined;
-    const goodReply = (frame: Frame) => mine(frame) && ((kind(frame) === "message_end" && frame.data!.event!.message?.role === "assistant" && frame.data!.event!.message.stopReason !== "error") ||
-      (frame.data?.type === "snapshot" && !frame.data.snapshot?.streaming && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant" && message.stopReason !== "error")));
-    await until(0, goodReply, SLOT_WAIT_MS, "first reply from the Mac");
-    for (let count = 0; count < SENDS; count++) {
+    const reply = (frame: Frame) => mine(frame) && ["message_update", "message_end"].includes(kind(frame) ?? "") && frame.data!.event!.message?.role === "assistant";
+    const first = await until(0, frame => reply(frame) || (mine(frame) && frame.data?.type === "snapshot" && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant")),
+      120_000, "first reply frame");
+    sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at });
+    const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
+    if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
+    for (let count = 1; count < SENDS; count++) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       const text = marker();
       const from = frames.length;
       const sentAt = Date.now();
       await post(`api/threads/${encodeURIComponent(id)}/prompt`, { requestId: randomUUID().replaceAll("-", ""), message: `${text} Reply with exactly: ok`, mode: "followUp", images: [] });
       const user = await until(from, frame => mine(frame) && kind(frame) === "message_start" && frame.data!.event!.message?.role === "user" && JSON.stringify(frame.data!.event!.message.content).includes(text), 120_000, "user message");
-      const token = await until(user.index + 1, frame => mine(frame) && ["message_update", "message_end"].includes(kind(frame) ?? "") && frame.data!.event!.message?.role === "assistant", 300_000, "reply frame");
+      const token = await until(user.index + 1, reply, 300_000, "reply frame");
       sends.push({ marker: text, sentAt, firstTokenAt: token.at });
-      await until(token.index, frame => mine(frame) && kind(frame) === "agent_end", 300_000, "turn end");
+      const done = await until(token.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "turn end");
+      if (kind(frames[done.index]!.frame) === "auto_retry_start") break;
     }
   } finally {
     await post(`api/threads/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
@@ -225,11 +229,10 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
   const at = Date.now();
   const config = JSON.parse(await readFile(join(DATA_DIR, "configuration.json"), "utf8")) as ChatConfig;
   const host = config.publicOrigin ? new URL(config.publicOrigin).hostname : "";
-  const [browser, ping, journal, serviceLog] = await Promise.all([
+  const [browser, ping, journal] = await Promise.all([
     settle(browse(config, chatId)),
     settle(onMac(`ping -c 5 -q ${host}`, 40)),
     settle(exec("journalctl", ["--user", "-u", "sieun-pi-chat", "--since", `@${Math.floor((at - 25 * 3_600_000) / 1000)}`, "-o", "short-iso-precise", "--no-pager"], { timeoutMs: 60_000 })),
-    settle(readFile(join(DATA_DIR, "service.log"), "utf8")),
   ]);
   const replies = await settle(sendProbe(config));
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
@@ -252,8 +255,7 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
   else take("mac_chat_reply_extra_rtt", replyExtra(replies.sends, macSession, rtt, at));
 
   if (journal instanceof Error) sourceError(`journalctl for sieun-pi-chat: ${journal.message}`);
-  else if (serviceLog instanceof Error) sourceError(`the chat service log: ${serviceLog.message}`);
-  else take("release_breaks_24h", releaseBreaks(journal, serviceLog, at));
+  else take("release_breaks_24h", releaseBreaks(journal, at));
   return { metrics, flagged };
 }
 

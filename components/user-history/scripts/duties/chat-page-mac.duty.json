@@ -42,6 +42,6 @@
       "scripts/duties/chat-page-mac.ts"
     ],
     "cwd": "../..",
-    "timeoutMs": 1200000
+    "timeoutMs": 300000
   }
 }
