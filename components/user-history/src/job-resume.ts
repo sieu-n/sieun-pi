@@ -1,10 +1,9 @@
-import { createReadStream } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { clockTime } from "./checkin-settings.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import type { PlanItem } from "./shared/types.ts";
+import { fileLines } from "./file-lines.ts";
 
 /**
  * What a fresh job needs to pick up the work of a job the chat ended while it waited on a board step: the job's brief, its last report to the
@@ -51,7 +50,7 @@ export async function jobBrief(childDir: string): Promise<string | undefined> {
 
 /** The task a session file opens with: its first `agent_message` custom message (a `[task from parent]`) or its first user message (a root's prompt). */
 export async function sessionBrief(file: string): Promise<string | undefined> {
-  const lines = createInterface({ input: createReadStream(file, "utf8"), crlfDelay: Infinity });
+  const lines = fileLines(file);
   try {
     for await (const line of lines) {
       const task = line.startsWith('{"type":"custom_message","customType":"agent_message"');
@@ -62,7 +61,6 @@ export async function sessionBrief(file: string): Promise<string | undefined> {
       if (text !== undefined) return text.replace(/^\[task from parent\]\s*/, "");
     }
   } catch { return undefined; }
-  finally { lines.close(); }
   return undefined;
 }
 const contentText = (content: unknown): string | undefined => typeof content === "string" ? content

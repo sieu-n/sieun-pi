@@ -1,9 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
 import { messageIdNote, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
+import { fileLines } from "./file-lines.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
 
@@ -29,7 +28,7 @@ export function hasChatMarker(entries: ReadonlyArray<{ type: string; customType?
  * stops at the first message entry and reads only the head of a long session.
  */
 export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
-  const lines = createInterface({ input: createReadStream(sessionFile, { encoding: "utf8" }), crlfDelay: Infinity });
+  const lines = fileLines(sessionFile);
   try {
     for await (const line of lines) {
       if (line.startsWith('{"type":"message"')) return false;
@@ -38,7 +37,6 @@ export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
     }
     return false;
   } catch { return false; }
-  finally { lines.close(); }
 }
 
 /** What the extension does at session_start: write the marker (flagged root, not marked yet) and whether the brief tool is active. */
@@ -174,7 +172,7 @@ export async function topSession(sessionFile: string): Promise<{ id: string; nam
     const header = await fileHeader(file);
     if (!header) return null;
     if (typeof header.parentSession === "string") { file = header.parentSession; continue; }
-    const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+    const lines = fileLines(file);
     let name = "";
     try {
       for await (const line of lines) {
@@ -186,13 +184,12 @@ export async function topSession(sessionFile: string): Promise<{ id: string; nam
       }
       return { id: header.id, name, chat: false };
     } catch { return null; }
-    finally { lines.close(); }
   }
   return null;
 }
 
 async function fileHeader(sessionFile: string): Promise<{ id: string; parentSession?: unknown } | null> {
-  const lines = createInterface({ input: createReadStream(sessionFile, { encoding: "utf8" }), crlfDelay: Infinity });
+  const lines = fileLines(sessionFile);
   try {
     for await (const line of lines) {
       const header = JSON.parse(line) as { type?: unknown; id?: unknown; parentSession?: unknown };
@@ -200,7 +197,6 @@ async function fileHeader(sessionFile: string): Promise<{ id: string; parentSess
     }
     return null;
   } catch { return null; }
-  finally { lines.close(); }
 }
 
 const JOB_CALL = /\brlm(?:\.spawn|\.create_session)?\s*\(/g;

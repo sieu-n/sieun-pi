@@ -1,8 +1,6 @@
-import { createReadStream } from "node:fs";
 import { replaceableLine } from "./agent-outbox.ts";
 import { type AlertLine, type RuleJob, ruleText } from "./alert-bridge.ts";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
@@ -12,6 +10,7 @@ import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
+import { fileLines } from "./file-lines.ts";
 
 /**
  * Duty jobs: on every scheduled run of a duty (the built-in check-in included) the server starts one job for it, a root session linked to the
@@ -306,7 +305,7 @@ const reason = (error: unknown): string => error instanceof Error ? error.messag
 
 /** A chat's name and folder from its session file: the header's cwd and the first session_info name (a chat is named at create). */
 export async function savedChat(file: string): Promise<{ name: string; cwd: string } | null> {
-  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  const lines = fileLines(file);
   let cwd: string | undefined;
   try {
     for await (const line of lines) {
@@ -321,7 +320,6 @@ export async function savedChat(file: string): Promise<{ name: string; cwd: stri
     }
     return null;
   } catch { return null; }
-  finally { lines.close(); }
 }
 
 /**

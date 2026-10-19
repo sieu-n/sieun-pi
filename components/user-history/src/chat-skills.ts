@@ -1,10 +1,9 @@
-import { createReadStream } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, matchesGlob, relative } from "node:path";
-import { createInterface } from "node:readline";
 import { frontmatter } from "../scripts/duties/skills-and-tools.ts";
 import type { FirstPrompt, SkillInfo, SkillSource, SkillsView } from "./shared/types.ts";
+import { fileLines } from "./file-lines.ts";
 
 /**
  * Characters per token of Prime's <skill> blocks. Measured 2026-10-14 with Anthropic's count_tokens for claude-opus-5-5 on the 44 blocks of an
@@ -123,7 +122,7 @@ export async function firstPrompt(sessionsDir: string, cwd: string): Promise<Fir
 }
 
 async function firstUsage(file: string, cwd: string): Promise<{ tokens: number; at: number } | null> {
-  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  const lines = fileLines(file);
   try {
     for await (const line of lines) {
       let entry: { type?: string; cwd?: string; parentSession?: string; message?: { role?: string; timestamp?: number; usage?: Record<string, unknown> } };
@@ -137,8 +136,6 @@ async function firstUsage(file: string, cwd: string): Promise<{ tokens: number; 
     return null;
   } catch {
     return null;
-  } finally {
-    lines.close();
   }
 }
 

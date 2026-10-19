@@ -1,8 +1,7 @@
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
 import { missing } from "./locked-json.ts";
 import { ownerTexts } from "./shared/brief-check.ts";
 import type { ThreadMessage } from "./shared/types.ts";
+import { fileLines } from "./file-lines.ts";
 
 /**
  * Every word the owner wrote in a session file (`ownerTexts`): his messages and his board answers, read line by line; empty for a missing
@@ -15,7 +14,7 @@ export async function fileOwnerTexts(file: string): Promise<string[]> {
 async function userMessages(file: string): Promise<ThreadMessage[]> {
   const messages: ThreadMessage[] = [];
   try {
-    for await (const line of createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity })) {
+    for await (const line of fileLines(file)) {
       if (!line.includes('"user"')) continue;
       let entry: { type?: unknown; message?: { role?: unknown; timestamp?: unknown } };
       try { entry = JSON.parse(line) as typeof entry; } catch { continue; }

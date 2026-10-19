@@ -1,10 +1,9 @@
-import { createReadStream } from "node:fs";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import type { AgentKind } from "./outbox.ts";
 import { zTime } from "./checkin-goals.ts";
 import type { JobFact } from "./checkin-steps.ts";
+import { fileLines } from "./file-lines.ts";
 
 /**
  * The brief of every job a chat or its jobs start, kept until the job's session file shows it. Prime holds a new session's first prompt and
@@ -73,7 +72,7 @@ const TASK_LABEL = "[task from parent]";
  * the task: from 10-13 to 10-16 07:39Z 11 of 65 children that never got their task had one, "duty prompt button" a check-in at 03:39Z.
  */
 async function prompts(file: string): Promise<{ prompted: boolean; task: boolean }> {
-  const lines = createInterface({ input: createReadStream(file, "utf8"), crlfDelay: Infinity });
+  const lines = fileLines(file);
   let prompted = false;
   try {
     for await (const line of lines) {
@@ -87,7 +86,6 @@ async function prompts(file: string): Promise<{ prompted: boolean; task: boolean
       if (text.startsWith(TASK_LABEL)) return { prompted, task: true };
     }
   } catch { /* unreadable: what was read */ }
-  finally { lines.close(); }
   return { prompted, task: false };
 }
 
@@ -167,7 +165,7 @@ const alive = (pid: number): boolean => {
 
 /** Whether a worker's recovery journal shows the session's agent start at or after `since`. */
 async function journalRan(journal: string, session: string, since: number): Promise<boolean> {
-  const lines = createInterface({ input: createReadStream(journal, "utf8"), crlfDelay: Infinity });
+  const lines = fileLines(journal);
   try {
     for await (const line of lines) {
       if (!line.includes(session) || !/"operation":\s*"agent_start"/.test(line)) continue;
@@ -175,7 +173,6 @@ async function journalRan(journal: string, session: string, since: number): Prom
       if (isRecord(entry) && entry.sessionId === session && typeof entry.recordedAt === "string" && Date.parse(entry.recordedAt) >= since) return true;
     }
   } catch { return false; }
-  finally { lines.close(); }
   return false;
 }
 
