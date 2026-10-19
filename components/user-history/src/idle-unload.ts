@@ -1,5 +1,5 @@
 import type { DaemonClient, SessionSummary } from "prime-agent";
-import { poolFreeAt, type PoolStatus, type PoolThread, threadKey } from "./chat-pool.ts";
+import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
 
 /**
@@ -269,6 +269,13 @@ export interface UnloadSource {
   now(): number;
 }
 
+/**
+ * How many trees one pool read for `providerWaits` names. The shared reader keeps 100 thread readings (chat-pool.ts KEPT_THREADS) and fails
+ * a read that names more: at 02:02Z on 10-19 the first sweep of 576ccfb6 asked for 153 trees and logged "pi-pool gave no reading". One
+ * `pi-pool snapshot` of 40 trees took 0.85 s on us-metal02.
+ */
+export const WAIT_READ_TREES = 40;
+
 /** What `providerWaits` reads: every row of this box (for each tree's root), which rows are this box's, a transcript's tail, and the pool. */
 export interface WaitReads {
   all: readonly SessionSummary[];
@@ -280,7 +287,7 @@ export interface WaitReads {
 /**
  * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`lastTurnError`) and whose tree, keyed by its
  * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that is.
- * One pool read covers every tree.
+ * The trees are read WAIT_READ_TREES at a time.
  */
 export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads): Promise<Map<string, number>> {
   const byId = new Map(reads.all.map(row => [row.sessionId, row] as const));
@@ -294,9 +301,13 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     .map(async row => lastTurnError(await reads.tail(row.sessionFile!).catch(() => "")) === undefined ? [] : [row]));
   const waiting = failed.flat();
   if (!waiting.length) return new Map();
-  const status = await reads.read([...new Set(waiting.map(rootOf))].map(session => ({ session, model: null })));
+  const trees = [...new Set(waiting.map(rootOf))].map(session => ({ session, model: null }));
+  const found = new Map<string, ThreadParts>();
+  for (let from = 0; from < trees.length; from += WAIT_READ_TREES) {
+    for (const [key, parts] of (await reads.read(trees.slice(from, from + WAIT_READ_TREES))).threads) found.set(key, parts);
+  }
   return new Map(waiting.flatMap(row => {
-    const parts = status.threads.get(threadKey({ session: rootOf(row), model: null }));
+    const parts = found.get(threadKey({ session: rootOf(row), model: null }));
     const freeAt = parts ? poolFreeAt(parts, row.model!.provider, now) : null;
     return freeAt !== null && poolHoldsPast(freeAt, now, idleMs) ? [[row.sessionId, freeAt] as const] : [];
   }));
@@ -319,8 +330,8 @@ function stateBusy(data: unknown, retry: boolean): boolean {
  * the hung worker 114947 left the `get_state` of 01a150e1 timing out every minute.
  */
 export const STOP_BOUND_MS = 75_000;
-/** How long the sweep waits for `held` (transcript tails and one pi-pool read) before it plans without it. */
-export const HELD_BOUND_MS = 20_000;
+/** How long the sweep waits for `held` (transcript tails and the pool reads, one per WAIT_READ_TREES trees) before it plans without it. */
+export const HELD_BOUND_MS = 45_000;
 
 const within = <T>(work: Promise<T>, ms: number, late: T): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;

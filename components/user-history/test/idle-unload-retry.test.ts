@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import type { SessionSummary } from "prime-agent";
 import { type PoolPart, poolFreeAt, type ThreadParts, threadKey } from "../src/chat-pool.ts";
-import { type DaemonAnswer, HOLD_REACH_MS, IdleUnloader, poolHoldsPast, providerWaits, retryCandidates, STOP_BOUND_MS, unloadPlan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, HOLD_REACH_MS, IdleUnloader, poolHoldsPast, providerWaits, retryCandidates, STOP_BOUND_MS, unloadPlan, WAIT_READ_TREES } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; rows: SessionSummary[]; tails: Record<string, string> };
 const day = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "daemon-rows-1019-0111.json"), "utf8")) as Fixture;
@@ -36,8 +36,10 @@ for (const sessionId of Object.keys(day.tails)) {
 }
 const reads = (slots: ReadonlyMap<string, number | null> = treeSlots) => ({
   all: day.rows, local: () => true, tail: async (file: string) => day.tails[file.slice("/sessions/".length, -".jsonl".length)] ?? "",
-  read: async (threads: readonly { session: string | null; model: string | null }[]) =>
-    ({ threads: new Map(threads.map(thread => [threadKey(thread), { ...parts(slots.get(thread.session ?? "") ?? null), at }] as const)) }),
+  read: async (threads: readonly { session: string | null; model: string | null }[]) => {
+    assert.ok(threads.length <= WAIT_READ_TREES, `${threads.length} trees in one read`);
+    return { threads: new Map(threads.map(thread => [threadKey(thread), { ...parts(slots.get(thread.session ?? "") ?? null), at }] as const)) };
+  },
 });
 
 test("the 01:11Z rows: each session asleep in its provider retry on a pool hold past the unload's minutes is planned, where none was before", async () => {
