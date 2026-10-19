@@ -1,0 +1,39 @@
+{
+  "name": "Twitch gap tracking",
+  "ownerWords": "fix plan and duties based on the board skill and pursue completion of plans",
+  "goal": "The Twitch top 10 index gaps page on the wiki (domains/platform-apis/twitch-index-gaps) shows all 10 gaps with a number measured in the last day, the gap scripts in auto-sns-agent scripts/twitch-gaps measure every gap without a Twitch rate limit or a zero read, and no risk on the Twitch risks page (domains/platform-apis/twitch-risks) fires.",
+  "metrics": [
+    {
+      "key": "page_gaps_fresh",
+      "label": "Gaps on the Twitch top 10 page with a number, when the page was measured in the last 24 h (0 when older)",
+      "op": ">=",
+      "target": 10,
+      "unit": " gaps",
+      "headline": true
+    },
+    {
+      "key": "failed_gaps",
+      "label": "Gaps the gap scripts failed to measure today, from a rate limit, a zero read, a crash or a missing script",
+      "op": "<=",
+      "target": 0,
+      "unit": " gaps"
+    },
+    {
+      "key": "risks_firing",
+      "label": "Risks on the Twitch risks page that fire on today's run",
+      "op": "<=",
+      "target": 0,
+      "unit": " risks"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/twitch-gaps.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Work in /home/sieun/Documents/Github/auto-sns-agent under its AGENTS.md. The precheck already ran the gap scripts (`node scripts/twitch-gaps/run.mjs`) and kept their JSON as twitch-gaps.latest.json in this chat's duty folder (~/.prime/agent/browser-chat/duties/01a151ca-2bab-71ee-a334-bfae1773e0a0/); read the precheck's flagged items first. Every run, when that JSON's measuredAt is newer than the page's `<time data-measured>`, have one writer subagent refresh apps/llm-wiki/content/domains/platform-apis/twitch-index-gaps/index.html from it (c20), keeping the `<time data-measured datetime>`, `<tr data-gap>` and `data-size` markers, passing `node apps/llm-wiki/scripts/prose-lint.mjs` on the page, and committing it with node scripts/repo/agent/commit.mjs. When the JSON is missing or older than this run, rerun `node scripts/twitch-gaps/run.mjs --out <that file>` from the repo root first. failed_gaps: rerun each failed gap with `--only <key>` and, when it fails again, its fix job lands a fix in scripts/twitch-gaps. risks_firing: follow the 'what to do when it fires' line of each firing risk on apps/llm-wiki/content/domains/platform-apis/twitch-risks/index.html; a risk row with no check in sieun-pi components/user-history/scripts/duties/twitch-gaps.ts RISK_CHECKS gets its check added there. Each missed metric gets one fix step with duty \"<this duty id>/<metric key>\" and a live job; a step whose job is live gets the new numbers and flagged lines by message, and a step with no live job gets one with await rlm.create_session(brief, name=...), never a second copy. Nothing goes outside (c37), and pushes and promotes need no ask (c74). All met and the page refreshed: end with no message."
+}
