@@ -585,11 +585,17 @@ export interface AgentQueueView { pool: AgentQueuePool; idleEvictionMinutes: Idl
 export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac" | "tree" | "aging" | "lease"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
 
 /**
- * Settings > Tools and skills: live checks of the tools agents use (the Aside browser, web search, computer use), run on the chat server with
- * the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts). `id` is that duty's check id; `off` is installed but closed on purpose.
+ * Settings > Tools and skills: per box in hosts.json, live checks of the tools agents there are meant to have (its `tools`: web search, a headless
+ * browser, the Aside browser, computer use), each run on that box with the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts).
+ * `id` is that duty's check id; `off` is installed but out of reach on purpose (the Mac asleep).
  */
-export type ToolKind = "browser" | "web search" | "computer use";
-export interface ToolCheck { id: string; kind: ToolKind; tool: string; status: "pass" | "fail" | "off"; detail: string; fix?: string; ms: number }
+export type { HostTool } from "../hosts.ts";
+import type { HostTool } from "../hosts.ts";
+export interface ToolCheck { id: string; tool: string; status: "pass" | "fail" | "off"; detail: string; fix?: string; ms: number }
+/** One tool on one box, with its checks, or `used: false` for a tool the box is not meant to have, which is never checked and never fails. */
+export type HostToolRow = { tool: HostTool; used: true; checks: ToolCheck[] } | { tool: HostTool; used: false };
+/** One box's tools, every HOST_TOOLS entry in order: the checks ran there, or the box did not answer and its used tools have no checks. */
+export type HostToolsCard = { name: string; self: boolean; checkedAt: number; tools: HostToolRow[] } & ({ state: "checked" } | { state: "unreachable"; error: string });
 /** The newest `--only` re-check of a flagged check after the daily run, as the duty job runs it after a fix. */
 export interface ToolsRecheck { at: number; status: "pass" | "fail" | "off"; detail: string }
 /**
@@ -600,8 +606,11 @@ export interface ToolsDailyRun {
   chatId: string; dutyId: string; name: string; at: number; verdict: "met" | "missed" | "error" | "skipped"; summary: string;
   checksRun: number | null; problems: { id: string; status: "fail" | "off"; text: string; recheck?: ToolsRecheck }[];
 }
-/** `checkedAt` is when the live checks ran; the server keeps one result for a few minutes so opening the tab does not pay for a search each time. */
-export interface ToolsView { checkedAt: number; checks: ToolCheck[]; daily: ToolsDailyRun | null }
+/**
+ * `checkedAt` is when the live checks ran; the server keeps one result for a few minutes so opening the tab does not pay for a search each time.
+ * `registryError` says why hosts.json did not read; then, as when it is absent, the list is this box alone with every tool.
+ */
+export interface ToolsView { checkedAt: number; hosts: HostToolsCard[]; registryError: string | null; daily: ToolsDailyRun | null }
 
 /** Where an installed skill comes from: the global folder, the running Prime release's built-in skills, or a repo's skill folder. */
 export type SkillSource = "global" | "built-in" | "repo";

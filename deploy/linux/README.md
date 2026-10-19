@@ -111,7 +111,7 @@ Update the pool with `/usr/bin/python3 -B components/pi-pool/install.py --ref <s
 
 ## Tools
 
-The Settings > Tools and skills panel checks web search, the Aside browser and cua-driver. On Linux each one needs these steps.
+The Settings > Tools and skills panel checks each box in `~/.config/sieun-pi/hosts.json` for the tools its `tools` list names, on that box: `websearch`, `headless-browser` (aside-browser's box runner), `aside` and `cua-driver`. A tool a box does not list shows as not used on that host, never as a failure. us-metal02 lists all four, and the Mac lists `websearch`, `aside` and `cua-driver`. On Linux each tool needs these steps.
 
 1. Web search reads a Virev key from `"virev": {"type": "api_key", "key": "kb_live_..."}` in `~/.prime/agent/auth.json`. Run `uv sync` in `~/.prime/agent/skills/websearch`, and install `websearch`, `board` and `aside-browser` into the kernel venv from `~/.prime/agent/skills/<name>` with `uv pip install --python ~/.prime/agent/kernel-venv/bin/python -e`.
 2. Install the Aside CLI with `curl -fsSL https://releases.aside.com/install.sh | bash`. Aside Browser does not run here, so sign the CLI in with `aside login --email <owner email>`, confirm the code in Aside on the Mac (Settings > Account > Devices), and pick the Mac with `aside host use <host>`.
@@ -120,3 +120,4 @@ The Settings > Tools and skills panel checks web search, the Aside browser and c
 5. Xvfb runs `/usr/bin/xkbcomp`, which the box lacks. Copy `usr/bin/Xvfb` to `Xvfb-localxkb` and replace its one `/usr/bin\0` string with `.\0` padded by NULs to 9 bytes, so it runs the unpacked `xkbcomp` from the unit's working directory.
 6. Install `cua-driver-x11` into `~/.local/bin`, then install and start `xvfb.service` and `cua-driver.service`.
 7. Add the servers to `settings.json` as in the main README, with `/home/sieun/.local/bin/aside` and `/home/sieun/.local/bin/cua-driver-x11` as the commands.
+8. The headless browser runs `~/.prime/agent/skills/aside-browser/box/box.mjs`; install it with `npm ci` in that folder, which needs Playwright's Chromium in `~/.cache/ms-playwright`.

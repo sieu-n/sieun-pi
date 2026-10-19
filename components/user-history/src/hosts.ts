@@ -21,10 +21,18 @@ export type Host = {
   ssh: string | null;
   /** `url` is set for a service behind tailscale serve; without it the service answers on http://<address>:<port>. */
   roles: Partial<Record<HostRole, { port: number; url?: string }>>;
+  /** The tools agents on this box are meant to have, which Settings > Tools and skills checks there; absent, every tool in HOST_TOOLS. */
+  tools?: HostTool[];
 };
 export type HostsRegistry = { version: 1; hosts: Host[] };
 
 const ROLES: readonly HostRole[] = ["pool", "wiki", "chat"];
+/**
+ * The tools a box can be meant to have: the websearch skill, a headless Chromium on the box (aside-browser's box runner), the Aside CLI and MCP
+ * for the owner's logged-in sites, and cua-driver for computer use. Boxes differ on purpose, so each host's `tools` lists its own.
+ */
+export const HOST_TOOLS = ["websearch", "headless-browser", "aside", "cua-driver"] as const;
+export type HostTool = (typeof HOST_TOOLS)[number];
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const CONFIG_DIR = join(homedir(), ".config/sieun-pi");
 export const HOSTS_FILE = join(CONFIG_DIR, "hosts.json");
@@ -63,8 +71,14 @@ function parseHost(value: unknown, at: string): Host {
     if (url !== undefined && (typeof url !== "string" || !/^https?:\/\//.test(url))) throw new Error(`${at}.roles.${role}.url: needs an http(s) URL`);
     roles[role as HostRole] = url === undefined ? { port } : { port, url: url.replace(/\/+$/, "") };
   }
-  return { name, hostname: text("hostname"), address: text("address"), relayPort, token, daemonSocket, ssh, roles };
+  const tools = value.tools;
+  if (tools !== undefined && (!Array.isArray(tools) || tools.some(tool => !(HOST_TOOLS as readonly unknown[]).includes(tool))))
+    throw new Error(`${at}.tools: needs a list of ${HOST_TOOLS.join(", ")}`);
+  return { name, hostname: text("hostname"), address: text("address"), relayPort, token, daemonSocket, ssh, roles, ...(tools ? { tools: [...new Set(tools as HostTool[])] } : {}) };
 }
+
+/** The tools `host` is meant to have, in HOST_TOOLS order; a host without a `tools` list gets every one. */
+export const hostTools = (host: Host | null): HostTool[] => HOST_TOOLS.filter(tool => !host?.tools || host.tools.includes(tool));
 
 export function parseHosts(value: unknown, source = "hosts.json"): HostsRegistry {
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.hosts)) throw new Error(`${source}: needs {"version": 1, "hosts": [...]}`);

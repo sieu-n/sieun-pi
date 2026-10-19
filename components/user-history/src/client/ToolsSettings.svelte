@@ -3,14 +3,15 @@
   import { api } from "./api.ts";
   import { clock } from "./clock.svelte.ts";
   import { clockTime, duration } from "./format.ts";
-  import type { SkillInfo, SkillSource, SkillsView, ToolCheck, ToolKind, ToolsDailyRun, ToolsView } from "../shared/types.ts";
+  import type { HostTool, HostToolsCard, SkillInfo, SkillSource, SkillsView, ToolCheck, ToolsDailyRun, ToolsView } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
 
-  const KINDS: { kind: ToolKind; label: string }[] = [
-    { kind: "browser", label: "Web browser" },
-    { kind: "web search", label: "Web search" },
-    { kind: "computer use", label: "Computer use" },
-  ];
+  const TOOL_LABELS: Record<HostTool, string> = {
+    "websearch": "Web search",
+    "headless-browser": "Headless browser",
+    "aside": "Aside browser",
+    "cua-driver": "Computer use",
+  };
   const SOURCES: { source: SkillSource; label: string }[] = [
     { source: "global", label: "Global" },
     { source: "built-in", label: "Built in" },
@@ -67,8 +68,18 @@
     return date.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  const groups = $derived(KINDS.map(entry => ({ ...entry, checks: tools?.checks.filter(check => check.kind === entry.kind) ?? [] })));
-  const failing = $derived(tools?.checks.filter(check => check.status === "fail").length ?? 0);
+  const checksOf = (host: HostToolsCard) => host.tools.flatMap(row => row.used ? row.checks : []);
+  const allChecks = $derived(tools?.hosts.flatMap(checksOf) ?? []);
+  const failing = $derived(allChecks.filter(check => check.status === "fail").length);
+  const unreachable = $derived(tools?.hosts.filter(host => host.state === "unreachable").length ?? 0);
+  /** One box's line: its failures, or that it did not answer, or that every check it is meant to have passes. */
+  function hostLine(host: HostToolsCard): { tone: "on" | "problem"; text: string } {
+    if (host.state === "unreachable") return { tone: "problem", text: `Not checked. ${host.error}` };
+    const checks = checksOf(host);
+    const fails = checks.filter(check => check.status === "fail").length;
+    if (!checks.length) return { tone: "on", text: "No tool is set for this host." };
+    return fails ? { tone: "problem", text: `${fails} of ${checks.length} checks fail.` } : { tone: "on", text: "Every check passes." };
+  }
   const elapsed = $derived(checking ? Math.max(0, Math.round((clock.now - checkStarted) / 1000)) : 0);
 
   const needle = $derived(query.trim().toLowerCase());
@@ -119,27 +130,46 @@
     {:else if !tools}
       <div class="empty muted"><span class="spinner"></span> Running the tool checks</div>
     {:else}
-      <p class="current" class:on={failing === 0} class:problem={failing > 0}>
+      <p class="current" class:on={failing === 0 && unreachable === 0} class:problem={failing > 0 || unreachable > 0}>
         <span class="dot" aria-hidden="true"></span>
-        <span>{failing === 0 ? "Every tool check passes." : `${failing} of ${tools.checks.length} checks fail.`}</span>
+        <span>
+          {failing === 0 ? "Every tool check passes" : `${failing} of ${allChecks.length} checks fail`}{unreachable ? `, and ${unreachable} ${unreachable === 1 ? "host" : "hosts"} did not answer` : ""}.
+        </span>
       </p>
-      {#each groups as group (group.kind)}
-        <div class="group">
-          <span class="name">{group.label}</span>
-          <ul class="rows">
-            {#each group.checks as check (check.id)}
-              <li class="check {check.status}">
-                {@render mark(check.status)}
-                <span class="tool" title={check.tool}>{check.tool}</span>
-                <span class="detail" title={check.detail}>{check.detail}</span>
-                <span class="ms" title="Check id {check.id}">{duration(check.ms)}</span>
-                {#if check.status === "fail" && check.fix}<span class="fix">To fix, {check.fix}</span>{/if}
-              </li>
-            {:else}
-              <li class="note">No check covers this tool.</li>
-            {/each}
-          </ul>
-        </div>
+      {#if tools.registryError}<p class="note problem">The hosts list did not read, so only this box shows. {tools.registryError}</p>{/if}
+      {#each tools.hosts as host (host.name)}
+        {@const line = hostLine(host)}
+        <section class="host" aria-label="Tools on {host.name}">
+          <h5>
+            <span class="host-name">{host.name}</span>
+            {#if host.self}<span class="badge">This box</span>{/if}
+            <span class="host-line {line.tone}" title={line.text}>{line.text}</span>
+          </h5>
+          {#each host.tools as row (row.tool)}
+            <div class="group" class:unused={!row.used}>
+              <span class="name">{TOOL_LABELS[row.tool]}</span>
+              <ul class="rows">
+                {#if !row.used}
+                  <li class="note unused-note">Not used on this host.</li>
+                {:else if host.state === "unreachable"}
+                  <li class="note">Not checked, because the host did not answer.</li>
+                {:else}
+                  {#each row.checks as check (check.id)}
+                    <li class="check {check.status}">
+                      {@render mark(check.status)}
+                      <span class="tool" title={check.tool}>{check.tool}</span>
+                      <span class="detail" title={check.detail}>{check.detail}</span>
+                      <span class="ms" title="Check id {check.id}">{duration(check.ms)}</span>
+                      {#if check.status === "fail" && check.fix}<span class="fix">To fix, {check.fix}</span>{/if}
+                    </li>
+                  {:else}
+                    <li class="note">No check covers this tool.</li>
+                  {/each}
+                {/if}
+              </ul>
+            </div>
+          {/each}
+        </section>
       {/each}
     {/if}
   </section>
@@ -253,7 +283,16 @@
   .current.problem { color: var(--danger); }
   .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  .host { display: flex; flex-direction: column; gap: 6px; }
+  .host + .host { margin-top: 8px; }
+  .host h5 { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); }
+  .host-name { font-weight: 600; }
+  .badge { padding: 1px 6px; border-radius: 999px; background: var(--bg-hover); color: var(--text-muted); font-size: 11.5px; font-weight: 500; }
+  .host-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-muted); }
+  .host-line.problem { color: var(--danger); }
   .group { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 4px 16px; }
+  .group.unused .name, .unused-note { color: var(--text-faint); }
+  .rows > li.note { padding: 5px 0; }
   .name { font-weight: 500; padding-top: 5px; }
   .rows { list-style: none; margin: 0; padding: 0; }
   .rows > li + li { border-top: 1px solid var(--border); }

@@ -5,17 +5,20 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { peerReach, seenAgo } from "../../src/host-reach.ts";
+import { hostTools, loadHosts, selfHost, type HostTool } from "../../src/hosts.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
- * use on this Mac is installed, signed in and answers a real call. Each check runs a CLI with argv (no shell) or speaks raw MCP over stdio, all in
+ * use on this box is installed, signed in and answers a real call. Each check runs a CLI with argv (no shell) or speaks raw MCP over stdio, all in
  * parallel with their own timeouts. No model call, nothing sent outside; the one paid call is a single Virev web search ($0.003 at most).
  * It fixes two things itself, because agents did both by hand on every run that hit them: it installs a newer stable cua-driver (cua_version) and
  * starts a stopped CuaDriver daemon (cua_permissions, cua_version).
  * The research behind each pass rule is in the auto-sns-agent session folder sessions/2026/10/10/1617-skills-and-tools-duty.
  * A `--only` run is the duty job's re-check after a fix; it is also appended to RECHECKS_FILE (RECHECKS_FILE env overrides the path).
+ * A run without `--only` leaves out the checks for tools this box is not meant to have (`tools` in hosts.json, hostChecks).
+ * `--results` prints each check's result as JSON and records nothing: Settings > Tools and skills runs it over ssh on every other box.
  */
 
 export type Group = "computer use" | "web search" | "browser" | "prime skills" | "accounts" | "peers" | "service clis" | "repo skills";
@@ -24,7 +27,10 @@ export type Fixer = "agent" | "owner";
 /** pass; fail with who fixes it; off = installed but not reachable on purpose (the Mac asleep), never a failure. */
 export type Outcome = { status: "pass"; detail: string } | { status: "fail"; fixer: Fixer; detail: string; fix: string } | { status: "off"; detail: string };
 /** `first` checks run before the rest, because they change what the others read (cua_version installs a new cua-driver and restarts its daemon). */
-export interface Check { id: string; group: Group; tool: string; first?: true; run: (deps: Deps) => Promise<Outcome> }
+export interface Check { id: string; group: Group; tool: string; first?: true;
+  /** The hosts.json tool the check belongs to; a run on a box that is not meant to have that tool leaves the check out. */
+  hostTool?: HostTool;
+  run: (deps: Deps) => Promise<Outcome> }
 
 export interface ExecResult { code: number; stdout: string; stderr: string; ms: number }
 export interface ExecOptions { cwd?: string; env?: Record<string, string>; timeoutMs: number; input?: string }
@@ -60,7 +66,7 @@ export interface Deps {
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
 const METAL_HOST = process.env.METAL_SSH_HOST || "us-metal01";
-const CHECK_TIMEOUT_MS = 90_000;
+export const CHECK_TIMEOUT_MS = 90_000;
 const MCP_TIMEOUT_MS = 20_000;
 /** A fixed 4x4 red PNG for the attach-image check. */
 const PNG_4X4 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR42mP4z8AARwzEcQCukw/xOF6MEQAAAABJRU5ErkJggg==";
@@ -267,7 +273,7 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
 }
 
 export const CHECKS: readonly Check[] = [
-  { id: "cua_permissions", group: "computer use", tool: "cua-driver", run: async deps => {
+  { id: "cua_permissions", group: "computer use", tool: "cua-driver", hostTool: "cua-driver", run: async deps => {
     const ask = async () => {
       const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: 10_000 });
       let status: { accessibility?: unknown; screen_recording?: unknown; daemon_running?: unknown; x11?: unknown; wayland?: unknown; atspi?: unknown } = {};
@@ -290,7 +296,7 @@ export const CHECKS: readonly Check[] = [
       deps.platform === "linux" ? "run `systemctl --user start xvfb.service cua-driver.service`, read `cua-driver doctor`, and re-check"
         : "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
   } },
-  { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", run: async deps => {
+  { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", hostTool: "cua-driver", run: async deps => {
     const server = await mcpServer(deps, "cua-driver");
     if (typeof server === "string") return missingServer("cua-driver", server);
     const answer = await deps.mcp(server.command, server.args ?? [], { name: "health_report", arguments: {} }, MCP_TIMEOUT_MS);
@@ -310,7 +316,7 @@ export const CHECKS: readonly Check[] = [
    * A newer stable cua-driver is installed here, then the daemon restarts. Agents did this by hand on 10-14 (0.34.1 to 0.35.2) and 10-15 (0.35.2 to
    * 0.35.4, 8 s): the macOS grants stayed, and the only break was the daemon left stopped. Releases came every 1 to 2 days (0.31.0 on 10-10, 0.35.4 on 10-15).
    */
-  { id: "cua_version", group: "computer use", tool: "cua-driver", first: true, run: async deps => {
+  { id: "cua_version", group: "computer use", tool: "cua-driver", hostTool: "cua-driver", first: true, run: async deps => {
     const result = await deps.exec(paths(deps).cua, ["check-update", "--json"], { timeoutMs: 15_000 });
     let info: { update_available?: boolean; error?: unknown; current_version?: string; latest_version?: string } = {};
     try { info = parseJson(result.stdout) as typeof info; } catch { return FAIL("agent", `check-update gave no JSON (${failText(result)})`, "run `cua-driver check-update --json` and read the error"); }
@@ -331,7 +337,7 @@ export const CHECKS: readonly Check[] = [
    * ~/.prime/agent/skills importable while Prime's kernel setup reinstalls it. On 10-18 websearch, board and aside_browser failed to import
    * from before 04:35 to 04:49 after such a reinstall (p254).
    */
-  { id: "websearch_kernel", group: "web search", tool: "websearch skill", run: async deps => {
+  { id: "websearch_kernel", group: "web search", tool: "websearch skill", hostTool: "websearch", run: async deps => {
     const python = paths(deps).kernelPython;
     const pinned = deps.pinSkillPaths ? await deps.pinSkillPaths().catch((error: unknown) => error instanceof Error ? error : new Error(String(error))) : undefined;
     if (pinned instanceof Error) return FAIL("agent", `could not write ${PIN_FILE}: ${brief(pinned.message, 200)}`,
@@ -347,7 +353,7 @@ export const CHECKS: readonly Check[] = [
       `\`uv pip uninstall --python ${python} prime-agent-skill-websearch\`, then re-check in a fresh kernel`);
     return FAIL("agent", `the kernel loads ${where || "nothing"} (${failText(result)})`, `make ${own} the only websearch install in the kernel venv`);
   } },
-  { id: "websearch_query", group: "web search", tool: "Virev search API", run: async deps => {
+  { id: "websearch_query", group: "web search", tool: "Virev search API", hostTool: "websearch", run: async deps => {
     const skill = paths(deps).websearch;
     const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
     const search = () => deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
@@ -364,7 +370,7 @@ export const CHECKS: readonly Check[] = [
     if (results && result.code === 0) return PASS(brief(result.stdout.split("\n").find(line => line.startsWith("Result 1:")) ?? "", 100));
     return FAIL("agent", `no results: ${failText(result)}`, "check that api.virev.ai answers and the skill's .venv imports");
   } },
-  { id: "aside_tabs", group: "browser", tool: "Aside browser MCP", run: async deps => {
+  { id: "aside_tabs", group: "browser", tool: "Aside browser MCP", hostTool: "aside", run: async deps => {
     const mac = await macReach(deps);
     if (!mac.online) return { status: "off", detail: mac.detail };
     const server = await mcpServer(deps, "aside");
@@ -379,7 +385,7 @@ export const CHECKS: readonly Check[] = [
       ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
   } },
   /** Only a reply that lists no signed-in account is the owner's; a timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z and 13:24Z) is a reach problem. */
-  { id: "aside_account", group: "browser", tool: "Aside account", run: async deps => {
+  { id: "aside_account", group: "browser", tool: "Aside account", hostTool: "aside", run: async deps => {
     const mac = await macReach(deps);
     if (!mac.online) return { status: "off", detail: mac.detail };
     const result = await deps.exec("aside", ["account", "status"], { timeoutMs: 10_000 });
@@ -387,6 +393,22 @@ export const CHECKS: readonly Check[] = [
     if (line) return PASS(brief(line[0], 100));
     if (result.code !== 0) return FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
     return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
+  } },
+  /**
+   * The headless Chromium agents use for pages that need no login: aside-browser's box runner opens a data: page and prints its title. The runner
+   * exits 1 once stdin closes, because closing the browser fires its disconnected handler, so only its answer line counts.
+   */
+  { id: "box_browser", group: "browser", tool: "headless Chromium", hostTool: "headless-browser", run: async deps => {
+    const runner = join(deps.home, ".prime/agent/skills/aside-browser/box/box.mjs");
+    const install = "run `npm ci` in ~/.prime/agent/skills/aside-browser/box, which needs Playwright's Chromium in ~/.cache/ms-playwright";
+    if (!await deps.exists(runner)) return FAIL("agent", `${runner} is missing`, install);
+    const code = "await openTab('data:text/html,<title>box-browser-ok</title>'); console.log(await page.title())";
+    // measured: a cold run took 1.4 s on us-metal02 on 10-19; 20 s matches the other one-shot CLI checks here.
+    const result = await deps.exec("node", [runner], { input: `${JSON.stringify({ id: 1, code })}\n`, timeoutMs: 20_000 });
+    let answer: { out?: unknown; error?: unknown } = {};
+    try { answer = JSON.parse(result.stdout.split("\n").find(line => line.startsWith("{")) ?? "{}") as typeof answer; } catch { /* reported below */ }
+    if (answer.out === "box-browser-ok") return PASS(`opened a page in ${result.ms} ms`);
+    return FAIL("agent", answer.error ? `the runner: ${brief(String(answer.error), 200)}` : `no answer (${failText(result)})`, install);
   } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {
     const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: 15_000 });
@@ -591,6 +613,18 @@ async function runOne(deps: Deps, check: Check): Promise<CheckResult> {
   return { check, outcome, ms: deps.now() - start };
 }
 
+/** One check's result as `--results` prints it and Settings > Tools and skills shows it. */
+export interface CheckReport { id: string; group: Group; tool: string; status: Outcome["status"]; detail: string; fix?: string; ms: number }
+export const checkReport = ({ check, outcome, ms }: CheckResult): CheckReport =>
+  ({ id: check.id, group: check.group, tool: check.tool, status: outcome.status, detail: outcome.detail, ...(outcome.status === "fail" ? { fix: outcome.fix } : {}), ms });
+
+/** CHECKS without the ones for tools this box is not meant to have (its `tools` in hosts.json); a box missing from hosts.json runs them all. */
+export async function hostChecks(load: typeof loadHosts = loadHosts): Promise<Check[]> {
+  const registry = await load().catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+  const tools = hostTools(registry ? selfHost(registry) : null);
+  return CHECKS.filter(check => !check.hostTool || tools.includes(check.hostTool));
+}
+
 /** Where a `--only` re-check is recorded, in the chat's duties folder, so Settings can show that a daily run's failures were fixed. */
 export const RECHECKS_FILE = "skills-and-tools.rechecks.jsonl";
 /** One `--only` re-check: when it ran and each check's outcome. */
@@ -765,8 +799,13 @@ async function main(): Promise<void> {
   if (unknown.length) { process.stderr.write(`skills-and-tools: unknown check ids ${unknown.join(", ")}; known: ${CHECKS.map(check => check.id).join(", ")}\n`); process.exit(2); }
   const stateFile = process.env.STATE_FILE;
   const deps = realDeps(stateFile ? dirname(stateFile) : tmpdir());
+  if (process.argv.includes("--results")) {
+    const results = await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : await hostChecks());
+    process.stdout.write(JSON.stringify(results.map(checkReport)) + "\n");
+    process.exit(0);
+  }
   const harness = !only && process.argv.includes("--with-harness") ? runHarness(deps.scratchDir) : null;
-  const results = await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : CHECKS);
+  const results = await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : await hostChecks());
   const output = harness ? withHarness(toOutput(results, deps.now()), await harness) : toOutput(results, deps.now());
   if (only) await appendFile(process.env.RECHECKS_FILE || join(deps.home, ".prime/agent/browser-chat/duties", RECHECKS_FILE), JSON.stringify(recheckRecord(results, deps.now())) + "\n", { mode: 0o600 });
   const text = JSON.stringify(output, null, 2) + "\n";
