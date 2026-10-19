@@ -244,16 +244,20 @@ const isGone = (result: InterruptedHead["result"]): boolean => typeof result ===
 
 /**
  * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`), and so
- * does each session in `owners` (the owners of the chats' open steps, see resume_paused.py --owners) wherever it sits. Never a chat:
- * `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after its mid-tool stop at 13:29Z or the jobs a token
- * hook failure and a worker stop ended at 13:48Z, two of them two levels under Crawler VP, and their steps stalled over 2 h.
+ * does each session in `owners` (the owners of the chats' open steps, see resume_paused.py --owners) wherever it sits, and each top-level
+ * session that is no chat (its own head). Never a chat: `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after
+ * its mid-tool stop at 13:29Z or the jobs a token hook failure and a worker stop ended at 13:48Z, two of them two levels under Crawler VP, and
+ * their steps stalled over 2 h. On 10-18 the 7 roots moved from the Mac to us-metal02 at 21:14Z (the release owner 01a10810, metal box owner
+ * 01a11d24 and five more) were neither a chat nor a chat's job, so after their 429s they slept in Prime's usage wait past 01:23Z on 10-19,
+ * when pi-pool already admitted their trees, and no sweep looked at them.
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
   interrupted: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
   owners: ReadonlySet<string> = new Set()): Promise<void> {
   const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
   try {
-    const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "")), owners);
+    const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "") ||
+      (run.session_id !== undefined && run.head_session_id === run.session_id)), owners);
     for (const job of report?.children ?? []) {
       const run = report!.paused.find(entry => entry.id === job.id);
       log(`job ${job.name}: interrupted (${run?.reason ?? "?"} at ${run?.errored_at ?? "?"}); continue: ${typeof job.result === "string" ? job.result : JSON.stringify(job.result)}`);

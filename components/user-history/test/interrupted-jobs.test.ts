@@ -295,3 +295,19 @@ test("the job sweep logs an unresolved stop of a chat's job, does not send it, a
   await writeFile(bad, `print(${JSON.stringify(JSON.stringify({ paused: [], heads: [], checked_at: "now", stopped: [{ ...deleted("j-deleted", "chat1"), stopped_by: 3 }] }))})\n`);
   await assert.rejects(runScript(["--dry-run"], bad), /printed a report whose stopped\[0\]\.stopped_by is missing/);
 });
+
+test("the sweep continues a top-level root that is no chat and no chat's job, asleep in its retry after pi-pool admits its tree", async () => {
+  // us-metal02 10-19 01:23:36Z: the release owner (01a10810) and the metal box owner (01a11d24), moved from the Mac at 21:14Z, slept in Prime's
+  // usage wait for their 00:26Z and 00:49Z 429 draws (retries at 02:21Z and 02:48Z) while pi-pool already gave their trees claude7.
+  const releaseOwner = "01a10810-34b5-710f-88fe-3d369f89a8c9", metal = "01a11d24-ac9b-757d-ac51-9b2b7598782f", crawler = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  const retry = "429 This request would exceed your account's rate limit. Please try again later.";
+  const planned: InterruptedReport = { paused: [{ ...job(releaseOwner, "hung", releaseOwner), retry_error: retry }, { ...job(metal, "hung", metal), retry_error: retry },
+    job(crawler, "error", crawler), job("01a14fe2-sub", "error", "01a0cc5e-elsewhere")], heads: [], checked_at: "now" };
+  const calls: string[][] = [];
+  const runs = new InterruptedRuns(async args => { calls.push([...args]); return planned; });
+  const aborted: string[] = [];
+  await resumeChatJobs([row(crawler, at)], new Set([crawler]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners, undefined, new Set(),
+    async id => { aborted.push(id); }), () => {});
+  assert.deepEqual(aborted, [releaseOwner, metal]);
+  assert.deepEqual(calls.at(-1), ["--direct", "--only", `${releaseOwner},${metal}`, "--this-box", "--unstuck", `${releaseOwner},${metal}`]);
+});
