@@ -9,9 +9,10 @@ home=$(getent passwd "$DEV_USER" | cut -d: -f6)
 user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # Unit -> CPUWeight, against the default of 100. CI VMs (virev-ci.slice), dev docker (dev.slice) and world rigs (transient user units and ssh
 # login scopes) stay at 100, so they never win over agents or prod (c108). The weights at 300 sit on every level from the root down to the
-# Prime daemon, because a weight only counts against its siblings: user.slice against virev.slice and dev.slice, user@1001.service against
-# the ssh login scopes, and the daemon against the other units in app.slice. virev.slice at 400 holds prod at 300 and CI at 100.
-declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=300 [user@$uid.service]=300 [virev.slice]=400 [virev-prod.slice]=300)
+# Prime daemon, because a weight only counts against its siblings: user.slice against virev.slice and dev.slice, and the daemon against the
+# other units in app.slice. user@1001.service runs at 10000, the most systemd takes, because its siblings are the ssh login scopes, 69 of them
+# at 100 each from Mac jobs on 10-19 at 21:1xZ, which at 300 left the user manager about 300/7200 of user-1001.slice when all were busy. virev.slice at 400 holds prod at 300 and CI at 100.
+declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=300 [user@$uid.service]=10000 [virev.slice]=400 [virev-prod.slice]=300)
 declare -A USER_WEIGHTS=([sieun-pi-chat.service]=1000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=300)
 
 dropin() {

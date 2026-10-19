@@ -30,7 +30,7 @@ class CpuProtectPlan(unittest.TestCase):
 
 class Setup(unittest.TestCase):
     def test_logins_and_the_chat_get_1000_and_agents_and_prod_300_on_every_level(self):
-        self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 300, "user@1001.service": 300,
+        self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 300, "user@1001.service": 10000,
                                              "virev.slice": 400, "virev-prod.slice": 300})
         self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 1000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 300})
