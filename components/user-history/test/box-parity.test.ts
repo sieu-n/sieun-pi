@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
+import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, versions: {}, ms: 1 });
@@ -28,9 +28,29 @@ test("shortfall counts a Mac commit as on the box under another hash by patch-id
     ["dddddddddd", "p-mac-only", ["k-page-1", "k-mac-only"]],
   ])}`;
   const box = `commits:${JSON.stringify({ ids: ["aaaaaaaaaa", "eeeeeeeeee"], patches: ["p-rebased"], bytes: ["k1", "k-page-1", "k-page-2"] })}`;
-  assert.equal(shortfall(mac, box), "box lacks 1 of the Mac's 4: dddddddddd");
-  assert.equal(shortfall(mac, `commits:${JSON.stringify({ ids: [], patches: ["p-rebased", "p-mac-only"], bytes: ["k-page-1", "k-page-2"] })}`), "box lacks 1 of the Mac's 4: aaaaaaaaaa");
+  const lacks = "box lacks 1 of the Mac's 4, which the Mac pushed, so a fetch on the box gets them: ";
+  assert.equal(shortfall(mac, box), `${lacks}dddddddddd`);
+  assert.equal(shortfall(mac, `commits:${JSON.stringify({ ids: [], patches: ["p-rebased", "p-mac-only"], bytes: ["k-page-1", "k-page-2"] })}`), `${lacks}aaaaaaaaaa`);
   assert.equal(shortfall(mac, "fail: git log: bad"), "the Mac gave its commits, box fail: git log: bad");
+});
+
+test("a Mac commit on a branch the box fetched is on the box, and one the Mac never pushed is mac_unpushed and not counted", () => {
+  const mac = `commits:${JSON.stringify([
+    ["aaaaaaaaaa", "p-fetched", ["k-a"], true],
+    ["bbbbbbbbbb", "p-not-fetched", ["k-b"], true],
+    ["cccccccccc", "p-local", ["k-c"], false],
+    ["dddddddddd", "p-local-shared", ["k-d"], false],
+  ])}`;
+  const box = `commits:${JSON.stringify({ ids: [], patches: ["p-local-shared"], bytes: [], fetched: ["aaaaaaaaaa"] })}`;
+  assert.deepEqual(commitGaps(mac, box), { missing: ["bbbbbbbbbb"], unpushed: ["cccccccccc"], total: 4 });
+  assert.equal(shortfall(mac, box), "box lacks 1 of the Mac's 4, which the Mac pushed, so a fetch on the box gets them: bbbbbbbbbb");
+  assert.equal(unpushedNote(mac, box), "the Mac has 1 of its last 4 commits on its branch unpushed to origin, so the box cannot fetch them: cccccccccc");
+  const row: Row = { id: "tip", tool: "checkout tip", probes: [{ tip: true }] };
+  const fetchedAll = `commits:${JSON.stringify({ ids: [], patches: ["p-local-shared"], bytes: [], fetched: ["aaaaaaaaaa", "bbbbbbbbbb"] })}`;
+  const result = judgeRows([row], output("mac", { tip: [mac] }), output("box", { tip: [fetchedAll] }), new Map());
+  assert.equal(result.off.length, 0);
+  assert.equal(result.matched, 1);
+  assert.match(result.unpushed[0]!.why, /1 of its last 4 .*cccccccccc/);
 });
 
 test("shortfall lets a box CLI version be newer than the Mac's and keeps an older one off", () => {
@@ -187,21 +207,26 @@ test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () =>
   };
   assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [shared]);
   git("config", "agent.branch", "dev/mac");
-  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [own, shared]);
+  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string, string, string[], boolean][]).map(([id, , , pushed]) => [id, pushed]), [[own, false], [shared, false]]);
   assert.deepEqual((JSON.parse(run("box").slice(8)) as { ids: string[] }).ids, [shared]);
-  assert.match(shortfall(run("mac"), run("box"))!, new RegExp(`box lacks 1 of the Mac's 2: ${own}`));
+  assert.equal(shortfall(run("mac"), run("box")), null);
+  assert.match(unpushedNote(run("mac"), run("box"))!, new RegExp(`1 of its last 2 .*: ${own}$`));
+  git("update-ref", "refs/remotes/origin/dev/mac", git("rev-parse", "HEAD"));
+  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string, string, string[], boolean][]).map(([, , , pushed]) => pushed), [true, true]);
+  assert.deepEqual((JSON.parse(run("box").slice(8)) as { fetched: string[] }).fetched, [own]);
+  assert.equal(shortfall(run("mac"), run("box")), null);
+  assert.equal(unpushedNote(run("mac"), run("box")), null);
 });
 
-test("the audit rows keep the box's dropped cua-driver and the Mac's own dev branch out of tool_rows_off", () => {
+test("the audit rows keep the box's dropped cua-driver out of tool_rows_off, and the tip row counts only the Mac commits it pushed", () => {
   const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
   const byId = new Map(rows.map(row => [row.id, row]));
   for (const id of ["mcp-cua-driver", "cli-cua-driver", "tools-panel-check-cua-permissions", "tools-panel-check-cua-mcp", "tools-panel-check-cua-version"])
     assert.match(byId.get(id)?.byDesign ?? "", /60e99f7d/, id);
   const tip = byId.get("auto-sns-agent-checkout-tip")!;
-  assert.match(tip.byDesign ?? "", /dev\/sieun-mac-a/);
-  const macCommits = `commits:${JSON.stringify([["aaaaaaaaaa", "p-mac", ["k-mac"]]])}`;
-  const boxCommits = `commits:${JSON.stringify({ ids: [], patches: [], bytes: [] })}`;
-  const result = judgeRows([tip], output("mac", { [tip.id]: [macCommits] }), output("box", { [tip.id]: [boxCommits] }), new Map());
-  assert.equal(result.off.length, 0);
-  assert.equal(result.byDesign.length, 1);
+  assert.equal(tip.byDesign, undefined);
+  const judge = (pushed: boolean) => judgeRows([tip], output("mac", { [tip.id]: [`commits:${JSON.stringify([["aaaaaaaaaa", "p-mac", ["k-mac"], pushed]])}`] }),
+    output("box", { [tip.id]: [`commits:${JSON.stringify({ ids: [], patches: [], bytes: [], fetched: [] })}`] }), new Map());
+  assert.equal(judge(true).off.length, 1);
+  assert.deepEqual([judge(false).off.length, judge(false).unpushed.length], [0, 1]);
 });

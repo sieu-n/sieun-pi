@@ -295,13 +295,22 @@ def commits(host):
 
     Each commit gives its 10-character hash, the `git patch-id --stable` of its diff without context lines (a merge diffs against its first
     parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
-    sends its last 100 as one list entry each; the box sends the hashes, patch-ids and path keys of its last 2000 as three flat lists.
+    sends its last 100 as one list entry each, with whether its own origin/<branch> holds it, so a commit it never pushed is told apart from one the
+    box failed to fetch. The box sends the hashes, patch-ids and path keys of its last 2000 as three flat lists, plus the hashes its fetched origin
+    branches hold beyond sieun/dev, such as the Mac's pushed dev/sieun-mac-a (c119).
     """
     count = "100" if host == "mac" else "2000"
+    name = branch(host)
     try:
-        diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", branch(host)]
+        diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", name]
         raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H"] + diff).decode("utf-8", "replace")
         patches = git_bytes(["patch-id", "--stable"], git_bytes(["log", "-p", "-U0", "--format=commit %H"] + diff)).decode()
+        if host == "box":
+            fetched = git_bytes(["rev-list", "--remotes=origin", "--not", name]).decode().split()
+        else:
+            pushed = "refs/remotes/origin/" + name
+            has_pushed = subprocess.run(["git", "-C", REPO, "rev-parse", "-q", "--verify", pushed], capture_output=True, timeout=TIMEOUT_S, env=ENV).returncode == 0
+            unpushed = set(git_bytes(["rev-list", "-n", count, name] + (["--not", pushed] if has_pushed else [])).decode().split())
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         return "fail: " + brief(str(error))
     order, wrote = [], {}
@@ -315,8 +324,9 @@ def commits(host):
     patch_of = {sha: pid for pid, sha in (line.split() for line in patches.splitlines() if line.strip())}
     if host == "box":
         return "commits:" + json.dumps({"ids": [sha[:10] for sha in order], "patches": sorted(set(pid[:16] for pid in patch_of.values())),
-                                        "bytes": sorted(set(path_key(path, blob) for files in wrote.values() for path, blob in files))})
-    return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]]] for sha in order])
+                                        "bytes": sorted(set(path_key(path, blob) for files in wrote.values() for path, blob in files)),
+                                        "fetched": sorted(sha[:10] for sha in fetched)})
+    return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]], sha not in unpushed] for sha in order])
 
 
 def at_tip(paths, host):

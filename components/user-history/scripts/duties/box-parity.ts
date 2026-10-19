@@ -12,8 +12,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `tool_rows_off`: rows of box-parity.rows.json (the 167 rows of the 10-18 audit, /home/sieun/box-tools-parity/gap-table.md) where the box lacks
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
- *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler) and a row with `byDesign`
- *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
+ *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler), a row with `byDesign`
+ *   and a Mac commit the Mac never pushed to origin (`mac_unpushed`) are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail starts with the probe's `shared` text comes from a service both hosts use, such as Google on Virev, so it is no box gap.
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
@@ -34,7 +34,7 @@ export type Probe = Record<string, unknown>;
 export interface Row { id: string; tool: string; probes?: Probe[]; mac?: Probe[]; box?: Probe[]; note?: string; byDesign?: string }
 export interface ProbeOutput { host: "mac" | "box"; values: Record<string, string[]>; versions: Record<string, unknown>; ms: number }
 export interface RowVerdict { row: Row; why: string }
-export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; matched: number }
+export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; unpushed: RowVerdict[]; matched: number }
 
 const setOf = (value: string): string[] | undefined => value.startsWith("set:") ? JSON.parse(value.slice(4)) as string[] : undefined;
 const failing = (value: string | undefined): boolean => value === undefined || value === "absent" || value.startsWith("fail");
@@ -58,24 +58,39 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   return mac === box ? null : `Mac ${mac!.slice(0, 80)}, box ${box.slice(0, 160)}`;
 }
 
-type MacCommit = [id: string, patch: string, paths: string[]];
-interface BoxCommits { ids: string[]; patches: string[]; bytes: string[] }
+type MacCommit = [id: string, patch: string, paths: string[], pushed?: boolean];
+interface BoxCommits { ids: string[]; patches: string[]; bytes: string[]; fetched?: string[] }
 
 /**
- * Which of the Mac's last commits on its branch the box's sieun/dev lacks, from the probe's `commits:` values. A Mac commit is on the box when the box has its hash,
- * a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every path it touched, a commit
- * that wrote the same bytes there, which covers a wiki page batch the box wrote again in other commits.
+ * The Mac's last commits on its branch that the box cannot work on, from the probe's `commits:` values. A Mac commit is on the box when the box's
+ * sieun/dev has its hash, a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every
+ * path it touched, a commit that wrote the same bytes there, which covers a wiki page batch the box wrote again in other commits; or when a branch
+ * the box fetched from origin holds its hash, such as the Mac's own dev/sieun-mac-a (c119). A commit missing on the box that the Mac pushed is a
+ * box gap, fixed by a fetch on the box. One the Mac never pushed is `unpushed`: the box cannot reach it, and only the Mac can fix that.
  */
-export function commitShortfall(mac: string, box: string): string | null {
-  if (!box.startsWith("commits:")) return `the Mac gave its commits, box ${box.slice(0, 160)}`;
+export function commitGaps(mac: string, box: string): { missing: string[]; unpushed: string[]; total: number } {
   const macCommits = JSON.parse(mac.slice(8)) as MacCommit[];
   const boxCommits = JSON.parse(box.slice(8)) as BoxCommits;
-  const ids = new Set(boxCommits.ids);
+  const ids = new Set([...boxCommits.ids, ...boxCommits.fetched ?? []]);
   const patches = new Set(boxCommits.patches);
   const bytes = new Set(boxCommits.bytes);
-  const missing = macCommits.filter(([id, patch, paths]) => !ids.has(id) && !(patch && patches.has(patch)) && !paths.every(key => bytes.has(key)))
-    .map(([id]) => id);
-  return missing.length ? `box lacks ${missing.length} of the Mac's ${macCommits.length}: ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", ..." : ""}` : null;
+  const absent = macCommits.filter(([id, patch, paths]) => !ids.has(id) && !(patch && patches.has(patch)) && !paths.every(key => bytes.has(key)));
+  return { missing: absent.filter(commit => commit[3] !== false).map(([id]) => id), unpushed: absent.filter(commit => commit[3] === false).map(([id]) => id), total: macCommits.length };
+}
+
+const listed = (ids: string[]) => `${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ", ..." : ""}`;
+
+export function commitShortfall(mac: string, box: string): string | null {
+  if (!box.startsWith("commits:")) return `the Mac gave its commits, box ${box.slice(0, 160)}`;
+  const { missing, total } = commitGaps(mac, box);
+  return missing.length ? `box lacks ${missing.length} of the Mac's ${total}, which the Mac pushed, so a fetch on the box gets them: ${listed(missing)}` : null;
+}
+
+/** The Mac commits the box lacks because the Mac never pushed them, for a `mac_unpushed` item that names them and counts toward no metric. */
+export function unpushedNote(mac: string | undefined, box: string | undefined): string | null {
+  if (!mac?.startsWith("commits:") || !box?.startsWith("commits:")) return null;
+  const { unpushed, total } = commitGaps(mac, box);
+  return unpushed.length ? `the Mac has ${unpushed.length} of its last ${total} commits on its branch unpushed to origin, so the box cannot fetch them: ${listed(unpushed)}` : null;
 }
 
 /** Orders two probe versions such as "8.1.1" or "3.6a": number by number, then the letter suffix, so "3.6" < "3.6a" < "3.7". */
@@ -99,7 +114,7 @@ const probesOf = (row: Row, host: "mac" | "box"): Probe[] => row[host] ?? row.pr
 
 /** Each row's verdict from both hosts' probe values and the box's Skills and tools outcomes. */
 export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutput, panel: ReadonlyMap<string, Outcome>): RowsResult {
-  const result: RowsResult = { off: [], byDesign: [], intended: [], matched: 0 };
+  const result: RowsResult = { off: [], byDesign: [], intended: [], unpushed: [], matched: 0 };
   for (const row of rows) {
     const boxProbes = probesOf(row, "box");
     const macValues = mac.values[row.id] ?? [];
@@ -107,6 +122,8 @@ export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutp
     const misses: string[] = [];
     const intended: string[] = [];
     probesOf(row, "mac").forEach((_, index) => {
+      const unpushed = unpushedNote(macValues[index], boxValues[index]);
+      if (unpushed) result.unpushed.push({ row, why: unpushed });
       const why = shortfall(macValues[index], boxValues[index]);
       if (!why) return;
       const reason = boxProbes[index]?.intended;
@@ -330,6 +347,7 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
     for (const { row, why } of result.off) flagged.push({ at, kind: "tool_row_off", item: row.id, excerpt: `${row.tool}: ${why}${row.note ? ` (${row.note})` : ""}`.slice(0, 600) });
     for (const { row, why } of result.intended) flagged.push({ at, kind: "intended", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.byDesign) flagged.push({ at, kind: "by_design", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
+    for (const { row, why } of result.unpushed) flagged.push({ at, kind: "mac_unpushed", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     flagged.push({ at, kind: "rows", excerpt: `${result.matched} of ${rows.length} rows match; the Mac read took ${mac.ms} ms and the box probe ${box.ms} ms` });
   }
 
