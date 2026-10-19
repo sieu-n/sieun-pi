@@ -385,7 +385,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const prioritySync = quiet ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
   if (!quiet) void poolPriorities.sync();
-  const ownerTurn = (id: string) => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
+  // pi-pool keeps turn slots on the machine a session runs on (pi-pool pool/remote.py LOCAL_COMMANDS), so this box's mark is for its own
+  // sessions only. A send to a Mac chat waited on it for nothing: `pi-pool owner-turn` took 0.38 to 0.76 s from a shell at box load 170 on 10-19.
+  const ownerTurn = (id: string) => catalog.hostOf(id) ? Promise.resolve() : markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
   // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
   const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);
   let closed = false;
