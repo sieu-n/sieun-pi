@@ -1,3 +1,4 @@
+import { appendFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -24,7 +25,9 @@ import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
-  const images = new ImageFitter();
+  const images = new ImageFitter(undefined, undefined, line => {
+    void appendFile(join(getAgentDir(), "logs", "context-images.log"), `${new Date().toISOString()} ${line}\n`).catch(() => {});
+  });
   pi.on("context", async event => {
     const short = shortNotices(event.messages);
     const messages = await images.messages(short ?? event.messages) ?? short;
