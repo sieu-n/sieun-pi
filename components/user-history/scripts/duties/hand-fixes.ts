@@ -78,7 +78,7 @@ export interface BoardStep { id: string; status: string; job?: string }
 export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
 /** `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable) and docker restart policy. */
 /** `networks` is the docker networks it joins, or undefined when the read did not list them. */
-export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string }; networks?: string[] }
+export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string }; networks?: string[]; image?: string; created?: string }
 export interface BoxExec { container: string; service: string; running: boolean; command: string; networks?: string[] }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
 /**
@@ -231,10 +231,10 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
     const [tag, name, rest] = line.split("\t");
     if (!name || rest === undefined) continue;
     if (tag === "C") {
-      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets] = rest.split("|");
+      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets, image, created] = rest.split("|");
       const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
       const networks = nets === undefined ? undefined : nets.split(",").filter(Boolean);
-      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}), ...(networks ? { networks } : {}) });
+      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}), ...(networks ? { networks } : {}), ...(image ? { image, created: created ?? "" } : {}) });
       service.set(name, svc);
       if (networks) nets_.set(name, networks);
     } else if (tag === "D") {
@@ -409,7 +409,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     metrics.unsupervised_box_processes = execs.length + left.length + loops.length;
     for (const loop of loops) flagged.push({ at, kind: "box_host_loop", excerpt: `us-metal01 process started by hand over ssh, pid ${loop.pid}, gone at the next reboot: ${loop.command}`.slice(0, 400) });
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
-    if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status})`).join(", ")}` });
+    if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status}${container.image ? `, ${container.image.replace(/@sha256:(\w{12})\w+/, "@$1")}, created ${container.created?.slice(0, 19)}Z` : ""})`).join(", ")}` });
     if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker and deploy.sh start again, not counted: ${kept.map(container => `${container.name} (until ${utc(container.oneoff!.expiresAt! * 1000)})`).join(", ")}` });
   }
   if (data.mac && data.box) metrics.hand_run_processes = metrics.session_loops_writing! + metrics.unsupervised_box_processes!;
@@ -449,7 +449,7 @@ export const eventsSql = (after: number): string =>
 export const BOX_SCRIPT = `set -u
 awk '$2 == "prod" && $3 == "deploy" && $5 == "ok:" { printf "D\\t%s\\t%s\\n", $1, $4 }' /srv/prod/releases/deploy.log
 for c in $(docker ps -a --format '{{.Names}}'); do
-  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}' "$c")
+  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
     printf 'E\\t%s\\t%s\\n' "$c" "$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")"
