@@ -1,12 +1,13 @@
 import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
-import { measureCache, primeTranscripts, readSessions, WINDOWS, type CacheMetric, type SessionCalls } from "./cache-ratio.ts";
+import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
+import { measureCache, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
@@ -50,8 +51,8 @@ export interface View { path: string; ts: string }
 export interface SkillSmoke { skill: string; pass: boolean; detail?: string }
 export interface HarnessDeps {
   roots: readonly SkillRoot[]; views: (since: string) => Promise<View[]>; dataDir: string; now: number;
-  /** Prime Agent transcripts with calls since the given time, and the duty's targets for the cache shares. */
-  sessions: (since: number) => Promise<SessionCalls[]>; cacheTargets: Record<CacheMetric, number>;
+  /** The cache read shares from LGTM (`measureCache`) against the duty's targets. */
+  cache: () => Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }>;
   /** A chat's owner messages, for the repeats the owner gave (`repeatsBetween`). */
   ownerTexts: (chat: string) => Promise<readonly string[]>;
   /** The Prime Agent transcript files that changed since the given time, for the reads of `transcripts` roots. */
@@ -228,7 +229,8 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${deps.roots.find(root => root.name === skill.root)?.transcripts ? "agent read in a Prime transcript" : "view event"} since ${since.slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
-  const cache = measureCache(await deps.sessions(deps.now - WINDOWS.cache_read_ratio_24h - HOUR), deps.now, deps.cacheTargets);
+  // An LGTM failure leaves the cache shares out and flags it, so the skill checks still report and the shares never read green.
+  const cache = await deps.cache().catch((error: unknown) => ({ metrics: {}, flagged: [{ kind: "cache_error", excerpt: `The cache read shares could not be read from LGTM: ${error instanceof Error ? error.message : String(error)}` }] }));
   const untracked = skills.filter(skill => skill.lastRead === undefined).length;
   if (untracked) flagged.push({ kind: "untracked", excerpt: `${untracked} skills have no read tracking (no llm-wiki view events for their root), so unread_14d leaves them out` });
   const prune = new Set([...failures.map(result => result.skill), ...unread.map(skill => skill.id)]);
@@ -240,6 +242,51 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     skills,
     smoke,
   };
+}
+
+/**
+ * The files under `dir` that `accepts` takes. In session-artifacts it enters only `sub-*` folders below the first level: transcripts sit in
+ * session folders and their RLM child chains (`primeRoots`), and agents keep millions of artifact files beside them.
+ */
+async function transcripts(dir: string, accepts: (path: string) => boolean, subOnly: boolean, depth = 0): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory() && (!subOnly || depth === 0 || entry.name.startsWith("sub-"))) found.push(...await transcripts(path, accepts, subOnly, depth + 1));
+    else if (entry.isFile() && accepts(path)) found.push(path);
+  }
+  return found;
+}
+
+const jsonl = (path: string) => path.endsWith(".jsonl");
+/**
+ * Where Prime Agent transcripts sit: root sessions flat in sessions/, root sessions moved to sessions-archive/, and RLM children under
+ * session-artifacts/<root id>/sub-<id>/[sub-<id>/...]<session>.jsonl (never rlm-subagents.jsonl).
+ */
+export function primeRoots(home: string): { root: string; accepts(path: string): boolean }[] {
+  const prime = join(home, ".prime", "agent");
+  const sessions = join(prime, "sessions"), artifacts = join(prime, "session-artifacts");
+  return [
+    { root: sessions, accepts: path => jsonl(path) && !relative(sessions, path).includes(sep) },
+    { root: join(prime, "sessions-archive"), accepts: jsonl },
+    { root: artifacts, accepts: path => {
+      if (!jsonl(path)) return false;
+      const parts = relative(artifacts, path).split(sep);
+      return parts.length >= 3 && parts.slice(1, -1).every(part => part.startsWith("sub-")) && parts.at(-1) !== "rlm-subagents.jsonl";
+    } },
+  ];
+}
+
+/** Every Prime Agent transcript that changed since `since`. */
+export async function primeTranscripts(home: string, since: number): Promise<string[]> {
+  const found: string[] = [];
+  for (const root of primeRoots(home)) {
+    for (const path of await transcripts(root.root, root.accepts, basename(root.root) === "session-artifacts")) {
+      const info = await stat(path).catch(() => null);
+      if (info && info.mtimeMs >= since) found.push(path);
+    }
+  }
+  return found;
 }
 
 /** The view events since `since` for files under .agents/skills or .claude/skills-native, from the wiki database, opened read only, without the smoke's reads. */
@@ -266,7 +313,8 @@ async function main(): Promise<void> {
   const duty = JSON.parse(await readFile(join(import.meta.dirname, "skills-and-tools.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
   const python = join(process.env.PRIME_AGENT_KERNEL_VENV || join(homedir(), ".prime/agent/kernel-venv"), "bin/python");
-  const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
+  const cache = () => measureCache(grafanaPrometheus(join(dataDir, "grafana-alerts.json")), cacheTargets);
+  const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), cache,
     ownerTexts: chat => fileOwnerTexts(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");

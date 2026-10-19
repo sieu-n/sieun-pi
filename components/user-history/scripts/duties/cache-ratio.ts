@@ -1,221 +1,74 @@
-import { readdir, stat } from "node:fs/promises";
-import { basename, join, relative, sep } from "node:path";
 import { cacheHitShare } from "../../src/shared/cache-health.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
-import { readAppended, type Needle } from "./read-appended.ts";
+import type { Prometheus, Sample } from "../../src/usage/lgtm.ts";
 
 /**
- * The prompt cache read share for the Skills and harness duty (owner c41: "measures the hourly and daily cache read ratio and flags a drop").
- * Share = cache read / (input + cache read + cache write) over this box's Prime Agent calls in the transcripts (`primeRoots`), one call per
- * assistant message with usage and a model, one row per response id.
- * When a share is under its target, the duty job gets the sessions that lost the most cache in warm breaks, with what came right before.
+ * The prompt cache read share for the Skills and tools duty (owner c41: "the cache read ratio of hour/day should stay high"), from LGTM, the one
+ * source of token usage (src/usage/lgtm.ts): cache read / (input + cache read + cache write) of every Prime process on every box, over the
+ * providers that read or wrote any cache in the window. When a share is under its target, the duty job gets the box and model pairs that wrote
+ * the most cache in that window, with each one's share.
  */
 
-const HOUR = 60 * 60_000;
-export const WINDOWS = { cache_read_ratio_1h: HOUR, cache_read_ratio_24h: 24 * HOUR } as const;
+export const WINDOWS = { cache_read_ratio_1h: "1h", cache_read_ratio_24h: "24h" } as const;
 export type CacheMetric = keyof typeof WINDOWS;
-/** A window with fewer calls is no data: the metric reads 100 and a flagged line says so. */
+/** A window with fewer finished calls is no data: the metric reads 100 and a flagged line says so. */
 export const MIN_CALLS = 20;
-/** A warm break: same session and model, at most this long after the call before, writing more than half that call's prompt to cache and reading under half. */
-export const WARM_GAP_MS = 5 * 60_000;
 const TOP = 3;
-/** Entries the model never sees; they are not named as the thing before a break. */
-const UNSEEN = new Set(["git_state", "child_usage_attributed", "session_state", "agent_status", "session_info", "thread_goal_state"]);
+const JOB = 'job="prime-agent"';
 
-export interface Call {
-  id: string; endedAt: number; startedAt: number | null; provider: string | null; model: string;
-  input: number; output: number; cacheRead: number; cacheWrite: number;
-  /** The entries the model saw between the call before and this one, oldest first: an entry type, or a custom entry's customType, or `user`. */
-  before: string[];
-}
-export interface SessionCalls { id: string; title: string; calls: Call[] }
-export interface WarmBreak { session: SessionCalls; call: Call; cacheWrite: number; after: string }
-
-const prompt = (call: Call) => call.input + call.cacheRead + call.cacheWrite;
-const share = (calls: readonly Call[]) => {
-  const hit = cacheHitShare(calls.reduce((sum, call) => ({ input: sum.input + call.input, cacheRead: sum.cacheRead + call.cacheRead, cacheWrite: sum.cacheWrite + call.cacheWrite }), { input: 0, cacheRead: 0, cacheWrite: 0 }));
-  return hit === null ? 100 : Math.round(1000 * hit) / 10;
+type Prompt = { input: number; cacheRead: number; cacheWrite: number };
+const KIND: Record<string, keyof Prompt> = { input: "input", cache_read: "cacheRead", cache_write: "cacheWrite" };
+const percent = (prompt: Prompt): number => { const hit = cacheHitShare(prompt); return hit === null ? 100 : Math.round(1000 * hit) / 10; };
+const add = (into: Map<string, Prompt>, key: string, sample: Sample) => {
+  const kind = KIND[sample.labels.kind ?? ""];
+  if (!kind) return;
+  const prompt = into.get(key) ?? { input: 0, cacheRead: 0, cacheWrite: 0 };
+  prompt[kind] += sample.value;
+  into.set(key, prompt);
 };
 
-/** A call the provider refused or that failed before any token: it reads and writes no cache. */
-const failed = (call: Call) => prompt(call) + call.output === 0;
-/** The entry a failed call leaves for the next call, so a break after an outage or a 429 names it. */
-export const FAILED = "failed call";
-
-/** Failed calls that ended in the window, each once. */
-export function windowFailures(sessions: readonly SessionCalls[], from: number, to: number): number {
-  const seen = new Set<string>();
-  for (const session of sessions) for (const call of session.calls) if (call.endedAt > from && call.endedAt <= to && failed(call)) seen.add(call.id);
-  return seen.size;
-}
-
-/** Each call once (fork copies share a response id), dropping error calls with no tokens and providers that report no cache at all in the window. */
-export function windowCalls(sessions: readonly SessionCalls[], from: number, to: number): Call[] {
-  const seen = new Map<string, Call>();
-  for (const session of sessions) for (const call of session.calls) {
-    if (call.endedAt <= from || call.endedAt > to || seen.has(call.id) || prompt(call) + call.output === 0) continue;
-    seen.set(call.id, call);
+/** One window's share, its finished and failed calls, and the box and model pairs that wrote the most cache, from per-box, provider and model counts. */
+export function windowShare(tokens: readonly Sample[], calls: readonly Sample[]): { share: number; calls: number; failures: number; writers: string[] } {
+  const byProvider = new Map<string, Prompt>();
+  for (const sample of tokens) add(byProvider, sample.labels.provider ?? "", sample);
+  const caching = new Set([...byProvider].filter(([, prompt]) => prompt.cacheRead + prompt.cacheWrite > 0).map(([provider]) => provider));
+  const total: Prompt = { input: 0, cacheRead: 0, cacheWrite: 0 };
+  const byPair = new Map<string, Prompt>();
+  for (const sample of tokens) {
+    if (!caching.has(sample.labels.provider ?? "")) continue;
+    const kind = KIND[sample.labels.kind ?? ""];
+    if (kind) total[kind] += sample.value;
+    add(byPair, `${sample.labels.box ?? "unknown"} ${sample.labels.model ?? "unknown"}`, sample);
   }
-  const caching = new Set([...seen.values()].filter(call => call.cacheRead + call.cacheWrite > 0).map(call => call.provider));
-  return [...seen.values()].filter(call => caching.has(call.provider));
-}
-
-/** Warm breaks whose call ended in the window, each break call once. */
-export function warmBreaks(sessions: readonly SessionCalls[], from: number, to: number): WarmBreak[] {
-  const found = new Map<string, WarmBreak>();
-  for (const session of sessions) {
-    // A failed call wrote no cache, so it is never the call before a break: the first call after hours of failures is a cold start.
-    const calls = session.calls.filter(call => !failed(call)).sort((a, b) => a.endedAt - b.endedAt);
-    for (let at = 1; at < calls.length; at++) {
-      const last = calls[at - 1]!, call = calls[at]!;
-      if (call.endedAt <= from || call.endedAt > to || found.has(call.id) || call.model !== last.model) continue;
-      // A call that still reads half the last prompt from cache kept its prefix; a big tool result made the write.
-      if ((call.startedAt ?? call.endedAt) - last.endedAt > WARM_GAP_MS || call.cacheWrite <= prompt(last) / 2 || call.cacheRead >= prompt(last) / 2) continue;
-      found.set(call.id, { session, call, cacheWrite: call.cacheWrite, after: call.before.at(-1) ?? "tool results only" });
-    }
+  let finished = 0, failures = 0;
+  for (const sample of calls) {
+    if (sample.labels.stop_reason === "error") failures += sample.value;
+    else if (caching.has(sample.labels.provider ?? "")) finished += sample.value;
   }
-  return [...found.values()];
+  const writers = [...byPair].sort((a, b) => b[1].cacheWrite - a[1].cacheWrite).slice(0, TOP)
+    .map(([pair, prompt]) => `${pair}: ${percent(prompt)}% read, ${(prompt.cacheWrite / 1e6).toFixed(1)}M cache tokens written`);
+  return { share: percent(total), calls: Math.round(finished), failures: Math.round(failures), writers };
 }
 
-/** One line per session with the most warm-break cache writes, top 3: its title and id, model, breaks, tokens, and what came before them. */
-export function breakLines(breaks: readonly WarmBreak[]): string[] {
-  const bySession = new Map<string, WarmBreak[]>();
-  for (const item of breaks) bySession.set(item.session.id, [...(bySession.get(item.session.id) ?? []), item]);
-  return [...bySession.values()]
-    .map(items => ({ items, tokens: items.reduce((sum, item) => sum + item.cacheWrite, 0) }))
-    .sort((a, b) => b.tokens - a.tokens).slice(0, TOP)
-    .map(({ items, tokens }) => {
-      const { session, call } = items[0]!;
-      const after = new Map<string, number>();
-      for (const item of items) after.set(item.after, (after.get(item.after) ?? 0) + 1);
-      const causes = [...after].sort((a, b) => b[1] - a[1]).map(([what, count]) => `${what} x${count}`).join(", ");
-      return `${session.title} (${session.id}, ${call.model}): ${items.length} warm breaks wrote ${(tokens / 1e6).toFixed(1)}M cache tokens; right before: ${causes}`;
-    });
-}
-
-/** Both shares, and for a share under its target the top warm-break sessions in that window. */
-export function measureCache(sessions: readonly SessionCalls[], now: number, targets: Record<CacheMetric, number>): { metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] } {
+/** Both shares, and for a share under its target the box and model pairs that wrote the most cache in that window. */
+export async function measureCache(prometheus: Prometheus, targets: Record<CacheMetric, number>): Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }> {
   const metrics = {} as Record<CacheMetric, number>;
   const flagged: FlaggedSlice[] = [];
-  for (const [key, span] of Object.entries(WINDOWS) as [CacheMetric, number][]) {
-    const calls = windowCalls(sessions, now - span, now);
-    // Failed calls are left out of the share; their count says when a window is short because the fleet was failing, as on 10-16 18:00 to 10-18 04:40 KST.
-    const failures = windowFailures(sessions, now - span, now);
-    const alsoFailed = failures ? ` (${failures} more failed with no tokens)` : "";
-    if (calls.length < MIN_CALLS) {
+  for (const [key, span] of Object.entries(WINDOWS) as [CacheMetric, string][]) {
+    const [tokens, calls] = await Promise.all([
+      prometheus.query(`sum by (box, provider, model, kind) (increase(prime_agent_tokens_total{${JOB}}[${span}]))`),
+      prometheus.query(`sum by (provider, stop_reason) (increase(prime_agent_calls_total{${JOB}}[${span}]))`),
+    ]);
+    const window = windowShare(tokens, calls);
+    const alsoFailed = window.failures ? ` (${window.failures} more ended in an error)` : "";
+    if (window.calls < MIN_CALLS) {
       metrics[key] = 100;
-      flagged.push({ kind: key, excerpt: `no data: ${calls.length} calls in the window, under ${MIN_CALLS}, so it reads 100${failures ? `; ${failures} calls failed with no tokens` : ""}` });
+      flagged.push({ kind: key, excerpt: `no data: ${window.calls} calls in the window, under ${MIN_CALLS}, so it reads 100${alsoFailed}` });
       continue;
     }
-    metrics[key] = share(calls);
-    if (metrics[key] >= targets[key]) continue;
-    const lines = breakLines(warmBreaks(sessions, now - span, now));
-    flagged.push(...(lines.length ? lines : ["no warm breaks: the drop comes from cold starts or calls after more than 5 minutes idle"])
-      .map(line => ({ kind: key, excerpt: `${metrics[key]}% < ${targets[key]}% over ${calls.length} calls${alsoFailed}; ${line}` })));
+    metrics[key] = window.share;
+    if (window.share >= targets[key]) continue;
+    flagged.push(...window.writers.map(line => ({ kind: key, excerpt: `${window.share}% < ${targets[key]}% over ${window.calls} calls${alsoFailed}; top cache writer ${line}` })));
   }
   return { metrics, flagged };
-}
-
-const NEEDLES: Needle[] = ["session", "title", "session_info", "compaction", "model_change", "thinking_level_change", "service_tier_change", "custom"]
-  .map(type => ({ text: `"type":"${type}`, within: 1 }))
-  .concat([{ text: '"role":"assistant"', within: 320 }, { text: '"role":"user"', within: 320 }]);
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
-const text = (value: unknown) => typeof value === "string" && value.trim() !== "" ? value : null;
-
-/** One transcript's calls since `since`, with what the model saw before each; null when the file is not a Prime Agent transcript. */
-export async function readTranscript(path: string, since: number): Promise<SessionCalls | null> {
-  let header: { id: string } | null = null, bad = false, title: string | null = null;
-  let before: string[] = [];
-  const calls: Call[] = [];
-  await readAppended(path, 0, NEEDLES, line => {
-    if (bad) return;
-    let entry: Record<string, unknown>;
-    try { const value: unknown = JSON.parse(line); if (!isRecord(value)) return; entry = value; } catch { return; }
-    if (!header) {
-      if (entry.type === "title") return;
-      if (entry.type !== "session" || !text(entry.id)) { bad = true; return; }
-      header = { id: entry.id as string };
-      return;
-    }
-    if (entry.type === "session_info") { title = text(entry.name) ?? title; return; }
-    const message = isRecord(entry.message) ? entry.message : null;
-    if (entry.type === "message" && message?.role === "user") { before.push("user"); return; }
-    if (entry.type !== "message") {
-      const kind = text(entry.customType) ?? String(entry.type);
-      if (!UNSEEN.has(kind)) before.push(kind);
-      return;
-    }
-    if (message?.role !== "assistant" || !isRecord(message.usage) || typeof message.model !== "string") return;
-    const parsed = Date.parse(String(entry.timestamp));
-    const endedAt = Number.isFinite(parsed) ? parsed : null;
-    const usage = message.usage;
-    const tokens = { input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite) };
-    const seen = before;
-    // A failed call keeps what came before it for the next call, which also sees the failure.
-    const none = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite === 0;
-    before = none ? [...seen.filter(kind => kind !== FAILED), FAILED] : [];
-    if (endedAt === null || endedAt < since) return;
-    const id = text(message.responseId) ?? (text(entry.id) ? `msg:${entry.id}:${endedAt}` : null);
-    if (!id) return;
-    calls.push({ id, endedAt, startedAt: typeof message.timestamp === "number" ? message.timestamp : null, provider: text(message.provider), model: message.model || "unknown",
-      ...tokens, before: seen });
-  });
-  const found = header as { id: string } | null;
-  return found && !bad ? { id: found.id, title: title ?? found.id, calls } : null;
-}
-
-/**
- * The files under `dir` that `accepts` takes. In session-artifacts it enters only `sub-*` folders below the first level: transcripts sit in
- * session folders and their RLM child chains (`primeRoots`), and agents keep millions of artifact files beside them.
- */
-async function transcripts(dir: string, accepts: (path: string) => boolean, subOnly: boolean, depth = 0): Promise<string[]> {
-  const found: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory() && (!subOnly || depth === 0 || entry.name.startsWith("sub-"))) found.push(...await transcripts(path, accepts, subOnly, depth + 1));
-    else if (entry.isFile() && accepts(path)) found.push(path);
-  }
-  return found;
-}
-
-const jsonl = (path: string) => path.endsWith(".jsonl");
-/**
- * Where Prime Agent transcripts sit: root sessions flat in sessions/, root sessions moved to sessions-archive/, and RLM children under
- * session-artifacts/<root id>/sub-<id>/[sub-<id>/...]<session>.jsonl (never rlm-subagents.jsonl).
- */
-export function primeRoots(home: string): { root: string; accepts(path: string): boolean }[] {
-  const prime = join(home, ".prime", "agent");
-  const sessions = join(prime, "sessions"), artifacts = join(prime, "session-artifacts");
-  return [
-    { root: sessions, accepts: path => jsonl(path) && !relative(sessions, path).includes(sep) },
-    { root: join(prime, "sessions-archive"), accepts: jsonl },
-    { root: artifacts, accepts: path => {
-      if (!jsonl(path)) return false;
-      const parts = relative(artifacts, path).split(sep);
-      return parts.length >= 3 && parts.slice(1, -1).every(part => part.startsWith("sub-")) && parts.at(-1) !== "rlm-subagents.jsonl";
-    } },
-  ];
-}
-
-/** Every Prime Agent transcript that changed since `since`. */
-export async function primeTranscripts(home: string, since: number): Promise<string[]> {
-  const found: string[] = [];
-  for (const root of primeRoots(home)) {
-    for (const path of await transcripts(root.root, root.accepts, basename(root.root) === "session-artifacts")) {
-      const info = await stat(path).catch(() => null);
-      if (info && info.mtimeMs >= since) found.push(path);
-    }
-  }
-  return found;
-}
-
-/** Every Prime Agent transcript that changed since `since`, read for calls since then. */
-export async function readSessions(home: string, since: number): Promise<SessionCalls[]> {
-  const sessions: SessionCalls[] = [];
-  for (const path of await primeTranscripts(home, since)) {
-    const session = await readTranscript(path, since);
-    if (session?.calls.length) sessions.push(session);
-  }
-  return sessions;
 }
