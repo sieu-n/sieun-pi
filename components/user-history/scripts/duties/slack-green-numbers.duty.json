@@ -1,0 +1,44 @@
+{
+  "name": "Slack green numbers",
+  "ownerWords": "이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼.",
+  "goal": "The Slack Green numbers the owner reads are right. Every Slack green duty check reads its prod sources, PostHog's weekly signups match the new Supabase accounts within 2, and every tile on the funnel dashboards 2191672 and 2186311 loads. Wrong funnel numbers and checks that could not read prod came up 7 times from Oct 9 to Oct 19.",
+  "metrics": [
+    {
+      "key": "numbers_wrong",
+      "label": "Number checks that fail, of 7",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "duty_source_errors",
+      "label": "Slack green duties whose last run could not read a source",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "signup_count_gap",
+      "label": "PostHog signups vs new Supabase accounts, 7 days, QA left out",
+      "op": "<=",
+      "target": 2
+    },
+    {
+      "key": "dashboard_tiles_failing",
+      "label": "Funnel dashboard tiles that fail to load",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-numbers.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 180000
+  },
+  "onMiss": "Name each wrong number and its cause from the flagged slices: the duty and the source it could not read (key, token, path or host), the signup gap with the user ids on each side and the code path that skipped or added the event, or the dashboard tile and its query error. Then start one fix job for the biggest cause: fix the failing duty precheck or its key first, because that duty's numbers are unread until then. A fix to slack-green code goes in a PR. If a live job already owns that cause, message it instead of starting a second one. Never email users, merge, deploy prod or change a dashboard by hand.",
+  "boardGoal": "p145"
+}
