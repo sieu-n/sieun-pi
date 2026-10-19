@@ -33,8 +33,15 @@ export interface Correction {
   handoff?: Handoff;
 }
 /** A thread (its name or id, as `waitTarget` resolves it) and the key words of the work that belongs to it. */
-/** `with`: when set, a step flags only if its text also names one of these words (10-10, c36: 'CI health check' is not a local uptime check). */
-export interface Handoff { to: string; topics: string[]; with?: string[] }
+/** Where a handed-off job runs. */
+export const ENVIRONMENTS = ["local", "staging", "prod"] as const;
+export type Environment = (typeof ENVIRONMENTS)[number];
+/**
+ * The scope of a handoff. `with`: when set, a step flags only if its text also names one of these words, such as the services the rule names
+ * (10-10, c36: 'CI health check' is not a local uptime check). `env`: when set, a step flags only if it, or the nearest item above it that
+ * names an environment, names one of these (10-19, c36 covers the local environment, and Crawler VP's p146 prod health check is its own).
+ */
+export interface Handoff { to: string; topics: string[]; with?: string[]; env?: Environment[] }
 export interface Ledger { corrections: Correction[] }
 
 /** A new correction from the owner. */
@@ -201,7 +208,9 @@ export function parseHandoff(value: unknown): Handoff {
   if (!topics.length) throw new Error("handoff.topics needs key words");
   const withList = Array.isArray(record.with) ? record.with : typeof record.with === "string" ? record.with.split(",") : [];
   const withWords = [...new Set(withList.filter((word): word is string => typeof word === "string").map(word => word.replace(/\s+/g, " ").trim()).filter(Boolean))];
-  return { to: text(record.to, "handoff.to"), topics, ...(withWords.length ? { with: withWords } : {}) };
+  const envList = Array.isArray(record.env) ? record.env : typeof record.env === "string" ? record.env.split(",") : [];
+  const env = [...new Set(envList.map(name => oneOf(typeof name === "string" ? name.trim() : name, ENVIRONMENTS, "handoff.env")))];
+  return { to: text(record.to, "handoff.to"), topics, ...(withWords.length ? { with: withWords } : {}), ...(env.length ? { env } : {}) };
 }
 
 const correctionId = (value: unknown, field: string): string => {
@@ -251,7 +260,7 @@ export function correctionResult(outcome: CorrectionOutcome): string {
         `with id "${entry.id}" and mergeInto "${outcome.closest.id}".` : "");
     case "known": return `Already recorded as ${entry.id}: ${entry.rule}. Nothing changed.`;
     case "fixed": return `Updated ${entry.id}: enforced by ${entry.enforcedBy} (${entry.ref}), ${entry.status}` +
-      `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")} go to ${entry.handoff.to}` : ""}.`;
+      `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")}${entry.handoff.env ? ` in ${entry.handoff.env.join(" or ")}` : ""} go to ${entry.handoff.to}` : ""}.`;
     case "repeat": return `Repeat of ${entry.id} "${entry.rule}", first given ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}; ` +
       `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ${AUTO_REFINE} ` +
       `The earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Make the smallest change that gets agents to follow the rule: first a ` +
@@ -358,4 +367,4 @@ export interface HandoffRule extends Handoff { correction: string }
 /** The ids of the corrections in force (not retired), for steps a correction parks. */
 export const activeCorrections = (ledger: Ledger): string[] => ledger.corrections.filter(entry => entry.status !== "retired").map(entry => entry.id);
 export const handoffRules = (ledger: Ledger): HandoffRule[] =>
-  ledger.corrections.flatMap(entry => entry.status !== "retired" && entry.handoff ? [{ correction: entry.id, to: entry.handoff.to, topics: entry.handoff.topics, ...(entry.handoff.with ? { with: entry.handoff.with } : {}) }] : []);
+  ledger.corrections.flatMap(entry => entry.status !== "retired" && entry.handoff ? [{ correction: entry.id, ...entry.handoff }] : []);

@@ -4,7 +4,7 @@ import { CorrectionLedger, correctionResult, parseCorrectionCall } from "../src/
 
 /**
  * `node --import tsx scripts/corrections-fix.ts <id> [--rule <text>] [--enforced-by brief|code|test] [--ref <text>] [--status active|reopened|retired]
- * [--handoff-to <thread> --topics "<a>,<b>" [--with "<c>,<d>"]] [--data-dir <dir>]`: updates one entry of <data dir>/corrections.json through the same path as
+ * [--handoff-to <thread> --topics "<a>,<b>" [--with "<c>,<d>"] [--env local,staging,prod]] [--data-dir <dir>]`: updates one entry of <data dir>/corrections.json through the same path as
  * correction_add with an id. A fix that lands: `<id> --ref <sha> --status active`. Prints the tool's result line.
  */
 export function fixArgs(argv: readonly string[]): { dataDir: string; call: Record<string, unknown> } {
@@ -17,7 +17,10 @@ export function fixArgs(argv: readonly string[]): { dataDir: string; call: Recor
     const value = flag(name);
     if (value !== undefined) call[key] = value;
   }
-  if (to !== undefined) call.handoff = { to, topics: flag("--topics") ?? "", ...(flag("--with") !== undefined ? { with: flag("--with") } : {}) };
+  if (to !== undefined) {
+    call.handoff = { to, topics: flag("--topics") ?? "", ...(flag("--with") !== undefined ? { with: flag("--with") } : {}),
+      ...(flag("--env") !== undefined ? { env: flag("--env") } : {}) };
+  }
   const dir = flag("--data-dir");
   return { dataDir: dir ? resolve(dir) : join(homedir(), ".prime/agent/browser-chat"), call };
 }

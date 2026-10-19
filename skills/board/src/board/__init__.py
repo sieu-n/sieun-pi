@@ -353,7 +353,9 @@ def corrections(id: str | None = None) -> str:  # noqa: A002
                  f"  theme: {' '.join(entry.get('theme', []))}",
                  f"  owner's words ({entry.get('at', '?')}): {entry.get('words', '')}"]
         if handoff:
-            lines.append(f"  steps on {', '.join(handoff.get('topics', []))} belong to {handoff.get('to')}")
+            scope = "".join([f" naming {', '.join(handoff['with'])}" if handoff.get("with") else "",
+                             f" in {' or '.join(handoff['env'])}" if handoff.get("env") else ""])
+            lines.append(f"  steps on {', '.join(handoff.get('topics', []))}{scope} belong to {handoff.get('to')}")
         lines += [f"  repeated {repeat.get('at', '?')}: {repeat.get('words', '')}" for repeat in entry.get("repeats", [])]
         return _Text("\n".join(lines))
     return _Text(f"No correction {id} in {path}.")

@@ -1,4 +1,4 @@
-import type { HandoffRule } from "./chat-corrections.ts";
+import type { Environment, HandoffRule } from "./chat-corrections.ts";
 import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
@@ -613,18 +613,31 @@ const CODE_TARGET = /\b(?:handlers?|quer(?:y|ies)|endpoints?|routes?|functions?|
 const OPERATES = /\b(?:runs?|running|restart|reboot|(?:un)?install|clean|free|kill|upgrade|reruns?|watch(?:es|ing)?|monitor(?:s|ing)?|measur(?:e|es|ed|ing)|operat(?:e|es|ing)|ping(?:s|ing)?|pag(?:e|es|ing)|on[\s-]call|keep\s+\S+(?:\s+\S+)?\s+up)\b/i;
 const codeWork = (item: PlanItem): boolean => !OPERATES.test(item.text) &&
   ((CODE_FIX.test(item.text) && CODE_TARGET.test(item.text)) || CODE_MARK.test(`${item.text}\n${item.note ?? ""}\n${item.waitFor ?? ""}`));
+/**
+ * The environments a text names: prod, staging, or local (local, locally, localhost, 127.0.0.1, a dev server). Crawler VP's p146 "... works on
+ * prod, and deploys and the health check keep the API up" names prod, so c36's local uptime handoff does not take it (10-19).
+ */
+const ENV_PATTERNS: readonly (readonly [Environment, RegExp])[] = [
+  ["prod", /\b(?:prod|production)\b/i],
+  ["staging", /\b(?:staging|stg)\b/i],
+  ["local", /\blocal(?:ly|host)?\b|\b127\.0\.0\.1\b|\bdev[\s-]+servers?\b/i],
+];
+export const namedEnvironments = (text: string): Environment[] => ENV_PATTERNS.flatMap(([env, pattern]) => pattern.test(text) ? [env] : []);
 /** An open plan item whose work belongs to another thread by a ledger handoff: the rule, and the topic its text or note names. */
 export interface ScopeMiss { item: PlanItem; rule: HandoffRule; topic: string }
 /**
  * The open plan items of a chat (session id and name in `self`) that belong to another thread (correction c7, owner 10-09: machine management goes to
- * ops guy and never runs in another chat): the text or note names a handoff topic as whole words. Not in the target chat itself, and not an item
- * that says it was handed off, or whose owner or `waitFor` names the target. An item that matches covers the items under it. Board order.
+ * ops guy and never runs in another chat): the text names a handoff topic as whole words, inside the handoff's scope (its `with` words and
+ * its `env`, read from the item or the nearest item above it that names an environment). Not in the target chat itself, and not an item that
+ * says it was handed off, or whose owner or `waitFor` names the target. An item that matches covers the items under it. Board order.
  */
 export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule[], self: readonly string[]): ScopeMiss[] {
   const mine = rules.filter(rule => !isHandoffTarget(rule.to, self));
   const misses: ScopeMiss[] = [];
-  const visit = (item: PlanItem, underCi: boolean) => {
+  const visit = (item: PlanItem, underCi: boolean, above: readonly Environment[]) => {
     const ci = underCi || CI_WORK.test(item.text);
+    const own = namedEnvironments(item.text);
+    const env = own.length ? own : above;
     if (OPEN.has(item.status) && !codeWork(item)) {
       const text = `${item.text}\n${item.note ?? ""}`;
       for (const rule of mine) {
@@ -633,15 +646,16 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
         const topic = matchTopic(withoutCheckHosts(item.text, rule.topics), machineTopics(item.text, rule.topics));
         if (topic === undefined) continue;
         if (rule.with?.length && matchTopic(item.text, rule.with) === undefined) continue;
+        if (rule.env?.length && !env.some(name => rule.env?.includes(name))) continue;
         if (ci && !rule.topics.some(topic => CI_WORK.test(topic.toUpperCase()))) continue;
         if (HANDED_OFF.test(text) || namesTarget(item.waitFor, rule.to) || namesTarget(stepOwner(item), rule.to)) return;
         misses.push({ item, rule, topic });
         return;
       }
     }
-    item.children.forEach(child => visit(child, ci));
+    item.children.forEach(child => visit(child, ci, env));
   };
-  (board?.plan ?? []).forEach(goal => visit(goal, false));
+  (board?.plan ?? []).forEach(goal => visit(goal, false, []));
   return misses;
 }
 /** The line for a step that belongs to another thread. */
