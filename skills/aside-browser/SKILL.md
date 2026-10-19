@@ -1,14 +1,24 @@
 ---
 name: aside-browser
-description: "The browser for this machine: the user's Aside with his logged-in sessions, plus a headless Chromium on the box for pages that need no login. Use for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps."
+description: "The browser for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps. On a Linux box every page opens in a headful Chrome on that box, and only a site that needs the owner's login opens in his Aside on the Mac."
 ---
 
 # aside-browser
 
-This module drives the separately installed Aside browser through the `aside` MCP server and its `repl`, `exec` and `memory_search` tools.
-On a box, `open_tab()` opens a page that needs none of the owner's logins in a headless Chromium on that box instead, with the same REPL globals.
+On a Linux box, `open_tab(url)` and `run(code)` drive a headful Google Chrome on that box by default, with no flag.
+Each kernel gets its own Chrome on its own Xvfb display, with its own profile folder, and all three go away when the kernel exits.
+The owner's Aside browser on his Mac is the exception, used only for a site that needs one of his logins, and it is the only browser on the Mac itself.
+Both browsers take the same Playwright-style REPL globals, so the same code runs in either.
 
 ## Setup
+
+On a Linux box:
+
+1. Install the box runner once with `cd skills/aside-browser/box && npm ci`, which needs `node`.
+2. Chrome comes from `/usr/bin/google-chrome`, or Playwright's Chromium in `~/.cache/ms-playwright` when that is missing, and `BOX_CHROME` names another binary.
+3. Xvfb comes from `~/.local/opt/xvfb` as `deploy/linux/README.md` (Tools, steps 3 and 4) unpacks it, or `Xvfb` on `PATH`, or `BOX_XVFB`. Without Xvfb, Chrome runs headless and the runner logs that.
+
+For the owner's Aside, on the Mac or for login pages from a box:
 
 1. Install Aside and its CLI, and keep Aside.app running.
 2. Check the signed-in account with `aside account status`, because a profile may not be signed in.
@@ -16,7 +26,6 @@ On a box, `open_tab()` opens a page that needs none of the owner's logins in a h
 4. Put the CLI on the MCP process's `PATH`, or use its absolute path as the MCP command.
 5. Start a new session or run `/reload`, because Prime Agent reads MCP settings only then.
 6. Check access with `await aside_browser.tabs()`.
-7. On a box, install the headless runner once with `cd skills/aside-browser/box && npm ci`, which needs `node` and Playwright's Chromium in `~/.cache/ms-playwright`.
 
 Without the MCP server, each call runs the one-shot CLI, and its output starts with `[aside-browser fallback]`.
 The fallback keeps no state between calls, so multi-step tab work needs the MCP server.
@@ -27,8 +36,8 @@ The fallback looks for the CLI at `ASIDE_CLI`, then `aside` on `PATH`, then `~/.
 ```python
 await aside_browser("return await page.title()")   # run REPL JS; `return value` prints it (`aside guide repl`)
 await aside_browser.tabs()                       # [{targetId, active, title, url, owned, browser}]
-await aside_browser.open_tab(url)                # sets `page`; this session owns the tab; browser picked by URL
-await aside_browser.open_tab(url, browser="aside")  # force the owner's Aside window ("box" forces the headless one)
+await aside_browser.open_tab(url)                # sets `page`; this session owns the tab; the box's Chrome unless the URL needs a login
+await aside_browser.open_tab(url, browser="aside")  # only for a page that needs the owner's login, such as a box page that hit a sign-in
 await aside_browser.attach(target_id=None)       # reuse a tab the user has open (None = active tab); not owned
 await aside_browser.snapshot(interactive=True)   # a11y tree with [ref=eN]; then page.locator('eN').click()
 await aside_browser.screenshot('/abs/path.png', full_page=False, annotated=False)  # copies the PNG out of the sandbox
@@ -130,17 +139,28 @@ To send:
 The check reads the chat's board through `components/user-history/src/owner-ok.ts` in the sieun-pi repo.
 The todo must be checked off and answered by the owner with its first choice or another go.
 
+## Which browser opens a page
+
+On a Linux box the default is the box's own headful Chrome:
+
+1. `open_tab(url)` with no `browser` opens the page in the box's Chrome, because every Aside tab renders on the owner's Mac, even in the background.
+2. `run(code)` before any tab runs in the box's Chrome, and `openTab('<url>')` inside `run()` picks its browser by that URL in the same way.
+3. Our own apps (`localhost`, `127.0.0.1`, `[::1]`, the tailnet), public pages and demo pages such as `http://[::1]:5180` always open on the box.
+4. Only a page that needs one of the owner's logins opens in his Aside: a host in `LOGIN_HOSTS` (Google, GitHub, vendor dashboards, social sites), a mail, ticket or social page, or a non-http URL (c82, c103).
+5. `agent()`, `memory_search()` and the site skill globals (`gmail`, `slack`, `googleDocs` and the rest) run in Aside, because they exist only there.
+6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
+
+On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside, and nothing else may open a window there.
+
 ## Browser rules
 
-- On a box, `open_tab(url)` opens a page that needs none of the owner's logins (our own apps on localhost or the tailnet, public pages) in the box's headless Chromium, because every tab in his Aside renders on his Mac even in the background.
-- A page on a host in `LOGIN_HOSTS` (Google, GitHub, vendor dashboards, social sites), a mail, ticket or social page, or any non-http URL opens in his Aside (c82, c103).
-- When a box page lands on a sign-in page, the result says so, and you open it again with `open_tab(url, browser="aside")`.
+- A box agent never sends non-login work to the Mac, so it never runs Playwright, a screenshot script or cua-driver over `ssh mac`, and never tunnels a Mac port to look at a page the box can serve itself.
+- Repo Playwright specs and shot scripts on a box launch their own headful Chrome on a fresh Xvfb display, as the repo's `playwright.config.ts` files and `packages/config/box-browser.mjs` set up.
+- Use no other browser automation, such as a CLI that launches a browser of its own.
+- If a skill, playbook or memory names another browser tool, or sends a box agent to Aside for a page that needs no login, change that text.
 - Box tabs have targetIds `box-1`, `box-2` and so on, and they close when your kernel exits.
-- In a box tab, `snapshot()` returns Playwright's full AI snapshot with `[ref=eN]` ids, `annotatedScreenshot` has no ref boxes, and `fs` is the box's real file system.
-- `agent()`, `memory_search()` and the site skill globals always use Aside.
-- On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside.
-- Use no other browser automation, such as a CLI that launches its own browser or a repo screenshot script.
-- If a skill, playbook or memory names another browser tool, change that text to `aside-browser`.
+- Each box browser is a separate Chrome with its own display and profile, so any number of agents can run one at once, and none of them sees another's cookies or tabs.
+- In a box tab, `snapshot()` returns Playwright's full AI snapshot with `[ref=eN]` ids, `annotatedScreenshot` has no ref boxes, `fs` is the box's real file system, and `page.setViewportSize()` works.
 - Screenshots are in device pixels, so read the viewport size and device pixel ratio before you crop for `attach_image`.
 - Read pages with `snapshot()`, not `page.content()`.
 - Pass a ref from the latest snapshot as `page.locator('e12')`, never inside a CSS selector, because each new snapshot invalidates the old refs.
@@ -149,4 +169,4 @@ The todo must be checked off and answered by the owner with its first choice or 
 
 ## Tests
 
-From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server, plus one box test that serves a page on 127.0.0.1 when the runner is installed.
+From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server, plus two box tests when the runner is installed: one serves a page on 127.0.0.1 and drives it, and one checks that Chrome runs headful on its own Xvfb display and that a SIGKILL of the runner leaves no Xvfb or Chrome behind.

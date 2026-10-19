@@ -8,10 +8,9 @@ new session), every call falls back to the one-shot CLI `aside repl`, which
 loses state between calls; the returned text then starts with a
 `[aside-browser fallback]` line.
 
-On a box, open_tab() sends a page that needs none of the owner's logins to a headless
-Chromium on this host (box/box.mjs, one runner per kernel) that exposes the same REPL
-globals, and later calls follow the tab's browser. Every Aside tab renders on the
-owner's Mac, so this keeps our own apps and public pages off his machine.
+On a Linux box, open_tab() and run() use a headful Chrome on this host by default (box/box.mjs, one runner per kernel,
+each on its own Xvfb display), which exposes the same REPL globals, and later calls follow the tab's browser. Only a page
+that needs one of the owner's logins goes to his Aside, because every Aside tab renders on his Mac.
 
 `run()` guards the three most common agent mistakes found in an audit of
 11,428 Aside REPL calls:
@@ -42,6 +41,7 @@ import sys
 import tempfile
 import threading
 from typing import Any
+from urllib.parse import urlsplit
 
 SERVER = "aside"
 CLI = os.environ.get("ASIDE_CLI") or shutil.which("aside") or os.path.expanduser("~/.local/bin/aside")
@@ -410,7 +410,7 @@ _REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)
 
 def _host_kind(url: str) -> str | None:
     """'mail' for a webmail page, 'ticket' for a support portal or contact form, 'social' for a social or chat site, else None."""
-    m = re.match(r"https?://([^/:?#]+)(?::\d+)?([^?#]*)", url or "", re.I)
+    m = re.match(r"https?://(\[[^\]/]*\]|[^/:?#]+)(?::\d+)?([^?#]*)", url or "", re.I)
     if not m or _LOCAL_HOST.match(m.group(1)):
         return None
     host, path = m.group(1), m.group(2)
@@ -718,7 +718,7 @@ async def _cli_fallback(tool: str, arguments: dict[str, Any]) -> str:
 # ---------------------------------------------------------------- box browser
 
 # Hosts where a page shows the owner's own account, so it opens in his Aside window. Every other http(s) page opens in the
-# box's headless Chromium: at 04:00 to 07:00Z on 2026-10-18 agents made 582 Aside REPL calls from us-metal02, and their open
+# box's own Chrome: at 04:00 to 07:00Z on 2026-10-18 agents made 582 Aside REPL calls from us-metal02, and their open
 # tabs all render as visible in his window (visibilityState 'visible' in every tab), while Aside used 70 to 105% of a Mac core.
 LOGIN_HOSTS = re.compile(
     r"(?:^|\.)(?:google\.com|youtube\.com|github\.com|gitlab\.com|posthog\.com|geonode\.com|iwebfusion\.net|railway\.(?:com|app)"
@@ -733,10 +733,27 @@ _LOGIN_PAGE = re.compile(r"^https?://(?:accounts\.|login\.|auth\.|sso\.)|/(?:log
 
 def browser_for(url: str) -> str:
     """'box' for a page that needs none of the owner's logins (our own apps, public pages), else 'aside'."""
-    m = re.match(r"https?://([^/:?#]+)", url or "", re.I)
-    if not m or not box_available() or LOGIN_HOSTS.search(m.group(1)) or _host_kind(url):
+    try:
+        parts = urlsplit(url or "")
+        host = parts.hostname or ""
+    except ValueError:
+        return "aside"
+    if parts.scheme not in ("http", "https") or not host or not box_available() or LOGIN_HOSTS.search(host) or _host_kind(url):
         return "aside"
     return "box"
+
+
+# The Aside REPL's site skill globals (`aside skills list`), which exist only in Aside.
+_SITE_GLOBAL = re.compile(r"\b(?:gmail|outlook|slack|notion|googleDocs|googleSheets|googleSearch|googleAccounts|youtube|linkedin|imessage)\s*\.\s*[A-Za-z_$]")
+_OPEN_TAB_URL = re.compile(r"""\bopenTab\s*\(\s*['"`]([^'"`]+)['"`]""")
+
+
+def _route(code: str) -> str | None:
+    """The browser a run() call needs: the one browser_for() picks for an openTab('<url>') in the code, Aside for a site skill global, else None (the current tab's browser)."""
+    opened = _OPEN_TAB_URL.search(code)
+    if opened:
+        return browser_for(opened.group(1))
+    return "aside" if _SITE_GLOBAL.search(code) else None
 
 
 def box_available() -> bool:
@@ -807,7 +824,12 @@ async def _box_call(code: str) -> str:
     return await asyncio.to_thread(_box.call, code)
 
 
-_browser = "aside"
+_browser: str | None = None
+
+
+def _current() -> str:
+    """The browser of the last open_tab, attach or routed run(); before any, the box when it works here, else Aside."""
+    return _browser or ("box" if box_available() else "aside")
 
 
 async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str | None = None, browser: str | None = None) -> str:
@@ -815,7 +837,7 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
 
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
     """
-    browser = browser or _browser
+    browser = browser or _current()
     approved = False
     if _sends(plain or code) or owner_ok:
         info = await _page(browser)
@@ -871,7 +893,11 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
             "Close your own tabs with `await aside_browser.close_own_tabs()`, or one tab with "
             "`await aside_browser.close_tab(target_id)`. Pass force=True only if the user asked for it.",
         )
-    return await _repl(wrap_code(code) if wrap else code, title, owner_ok=owner_ok, plain=code)
+    global _browser
+    where = _route(code)
+    text = await _repl(wrap_code(code) if wrap else code, title, owner_ok=owner_ok, plain=code, browser=where)
+    _browser = where or _browser
+    return text
 
 
 repl = run
@@ -907,7 +933,7 @@ async def owned_tabs() -> list[dict[str, Any]]:
 
 
 _BOX_NOTE = (
-    "[aside-browser box] Opened in the box's headless Chromium, which has none of the owner's logins. "
+    "[aside-browser box] Opened in the box's own Chrome, which has none of the owner's logins. "
     "Pass browser='aside' for a page that needs one."
 )
 
@@ -916,7 +942,7 @@ async def open_tab(url: str, browser: str | None = None) -> str:
     """Open url in a new tab owned by this session, set it as `page`, return title, final URL and targetId.
 
     browser=None picks by URL with browser_for(): a page that needs the owner's login opens in his Aside window, every other
-    page (our own apps, public pages) in the box's headless Chromium. Later run(), snapshot() and screenshot() calls use that tab.
+    page (our own apps, public pages) in the box's Chrome. Later run(), snapshot() and screenshot() calls use that tab.
     """
     global _browser
     where = browser or browser_for(url)
@@ -1023,7 +1049,7 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
         _forget([target_id])
         return text
     # One REPL call reads the current tab and closes it only when this session owns it, which saves a round trip to the Mac.
-    allowed = "true" if force or _browser == "box" else json.dumps(list(_owned_tabs())) + ".includes(__id)"
+    allowed = "true" if force or _current() == "box" else json.dumps(list(_owned_tabs())) + ".includes(__id)"
     found = _json_line(await _repl(
         _scoped(
             f"const __id = page ? page.targetId : null; const __ok = !!__id && {allowed};"

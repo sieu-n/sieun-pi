@@ -324,6 +324,39 @@ class BrowserRoutingTests(Base):
     def test_box_off_sends_everything_to_aside(self):
         self.assertEqual(ab.browser_for("https://example.com/"), "aside")
 
+    def test_bracketed_ipv6_pages_on_this_host_go_to_the_box(self):
+        with patch.object(ab, "box_available", return_value=True):
+            for url in ("http://[::1]:5180/", "http://[::1]/configure", "http://[fd7a:115c:a1e0::5]:5180/x"):
+                self.assertEqual(ab.browser_for(url), "box", url)
+                self.assertIsNone(ab._host_kind(url), url)
+
+    def run_routed(self, code):
+        mcp = self.fake("aside out")
+        box = AsyncMock(return_value="box out")
+        with patch.object(ab, "box_available", return_value=True), patch.object(ab, "_box_call", box):
+            out = self.call(ab.run(code))
+        return out, mcp.calls, box.await_count
+
+    def test_run_before_any_tab_uses_the_box(self):
+        ab._browser = None
+        self.assertEqual(self.run_routed("return 1"), ("box out", [], 1))
+
+    def test_run_opens_each_url_in_the_browser_browser_for_picks(self):
+        self.assertEqual(self.run_routed("await openTab('http://[::1]:5180/')")[0], "box out")
+        self.assertEqual(ab._browser, "box")
+        self.assertEqual(self.run_routed('const p = await openTab("https://github.com/settings/tokens")')[0], "aside out")
+        self.assertEqual(ab._browser, "aside")
+
+    def test_site_skill_globals_run_in_aside(self):
+        ab._browser = "box"
+        self.assertEqual(self.run_routed("return await googleDocs.getDocumentHTML(id)")[0], "aside out")
+
+    def test_on_the_mac_everything_stays_in_aside(self):
+        ab._browser = None
+        with patch.object(ab.sys, "platform", "darwin"), patch.dict(os.environ, {"ASIDE_BROWSER_BOX": "1"}):
+            self.assertEqual(ab.browser_for("http://localhost:5180/"), "aside")
+            self.assertEqual(ab._current(), "aside")
+
 
 @unittest.skipUnless(shutil.which("node") and os.path.isdir(os.path.join(ab.BOX_DIR, "node_modules", "playwright-core")), "box runner not installed")
 class BoxBrowserTests(Base):
@@ -381,6 +414,40 @@ class BoxBrowserTests(Base):
         self.assertEqual([(t["targetId"], t["browser"], t["owned"]) for t in listed if t["browser"] == "box"], [("box-1", "box", True)])
         self.assertEqual(closed, ["box-1"])
         self.assertEqual([c["title"] for c in mcp.calls], ["list tabs"])
+
+    def test_the_box_browser_is_headful_on_its_own_display_and_leaves_nothing_when_killed(self):
+        if not os.path.exists(os.path.expanduser("~/.local/opt/xvfb/usr/bin/Xvfb-localxkb")) and not shutil.which("Xvfb"):
+            self.skipTest("no Xvfb on this host")
+        ab._browser = None
+        self.fake()
+        async def flow():
+            await ab.run(f"await openTab({json.dumps(self.url)})")
+            return await ab.run("return await page.evaluate(() => [navigator.userAgent, document.visibilityState].join(' '))")
+        agent = self.call(flow())
+        self.assertNotIn("Headless", agent)
+        self.assertIn("visible", agent)
+        runner = ab._box.proc.pid
+        kids = subprocess.run(["ps", "-o", "pid=,args=", "--ppid", str(runner)], capture_output=True, text=True).stdout
+        self.assertIn("Xvfb", kids)
+        self.assertIn("chrome", kids)
+        profile = [n for n in os.listdir(tempfile.gettempdir()) if n.startswith(f"aside-box-{runner}-")]
+        self.assertEqual(len(profile), 1)
+        ab._box.proc.kill()
+        ab._box.proc.wait()
+        pids = [int(line.split()[0]) for line in kids.splitlines()]
+        # measured: on 2026-10-19 Xvfb and Chrome were both gone 2 s after the runner's SIGKILL.
+        def running(pid):
+            try:
+                with open(f"/proc/{pid}/stat") as fh:
+                    return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+            except FileNotFoundError:
+                return False
+        for _ in range(100):
+            alive = [p for p in pids if running(p)]
+            if not alive:
+                break
+            asyncio.run(asyncio.sleep(0.1))
+        self.assertEqual(alive, [])
 
 
 if __name__ == "__main__":

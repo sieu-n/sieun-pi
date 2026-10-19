@@ -1,19 +1,41 @@
-// Headless Chromium on this host with the Aside REPL's globals, so pages that need none of the owner's logins
-// render here instead of in his Aside window. aside_browser starts one runner per kernel and talks JSON lines on
-// stdin/stdout: {"id", "code"} in, {"id", "out"} or {"id", "error"} out. The runner exits when stdin closes.
+// Headful Chrome on this host, on its own Xvfb display, with the Aside REPL's globals, so pages that need none of the owner's
+// logins render here instead of in his Aside window. aside_browser starts one runner per kernel and talks JSON lines on
+// stdin/stdout: {"id", "code"} in, {"id", "out"} or {"id", "error"} out. The runner exits when stdin closes, and its display,
+// browser and profile go with it.
 import { createInterface } from "node:readline";
 import { Buffer } from "node:buffer";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { chromium } from "playwright-core";
+import { hasDisplayServer, startDisplay } from "./display.mjs";
 
+// Chrome's profile lives in a folder named for this runner's pid, because Playwright makes it under os.tmpdir() and a
+// SIGKILLed runner cannot remove it. Each start removes the folders of runners that are gone.
+const TMP = os.tmpdir();
+for (const name of fs.readdirSync(TMP)) {
+  const pid = Number(/^aside-box-(\d+)-/.exec(name)?.[1]);
+  if (!pid) continue;
+  try { process.kill(pid, 0); } catch (e) { if (e.code === "ESRCH") fs.rmSync(path.join(TMP, name), { recursive: true, force: true }); }
+}
+const profileRoot = fs.mkdtempSync(path.join(TMP, `aside-box-${process.pid}-`));
+process.env.TMPDIR = profileRoot;
+const cleanup = () => fs.rmSync(profileRoot, { recursive: true, force: true });
+
+const headful = hasDisplayServer();
+if (!headful && process.platform === "linux") process.stderr.write("aside-box: no Xvfb on this host, so Chrome runs headless\n");
+const screen = headful ? await startDisplay() : null;
+const chrome = process.env.BOX_CHROME || (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : chromium.executablePath());
+const env = { ...process.env, ...(screen ? { DISPLAY: screen.display } : {}) };
 // Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
 // the CI VMs add and drop cig-N taps all day, and on 2026-10-18 a plain launch hit 158 such failures and 2 of 4 loads of
 // a Vite page rendered "500 Internal Error", while the wrapper that hides netlink from Chromium hit 0 and 4 of 4 loaded.
+// Chrome exits when the runner's end of its debugging pipe closes, so a SIGKILLed runner leaves no browser either.
 const browser = await chromium.launch(process.platform === "linux" && process.arch === "x64"
-  ? { headless: true, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname,
-      env: { ...process.env, BOX_CHROMIUM: chromium.executablePath() } }
-  : { headless: true });
-browser.on("disconnected", () => process.exit(1));
+  ? { headless: !headful, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname, env: { ...env, BOX_CHROMIUM: chrome } }
+  : { headless: !headful, executablePath: chrome, env });
+let closing = false;
+browser.on("disconnected", () => { screen?.close(); cleanup(); if (!closing) process.exit(1); });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const ids = new WeakMap();
 let next = 1;
@@ -95,4 +117,7 @@ for await (const line of rl) {
     process.stdout.write(JSON.stringify({ id: msg.id, error: String((e && e.stack) || e) }) + "\n");
   }
 }
+closing = true;
 await browser.close();
+screen?.close();
+cleanup();
