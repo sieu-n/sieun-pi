@@ -36,4 +36,6 @@ The call returns one string and never raises, so errors arrive as text. Optional
 
 On a Google 429, 502 or 504, the call returns DuckDuckGo results under a `NOTE:` line that quotes the API's status and message, and takes no charge. A 429 means Google refused the crawler, and a 502 `Upstream error` usually means the crawler itself is down, as during the 2026-10-15 prod deploy hold. The fallback posts to DuckDuckGo Lite and tries the Lite GET when the post gets the 202 throttle page. When both are throttled, the call returns the API error alone.
 
+When the call returns the API error alone, open DuckDuckGo's HTML page in one browser tab with `await aside_browser.open_tab('https://duckduckgo.com/html/?q=<query>&kl=us-en')`, read the `.result a.result__a` links, and decode each link's `uddg=` parameter. On 2026-10-12 a keyword research job ran 31 queries this way at one query every 6 s, and the 32nd got DuckDuckGo's anomaly page. In the same job plain httpx calls got a 429 from Brave search and a 403 from Mojeek.
+
 Do not use `engine="bing"`, because Bing serves decoy results that look valid but do not match the query (checked 2026-08-26). The 429 error text still says "try engine='bing'", so ignore that hint.
