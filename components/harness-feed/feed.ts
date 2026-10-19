@@ -43,7 +43,30 @@ export async function round(ctx: Context, readers = READERS, only: string[] | nu
     samples.push({ name: "harness.feed.reader_ok", kind: "gauge", help: "1 when the reader's last round read without an error.", value: ok, labels: { group } },
       { name: "harness.feed.reader_duration", kind: "gauge", unit: "s", help: "How long the reader's last round took.", value: (performance.now() - started) / 1000, labels: { group } });
   }));
+  tagRunsOn(samples);
   return { samples, errors };
+}
+
+/** The `box` label Alloy gives a host whose hosts.json name differs from it: the Mac's Alloy labels its series box="mbp". */
+const ALLOY_BOX: Record<string, string> = { mac: "mbp" };
+
+/**
+ * Gives every sample with a `chat` label a `runs_on` label, the box whose Prime daemon runs that chat, in the dashboard's `box` naming. The chat
+ * service on one box reads the chats of every box, so the board's box selector filters a chat's series on `runs_on` instead of the sender's
+ * `box`. The map comes from the tokens reader's chat cost samples, which read it from the session copy each chat's row is in.
+ */
+export function tagRunsOn(samples: Sample[]): void {
+  const boxOf = new Map<string, string>();
+  for (const sample of samples) {
+    const runsOn = sample.labels?.runs_on;
+    if (sample.name !== "harness.tokens.chat_cost_usd" || !runsOn || !sample.labels?.chat) continue;
+    boxOf.set(sample.labels.chat, ALLOY_BOX[runsOn] ?? runsOn);
+  }
+  for (const sample of samples) {
+    const chat = sample.labels?.chat;
+    const box = chat === undefined ? undefined : boxOf.get(chat);
+    if (box) sample.labels = { ...sample.labels, runs_on: box };
+  }
 }
 
 async function send(body: object): Promise<string | null> {

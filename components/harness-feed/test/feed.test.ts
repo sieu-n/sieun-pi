@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { round } from "../feed.ts";
+import { round, tagRunsOn } from "../feed.ts";
 import { payload, promName, type Context } from "../otlp.ts";
 
 const ctx: Context = { home: "/nonexistent", host: "t", platform: "linux", now: 0, chatHost: false, state: new Map() };
@@ -32,4 +32,17 @@ test("a failing reader reports ok 0 and leaves the others' samples", async () =>
   assert.ok(samples.some(s => s.name === "g"));
   assert.equal(samples.find(s => s.name === "harness.feed.reader_ok" && s.labels?.group === "bad")?.value, 0);
   assert.match(errors.bad, /boom/);
+});
+
+test("every chat sample gets the box its chat runs on, in the board's box names, from the chat cost samples", () => {
+  const samples = [
+    { name: "harness.tokens.chat_cost_usd", kind: "gauge" as const, help: "C.", value: 1, labels: { chat: "frontend bro", part: "thread", runs_on: "mac" } },
+    { name: "harness.tokens.chat_cost_usd", kind: "gauge" as const, help: "C.", value: 1, labels: { chat: "AI harness", part: "thread", runs_on: "us-metal02" } },
+    { name: "harness.duties.count", kind: "gauge" as const, help: "D.", value: 2, labels: { chat: "frontend bro", state: "met" } },
+    { name: "harness.plan.items", kind: "gauge" as const, help: "P.", value: 3, labels: { chat: "AI harness" } },
+    { name: "harness.plan.items", kind: "gauge" as const, help: "P.", value: 4, labels: { chat: "gone chat" } },
+    { name: "harness.pool.waiting", kind: "gauge" as const, help: "W.", value: 0 },
+  ];
+  tagRunsOn(samples);
+  assert.deepEqual(samples.map(s => (s.labels as Record<string, string> | undefined)?.runs_on), ["mbp", "us-metal02", "mbp", "us-metal02", undefined, undefined]);
 });
