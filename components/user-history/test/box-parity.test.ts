@@ -118,7 +118,7 @@ test("unitLimits counts our unit files and runtime settings, and skips vendor fi
 });
 
 test("unitLimits lists a setting the deploy/linux layer scripts set as owner-asked, and counts one that differs from them (owner's t84 answer 10-19)", () => {
-  assert.equal(layers.weights.get("system user@1001.service"), "300");
+  assert.equal(layers.weights.get("system user@1001.service"), "10000");
   assert.equal(layers.weights.get("user sieun-pi-chat.service"), "1000");
   assert.deepEqual([layers.nice, layers.heavy], [{ unit: "prime-agent-daemon.service", value: -10 }, { swapMax: "0", score: 500 }]);
   const asked = (unit: Record<string, string>, ...rest: Parameters<typeof context>) => unitLimits(unit, context(...rest)).map(finding => [finding.key, Boolean(finding.ownerAsked)]);
@@ -126,7 +126,7 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked({ Id: "ssh.service", DropInPaths: dropin, CPUWeight: "1000" }, { [dropin]: "CPUWeight=1000\n" }, {}, "system"), [["system ssh.service CPUWeight", true]]);
   assert.deepEqual(asked({ Id: "ssh.service", DropInPaths: dropin, CPUWeight: "500" }, { [dropin]: "CPUWeight=500\n" }, {}, "system"), [["system ssh.service CPUWeight", false]]);
   assert.deepEqual(asked({ Id: "ssh.service", CPUWeight: "1000" }, {}, {}, "user"), [["user ssh.service CPUWeight", false]]);
-  assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "300" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
+  assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "10000" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
   assert.deepEqual(asked({ Id: "dev.slice", CPUWeight: "300" }, {}, {}, "system"), [["system dev.slice CPUWeight", false]]);
   const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "300" };
   assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", true]]);
