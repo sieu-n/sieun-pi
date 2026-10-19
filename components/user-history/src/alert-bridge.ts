@@ -173,8 +173,11 @@ const waiting = (rule: Tracked, now: number): boolean => rule.job !== undefined 
  * chat is one entry, and every label set of it (lane, env and so on) is an instance of that entry. On 10-18 one proxy rule firing in 6 lanes
  * had opened 6 steps on crawler ops' board, one per Grafana fingerprint.
  *
- * 1. A firing whose instance key is already on a rule goes back to it, so a resolved rule whose same firing returns fires again on its entry.
- *    At 06:20:35Z on 10-15 one poll dropped 25 alerts at once and they came back with the same startsAt.
+ * 1. A firing whose instance key is already on a rule goes back to it and fires nothing, however long it was gone: the same fingerprint and
+ *    startsAt is the same Grafana alert, which never resolved. At 06:20:35Z on 10-15 one poll dropped 25 alerts at once and they came back
+ *    with the same startsAt. From 16:45:34Z to 16:57:35Z on 10-18 two obs deploys recreated Grafana, whose first lists lack each firing alert
+ *    until that rule's first evaluation, and the bridge fired 20 such rules again 29 times; on 10-19 the 5m group estate-cpu-saturated came back
+ *    305 s after Grafana listened.
  * 2. Any other firing joins the open rule of its chat and rule, or opens a new one, which replaces the chat's resolved entry of that rule and
  *    keeps its job, so a live job gets the next fire.
  * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
@@ -192,7 +195,6 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const key = owner.get(id);
     if (!key) { rest.push(alert); continue; }
     const rule = rules[key]!;
-    if (isResolved(rule) && now - rule.resolvedAt! > REFIRE_MS) fired.add(key);
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
     rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels };

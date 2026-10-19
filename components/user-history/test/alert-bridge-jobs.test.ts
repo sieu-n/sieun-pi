@@ -116,6 +116,28 @@ test("a rule that Grafana resets to Normal (Updated) and fires again minutes lat
   assert.equal(f.started.length, 2, "the day-later reopen still applies");
 });
 
+test("a firing alert that a Grafana restart drops from the list comes back with the same startsAt as the same incident, however long its first evaluation takes", async () => {
+  // 10-18 16:45:34Z to 16:57:35Z: two obs deploys recreated Grafana, its first alert lists lacked every firing alert until that rule's first
+  // evaluation, and the bridge fired 20 rules again 29 times whose Grafana state and startsAt never changed. On 10-19 Grafana listened at 14:53:53Z
+  // and sent estate-cpu-saturated, in a 5m group, at 14:58:58Z, 305 s later, so a poll at the listen time saw it back after more than REFIRE_MS.
+  const f = await fixture();
+  f.set([ciAlert()]);
+  await f.bridge.tick();
+  f.working.clear();
+  f.set([]); f.at(NOW + 60_000);
+  await f.bridge.tick();
+  assert.equal(firingRules(await f.state(), CI).length, 0);
+  const gone = 305_000 + 30_000;
+  assert.ok(gone > REFIRE_MS, "the measured gap plus one poll is longer than REFIRE_MS");
+  f.set([ciAlert()]); f.at(NOW + 60_000 + gone);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the same Grafana alert starts no second job");
+  assert.equal(f.sent.length, 0);
+  const rule = (await f.state()).rules[ruleKey(CI, "ci-history-stale")]!;
+  assert.equal(rule.wokeAt, NOW);
+  assert.equal(firingRules(await f.state(), CI).length, 1);
+});
+
 test("a rule that still fires a day after its job took it and ended gets a new job, and one whose job still works does not", async () => {
   const f = await fixture();
   f.set([ciAlert()]);
