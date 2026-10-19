@@ -36,6 +36,9 @@ The aside-browser skill holds the runtime check for webmail, ticket, contact and
 
 `kernel-guard.ts` adds the run-time half of the send guard to the Python kernel.
 It prepends one line to each ipython cell, and that line runs `kernel-guard.py` once per kernel.
+The same line runs `kernel-cwd.py` once per kernel. It writes the kernel's pid, host and cwd to `$RLM_SESSION_DIR/kernel-cwd.json` at load and after each `os.chdir`.
+Both tool_call guards judge an ipython cell where it runs, which `kernel-cwd.ts` works out. The cell starts in the cwd that report names while its kernel lives, else in `ctx.cwd`, which Prime sets to the session's start cwd. Each `os.chdir` the cell spells out, such as a string, an f-string, a name the cell set, `Path(...) / 'x'` or `os.path.expanduser(...)`, moves the cwd for the commands after it. A bash call follows its own `cd` and `git -C`, as before.
+On 10-19 a replay of the box's last 24 h found git commits in prime-agent, sieun-pi and scratch repos judged as if they ran in auto-sns-agent's checkout, because their sessions had started there.
 From then on the kernel checks each send as it happens, so a command, URL or MCP tool built at run time is judged like a literal one.
 It checks every subprocess (`bash()`, `subprocess`, `os.system`) whose text names a send tool, with shell variables from the process environment filled in, through `send-check.ts`, which runs the tool_call guard's own rules.
 Every Python process on the box with the same global-rules files and environment shares one `node send-check.ts --serve-socket <path>`, started by the first check that finds none. The socket's name hashes the `.ts` and `.json` files and the environment without the per-session `RLM_*`, `PRIME_AGENT_INTERNAL_*` and `PRIME_AGENT_KERNEL_*` keys. Each check carries its process's whole environment and cwd, which the judge takes on before it judges, so the verdict is the one a fresh `node send-check.ts` in that process would give. The judge exits after 2 minutes with no check, and a check that cannot reach or start one runs `node send-check.ts` once. A git argv list with no shell syntax in any word skips the check, because no send rule judges git.
@@ -80,6 +83,7 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
   -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts -> shell.ts
                             send-guard.ts -> send-targets.json, node --import tsx ../user-history/src/owner-ok.ts (send approvals)
   -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
+                            ipython cell prelude -> kernel-cwd.py -> $RLM_SESSION_DIR/kernel-cwd.json -> kernel-cwd.ts (guard.ts, auto-sns-agent.ts)
                             python-child/sitecustomize.py -> kernel-guard.py (Python processes the kernel starts)
   -> auto-sns-agent.ts  -> ~/Documents/Github/auto-sns-agent/scripts/repo/agent/guards/prime.mjs (that repo's rules)
 ```
@@ -105,7 +109,7 @@ Each log line names the rule and the session cwd, for example `[guard] block rul
 
 The tool_call guard reads literal command text. The kernel guard checks the calls a Python process makes at run time. Neither is a sandbox.
 The tool_call guard skips cells over 200,000 characters.
-The kernel's `os.chdir` is invisible to the tool_call guard, so a bare git command is judged against the session cwd. The kernel guard covers that gap for auto-sns-agent's git rules only.
+A chdir to a name an earlier cell set is invisible to the cell text, so the tool_call guard judges the commands after it from the cell's start cwd until the kernel reports its new cwd. The kernel guard covers that gap for auto-sns-agent's git rules only.
 The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, an HTTP request whose request line is split over several socket writes, HTTP/2, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client`, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
 In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).

@@ -21,10 +21,13 @@ if (!skip) {
 	const checkout = join(BOX, "Documents/Github/auto-sns-agent");
 	mkdirSync(join(checkout, "scripts/repo/agent"), { recursive: true });
 	cpSync(SOURCE, join(checkout, "scripts/repo/agent/guards"), { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
+	// The guards also load these from HEAD (agent-branch.mjs headModule), so the fixture commits them too.
+	const headModules = ["scripts/ci/branches.mjs", "scripts/repo/agent/shared-index.mjs"];
+	for (const rel of headModules) cpSync(join(SOURCE, "../../../..", rel), join(checkout, rel));
 	git("init", "-q", "-b", "sieun/dev", checkout);
 	git("-C", checkout, "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent");
 	// The guard loads from the checkout's HEAD.
-	git("-C", checkout, "add", "scripts/repo/agent/guards");
+	git("-C", checkout, "add", "scripts/repo/agent/guards", ...headModules);
 	git("-C", checkout, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "guards");
 	const sieunPi = join(BOX, "src/sieun-pi");
 	mkdirSync(sieunPi, { recursive: true });

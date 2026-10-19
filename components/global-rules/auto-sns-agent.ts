@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ToolCallEvent } from "prime-agent";
+import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 /*
  * auto-sns-agent's repo guard for every Prime session, whatever its cwd. The rules live in that repo's
@@ -103,7 +104,28 @@ async function handlers(): Promise<Map<string, Handler>> {
 export async function register(pi: Pick<ExtensionAPI, "on">): Promise<void> {
 	if (!existsSync(CHECKOUT)) return;
 	const target = pi as unknown as { on(name: string, handler: Handler): void };
-	for (const name of (await handlers()).keys()) target.on(name, async (event, ctx) => (await handlers()).get(name)?.(event, ctx));
+	for (const name of (await handlers()).keys()) {
+		target.on(name, async (event, ctx) => {
+			const handler = (await handlers()).get(name);
+			return name === "tool_call" ? judgeWhereItRuns(handler, event, ctx) : handler?.(event, ctx);
+		});
+	}
+}
+
+/**
+ * The guard reads ctx.cwd, which Prime sets to the cwd the session started in. An ipython cell runs from the kernel's cwd and moves
+ * with each os.chdir in it, so each part of the cell goes to the guard with the cwd it runs in (kernel-cwd.ts). A bash call follows
+ * its own cd and git -C in the guard's shell walk.
+ */
+async function judgeWhereItRuns(handler: Handler | undefined, event: unknown, ctx: unknown): Promise<unknown> {
+	const call = event as { toolName?: string; input?: { code?: unknown } };
+	if (!handler || call?.toolName !== "ipython" || typeof call.input?.code !== "string" || !ctx || typeof ctx !== "object") return handler?.(event, ctx);
+	for (const step of cellSteps(call.input.code, cellStart(ctx))) {
+		const at = new Proxy(ctx, { get: (target, key) => (key === "cwd" ? step.cwd : Reflect.get(target, key)) });
+		const verdict = (await handler({ ...call, input: { ...call.input, code: step.code } }, at)) as { block?: boolean } | undefined;
+		if (verdict?.block) return verdict;
+	}
+	return undefined;
 }
 
 /** A root session's kernel has RLM_SESSION_DIR=<artifacts>/<session id>; a subagent's ends in sub-<n> and is never the release owner. */

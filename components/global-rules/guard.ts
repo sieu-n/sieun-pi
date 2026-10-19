@@ -5,6 +5,7 @@ import { applyOwnerOk, judgeSendPython, judgeSendShell, ownerOkToken } from "./s
 import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
+import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 export interface Verdict {
 	rule: "sieun-pi" | "send";
@@ -88,10 +89,13 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 	];
 }
 
+/** `cwd` is where the cell starts; each os.chdir the cell spells out moves it for the commands after it (kernel-cwd.ts). */
 export function judgeCell(code: string, cwd: string): Verdict[] {
 	return [
-		...extractShellCandidates(code).flatMap((candidate) =>
-			judgeShellText(candidate.text, cwd).map((v) => ({ ...v, command: `${v.command}  (${candidate.source})` })),
+		...cellSteps(code, cwd).flatMap((step) =>
+			extractShellCandidates(step.code).flatMap((candidate) =>
+				judgeShellText(candidate.text, step.cwd).map((v) => ({ ...v, command: `${v.command}  (${candidate.source})` })),
+			),
 		),
 		...judgeSendPython(code),
 	];
@@ -117,7 +121,7 @@ export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionCont
 	try {
 		if (!enabled("GLOBAL_RULES_GUARD")) return undefined;
 		if (event.toolName !== "bash" && event.toolName !== "ipython") return undefined;
-		cwd = ctx?.cwd ?? process.cwd();
+		cwd = event.toolName === "ipython" ? cellStart(ctx) : (ctx?.cwd ?? process.cwd());
 		const input = event.input as Record<string, unknown>;
 		const text = event.toolName === "bash" ? input.command : input.code;
 		if (typeof text !== "string") return undefined;

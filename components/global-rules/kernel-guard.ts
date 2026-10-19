@@ -9,7 +9,11 @@ import { enabled, log } from "./log.ts";
  * SMTP connects and MCP calls a cell makes as they happen, which catches a send whose text is built at run time.
  * The prelude runs the file once per kernel. A file that fails to load lets the cell run, like the tool_call guard.
  */
-const FILE = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "kernel-guard.py");
+const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
+const FILE = join(HERE, "kernel-guard.py");
+// kernel-cwd.py reports the kernel's cwd to the tool_call guard (kernel-cwd.ts). It has its own flag, so a kernel that loaded the
+// send guard before this file existed gets it on its next cell.
+const CWD_FILE = join(HERE, "kernel-cwd.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -19,6 +23,12 @@ if not getattr(sys, "global_rules_send_guard", False):
     except Exception as error:
         sys.global_rules_send_guard = "failed"
         print(f"global-rules: the kernel send guard did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_cwd", False):
+    sys.global_rules_kernel_cwd = True
+    try:
+        exec(compile(open(${JSON.stringify(CWD_FILE)}).read(), ${JSON.stringify(CWD_FILE)}, "exec"), {"__name__": "global_rules_kernel_cwd", "__file__": ${JSON.stringify(CWD_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel cwd report did not load: {error}", file=sys.stderr)
 `;
 
 /** One line, so the cell's own line numbers in a traceback move by one. */

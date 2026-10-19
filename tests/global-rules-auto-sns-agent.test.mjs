@@ -8,6 +8,8 @@ import test from "node:test";
 // auto-sns-agent's repo guard loads from global-rules for every Prime session, whatever its cwd. The fixture checkout holds a copy of
 // the live checkout's scripts/repo/agent/guards, so the rules under test are the ones agents get, and nothing here runs a command.
 const SOURCE = join(homedir(), "Documents/Github/auto-sns-agent/scripts/repo/agent/guards");
+// The guards also load these from HEAD (agent-branch.mjs headModule), so the fixture commits them too.
+const HEAD_MODULES = ["scripts/ci/branches.mjs", "scripts/repo/agent/shared-index.mjs"];
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-auto-sns-agent-")));
 const checkout = join(root, "auto-sns-agent");
 const broken = join(root, "broken", "auto-sns-agent");
@@ -19,13 +21,14 @@ const REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs
 const GIT_ID = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 function commitGuards(dir, message = "guards") {
   const env = { PATH: process.env.PATH ?? "", HOME: root, ...GIT_ID };
-  execFileSync("/usr/bin/git", ["-C", dir, "add", "-A", "scripts/repo/agent/guards"], { env });
+  execFileSync("/usr/bin/git", ["-C", dir, "add", "-A", "scripts/repo/agent/guards", ...HEAD_MODULES], { env });
   execFileSync("/usr/bin/git", ["-C", dir, "commit", "-q", "--allow-empty", "-m", message], { env });
 }
 
 function fixture(dir) {
   mkdirSync(join(dir, "scripts/repo/agent"), { recursive: true });
   cpSync(SOURCE, join(dir, "scripts/repo/agent/guards"), { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
+  for (const rel of HEAD_MODULES) cpSync(join(SOURCE, "../../../..", rel), join(dir, rel));
   execFileSync("/usr/bin/git", ["init", "-q", "-b", "sieun/dev", dir]);
   execFileSync("/usr/bin/git", ["-C", dir, "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"]);
   commitGuards(dir);
@@ -80,10 +83,18 @@ test("the 10-14 14:40Z push is refused from a /Users/sieunpark session through c
   assert.match(await call("ipython", `r = await bash("cd ${checkout} && ${REAL_PUSH.replaceAll('"', '\\"')}")`, ctx(HOME_CWD, "x")) ?? "", /git-push-sieun-dev/);
 });
 
-test("the release owner's push and a ci/ push pass from any cwd", { skip }, async () => {
+test("the release owner's push passes from any cwd, and a ci/ push is refused from any cwd", { skip }, async () => {
   assert.equal(await call("bash", `cd ${checkout} && ${REAL_PUSH}`, ctx(HOME_CWD, OWNER)), null);
   assert.equal(await call("bash", `git -C ${checkout} push -q origin HEAD:refs/heads/sieun/dev`, ctx(checkout, OWNER)), null);
-  assert.equal(await call("bash", `cd ${checkout} && git push origin HEAD:refs/heads/ci/guard-everywhere`, ctx(HOME_CWD, "x")), null);
+  assert.match(await call("bash", `cd ${checkout} && git push origin HEAD:refs/heads/ci/guard-everywhere`, ctx(HOME_CWD, "x")) ?? "", /^repo guard \(git-push-ci\)/);
+});
+
+test("an ipython cell is judged where it runs after os.chdir, into the checkout or out of it", { skip }, async () => {
+  assert.equal(await call("ipython", "bash('git stash')", ctx(HOME_CWD, "x")), null);
+  assert.match(await call("ipython", `import os\nos.chdir(${JSON.stringify(checkout)})\nbash('git stash')`, ctx(HOME_CWD, "x")) ?? "", /git-hazard/);
+  assert.match(await call("ipython", "bash('git stash')", ctx(checkout, "x")) ?? "", /git-hazard/);
+  assert.equal(await call("ipython", `import os\nos.chdir(${JSON.stringify(root)})\nbash('git stash')`, ctx(checkout, "x")), null);
+  assert.equal(await call("ipython", `bash(f"cd {T} && git stash")`, ctx(checkout, "x")), null);
 });
 
 test("a session outside the checkout keeps its other git and its env reads", { skip }, async () => {
