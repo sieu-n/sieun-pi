@@ -292,6 +292,8 @@ export class Duties {
       await this.resume(chatId);
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
+        // An after-job measure runs the duty's precheck, so a due run waits for it instead of calling the same routes beside it.
+        if (due.kind === "run" && this.afters.has(`${chatId}/${duty.id}`)) continue;
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
         else if (due.kind === "run" && !this.start(chatId, duty.id, due.trigger, due.slot)) await this.skipBusy(chatId, duty, due.slot);
         else if (due.kind === "no" && duty.status === "active") idle.push({ chatId, duty });
@@ -341,6 +343,9 @@ export class Duties {
     if (!pushMisses(own, counted, everyMs, this.now())) return;
     const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
     if (lastRun && await this.host.jobs.working(lastRun.job).catch(() => false)) return;
+    // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
+    // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
+    if (lastRun && lastRun.trigger !== "rerun" && !own.some(run => run.rerunOf === lastRun.at) && await this.cutOf(chatId, lastRun)) return;
     // The last job has ended, so its after-job measure is the duty's check now: the push judges on its result instead of measuring beside it.
     if (lastRun && !lastRun.after || this.afters.has(key)) {
       await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));
@@ -487,7 +492,7 @@ export class Duties {
         if (!run.job || seen.has(run.duty)) continue;
         seen.add(run.duty);
         const key = `${chatId}/${run.duty}`;
-        if (run.trigger === "rerun" || (!run.cut && !run.after) || this.running.has(key) || this.reran.has(`${key}@${run.at}`) ||
+        if (run.trigger === "rerun" || (!run.cut && !run.after) || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`) ||
           runs.some(other => other.duty === run.duty && other.rerunOf === run.at)) continue;
         const ended = run as DutyRunRecord & { job: DutyJobRef };
         const cut = await this.cutOf(chatId, ended);

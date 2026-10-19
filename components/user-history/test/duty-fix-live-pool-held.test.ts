@@ -1,6 +1,9 @@
 // Guards api portal vp's d2 runs on 10-19 from 14:09Z to 14:40Z: pi-pool held the trees of parity prod promote 12, parity missing routes and
 // parity crawler errors after their cuts between 13:30Z and 14:08Z, and each run recorded every fix step's job as not live ("live": false).
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { PoolHeldJobs } from "../src/chat-resume.ts";
 import { fixLiveReader } from "../src/shared/duty-fixes.ts";
@@ -42,4 +45,14 @@ test("a fix job asleep on a board.wake stays live when the pi-pool read fails", 
   const live = fixLiveReader({ rows: async () => rows, asleep: async () => [missing], pool: async () => { throw new Error("pool down"); }, held: () => [] }, now);
   assert.equal(await live(chat, steps[1]!), true);
   assert.equal(await live(chat, steps[0]!), false);
+});
+
+test("the held sessions outlive a restart, so the first push check after a release reads them before the first pass", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pool-held-"));
+  try {
+    const file = join(dir, "pool-held.json");
+    await new PoolHeldJobs(async () => false, file).set([held("parity missing routes", missing, "2026-10-19T13:30:30.688Z")]);
+    assert.deepEqual([...new PoolHeldJobs(async () => false, file).sessions()], [missing]);
+    assert.deepEqual([...new PoolHeldJobs(async () => false, join(dir, "none.json")).sessions()], []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

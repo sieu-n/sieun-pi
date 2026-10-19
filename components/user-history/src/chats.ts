@@ -222,7 +222,7 @@ export class Chats {
    */
   private rootsSweptAt = -Infinity;
   private passWaits = false;
-  private readonly heldJobs = new PoolHeldJobs((tree, provider) => this.source.poolAdmits?.(tree, provider) ?? Promise.resolve(false));
+  private readonly heldJobs: PoolHeldJobs;
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -243,6 +243,7 @@ export class Chats {
   constructor(readonly index: IdIndex, private readonly threads: ChatThreads, private readonly summary: ChatSummary, private readonly build: string,
     private readonly loads: LoadRecord, private readonly source: CheckInSource, private readonly log: (line: string) => void = () => {}) {
     this.now = source.now ?? Date.now;
+    this.heldJobs = new PoolHeldJobs((tree, provider) => source.poolAdmits?.(tree, provider) ?? Promise.resolve(false), source.poolHeldFile);
     this.started = this.now();
     this.lastScan = this.started;
     this.wokeAt = this.started;

@@ -1,5 +1,6 @@
 import { execFile, type ExecFileException } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
@@ -259,6 +260,14 @@ export async function cutJobs(dataDir: string, chats: readonly string[], artifac
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
+/** The session ids a past serve's `PoolHeldJobs` wrote to `file`; none when it is missing or unreadable. */
+function heldSessionsIn(file: string): string[] {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch { return []; }
+}
+
 /**
  * The jobs the last pass left because pi-pool held their tree (`InterruptedReport.held`). At the first chat tick (CHECK_IN_TICK_MS) at or after
  * a run's pool time, or at each tick for a run with none, `admits` (`poolAdmits`, the same rule as resume_paused.py account_blocker) asks the
@@ -268,13 +277,20 @@ const isGone = (result: InterruptedHead["result"]): boolean => typeof result ===
  */
 export class PoolHeldJobs {
   private runs: readonly PoolHeldRun[] = [];
-  private held: ReadonlySet<string> = new Set();
+  private held: ReadonlySet<string>;
 
-  constructor(private readonly admits: (tree: string, provider: string) => Promise<boolean>) {}
+  /**
+   * `file` keeps the held sessions across a restart: the first pass after the 15:49:20Z release on 10-19 ran at 15:53:04Z, and at 15:50Z the
+   * duty runner read the held fix jobs of Vent's d1 and Crawler VP's d1 as not live and started a push run of each.
+   */
+  constructor(private readonly admits: (tree: string, provider: string) => Promise<boolean>, private readonly file?: string) {
+    this.held = new Set(file ? heldSessionsIn(file) : []);
+  }
 
-  set(runs: readonly PoolHeldRun[]): void {
+  set(runs: readonly PoolHeldRun[]): Promise<void> {
     this.runs = runs.filter(run => run.provider !== null && run.host === undefined);
     this.held = new Set(runs.map(run => run.session_id));
+    return this.file ? writeFile(this.file, JSON.stringify([...this.held])).catch(() => {}) : Promise.resolve();
   }
 
   /**
@@ -331,6 +347,6 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
     for (const entry of report?.held ?? []) {
       log(`job ${entry.name}: held by pi-pool until ${entry.pool_at ?? "a time it does not say"}: ${entry.held_by} (cut at ${entry.errored_at ?? "?"}, tree ${entry.tree.slice(0, 8)}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
-    held?.set(report?.held ?? []);
+    await held?.set(report?.held ?? []);
   } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }
 }

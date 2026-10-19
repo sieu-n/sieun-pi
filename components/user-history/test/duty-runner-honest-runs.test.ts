@@ -105,7 +105,7 @@ const PUSH_NOW = Date.parse("2026-10-18T05:20:00Z");
 const RED = { clean_min_30: { value: 2, target: 30, op: ">=" as const, met: false } };
 
 /** A daily duty that is not due, one missed run 3 h old with an ended job, and the chat's check-in every 2 h; `change` sets up each case. */
-async function pushCase(change: { after?: "met"; working?: boolean; liveFix?: boolean; lastAgoMin?: number } = {}) {
+async function pushCase(change: { after?: "met"; working?: boolean; liveFix?: boolean; lastAgoMin?: number; cut?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "duty-push-"));
   const precheck = join(dir, "precheck.mjs");
   await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { clean_min_30: 2 } }));`);
@@ -121,6 +121,7 @@ async function pushCase(change: { after?: "met"; working?: boolean; liveFix?: bo
   const at = PUSH_NOW - (change.lastAgoMin ?? 180) * MIN;
   await store.appendRun(CHAT, { duty: "d1", at, slot: at, trigger: "schedule", ms: 1000, verdict: "missed", metrics: RED, summary: "clean_min_30 2 < 30",
     job: { id: "job-0", name: "Portal stays up 1" },
+    ...change.cut ? { cut: { error: "pi-pool holds the tree", at: at + MIN, provider: "anthropic", slotAt: PUSH_NOW + 30 * MIN } } : {},
     ...change.after ? { after: { at: at + 30 * MIN, verdict: "met" as const, metrics: { clean_min_30: { ...RED.clean_min_30, value: 31, met: true } }, summary: "met" } } : {} });
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [],
     plan: [{ id: "p7", text: "Fix the portal", status: "doing", job: "fix-job", duty: "d1/clean_min_30", children: [] } as PlanItem] };
@@ -160,8 +161,8 @@ test("a red daily duty with no job at work gets a push run at the check-in inter
   assert.ok(lines.some(line => line.includes("red on clean_min_30") && line.includes("a push run starts")));
 });
 
-test("no push run when the after-job measure is met, a fix job is live, the last job works, or the newest run is younger than the interval", async () => {
-  for (const change of [{ after: "met" as const }, { liveFix: true }, { working: true }, { lastAgoMin: 60 }]) {
+test("no push run when the after-job measure is met, a fix job is live, the last job works, its cut run waits for its rerun, or the newest run is younger than the interval", async () => {
+  for (const change of [{ after: "met" as const }, { liveFix: true }, { working: true }, { cut: true }, { lastAgoMin: 60 }]) {
     const { runs, started } = await pushCase(change);
     assert.equal(runs.length, 1, JSON.stringify(change));
     assert.equal(started.length, 0, JSON.stringify(change));

@@ -229,7 +229,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
         }),
       held: now => readHeldTurns(dataDir, now),
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
-      settings, claude: claudeReader(), poolAdmits, queue: queued,
+      settings, claude: claudeReader(), poolAdmits, poolHeldFile: join(dataDir, "pool-held.json"), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => checkInDuties(duties.store, id, async other => (await chats.ids()).has(other)),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
