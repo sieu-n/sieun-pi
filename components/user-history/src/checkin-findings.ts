@@ -1,8 +1,8 @@
 import type { Environment, HandoffRule } from "./chat-corrections.ts";
 import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-duties.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
-  targetMet, walkItems } from "./shared/chat-board.ts";
+import { areaWords, BOARD_LIMITS, buildGoal, coversStep, goalBelow, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, openTops, planJob, prNumbers,
+  requirementGaps, stepGo, targetMet, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { upkeepWords } from "./shared/upkeep-title.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
@@ -10,6 +10,7 @@ import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState,
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { heldByTodo, type Movers, outsideMover } from "./checkin-end-state.ts";
 import { localTime } from "./checkin-settings.ts";
+import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses and owner gates, each with the line the duty job reads (goals: src/checkin-goals.ts). */
 
@@ -20,6 +21,7 @@ import { localTime } from "./checkin-settings.ts";
 /**
  * The open goals with no done line: no `target` and no "Done when" in the note. The owner on 10-18 (c110): a plan "define[s] a clear scope of
  * completion", after ops guy's p45 and p221 sat at 64 of 71 and 60 of 69 steps with no end in sight (board skill, references/plan-and-duties.md).
+ * An area that holds goals with targets is no goal (`openGoals`): it is done when they are.
  */
 export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] =>
   openGoals(board?.plan ?? []).filter(goal => !goal.target && !/\bdone when\b/i.test(goal.note ?? ""));
@@ -34,7 +36,7 @@ export const ALERT_GOAL_TEXT = "Firing prod alerts";
  */
 export function planRiskSteps(board: ChatBoard | null): PlanItem[] {
   const found: PlanItem[] = [];
-  for (const goal of openGoals(board?.plan ?? [])) {
+  for (const goal of openTops(board?.plan ?? [])) {
     if (goal.text.trim() === ALERT_GOAL_TEXT) walkItems(goal.children, item => { if (OPEN.has(item.status) && !item.children.length) found.push(item); });
     else walkItems([goal], item => { if (OPEN.has(item.status) && upkeepWords(item.text)) found.push(item); });
   }
@@ -59,10 +61,17 @@ export function riskStepsLine(items: readonly PlanItem[]): string {
 
 /** The open goals with no step under them: a step filed as a goal. */
 export const looseGoals = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !goal.children.length);
-/** The open goals when there are more than BOARD_LIMITS.openGoals; a board from before the limit can still hold more. */
-export function extraGoals(board: ChatBoard | null): PlanItem[] {
-  const open = openGoals(board?.plan ?? []);
-  return open.length > BOARD_LIMITS.openGoals ? open : [];
+/** An open goal past BOARD_LIMITS.openGoals that has no number, or no live job to push it: `open` is how many open goals the board holds. */
+export interface ExtraGoal { goal: PlanItem; lacks: "number" | "owner"; open: number }
+/**
+ * When the board holds more than BOARD_LIMITS.openGoals open goals, the ones with no number (`no_number`) or no live owner job where one is
+ * needed (`start`). A goal at target, waiting on the owner's answer or on a time has nothing to add. Goals that all carry a live number and a
+ * live owner raise nothing, whatever their count: Crawler VP was flagged for 13 such goals in 13 check-ins in a row on 10-19.
+ */
+export function extraGoals(pushes: readonly GoalPush[]): ExtraGoal[] {
+  if (pushes.length <= BOARD_LIMITS.openGoals) return [];
+  return pushes.flatMap((push): ExtraGoal[] => push.act === "no_number" ? [{ goal: push.goal, lacks: "number", open: pushes.length }]
+    : push.act === "start" ? [{ goal: push.goal, lacks: "owner", open: pushes.length }] : []);
 }
 /** The open items right under a closed (done or dropped) item, board order: a closed goal with open work is a lie. */
 export function openUnderClosed(board: ChatBoard | null): { item: PlanItem; parent: PlanItem }[] {
@@ -74,16 +83,20 @@ export const underClosedLine = ({ item, parent }: { item: PlanItem; parent: Plan
   `${item.id} ${quote(item.text)} is open under closed ${parent.id}: close it, or reopen ${parent.id} if the work is real`;
 export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}; close it with a note that names this`;
 /**
- * A goal with a target gets a step under it rather than a move, so its target stays at the top level where the check-in reads it: launch main
- * bro 10-15 14:08Z was told to move p125 and p126, its top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
+ * A goal with a target gets a step under it rather than a move: launch main bro 10-15 14:08Z was told to move p125 and p126, its top-level d1
+ * and d2 duty metric items, "with plan_update parent", and p126 carries d2's target. A move under an area would keep its number (`openGoals`),
+ * but the goal would still have no step.
  */
 export const looseGoalLine = (goal: PlanItem): string => goal.target
   ? `${goal.id} ${quote(goal.text)} is a goal with a target and no steps: add a step under it (plan_add with parent ${goal.id}) whose job moves ` +
     "its number, or close it if its work shipped"
   : `${goal.id} ${quote(goal.text)} is a top-level item with no steps: move it under the goal it belongs to with plan_update parent, give it ` +
     "steps, or close it if its work shipped";
-export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.length} open goals, over the target of ${BOARD_LIMITS.openGoals}: fold goals of one area under one ` +
-  `area goal (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")})`;
+export const extraGoalsLine = ({ goal, lacks, open }: ExtraGoal): string => `${goal.id} ${quote(goal.text)} is one of ${open} open goals, over the target of ` +
+  `${BOARD_LIMITS.openGoals}, and ${lacks === "number"
+    ? "has no number: give it a target from the owner's words with plan_update target, or close it if it is no goal of its own"
+    : `no live job owns its number: set one live job on its push step (duty "${GOAL_PUSH_LINK}"), or close it if its work shipped`}. ` +
+  "A goal with a live number and owner needs nothing here, under an area goal or at the top level";
 
 /**
  * A goal held only by other threads (c45, owner 10-12 on chat bugfix temp: p1 "Old chats show in the sidebar again" stayed open after its fix
@@ -105,9 +118,11 @@ export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.l
 export interface HeldGoal { goal: { id: string; text: string }; steps: { item: PlanItem; thread: { id: string; name: string } }[] }
 export function heldElsewhere(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
   jobs: readonly string[] = [], paused: ReadonlySet<string> = new Set()): HeldGoal[] {
+  // A goal with a goal of its own open under it still has that goal's work (`withGoals` gives those steps to the goal below).
   const settled = (goal: PlanItem): boolean => goal.children.some(child => CLOSED.has(child.status)) &&
-    (!goal.target || targetMet(goal.target));
-  const tops = new Map((board?.plan ?? []).map(goal => [goal.id, goal]));
+    (!goal.target || targetMet(goal.target)) && !goalBelow(goal);
+  const tops = new Map<string, PlanItem>();
+  walkItems(board?.plan ?? [], item => { tops.set(item.id, item); });
   const own = new Set([...jobs, ...rows.filter(row => jobs.includes(row.name)).map(row => row.id)]);
   const other = (thread: { id: string; name: string } | undefined) => thread && !own.has(thread.id) && !own.has(thread.name) ? thread : undefined;
   // A step the owner holds is no other thread's to move, so the goal is never handed to that thread: an open For you todo links it, or the

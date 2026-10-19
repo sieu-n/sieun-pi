@@ -1,4 +1,5 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
+import { CHECK_IN_DUTY_ID } from "./chat-duties.ts";
 import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { upkeepWords } from "./upkeep-title.ts";
@@ -18,14 +19,56 @@ export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the own
   "(plan_update {id, note}).";
 /**
  * Soft targets for board text and counts (owner 10-18: "all these should be modeled as a soft cap"): an agent's op over one still applies, and
- * its summary ends with a flag that names the target (`softFlags`). `openGoals` is the number of open goals past which the check-in asks the
- * chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
+ * its summary ends with a flag that names the target (`softFlags`). `openGoals` is the number of open goals past which the check-in flags each
+ * goal with no number or no live owner job (c44, owner 10-12: "a few area goals with their open steps under them"). Goals that all carry a live
+ * number and owner raise no flag: on 10-19 Crawler VP held 13 such goals, 6 of them Instagram, and the old ask to fold them hid their numbers.
  */
 export const BOARD_LIMITS = { text: 500, note: 2000, waitFor: 200, planItems: 500, todos: 100, openGoals: 6, links: 5, label: 120,
   requirements: 30, choices: { min: 2, max: 4, text: 80 } } as const;
 const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
-/** The open goals: top-level plan items that are todo, doing or blocked. */
-export const openGoals = (plan: readonly PlanItem[]): PlanItem[] => plan.filter(item => OPEN_STATUSES.has(item.status));
+/** The open top-level plan items: the goals and the areas that group them. */
+export const openTops = (plan: readonly PlanItem[]): PlanItem[] => plan.filter(item => OPEN_STATUSES.has(item.status));
+/** The duty link of a goal's push step: the step the check-in adds under a goal for the one job that owns its number. */
+export const GOAL_PUSH_LINK = `${CHECK_IN_DUTY_ID}/goal_gaps`;
+/**
+ * An item that is a goal of its own wherever it sits: an open item with a target that is no step. A push step (`GOAL_PUSH_LINK`) is a step, and
+ * so is a duty fix step with no steps under it: on 10-19, 26 open items below the top level on the chats' boards carried a target and a duty
+ * link with no steps, like Crawler VP's p844 "Fix: GeoNode carries 62.5 Mbps" on d9/geonode_mbps and its push step p589 under p828.
+ */
+export const numberedGoal = (item: PlanItem): boolean => item.target !== undefined && OPEN_STATUSES.has(item.status) && item.duty !== GOAL_PUSH_LINK &&
+  (item.duty === undefined || item.children.length > 0);
+/** Whether a goal with a target (`numberedGoal`) sits somewhere under an item. */
+export const goalBelow = (item: PlanItem): boolean => item.children.some(child => numberedGoal(child) || goalBelow(child));
+/**
+ * The open goals in board order: every goal with a target at any depth (`numberedGoal`), and every open top-level item with no goal under it. A top-level
+ * item with no target that holds goals is an area, which groups them and is no goal itself.
+ */
+export function openGoals(plan: readonly PlanItem[]): PlanItem[] {
+  const found: PlanItem[] = [];
+  const visit = (item: PlanItem, top: boolean): void => {
+    if (numberedGoal(item) || (top && OPEN_STATUSES.has(item.status) && !goalBelow(item))) found.push(item);
+    for (const child of item.children) visit(child, false);
+  };
+  for (const item of plan) visit(item, true);
+  return found;
+}
+/** Each item's goal, by item id: the nearest goal with a target at or above it (`numberedGoal`), else its top-level item. */
+export function goalsByItem(plan: readonly PlanItem[]): Map<string, PlanItem> {
+  const goals = new Map<string, PlanItem>();
+  const visit = (item: PlanItem, goal: PlanItem): void => {
+    const own = numberedGoal(item) ? item : goal;
+    goals.set(item.id, own);
+    for (const child of item.children) visit(child, own);
+  };
+  for (const top of plan) visit(top, top);
+  return goals;
+}
+/** Visits a goal and the items under it that belong to no other goal: the walk stops at each goal below it (`numberedGoal`). */
+export function walkGoal(goal: PlanItem, visit: (item: PlanItem) => void): void {
+  visit(goal);
+  const down = (item: PlanItem): void => { for (const child of item.children) if (!numberedGoal(child)) { visit(child); down(child); } };
+  down(goal);
+}
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
 export class BoardError extends Error {
@@ -305,7 +348,7 @@ export const areaWords = (text: string): Set<string> => new Set((text.toLowerCas
 export function sameAreaGoal(plan: readonly PlanItem[], text: string): PlanItem | undefined {
   const words = areaWords(text);
   let best: { goal: PlanItem; shared: number } | undefined;
-  for (const goal of openGoals(plan)) {
+  for (const goal of openTops(plan)) {
     const other = areaWords(goal.text);
     const shared = [...words].filter(word => other.has(word)).length;
     if (shared >= 2 && shared * 2 >= words.size && shared > (best?.shared ?? 0)) best = { goal, shared };

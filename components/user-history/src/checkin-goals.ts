@@ -1,10 +1,9 @@
 import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
 import { heldByTodo, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
-import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
-import { targetOp, targetStaleMs } from "./shared/chat-board.ts";
+import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, OPEN, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
 
 /**
  * The check-in's first job: push each open goal's number to its target (owner 10-15 on Crawler VP p71, Instagram Tier A indexed 14.9 of 100%
@@ -13,8 +12,7 @@ import { type JobFact, OPEN, ownerLabel, quote, type StepView, walk } from "./ch
  * check-ins before (`GoalMemo`), its pace, and the live job that owns the number. Code measures; the check-in job steers or starts the owner.
  */
 
-/** The duty link of a goal's push step: the step the check-in adds under a goal for the one job that owns its number. */
-export const GOAL_PUSH_LINK = `${CHECK_IN_DUTY_ID}/goal_gaps`;
+export { GOAL_PUSH_LINK };
 /**
  * A goal reaches its target within this at its measured rate, or it is off pace. On 10-15 Crawler VP p71 rose from 10.17% at 06:42Z to 14.9%
  * at 19:35Z, about 10 days to 100% at that rate, and the owner asked whether it was working at all.
@@ -86,7 +84,8 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
     const own = goal.duty === GOAL_PUSH_LINK ? undefined : goal.duty;
     const same = new Set<string>();
     let newer: { key: string; fact: MetricFact & { value: number } } | undefined;
-    walk([goal], item => {
+    // A goal with a target under this one owns its own steps' metrics (`walkGoal`).
+    walkGoal(goal, item => {
       if (!item.duty || item.duty === GOAL_PUSH_LINK || (own && item.duty !== own)) return;
       const fact = metrics.get(item.duty);
       if (fact?.value === undefined || fact.target !== target.target || (fact.op ?? ">=") !== op || (!own && !keyNamesGoal(item.duty, target))) return;
@@ -101,7 +100,7 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
   }
   let found: GoalNumber | undefined;
   // The goal itself first: slack green guy p151 is a top-level fix step of d1/signup_to_workspace_pct and read as having no number on 10-16.
-  walk([goal], item => {
+  walkGoal(goal, item => {
     if (found || !item.duty || item.duty === GOAL_PUSH_LINK) return;
     const fact = metrics.get(item.duty);
     if (fact?.value === undefined || fact.target === undefined) return;
@@ -258,16 +257,18 @@ export const goalWords = (goal: PlanItem): string[] => {
 };
 
 /**
- * Each open goal's push for this run, and the memos to keep. Goals the check-in folds into a duty (`folded`) are left out, because the duty
- * carries their number. Order: goals to start a job for, then to steer, then without a number, then on pace; the largest gap first in each.
+ * Each open goal's push for this run (`openGoals`: a goal with a target under an area goal gets its own), and the memos to keep. Goals the
+ * check-in folds into a duty (`folded`) are left out, because the duty carries their number. Order: goals to start a job for, then to steer,
+ * then without a number, then on pace; the largest gap first in each. Crawler VP 10-19: its 13 open goals each carried a live number, and the
+ * extra_goals ask to fold them under area goals would have dropped each folded goal's number, trend, pace and owner job.
  */
 export function goalPushes(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, GoalMemo>> | undefined,
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
   folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set()): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
-  const pushes = (board?.plan ?? []).flatMap((goal): GoalPush[] => {
-    if (!OPEN.has(goal.status) || folded.has(goal.id)) return [];
+  const pushes = openGoals(board?.plan ?? []).flatMap((goal): GoalPush[] => {
+    if (folded.has(goal.id)) return [];
     const words = goalWords(goal);
     const owner = goalOwner(goal, views);
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);

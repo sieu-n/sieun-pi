@@ -1,4 +1,4 @@
-import { coversStep, firstClause, planJob } from "./shared/chat-board.ts";
+import { coversStep, firstClause, goalsByItem, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
@@ -471,10 +471,9 @@ export function classifyBoard(board: ChatBoard | null, facts: readonly JobFact[]
   for (const item of board?.plan ?? []) visit(item);
   return withGoals(views, board);
 }
-/** Each step's goal: the top-level plan item it is under, or itself. */
+/** Each step's goal (`goalsByItem`): the nearest open item with a target at or above it, else the top-level item it is under, or itself. */
 export function withGoals(views: StepView[], board: ChatBoard | null): StepView[] {
-  const goals = new Map<string, PlanItem>();
-  for (const top of board?.plan ?? []) walk([top], item => goals.set(item.id, top));
+  const goals = goalsByItem(board?.plan ?? []);
   for (const view of views) { const goal = goals.get(view.item.id); if (goal) view.goal = { id: goal.id, text: goal.text }; }
   return views;
 }

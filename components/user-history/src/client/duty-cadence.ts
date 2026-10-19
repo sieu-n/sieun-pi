@@ -53,7 +53,7 @@ const FLAG_WORDS: Record<string, { noun: string; words: string } | string> = {
   blocked_on_others: { noun: "step", words: "blocked on others for over an hour" },
   finished_open: { noun: "item", words: "done but still open" },
   loose_goals: { noun: "goal", words: "with no steps" },
-  extra_goals: "too many open goals",
+  extra_goals: { noun: "goal", words: "past the goal target with no number or no live owner" },
   open_under_closed: { noun: "item", words: "open under a closed one" },
   held_elsewhere: { noun: "goal", words: "held by other chats" },
   wait_met: { noun: "step", words: "whose wait is over" },

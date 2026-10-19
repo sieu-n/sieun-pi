@@ -4,14 +4,14 @@ import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartb
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
+import { goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
-import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
+import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, type ExtraGoal, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet, goalsWithoutDoneLine, planRiskSteps,
@@ -94,7 +94,7 @@ export interface CheckInPrecheck {
   goals: GoalPush[]; blocked: BlockedStep[];
   /** The chat's jobs with no progress for a check-in interval or whose last turn failed, to nudge or restart (`jobPushes`). */
   jobs: JobPush[];
-  done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
+  done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: ExtraGoal[]; underClosed: { item: PlanItem; parent: PlanItem }[];
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
   noDuty: PlanItem[];
@@ -174,7 +174,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: goals.pushes, blocked, done,
-    loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
+    loose: context.boardError ? [] : looseGoals(board), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
@@ -308,7 +308,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Plan shape (fix it in this run with board ops: close or fold what shipped, move a loose step under its goal with plan_update parent, " +
       "hand off or remove the rest; the owner should never have to tidy the plan)", [...precheck.held.filter(held => !folded.has(held.goal.id)).map(heldLine),
       ...precheck.loose.filter(goal => !folded.has(goal.id)).map(looseGoalLine),
-      ...precheck.extra.length ? [extraGoalsLine(precheck.extra)] : [], ...precheck.underClosed.map(underClosedLine)]),
+      ...precheck.extra.map(extraGoalsLine), ...precheck.underClosed.map(underClosedLine)]),
     ...section("Waits that are over (act on each in this run)", precheck.waitsMet.map(waitMetLine)),
     ...section("No progress in the last hour (work should be moving)", precheck.noProgress ? [noProgressLine(precheck.noProgress)] : []),
     ...section("Blocked on CI, a release or another thread with no job on it (start a job that fixes each blocker in this run, or send its owner a " +
@@ -374,7 +374,7 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
  * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps`, the headline, is an open goal whose number is off pace or that no live job owns (`pushNeeded`, owner 10-15 on p71).
  * `blocked_on_others` is a step blocked on CI, a release or another thread for over an hour with no live job (`blockedOnOthers`, W56).
  * `finished_open` is an open item that looks done (`looksDone`), `loose_goals` an open goal with no step under it (`looseGoals`) and
- * `extra_goals` the open goals over BOARD_LIMITS.openGoals (`extraGoals`), `open_under_closed` an open item right under a closed one
+ * `extra_goals` an open goal past BOARD_LIMITS.openGoals with no number or no live owner job (`extraGoals`), `open_under_closed` an open item right under a closed one
  * (`openUnderClosed`), the plan's shape (c44). `held_elsewhere` is a goal whose every open step another thread holds (`heldElsewhere`) and
  * `wait_met` a step whose named wait is over (`waitsMet`), finished work left open behind a wait (c45). `no_progress` is 1 when no plan
  * item was done in the last hour and some open step is not blocked under a goal that did not move (`noProgress`). `stale_steps` is an open item with a waitUntil over 24 h
@@ -395,7 +395,7 @@ export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stal
   held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0, no_done_line: 0, plan_risks: 0 };
 /** What the precheck found on the board besides the step classes: steps on another thread's work, broken hard gates, stalled waits, the plan's shape. */
 export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalPush[]; blocked: readonly BlockedStep[];
-  done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly PlanItem[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
+  done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly ExtraGoal[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
   held: readonly HeldGoal[]; waitsMet: readonly WaitMet[]; noProgress: NoProgress | null; stale: readonly StaleStep[]; fold: readonly FoldGoal[];
   load?: readonly SessionLoad[]; heartbeats?: readonly RedundantHeartbeat[]; noDuty?: readonly PlanItem[]; noDoneLine?: readonly PlanItem[]; risks?: readonly PlanItem[];
   /** Each open leaf step's end state (`endState`): every stuck one counts in `stuck_steps`. */
@@ -461,7 +461,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const entry of fold) flag("goals_to_fold", entry.goal.id, foldLine(entry));
   for (const found of done.filter(found => !folded.has(found.item.id))) { misses.finished_open++; flagged.push({ chat, at: now, kind: "finished_open", excerpt: lookDoneLine(found), item: found.item.id }); }
   for (const goal of loose.filter(goal => !folded.has(goal.id))) { misses.loose_goals++; flagged.push({ chat, at: now, kind: "loose_goals", excerpt: looseGoalLine(goal), item: goal.id }); }
-  if (extra.length) { misses.extra_goals = extra.length - BOARD_LIMITS.openGoals; flagged.push({ chat, at: now, kind: "extra_goals", excerpt: extraGoalsLine(extra) }); }
+  for (const entry of extra) flag("extra_goals", entry.goal.id, extraGoalsLine(entry));
   for (const found of underClosed) { misses.open_under_closed++; flagged.push({ chat, at: now, kind: "open_under_closed", excerpt: underClosedLine(found), item: found.item.id }); }
   for (const goal of held.filter(goal => !folded.has(goal.goal.id))) { misses.held_elsewhere++; flagged.push({ chat, at: now, kind: "held_elsewhere", excerpt: heldLine(goal), item: goal.goal.id }); }
   if (still) { misses.no_progress = 1; flagged.push({ chat, at: now, kind: "no_progress", excerpt: noProgressLine(still) }); }

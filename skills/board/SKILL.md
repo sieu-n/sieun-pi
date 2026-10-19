@@ -80,7 +80,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 4. Link a job on the step it does, not on the goal. Goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide (blocked), Build (blocked), Verify (todo).
 5. A step's `job` names its owner, which is a job name or another thread as `thread:<id>` or its session name.
 6. A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.
-7. Keep a few area goals, at most 6 open, and move a step filed in the wrong place with plan_update `parent`.
+7. Keep a few area goals, and move a step filed in the wrong place with plan_update `parent`. A goal with a target stays a goal under an area goal, so it keeps its number, trend and push step. Past 6 open goals the check-in flags only a goal with no number or no live owner job.
 
 ## Plan and duties
 
@@ -145,7 +145,7 @@ The owner picking a design on a demo is not a go. Offer the go choice first, wor
 
 ### Targets
 
-`target: {metric,target,unit,current?,measuredAt?,source?,cadence?,direction?}` on a top-level goal is its measurable target. Give a goal one when it has a measurable outcome. Set `direction` to `"down"` when lower is better, such as a wait or a run time, and to `"up"` when higher is better. Without one, the board stores the direction its numbers show when the target is set, so a target under its current reading is lower is better, and a target of 0 is always lower is better. The stored direction stays on later writes that leave it out, and only an op that names a new direction changes it. Each time you measure, send the whole target with current, measuredAt (ISO) and source together. Use `cadence: "daily"` when a daily duty measures it.
+`target: {metric,target,unit,current?,measuredAt?,source?,cadence?,direction?}` on a goal at any depth is its measurable target. Give a goal one when it has a measurable outcome. Set `direction` to `"down"` when lower is better, such as a wait or a run time, and to `"up"` when higher is better. Without one, the board stores the direction its numbers show when the target is set, so a target under its current reading is lower is better, and a target of 0 is always lower is better. The stored direction stays on later writes that leave it out, and only an op that names a new direction changes it. Each time you measure, send the whole target with current, measuredAt (ISO) and source together. Use `cadence: "daily"` when a daily duty measures it.
 
 The check-in lists every goal short of its target or not measured. Push the step that closes the largest gap, because waiting steps are not progress (c23).
 

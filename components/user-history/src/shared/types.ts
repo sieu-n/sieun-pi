@@ -108,7 +108,10 @@ export interface PlanItem {
   kind?: "build";
   /** A goal's requirements check: one line per owner requirement, quoting the owner's words. */
   requirements?: Requirement[];
-  /** A goal's measurable target and its last measurement (`goalGaps` in src/checkin-findings.ts); only a top-level plan item carries one. */
+  /**
+   * A goal's measurable target and its last measurement (`goalPushes` in src/checkin-goals.ts). Any open item with one is a goal of its own at any
+   * depth, so a goal under an area goal keeps its number, trend, pace and push step (`openGoals` in src/shared/chat-board.ts).
+   */
   target?: GoalTarget;
   /**
    * The duty metric this step fixes, `<dutyId>/<metricKey>` like "d6/usable_pct_24h" or "checkin/stuck_steps" (`dutyFixes` in
