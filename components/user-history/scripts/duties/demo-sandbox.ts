@@ -21,8 +21,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   are planned, so they are run detail (owner via frontend bro, 10-19: count only unplanned exits).
  * - ssr_timeouts_24h: times in 24 h a page hung on "transport invoke timed out", from the pm2 error log. Error lines less than
  *   EVENT_GAP_MS apart are one event, since one hung request logs 3 to 20 lines.
- * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h, planned_restarts_24h,
- * outside_requests and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
+ * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, headless_chrome, guard_restarts_24h, config_restarts_24h,
+ * planned_restarts_24h, outside_requests and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
  * show a clean day, plus 1 to source_errors and a flagged slice. `lastEventAt` names the newest restart and SSR timeout, so a miss streak whose
  * events stopped is not called stuck (`MetricStreak.quietSince`).
  */
@@ -75,6 +75,17 @@ export async function treeMb(deps: Pick<SandboxDeps, "exec" | "read" | "platform
   })));
   if (!rollups.some(Boolean)) throw new Error(`no /proc/<pid>/smaps_rollup could be read for pids ${pids.join(", ")}`);
   return pssMb(rollups);
+}
+
+/**
+ * The headless Chrome browsers on the host (a Chrome process with --headless and no --type=) and every process under them. On 10-19 about 18
+ * shot browsers from demo jobs ran on the Mac at once, its load hit 78 and /health went unanswered for 120 s, so the run detail shows a pile-up.
+ */
+export function headlessChrome(ps: string): { browsers: number; processes: number } {
+  const browsers = ps.split("\n").map(line => /^\s*(\d+)\s+\d+\s+(.*)$/.exec(line)).filter(match => match !== null)
+    .filter(match => /chrom/i.test(match[2]!) && /\s--headless(?:[=\s]|$)/.test(match[2]!) && !match[2]!.includes("--type="))
+    .map(match => Number(match[1]));
+  return { browsers: browsers.length, processes: new Set(browsers.flatMap(pid => treePids(ps, pid))).size };
 }
 
 export const BASE_URL = "http://localhost:5180";
@@ -287,7 +298,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   const flagged: FlaggedSlice[] = [];
   const lastEventAt: Record<string, number> = {};
   const metrics = { walk_problems: 0, health_ms: 0, restarts_24h: 0, ssr_timeouts_24h: 0,
-    configure_ms: 0, dev_tree_mb: 0, guard_restarts_24h: 0, config_restarts_24h: 0, planned_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
+    configure_ms: 0, dev_tree_mb: 0, headless_chrome: 0, guard_restarts_24h: 0, config_restarts_24h: 0, planned_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
   const sourceError = (kind: string, excerpt: string) => { metrics.source_errors++; flagged.push({ at, kind, excerpt }); };
   const readOrError = async (path: string): Promise<string | Error> => { try { return await deps.read(path); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } };
 
@@ -348,6 +359,13 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
       flagged.push({ at, kind: metrics.dev_tree_mb > MEMORY_FLAG_MB ? "memory" : "memory_ok", excerpt: `${PM2_NAME} dev tree (pids ${pids.join(", ")}) holds ${metrics.dev_tree_mb} MB` });
     }
   } catch (error) { sourceError("source", `pm2 or the ${deps.platform === "darwin" ? "footprint" : "smaps_rollup"} read (PM2_HOME ${deps.pm2.home}): ${error instanceof Error ? error.message : String(error)}`); }
+
+  // headless_chrome (detail).
+  try {
+    const chrome = headlessChrome(await deps.exec("ps", ["-axo", "pid=,ppid=,args="]));
+    metrics.headless_chrome = chrome.browsers;
+    flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; shot scripts run theirs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs` });
+  } catch (error) { sourceError("source", `ps for headless Chrome: ${error instanceof Error ? error.message : String(error)}`); }
 
   // walk_problems (the headline) and outside_requests (detail).
   const walkText = await readOrError(join(deps.repo, WALK_FILE));
