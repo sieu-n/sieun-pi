@@ -13,6 +13,11 @@ def tree_view(state, key, provider, accounts, f, cfg, now):
     return accounts, tree, sched.book_for(state, provider, key, cfg, now), state["providers"][provider]["cooldowns"]
 
 
+def selection_view(tree):
+    account_id = tree.pin or tree.pool_pin
+    return {"mode": "manual", "account_id": account_id} if account_id else {"mode": "auto"}
+
+
 def wait_view(d):
     """The wait the tree's next request gets as {account, slot_at}; None when that
     request gets an account. The wait on file can be stale: on 10-18 at 16:21Z
@@ -50,12 +55,13 @@ def cmd_ls(rest):
     pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
            "pin": {"id": pin_account.id, "email": pin_account.email, "label": pin_account.label} if pin_account else None,
-           "priority": tree.priority, "wait": wait_view(d) if key else None,
-           "rows": rows}
+           "priority": tree.priority, "selection": selection_view(tree),
+           "wait": wait_view(d) if key else None, "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
         return 0
-    print(f"{provider}  session {out['session'] or '-'}  priority {tree.priority}"
+    mode = "Manual" if out["selection"]["mode"] == "manual" else "Auto"
+    print(f"{provider}  session {out['session'] or '-'}  {mode}  priority {tree.priority}"
           + (f"  waits for {out['wait']['account']} at {vending.iso(out['wait']['slot_at'])}" if out["wait"] else ""))
     width = max([len("account")] + [len(r["label"]) for r in rows])
     print(f"{'account':{width}s} {'usage':>9}  flags")
@@ -105,13 +111,8 @@ def cmd_model(rest):
 
 
 def cmd_limited(rest):
-    """The provider answered 429 for the account this session tree last vended.
-    Record the limit until `--until` (epoch seconds), so every tree on that
-    account and every pin yield to it, and print what the tree's next request
-    gets: {"account", "until", "next", "retry_at"}. `next` names the account the
-    retry enters now. When it is null the tree waits, and `retry_at` is its own
-    slot time (epoch sec): the extension sets the message's retryAfterMs to it, so
-    Prime sleeps until the tree's slot, not until the provider's reset."""
+    """Record a provider 429 and report the next Auto account or wait.
+    Manual replies retain the selected identity and the original provider failure."""
     f = status_view.parse_flags(rest)
     provider, until = f["provider"], f["until"]
     if until is None:
@@ -135,13 +136,20 @@ def cmd_limited(rest):
             vending.HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
             d = plan_next(state, key, provider, accounts, cfg, now)
             base.save_json(base.STATE, state)
+    selection = selection_view(sched.tree_for(state, key, provider))
+    manual = selection["mode"] == "manual"
     if stale:
         out = {"account": None, "until": round(until), "next": last["email"], "retry_at": None, "stale": True}
+        out["selection"] = selection
+        if manual:
+            out["next"] = None
         base.log("limited_stale", provider=provider, current=last["email"], session=key.key,
                  sent=vending.iso(f["since"]))
         print(json.dumps(out))
         return 0
-    out = {"account": last["email"], "until": round(until), **next_fields(d)}
+    out = {"account": last["email"], "until": round(until), "selection": selection, **next_fields(d)}
+    if manual:
+        out.update(selection=selection, next=None, retry_at=None)
     base.log("limited", provider=provider, account=last["email"], session=key.key,
              until=vending.iso(until), next=out["next"], retry_at=out["retry_at"] and vending.iso(out["retry_at"]))
     print(json.dumps(out))
@@ -173,7 +181,9 @@ def cmd_refused(rest):
     provider = f["provider"]
     reason = base.account_refusal(" ".join(f["positional"]))
     if reason is None:
-        print(json.dumps({"reason": None}))
+        state = registry.load_state()
+        key = status_view.session_key_for(f["session"], state)
+        print(json.dumps({"reason": None, "selection": selection_view(sched.tree_for(state, key, provider))}))
         return 0
     cfg, now = base.config(), time.time()
     accounts = registry.load_index(provider)
@@ -191,6 +201,10 @@ def cmd_refused(rest):
         d = plan_next(state, key, provider, accounts, cfg, now)
         base.save_json(base.STATE, state)
     out = {"account": account.label, "reason": reason, **next_fields(d)}
+    selection = selection_view(sched.tree_for(state, key, provider))
+    out["selection"] = selection
+    if selection["mode"] == "manual":
+        out.update(next=None, retry_at=None)
     base.log("refused", provider=provider, account=account.label, reason=reason, session=key.key, next=out["next"])
     print(json.dumps(out))
     return 0
@@ -218,25 +232,28 @@ def cmd_who(rest):
         d = sched.decide(tree, accounts, book, cooldowns, cfg, now)
         res = d if isinstance(d, (sched.Stay, sched.Admit)) else None
         by_id = {a.id: a for a in accounts}
-        current = by_id.get(tree.current) or (res.account if res else None)
+        selected_id = tree.pin or tree.pool_pin
+        current = by_id.get(selected_id) if selected_id else by_id.get(tree.current) or (res.account if res else None)
         providers_out[provider] = {
             "account": res.account.id if res else None,
             "email": res.account.email if res else None,
             "label": res.account.label if res else None,
-            "reason": res.reason if res else ("wait" if isinstance(d, sched.Wait) else None),
-            "pinned": bool(tree.pin),
-            "shadowed": list(d.shadowed) if d is not None and d.shadowed else None,
+            "reason": res.reason if res else (d.reason if isinstance(d, sched.Blocked) else "wait" if isinstance(d, sched.Wait) else None),
+            "pinned": bool(tree.pin or tree.pool_pin),
+            "selection": selection_view(tree),
+            "shadowed": list(d.shadowed) if isinstance(d, (sched.Stay, sched.Admit, sched.Wait)) and d.shadowed else None,
             "at": tree.current_at or None,
             "wait": wait_view(d),
             "moves_today": len([t for t in tree.moves if now - t < sched.MOVE_WINDOW_SEC]),
-            # What the session's requests actually use: its last vend, else what the
-            # next vend resolves to. The extension's footer status shows this.
-            "current": {"email": current.email, "label": current.label, "session_pct": current.session_pct,
+            "current": {"id": current.id, "email": current.email, "label": current.label, "session_pct": current.session_pct,
                         "weekly_pct": current.weekly_pct, "gated_pct": current.gated_pct,
                         "next": tree.current is not None and res is not None
                                 and res.account.id != tree.current and res.account.label}
                        if current else None,
         }
+        if isinstance(d, sched.Blocked):
+            why = state["providers"][provider].get("cooldown_reasons", {}).get(d.account_id) or d.reason
+            providers_out[provider]["error"] = f"Manual account {current.label if current else d.account_id}: {why}"
     out = {"session": key.key if key else None, "priority": priority, "providers": providers_out}
     if f["json"]:
         print(json.dumps(out, indent=2))
@@ -253,7 +270,8 @@ def cmd_who(rest):
             if not info["email"]:
                 print(f"{provider:14s} no account can serve")
                 continue
-            line = f"{provider:14s} {info['label']}  ({info['reason']})"
+            mode = "Manual" if info["selection"]["mode"] == "manual" else "Auto"
+            line = f"{provider:14s} {mode} {info['label']}  ({info['reason']})"
             if info["shadowed"]:
                 line += f"  pin {info['shadowed'][0]} {info['shadowed'][1]}"
             print(line)
@@ -298,8 +316,7 @@ def cmd_enable(rest):
 
 
 def cmd_toggle(rest, off):
-    """`pi-pool off` / `pi-pool on`: keep an account in the pool but
-    never pick it while off. Every pin on it yields."""
+    """`pi-pool off` removes an account from Auto, while Manual pins may use it."""
     verb = "off" if off else "on"
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
@@ -318,7 +335,7 @@ def cmd_toggle(rest, off):
         vending.IntentWriter(state).set_disabled(provider, account.id, off, time.time())
         base.save_json(base.STATE, state)
     base.log("account_" + verb, provider=provider, account=account.label)
-    print(f"{account.label} is {verb}" + ("; the pool never picks it until pi-pool on" if off else "; the pool can pick it again"))
+    print(f"{account.label} is {verb}" + ("; excluded from Auto, available in Manual" if off else "; Auto can pick it again"))
     return 0
 
 
@@ -348,8 +365,7 @@ def cmd_unlimited(rest):
 
 
 def cmd_rm(rest):
-    """Remove an account: its credential, its index record, and every pin and
-    flag that names it here."""
+    """Remove credentials and the index record, preserving Manual selections as missing."""
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
     if len(positional) != 1:

@@ -84,15 +84,9 @@ DEFAULTS = {
     "cooldown_sec": 1200,
     # anthropic-only per-model weekly caps that also count toward depletion
     "switch_models": ["fable"],
-    # a session record with no vend and no fresh pin for this long is dropped
     "pin_ttl_sec": 7 * 24 * 3600,
     # a session counts as running on an account if it vended within this window
     "active_session_sec": 3600,
-    # a session tree that vended within this window still has a prompt cache on
-    # its account: the daemon runs with PI_CACHE_RETENTION=long (1 h TTL), and
-    # 2026-10-12 transcripts read 58-98% of the prompt from cache up to 3600 s
-    # after the previous call, then 0-8%
-    "cache_ttl_sec": 3600,
     # cooldown for an anthropic account whose organization refuses OAuth
     # (HTTP 403 oauth_not_allowed_for_organization) or rejects its token
     "refused_cooldown_sec": 24 * 3600,

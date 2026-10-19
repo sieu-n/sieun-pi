@@ -12,7 +12,7 @@ def setUpModule():
 
 TESTS = Path(__file__).resolve().parent
 EXTENSION = TESTS.parent / "app" / "extension" / "index.ts"
-LINE = "account a@x 5h 10% · week 5% · fable 1%"
+LINE = "account Auto a@x 5h 10% · week 5% · fable 1%"
 
 
 def drive(*steps):
@@ -87,7 +87,7 @@ class WaitForASlot(unittest.TestCase):
     def test_a_429_with_no_next_account_waits_until_the_slot(self):
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "limited",
-                     "reply": {"account": "x@x", "until": NOW_SEC + 6339, "next": None, "retry_at": NOW_SEC + 600}},
+                     "reply": {"selection": {"mode": "auto"}, "account": "x@x", "until": NOW_SEC + 6339, "next": None, "retry_at": NOW_SEC + 600}},
                     {"op": "message", "name": "ui",
                      "message": failure({"status": 429, "kind": "rate_limit", "retryAfterMs": 6_339_000})})
         [message] = run["messages"]
@@ -100,14 +100,14 @@ class WaitForASlot(unittest.TestCase):
         recheck before it only adds another failed message to the session."""
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "limited",
-                     "reply": {"account": "x@x", "until": NOW_SEC + 9000, "next": None, "retry_at": NOW_SEC + 7000}},
+                     "reply": {"selection": {"mode": "auto"}, "account": "x@x", "until": NOW_SEC + 9000, "next": None, "retry_at": NOW_SEC + 7000}},
                     {"op": "message", "name": "ui", "message": failure({"status": 429, "retryAfterMs": 9_000_000})})
         [details] = [d["details"] for d in run["messages"][0]["diagnostics"] if d["type"] == "provider_stream_failure"]
         self.assertEqual(details["retryAfterMs"], 7_000_000)
 
     def test_a_429_with_a_next_account_retries_at_once(self):
         run = drive({"op": "start", "name": "ui"},
-                    {"op": "reply", "verb": "limited", "reply": {"account": "x@x", "until": NOW_SEC + 600, "next": "y@x", "retry_at": None}},
+                    {"op": "reply", "verb": "limited", "reply": {"selection": {"mode": "auto"}, "account": "x@x", "until": NOW_SEC + 600, "next": "y@x", "retry_at": None}},
                     {"op": "message", "name": "ui", "message": failure({"status": 429, "retryAfterMs": 600_000})})
         [details] = [d["details"] for d in run["messages"][0]["diagnostics"] if d["type"] == "provider_stream_failure"]
         self.assertNotIn("retryAfterMs", details)
@@ -116,7 +116,7 @@ class WaitForASlot(unittest.TestCase):
         text = 'Failed to resolve API key for provider "anthropic" from shell command: /x/bin/pi-pool-token'
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "who", "reply": {"providers": {"anthropic": {
-                        "current": None, "wait": {"account": "y", "slot_at": NOW_SEC + 300}}}}},
+                        "selection": {"mode": "auto"}, "current": None, "wait": {"account": "y", "slot_at": NOW_SEC + 300}}}}},
                     {"op": "message", "name": "ui", "message": {
                         "role": "assistant", "stopReason": "error", "provider": "anthropic", "errorMessage": text,
                         "diagnostics": [{"type": "agent_lifecycle_failure"}]}})
@@ -132,7 +132,7 @@ class WaitForASlot(unittest.TestCase):
         slot = NOW_SEC + (8 * 3600 + 55 * 60 + 30) - (8 * 3600 + 32 * 60 + 37)
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "who", "reply": {"providers": {"anthropic": {
-                        "current": None, "wait": {"account": "y", "slot_at": slot}}}}},
+                        "selection": {"mode": "auto"}, "current": None, "wait": {"account": "y", "slot_at": slot}}}}},
                     {"op": "message", "name": "ui", "message": {
                         "role": "assistant", "stopReason": "error", "provider": "anthropic", "errorMessage": text,
                         "diagnostics": [{"type": "agent_lifecycle_failure"}]}})

@@ -974,7 +974,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       }
       if (route === "api/accounts/login") {
         const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
-        json(res, 200, logins.start(text(body.provider, "provider", 64), account)); return;
+        if (body.off !== undefined && typeof body.off !== "boolean") throw new PoolError(400, "off must be a boolean.");
+        json(res, 200, logins.start(text(body.provider, "provider", 64), account, body.off === true)); return;
       }
       if (route === "api/accounts/refresh") {
         const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);

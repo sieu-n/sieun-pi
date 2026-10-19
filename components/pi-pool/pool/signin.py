@@ -1,10 +1,11 @@
 """`pi-pool login`: an OAuth sign-in driven as JSON lines, and `pi-pool file-login`, which
 files the login in the account store of the machine that holds the accounts.
 
-A sign-in runs where its browser is. Claude uses PKCE with a localhost callback (or a
-pasted code); Codex uses the device-code flow. The login is then filed by the holder:
+A sign-in can finish in another device's browser. Claude uses PKCE with a localhost
+callback, a pasted callback URL or a provider-issued code; Codex uses the device-code flow. The login is then filed by the holder:
 in this process when this machine holds the accounts, else through `pi-pool serve`."""
-import base64, datetime, hashlib, http.server, json, os, queue, secrets, select, signal, sys, threading, time, uuid
+import base64, datetime, hashlib, http.server, json, os, queue, re, secrets, select, signal, sys, threading, time, uuid
+from dataclasses import dataclass
 import urllib.error, urllib.parse, urllib.request
 
 from . import base, registry, remote, status_view
@@ -60,22 +61,69 @@ def claude_profile(access_token):
         return json.loads(resp.read())
 
 
+@dataclass(frozen=True)
+class ClaudeCode:
+    code: str
+    redirect_uri: str
+
+
+@dataclass(frozen=True)
+class ClaudeDenied:
+    pass
+
+
+class CallbackInvalid(ValueError):
+    pass
+
+
+def claude_callback(value, state, local, *, pasted=False):
+    """Parse the pending flow's callback URL, or its provider-issued manual code."""
+    if pasted and not any(mark in value for mark in (":", "/", "?")):
+        code, separator, given = value.partition("#")
+        if not code or any(character.isspace() for character in code) or (separator and not secrets.compare_digest(given.encode(), state.encode())):
+            raise CallbackInvalid("That code belongs to another sign-in. Use the link above and try again.")
+        return ClaudeCode(code, CLAUDE_MANUAL_REDIRECT)
+    try:
+        url = urllib.parse.urlsplit(value)
+        redirect = urllib.parse.urlunsplit((url.scheme, url.netloc, url.path, "", ""))
+        allowed = (local, CLAUDE_MANUAL_REDIRECT) if pasted else (local,)
+        if redirect not in allowed or url.fragment or re.search(r"%(?![0-9a-fA-F]{2})", url.query):
+            raise ValueError()
+        fields = urllib.parse.parse_qs(url.query, keep_blank_values=True, strict_parsing=True, errors="strict")
+        if any(len(values) != 1 for values in fields.values()):
+            raise ValueError()
+    except ValueError:
+        raise CallbackInvalid("Paste the full callback URL from this sign-in, or its sign-in code.") from None
+    if not secrets.compare_digest(fields.get("state", [""])[0].encode(), state.encode()):
+        raise CallbackInvalid("That URL belongs to another sign-in. Use the link above and try again.")
+    code, error = fields.get("code", [""])[0], fields.get("error", [""])[0]
+    if bool(code) == bool(error):
+        raise CallbackInvalid("The callback URL must contain a sign-in code or a provider error.")
+    if error:
+        return ClaudeDenied()
+    return ClaudeCode(code, redirect)
+
+
 class Callback(http.server.BaseHTTPRequestHandler):
-    """The localhost redirect target: hands the code to the waiting login and sends
-    the browser on to Claude's success page."""
     codes = None
     state = None
+    local = None
 
     def log_message(self, *args):
         pass
 
     def do_GET(self):
-        url = urllib.parse.urlparse(self.path)
-        got = urllib.parse.parse_qs(url.query)
-        if url.path != "/callback" or got.get("state", [None])[0] != self.state or not got.get("code"):
+        try:
+            if not self.path.startswith("/callback?"):
+                raise CallbackInvalid()
+            completion = claude_callback(self.local + self.path[len("/callback"):], self.state, self.local)
+        except CallbackInvalid:
             self.send_error(400)
             return
-        self.codes.put(("callback", got["code"][0]))
+        self.codes.put(("callback", completion))
+        if isinstance(completion, ClaudeDenied):
+            self.send_error(400, "Claude did not approve the sign-in")
+            return
         self.send_response(302)
         self.send_header("Location", CLAUDE_SUCCESS_URL)
         self.end_headers()
@@ -113,8 +161,9 @@ def claude_login(emit, stdin, deadline):
     codes = queue.Queue()
     handler = type("Handler", (Callback,), {"codes": codes, "state": state})
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
     local = f"http://localhost:{server.server_address[1]}/callback"
+    handler.local = local
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def authorize(redirect):
         return CLAUDE_AUTHORIZE_URL + "?" + urllib.parse.urlencode({
@@ -123,6 +172,7 @@ def claude_login(emit, stdin, deadline):
     try:
         emit({"event": "url", "url": authorize(local), "manual_url": authorize(CLAUDE_MANUAL_REDIRECT), "code": None, "paste": True})
         retries = 0
+        attempted = set()
         while True:
             if time.time() > deadline:
                 raise LoginFailed("the sign-in did not finish in time")
@@ -132,15 +182,21 @@ def claude_login(emit, stdin, deadline):
             except queue.Empty:
                 pass
             for line in stdin.lines(0.3):
-                code, _, given = line.partition("#")
-                if given and given != state:
-                    emit({"event": "retry", "message": "That code belongs to another sign-in. Open the link above and try again."})
+                try:
+                    found.append(("paste", claude_callback(line, state, local, pasted=True)))
+                except CallbackInvalid as error:
+                    emit({"event": "retry", "message": str(error)})
+            for how, completion in found:
+                if isinstance(completion, ClaudeDenied):
+                    raise LoginFailed("Claude did not approve the sign-in. Start a new sign-in to try again.")
+                digest = hashlib.sha256(completion.code.encode()).digest()
+                if digest in attempted:
+                    emit({"event": "retry", "message": "That callback was already submitted. Finish a new approval from the link above."})
                     continue
-                found.append(("paste", code))
-            for how, code in found:
+                attempted.add(digest)
                 status, body = post(base.TOKEN_URL, {
-                    "grant_type": "authorization_code", "code": code, "client_id": base.CLIENT_ID, "code_verifier": verifier,
-                    "state": state, "redirect_uri": local if how == "callback" else CLAUDE_MANUAL_REDIRECT})
+                    "grant_type": "authorization_code", "code": completion.code, "client_id": base.CLIENT_ID, "code_verifier": verifier,
+                    "state": state, "redirect_uri": completion.redirect_uri})
                 if status == 200 and isinstance(body, dict) and body.get("access_token") and body.get("refresh_token"):
                     return claude_harvest(body)
                 retries += 1
@@ -243,7 +299,7 @@ def write_secret(provider, account_id, secret):
         base.CodexFileAdapter(base.codex_secret(account_id)).write(secret)
 
 
-def file_login(provider, harvest, target=None):
+def file_login(provider, harvest, target=None, *, off=False):
     """File a harvested login in this machine's store: its credential under the
     account it belongs to, its record in the index. With `target` (an id, label or
     email), a login of any other account is refused and nothing is written.
@@ -275,7 +331,15 @@ def file_login(provider, harvest, target=None):
             label = f"{h.get('email')} ({registry.org_suffix(h)})" if shared else h.get("email") or account_id
             records.append({"id": account_id, "label": label, "windows": [],
                             "addedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), **fresh})
-        base.write_index(provider, idx)
+        if off:
+            from . import vending
+            with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+                state = registry.load_state()
+                vending.IntentWriter(state).set_disabled(provider, account_id, True, time.time())
+                base.save_json(base.STATE, state)
+                base.write_index(provider, idx)
+        else:
+            base.write_index(provider, idx)
         label = registry.record_labels(records)[account_id] if provider == "anthropic" else \
             next(r for r in records if r["id"] == account_id)["label"]
         size = len(records)
@@ -303,21 +367,23 @@ def cmd_file_login(rest):
         raise SystemExit("file-login reads one JSON harvest on stdin")
     if provider not in base.PROVIDERS:
         raise SystemExit(f"unknown provider {provider}")
+    if not isinstance(harvest.get("off", False), bool):
+        raise SystemExit("file-login off must be a boolean")
     try:
-        said, account_id = file_login(provider, harvest, harvest.get("target"))
+        said, account_id = file_login(provider, harvest, harvest.get("target"), off=harvest.get("off", False))
     except (LoginRefused, RuntimeError, TimeoutError) as e:
         raise SystemExit(str(e)[:300])
     print(json.dumps({"message": said, "id": account_id}))
     return 0
 
 
-def file_anywhere(provider, harvest, target):
+def file_anywhere(provider, harvest, target, *, off=False):
     """File the login with the machine that holds the accounts. Returns the sentence."""
     cfg = remote.client()
     if cfg is None:
-        return file_login(provider, harvest, target)[0]
+        return file_login(provider, harvest, target, off=off)[0]
     try:
-        code, out, err = remote.ask(cfg, ["--cli", "file-login"], stdin=json.dumps({**harvest, "provider": provider, "target": target}))
+        code, out, err = remote.ask(cfg, ["--cli", "file-login"], stdin=json.dumps({**harvest, "provider": provider, "target": target, "off": off}))
     except remote.Unreachable as e:
         raise LoginRefused(str(e))
     if code:
@@ -326,14 +392,17 @@ def file_anywhere(provider, harvest, target):
 
 
 def cmd_login(rest):
-    """`pi-pool login [<email|id>] [--provider p] [--timeout sec]`: add an account,
+    """`pi-pool login [<email|id>] [--provider p] [--timeout sec] [--off]`: add an account,
     or sign one in again.
 
     stdout is JSON lines: {"event":"url"} with the sign-in link (Claude: a localhost
     callback link, plus the paste link; Codex: the device page and code),
     {"event":"retry"}, then one {"event":"done","ok":...}. stdin takes a pasted
-    Claude sign-in code per line; closing stdin cancels."""
+    Claude callback URL or sign-in code per line; closing stdin cancels."""
     rest, timeout = list(rest), LOGIN_TIMEOUT_SEC
+    off = "--off" in rest
+    if off:
+        rest.remove("--off")
     if "--timeout" in rest:
         at = rest.index("--timeout")
         try:
@@ -344,7 +413,7 @@ def cmd_login(rest):
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
     if provider not in base.PROVIDERS or len(positional) > 1 or timeout <= 0:
-        raise SystemExit("usage: pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]")
+        raise SystemExit("usage: pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>] [--off]")
     emit = lambda event: (sys.stdout.write(json.dumps(event) + "\n"), sys.stdout.flush())
     target = positional[0] if positional else None
 
@@ -355,7 +424,7 @@ def cmd_login(rest):
     try:
         sign_in = claude_login if provider == "anthropic" else codex_login
         harvest = sign_in(emit, Input(), time.time() + timeout)
-        result = {"event": "done", "ok": True, "message": file_anywhere(provider, harvest, target)}
+        result = {"event": "done", "ok": True, "message": file_anywhere(provider, harvest, target, off=off)}
     except (LoginFailed, LoginRefused, RuntimeError, OSError) as e:
         result = {"event": "done", "ok": False, "message": str(e)[:300]}
     base.log("login_end", provider=provider, ok=result["ok"], message=result["message"])

@@ -203,7 +203,7 @@ def account_card(p, a, ctx):
     lines += window_rows(p, a, now) if a.windows else [f"{NOTE_INDENT}{p.dim('never sampled')}"]
     notes = []
     if reason == "disabled":
-        notes.append((p.dim, f"off: never picked until pi-pool on {a.label}"))
+        notes.append((p.dim, "Off excludes Auto; a Manual selection can still use this account"))
     elif reason == "needs-reauth":
         flag = " --provider openai-codex" if a.provider == "openai-codex" else ""
         notes.append((p.red, f"login is dead: pi-pool login {a.id}{flag}"))

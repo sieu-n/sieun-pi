@@ -22,7 +22,7 @@ const slotOf = (sessionId: string): number | null => { const found = SLOT.exec(d
 
 /** `pi-pool who` and `ls` for a tree held until `slotAt` (epoch ms), or served now by claude7 with null. */
 const parts = (slotAt: number | null): ThreadParts => ({
-  who: part({ providers: { anthropic: { account: slotAt ? null : "claude7", wait: slotAt ? { account: "claude11", slot_at: slotAt / 1000 } : null } } }),
+  who: part({ providers: { anthropic: { selection: { mode: "auto" }, account: slotAt ? null : "claude7", wait: slotAt ? { account: "claude11", slot_at: slotAt / 1000 } : null } } }),
   ls: { anthropic: part({ provider: "anthropic", rows: [{ id: "claude7", email: "claude7@slack.green", usage: "", reason: null, usable: slotAt === null, current: false, pinned: false }] }),
     "openai-codex": part({ provider: "openai-codex", rows: [] }) },
 });

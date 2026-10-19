@@ -74,20 +74,20 @@ class LimitedSurvivesARestart(PoolFixture):
         now = time.time()
         self.write_state({"version": 2, "providers": {
             "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}},
-            "openai-codex": {"pin": self.C, "cooldowns": {}, "disabled": {}}},
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}},
             "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
                                         "vends": {"openai-codex": {"account_id": self.C, "email": "c@x", "at": now, "n": 3}}}}})
 
-    def test_a_429_moves_the_pool_pin_until_the_reset_and_a_new_process_still_sees_it(self):
+    def test_a_429_rotates_auto_and_a_new_process_still_sees_it(self):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None})
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None, "selection": {"mode": "auto"}})
         self.assertEqual(self.state()["providers"]["openai-codex"]["limits"][self.C]["session"], self.SESSION)
         code, out = self.cli("who", "--json", "--session", self.SESSION)
         self.assertEqual(code, 0, out)
         who = json.loads(out)["providers"]["openai-codex"]
-        self.assertEqual((who["email"], who["reason"], who["shadowed"]), ("d@x", "switch", [self.C, "limited"]))
+        self.assertEqual((who["email"], who["reason"], who["shadowed"]), ("d@x", "switch", None))
         row = self.rows("openai-codex")["c@x"]
         self.assertEqual((row["usable"], row["limited_until"]), (False, round(until)))
         self.assertTrue(row["reason"].startswith("limited "), row["reason"])
@@ -111,7 +111,7 @@ class LimitedSurvivesARestart(PoolFixture):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(time.time()))
-        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None}, out)
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None, "selection": {"mode": "auto"}}, out)
         moved = time.time()
         state = self.state()
         state["sessions"][self.SESSION]["vends"]["openai-codex"] = {"account_id": self.D, "email": "d@x", "at": moved, "from": moved, "n": 1}
@@ -119,7 +119,7 @@ class LimitedSurvivesARestart(PoolFixture):
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(moved - 5))
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": None, "until": round(until), "next": "d@x", "retry_at": None, "stale": True})
+        self.assertEqual(json.loads(out), {"account": None, "until": round(until), "next": "d@x", "retry_at": None, "stale": True, "selection": {"mode": "auto"}})
         self.assertEqual(set(self.state()["providers"]["openai-codex"]["limits"]), {self.C}, "d@x is not marked with c@x's reset")
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(moved + 1))
@@ -174,7 +174,7 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
     def test_the_account_leaves_the_pool_and_the_session_moves(self):
         code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION, self.TERMS)
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": "a@x", "reason": "needs terms", "next": "b@x", "retry_at": None})
+        self.assertEqual(json.loads(out), {"account": "a@x", "reason": "needs terms", "next": "b@x", "retry_at": None, "selection": {"mode": "auto"}})
         code, out = self.cli("who", "--json", "--session", self.SESSION)
         self.assertEqual(code, 0, out)
         self.assertEqual(json.loads(out)["providers"]["anthropic"]["email"], "b@x")
@@ -199,13 +199,13 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
         code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION,
                              "Provider rejected the request (invalid_request_error, 400): prompt is too long")
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"reason": None})
+        self.assertEqual(json.loads(out), {"reason": None, "selection": {"mode": "auto"}})
         self.assertEqual(self.state(), before)
 
 
 class OffAndOn(PoolFixture):
     def test_off_keeps_the_account_listed_but_never_usable(self):
-        self.assertEqual(self.cli("off", "a@x"), (0, "a@x is off; the pool never picks it until pi-pool on"))
+        self.assertEqual(self.cli("off", "a@x"), (0, "a@x is off; excluded from Auto, available in Manual"))
         row = self.rows()["a@x"]
         self.assertEqual((row["disabled"], row["usable"], row["reason"]), (True, False, "disabled"))
         self.assertFalse(self.rows()["b@x"]["disabled"])
@@ -214,7 +214,7 @@ class OffAndOn(PoolFixture):
     def test_off_twice_and_on_twice_are_no_ops(self):
         self.cli("off", "a@x")
         self.assertEqual(self.cli("off", "a@x"), (0, "a@x is already off"))
-        self.assertEqual(self.cli("on", "a@x"), (0, "a@x is on; the pool can pick it again"))
+        self.assertEqual(self.cli("on", "a@x"), (0, "a@x is on; Auto can pick it again"))
         self.assertEqual(self.cli("on", "a@x"), (0, "a@x is already on"))
         row = self.rows()["a@x"]
         self.assertEqual((row["disabled"], row["usable"]), (False, True))
@@ -224,11 +224,12 @@ class OffAndOn(PoolFixture):
         self.assertTrue(self.rows("openai-codex")["c@x"]["disabled"])
         self.assertEqual(self.state()["providers"]["anthropic"].get("disabled"), {})
 
-    def test_an_off_account_cannot_be_pinned(self):
+    def test_an_off_account_can_be_manually_pinned(self):
         self.cli("off", "a@x")
         code, out = self.cli("pin", "a@x")
-        self.assertNotEqual(code, 0)
-        self.assertIn("a@x is off", out)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.state()["providers"]["anthropic"]["pin"], A)
+        self.assertTrue(self.rows()["a@x"]["disabled"])
 
     def test_an_unknown_account_is_an_error(self):
         code, out = self.cli("off", "z@x")
@@ -240,7 +241,7 @@ class Remove(PoolFixture):
     def secret(self, name):
         return os.path.join(self.accounts, "secrets", name)
 
-    def test_rm_deletes_the_credential_and_record_and_forgets_every_intent(self):
+    def test_rm_deletes_credentials_but_preserves_manual_selection(self):
         os.makedirs(os.path.join(self.accounts, "secrets"))
         for account in (A, B):
             with open(self.secret("pi-pool.anthropic." + account), "w") as f:
@@ -258,8 +259,9 @@ class Remove(PoolFixture):
         self.assertEqual([r["id"] for r in self.index()], [B])
         self.assertEqual(sorted(os.listdir(os.path.join(self.accounts, "secrets"))), ["pi-pool.anthropic." + B])
         prov = self.state()["providers"]["anthropic"]
-        self.assertEqual((prov["pin"], prov["disabled"], prov["cooldowns"]), (None, {}, {B: 9e12}))
-        self.assertEqual(self.state()["sessions"]["s1"]["pins"], {"openai-codex": {"account_id": "cccc", "at": at}})
+        self.assertEqual((prov["pin"], prov["disabled"], prov["cooldowns"]), (A, {}, {B: 9e12}))
+        self.assertEqual(self.state()["sessions"]["s1"]["pins"], {
+            "anthropic": {"account_id": A, "at": at}, "openai-codex": {"account_id": "cccc", "at": at}})
 
     def test_rm_deletes_a_codex_auth_file(self):
         c = CODEX_INDEX["accounts"][0]["id"]
@@ -428,7 +430,7 @@ class ClaudeSignIn(InProcessStore):
 
     def test_three_refused_codes_end_the_sign_in(self):
         with self.assertRaisesRegex(signin.LoginFailed, "three times"):
-            self.run_login(FakeInput(["bad"], ["bad"], ["bad"]))
+            self.run_login(FakeInput(["bad-1"], ["bad-2"], ["bad-3"]))
 
     def test_closing_stdin_cancels(self):
         with self.assertRaisesRegex(signin.LoginFailed, "cancelled"):
@@ -554,7 +556,7 @@ class SecondOrganization(InProcessStore):
         code, out = self.cli("off", "a@x")
         self.assertNotEqual(code, 0)
         self.assertIn("a@x names 2 accounts", out)
-        self.assertEqual(self.cli("off", "a@x (Team)"), (0, "a@x (Team) is off; the pool never picks it until pi-pool on"))
+        self.assertEqual(self.cli("off", "a@x (Team)"), (0, "a@x (Team) is off; excluded from Auto, available in Manual"))
         self.assertEqual(list(self.state()["providers"]["anthropic"]["disabled"]), [self.team_id()])
         self.assertEqual(self.cli("on", A)[0], 0)
 

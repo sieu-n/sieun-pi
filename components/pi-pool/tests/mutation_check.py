@@ -8,8 +8,8 @@ import json, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 MUTATIONS = {
-    "R1 stay": ("    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id:",
-                "    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id and admit_reason(cur, cooldowns, cfg, now, p) is None:"),
+    "R1 stay": ("    if cur_why is None and cur is not None and not tree.wait and (manual or tree.leave != cur.id):",
+                "    if cur_why is None and cur is not None and not tree.wait and (manual or tree.leave != cur.id) and admit_reason(cur, cooldowns, cfg, now, p) is None:"),
     "R2 admit cap": ("    if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg[\"seven_day_max_pct\"]:\n        return \"depleted\"\n    if registry.usage_unsampled",
                      "    if False:\n        return \"depleted\"\n    if registry.usage_unsampled"),
     "R2 projection": ("        if why is None and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):",
@@ -23,7 +23,7 @@ MUTATIONS = {
         "    candidates = [a for a in ranked if allowed(a)]",
         "    candidates = [a for a in ranked if allowed(a)] + sorted([a for a in accounts if allowed(a) and a not in ranked and serve_reason(a, cooldowns, now) is None], key=lambda a: a.session_pct)"),
     "R5 backoff on a depleted pool": (
-        "    if not any(admit_reason(a, cooldowns, cfg, now, p) in (None, \"unsampled\") for a in accounts):",
+        "    if waits_for_rotation(accounts, cooldowns, cfg, now, p):",
         "    if False:"),
     "R5 backoff held until its draw": (
         "    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None",
@@ -36,13 +36,14 @@ MUTATIONS = {
     "R7 high goes first": ("    return (PRIORITY_RANK.get(tree.priority, 1), tree.wait[2] if tree.wait else now, tree.key or \"\")",
                            "    return (1, tree.wait[2] if tree.wait else now, tree.key or \"\")"),
     "R7 last cell for high": ("        if sole and cap > 1 and tree.priority != \"high\" and c % cap == cap - 1:\n            continue\n", ""),
-    "pin applies once": ("    pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at",
-                         "    pending = tree.pin and tree.pin != tree.current"),
+    "session pin is strict": ("    manual = tree.pin or tree.pool_pin",
+                               "    manual = tree.pool_pin"),
     "jobs: a child session keys by its root": ("    key = uuid or active\n", "    key = active or uuid\n"),
-    "stale pins dropped": ("            if not pin or now - (pin.get(\"at\") or 0) > pin_ttl:", "            if not pin:"),
+    "old pins retained": ('    raw.setdefault("sessions", {})',
+                          '    for rec in raw.setdefault("sessions", {}).values():\n        rec["pins"] = {}'),
 }
 # The file each rule lives in; every other rule is in pool/sched.py.
-RULE_FILES = {"jobs: a child session keys by its root": "pool/registry.py", "stale pins dropped": "pool/registry.py"}
+RULE_FILES = {"jobs: a child session keys by its root": "pool/registry.py", "old pins retained": "pool/registry.py"}
 
 
 def main():

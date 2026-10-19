@@ -174,13 +174,12 @@ In the TUI:
 
     /account
 
-It lists the pool with usage and flags, plus a "Follow the pool" row. Codex rows also
-carry the plan (`email  plus  0%/100%  [depleted]`); `ls --json` puts it in a `plan`
-field on codex rows only. Pick a row.
-The tray shows `<email> (next request)` and the switch lands on that session's next
-request when the account can take the session (see "Which account a request gets").
-Picking an account that cannot take it now asks first; the pin then waits, and the
-session moves there only when it must move or starts cold.
+It lists accounts with usage and flags, plus an Auto row. Codex rows also show their plan.
+Picking an account selects Manual mode for the session tree, including its subagents.
+Off accounts remain selectable. The footer shows Auto or Manual and the chosen account.
+The next request uses only the Manual account, subject to its existing admission rules.
+If that account fails, the session reports the error or waits on that account without switching.
+Choose Auto to clear the session pin. A global pool pin remains a separate all-session override.
 
 From a shell inside the session:
 
@@ -212,10 +211,10 @@ until the session's next provider request runs the hook.
     pi-pool refresh [<email|id> ...] [--provider p] [--json | --stream]
                                   read usage now for every account, or the named ones (needs --provider)
     pi-pool sample                read each account whose usage figure is due (the holder's timer, every minute)
-    pi-pool off <email|id> [--provider <p>]   keep an account pooled but never pick it (`ls --json` shows `disabled`)
+    pi-pool off <email|id> [--provider <p>]   exclude from Auto; still selectable in Manual
     pi-pool on <email|id> [--provider <p>]    let the pool pick it again
-    pi-pool rm <email|id> [--provider <p>]    delete the account's credential and record, then drop its pins here
-    pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]
+    pi-pool rm <email|id> [--provider <p>]    delete credentials; Manual selections report the missing account
+    pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>] [--off]
                                   add an account or sign one in again (Claude: by organization, see below)
                                   for a browser: stdout is JSON lines ({"event":"url"} with the link and the
                                   Codex device code, {"event":"retry"}, one {"event":"done","ok":...}); stdin takes
@@ -242,17 +241,22 @@ until the session's next provider request runs the hook.
 `pi-pool login` signs in with each provider's own OAuth client, the one Claude Code and the
 Codex CLI use, so the grants refresh like theirs.
 
-- Claude uses PKCE. The first `url` event carries two links: `url`, whose redirect is a
-  localhost callback this process serves, and `manual_url`, whose redirect is Anthropic's
-  code page. A browser on the same machine finishes through `url`; a code pasted on stdin
-  (`code#state`) finishes through `manual_url`. A refused code emits `retry`; three end the
-  sign-in. The grant's plan comes from `GET /api/oauth/profile`.
+- Claude uses PKCE, and the initiating process keeps the pending state and verifier.
+- The first `url` event has a browser approval URL with a localhost callback and a `manual_url` for Anthropic's code page.
+- A browser on the same device can finish through the localhost callback.
+- A browser on another device can finish by pasting its full callback URL into the waiting sign-in, even when localhost does not open there.
+- The manual code page also accepts its `code#state` on stdin.
+- A rejected paste leaves the same approval URL available for correction.
+- The grant's plan comes from `GET /api/oauth/profile`.
 - Codex uses the device-code flow: the `url` event carries `https://auth.openai.com/codex/device`
   and the code to enter.
 
 The login is then filed by the holder (`pool/signin.py` `file_login`): its credential under
 the account it belongs to, its record in the index, its `pi-pool limited` record and any
 `needs terms` or `token rejected (401)` cooldown dropped, and its usage read once.
+`pi-pool login --off` records Off before publishing the account in the index, so Auto never
+sees an eligible account during insertion. Signing in an existing Off account keeps it Off.
+The chat's existing `POST /api/accounts/login` accepts `off: true` for the same reserved-add flow.
 
 ## One login in two organizations
 
@@ -273,9 +277,11 @@ Rows carry `label`: the email, or `email (organization)` when two accounts share
 label, a unique id prefix, or an email only one account has; a shared email exits with the
 labels to choose from.
 
-`ls --json` names the pool `pin`, the tree's `priority` and the `wait` its next request gets (`{account, slot_at}`
-or null, never a stale record on file; `who --json` carries the same `wait` per provider and `priority` at the top). Its
-rows carry `usable` (the account takes this tree now), `serves` (a tree already on it stays),
+`ls --json` names the pool `pin`, the tree's `selection`, `priority` and the `wait` its next request gets (`{account, slot_at}`
+or null, never a stale record on file; `who --json` carries the same `wait` per provider and `priority` at the top).
+Both commands report `selection` as `{"mode":"auto"}` or `{"mode":"manual","account_id":"..."}`
+per provider. Manual selection remains visible even when the selected account cannot serve. Its
+rows carry `usable` (Auto admission eligibility), `serves` (Auto sticky eligibility),
 `score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting` (the other trees whose wait
 names the account, a backoff included), and
 what `status` draws: `tier` (`max 20x`, `pro`), `windows`
@@ -343,20 +349,22 @@ account, or wait for a slot. `decide` in `pool/sched.py` holds the rules, first 
 
 ```mermaid
 flowchart TD
-  R[request of a tree] --> P{pin set since the last request, and its account takes the tree?}
-  P -- yes --> A[admit to the pin]
-  P -- no --> S{own account still serves?}
+  R[request of a tree] --> M{Manual selection?}
+  M -- yes --> P[Consider only the selected account, including Off]
+  P --> A[Stay, admit, wait, or report that account error]
+  M -- no --> E[Exclude every Off account]
+  E --> S{own eligible account still serves?}
   S -- yes --> STAY[stay]
   S -- no --> B{move budget left, or a high tree that must move?}
-  B -- yes --> C{an account under the admit cap with a free slot?}
+  B -- yes --> C{an eligible account under the admit cap with a free slot?}
   B -- no --> W
   C -- yes --> A2[admit to the best score]
-  C -- no --> W[wait for a cell, or back off 0-120 min when no account passes R2]
+  C -- no --> W[wait for a cell, or back off when no account passes R2]
 ```
 
 | # | rule | effect |
 |---|---|---|
-| R1 stay | the tree's own account still serves: no 429 on file, every counting window under 100%, credential ok | it stays, warm or cold. No move because of a cutoff, a better account, a pin set earlier or another tree's move |
+| R1 stay | the tree's own eligible account still serves: no 429 on file, every counting window under 100%, credential ok | Auto stays, warm or cold, unless a higher Codex plan is available. Manual considers only its selected account. |
 | R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old, with that sample projected to the next read | holds for new trees, moves after a 429, pins and `pi-pool switch`. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s. The projection is the read plus the account's own rate for each tree that sent a request there in the last 15 minutes over the 20 minutes from the read to the next one, plus the new tree from now to the next read The own rate is the 5h change between the last read and the newest read at least 20 minutes older in the same window, plus one point for rounding, divided by the spending tree-minutes between them. Until a window has two such reads, `tree_5h_pct_per_min` of the tier stands in (team 0.68, max 5x 0.92, max 20x 0.28, measured on 10-12 and 10-13; see `base.DEFAULTS`). A projection at the cap counts as no room, so with no other account the tree backs off (R5) |
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
@@ -397,15 +405,20 @@ about 20 429s in 3 minutes, and the pool flock gave 1,875 `vend_lock_busy` lines
 revive 2 minutes apart: every tree gets a token, no account takes more than 3 trees in the
 minute after it revives, and none runs out within a minute of its revival.
 
-A pin is an owner intent applied once: the tree's next request moves to the pinned
-account if it passes R2 (a high tree skips R4). After that the pin steers the tree only
-when it must move or starts cold (no request for `cache_ttl_sec`), and it never pulls a warm
-tree back. A pool pin (`pi-pool pin`) moves trees at slot pace while its account passes R2.
-On load the pool drops pins older than `pin_ttl_sec`.
+A Manual selection pins the session tree to one account until `pi-pool use --follow`
+returns it to Auto. The pin survives restarts, quiet sessions, model changes and retry paths.
+The scheduler never falls back to another account when a Manual account fails, runs out,
+or is removed. A failure reports that account's error; an admission wait stays on that account.
+Existing admission caps, model rules and slot rules still apply.
+
+An Off account stays listed with `disabled: true` but is excluded from every Auto choice,
+including a previous sticky account and credential fallback. A deliberate Manual choice may
+use it. Turning an account Off does not remove Manual pins or its health state.
+Session Manual pins take precedence over a global pool pin. `pi-pool switch` refuses a Manual
+selection until its binding is cleared.
 
 Every vend that changes a tree's account logs one `vend` line with `reason` (`new`,
-`switch`, `back`, `session_pin`, `pool_pin`, `upgrade`), the yielded pin in `shadowed`
-with `why` (`depleted`, `limited`, `busy`, ...) and the `previous` account, and one `switch`
+`switch`, `back`, `session_pin`, `pool_pin`, `upgrade`) and the `previous` account, and one `switch`
 line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 `credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
 Every refused request logs one `parked` line with `at` in epoch seconds, the slot, `backoff` and
@@ -436,7 +449,11 @@ with a 400 "not supported when using Codex with a ChatGPT account". The upgrade 
 the tree to an account on a higher plan (reason `upgrade`), and a higher plan ranks first
 for every admission. Anthropic accounts carry no plan, so it never fires there.
 
-## A 429 moves the session in the same turn
+## Auto retries can rotate accounts
+
+Manual mode keeps the original provider failure and diagnostics. It never rewrites a
+429, refusal or token-hook failure to retry on another identity. The following rotation
+rules apply only to Auto.
 
 Usage figures come from samples that can be 15 minutes old, so the provider's
 own 429 is the first sign that an account is used up. The extension handles it on
@@ -624,7 +641,7 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
 `admit_per_unit`, `depleted_backoff_max_sec`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
-`switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
+`switch_models`, `pin_ttl_sec`, `active_session_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
 `working_max`, `tree_working_max`, `queue_aging_s`, `lease_s` and `prod_turns_on`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys

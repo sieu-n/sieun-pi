@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { askHookd, listAccounts, parsePoolSnapshot, readSnapshot, PoolStatusReader, snapshotArgs, threadKey, type PoolPart, type PoolSnapshot, type PoolThread } from "../src/chat-pool.ts";
 
 const part = (out: unknown, code = 0): PoolPart => ({ code, out: typeof out === "string" ? out : JSON.stringify(out), err: "" });
-const listing = (provider: string, email: string) => ({ provider, rows: [{ id: email, email, usage: "1%", reason: null, usable: true, current: true, pinned: false }] });
+const listing = (provider: string, email: string) => ({ provider, selection: { mode: "auto" }, rows: [{ id: email, email, usage: "1%", reason: null, usable: true, current: true, pinned: false }] });
 
 /** A fake `pi-pool snapshot`: each call waits for `answer`; the account email names the call, so a test sees which read answered. */
 function fakePool() {

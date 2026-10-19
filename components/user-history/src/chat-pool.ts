@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
 import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
-  type PoolResolution, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
+  type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
@@ -91,12 +91,19 @@ export function parsePoolWait(value: unknown): PoolWait | null {
   return account && slotAt ? { account, slotAt } : null;
 }
 
+export function parsePoolSelection(value: unknown): PoolSelection {
+  if (isRecord(value) && value.mode === "auto") return { mode: "auto" };
+  if (isRecord(value) && value.mode === "manual" && typeof value.account_id === "string" && value.account_id && !value.account_id.startsWith("-"))
+    return { mode: "manual", account_id: value.account_id };
+  throw new Error("pi-pool returned an invalid account selection");
+}
+
 export function parsePoolResolution(value: unknown, provider: string): PoolResolution | null {
   if (!isRecord(value) || !isRecord(value.providers)) throw new Error("pi-pool returned an invalid resolution");
   const selected = value.providers[provider];
-  if (!isRecord(selected) || "error" in selected) return null;
-  return { account: typeof selected.account === "string" ? selected.account : null, email: typeof selected.email === "string" ? selected.email : null,
-    reason: typeof selected.reason === "string" ? selected.reason : null, pinned: selected.pinned === true };
+  if (!isRecord(selected)) return null;
+  return { account: text(selected.account), email: text(selected.email), reason: text(selected.reason), pinned: selected.pinned === true,
+    selection: parsePoolSelection(selected.selection), error: text(selected.error) };
 }
 
 /** pi-pool reads the calling session from these variables. The service may have been started inside a session; a thread is always named with --session instead. */
@@ -348,16 +355,21 @@ export function forgetAccountReadings(): void { poolStatus.forget(); }
 /** The accounts view of one thread from its snapshot parts, as `who`, `config` and `ls` for each provider gave it at `parts.at`. */
 export function accountsView(sessionId: string | null, parts: ThreadParts & { at: number }, config: PoolPart | null): AccountsView {
   const json = (part: PoolPart | null): unknown => { try { return part ? JSON.parse(partOut(part)) : null; } catch { return null; } };
-  const resolution = json(parts.who);
+  let resolution: unknown = null;
+  try { resolution = JSON.parse(parts.who.out); } catch {}
+  const whoError = parts.who.code !== 0 ? parts.who.err.trim() || reportedError(parts.who.out) || `pi-pool who exited ${parts.who.code}` : null;
   const poolConfig = parsePoolConfig(json(config));
   const providers = pooledProviders.map((provider): PoolProvider => {
     try {
       const listing: unknown = JSON.parse(partOut(parts.ls[provider]));
-      if (isRecord(listing) && typeof listing.error === "string") return { provider, rows: [], resolution: null, error: listing.error };
       const poolPin = isRecord(listing) && isRecord(listing.pin) ? text(listing.pin.id) : null;
       const said = isRecord(resolution) && isRecord(resolution.providers) && isRecord(resolution.providers[provider]) ? resolution.providers[provider] : null;
+      const selection = parsePoolSelection(said?.selection ?? (isRecord(listing) ? listing.selection : undefined));
+      const resolved = resolution && isRecord(resolution) && isRecord(resolution.providers) ? parsePoolResolution(resolution, provider) : null;
+      const reading: PoolResolution = { account: null, email: null, reason: null, pinned: false, ...resolved, selection, error: resolved?.error ?? whoError };
+      if (isRecord(listing) && typeof listing.error === "string") return { provider, rows: [], resolution: reading, error: listing.error };
       const wait = parsePoolWait(isRecord(listing) && "wait" in listing ? listing.wait : said?.wait);
-      return { provider, rows: parsePoolRows(listing, provider), resolution: resolution ? parsePoolResolution(resolution, provider) : null, wait, poolPin };
+      return { provider, rows: parsePoolRows(listing, provider), resolution: reading, wait, poolPin };
     } catch (error) { return { provider, rows: [], resolution: null, error: error instanceof Error ? error.message : String(error) }; }
   });
   const priority = sessionId && isRecord(resolution) ? parsePoolPriority(resolution.priority) : null;
@@ -393,24 +405,22 @@ export function claudeStateOf(rows: readonly PoolAccount[], now: number): Claude
   return { serves: live.some(row => row.usable), freeAt: frees.length ? Math.min(...frees) : null };
 }
 
-/**
- * Whether the pool would give the tree of `parts` (read with `--session <tree root>`) a `provider` account now, the rule of
- * resume_paused.py account_blocker(strict=True): `who` names an account, holds no wait whose slot_at is still ahead, and `ls` lists that
- * account usable. Anything that fails to read or parse is a hold.
- */
+/** A resolved manual account bypasses Auto eligibility; resolution errors and future admission slots still hold the thread. */
 export function poolAdmitsNow(parts: Pick<ThreadParts, "who" | "ls">, provider: string, now: number): boolean {
   if (!isPooled(provider)) return false;
   try {
     const who: unknown = JSON.parse(partOut(parts.who));
     const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
-    if (!isRecord(said)) return false;
+    if (!isRecord(said) || text(said.error)) return false;
+    const selection = parsePoolSelection(said.selection);
     const wait = isRecord(said.wait) ? said.wait : null;
     if (wait && typeof wait.slot_at === "number" && wait.slot_at * 1000 > now) return false;
     const account = text(said.account);
     if (!account) return false;
     const listing: unknown = JSON.parse(partOut(parts.ls[provider]));
     const rows = isRecord(listing) && Array.isArray(listing.rows) ? listing.rows : [];
-    return rows.some(row => isRecord(row) && row.id === account && row.usable === true);
+    return rows.some(row => isRecord(row) && row.id === account &&
+      (selection.mode === "manual" ? account === selection.account_id : row.usable === true));
   } catch { return false; }
 }
 
@@ -430,7 +440,7 @@ export function poolFreeAt(parts: Pick<ThreadParts, "who" | "ls">, provider: str
     if (slotAt !== null && slotAt > now) return slotAt;
     const rows = parsePoolRows(JSON.parse(partOut(parts.ls[provider])), provider);
     const account = text(said.account);
-    if (!account) return claudeStateOf(rows, now).freeAt;
+    if (!account) return parsePoolSelection(said.selection).mode === "manual" ? null : claudeStateOf(rows, now).freeAt;
     const row = rows.find(entry => entry.id === account);
     const ends = [row?.limitedUntil, row?.cooldownUntil].filter((at): at is number => typeof at === "number" && at > now);
     return ends.length ? Math.max(...ends) : null;
@@ -459,7 +469,7 @@ export const poolCommand = {
   enable: (provider: string, account: string) => ["on", account, "--provider", provider],
   remove: (provider: string, account: string) => ["rm", account, "--provider", provider],
   refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
-  login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
+  login: (provider: string, account: string | null, seconds: number, off = false) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds), ...(off ? ["--off"] : [])],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
   admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
@@ -653,7 +663,7 @@ export function parseLoginEvent(line: string): LoginEvent | null {
   if (!isRecord(value)) return null;
   switch (value.event) {
     case "url": return { event: "url", url: httpsUrl(value.url), manualUrl: httpsUrl(value.manual_url), code: text(value.code), paste: value.paste === true };
-    case "retry": return { event: "retry", message: text(value.message) ?? "That code was not accepted. Open the new link and try again." };
+    case "retry": return { event: "retry", message: text(value.message) ?? "That URL or code was not accepted. Paste the matching callback URL or code and try again." };
     case "done": return { event: "done", ok: value.ok === true, message: text(value.message) ?? (value.ok === true ? "Signed in." : "The sign-in failed.") };
     default: return null;
   }
@@ -691,12 +701,12 @@ export class AccountLogins {
     return () => { this.listeners.delete(listener); };
   }
 
-  start(provider: string, account: string | null): AccountLogin {
+  start(provider: string, account: string | null, off = false): AccountLogin {
     if (!isPooled(provider)) throw new PoolError(400, "Choose a pooled provider.");
     if (account !== null && (!account || account.startsWith("-") || account.length > 256)) throw new PoolError(400, "Choose an account.");
     if (loginRunning(this.login)) throw new PoolError(409, "Another sign-in is still running. Finish or cancel it first.");
     const seconds = Math.max(1, Math.floor(this.deadlineMs / 1000));
-    const child = spawn(this.executable, poolCommand.login(provider, account, seconds), { env: poolEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(this.executable, poolCommand.login(provider, account, seconds, off), { env: poolEnv(), stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     this.stopping = null;
     this.update({ id: randomUUID(), provider, account, status: "starting", url: null, manualUrl: null, code: null, paste: false, message: null });
@@ -738,8 +748,8 @@ export class AccountLogins {
   paste(id: string, code: string): AccountLogin {
     const login = this.running(id);
     const line = code.trim();
-    if (!line || line.length > 4096 || /[\r\n]/.test(line)) throw new PoolError(400, "Paste the sign-in code as one line.");
-    if (!login.paste) throw new PoolError(409, "This sign-in does not take a pasted code.");
+    if (!line || line.length > 4096 || /[\r\n]/.test(line)) throw new PoolError(400, "Paste the callback URL or sign-in code as one line.");
+    if (!login.paste) throw new PoolError(409, "This sign-in does not take a pasted URL or code.");
     this.child?.stdin?.write(line + "\n");
     return this.update({ ...login, status: "finishing", message: null });
   }
@@ -777,7 +787,7 @@ export class AccountLogins {
   private apply(child: ChildProcess, event: LoginEvent): void {
     if (this.child !== child || !this.login || this.stopping) return;
     if (event.event === "url") this.update({ ...this.login, status: "waiting", url: event.url ?? event.manualUrl, manualUrl: event.manualUrl, code: event.code, paste: event.paste, message: null });
-    else if (event.event === "retry") this.update({ ...this.login, status: "starting", url: null, manualUrl: null, code: null, message: event.message });
+    else if (event.event === "retry") this.update({ ...this.login, status: "waiting", message: event.message });
   }
 
   private update(login: AccountLogin): AccountLogin {

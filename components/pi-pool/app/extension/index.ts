@@ -1,27 +1,3 @@
-/**
- * pi-pool inside Prime Agent: the /account picker, the footer status that
- * names the account this session's requests use, and adoption of a stored
- * /login that would otherwise bypass the pool.
- *
- * A provider 429 on a pooled provider is reported to the pool (`limited`); when
- * another account takes the session, the failed message loses its reset time, so
- * Prime retries in about a second and the hook vends that account in the same
- * turn. When none does, the pool gives the session its own slot time and the
- * message waits until then, not until the provider's reset.
- * A 400 or 403 goes to the pool too (`refused`): when its text names an
- * account-level refusal, such as Consumer Terms not yet accepted, the pool takes
- * the account out and the same turn retries on another one the same way.
- *
- * A turn that failed because the token hook gave no token, such as a hook the
- * Mac slept through, loses Prime's lifecycle-failure tag so Prime retries it. When
- * the hook gave no token because the session waits for a slot, the failure
- * becomes a rate limit that waits until that slot.
- *
- * Every judgement lives in `pi-pool-token --cli`. This file parses JSON and
- * formats strings, so the precedence rules and the usage math exist once, in
- * Python. Everything here goes through the public extension API, so it keeps
- * working across Prime Agent updates with nothing to re-apply.
- */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
@@ -58,23 +34,34 @@ const FOLLOW = "follow";
 const WIDGET_KEY = "pi-pool";
 const STATUS_REFRESH_MS = 60_000;
 
+type Selection = { mode: "auto" } | { mode: "manual"; account_id: string };
+
+function isSelection(value: unknown): value is Selection {
+	if (!value || typeof value !== "object" || !("mode" in value)) return false;
+	return value.mode === "auto" || (value.mode === "manual" && "account_id" in value && typeof value.account_id === "string" && value.account_id.length > 0);
+}
+
+function selectionName(selection: Selection, label?: string): string {
+	return selection.mode === "auto" ? `Auto${label ? ` ${label}` : ""}` : `Manual ${label ?? selection.account_id}`;
+}
+
 /** One row of `pi-pool-token --cli ls --json`. The CLI owns every judgement in it. */
 interface AccountRow {
 	id: string; email: string; label: string; usage: string; session_pct: number; weekly_pct: number; gated_pct: number;
-	usable: boolean; reason: string | null; current: boolean; pinned: boolean; live: boolean;
+	disabled: boolean; usable: boolean; reason: string | null; current: boolean; pinned: boolean; live: boolean;
 	/** How much the pool prefers this account for this session; null when it cannot take the session. */
 	score: number | null;
 	/** openai-codex only: free | plus | pro | team. The pool sends no plan for anthropic. */
 	plan?: string;
 }
 interface CliListing {
-	provider: string; session: string | null; rows: AccountRow[];
+	provider: string; session: string | null; selection: Selection; rows: AccountRow[];
 }
 /** Every CLI verb answers with a listing or with `{"error": "..."}`. */
 type CliReply = CliListing | { error: string };
 
 function isListing(reply: CliReply): reply is CliListing {
-	return Array.isArray((reply as CliListing).rows);
+	return "rows" in reply && Array.isArray(reply.rows) && isSelection(reply.selection);
 }
 
 /** Runs the pool CLI. Never throws; a failed run becomes a notify. */
@@ -102,11 +89,11 @@ function sessionId(ctx: ExtensionContext): string | undefined {
 }
 
 function rowLabel(row: AccountRow, provider: string): string {
-	const tags = [row.current && "current", row.pinned && "pinned", row.reason, row.live && "supervised"]
+	const tags = [row.current && "current", row.pinned && "selected", row.disabled && "Off", row.usable ? "Auto eligible" : "Auto ineligible", row.reason, row.live && "supervised"]
 		.filter((tag): tag is string => Boolean(tag));
 	const usage = [`5h ${pct(row.session_pct)}`, `week ${pct(row.weekly_pct)}`];
 	if (provider === "anthropic") usage.push(`fable ${pct(row.gated_pct)}`);
-	return `${row.label}${row.plan ? ` ${row.plan}` : ""}  ${usage.join(" · ")}${tags.length ? `  ${tags.join(", ")}` : ""}`;
+	return `Manual ${row.label}${row.plan ? ` ${row.plan}` : ""}  ${usage.join(" · ")}${tags.length ? `  ${tags.join(", ")}` : ""}`;
 }
 
 /** Accounts that take this session first, best score first, then the rest; the picker reads top down. */
@@ -126,7 +113,7 @@ async function listAccounts(provider: string, sid: string | undefined): Promise<
 	} catch {
 		return { ok: false, out: res.ok ? `unreadable JSON from ${POOL_BIN}: ${res.out.slice(0, 200)}` : res.out };
 	}
-	if (!isListing(reply)) return { ok: false, out: reply.error };
+	if (!isListing(reply)) return { ok: false, out: "error" in reply ? reply.error : "invalid account listing" };
 	return { ok: true, out: res.out, data: reply };
 }
 
@@ -140,10 +127,11 @@ async function applyChoice(ctx: ExtensionCommandContext, provider: string, sid: 
 
 /** One provider of `pi-pool-token --cli who --json`. */
 interface WhoProvider {
+	selection: Selection;
 	error?: string;
 	/** The session's slot while it waits for an account; null when it does not wait. */
 	wait?: { account: string; slot_at: number } | null;
-	current: { email: string; label: string; session_pct: number; weekly_pct: number; gated_pct: number; next: string | false } | null;
+	current: { id: string; email: string; label: string; session_pct: number; weekly_pct: number; gated_pct: number; next: string | false } | null;
 }
 type WhoReply = { providers?: Record<string, WhoProvider> };
 
@@ -166,7 +154,11 @@ function who(fresh: boolean): Promise<WhoReply | undefined> {
 		startedAt: Date.now(),
 		done: false,
 		reply: pool(["who", "--json"])
-			.then((res) => JSON.parse(res.out) as WhoReply)
+			.then((res) => {
+				const reply = JSON.parse(res.out) as WhoReply;
+				if (Object.values(reply.providers ?? {}).some((info) => !isSelection(info.selection))) return undefined;
+				return reply;
+			})
 			.catch(() => undefined)
 			.finally(() => {
 				run.done = true;
@@ -206,8 +198,15 @@ async function refreshStatus(ctx: ExtensionContext, fresh = false): Promise<void
 		if (!reply) return;
 		const info = reply.providers?.[provider];
 		const theme = ctx.ui.theme;
-		if (!info || info.error || !info.current) {
-			showLine(ctx, theme.fg("warning", info?.error ? "pool unavailable" : "no pooled account"));
+		if (!info) {
+			showLine(ctx, theme.fg("warning", "pool unavailable"));
+			return;
+		}
+		const mode = info.selection.mode === "auto" ? "Auto" : "Manual";
+		if (info.error || !info.current || (info.selection.mode === "manual" && info.current.id !== info.selection.account_id)) {
+			const state = info.error || "no pooled account";
+			const label = info.selection.mode === "manual" && info.current?.id === info.selection.account_id ? info.current.label : undefined;
+			showLine(ctx, theme.fg("warning", `account ${selectionName(info.selection, label)} · ${state}`));
 			return;
 		}
 		const cur = info.current;
@@ -215,8 +214,8 @@ async function refreshStatus(ctx: ExtensionContext, fresh = false): Promise<void
 		if (provider === "anthropic") usage.push(`fable ${pct(cur.gated_pct)}`);
 		const hot = Math.max(cur.session_pct, cur.weekly_pct, cur.gated_pct);
 		const color = hot >= 95 ? "error" : hot >= 75 ? "warning" : "dim";
-		const next = cur.next ? theme.fg("accent", ` → ${cur.next}`) : "";
-		showLine(ctx, `${theme.fg("dim", `account ${cur.label}`)} ${theme.fg(color, usage.join(" · "))}${next}`);
+		const next = info.selection.mode === "auto" && cur.next ? theme.fg("accent", ` → ${cur.next}`) : "";
+		showLine(ctx, `${theme.fg("dim", `account ${mode} ${cur.label}`)} ${theme.fg(color, usage.join(" · "))}${next}`);
 	} catch {
 		// A status line must never break the session. Leave the last text in place.
 	}
@@ -233,15 +232,16 @@ async function recordModel(ctx: ExtensionContext, model = ctx.model): Promise<vo
 const RESET_PHRASE = /(?:try again|resets?|available)[^.]{0,80}?(?:~\s*)?\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b\.?/gi;
 
 /** `pi-pool-token --cli limited` answer. `next` names the account the retry enters now; when it is null, `retry_at` (epoch sec) is the session's own slot. */
-interface LimitedReply { account: string | null; until: number; next: string | null; retry_at?: number | null; stale?: boolean }
+interface LimitedReply { selection: Selection; account: string | null; until: number; next: string | null; retry_at?: number | null; stale?: boolean }
 /** `pi-pool-token --cli refused` answer. `reason` is null when the text names no account-level refusal. */
-interface RefusedReply { account?: string; reason: string | null; next?: string | null; retry_at?: number | null }
+interface RefusedReply { selection: Selection; account?: string; reason: string | null; next?: string | null; retry_at?: number | null }
 
-async function poolJson<T>(args: string[]): Promise<T | undefined> {
+async function poolJson<T extends { selection: Selection }>(args: string[]): Promise<T | undefined> {
 	const res = await pool(args);
 	if (!res.ok) return undefined;
 	try {
-		return JSON.parse(res.out) as T;
+		const reply = JSON.parse(res.out) as T;
+		return isSelection(reply.selection) ? reply : undefined;
 	} catch {
 		return undefined;
 	}
@@ -258,6 +258,10 @@ function waitMs(slotAt: number): number {
 }
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
+
+function manualFailure(message: AssistantMessage, selection: Extract<Selection, { mode: "manual" }>): AgentMessage {
+	return { ...message, errorMessage: `${message.errorMessage ?? ""} pi-pool: ${selectionName(selection)} remains selected.`.trim() };
+}
 
 /** A rate-limit failure Prime's wait-for-usage sleeps on for `ms`, with the "Try again in" text to match. */
 function waitFailure(message: AssistantMessage, original: string, said: string, details: Record<string, unknown>, ms: number, failure: unknown): AgentMessage {
@@ -300,6 +304,7 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 		// The request was sent at the message's timestamp: a 429 from before this tree moved accounts marks nothing.
 		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until), "--since", String(message.timestamp / 1000)]);
 		if (!reply) return undefined;
+		if (reply.selection.mode === "manual") return manualFailure(message, reply.selection);
 		if (!reply.next) {
 			if (typeof reply.retry_at !== "number") return undefined;
 			const said = `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; this session waits for its slot at ${new Date(reply.retry_at * 1000).toISOString()}.`;
@@ -315,7 +320,9 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 	}
 	if (details.status === 400 || details.status === 403) {
 		const reply = await poolJson<RefusedReply>(["refused", "--provider", message.provider, message.errorMessage ?? ""]);
-		if (!reply?.reason) return undefined;
+		if (!reply) return undefined;
+		if (reply.selection.mode === "manual") return manualFailure(message, reply.selection);
+		if (!reply.reason) return undefined;
 		if (!reply.next) {
 			if (typeof reply.retry_at !== "number") return undefined;
 			const said = `pi-pool: ${reply.account} is out of the pool (${reply.reason}); this session waits for its slot at ${new Date(reply.retry_at * 1000).toISOString()}.`;
@@ -347,7 +354,10 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
 	if (!HOOK_FAILED.test(message.errorMessage ?? "")) return undefined;
 	if (!message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")) return undefined;
-	const wait = (await who(true))?.providers?.[message.provider]?.wait;
+	const info = (await who(true))?.providers?.[message.provider];
+	if (!info) return undefined;
+	if (info.selection.mode === "manual") return manualFailure(message, info.selection);
+	const wait = info.wait;
 	if (wait && typeof wait.slot_at === "number") {
 		const said = `pi-pool: this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
 		return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);
@@ -645,15 +655,15 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("account", {
-		description: "Switch the pooled account for this session",
+		description: "Choose Auto pool selection or a Manual account for this session",
 		getArgumentCompletions: async (): Promise<AutocompleteItem[]> => {
 			// No ctx here, so the model's provider is unknown. Offer both pools.
 			try {
 				const listings = await Promise.all([...POOLED_PROVIDERS].map((provider) => listAccounts(provider, undefined)));
 				const labels = listings.flatMap((listed) => (listed.ok ? listed.data.rows.map((row) => row.label) : []));
-				return [...new Set(labels), FOLLOW].map((value) => ({ value, label: value }));
+				return [...new Set(labels), FOLLOW].map((value) => ({ value, label: value === FOLLOW ? "Auto" : `Manual ${value}` }));
 			} catch {
-				return [{ value: FOLLOW, label: FOLLOW }];
+				return [{ value: FOLLOW, label: "Auto" }];
 			}
 		},
 		handler: async (args, ctx) => {
@@ -670,23 +680,20 @@ export default function (pi: ExtensionAPI): void {
 					return;
 				}
 				const data = listed.data;
-				const followLabel = "Follow the pool (stay on the current account until it runs out)";
+				const followLabel = "Auto (let the pool choose and switch accounts)";
 				const trimmed = args.trim();
 				let target: string;
 				if (trimmed) {
 					target = trimmed === FOLLOW ? FOLLOW : trimmed;
 				} else {
 					const rows = pickerRows(data.rows);
-					const choice = await ctx.ui.select(`Account for this session (${provider})`, [followLabel, ...rows.map((row) => rowLabel(row, provider))]);
+					const selection = data.selection;
+					const selected = selection.mode === "manual"
+						? rows.find((row) => row.id === selection.account_id)
+						: rows.find((row) => row.current);
+					const choice = await ctx.ui.select(`Account for this session (${provider}) · ${selectionName(data.selection, selected?.label)}`, [followLabel, ...rows.map((row) => rowLabel(row, provider))]);
 					if (choice === undefined) return;
 					target = choice === followLabel ? FOLLOW : (rows.find((row) => rowLabel(row, provider) === choice)?.id ?? choice);
-				}
-				if (target !== FOLLOW) {
-					const row = data.rows.find((candidate) => [candidate.id, candidate.label, candidate.email].includes(target));
-					if (row && !row.usable) {
-						const ok = await ctx.ui.confirm("Account cannot take this session", `${row.label} is ${row.reason ?? "unusable"} right now, so the pin waits: the session moves there only when it must move or starts cold. Pin it?`);
-						if (!ok) return;
-					}
 				}
 				await applyChoice(ctx, provider, sid, target);
 			} catch (err) {

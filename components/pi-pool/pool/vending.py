@@ -1,6 +1,6 @@
 """The token hook: state writers, credentials, the fallback login and adopt-logins, the
 refusal probe, and vend()."""
-import os, subprocess, sys, time
+import dataclasses, os, subprocess, sys, time
 
 from . import base, registry, sched
 
@@ -106,8 +106,8 @@ class HookWriter:
     def prune(self, cfg, now):
         """Drop expired cooldowns and limits, admissions older than
         ADMISSION_KEEP_SEC, moves older than a day, waits whose slot passed
-        WAIT_STALE_SEC ago, and sessions that have not vended for pin_ttl_sec, and
-        moves a record quiet for active_session_sec with no wait to the session
+        WAIT_STALE_SEC ago, and automatic sessions inactive for pin_ttl_sec.
+        Moves a record quiet for active_session_sec with no wait to the session
         archive (registry.Sessions). Returns whether anything changed, so a request that prunes nothing does
         not rewrite the file. Liveness is NOT a pid test: a session resumed in a
         new worker keeps its pin, which is the whole point of keying by uuid."""
@@ -144,7 +144,7 @@ class HookWriter:
         for key in list(self._state["sessions"]):
             rec = self._state["sessions"][key]
             last = registry.last_active(rec)
-            if now - last > ttl:
+            if now - last > ttl and not rec.get("pins"):
                 del self._state["sessions"][key]
                 dropped += 1
                 continue
@@ -201,6 +201,8 @@ class IntentWriter:
         rec = self._state["sessions"].get(key.key)
         if rec:
             (rec.get("pins") or {}).pop(provider, None)
+            if os.path.isfile(os.path.join(registry.archive_dir(), key.key + ".json")):
+                registry.archive_record(key.key, rec)
 
     def set_pool_pin(self, provider, account_id):
         self._state["providers"][provider]["pin"] = account_id
@@ -225,21 +227,11 @@ class IntentWriter:
             disabled.pop(account_id, None)
 
     def forget_account(self, provider, account_id):
-        """Drop every intent that names an account the index no longer has.
-        Vends are the hook's records and stay; the next request rewrites them."""
+        """Drop account health and waits, but keep explicit account selections."""
         prov = self._state["providers"][provider]
-        if prov.get("pin") == account_id:
-            prov["pin"] = None
         for key in ("disabled", "cooldowns", "cooldown_reasons", "limits", "admissions"):
             (prov.get(key) or {}).pop(account_id, None)
-        for key, rec in registry.each_archived():
-            if ((rec.get("pins") or {}).get(provider) or {}).get("account_id") == account_id:
-                del rec["pins"][provider]
-                registry.archive_record(key, rec)
         for rec in self._state["sessions"].values():
-            pins = rec.get("pins") or {}
-            if (pins.get(provider) or {}).get("account_id") == account_id:
-                del pins[provider]
             waits = rec.get("wait") or {}
             if (waits.get(provider) or {}).get("account") == account_id:
                 del waits[provider]
@@ -335,7 +327,7 @@ def stay_now(state, d, tree, key, provider, cfg, now, parent):
     read runs security(1), which the flock must not wait on. None sends the vend down the two-flock path.
     On us-metal02 on 10-18 the flock was held 91% of the time, each hold read and wrote the 2.7 MB state.json,
     and 23 hooks in 10 min gave up after STATE_LOCK_TIMEOUT."""
-    if key is None or d is None or isinstance(d, sched.Wait) or d.account.id != tree.current:
+    if key is None or not isinstance(d, (sched.Stay, sched.Admit)) or d.account.id != tree.current:
         return None
     if isinstance(d.account.cred, registry.Keychain) and not base.FILE_SECRETS:
         return None
@@ -545,20 +537,27 @@ def iso(epoch):
 
 
 def last_vend_account(state, key, provider, accounts, now):
-    """The account this session was last vended, for a request that cannot take
-    the pool flock. None when the session has no vend on file, or that account
-    is off, needs reauth, is cooling down after a refusal, or holds the
-    provider's 429."""
+    """The last vended account when it still serves and matches manual selection.
+    An Off account serves only an explicit manual selection."""
     if key is None or state.get("version") != 2:
         return None
     last = (((state.get("sessions") or {}).get(key.key) or {}).get("vends") or {}).get(provider)
     prov = (state.get("providers") or {}).get(provider)
     if not last or not prov:
         return None
-    account = next((a for a in registry.with_pool_state(accounts, state, provider) if a.id == last["account_id"]), None)
-    if account is None or account.disabled or account.needs_reauth or account.limited_until > now:
+    tree = sched.tree_for(state, key, provider)
+    manual = tree.pin or tree.pool_pin
+    if tree.wait or (manual and last["account_id"] != manual):
         return None
-    if (prov.get("cooldowns") or {}).get(account.id, 0) > now:
+    cfg = base.config()
+    candidates = registry.with_pool_state(accounts, state, provider)
+    candidates = registry.with_models(candidates, registry.session_models(state, key, provider, cfg, now), cfg)
+    account = next((a for a in candidates if a.id == last["account_id"]), None)
+    if account is None:
+        return None
+    if manual:
+        account = dataclasses.replace(account, disabled=False)
+    if sched.serve_reason(account, prov.get("cooldowns") or {}, now):
         return None
     return account
 
@@ -576,7 +575,7 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     writer = HookWriter(state)
     writer.track_reads(provider, accounts, sched.in_use_counts(state, provider, now, cfg["spending_tree_sec"]), now)
     d = sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
-    if key is None or d is None:
+    if key is None or d is None or isinstance(d, sched.Blocked):
         return d, tree, False
     if isinstance(d, sched.Wait):
         # One line per refused request, for the Whole system duty: `room` names the accounts the rules let this
@@ -677,6 +676,12 @@ def vend(provider):
         return
     if d is None:
         raise RuntimeError(f"no {provider} account can serve this session")
+    if isinstance(d, sched.Blocked):
+        selected = next((a for a in accounts if a.id == d.account_id), None)
+        label = selected.label if selected else d.account_id
+        reason = ((state["providers"][provider].get("cooldown_reasons") or {}).get(d.account_id) or d.reason
+                  if d.reason == "cooldown" else d.reason)
+        raise RuntimeError(f"pinned {provider} account {label}: {reason}")
     if isinstance(d, sched.Wait):
         if d.vend is not None:
             try:

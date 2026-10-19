@@ -75,10 +75,16 @@ export function threadProvider(view: AccountsView, modelProvider: string | undef
   return view.providers.find(entry => entry.provider === modelProvider) ?? view.providers.find(entry => entry.resolution?.email) ?? view.providers[0];
 }
 
-/** The account `pi-pool who` resolves for this thread on this provider; never falls back to a guess. */
+/** The intended manual account, or the account the pool resolves in Auto. */
 export function resolvedAccount(provider: PoolProvider): PoolAccount | undefined {
-  const account = provider.resolution?.account;
+  const selection = provider.resolution?.selection;
+  const account = selection?.mode === "manual" ? selection.account_id : provider.resolution?.account;
   return account ? provider.rows.find(row => row.id === account) : undefined;
+}
+
+export function isManualAccount(provider: PoolProvider, account: string): boolean {
+  const selection = provider.resolution?.selection;
+  return selection?.mode === "manual" && selection.account_id === account;
 }
 
 const REASON_TEXT: Record<string, string> = {
@@ -101,15 +107,22 @@ export function clockText(ms: number, now = Date.now()): string {
 /** The Accounts header: the account the pool holds this thread for and when it comes back, else the account it uses and why. */
 export function resolutionSentence(provider: PoolProvider, now = Date.now()): string {
   const label = PROVIDER_LABEL[provider.provider];
+  const resolution = provider.resolution;
+  if (resolution?.selection.mode === "manual") {
+    const account = resolvedAccount(provider)?.label ?? resolution.selection.account_id;
+    const scope = provider.poolPin === resolution.selection.account_id ? " for all sessions" : " for this thread";
+    const wait = provider.wait ? provider.wait.slotAt > now ? ` Admission waits until ${clockText(provider.wait.slotAt, now)}.` : " Admission is due now." : "";
+    return `Manual keeps ${account} selected${scope}.` + (resolution.error ? ` ${resolution.error}` : "") + wait;
+  }
+  if (resolution?.error) return resolution.error;
   if (provider.wait) {
     const account = provider.rows.find(row => row.id === provider.wait!.account)?.label ?? provider.wait.account;
     return provider.wait.slotAt > now ? `Waiting for ${account}, back at ${clockText(provider.wait.slotAt, now)}.` : `Waiting for ${account}, due back now.`;
   }
-  const resolution = provider.resolution;
   if (!resolution) return provider.error ?? `The ${label} pool did not say which account this thread uses.`;
   if (resolution.email) {
     const why = reasonText(resolution.reason);
-    return `This thread uses ${resolvedAccount(provider)?.label ?? resolution.email}` + (why ? ` (${why}).` : ".");
+    return `Auto uses ${resolvedAccount(provider)?.label ?? resolution.email}` + (why ? ` (${why}).` : ".");
   }
   return `No ${label} account can serve this thread right now.`;
 }

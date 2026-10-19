@@ -361,25 +361,20 @@ def with_pool_state(accounts, state, provider):
     return out
 
 
-def normalize(raw, now, pin_ttl=base.DEFAULTS["pin_ttl_sec"]):
-    """A v2 state with every provider, without the pins the owner set more than pin_ttl ago.
-    Anything that is not a v2 file starts empty. Pure and idempotent."""
+def normalize(raw):
+    """A v2 state with every provider. Pure and idempotent."""
     if raw.get("version") != 2:
         raw = {"version": 2, "providers": {}, "sessions": {}}
     for provider in base.PROVIDERS:
         raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
-    for rec in raw.setdefault("sessions", {}).values():
-        pins = rec.get("pins") or {}
-        for provider, pin in list(pins.items()):
-            if not pin or now - (pin.get("at") or 0) > pin_ttl:
-                del pins[provider]
+    raw.setdefault("sessions", {})
     return raw
 
 
 def load_state():
     """Read state.json. Call under the pool flock."""
     now, ttl = time.time(), base.config()["pin_ttl_sec"]
-    state = normalize(base.load_json(base.STATE, {}) or {}, now, ttl)
+    state = normalize(base.load_json(base.STATE, {}) or {})
     state["sessions"] = Sessions(state["sessions"], now, ttl)
     return state
 
@@ -420,26 +415,30 @@ def archive_record(key, rec):
 
 
 def archived_record(key, now, pin_ttl):
-    """The archived record under `key` with its expired pins dropped, or None when there is none or it is older than pin_ttl."""
+    """Read an archived record. Manual selections never expire."""
     if not isinstance(key, str) or not SAFE_KEY.match(key):
         return None
     rec = base.load_json(os.path.join(archive_dir(), key + ".json"))
-    if not isinstance(rec, dict) or now - last_active(rec) > pin_ttl:
+    if not isinstance(rec, dict) or (not rec.get("pins") and now - last_active(rec) > pin_ttl):
         return None
-    return normalize({"version": 2, "sessions": {key: rec}}, now, pin_ttl)["sessions"][key]
+    return normalize({"version": 2, "sessions": {key: rec}})["sessions"][key]
 
 
 def sweep_archive(now, pin_ttl):
-    """Delete archived records quiet for over pin_ttl, which prune would have dropped from state.json, by the file's mtime,
-    which archive_record sets to the record's last activity; and temp files a killed writer left."""
+    """Delete expired automatic records and temporary files left by dead writers."""
     try:
         entries = list(os.scandir(archive_dir()))
     except FileNotFoundError:
         return
     for entry in entries:
         try:
-            if now - entry.stat().st_mtime > pin_ttl or (".tmp." in entry.name and not pid_alive(entry.name.rsplit(".", 1)[-1])):
-                os.remove(entry.path)
+            if ".tmp." in entry.name:
+                if not pid_alive(entry.name.rsplit(".", 1)[-1]):
+                    os.remove(entry.path)
+            elif now - entry.stat().st_mtime > pin_ttl:
+                rec = base.load_json(entry.path)
+                if not isinstance(rec, dict) or not rec.get("pins"):
+                    os.remove(entry.path)
         except FileNotFoundError:
             pass
 

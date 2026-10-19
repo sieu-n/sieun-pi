@@ -16,8 +16,6 @@ def cmd_pin(rest):
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({known})")
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
-        if account.id in (state["providers"][provider].get("disabled") or {}):
-            raise SystemExit(f"{account.label} is off; turn it on first (pi-pool on {account.label} --provider {provider})")
         if state["providers"][provider].get("pin") == account.id:
             print(f"already pinned: {account.label}")
             return 0
@@ -53,7 +51,10 @@ def cmd_switch(rest):
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         key = status_view.session_key_for(f["session"], state)
-        current = sched.tree_for(state, key, provider).current if key else None
+        tree = sched.tree_for(state, key, provider)
+        if tree.pin or tree.pool_pin:
+            raise SystemExit("Manual mode stays pinned; select Auto (pi-pool use --follow) before switching")
+        current = tree.current if key else None
         if current is None:
             print(f"no {provider} account on file for this session; nothing to switch from")
             return 2
@@ -178,9 +179,6 @@ def cmd_use(rest):
             known = ", ".join(a.label for a in accounts)
             print(f"{positional[0]} is not in the {provider} pool ({known})")
             return 2
-        if account.id in (state["providers"][provider].get("disabled") or {}):
-            print(f"{account.label} is off; turn it on first (pi-pool on {account.label} --provider {provider})")
-            return 2
         if prev_pin and prev_pin["account_id"] == account.id:
             print(f"already on {account.label}")
             return 0
@@ -188,8 +186,8 @@ def cmd_use(rest):
         base.save_json(base.STATE, state)
         base.log("use", session=key.key, provider=provider, account=account.label,
                  previous=prev_pin["account_id"] if prev_pin else None)
-        print(f"{account.label} selected for this session tree; the next request moves there "
-              f"if it can take the tree, and later moves prefer it")
+        print(f"{account.label} selected for this session tree in Manual mode; "
+              "requests stay pinned until you select Auto (pi-pool use --follow)")
         return 0
 
 

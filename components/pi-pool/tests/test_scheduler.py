@@ -168,12 +168,14 @@ class R2AdmitCap(unittest.TestCase):
         d = decide(state, new, [acct("hot", five=75)])
         self.assertIsInstance(d, sched.Wait)
 
-    def test_a_pin_into_an_account_at_70_percent_yields(self):
+    def test_a_pin_into_an_account_at_70_percent_waits(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "hot", "at": NOW, "by": "cli"}}
         d = decide(state, KEY, [acct("a", five=20), acct("hot", five=72)])
-        self.assertEqual((type(d), d.account.id, d.shadowed), (sched.Stay, "a", ("hot", "depleted")))
+        self.assertIsInstance(d, sched.Wait)
+        self.assertEqual(d.slot_account.id, "hot")
+        self.assertIsNone(d.vend)
 
 
 class R3Score(unittest.TestCase):
@@ -538,21 +540,23 @@ class R7PriorityShare(unittest.TestCase):
 
 
 class Pins(unittest.TestCase):
-    def test_a_pin_applies_once_on_the_next_request(self):
+    def test_a_pin_applies_on_the_next_request(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "b", "at": NOW - 30, "by": "cli"}}
         d = request(state, KEY, [acct("a", five=20), acct("b", five=10)], NOW)
         self.assertEqual((d.account.id, d.reason), ("b", "session_pin"))
 
-    def test_a_pin_that_yielded_does_not_pull_a_warm_tree_back(self):
+    def test_a_pin_waits_and_uses_its_account_once_it_recovers(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "b", "at": NOW - 30, "by": "cli"}}
         d = request(state, KEY, [acct("a", five=20), acct("b", five=80)], NOW)
-        self.assertEqual((d.account.id, d.shadowed), ("a", ("b", "depleted")))
+        self.assertIsInstance(d, sched.Wait)
+        self.assertEqual(d.slot_account.id, "b")
+        self.assertIsNone(d.vend)
         d = request(state, KEY, [acct("a", five=20), acct("b", five=0)], NOW + 600)
-        self.assertEqual((type(d), d.account.id), (sched.Stay, "a"))
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "b"))
 
     def test_a_pin_steers_a_cold_tree(self):
         state = empty_state()
@@ -570,15 +574,16 @@ class Pins(unittest.TestCase):
 
 
 class StateCleanup(unittest.TestCase):
-    def test_pins_older_than_pin_ttl_are_dropped_on_load(self):
+    def test_pins_older_than_pin_ttl_are_retained_on_load(self):
         raw = empty_state()
         raw["sessions"] = {
             "o": {"pins": {P: {"account_id": "a", "at": NOW - 8 * 86400, "by": "cli"}}, "last_seen": NOW},
             "k": {"pins": {P: {"account_id": "a", "at": NOW - 3600, "by": "cli"}}, "last_seen": NOW}}
-        out = registry.normalize(raw, NOW, CFG["pin_ttl_sec"])
-        self.assertEqual(out["sessions"]["o"]["pins"], {})
+        out = registry.normalize(raw)
+        self.assertEqual(out["sessions"]["o"]["pins"].get(P),
+                         {"account_id": "a", "at": NOW - 8 * 86400, "by": "cli"})
         self.assertEqual(out["sessions"]["k"]["pins"][P], {"account_id": "a", "at": NOW - 3600, "by": "cli"})
-        self.assertEqual(registry.normalize(json.loads(json.dumps(out)), NOW, CFG["pin_ttl_sec"]), out)
+        self.assertEqual(registry.normalize(json.loads(json.dumps(out))), out)
 
     def test_prune_drops_old_admissions_moves_and_stale_waits(self):
         state = empty_state()
@@ -624,7 +629,8 @@ class Cli(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
         rc, out, _ = self.run_cli(state, [acct("x", five=100), acct("y", five=10)], ["limited", "--until", str(NOW + 3000)])
-        self.assertEqual(json.loads(out), {"account": "x@x", "until": round(NOW + 3000), "next": "y@x", "retry_at": None})
+        self.assertEqual(json.loads(out), {"account": "x@x", "until": round(NOW + 3000), "next": "y@x", "retry_at": None,
+                                           "selection": {"mode": "auto"}})
 
     def test_priority_creates_the_tree_record_of_a_new_session(self):
         uuid = "01a00000-0000-7000-8000-000000000042"

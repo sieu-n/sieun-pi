@@ -429,7 +429,8 @@ export interface AccountResets {
   /** A claim whose outcome is unknown; using the reset again retries it with the same request id. */
   pending: { grantId: string; createdAt: number } | null;
 }
-export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean }
+export type PoolSelection = { mode: "auto" } | { mode: "manual"; account_id: string };
+export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean; selection: PoolSelection; error: string | null }
 /** A thread's class in the pool (`pi-pool priority`): high trees get admission slots first, low ones wait for the emptiest accounts. */
 export type PoolPriority = "high" | "normal" | "low";
 export const POOL_PRIORITIES: readonly PoolPriority[] = ["high", "normal", "low"];

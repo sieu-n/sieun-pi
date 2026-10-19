@@ -91,8 +91,6 @@ const POOL_RULES: Rule[] = [
     text: "A thread out of moves waits for its own account only when that account frees within this time. Else it moves anyway.", source: { file: POOL_BASE, symbol: "DEFAULTS.budget_wait_max_sec" } },
   { id: "load-window", title: "Load window", value: q(POOL_DEFAULTS.active_session_sec, "s"), setting: pool("active_session_sec"),
     text: "The score counts the threads an account served in this window as its load.", source: { file: POOL_BASE, symbol: "DEFAULTS.active_session_sec" } },
-  { id: "cold", title: "Cold thread", value: q(POOL_DEFAULTS.cache_ttl_sec, "s"), setting: pool("cache_ttl_sec"),
-    text: "A thread with no request for this long has lost its prompt cache, so its pin may move it back on the next request.", source: { file: POOL_BASE, symbol: "DEFAULTS.cache_ttl_sec" } },
   { id: "refused", title: "Refusal cooldown", value: q(POOL_DEFAULTS.refused_cooldown_sec, "s"), setting: pool("refused_cooldown_sec"),
     text: "An account the provider refuses (terms not accepted, sign-in turned off) is skipped for this long.", source: { file: POOL_BASE, symbol: "DEFAULTS.refused_cooldown_sec" } },
   { id: "probe", title: "Refusal check", value: q(POOL_DEFAULTS.probe_interval_sec, "s"), setting: pool("probe_interval_sec"),
@@ -101,16 +99,16 @@ const POOL_RULES: Rule[] = [
 
 /** The order `decide` in pi-pool's pool/sched.py walks, first match wins, per provider. */
 export const ACCOUNT_ORDER: Rank[] = [
-  { rank: 1, name: "New pin for this thread", setBy: "Use on an account row, or an account picked for a new chat",
-    rule: "Applied once: the next request moves there when the account is under the admit cap and has a free slot. A high thread skips the slot." },
-  { rank: 2, name: "Pin for all sessions", setBy: "Pin in an account row's menu",
-    rule: "Moves threads to the account one slot at a time while it is under the admit cap." },
-  { rank: 3, name: "The thread's own account", setBy: "The thread's last request",
-    rule: "Holds while the account serves, warm or cold. A Codex thread moves up to a higher plan with a free slot, and a cold thread goes back to its pin." },
-  { rank: 4, name: "Best score", setBy: "A new thread, or a thread whose account stopped serving",
-    rule: "Admits the thread to the account with the best score among those under the admit cap with a free slot." },
-  { rank: 5, name: "Wait", setBy: "No account takes the thread",
-    rule: "The thread gets its own slot on the account that frees first and sleeps until then." },
+  { rank: 1, name: "Manual for this thread", setBy: "Use on an account row, or an account picked for a new chat",
+    rule: "Keeps this account across restarts, models and retries until Auto is chosen. Off accounts are allowed. If the account cannot serve, its error is returned without switching." },
+  { rank: 2, name: "Manual for all sessions", setBy: "Pin in an account row's menu",
+    rule: "Applies to sessions without their own manual choice. Keeps the pinned account or reports its error until the pool pin is removed." },
+  { rank: 3, name: "The thread's own account", setBy: "The thread's last Auto request",
+    rule: "Auto stays while this account serves. A Codex thread may move to a higher plan with a free slot." },
+  { rank: 4, name: "Best score", setBy: "An Auto thread with no serving account",
+    rule: "Admits the thread to the account with the best score among those under the admit cap with a free slot. Off accounts are excluded." },
+  { rank: 5, name: "Wait", setBy: "No account takes an Auto thread",
+    rule: "The thread gets its own slot on the account that frees first and waits until then." },
 ];
 
 /** A pool rule with this Mac's value when its pi-pool config overrides the default. */
@@ -149,16 +147,20 @@ export function howTopics(config: PoolConfig | null): Topic[] {
   },
   {
     id: "pool", label: "Account pool",
-    intro: "Every thread draws its Claude or Codex sign-in from a pool of accounts. On each request the pool decides one of three things: stay on the thread's account, admit the thread to another account, or make it wait for a slot.",
+    intro: "Auto picks an eligible Claude or Codex account. Manual keeps the account you choose, including an Off account. If that account cannot serve, you see its error and the choice stays pinned.",
     diagram: `flowchart LR
-  req[Next request] --> own{Own account still serves?}
+  req[Next request] --> mode{Selection}
+  mode -- Manual --> pinned[Chosen account, including Off]
+  pinned --> result[Serve or return its error]
+  mode -- Auto --> own{Own account still serves?}
   own -- yes --> stay([Stay])
   own -- no --> cap{"Account under ${admit}% 5h<br>with a free slot?"}
   cap -- yes --> admit([Admit to the best score])
   cap -- no --> wait([Wait for its own slot])`,
     steps: [
-      { title: "Stay", text: "A thread stays on its account while the account serves, which means no 429 and no window at 100%. A move drops the prompt cache, so a cutoff or a better score never moves it." },
-      { title: "Admit cap", text: `An account takes a new or moving thread only under ${admit}% of its 5-hour window and ${week}% of its week. No thread enters an account at ${admit}% or more.` },
+      { title: "Manual", text: "Choose an account to keep it across restarts, models and retries. Off excludes an account from Auto only. Manual never switches after an error. Choose Auto to clear the thread pin." },
+      { title: "Stay", text: "An Auto thread stays on its account while the account serves, which means no 429 and no window at 100%. A move drops the prompt cache, so a cutoff or a better score never moves it." },
+      { title: "Admit cap", text: `An account takes a new or moving thread only under ${admit}% of its 5-hour window and ${week}% of its week. Auto does not enter an account at ${admit}% or more.` },
       { title: "Score", text: "Among the accounts that pass, the thread goes to the best score: weekly pace times 5-hour headroom, divided by load. Weekly pace is the week left over the hours to its reset, so a week that resets soon with room left is spent first." },
       { title: "Slots", text: `Each account takes ${slots(TIER_UNITS["max 20x"])} threads every ${slot} on a Max 20x plan and ${slots(TIER_UNITS["max 5x"])} on the others. Threads that leave one account together enter the next ones at that pace.` },
       { title: "Wait", text: "When no account takes the thread, it gets its own slot on the account that frees first. Waiting threads line up by priority, then by when they began to wait. The turn sleeps until its own slot, not until its old account resets." },

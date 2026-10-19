@@ -1,9 +1,10 @@
 <script lang="ts">
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { accountState, forgetAccounts, loadAccounts, meterTone, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL,
+  import { accountState, isManualAccount, forgetAccounts, loadAccounts, meterTone, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL,
     threadProvider, threadsText, windowColumns, windowLabel, type AccountState } from "./accounts.ts";
   import { labels } from "./labels.ts";
+  import { pushedAccounts } from "./thread-side.svelte.ts";
   import PriorityPicker from "./PriorityPicker.svelte";
   import type { AccountAction, AccountLogin as Login, AccountResets, AccountsView, PoolAccount, PoolProvider, Priority, ResetGrant, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
@@ -123,7 +124,7 @@
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)));
 
   function rank(row: PoolAccount): number {
-    return row.id === resolution?.account && !row.disabled ? 0 : RANK[accountState(row) ?? "ready"];
+    return current && isManualAccount(current, row.id) || row.id === resolution?.account ? 0 : RANK[accountState(row) ?? "ready"];
   }
 
   /** `quiet` keeps the table at full opacity: a refresh reloads it after every read. */
@@ -146,7 +147,9 @@
     try {
       const result = await api.accountAction(action);
       forgetAccounts();
-      rememberAccounts("id" in action ? action.id : threadId, result);
+      const id = "id" in action ? action.id : threadId;
+      rememberAccounts(id, result, modelId);
+      if (id) pushedAccounts.landed(id);
       view = result;
       notice = result.notice ?? null;
       if (action.action === "reset") void startRefresh("anthropic", action.account);
@@ -237,7 +240,7 @@
     const state = accountState(row);
     const read = refreshEntry(row);
     const unread = read?.state === "failed" && read.reason ? [`Not read: ${read.reason.replace(/\.$/, "")}.`] : [];
-    if (state === "off") return ["Off. The pool never picks it.", ...unread];
+    if (state === "off") return ["Off excludes this account from Auto. Manual can still use it.", ...unread];
     const out: string[] = [];
     if (state === "needs-login") out.push("The sign-in expired.");
     else if (state === "needs-terms") out.push(`Anthropic refuses every request until the updated Consumer Terms are accepted. Open claude.ai signed in as ${row.label}, accept them, then choose Check again.`);
@@ -246,7 +249,7 @@
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
     }
     else if (state === "limited" && row.limitedUntil && row.limitedUntil > now)
-      out.push(`The provider answered 429. The pool skips it for ${span(row.limitedUntil - now)}, pins included.`);
+      out.push(`The provider answered 429. Auto skips it for ${span(row.limitedUntil - now)}. Manual stays on it and reports the limit.`);
     out.push(...unread);
     const stale = staleText(row, now);
     if (stale && state !== "needs-login") out.push(stale + ".");
@@ -255,8 +258,7 @@
     return out;
   }
 
-  /** A row click uses the account for this thread. One that cannot serve now, is off or is already in use takes no click; the pool may still refuse a full one. */
-  const pickable = (row: PoolAccount): boolean => threadId !== null && row.usable && !row.disabled && row.id !== resolution?.account && acting === null;
+  const pickable = (row: PoolAccount): boolean => threadId !== null && current !== undefined && !isManualAccount(current, row.id) && acting === null;
 
   function useForThread(provider: Provider, row: PoolAccount): void {
     menu = null;
@@ -268,7 +270,7 @@
     useForThread(provider, row);
   }
   function ask(next: Confirm): void { menu = null; typed = ""; confirm = next; }
-  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.label} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it. While it is used up, limited by a 429 or cooling down, sessions use another account and come back when it can serve.`, label: "Pin",
+  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.label} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session without its own choice stays on this account until you unpin it. If it cannot serve, the session reports its error without switching accounts.`, label: "Pin",
     action: { action: "pin", provider, account: row.id } });
   const askUnpin = (provider: Provider) => ask({ title: `Unpin ${PROVIDER_LABEL[provider]}?`, body: "Sessions go back to the pool's own choice.", label: "Unpin", action: { action: "unpin", provider } });
   const askRecheck = (provider: Provider) => ask({ title: "Check refused accounts again?",
@@ -334,8 +336,9 @@
           {POOL_PRIORITY_LABEL[view.priority]}<Icon name="chevronDown" size={12} />
         </button>
       {/if}
-      {#if threadId && resolution?.pinned}
-        <button class="button small" disabled={acting !== null} onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>Follow the pool</button>
+      {#if threadId}
+        <button class="button small" aria-pressed={resolution?.selection.mode === "auto"} disabled={acting !== null || resolution?.selection.mode === "auto"}
+          onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>{current.poolPin ? "Auto (pool override active)" : "Auto"}</button>
       {/if}
     </div>
     {#if shownRefresh}
@@ -363,7 +366,8 @@
         </div>
         {#each rows as row (row.id)}
           {@const state = accountState(row)}
-          {@const inUse = row.id === resolution?.account && !row.disabled}
+          {@const manual = isManualAccount(current, row.id)}
+          {@const inUse = manual || row.id === resolution?.account}
           {@const rowNotes = notes(row)}
           {@const canPick = pickable(row)}
           {@const read = refreshEntry(row)}
@@ -383,7 +387,7 @@
                 {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>{/if}
                 {#if pendingReset(row.resets)}<span class="badge warning">Reset unknown</span>
                 {:else if usableGrant(row.resets)}<span class="badge success">{usableGrant(row.resets)!.resetsLeft} reset{usableGrant(row.resets)!.resetsLeft === 1 ? "" : "s"}</span>{/if}
-                {#if inUse}<span class="badge accent">{threadId ? "This thread" : "Next request"}</span>{/if}
+                {#if inUse}<span class="badge accent">{manual ? "Manual" : threadId ? "Auto" : "Next request"}</span>{/if}
               </div>
             </div>
             {#each columns as column (column)}
@@ -444,12 +448,12 @@
       <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use in this thread</button>
     {/if}
     <button type="button" class="menu-item" role="menuitem" disabled={refreshes[provider]?.status === "running"} onclick={() => void startRefresh(provider, row.id)}>Refresh usage</button>
+    {#if current.poolPin === row.id}
+      <button type="button" class="menu-item" role="menuitem" onclick={() => askUnpin(provider)}>Unpin for all sessions</button>
+    {:else}
+      <button type="button" class="menu-item" role="menuitem" onclick={() => askPin(provider, row)}>Pin for all sessions</button>
+    {/if}
     {#if !row.disabled}
-      {#if current.poolPin === row.id}
-        <button type="button" class="menu-item" role="menuitem" onclick={() => askUnpin(provider)}>Unpin for all sessions</button>
-      {:else}
-        <button type="button" class="menu-item" role="menuitem" onclick={() => askPin(provider, row)}>Pin for all sessions</button>
-      {/if}
       {#if provider === "anthropic" && (pendingReset(row.resets) || usableGrant(row.resets))}
         <button type="button" class="menu-item" role="menuitem" onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry the reset" : "Use a reset"}</button>
       {/if}

@@ -11,8 +11,8 @@ const messages = [];
 const times = [];
 let pending = 0;
 const replies = {
-  who: { providers: { anthropic: { current: { email: 'a@x', label: 'a@x', session_pct: 10, weekly_pct: 5, gated_pct: 1, next: false } } } },
-  ls: { provider: 'anthropic', session: null, rows: [{ id: 'a', email: 'a@x', label: 'a@x', usage: '', session_pct: 10, weekly_pct: 5, gated_pct: 1, usable: true, reason: null, current: true, pinned: false, live: false, score: 1 }] },
+  who: { providers: { anthropic: { selection: { mode: 'auto' }, current: { id: 'a', email: 'a@x', label: 'a@x', session_pct: 10, weekly_pct: 5, gated_pct: 1, next: false } } } },
+  ls: { provider: 'anthropic', session: null, selection: { mode: 'auto' }, rows: [{ id: 'a', email: 'a@x', label: 'a@x', usage: '', session_pct: 10, weekly_pct: 5, gated_pct: 1, disabled: false, usable: true, reason: null, current: true, pinned: false, live: false, score: 1 }] },
 };
 const childProcess = createRequire(import.meta.url)('node:child_process');
 childProcess.execFile = (_bin, args, _options, callback) => {

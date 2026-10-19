@@ -4,32 +4,27 @@
   import UsageMeters from "./UsageMeters.svelte";
   import Icon from "./Icon.svelte";
 
-  /**
-   * Pool accounts for one provider, to start a new chat on. Follow the pool is the default and names the account the pool would pick next.
-   * Accounts that cannot serve now (depleted, cooldown, refused, turned off or signed out) are greyed and cannot be chosen.
-   */
   let { provider, model, choice, onchoose }: { provider: PoolProvider; model?: string | undefined; choice: NewChatAccount | null; onchoose: (account: NewChatAccount | null) => void } = $props();
 
   const next = $derived(provider.resolution?.account ?? null);
   const nextEmail = $derived(provider.rows.find(row => row.id === next)?.email ?? provider.resolution?.email ?? null);
   const selected = $derived(choice?.provider === provider.provider ? choice.id : null);
-  const blocked = (row: PoolAccount) => row.disabled || !row.usable;
-
   function pick(row: PoolAccount): void {
-    if (!blocked(row)) onchoose({ provider: provider.provider, id: row.id });
+    onchoose({ provider: provider.provider, id: row.id });
   }
 </script>
 
 <div class="menu-heading">{PROVIDER_LABEL[provider.provider]} account for this chat</div>
 <button type="button" class="menu-item follow" role="menuitemradio" aria-checked={selected === null} data-autofocus={selected === null ? true : undefined} onclick={() => onchoose(null)}>
   <span class="check">{#if selected === null}<Icon name="check" size={13} />{/if}</span>
-  <span class="text"><span class="email">Follow the pool</span><span class="sub">{nextEmail ? "Next pick: " + nextEmail : "The pool picks when the chat starts"}</span></span>
+  <span class="text"><span class="email">Auto</span><span class="sub">{nextEmail ? "Next pick: " + nextEmail : "The pool picks when the chat starts"}</span></span>
 </button>
 <div class="menu-separator"></div>
+<div class="menu-heading">Manual · keep the chosen account</div>
 {#each provider.rows as row (row.id)}
   {@const state = accountState(row)}
   {@const stale = staleText(row)}
-  <button type="button" class="menu-item account" class:greyed={blocked(row)} role="menuitemradio" aria-checked={selected === row.id} aria-disabled={blocked(row)}
+  <button type="button" class="menu-item account" role="menuitemradio" aria-checked={selected === row.id}
     data-autofocus={selected === row.id ? true : undefined} onclick={() => pick(row)}>
     <span class="check">{#if selected === row.id}<Icon name="check" size={13} />{/if}</span>
     <span class="text">
@@ -54,8 +49,6 @@
   .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sub { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meters { display: inline-flex; gap: 8px; flex: none; }
-  .greyed .email, .greyed .meters { opacity: 0.5; }
-  .account[aria-disabled="true"] { cursor: not-allowed; }
   .badge-slot { display: inline-flex; justify-content: flex-end; flex: none; width: 76px; }
   .badge { flex: none; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 500; line-height: 18px; background: var(--bg-sunken); color: var(--text-muted); }
   .badge.accent { background: var(--accent-soft); color: var(--accent-bold); }

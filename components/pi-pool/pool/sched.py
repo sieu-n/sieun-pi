@@ -10,7 +10,7 @@ from . import base, registry
 # first match wins:
 #   R1 stay: the tree's own account still serves (no 429, every window under 100%,
 #      credential ok), warm or cold. No move because of a cutoff, a better account,
-#      a pin set earlier or another tree's move.
+#      or another tree's move.
 #   R2 admit cap: an account takes a tree that is not on it only under
 #      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
 #      seven_day_max_pct of its week and its Fable cap. The 5h figure is projected
@@ -46,10 +46,7 @@ class Tree:
     # The account the tree was last vended, and when; None for a new tree.
     current: "str | None" = None
     current_at: float = 0
-    # The owner's pin, and when it was set. A pin set after the tree's last vend
-    # is pending: the next request applies it once.
     pin: "str | None" = None
-    pin_at: float = 0
     pool_pin: "str | None" = None
     # The account `pi-pool switch` asked the tree to leave.
     leave: "str | None" = None
@@ -117,6 +114,12 @@ class Wait:
     backoff: bool = False
     # The accounts R1-R7 would admit this tree onto now but for a cell (R4).
     room: tuple = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class Blocked:
+    account_id: str
+    reason: str
 
 
 def admit_cap(cfg, priority):
@@ -343,10 +346,22 @@ def plan_tier(a):
 
 
 def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
-    """Stay, Admit or Wait for one request of one tree; None when no account can
-    ever serve it. Pure but for `draw`, the R5 backoff's uniform number in [0, 1)
+    """Stay, Admit, Wait or Blocked for one request. Manual selection never
+    changes identity; automatic selection returns None when no account can serve.
+    Pure but for `draw`, the R5 backoff's uniform number in [0, 1)
     (random.random() when None): the caller writes what it decides under the pool
     flock, so trees that ask together see each other's admissions and waits."""
+    manual = tree.pin or tree.pool_pin
+    pin_reason = "session_pin" if tree.pin else "pool_pin"
+    if manual:
+        accounts = [dataclasses.replace(a, disabled=False) for a in accounts if a.id == manual]
+        if not accounts:
+            return Blocked(manual, "missing")
+        reason = credential_reason(accounts[0], cooldowns, now)
+        if reason:
+            return Blocked(manual, reason)
+    else:
+        accounts = [a for a in accounts if not a.disabled]
     by_id = {a.id: a for a in accounts}
     p = tree.priority if tree.priority in PRIORITY_RANK else "normal"
     rank = tree_rank(tree, now)
@@ -381,7 +396,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
         return tuple(a for a in ranked if a.id != skip and open_now(a))
 
     cur_why = "missing" if tree.current and cur is None else (serve_reason(cur, cooldowns, now) if cur else None)
-    left = (tree.current, cur_why) if tree.current else None
+    left = (tree.current, "pin" if manual and tree.current != manual else cur_why) if tree.current else None
     shadowed = None
     own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
     vend = cur if own_ok and cur_why is not None else None
@@ -396,31 +411,11 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if held is not None and waits_for_rotation(accounts, cooldowns, cfg, now, p):
         return Wait(tree.wait[1], held, vend, None, left, backoff=True)
 
-    pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at
-    if pending:
-        a = by_id.get(tree.pin)
-        why = why_not(a)
-        if why is None and (p == "high" or open_now(a)):
-            return Admit(a, "session_pin", None, left and (left[0], "pin"), others(a.id), scores)
-        shadowed = (tree.pin, why or "busy")
-    if tree.pool_pin and tree.pool_pin != tree.current:
-        a = by_id.get(tree.pool_pin)
-        why = why_not(a)
-        if why is None and open_now(a):
-            return Admit(a, "pool_pin", shadowed, left and (left[0], "pin"), others(a.id), scores)
-        shadowed = shadowed or (tree.pool_pin, why or "busy")
-    if cur_why and tree.current in (tree.pin, tree.pool_pin):
-        shadowed = shadowed or (tree.current, cur_why)
-
-    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id:
+    if cur_why is None and cur is not None and not tree.wait and (manual or tree.leave != cur.id):
         better = [a for a in ranked if plan_tier(a) > plan_tier(cur) and open_now(a)]
         if better:
             return Admit(better[0], "upgrade", shadowed, (cur.id, "plan"), others(better[0].id), scores)
-        cold = now - tree.current_at >= cfg["cache_ttl_sec"]
-        pin = by_id.get(tree.pin) if tree.pin and tree.pin != cur.id else None
-        if cold and pin is not None and why_not(pin) is None and open_now(pin):
-            return Admit(pin, "session_pin", shadowed, (cur.id, "pin"), others(pin.id), scores)
-        return Stay(cur, "session_pin" if tree.pin == cur.id else "stay", shadowed, others(cur.id))
+        return Stay(cur, pin_reason if manual else "stay", shadowed, others(cur.id))
 
     # The tree enters an account: it is new, its account stopped serving, it was
     # asked to leave, or it waits for a slot.
@@ -438,18 +433,15 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
         left = (tree.current, "budget_overrun")
 
     def leaving(a):
-        return tree.leave is not None and a.id == tree.leave == tree.current
+        return not manual and tree.leave is not None and a.id == tree.leave == tree.current
 
     def allowed(a):
         return not leaving(a) and (not stuck or a.id == tree.current)
 
     candidates = [a for a in ranked if allowed(a)]
-    pin = next((a for a in candidates if a.id == tree.pin), None)
-    if pin is not None:
-        candidates = [pin] + [a for a in candidates if a.id != pin.id]
     for a in candidates:
         if open_now(a):
-            reason = ("session_pin" if a.id == tree.pin else "back" if a.id == tree.current
+            reason = (pin_reason if manual else "back" if a.id == tree.current
                       else "switch" if tree.current else "new")
             return Admit(a, reason, shadowed, None if a.id == tree.current else left, others(a.id), scores)
     if tree.leave and cur is not None and tree.leave == cur.id and cur_why is None and not tree.wait:
@@ -467,10 +459,10 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
             t = first_open(a, t0, tree, rank, book, cfg, len(frees) == 1)
         options.append((t, -score(a, cfg, t, p, load), a.label, a))
     if not options:
-        return None
+        return Blocked(manual, why_not(by_id[manual]) or "busy") if manual else None
     slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
     if slot_at == float("inf"):
-        return None
+        return Blocked(manual, "busy") if manual else None
     # The backoff is for a pool waiting on rotation: no account takes this class of
     # tree on its last read. A projection hold or an unsampled account clears at the
     # next read, and a tree out of moves (R6) waits for its own account, so those
@@ -483,9 +475,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
 
 
 def in_use_counts(state, provider, now=None, window_sec=None):
-    """Trees vended each account within active_session_sec: the load in R3.
-    A session record lives for pin_ttl_sec (a week) after its last request, and
-    counting those idle records charged an account for sessions that ended days ago."""
+    """Count active vends for R3 load. Archived Manual pins remain persistent but add no idle load."""
     now = time.time() if now is None else now
     window_sec = base.config()["active_session_sec"] if window_sec is None else window_sec
     counts = {}
@@ -505,7 +495,7 @@ def tree_for(state, key, provider):
     wait = (rec.get("wait") or {}).get(provider)
     return Tree(key=key.key if key else None,
                 current=last.get("account_id"), current_at=last.get("at") or 0,
-                pin=pin.get("account_id"), pin_at=pin.get("at") or 0, pool_pin=prov.get("pin"),
+                pin=pin.get("account_id"), pool_pin=prov.get("pin"),
                 leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"),
                 priority=rec.get("priority") or "normal",
                 moves=tuple((rec.get("moves") or {}).get(provider) or ()),

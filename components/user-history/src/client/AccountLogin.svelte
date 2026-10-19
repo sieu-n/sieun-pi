@@ -12,6 +12,7 @@
 
   let code = $state("");
   let sending = $state(false);
+  let pasteError = $state<string | null>(null);
   let copied = $state(false);
   const label = $derived(PROVIDER_LABEL[login.provider]);
   const title = $derived(login.account ? `Sign in again as ${account ?? login.account}` : `Add a ${label} account`);
@@ -21,8 +22,9 @@
     event.preventDefault();
     if (!code.trim() || sending) return;
     sending = true;
+    pasteError = null;
     try { await api.pasteLogin(login.id, code.trim()); code = ""; }
-    catch (caught) { store.toast(caught instanceof Error ? caught.message : String(caught)); }
+    catch (caught) { pasteError = caught instanceof Error ? caught.message : String(caught); }
     finally { sending = false; }
   }
   async function cancel(): Promise<void> {
@@ -50,6 +52,7 @@
     {#if login.message}<p class="warn"><Icon name="alert" size={14} />{login.message}</p>{/if}
     <p class="state"><span class="spinner tiny"></span>{login.message ? "Waiting for a new sign-in link" : `Starting the ${label} sign-in`}</p>
   {:else if login.status === "waiting" || login.status === "finishing"}
+    {#if pasteError || login.message}<p class="warn" role="alert"><Icon name="alert" size={14} />{pasteError ?? login.message}</p>{/if}
     <ol class="steps">
       <li>
         <span class="step">1</span>
@@ -68,15 +71,15 @@
       {:else if login.paste}
         <li>
           <span class="step">2</span>
-          <span class="what">If the page shows a code, paste it here.</span>
+          <span class="what">After approval, paste the full callback URL from the address bar, or the code shown on the page.</span>
           <form class="paste" onsubmit={submit}>
-            <input class="field mono" bind:value={code} placeholder="Sign-in code" aria-label="Sign-in code" autocomplete="off" spellcheck="false" disabled={login.status === "finishing"} />
+            <input class="field mono" bind:value={code} placeholder="Callback URL or sign-in code" aria-label="Callback URL or sign-in code" autocomplete="off" spellcheck="false" disabled={login.status === "finishing"} />
             <button type="submit" class="button small primary" disabled={!code.trim() || sending || login.status === "finishing"}>Submit</button>
           </form>
         </li>
       {/if}
     </ol>
-    <p class="state"><span class="spinner tiny"></span>{login.status === "finishing" ? "Checking the code" : "Waiting for you to finish in the browser"}</p>
+    <p class="state"><span class="spinner tiny"></span>{login.status === "finishing" ? "Checking the URL or code" : "Waiting for you to finish in the browser"}</p>
   {:else if login.status === "done"}
     <p class="state ok"><Icon name="check" size={14} />Signed in. {login.message ?? ""}</p>
     <div class="actions"><button type="button" class="button small" onclick={onclose}>Done</button></div>

@@ -31,7 +31,7 @@ const retryError = transcript.at(-1)!.errorMessage!;
 
 const part = (value: unknown, code = 0): PoolPart => ({ code, out: typeof value === "string" ? value : JSON.stringify(value), err: code ? "pi-pool: no answer" : "" });
 /** `pi-pool who --json --session <chat>` as it answers on this box, the tree held for claude7 until its slot, or given claude7 now. */
-const who = (said: Record<string, unknown>): PoolPart => part({ session: CHAT, priority: "high", providers: { anthropic: { email: null, label: null, pinned: false, ...said } } });
+const who = (said: Record<string, unknown>): PoolPart => part({ session: CHAT, priority: "high", providers: { anthropic: { email: null, label: null, pinned: false, selection: { mode: "auto" }, ...said } } });
 const HELD = who({ account: null, reason: "wait", wait: { account: CLAUDE7, slot_at: SLOT } });
 const ADMITTED = who({ account: CLAUDE7, reason: "switch", wait: null });
 const listing = (claude7Usable: boolean): PoolPart => part({ provider: "anthropic", wait: null, rows: [

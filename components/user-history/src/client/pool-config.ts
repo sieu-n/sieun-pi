@@ -8,7 +8,6 @@ export const POOL_DEFAULTS = {
   admit_slot_sec: 120,
   admit_per_unit: 1,
   budget_wait_max_sec: 3600,
-  cache_ttl_sec: 3600,
   refused_cooldown_sec: 24 * 3600,
   probe_interval_sec: 6 * 3600,
   active_session_sec: 3600,

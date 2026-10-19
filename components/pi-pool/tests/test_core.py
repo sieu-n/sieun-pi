@@ -71,7 +71,7 @@ def resolved(state, accounts=ALL, cooldowns=None, provider="anthropic"):
 
 
 class Precedence(unittest.TestCase):
-    """A pending pin, the pool pin, the tree's own account, then an admission."""
+    """A strict session pin, a strict pool pin, then automatic selection."""
 
     def test_a_session_stays_on_its_usable_account(self):
         r = resolved(state_v2(current="b"))
@@ -82,15 +82,15 @@ class Precedence(unittest.TestCase):
         self.assertEqual((type(r), r.reason, r.account.id), (sched.Admit, "new", "a"))
         self.assertEqual({e for e, _ in r.scores}, {"a@x", "b@x", "c@x"})
 
-    def test_a_pending_pin_beats_the_current_account(self):
+    def test_a_session_pin_beats_the_current_account(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "c", "at": NOW + 1}}, current="b"))
         self.assertEqual((r.account.id, r.reason), ("c", "session_pin"))
 
-    def test_a_pin_on_an_account_that_cannot_take_the_tree_yields_and_reports_why(self):
+    def test_a_pin_on_an_account_that_cannot_take_the_tree_reports_why(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, current="b"))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("d", "depleted")))
+        self.assertEqual(r, sched.Blocked("d", "depleted"))
 
-    def test_a_yielded_pin_is_not_written_away(self):
+    def test_a_blocked_pin_is_not_written_away(self):
         state = state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, current="b")
         resolved(state)
         self.assertEqual(state["sessions"][KEY.key]["pins"]["anthropic"]["account_id"], "d")
@@ -102,11 +102,13 @@ class Precedence(unittest.TestCase):
         self.assertIn(KEY.key, state["sessions"])
         self.assertEqual(resolved(state).account.id, "c")
 
-    def test_a_pin_older_than_the_ttl_is_pruned(self):
+    def test_a_pin_older_than_the_ttl_is_archived_and_retained(self):
         state = state_v2(pins={"anthropic": {"account_id": "c", "at": NOW - 8 * 86400}}, current="b")
         state["sessions"][KEY.key]["last_seen"] = NOW - 8 * 86400
         vending.HookWriter(state).prune(CFG, NOW)
         self.assertEqual(state["sessions"], {})
+        archived = registry.archived_record(KEY.key, NOW, CFG["pin_ttl_sec"])
+        self.assertEqual(archived["pins"]["anthropic"]["account_id"], "c")
 
     def test_a_pin_on_the_current_account_is_a_pin(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "b", "at": NOW}}, current="b"))
@@ -183,25 +185,27 @@ class PoolPin(unittest.TestCase):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="c"))
         self.assertEqual((r.account.id, r.reason), ("a", "session_pin"))
 
-    def test_a_pool_pin_yields_when_its_account_is_depleted(self):
+    def test_a_pool_pin_reports_depletion_without_fallback(self):
         r = resolved(state_v2(pool_pin="d", current="b"))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("d", "depleted")))
+        self.assertEqual(r, sched.Blocked("d", "depleted"))
 
-    def test_a_pool_pin_yields_on_needs_reauth(self):
+    def test_a_pool_pin_reports_needs_reauth_without_fallback(self):
         r = resolved(state_v2(pool_pin="e", current="b"))
-        self.assertEqual((r.account.id, r.reason), ("b", "stay"))
+        self.assertEqual(r, sched.Blocked("e", "needs-reauth"))
 
-    def test_a_pool_pin_yields_when_its_account_is_in_cooldown(self):
+    def test_a_pool_pin_reports_cooldown_without_fallback(self):
         r = resolved(state_v2(pool_pin="c", current="b", cooldowns={"c": NOW + 60}))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("c", "cooldown")))
+        self.assertEqual(r, sched.Blocked("c", "cooldown"))
 
-    def test_a_pool_pin_yields_when_its_account_is_limited(self):
+    def test_a_pool_pin_waits_when_its_account_is_limited(self):
         r = resolved(state_v2(pool_pin="c", current="b"), limited({"c": NOW + 3600}))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("c", "limited")))
+        self.assertIsInstance(r, sched.Wait)
+        self.assertEqual(r.slot_account.id, "c")
+        self.assertIsNone(r.vend)
 
-    def test_a_depleted_session_pin_falls_through_to_a_usable_pool_pin(self):
+    def test_a_depleted_session_pin_blocks_a_usable_pool_pin(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, pool_pin="c", current="b"))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("d", "depleted")))
+        self.assertEqual(r, sched.Blocked("d", "depleted"))
 
 
 def limited(limits, accounts=ALL):
@@ -211,8 +215,7 @@ def limited(limits, accounts=ALL):
 
 
 class LimitedByThe429(unittest.TestCase):
-    """A 429 recorded by `pi-pool limited` makes every pin and the tree's own
-    account yield until it expires."""
+    """A 429 prevents admission until the account's limit expires."""
 
     def test_a_limited_account_reports_limited_with_its_countdown(self):
         a = limited({"a": NOW + 7200})[0]
@@ -223,10 +226,12 @@ class LimitedByThe429(unittest.TestCase):
         a = limited({"a": NOW - 1})[0]
         self.assertIsNone(sched.admit_reason(a, {}, CFG, NOW))
 
-    def test_a_limited_session_pin_yields_to_the_pool_pin(self):
+    def test_a_limited_session_pin_waits_without_using_the_pool_pin(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW + 1}}, pool_pin="c", current="b"),
                      limited({"a": NOW + 60}))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("a", "limited")))
+        self.assertIsInstance(r, sched.Wait)
+        self.assertEqual(r.slot_account.id, "a")
+        self.assertIsNone(r.vend)
 
     def test_a_limited_current_account_moves(self):
         r = resolved(state_v2(current="a"), limited({"a": NOW + 60}))
@@ -261,9 +266,9 @@ class Fallbacks(unittest.TestCase):
         self.assertEqual((r.reason, r.left), ("switch", ("b", "cooldown")))
         self.assertIn(r.account.id, {"a", "c"})
 
-    def test_a_missing_pin_account_yields(self):
+    def test_a_missing_pin_account_is_blocked(self):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "gone", "at": NOW + 1}}, current="b"))
-        self.assertEqual((r.account.id, r.shadowed), ("b", ("gone", "missing")))
+        self.assertEqual(r, sched.Blocked("gone", "missing"))
 
     def test_no_account_that_can_ever_serve_resolves_to_nothing(self):
         self.assertIsNone(resolved(state_v2(), [BROKEN]))
@@ -275,13 +280,13 @@ class Fallbacks(unittest.TestCase):
 
 class Normalize(unittest.TestCase):
     def test_a_file_that_is_not_v2_starts_empty_with_both_providers(self):
-        out = registry.normalize({"pin": "a@x", "cooldowns": {"c": NOW + 60}}, NOW)
+        out = registry.normalize({"pin": "a@x", "cooldowns": {"c": NOW + 60}})
         self.assertEqual((out["sessions"], sorted(out["providers"])), ({}, ["anthropic", "openai-codex"]))
         self.assertEqual(out["providers"]["anthropic"], registry.empty_provider_state())
 
     def test_normalizing_twice_changes_nothing(self):
-        once = registry.normalize({}, NOW)
-        self.assertEqual(registry.normalize(json.loads(json.dumps(once)), NOW), once)
+        once = registry.normalize({})
+        self.assertEqual(registry.normalize(json.loads(json.dumps(once))), once)
 
 
 class Writers(unittest.TestCase):
@@ -554,11 +559,11 @@ class SessionArchive(unittest.TestCase):
         state = {"sessions": self.sessions({})}
         self.assertEqual(registry.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
 
-    def test_forgetting_an_account_drops_archived_pins_on_it(self):
+    def test_forgetting_an_account_preserves_archived_pins_on_it(self):
         registry.archive_record("old", {"uuid": "old", "last_seen": NOW - 7200, "pins": {"anthropic": {"account_id": "b", "at": NOW - 7200}}})
         state = state_v2()
         vending.IntentWriter(state).forget_account("anthropic", "b")
-        self.assertEqual(dict(registry.each_archived())["old"]["pins"], {})
+        self.assertEqual(dict(registry.each_archived())["old"]["pins"]["anthropic"]["account_id"], "b")
 
     def test_a_session_arg_matches_an_archived_record(self):
         registry.archive_record("01a0-archived", {"uuid": "01a0-archived", "active_id": "abc123abc123", "last_seen": NOW - 7200, "pins": {}})
@@ -843,21 +848,22 @@ class LsNamesThePoolPin(unittest.TestCase):
             self.assertNotIn("seat", listing)
 
 
-class RefusedAccountsBreakPins(unittest.TestCase):
-    def test_a_pin_yields_to_a_refusal_cooldown(self):
-        tree = sched.Tree(key=KEY.key, pin="a", pin_at=NOW, current="b", current_at=NOW - 60)
+class RefusedAccountsKeepPins(unittest.TestCase):
+    def test_a_pin_reports_a_refusal_cooldown(self):
+        tree = sched.Tree(key=KEY.key, pin="a", current="b", current_at=NOW - 60)
         res = sched.decide(tree, [A, B], sched.Book(), {"a": NOW + 100}, CFG, NOW)
-        self.assertEqual((res.account.id, res.reason, res.shadowed), ("b", "stay", ("a", "cooldown")))
+        self.assertEqual(res, sched.Blocked("a", "cooldown"))
 
 
-class DisabledAccountsNeverServe(unittest.TestCase):
+class DisabledAccountsRequireManualSelection(unittest.TestCase):
     OFF = dataclasses.replace(A, disabled=True)
 
-    def test_every_pin_yields_to_an_off_account(self):
-        for tree in (sched.Tree(pin="a", pin_at=NOW, current="b", current_at=NOW - 60),
-                     sched.Tree(pool_pin="a", current="b"), sched.Tree(current="a")):
+    def test_only_an_explicit_pin_selects_an_off_account(self):
+        for tree, expected in ((sched.Tree(pin="a", current="b"), "a"),
+                               (sched.Tree(pool_pin="a", current="b"), "a"),
+                               (sched.Tree(current="a"), "b")):
             res = sched.decide(tree, [self.OFF, B], sched.Book(), {}, CFG, NOW)
-            self.assertEqual(res.account.id, "b", tree)
+            self.assertEqual(res.account.id, expected, tree)
 
     def test_with_pool_state_marks_only_the_named_accounts(self):
         state = {"providers": {"anthropic": {"disabled": {"a": NOW}}}}
