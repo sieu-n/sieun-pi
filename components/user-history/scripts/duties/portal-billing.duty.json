@@ -1,0 +1,38 @@
+{
+  "name": "Portal billing",
+  "ownerWords": "이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼.",
+  "goal": "Every call to api.virev.ai costs what its answer is worth: a 2xx with data is charged its price, and an empty, not found or failed answer costs $0. Portal billing broke three times on 10-18, each found by luck: a crawl preset billed empty pages (a18c147dc9), a burst skipped the rate count and intelligence.profile served bundles free (cb6b4904eb, 0982ee03ca), and Hacker News presets charged for a missing user, item or zero-hit search (a07e3b3337). This duty catches the next one within a day: billing_mismatches_24h pairs every prod request line with its ledger row, uncounted_calls_24h counts calls served after the rate count or charge failed, and empty_charged_probe calls known-empty and known-good inputs on staging and prod and reads what the ledger charged.",
+  "metrics": [
+    {
+      "key": "billing_mismatches_24h",
+      "label": "Prod calls in 24 h served free or charged for an error answer",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "uncounted_calls_24h",
+      "label": "Prod calls in 24 h that answered 2xx after the rate count or charge failed",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "empty_charged_probe",
+      "label": "Probe calls on staging and prod charged the wrong amount (empty must cost $0)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/portal-billing.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read the flagged rows and name the cause in one line. A served_free row is a priced route that answers 2xx without a ledger row: read that route in apps/api-portal at prod's deployed commit and find where it answers before chargeConfirmed (intelligence.profile charged fire-and-forget until 0982ee03ca). A charged_on_error row is a route that charges before its answer fails. An uncounted row is the gateway serving a call after rate_check_failed or deduct_failed: prod runs a gateway older than 0982ee03ca when the line says failMode open, so name the promote that carries 0982ee03ca and cb6b4904eb, which the release owner runs without a go (c74); a new cause gets a fix on staging (c50). A probe_charge row names the env, the input and the charge: an empty input charged on staging is a preset without billOnlyWith in apps/api-portal/src/lib/server/crawl-presets.ts (a07e3b3337 fixed Hacker News), and one charged only on prod waits for the promote that carries the staging fix. A source_error or probe_unjudged row is the measure itself: fix this precheck. A miss gets one live fix job in this chat unless one is live, and the fix job proves its fix with this duty's next run. Send nothing outside (c37). Merges, pushes and prod promotes need no go before the launch (c74). All on target: end the turn with no message.",
+  "boardGoal": "p18"
+}
