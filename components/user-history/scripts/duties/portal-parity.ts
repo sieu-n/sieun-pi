@@ -13,7 +13,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *    Vercel automation bypass).
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
- *    VIREV_API_KEY_PROD, skip the operations SPEC-93 never calls on prod (writes, and calls over the owner's prod run cap), and stop at that cap.
+ *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
+ *    (intelligence profile, contact and custom reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an `upstream_*` or `capacity_exhausted` code is a crawler cause (the portal passes crawler errors on that way), anything
  *    else is a portal cause, and a call it could not make or judge is unprobed. A page-1 answer with a cursor gets one page-2 call.
  * 4. It maps answers to crawler routes through portal-parity.routes.json: a route works on an env when one of its /v1 operations works there,
@@ -69,14 +70,19 @@ export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
 export interface Route { crawler: string; group: string; portal: string[]; byDesign?: string }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
-export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string }
-/** `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. */
-export interface ParityState { verdicts: Record<string, Verdict>; ms?: Record<string, number> }
+export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
+/**
+ * `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. `paidAt` holds when each
+ * paid prod read last got an answer, so the run calls it once a UTC day.
+ */
+export interface ParityState { verdicts: Record<string, Verdict>; ms?: Record<string, number>; paidAt?: Record<string, number> }
 /** The saved state, or undefined for none. The duty runner seeds STATE_FILE with "{}" before the first run, which has no verdicts. */
 export function parseState(text: string): ParityState | undefined {
   const state = JSON.parse(text) as Partial<ParityState> | null;
   if (!state || typeof state.verdicts !== "object" || state.verdicts === null) return undefined;
-  return typeof state.ms === "object" && state.ms !== null ? { verdicts: state.verdicts, ms: state.ms } : { verdicts: state.verdicts };
+  const record = (value: unknown) => typeof value === "object" && value !== null ? value as Record<string, number> : undefined;
+  const ms = record(state.ms), paidAt = record(state.paidAt);
+  return { verdicts: state.verdicts, ...(ms ? { ms } : {}), ...(paidAt ? { paidAt } : {}) };
 }
 
 /** Every operation in an openapi document as "METHOD /path". */
@@ -211,7 +217,7 @@ export const ENVS = ["prod", "staging"] as const;
 export type Env = typeof ENVS[number];
 /** The "could not measure" value of a share: below any target, so a run that measured nothing never looks on target. */
 export const UNMEASURED_PCT = -1;
-/** How one crawler route does through the portal on one env. `skipped` is a route SPEC-93 does not call on prod (owner's prod cost cap, or a write). */
+/** How one crawler route does through the portal on one env. `skipped` is a route SPEC-93 does not call on prod because it is a write. */
 export type RouteVerdict = "works" | "missing" | "portal" | "crawler" | "unprobed" | "skipped";
 
 /** A route's verdict on one env from that env's documented operations (null when unread) and that env's probe results. */
@@ -234,7 +240,7 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
  */
 export function parityMetrics(input: {
   routes: readonly Route[]; crawler: OpenApi | null; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
-  sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number;
+  sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number; paid?: ReadonlySet<string>;
 }): { output: PrecheckOutput; state: ParityState } {
   const { routes, at } = input;
   const flagged: FlaggedSlice[] = input.sourceErrors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
@@ -275,10 +281,14 @@ export function parityMetrics(input: {
   metrics.routes_scored = scored.length;
   metrics.source_errors = input.sourceErrors.length;
   if (input.prodCostUsd !== undefined) metrics.prod_cost_usd = Math.round(input.prodCostUsd * 10_000) / 10_000;
+  const paid = input.probes.prod.filter(probe => probe.costUsd).sort((a, b) => b.costUsd! - a.costUsd!);
+  if (paid.length) flagged.push({ at, kind: "prod_cost", excerpt: `Prod cost per call, highest first: ${paid.map(probe => `${probe.op} $${probe.costUsd}`).join(", ")}`.slice(0, 600) });
   const state: ParityState = { verdicts: { ...input.previous?.verdicts } };
   for (const env of ENVS) for (const probe of input.probes[env]) if (probe.verdict !== "skipped" && probe.verdict !== "unprobed") state.verdicts[`${env} ${probe.op}`] = probe.verdict;
   state.ms = { ...input.previous?.ms };
   for (const env of ENVS) for (const probe of input.probes[env]) if (probe.ms > 0) state.ms[`${env} ${probe.op}`] = probe.ms;
+  state.paidAt = { ...input.previous?.paidAt };
+  for (const probe of input.probes.prod) if (input.paid?.has(probe.op) && probe.ms > 0 && ["ok", "portal", "crawler"].includes(probe.verdict)) state.paidAt[probe.op] = at;
   return { output: { metrics, flagged }, state };
 }
 
@@ -343,13 +353,13 @@ async function cancelJob(base: string, extra: Record<string, string>, org: Org, 
     .then(response => response.body?.cancel()).catch(() => undefined);
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; perMinute?: number; budget?: { capUsd: number; spent: number }; lastMs?: Record<string, number> | undefined }
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
- * operations with ids from this run, and page 2 of each page-1 answer with a cursor. An operation in `skip` is not called. With `perMinute`,
- * a call waits for the next clock minute once this minute has that many, the way the portal counts its limit; on prod a call does not start
- * once the run spent the owner's prod cap.
+ * operations with ids from this run, and page 2 of each page-1 answer with a cursor. An operation in `skip` is not called, and one in `held`
+ * gives its held result without a call. With `perMinute`, a call waits for the next clock minute once this minute has that many, the way
+ * the portal counts its limit. With `spend`, each call's meta.cost goes on its result and into the run's total.
  */
 async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: number): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
@@ -359,13 +369,17 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
       await new Promise(resolve => setTimeout(resolve, (minute + 1) * 60_000 - Date.now()));
     const minute = Math.floor(Date.now() / 60_000);
     minutes.set(minute, (minutes.get(minute) ?? 0) + 1);
-    if (target.budget && target.budget.spent >= target.budget.capUsd)
-      return { op, verdict: "skipped", status: 0, ms: 0, note: `not called: this run spent the prod cap of $${target.budget.capUsd}`, body: null };
     const result = await probe(base, target.headers, org, op, request, deadline, note);
-    if (target.budget) target.budget.spent += money((result.body as { meta?: { cost?: unknown } } | null)?.meta?.cost);
-    return result;
+    if (!target.spend) return result;
+    const costUsd = money((result.body as { meta?: { cost?: unknown } } | null)?.meta?.cost);
+    target.spend.usd += costUsd;
+    return { ...result, costUsd };
   };
-  const skipped = (op: string) => ({ op, verdict: "skipped" as const, status: 0, ms: 0, note: `not called on ${env}: ${skip.get(baseOp(op))}`, body: null });
+  const preset = (op: string): (ProbeResult & { body: unknown }) | undefined => {
+    const held = target.held?.get(baseOp(op));
+    if (held) return { ...held, op, body: null };
+    return skip.has(baseOp(op)) ? { op, verdict: "skipped", status: 0, ms: 0, note: `not called on ${env}: ${skip.get(baseOp(op))}`, body: null } : undefined;
+  };
   const all = operations(doc);
   const ops = [...all].filter(([op]) => !isDm(op));
   const later: [string, Operation][] = [];
@@ -384,7 +398,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const jobsRun = (async () => {
     const results: (ProbeResult & { body: unknown })[] = [];
     for (const [index, op] of jobOps.entries()) {
-      if (skip.has(baseOp(op))) { results.push(skipped(op)); continue; }
+      const before = preset(op);
+      if (before) { results.push(before); continue; }
       const operation = all.get(baseOp(op));
       const request = operation && buildRequest(baseOp(op), operation);
       if (!request || "missing" in request) { results.push({ op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null }); continue; }
@@ -403,7 +418,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const pageTwo = new Map<string, ProbeResult & { body: unknown }>();
   const pageTwoRuns: Promise<void>[] = [];
   const phase1Run = Promise.all(first.map(async ([op, operation], index) => {
-    if (skip.has(op)) return skipped(op);
+    const before = preset(op);
+    if (before) return before;
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const org = orgs[index % orgs.length]!;
@@ -418,7 +434,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const chained = chainIds(sources.map(source => source.result.body));
   const ids = Object.fromEntries(Object.entries(chained).map(([name, id]) => [name, id.value]));
   const phase2 = await Promise.all(later.map(async ([op, operation]) => {
-    if (skip.has(op)) return skipped(op);
+    const before = preset(op);
+    if (before) return before;
     const request = buildRequest(op, operation, ids);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const name = CHAINED.exec(op)![1]!;
@@ -443,20 +460,35 @@ function money(value: unknown): number {
 }
 
 /**
- * The operations SPEC-93 never calls on prod, with the reason: every case of the operation skips on prod (a write, or over the owner's prod
- * cost cap). Read from auto-sns-agent apps/llm-wiki/specs/lib/api-portal/<group>.mjs, the cases the prod spec run uses.
+ * SPEC-93 skips a case on prod for cost (`prod-cost`, its $0.15 run cap) or because it writes. This duty calls the cost skips anyway, once a
+ * UTC day: they are the paid intelligence reads customers pay the most for, and the 10-19 plan audit found that no run checked them on prod.
+ * The duty reran every 15 min on 10-19 (d2.last-runs.json), and contact/complete alone cost $0.05 a call that day, so a run later the same
+ * day reuses the day's answer.
  */
-async function prodSkips(): Promise<{ skip: Map<string, string>; capUsd: number }> {
+const PAID = "prod-cost";
+const utcDay = (ms: number) => Math.floor(ms / 86_400_000);
+
+/**
+ * The operations SPEC-93 never calls on prod, read from auto-sns-agent apps/llm-wiki/specs/lib/api-portal/<group>.mjs, the cases the prod
+ * spec run uses. An operation every case of which skips on prod for cost is `paid`; one with any other skip reason is in `skip`, with it.
+ */
+async function prodSkips(): Promise<{ skip: Map<string, string>; paid: Set<string> }> {
   const lib = join(REPO, "apps/llm-wiki/specs/lib");
-  const portal = await import(pathToFileURL(join(lib, "api-portal.mjs")).href) as { PROD_RUN_CAP_USD: number; SKIP_REASONS: Record<string, string> };
+  const portal = await import(pathToFileURL(join(lib, "api-portal.mjs")).href) as { SKIP_REASONS: Record<string, string> };
   const cases: { op: string; skip?: { prod?: { reason: string } } }[] = [];
   for (const file of (await readdir(join(lib, "api-portal"))).filter(name => name.endsWith(".mjs")))
     cases.push(...((await import(pathToFileURL(join(lib, "api-portal", file)).href)) as { default: typeof cases }).default);
   const byOp = new Map<string, (string | undefined)[]>();
   for (const one of cases) byOp.set(one.op, [...(byOp.get(one.op) ?? []), one.skip?.prod?.reason]);
   const skip = new Map<string, string>();
-  for (const [op, reasons] of byOp) if (reasons.every(reason => reason)) skip.set(op, `${reasons[0]}, ${portal.SKIP_REASONS[reasons[0]!] ?? "SPEC-93 skips it on prod"}`);
-  return { skip, capUsd: portal.PROD_RUN_CAP_USD };
+  const paid = new Set<string>();
+  for (const [op, reasons] of byOp) {
+    if (!reasons.every(reason => reason)) continue;
+    const other = reasons.find(reason => reason !== PAID);
+    if (other) skip.set(op, `${other}, ${portal.SKIP_REASONS[other] ?? "SPEC-93 skips it on prod"}`);
+    else paid.add(op);
+  }
+  return { skip, paid };
 }
 
 async function main(): Promise<void> {
@@ -486,7 +518,14 @@ async function main(): Promise<void> {
   const staging = bypass ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`, { "x-vercel-protection-bypass": bypass })) : null;
   const probes: Record<Env, ProbeResult[]> = { prod: [], staging: [] };
   const orgs: Org[] = [];
-  const budget = skips ? { capUsd: skips.capUsd, spent: 0 } : undefined;
+  const spend = { usd: 0 };
+  const held = new Map<string, ProbeResult>();
+  for (const op of skips?.paid ?? []) {
+    const at = previous?.paidAt?.[op];
+    const verdict = previous?.verdicts[`prod ${op}`];
+    if (at !== undefined && verdict && utcDay(at) === utcDay(start))
+      held.set(op, { op, verdict, status: 0, ms: 0, note: `paid read, answer of ${new Date(at).toISOString()} reused; called again on the next UTC day` });
+  }
   try {
     if (env && staging && bypass && secret) {
       const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
@@ -495,14 +534,14 @@ async function main(): Promise<void> {
     await Promise.all([
       orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes, start)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, perMinute: PROD_PER_MINUTE, ...(budget ? { budget } : {}), lastMs: previous?.ms }, routes, start)
+      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms }, routes, start)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
     if (env && secret) await Promise.all(orgs.map(org => cleanupOrg(env.urls.convex!, secret, org).catch((error: unknown) =>
       sourceErrors.push(`cleanup of test org ${org.id} failed: ${error instanceof Error ? error.message : String(error)}`))));
   }
-  const result = parityMetrics({ routes, crawler, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(budget ? { prodCostUsd: budget.spent } : {}) });
+  const result = parityMetrics({ routes, crawler, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && (probes.prod.length || probes.staging.length)) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
 }
