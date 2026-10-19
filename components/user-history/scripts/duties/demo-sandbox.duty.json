@@ -1,7 +1,7 @@
 {
   "name": "Demo sandbox works",
   "ownerWords": "is http://localhost:5180/ working properly? so it's half for demoing, half for development (like Claude design, you mock here and discuss with user).\n\nhonestly it doesn't seem like it's working, achieve this goal.\n\nand switching between tabs/apps/views is infuriatingly slow. it's just demo app why the fuck\n\nno external connection should work off of internal fake database",
-  "goal": "The 5180 demo works offline and answers every time the owner opens it: the daily offline walk of the 6 apps passes with 0 outside requests, /health answers within 3 s, the dev server goes down and restarts at most once a day (restarts a vite config edit asks for do not count), and no page hangs on an SSR timeout. Tell the owner only when 5180 stays down for over an hour.",
+  "goal": "The 5180 demo works offline and answers every time the owner opens it: the daily offline walk of the 6 apps passes with 0 outside requests, /health answers within 3 s, the dev server goes down unplanned at most once a day (a deliberate pm2 restart or stop and a restart a vite config edit asks for do not count), and no page hangs on an SSR timeout. Tell the owner only when 5180 stays down for over an hour.",
   "metrics": [
     {
       "key": "walk_problems",
@@ -19,7 +19,7 @@
     },
     {
       "key": "restarts_24h",
-      "label": "Times the 5180 dev server went down and restarted in 24 h",
+      "label": "Times in 24 h the 5180 dev server went down unplanned (crashes, exit codes, dev-guard memory kills); a deliberate pm2 restart or stop does not count",
       "op": "<=",
       "target": 1
     },

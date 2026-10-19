@@ -17,8 +17,9 @@ const RUN_AT = Date.parse("2026-10-18T06:36:37Z");
 const iso = (at: number) => new Date(at).toISOString().slice(0, 19) + "Z";
 
 test("a box pm2.log written in UTC reads in UTC under a KST process", () => {
-  const { events } = restarts(PM2_LOG, undefined, RUN_AT, "Etc/UTC");
-  assert.deepEqual(events.map(event => iso(event.at)), ["2026-10-18T02:17:26Z", "2026-10-18T04:46:39Z", "2026-10-18T05:55:38Z"]);
+  const { events, planned } = restarts(PM2_LOG, undefined, RUN_AT, "Etc/UTC");
+  assert.deepEqual(events, []);
+  assert.deepEqual(planned.map(exit => iso(exit.at)), ["2026-10-18T02:17:26Z", "2026-10-18T04:46:39Z", "2026-10-18T05:55:38Z"]);
 });
 
 test("a Mac pm2.log written in KST still reads in KST", () => {

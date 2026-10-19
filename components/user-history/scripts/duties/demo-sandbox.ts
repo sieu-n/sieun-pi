@@ -15,12 +15,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   off of internal fake database". The walk is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
  *   report to WALK_FILE; this script only reads that report.
  * - health_ms: how long 5180 /health took to answer 200, at most 3 s. No answer or a non-200 reads as the full 30 s wait.
- * - restarts_24h: times the dev server went down and restarted in 24 h (crashes, dev-guard memory kills, pm2 restarts by hand), from
- *   pm2.log. A crash loop counts once. A restart that a vite config edit asks for ("config changed, exiting so pm2 starts a fresh dev
- *   server") is development, so it is run detail.
+ * - restarts_24h: times in 24 h the dev server went down without anyone asking for it (crashes and other exit codes, dev-guard memory
+ *   kills), from pm2.log, so it measures whether the sandbox stays up. A crash loop counts once. A deliberate `pm2 restart` or `pm2 stop`
+ *   by an agent or a person, and a restart that a vite config edit asks for ("config changed, exiting so pm2 starts a fresh dev server"),
+ *   are planned, so they are run detail (owner via frontend bro, 10-19: count only unplanned exits).
  * - ssr_timeouts_24h: times in 24 h a page hung on "transport invoke timed out", from the pm2 error log. Error lines less than
  *   EVENT_GAP_MS apart are one event, since one hung request logs 3 to 20 lines.
- * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h,
+ * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h, planned_restarts_24h,
  * outside_requests and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
  * show a clean day, plus 1 to source_errors and a flagged slice. `lastEventAt` names the newest restart and SSR timeout, so a miss streak whose
  * events stopped is not called stuck (`MetricStreak.quietSince`).
@@ -215,10 +216,11 @@ export interface RestartEvent { at: number; exits: Exit[]; kinds: ExitKind[] }
  * The dev server's exits over the last 24 h from pm2.log (`App [virev-demo:4] exited with code [97] via signal [SIGINT]`; pm2 starts it again
  * after each). Code 97 is a dev-guard memory kill (scripts/dev/dev-guard.mjs); a `Stopping app:virev-demo` up to 15 s before is a pm2 restart by
  * hand; a code 0 exit with vite's `config changed, exiting so pm2 starts a fresh dev server` in the out log up to 5 s before is a config edit
- * (outLog undefined: unknown, so it counts); anything else is a crash. Restarts are the non-config exits grouped into events, so the crash loop
- * of 10-15 04:26 KST (about 30 exits with code 2 in 40 s, materialize refusing hand edits) counts once.
+ * (outLog undefined: unknown, so it counts); anything else is a crash. Restarts are the unplanned exits (guard and crash) grouped into events,
+ * so the crash loop of 10-15 04:26 KST (about 30 exits with code 2 in 40 s, materialize refusing hand edits) counts once. Hand restarts and
+ * config edits are planned and come back in `planned`.
  */
-export function restarts(pm2Log: string, outLog: string | undefined, now: number, zone: string): { events: RestartEvent[]; config: Exit[] } {
+export function restarts(pm2Log: string, outLog: string | undefined, now: number, zone: string): { events: RestartEvent[]; config: Exit[]; planned: Exit[] } {
   const stops = recentLines(pm2Log, now, zone, line => line.includes(`Stopping app:${PM2_NAME} `)).map(entry => entry.at);
   const configs = outLog === undefined ? [] : recentLines(outLog, now, zone, line => line.includes("config changed, exiting so pm2 starts a fresh dev server")).map(entry => entry.at);
   const exits: Exit[] = recentLines(pm2Log, now, zone, line => line.includes(`App [${PM2_NAME}:`) && line.includes("] exited with code [")).map(({ at, line }) => {
@@ -229,9 +231,9 @@ export function restarts(pm2Log: string, outLog: string | undefined, now: number
       : "crash";
     return { at, code, kind };
   });
-  const events = group(exits.filter(exit => exit.kind !== "config"))
+  const events = group(exits.filter(exit => exit.kind === "crash" || exit.kind === "guard"))
     .map(members => ({ at: members[0]!.at, exits: members, kinds: [...new Set(members.map(exit => exit.kind))] }));
-  return { events, config: exits.filter(exit => exit.kind === "config") };
+  return { events, config: exits.filter(exit => exit.kind === "config"), planned: exits.filter(exit => exit.kind === "command") };
 }
 
 interface WalkResult { status?: string; errors?: { message?: string }[]; error?: { message?: string } }
@@ -268,7 +270,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   const flagged: FlaggedSlice[] = [];
   const lastEventAt: Record<string, number> = {};
   const metrics = { walk_problems: 0, health_ms: 0, restarts_24h: 0, ssr_timeouts_24h: 0,
-    configure_ms: 0, dev_tree_mb: 0, guard_restarts_24h: 0, config_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
+    configure_ms: 0, dev_tree_mb: 0, guard_restarts_24h: 0, config_restarts_24h: 0, planned_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
   const sourceError = (kind: string, excerpt: string) => { metrics.source_errors++; flagged.push({ at, kind, excerpt }); };
   const readOrError = async (path: string): Promise<string | Error> => { try { return await deps.read(path); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } };
 
@@ -305,15 +307,17 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     metrics.restarts_24h = 1;
     sourceError("source", `pm2.log: ${pm2Log.message}; restarts_24h reads 1 because an unread log cannot show a clean day`);
   } else {
-    const { events, config } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at, deps.pm2.zone);
+    const { events, config, planned } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at, deps.pm2.zone);
     metrics.restarts_24h = events.length;
     if (events.length) lastEventAt.restarts_24h = Math.max(...events.map(event => event.at));
     metrics.config_restarts_24h = config.length;
+    metrics.planned_restarts_24h = planned.length;
     for (const event of events) {
       const codes = [...new Set(event.exits.map(exit => exit.code))].join(", ");
       flagged.push({ at, kind: "restart", excerpt: `${iso(event.at)}: ${event.kinds.join(" and ")}, ${event.exits.length} exit${event.exits.length === 1 ? "" : "s"} (code ${codes})` });
     }
     if (config.length) flagged.push({ at, kind: "config_restart", excerpt: `${config.length} restarts asked for by vite config edits (not counted): ${config.map(exit => iso(exit.at)).join(", ")}` });
+    if (planned.length) flagged.push({ at, kind: "planned_restart", excerpt: `${planned.length} deliberate pm2 restarts or stops (not counted): ${planned.map(exit => iso(exit.at)).join(", ")}` });
   }
 
   // dev_tree_mb (detail).
