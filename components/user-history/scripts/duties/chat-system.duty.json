@@ -1,0 +1,47 @@
+{
+  "name": "Chat system",
+  "ownerWords": "(10-19) your NUMBER 1 GOAL. this is your \"Chat system duty\" ... plan should be tasks all eventually clear. duties are things that need constant montiroing thus set a heartbeat. things like \"i need to keep X working\" should NOT be registered as a zombie plan. ALL PLANS SHOULD BE EPHEMERAL, and the Chat (and Chat-check-in) MUST BE DESIGNED SO THAT IT ACTIVELY PERSUES AND CLEARS ALL THE TASKS. ... keeping this compliant on it's own your duty.\n\n(10-14, c64) this is your KPI of chat system duty. look i know there are alot of checks but the fundamentals are much more important than the quantitative number of checks\n\n(10-15, c75) why is duties not all passing? this should not be considered ok, same for ALL other chats.",
+  "goal": "Every chat clears its plan on its own and keeps its duties green. The owner checks this by opening a few chats: each open step has a job moving it or a For you question that links it, each plan holds only tasks that finish, and each red duty has a fix job working on it. It runs every 30 min, because the owner asked on 10-15 for a 30-minute check of open steps in all chats, which the Whole system duty held until 10-19. Each run also spot-audits one chat at random, quietly, for now (owner msg mvfb7zt0: \"당분간은 몰래 실사 감시도 하고\").",
+  "metrics": [
+    {
+      "key": "stuck_steps_all",
+      "label": "Open steps in all chats that nobody moves",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "plan_upkeep_all",
+      "label": "Open plan items in all chats that hold upkeep or a standing risk, or a goal with no done line",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "stuck_duties",
+      "label": "Red duties in any chat with no live fix job after 3 runs",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "duties_green_pct",
+      "label": "Duties green in all chats",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 30
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/chat-system.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Read the detail file the flagged lines name first. Stuck steps: message each chat that owns them with the step ids and ask it to give each one a live job, a For you todo that links it, or a close, this turn. Plan upkeep: message the chat with the item ids and ask it to move each upkeep or risk item into a duty metric or its wiki risk page and give each open step a Done when line, following the board skill's plan-and-duties reference; when the same chat repeats it on 3 runs, fix the chat brief or check-in prompt that let it through, with a clean-room test. Stuck duties: each gets one fix job, as in the check-ins reference item 12: steer the live job on its fix step, else start one with rlm.create_session and set it on the step. Duties green: the stuck duties come first, and the share needs no separate job. Every run, on target or not: do the spot audit the detail file names, fix what is off in that chat, and append what you found to the log it names. A miscount gets a fix in scripts/duties/chat-system.ts with a test. Never send anything outside, and never message the owner about this duty."
+}

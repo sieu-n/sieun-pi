@@ -479,17 +479,23 @@ export interface Inputs {
  */
 export function liveStuck(value: number, at: number, flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined,
   activity: ReadonlyMap<string, number>, waking: ReadonlySet<string> = new Set()): number {
-  if (!board || Date.parse(board.updatedAt) <= at) return value;
+  return !board || Date.parse(board.updatedAt) <= at ? value : liveStuckIds(at, flagged, board, activity, waking).length;
+}
+
+/** The ids of the steps a check-in snapshot flagged stuck that `liveStuck` still counts: all of them while the snapshot is up to date. */
+export function liveStuckIds(at: number, flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined,
+  activity: ReadonlyMap<string, number>, waking: ReadonlySet<string> = new Set()): string[] {
+  const items = [...new Set((flagged ?? []).filter(slice => slice.kind === "stuck_steps" && slice.item).map(slice => slice.item!))];
+  if (!board || Date.parse(board.updatedAt) <= at) return items;
   const open = new Map<string, { sessionId?: string }>();
   walk(board.plan, item => { if (OPEN.has(item.status)) open.set(item.id, item); });
-  const items = new Set((flagged ?? []).filter(slice => slice.kind === "stuck_steps" && slice.item).map(slice => slice.item!));
-  return [...items].filter(id => {
+  return items.filter(id => {
     const step = open.get(id);
     if (!step) return false;
     if (step.sessionId && waking.has(step.sessionId)) return false;
     const wrote = step.sessionId ? activity.get(step.sessionId) : undefined;
     return wrote === undefined || wrote <= at;
-  }).length;
+  });
 }
 
 /**
@@ -530,6 +536,54 @@ const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an un
   `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
   (agents.hung ? `, ${agents.idle} idle and ${agents.hung} in a hung tool call` : ` and ${agents.idle} idle`);
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
+/** What `planCounts` reads: the chats with their duty runs, their live boards and the owners of their open steps. */
+export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named">;
+/** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
+export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; at: number | undefined; items: string[] }
+
+/**
+ * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
+ * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0).
+ */
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; line: string }[] } {
+  // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
+  // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
+  // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
+  // On 10-18 d7 at 02:13Z counted frontend bro's p197, whose job had ended, though that chat's check-in job had set a live job on it. A count
+  // older than the interval is left out: after no check-in ran from 00:05Z on 10-17, 20 h old counts read as current.
+  // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
+  // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
+  const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
+    // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
+    // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
+    const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
+    const after = run?.after?.metrics?.stuck_steps;
+    // A check-in whose job still works (it has a job and no after-job measure yet) is the live owner of every step it flagged, so none is stuck
+    // until that job ends and its after-job count says what it left: at 06:54Z on 10-18 d7 read 27, 26 of them ops guy's Grafana rule steps
+    // that its 06:49Z check-in job was giving jobs, and that chat's after-job measure at 06:55Z read 0.
+    if (run?.job && !run.after) return { chat, value: 0, at: run.at, items: [] as string[] };
+    const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
+    const fresh = at !== undefined && (chat.everyMs === undefined || input.now - at <= chat.everyMs);
+    const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
+    const board = input.boards?.get(chat.id);
+    const value = read > 0 ? liveStuck(read, at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : 0;
+    return { chat, value, at, items: value > 0 ? liveStuckIds(at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : [] };
+  }).filter(entry => entry.value > 0);
+  // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
+  // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
+  const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
+  const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
+    const own = chat.runs.filter(run => run.duty === duty.id);
+    const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
+    if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
+    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
+    const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
+    return [{ chat: chat.id, line: `${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
+      `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
+  }));
+  return { stuck, redDuties };
+}
+
 /** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */
 const spans = (starts: readonly number[]): string => {
   const runs: [number, number][] = [];
@@ -624,39 +678,7 @@ export function measure(input: Inputs): PrecheckOutput {
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
   }
-  // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
-  // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
-  // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
-  // On 10-18 d7 at 02:13Z counted frontend bro's p197, whose job had ended, though that chat's check-in job had set a live job on it. A count
-  // older than the interval is left out: after no check-in ran from 00:05Z on 10-17, 20 h old counts read as current.
-  // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
-  // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
-  const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
-    // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
-    // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
-    const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
-    const after = run?.after?.metrics?.stuck_steps;
-    // A check-in whose job still works (it has a job and no after-job measure yet) is the live owner of every step it flagged, so none is stuck
-    // until that job ends and its after-job count says what it left: at 06:54Z on 10-18 d7 read 27, 26 of them ops guy's Grafana rule steps
-    // that its 06:49Z check-in job was giving jobs, and that chat's after-job measure at 06:55Z read 0.
-    if (run?.job && !run.after) return { chat, value: 0, at: run.at };
-    const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
-    const fresh = at !== undefined && (chat.everyMs === undefined || now - at <= chat.everyMs);
-    const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
-    return { chat, value: read > 0 ? liveStuck(read, at!, run!.flagged, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), input.waking) : 0, at };
-  }).filter(entry => entry.value > 0);
-  // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
-  // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
-  const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
-  const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
-    const own = chat.runs.filter(run => run.duty === duty.id);
-    const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
-    if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
-    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
-    const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
-    return [`${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
-      `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now`];
-  }));
+  const { stuck, redDuties } = planCounts(input);
   const quietMs = input.quietMs ?? QUIET_MINUTES * MINUTE;
   const quiet = quietAgents(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
   const worst = quiet.reduce<QuietMinute | undefined>((top, minute) => !top || minute.agents.gb >= top.agents.gb ? minute : top, undefined);
@@ -742,8 +764,9 @@ export function measure(input: Inputs): PrecheckOutput {
     flagged.push({ kind: "queue_hold", item: hold.session, excerpt: `pi-pool refused ${hold.session} for ${minutes(hold.to - hold.from)} min, ${clock(hold.from)} to ${clock(hold.to)}, ` +
       (hold.cell ? `waiting for a cell of ${hold.room.join(", ")} at R4's pace while trees of its priority or higher took them.` : `while ${hold.room.join(", ")} took its class.`) });
   }
-  for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id, excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves, from its check-in at ${clock(entry.at!)}.` });
-  for (const line of redDuties) flagged.push({ kind: "stuck_duty", excerpt: line });
+  for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id,
+    excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves${entry.items.length ? ` (${entry.items.join(", ")})` : ""}, from its check-in at ${clock(entry.at!)}.` });
+  for (const duty of redDuties) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: duty.line });
   for (const job of cutHeld.sort((a, b) => a.at - b.at)) {
     const grants = (input.log.grants ?? []).filter(grant => grant.session === job.session && grant.at >= job.at);
     const admitted = grants.map(grant => {
@@ -982,7 +1005,7 @@ async function jobSessions(artifacts: string, chats: readonly string[]): Promise
 }
 
 /** This box's catalog copy (`session-copy.json`) and each other box's (`MIRROR_DIR/<host>.sessions.json` in src/host-catalogs.ts). */
-async function catalogCopies(dataDir: string): Promise<string[]> {
+export async function catalogCopies(dataDir: string): Promise<string[]> {
   const mirror = join(homedir(), ".cache/sieun-pi/hosts");
   const files = [join(dataDir, "session-copy.json"), ...(await readdir(mirror).catch(() => [] as string[])).filter(name => name.endsWith(".sessions.json")).map(name => join(mirror, name))];
   return Promise.all(files.map(file => readFile(file, "utf8").catch(() => "")));
@@ -990,17 +1013,11 @@ async function catalogCopies(dataDir: string): Promise<string[]> {
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
-async function main(): Promise<void> {
-  const output = process.env.OUTPUT_FILE;
-  if (!output) { process.stderr.write("whole-system: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const now = Date.now();
-  const dataDir = chatDataDir();
-  const day = await readWatch(dataDir, now - DAY_MS, now);
-  const quietMs = quietMinutes(dataDir) * MINUTE;
-  const watch = day.filter(line => Date.parse(line.at) >= now - Math.max(2 * WINDOW_MS, WINDOW_MS + quietMs + 2 * MINUTE));
-  const names = new Map<string, string>();
-  for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
-  // Only the owner's chats (`ownerChats`): an archived or clean-room test chat stays out of his counts and the job's messages.
+/**
+ * The chats, live boards and step owners `planCounts` reads, from the chat service's data dir. Only the owner's chats (`ownerChats`): an archived
+ * or clean-room test chat stays out of his counts and the job's messages. `names` titles a chat; one it lacks reads as its short id.
+ */
+export async function planInputs(dataDir: string, now: number, names: ReadonlyMap<string, string>): Promise<Required<Omit<PlanInputs, "now">> & { now: number; pausedChats: Set<string> }> {
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
@@ -1013,13 +1030,29 @@ async function main(): Promise<void> {
     chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs, paused,
       duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
   }
-  const live = ids;
+  const boardStore = new BoardStore(dataDir);
+  const boards = new Map(await Promise.all(ids.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
+  const agentDir = join(dataDir, "..");
+  const named = await jobSessions(join(agentDir, "session-artifacts"), ids);
+  return { now, chats, pausedChats, boards, named, ownerActivity: await ownerActivity(agentDir, boards, named),
+    waking: await wakingOwners(agentDir, join(dataDir, "wakes"), boards, now, named), poolWaiting: await poolWaitingOwners(agentDir, boards, named) };
+}
+
+async function main(): Promise<void> {
+  const output = process.env.OUTPUT_FILE;
+  if (!output) { process.stderr.write("whole-system: OUTPUT_FILE is not set\n"); process.exit(2); }
+  const now = Date.now();
+  const dataDir = chatDataDir();
+  const day = await readWatch(dataDir, now - DAY_MS, now);
+  const quietMs = quietMinutes(dataDir) * MINUTE;
+  const watch = day.filter(line => Date.parse(line.at) >= now - Math.max(2 * WINDOW_MS, WINDOW_MS + quietMs + 2 * MINUTE));
+  const names = new Map<string, string>();
+  for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
+  const plan = await planInputs(dataDir, now, names);
+  const live = plan.chats.map(chat => chat.id);
   const supervisorLogs = await daemonLogs(join(dataDir, "..", "logs"));
   const cut = await findCutJobs(join(dataDir, "..", "session-artifacts"), live,
     (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, daemonStops(supervisorLogs));
-  const boardStore = new BoardStore(dataDir);
-  const boards = new Map(await Promise.all(live.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
-  const named = await jobSessions(join(dataDir, "..", "session-artifacts"), live);
   const serviceLines = await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES);
   const box = watch.at(-1)?.host ?? hostname();
   const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
@@ -1031,7 +1064,8 @@ async function main(): Promise<void> {
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const result = measure({
-    now, watch, day, quietMs,
+    ...plan,
+    watch, day, quietMs,
     log: readServiceLog(serviceLines),
     pool: readPoolLog(await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES), now),
     daemonFaults,
@@ -1039,13 +1073,7 @@ async function main(): Promise<void> {
     queueOverruns,
     slotWaits,
     listed,
-    chats,
-    cut: cutJobsHoldingWork(cut, boards, pausedChats),
-    boards,
-    ownerActivity: await ownerActivity(join(dataDir, ".."), boards, named),
-    waking: await wakingOwners(join(dataDir, ".."), join(dataDir, "wakes"), boards, now, named),
-    poolWaiting: await poolWaitingOwners(join(dataDir, ".."), boards, named),
-    named,
+    cut: cutJobsHoldingWork(cut, plan.boards, plan.pausedChats),
   });
   // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
   const here = watch.at(-1)?.host;
@@ -1058,6 +1086,10 @@ async function main(): Promise<void> {
     const slice = result.flagged?.find(item => item.kind === "oversized" && item.excerpt === entry.text);
     if (slice) slice.excerpt += `; its memory map and threads: ${file}`;
   }
+  // The Chat system duty (d9, chat-system.ts) has counted stuck steps and stuck duties since 10-19, so this duty's job gets neither.
+  delete result.metrics.stuck_steps_all;
+  delete result.metrics.stuck_duties;
+  if (result.flagged) result.flagged = result.flagged.filter(slice => slice.kind !== "stuck_steps" && slice.kind !== "stuck_duty");
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
