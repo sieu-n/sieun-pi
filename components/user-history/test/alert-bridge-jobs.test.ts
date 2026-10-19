@@ -162,7 +162,7 @@ test("a fire whose job cannot start escalates to ops guy once after 30 min, and 
   await f.bridge.tick();
   const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
   assert.equal(escalations().length, 1);
-  assert.match(escalations()[0]!.text, /On VP of CI, the alert bridge could not start its triage job: ci-history-stale/);
+  assert.match(escalations()[0]!.text, /On VP of CI, the start of its triage job failed \(Timed out after 10000ms waiting for the Prime Agent daemon handshake\.\) and is tried again each poll: ci-history-stale/);
   f.at(NOW + ESCALATE_MS + 30_000);
   await f.bridge.tick();
   assert.equal(escalations().length, 1);
@@ -306,6 +306,63 @@ test("a version 3 state with one never-ran job per rule moves every such rule to
   assert.equal(state.chats[CRAWLER], "old-2");
   assert.deepEqual(Object.values(state.rules).map(rule => rule.job!.id), ["old-2", "old-2", "old-2"]);
   assert.deepEqual(Object.keys(state.jobs), ["old-2"]);
-  assert.deepEqual(f.sent.map(({ session }) => session), ["old-2"]);
-  assert.match(f.sent[0]!.text, /2 rules of your chat fired: crawler-a .*crawler-b /);
+  assert.deepEqual(f.sent.filter(({ session }) => session === "old-2").length, 1);
+  assert.match(f.sent.find(({ session }) => session === "old-2")!.text, /2 rules of your chat fired: crawler-a .*crawler-b /);
+  assert.deepEqual(f.sent.filter(({ session }) => session !== "old-2").map(({ session }) => session).sort(), ["old-0", "old-1"], "the old jobs are told who owns their rules");
+});
+
+// Replays 10-19 16:52:54Z: the start for crawler-prod-jobs-wait-budget-failed hung in the duty create queue and no other chat got a fire.
+test("a start that hangs for one chat holds up no other chat, and its fire escalates as a start that has not finished", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "alert-bridge-hang-"));
+  let now = NOW;
+  let list: unknown[] = [crawler("cccc000000000009", "crawler-prod-jobs-wait-budget-failed")];
+  const starts: string[] = [];
+  const sent: { session: string; text: string }[] = [];
+  const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), now: () => now, log: () => {}, alerts: async () => parseAlerts(list), deliver: async (session, text) => { sent.push({ session, text }); },
+    startJob: (chat, lines) => {
+      starts.push(chat);
+      return chat === CRAWLER ? new Promise<never>(() => {}) : Promise.resolve({ id: `job-${starts.length}`, name: `alert ${lines[0]!.rule}` });
+    }, jobWorking: async () => true, jobTurn: async (_job, since) => ({ ran: true, at: since }) });
+  await bridge.poll();
+  void bridge.dispatch();
+  list = [crawler("cccc000000000009", "crawler-prod-jobs-wait-budget-failed"), ciAlert()];
+  now = NOW + 30_000;
+  await bridge.poll();
+  await bridge.dispatch();
+  assert.deepEqual(starts, [CRAWLER, CI], "VP of CI gets its job, and the hung Crawler VP start is not started again");
+  now = NOW + ESCALATE_MS;
+  await bridge.poll();
+  const escalation = sent.find(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  assert.match(escalation?.text ?? "", /On Crawler VP, the start of its triage job has waited since 2026-10-18T16:00Z and has not finished: crawler-prod-jobs-wait-budget-failed/);
+});
+
+test("a triage job pi-pool holds after it ran stays the chat's job, and a job that had the rule before is told who owns it", async () => {
+  const f = await fixture();
+  f.set([ciAlert()]);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", { ran: true, at: NOW + 10_000 });
+  f.at(NOW + 60_000);
+  await f.bridge.tick();
+  f.turns.set("job-1", { ran: false, error: SLOT_WAIT, slotAt: NOW + 20 * 60_000 });
+  f.set([ciAlert(), raw("aaaa0000000000c2", { alertname: "CI steps stale", __alert_rule_uid__: "ci-steps-stale" }, "2026-10-18T16:01:00.000Z")]);
+  f.at(NOW + 2 * 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the held job keeps the chat");
+  assert.deepEqual(f.sent.map(({ session }) => session), ["job-1"]);
+});
+
+test("a rule's old per-rule job is told the chat's triage job owns it", async () => {
+  const f0 = await fixture();
+  f0.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b")]);
+  await f0.bridge.tick();
+  const v4 = await f0.state();
+  const rules = Object.fromEntries(Object.entries(v4.rules).map(([key, rule], index) => [key, { ...rule, job: { id: `old-${index}`, name: `alert ${rule.rule}`, at: NOW + index } }]));
+  const f = await fixture({ state: { v: 3, rules } });
+  f.turns.set("old-0", { ran: false, error: SLOT_WAIT });
+  f.turns.set("old-1", { ran: false, error: SLOT_WAIT });
+  f.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b")]);
+  await f.bridge.tick();
+  const told = f.sent.find(({ session }) => session === "old-0");
+  assert.match(told?.text ?? "", /^\[alert\] crawler-a now belongs to this chat's triage job "alert crawler-b" \(session old-1\)/);
 });

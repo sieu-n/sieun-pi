@@ -325,11 +325,20 @@ export function firedAgainText(lines: readonly AlertLine[]): string {
     "report say for each rule whether your fix covers it.";
 }
 
+/** The message to a job that had a rule the chat's triage job now owns. */
+export const ownedByText = (rules: readonly string[], owner: AlertJob): string =>
+  `[alert] ${rules.join(", ")} now ${rules.length === 1 ? "belongs" : "belong"} to this chat's triage job "${owner.name}" (session ${owner.id}), ` +
+  "which carries every fire of the chat. Stop your work on it, and end your turn with one line that points to that job.";
+
 /** The words Prime puts before the token hook's own answer, which say nothing the hook's words do not. */
 const TOKEN_HOOK_PREFIX = /^Failed to resolve API key for provider "[^"]+" from shell command: \S+ /;
 
 /** One rule to escalate: `job` names the job that took its fire and has had no model turn, and `error` that job's last failed call. */
-export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string };
+export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string;
+  /** With no job: when the start of the chat's triage job began, while it still runs. */
+  waitingSince?: number;
+  /** With no job: why the last start of the chat's triage job failed. */
+  startError?: string };
 
 /** The escalation to ops guy, with the rules grouped by chat and by the job that has them. */
 export function escalationText(lines: readonly EscalationLine[]): string {
@@ -337,8 +346,10 @@ export function escalationText(lines: readonly EscalationLine[]): string {
   const groups = new Map<string, EscalationLine[]>();
   for (const line of lines) groups.set(`${line.chat}\u0000${line.job ?? ""}`, [...groups.get(`${line.chat}\u0000${line.job ?? ""}`) ?? [], line]);
   const parts = [...groups.values()].map(group => {
-    const { chat, job, error } = group.find(line => line.error) ?? group[0]!;
-    const why = job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}` : "the alert bridge could not start its triage job";
+    const { chat, job, error, waitingSince, startError } = group.find(line => line.error) ?? group[0]!;
+    const why = job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}`
+      : waitingSince !== undefined ? `the start of its triage job has waited since ${minute(waitingSince)} and has not finished`
+      : startError ? `the start of its triage job failed (${startError.slice(0, 200)}) and is tried again each poll` : "the alert bridge has not started its triage job yet";
     return `on ${chat}, ${why}: ${group.map(line => ruleText(line)).join(", ")}`;
   });
   return `[alert-escalation] ${lines.length === 1 ? "A rule has" : `${lines.length} rules have`} nobody working ${lines.length === 1 ? "its" : "their"} fire ` +
@@ -391,6 +402,10 @@ export class AlertBridge {
   private queue: Promise<unknown> = Promise.resolve();
   private firing: ReadonlyMap<string, FiringAlert> = new Map();
   private boarded: ReadonlySet<string> = new Set();
+  /** The chats whose hand-off runs now, with when it began. */
+  private readonly handing = new Map<string, number>();
+  /** Each chat's last failed hand-off, until one succeeds. */
+  private readonly startErrors = new Map<string, string>();
   constructor(private readonly deps: AlertBridgeDeps) { this.now = deps.now ?? Date.now; }
 
   /** One poll and then one dispatch, as one timer tick did before they ran apart. */
@@ -425,46 +440,77 @@ export class AlertBridge {
 
   /**
    * Gives each chat's owed fires (`owed`) to the chat's triage job, all in one go: by one message while that job still works or has never had
-   * a turn, or else to one new job that carries them all. A start or message that fails leaves the fires owed, so they go again next dispatch
-   * and escalate at ESCALATE_MS. The slow calls run outside `update`, so polls go on meanwhile.
+   * a turn, or else to one new job that carries them all. Each chat's hand-off runs on its own, and a chat whose hand-off still runs is skipped,
+   * so one slow start holds up no other chat: at 16:52:54Z on 10-19 the start for crawler-prod-jobs-wait-budget-failed queued behind duty creates
+   * of 50 to 90 s each while the daemon was overloaded, and no other chat got a fire until the 17:05Z restart. A start or message that fails
+   * leaves the fires owed, so they go again next dispatch, and the failure or the wait goes into the escalation at ESCALATE_MS. The slow calls
+   * run outside `update`, so polls go on meanwhile.
    */
   async dispatch(): Promise<void> {
     if (!this.deps.startJob) return;
     const snapshot = await this.update(async state => state);
     const byChat = new Map<string, string[]>();
     for (const [key, rule] of Object.entries(snapshot.rules)) {
-      if (owed(snapshot, rule) && this.boarded.has(rule.chat)) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], key]);
+      if (owed(snapshot, rule) && this.boarded.has(rule.chat) && !this.handing.has(rule.chat)) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], key]);
     }
-    for (const [chat, keys] of byChat) {
-      const lines = keys.map(key => alertLine(snapshot.rules[key]!, this.firing));
-      const current = snapshot.chats[chat] === undefined ? undefined : snapshot.jobs[snapshot.chats[chat]!];
-      try {
-        const job = await this.give(chat, current, lines);
-        const at = this.now();
-        await this.update(async state => {
-          const rules = { ...state.rules };
-          for (const key of keys) {
-            const now = rules[key];
-            const was = snapshot.rules[key]!;
-            if (!now || now.job?.id !== was.job?.id || now.job?.at !== was.job?.at) continue;
-            rules[key] = { ...now, job: { id: job.id, name: job.name, at } };
-          }
-          return pruned({ ...state, rules, jobs: { ...state.jobs, [job.id]: { ...state.jobs[job.id], ...job } }, chats: { ...state.chats, [chat]: job.id } });
-        });
-      } catch (error) { this.deps.log(`alerts: triage job of ${chat.slice(0, 8)} for ${lines.map(line => line.rule).join(", ")}: ${message(error)}; tried again next tick`); }
+    await Promise.all([...byChat].map(([chat, keys]) => this.handOff(snapshot, chat, keys)));
+  }
+
+  private async handOff(snapshot: BridgeState, chat: string, keys: readonly string[]): Promise<void> {
+    const lines = keys.map(key => alertLine(snapshot.rules[key]!, this.firing));
+    const current = snapshot.chats[chat] === undefined ? undefined : snapshot.jobs[snapshot.chats[chat]!];
+    this.handing.set(chat, this.now());
+    try {
+      const job = await this.give(chat, current, lines);
+      this.startErrors.delete(chat);
+      await this.point(snapshot, keys, job, current);
+      const at = this.now();
+      await this.update(async state => {
+        const rules = { ...state.rules };
+        for (const key of keys) {
+          const now = rules[key];
+          const was = snapshot.rules[key]!;
+          if (!now || now.job?.id !== was.job?.id || now.job?.at !== was.job?.at) continue;
+          rules[key] = { ...now, job: { id: job.id, name: job.name, at } };
+        }
+        return pruned({ ...state, rules, jobs: { ...state.jobs, [job.id]: { ...state.jobs[job.id], ...job } }, chats: { ...state.chats, [chat]: job.id } });
+      });
+    } catch (error) {
+      this.startErrors.set(chat, message(error));
+      this.deps.log(`alerts: triage job of ${chat.slice(0, 8)} for ${lines.map(line => line.rule).join(", ")}: ${message(error)}; tried again next tick`);
+    } finally { this.handing.delete(chat); }
+  }
+
+  /**
+   * Tells each other job that had one of `keys` that the chat's triage job owns it now, so a duplicate the pool wakes later stops and frees its
+   * worker. At 20:30Z on 10-19 eight per-rule jobs for hyperdx-error-logs from before the per-chat change woke at once and read the same fault.
+   */
+  private async point(snapshot: BridgeState, keys: readonly string[], owner: TriageJob, previous: TriageJob | undefined): Promise<void> {
+    const old = new Map<string, { name: string; rules: string[] }>();
+    for (const key of keys) {
+      const was = snapshot.rules[key]!.job;
+      if (!was || was.id === owner.id || was.id === previous?.id) continue;
+      old.set(was.id, { name: was.name, rules: [...old.get(was.id)?.rules ?? [], snapshot.rules[key]!.rule] });
+    }
+    for (const [id, { name, rules }] of old) {
+      await this.deps.deliver(id, ownedByText(rules, owner)).then(
+        () => this.deps.log(`alerts: told job ${name} (${id.slice(0, 8)}) that triage job ${owner.name} owns ${rules.join(", ")}`),
+        error => this.deps.log(`alerts: tell job ${id.slice(0, 8)} its owner: ${message(error)}`));
     }
   }
 
   /**
-   * The triage job that takes the chat's fires now. A job that never had a turn keeps them: on 10-19 the bridge read such jobs as ended and
-   * started another for each fire, until 25 jobs for hyperdx-error-logs sat in pi-pool's queue with no turn.
+   * The triage job that takes the chat's fires now. A job that never had a turn keeps them, and so does one whose last call failed on a pool
+   * wait or limit after it ran, since pi-pool holds it and the resume pass continues it: on 10-19 the bridge read such jobs as ended and
+   * started another for each fire, until 25 jobs for hyperdx-error-logs sat in pi-pool's queue with no turn and 8 of them woke at once at 20:30Z.
    */
   private async give(chat: string, current: TriageJob | undefined, lines: readonly AlertLine[]): Promise<TriageJob> {
     const rules = lines.map(line => line.rule).join(", ");
     const keep = async (job: TriageJob): Promise<boolean> => {
       if (await this.deps.jobWorking?.(job)) return true;
-      if (job.ranAt !== undefined || !this.deps.jobTurn || this.now() - job.at >= REOPEN_MS) return false;
-      return !(await this.deps.jobTurn(job, job.at)).ran;
+      if (!this.deps.jobTurn || this.now() - (job.ranAt ?? job.at) >= REOPEN_MS) return false;
+      const turn = await this.deps.jobTurn(job, job.ranAt === undefined ? job.at : job.ranAt + 1);
+      return job.ranAt === undefined ? !turn.ran : !turn.ran && turn.slotAt !== undefined;
     };
     if (current && await keep(current)) {
       await this.deps.deliver(current.id, firedAgainText(lines));
@@ -544,7 +590,9 @@ export class AlertBridge {
         const rule = state.rules[key]!;
         const job = rule.job && !owed(state, rule) ? rule.job : undefined;
         const error = job && errors.get(job.id);
-        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {} };
+        const start = job ? {} : this.handing.has(rule.chat) ? { waitingSince: this.handing.get(rule.chat)! }
+          : this.startErrors.has(rule.chat) ? { startError: this.startErrors.get(rule.chat)! } : {};
+        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...start };
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };
@@ -661,16 +709,14 @@ export async function readOwnersFor(configFile: string, home: string): Promise<O
   return readOwners(repo, ["origin/main", ...refs]);
 }
 
-/** Starts the bridge: a poll each `everyMs`, and after each poll a dispatch unless one still runs, so a slow job start never skips a poll. */
+/**
+ * Starts the bridge: a poll each `everyMs`, and after each poll a dispatch, which skips each chat whose hand-off still runs, so a slow job
+ * start never skips a poll or holds up another chat.
+ */
 export function startAlertBridge(deps: AlertBridgeDeps, everyMs = TICK_MS): () => void {
   const bridge = new AlertBridge(deps);
   let polling = false;
-  let dispatching = false;
-  const dispatch = () => {
-    if (dispatching) return;
-    dispatching = true;
-    void bridge.dispatch().catch(error => deps.log(`alerts: dispatch: ${errorText(error)}`)).finally(() => { dispatching = false; });
-  };
+  const dispatch = () => { void bridge.dispatch().catch(error => deps.log(`alerts: dispatch: ${errorText(error)}`)); };
   const run = () => {
     if (polling) return;
     polling = true;
