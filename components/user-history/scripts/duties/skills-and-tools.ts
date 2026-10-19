@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { peerReach, seenAgo } from "../../src/host-reach.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -170,19 +170,36 @@ export function headSkillIds(lsTree: string): string[] {
   return [...outer, ...native].sort();
 }
 /** check-skill-paths.mjs run over HEAD's skill roots: `git archive` copies them to scratch, and GIT_DIR keeps the script's HEAD file list and ignore rules on the repo. */
+const SKILL_PATHS_SCRIPT = "scripts/ci/check-skill-paths.mjs";
+
+/** The script and every module it imports by a relative path at HEAD, so the archive runs it with its own imports (gh-annotate.mjs since 10-17). */
+async function scriptWithImports(deps: Deps, entry: string): Promise<string[]> {
+  const seen = new Set<string>();
+  const queue = [entry];
+  for (let file = queue.shift(); file; file = queue.shift()) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const shown = await deps.exec("git", ["show", `HEAD:${file}`], { cwd: deps.repo, timeoutMs: 10_000 });
+    if (shown.code !== 0) continue;
+    for (const [, spec] of shown.stdout.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) queue.push(posix.join(posix.dirname(file), spec!));
+  }
+  return [...seen];
+}
+
 async function skillPathsAtHead(deps: Deps): Promise<ExecResult> {
   const dir = join(deps.scratchDir, `skill-paths-head-${process.pid}`);
   const tar = `${dir}.tar`;
   const gitDir = await deps.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: deps.repo, timeoutMs: 10_000 });
   if (gitDir.code !== 0) return gitDir;
+  const scripts = await scriptWithImports(deps, SKILL_PATHS_SCRIPT);
   try {
     for (const [file, args] of [["rm", ["-rf", dir, tar]], ["mkdir", ["-p", dir]],
-      ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ".agents/skills", ".claude/skills-native", ".claude/rules", "scripts/ci/check-skill-paths.mjs", ":(glob)**/.gitignore"]],
+      ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ".agents/skills", ".claude/skills-native", ".claude/rules", ...scripts, ":(glob)**/.gitignore"]],
       ["tar", ["-x", "-f", tar, "-C", dir]]] as const) {
       const step = await deps.exec(file, args, { cwd: deps.repo, timeoutMs: 20_000 });
       if (step.code !== 0) return step;
     }
-    return await deps.exec("node", ["scripts/ci/check-skill-paths.mjs", "--json"], { cwd: dir, env: { GIT_DIR: gitDir.stdout.trim(), GIT_WORK_TREE: dir }, timeoutMs: 20_000 });
+    return await deps.exec("node", [SKILL_PATHS_SCRIPT, "--json"], { cwd: dir, env: { GIT_DIR: gitDir.stdout.trim(), GIT_WORK_TREE: dir }, timeoutMs: 20_000 });
   } finally {
     await deps.exec("rm", ["-rf", dir, tar], { timeoutMs: 10_000 });
   }

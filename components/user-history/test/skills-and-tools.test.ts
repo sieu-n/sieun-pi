@@ -109,19 +109,26 @@ test("skill_map compares HEAD's skill folders with HEAD's map, so an uncommitted
   assert.ok(outcome.status === "fail" && outcome.detail === "map lacks gh", JSON.stringify(outcome));
 });
 
-test("skill_paths runs check-skill-paths.mjs over a git archive of HEAD with GIT_DIR on the repo, and cleans up", async () => {
+const HEAD_FILES: Record<string, string> = {
+  "scripts/ci/check-skill-paths.mjs": "import { readFileSync } from 'node:fs';\nimport { annotate } from './gh-annotate.mjs';\n",
+  "scripts/ci/gh-annotate.mjs": "import { join } from 'node:path';\nexport { root } from \"../lib/paths.mjs\";\nimport { annotate } from './gh-annotate.mjs';\n",
+};
+
+test("skill_paths runs check-skill-paths.mjs with the modules it imports at HEAD over a git archive with GIT_DIR on the repo, and cleans up", async () => {
   const calls: { file: string; args: readonly string[]; cwd: string | undefined; env: Record<string, string> | undefined }[] = [];
   const run = (stdout: string): Deps => ({
     ...deps("linux"),
     exec: async (file, args, options) => {
       calls.push({ file, args, cwd: options.cwd, env: options.env });
-      return { code: 0, stdout: file === "git" && args[0] === "rev-parse" ? "/repo/.git\n" : file === "node" ? stdout : "", stderr: "", ms: 0 };
+      return { code: 0, stdout: file === "git" && args[0] === "rev-parse" ? "/repo/.git\n" : file === "git" && args[0] === "show" ? HEAD_FILES[args[1]!.slice(5)] ?? "" : file === "node" ? stdout : "", stderr: "", ms: 0 };
     },
   });
   assert.equal((await skillPaths.run(run("[]"))).status, "pass");
   const node = calls.find(call => call.file === "node")!;
   const archive = calls.find(call => call.file === "git" && call.args[0] === "archive")!;
   assert.ok(archive.args.includes("HEAD") && archive.cwd === "/repo");
+  for (const file of ["scripts/ci/check-skill-paths.mjs", "scripts/ci/gh-annotate.mjs", "scripts/lib/paths.mjs"]) assert.ok(archive.args.includes(file), `archive lacks ${file}`);
+  assert.ok(!archive.args.includes("node:fs"));
   assert.deepEqual(node.env, { GIT_DIR: "/repo/.git", GIT_WORK_TREE: node.cwd });
   assert.ok(node.cwd!.startsWith("/tmp/skill-paths-head-"));
   assert.deepEqual(calls.at(-1)!.args, ["-rf", node.cwd, `${node.cwd}.tar`]);
