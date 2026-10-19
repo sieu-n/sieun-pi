@@ -643,7 +643,7 @@ export class Catalog {
       } });
     if (hosts) {
       // Another box's list or reachability changed: its rows go into the next frame with this box's copy.
-      hosts.onChange = () => { if (this.peer.listed && !this.closed) void this.apply(this.peer.list()).catch(() => {}); };
+      hosts.onChange = () => { if (this.peer.listed && !this.closed) void this.apply().catch(() => {}); };
       hosts.start();
     }
     this.client.onMessage(message => {
@@ -663,7 +663,7 @@ export class Catalog {
     if (this.closed) return;
     if (this.peer.state === "down") this.setDaemon("down", this.unreachable(this.peer.error));
     if (this.peer.state === "up") { this.setDaemon("up"); this.scheduleSchedulesRefresh(0); }
-    if (this.peer.listed) void this.apply(this.peer.list()).catch(() => {});
+    if (this.peer.listed) void this.apply().catch(() => {});
   }
 
   private unreachable(cause: string | undefined): string {
@@ -724,23 +724,54 @@ export class Catalog {
    */
   async refresh(): Promise<void> {
     await waitFor(this.peer.sync(() => this.connect()), LIST_WAIT_MS, this.peer.name);
+    this.inputs++;
     this.index(this.peer.list());
     void this.emit().catch(() => {});
   }
 
-  private async apply(rows: SessionSummary[]): Promise<void> {
+  /**
+   * A copy changed: the rows are indexed again once, when a reader next needs them (`settle`), and at the latest after emitGapMs. Until 10-19
+   * each change indexed all rows at once: this box's copy changes every 150 ms at the live roster rate, and a projection runs at most every
+   * emitGapMs, so on a scratch serve on a copy of the live data dir (`steady-profile.md`) the index ran about twice per projection and was 31 s
+   * of 124 s of main-thread time from minute 3 on.
+   */
+  private async apply(): Promise<void> {
     if (this.closed) return;
-    this.index(rows);
+    this.inputs++;
+    if (!this.stale) {
+      this.stale = true;
+      this.staleTimer = setTimeout(() => { this.staleTimer = undefined; this.settle(); }, this.emitGapMs);
+      this.staleTimer.unref();
+    }
     await this.emit();
+  }
+
+  /** True while a copy changed since the last `index`; every reader of the indexed rows calls `settle` first. */
+  private stale = false;
+  private staleTimer: ReturnType<typeof setTimeout> | undefined;
+  private settle(): void {
+    if (!this.stale) return;
+    this.stale = false;
+    clearTimeout(this.staleTimer);
+    this.staleTimer = undefined;
+    if (!this.closed && this.peer.listed) this.index(this.peer.list());
   }
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
   private index(rows: SessionSummary[]): void {
-    this.inputs++;
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
-    this.own = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : [row.sessionId]));
-    this.ownActive = new Set(rows.flatMap(row => row.activeSessionId ? [row.sessionId, row.activeSessionId] : []));
+    const own = new Set<string>();
+    const ownActive = new Set<string>();
+    for (const row of rows) {
+      own.add(row.sessionId);
+      if (row.activeSessionId === undefined) continue;
+      own.add(row.activeSessionId);
+      ownActive.add(row.sessionId);
+      ownActive.add(row.activeSessionId);
+    }
+    this.own = own;
+    this.ownActive = ownActive;
     for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
@@ -798,6 +829,7 @@ export class Catalog {
     const queuedRead = this.queueSource();
     const wakesRead = this.wakesSource(startedAt).catch(() => []);
     const originOf = await wait(this.origins.resolver(chats ?? new Set()));
+    this.settle();
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
     const selfName = this.hosts?.selfName ?? null;
@@ -1055,11 +1087,13 @@ export class Catalog {
   }
 
   private find(sessionId: string): SessionSummary | undefined {
+    this.settle();
     return this.summaries.get(sessionId) ?? this.childById.get(sessionId);
   }
 
   /** The last activity of each session the daemon lists below `sessionId` at any depth, in epoch ms, NaN for one with none. */
   childActivity(sessionId: string): number[] {
+    this.settle();
     const children = childrenByParent(this.childSummaries);
     const times: number[] = [];
     const seen = new Set([sessionId]);
@@ -1075,17 +1109,18 @@ export class Catalog {
 
   /** Native usage cost of each subagent under a parent session, from the daemon summaries of non-top-level sessions. */
   childUsage(parentSessionId: string): ChildUsage[] {
+    this.settle();
     return this.childSummaries.filter(row => row.parentSessionId === parentSessionId).map(row => ({ sessionId: row.sessionId,
       ...(row.rlmChildId ? { rlmChildId: row.rlmChildId } : {}), ...(row.sessionName ? { sessionName: row.sessionName } : {}),
       ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }
 
-  forget(sessionId: string): void { this.summaries.delete(sessionId); }
+  forget(sessionId: string): void { this.settle(); this.summaries.delete(sessionId); }
 
   /** Changes the row of a session this server changed itself, such as a saved session's new name, in the copy of the box that lists it. */
   patchRow(sessionId: string, fields: Partial<SessionSummary>): void {
     if (!this.hosts?.patch(sessionId, fields) && !this.peer.patch(sessionId, fields)) return;
-    if (this.peer.listed) void this.apply(this.peer.list()).catch(() => {});
+    if (this.peer.listed) void this.apply().catch(() => {});
   }
 
   /** This box's session ids and active session ids from its last list, and the ones of them with a worker now. */
@@ -1111,6 +1146,7 @@ export class Catalog {
     const host = this.hosts?.hostOf(id);
     if (!host) return this.placed.get(id) ?? null;
     this.placed.delete(id);
+    this.settle();
     if (!this.own.has(id)) return host.name;
     return !this.ownActive.has(id) && this.hosts!.isActive(id) ? host.name : null;
   }
@@ -1168,8 +1204,10 @@ export class Catalog {
    * during this wait and the row was never looked up again, and a copy up to 30 min old may lack a newer chat.
    */
   private async unplaced(id: string): Promise<boolean> {
+    this.settle();
     if (!this.hosts || this.hosts.allSynced() || this.own.has(id)) return false;
     await Promise.all([this.peer.loaded(), this.hosts.loaded()]);
+    this.settle();
     return !this.hosts.allSynced() && !this.own.has(id) && !this.hosts.hostOf(id);
   }
 
@@ -1207,6 +1245,7 @@ export class Catalog {
 
   /** Each box's folders, its 30 most recently used, so New chat offers a box only the folders on its own disk. */
   async workspaces(): Promise<Workspace[]> {
+    this.settle();
     if (this.summaries.size === 0) await this.refresh().catch(() => {});
     const byFolder = new Map<string, Workspace>();
     for (const row of this.summaries.values()) {
@@ -1229,6 +1268,7 @@ export class Catalog {
     this.peer.close();
     clearTimeout(this.schedulesTimer);
     clearTimeout(this.ratesTimer);
+    clearTimeout(this.staleTimer);
     this.listeners.clear();
     this.client.close();
     this.hosts?.close();
