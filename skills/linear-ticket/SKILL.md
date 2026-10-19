@@ -31,6 +31,8 @@ The owner knows little of the codebase, so state what changes for a person befor
 Show before-and-after behavior, examples, tradeoffs, and results a person can see.
 Give each product decision its options and a recommendation.
 Keep code pointers on the linked spec page, not in the issue.
+A ticket for a change across platforms, such as health, pagination or monitoring, starts with the principle and the shared piece, then today's numbers, the changes, what a user or on-call person sees, and a coverage table with one row per platform.
+On 2026-09-09 the owner rejected a VIR-375 draft that opened with Instagram `parse.py` line numbers and table names, because it read as an Instagram fix, and asked for it "AT MUCH HIGHER LEVEL".
 A link adds detail and never replaces the explanation.
 
 Put a diagram or screenshot beside each flow, screen, or choice it explains.
