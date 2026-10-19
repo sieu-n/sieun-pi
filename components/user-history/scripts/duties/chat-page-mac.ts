@@ -34,6 +34,8 @@ const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5" };
 const LOADS = 10;
 const SWITCHES = 10;
 const SENDS = 3;
+/** pi-pool can hold a new thread's first turn with no frame at all: over 2 min on the Mac at 15:41Z on 10-19, while at 15:17Z it answered an error in 3 s. */
+const FIRST_REPLY_MS = 10 * 60_000;
 /** On 10-19 the 01:14:15Z release crash-looped from 7 s after it to past 01:18:52Z (p72), so a break up to 10 min after a release is its break. */
 export const RELEASE_WINDOW_MS = 10 * 60_000;
 
@@ -200,7 +202,7 @@ async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendT
     const kind = (frame: Frame) => frame.data?.type === "event" ? frame.data.event?.type : undefined;
     const reply = (frame: Frame) => mine(frame) && ["message_update", "message_end"].includes(kind(frame) ?? "") && frame.data!.event!.message?.role === "assistant";
     const first = await until(0, frame => reply(frame) || (mine(frame) && frame.data?.type === "snapshot" && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant")),
-      120_000, "first reply frame");
+      FIRST_REPLY_MS, "first reply frame");
     sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at });
     const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
     if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
