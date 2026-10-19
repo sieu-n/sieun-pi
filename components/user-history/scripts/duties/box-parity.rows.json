@@ -1959,8 +1959,8 @@
   ]
  },
  {
-  "id": "auto-sns-agent-agent-scripts-commit-mjs-whose-mjs-ship-mjs-l",
-  "tool": "auto-sns-agent agent scripts (commit.mjs, whose.mjs, ship.mjs, land-object.mjs)",
+  "id": "auto-sns-agent-agent-scripts-commit-mjs-whose-mjs-land-object-mjs",
+  "tool": "auto-sns-agent agent scripts (commit.mjs, whose.mjs, land-object.mjs)",
   "probes": [
    {
     "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/commit.mjs"
@@ -1969,12 +1969,10 @@
     "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/whose.mjs"
    },
    {
-    "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/ship.mjs"
-   },
-   {
     "path": "~/Documents/Github/auto-sns-agent/scripts/repo/agent/land-object.mjs"
    }
-  ]
+  ],
+  "note": "ship.mjs left the list because auto-sns-agent e9bfb6842a deleted it on purpose."
  },
  {
   "id": "auto-sns-agent-repo-skills-agents-claude",
