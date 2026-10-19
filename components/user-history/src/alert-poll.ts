@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { type FiringAlert, readGrafanaAlerts } from "./alert-bridge.ts";
+import { errorText, type FiringAlert, readGrafanaAlerts } from "./alert-bridge.ts";
 import { type Alerting, macWokeAt, PollHealth, type PollRecord, readAlerting, statusOf, writeStatus } from "./alert-bridge-health.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { TICK_MS } from "./wakes.ts";
@@ -37,7 +37,7 @@ export function runPoll(input: PollInput, post: (frame: PollFrame) => void, onAl
     void health.poll(() => withHookAlert(readGrafanaAlerts(input.grafanaConfig), hookWatch))
       .then(alerts => post({ type: "poll", record: health.record, alerts }), error => {
         post({ type: "poll", record: health.record, alerts: null });
-        log(`alerts: ${error instanceof Error ? error.message : String(error)}`);
+        log(`alerts: ${errorText(error)}`);
       })
       .then(write).catch(error => log(`alerts: status: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => { polling = false; });
