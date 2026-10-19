@@ -19,7 +19,7 @@ import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts"
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
-import { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } from "./job-leftovers.ts";
+import { ARTIFACTS, deletedFolders, dryLeftoverSource, endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
@@ -141,11 +141,17 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
  * `scratch`: a serve on a copy of the live data dir, such as a CPU profile. Its wakes, spawn briefs, archive queue and duties are the live
  * service's, so it starts none of the loops that send, prompt, reopen, archive or write the pool, and it acts only on its own chats. On 10-18 a
  * profile serve on a copy woke 3 jobs and relayed 2 wakes through their parents at 08:25Z, which the live service also sent.
+ * `replay`: a scratch serve on a recorded fake daemon (`serve --replay-daemon`), whose threads attach as a live serve's do.
  * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
  * `copyFile`: where this box's session copy is kept across restarts (`SessionPeer`), so a restart serves the sidebar before any list.
  */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
   const scratch = options.scratch === true;
+  // A replay serve runs the loops a live start runs whose only effects are daemon commands, which all reach the recorded fake daemon, and
+  // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures, compaction,
+  // usage pushes) stays off or dry. `quiet` is a scratch serve without it.
+  const replay = scratch && options.replay === true;
+  const quiet = scratch && !replay;
   const ownChatsOnly = options.ownChatsOnly === true || scratch;
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
@@ -167,7 +173,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
-      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), scratch, join(dataDir, "saved-archive-queue.json"));
+      file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), quiet, join(dataDir, "saved-archive-queue.json"));
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), read: readPoolClasses, set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
@@ -176,7 +182,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
-  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...scratch ? { tickMs: 0 } : {} });
+  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
   const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = boardQueueRead;
@@ -206,11 +212,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
-      leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
-      deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
+      leftovers: (dir, session) => endLeftovers(replay ? dryLeftoverSource : leftoverSource, dir, session),
+      deletedLeftovers: async chat => endLeftovers(replay ? dryLeftoverSource : leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
+      // resume_paused.py sends its continues to the live daemon itself, so a replay serve only reads the cut jobs.
+      interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], ARTIFACTS); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {
           await threads.abort(id);
           await threads.settled(id);
@@ -223,9 +230,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => checkInDuties(duties.store, id, async other => (await chats.ids()).has(other)),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
-      dutyRuns: id => duties.store.runs(id), prs: prStates(),
+      dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,
-      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...scratch ? { tickMs: 0 } : {} },
+      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
@@ -251,7 +258,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = queued;
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
-  if (!scratch) void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
+  if (!quiet) void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
@@ -259,16 +266,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
   const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
-  const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+  const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
-  const agentOutbox = new AgentOutbox(join(dataDir, scratch ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
+  const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     stopped: stopRecords(dataDir),
     send: async (session, text) => {
       const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
-        id => reopenSession(catalog, { agentDir, adopt: root => adoptMoved(root, agentDir) }, id), dutyLog);
+        id => reopenSession(catalog, { agentDir, ...replay ? {} : { adopt: (root: string) => adoptMoved(root, agentDir) } }, id), dutyLog);
       if (response.success) return "sent";
       // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).
       if (REOPENABLE.test(response.error)) return "gone";
@@ -295,8 +302,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     } });
   const agentMessage = { deliver: (session: string, text: string, root?: string, kind?: AgentKind) => agentOutbox.deliver(session, text, root, kind) };
-  const stopWakes = scratch ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
-  const stopBriefs = scratch ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
+  const stopWakes = quiet ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: replay ? async () => ({ done: false }) : readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const stopBriefs = quiet ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
       const chat = await dutyJobs.chat(record.root);
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
@@ -359,7 +366,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     now: () => Date.now(),
   });
   let unloading = false;
-  const unloader = ownChatsOnly ? undefined : setInterval(() => {
+  const unloader = ownChatsOnly && !replay ? undefined : setInterval(() => {
     if (unloading) return;
     unloading = true;
     void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
@@ -369,9 +376,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
     waking: async () => new Set((await pendingWakes(join(dataDir, "wakes"), Date.now()).catch(() => [])).map(wake => wake.session)),
     idleMs: () => { const minutes = defaults.idleEviction(); return minutes === "off" ? null : minutes * 60_000; }, log: dutyLog, everyMs: JOB_CLEANUP_EVERY_MS });
-  const prioritySync = scratch ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
+  const prioritySync = quiet ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
-  if (!scratch) void poolPriorities.sync();
+  if (!quiet) void poolPriorities.sync();
   const ownerTurn = (id: string) => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
   // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
   const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);

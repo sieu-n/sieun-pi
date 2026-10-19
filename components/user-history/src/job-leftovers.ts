@@ -448,3 +448,6 @@ export const leftoverSource: LeftoverSource = {
   },
   kernelStates: transcripts => kernelStates(transcripts),
 };
+
+/** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, tab close or delete, and a tab count of -1 so no tab record is emptied. */
+export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [] };

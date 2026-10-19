@@ -17,8 +17,10 @@ export const DAEMON_READS: ReadonlySet<string> = new Set(["list", "list_saved_se
  * A socket in front of the daemon that a scratch serve uses as its only daemon socket. It passes `DAEMON_READS` through and answers every
  * other command itself with a failure, so no path in the serve (a thread view, a build-change reload, a wake, an outbox send) can change a
  * session. The daemon's own lines (hello, responses, events) pass back unchanged.
+ * `replay` (`serve --scratch --replay-daemon`): a connection whose daemon hello carries `replay: true`, which only a recorded fake daemon sends,
+ * passes every command, so a profile can attach the chats a live start attaches. Any other daemon stays read-only.
  */
-export async function readOnlyDaemon(upstream: string, log: (line: string) => void): Promise<{ socketPath: string; close(): Promise<void> }> {
+export async function readOnlyDaemon(upstream: string, log: (line: string) => void, options: { replay?: boolean } = {}): Promise<{ socketPath: string; close(): Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "sieun-pi-scratch-"));
   const socketPath = join(dir, "daemon.sock");
   const refused = new Set<string>();
@@ -29,6 +31,22 @@ export async function readOnlyDaemon(upstream: string, log: (line: string) => vo
     const end = () => { client.destroy(); daemon.destroy(); clients.delete(client); };
     daemon.on("error", end).on("close", end);
     client.on("error", end).on("close", end);
+    let replaying = false;
+    if (options.replay) {
+      let head = "";
+      const hello = (chunk: Buffer) => {
+        head += chunk;
+        const newline = head.indexOf("\n");
+        if (newline < 0) return;
+        daemon.off("data", hello);
+        try {
+          const first = JSON.parse(head.slice(0, newline)) as { type?: unknown; replay?: unknown };
+          replaying = first.type === "daemon_hello" && first.replay === true;
+        } catch { replaying = false; }
+        if (!replaying && !refused.has("replay")) { refused.add("replay"); log("scratch serve: the daemon hello has no replay mark, so this serve only reads"); }
+      };
+      daemon.on("data", hello);
+    }
     daemon.pipe(client);
     let buffer = "";
     client.on("data", chunk => {
@@ -40,7 +58,7 @@ export async function readOnlyDaemon(upstream: string, log: (line: string) => vo
         let wire: { type?: unknown; id?: unknown; command?: { type?: unknown } };
         try { wire = JSON.parse(line); } catch { continue; }
         const type = String((wire.type === "command" ? wire.command?.type : wire.type) ?? "");
-        if (DAEMON_READS.has(type)) { daemon.write(line + "\n"); continue; }
+        if (replaying || DAEMON_READS.has(type)) { daemon.write(line + "\n"); continue; }
         // A result acknowledgement only follows a command that changes a session, and none reached the daemon.
         if (type === "ack_result") continue;
         if (!refused.has(type)) { refused.add(type); log(`scratch serve: refused daemon command ${type}; a scratch serve only reads`); }

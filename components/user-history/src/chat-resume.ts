@@ -235,9 +235,9 @@ export const interruptedRuns = new InterruptedRuns();
  * The jobs under `chats` whose last turn was cut and that got no input since, by the Whole system duty's own rule (`findCutJobs`). The resume
  * script lists only sessions the daemon still runs, so 27 of the 39 cut jobs the duty counted at 05:22Z on 10-16 never got a continue.
  */
-export async function cutJobs(dataDir: string, chats: readonly string[]): Promise<Set<string>> {
+export async function cutJobs(dataDir: string, chats: readonly string[], artifacts = join(dataDir, "..", "session-artifacts")): Promise<Set<string>> {
   const deleted = JSON.parse(await readFile(join(dataDir, "deleted-jobs.json"), "utf8").catch(() => "{}")) as Record<string, Record<string, number>>;
-  return new Set((await findCutJobs(join(dataDir, "..", "session-artifacts"), chats, deleted, Date.now())).map(job => job.session));
+  return new Set((await findCutJobs(artifacts, chats, deleted, Date.now())).map(job => job.session));
 }
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");

@@ -47,8 +47,8 @@ function copiedDataDir(dir: string, socketPath: string, port: number) {
   return { home, data, row };
 }
 
-/** A daemon that answers every command with success, attach with a live snapshot, and records each command and connection. */
-async function fakeDaemon(t: TestContext, socketPath: string, rows: unknown[]) {
+/** A daemon that answers every command with success, attach with a live snapshot, and records each command and connection; `hello` joins its hello. */
+async function fakeDaemon(t: TestContext, socketPath: string, rows: unknown[], hello: Record<string, unknown> = {}) {
   const commands: string[] = [];
   const sockets = new Set<Socket>();
   let connections = 0;
@@ -58,7 +58,7 @@ async function fakeDaemon(t: TestContext, socketPath: string, rows: unknown[]) {
     socket.on("close", () => sockets.delete(socket));
     socket.on("error", () => {});
     socket.write(JSON.stringify({ type: "daemon_hello", protocol: { name: DAEMON_PROTOCOL_NAME, version: DAEMON_PROTOCOL_VERSION }, schemaRevision: 30,
-      serverCapabilities: CAPABILITIES, appVersion: "0.9.8" }) + "\n");
+      serverCapabilities: CAPABILITIES, appVersion: "0.9.8", ...hello }) + "\n");
     let buffer = "";
     socket.on("data", chunk => {
       buffer += chunk;
@@ -164,4 +164,37 @@ test("a scratch serve refuses the live daemon socket, and with --live-reads-only
   assert.ok(frames.some(frame => frame.includes("scratch copy hello")), `the tab got the chat:\n${reader.out.log}`);
   assert.ok(daemon.commands.includes("list"), `the serve read the live daemon's list:\n${reader.out.log}`);
   assert.deepEqual(daemon.commands.filter(type => !READS.has(type)), [], `the serve acted on a live session:\n${reader.out.log}`);
+});
+
+test("a --replay-daemon scratch serve attaches its chats only through a daemon whose hello carries replay: true, and still refuses the live socket", { timeout: 120_000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), "scratch-replay-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = async (name: string, hello: Record<string, unknown>) => {
+    const socketPath = join(dir, `${name}.sock`), port = await freePort();
+    const { home, data, row } = copiedDataDir(join(dir, name), socketPath, port);
+    const daemon = await fakeDaemon(t, socketPath, [row], hello);
+    const serve = startServe(t, ["--data-dir", data, "--port", String(port), "--socket", socketPath, "--scratch", "--replay-daemon"], home);
+    await waitListening(serve, port);
+    await openTab(t, data, port, 8_000);
+    serve.child.kill("SIGTERM");
+    await new Promise(resolve => serve.child.once("exit", resolve));
+    return { commands: daemon.commands, log: serve.out.log };
+  };
+  const replayed = await run("replay", { replay: true });
+  assert.ok(replayed.commands.includes("attach"), `the serve did not attach through the replay daemon:\n${replayed.log}`);
+  const plain = await run("plain", {});
+  assert.ok(plain.commands.includes("list"), `the serve read the daemon's list:\n${plain.log}`);
+  assert.deepEqual(plain.commands.filter(type => !READS.has(type)), [], `the serve acted on a daemon with no replay mark:\n${plain.log}`);
+  assert.match(plain.log, /no replay mark/);
+
+  const tmp = join(dir, "tmp"), liveDir = join(tmp, `prime-agent-${process.getuid?.() ?? "user"}`), live = join(liveDir, "daemon.sock");
+  mkdirSync(liveDir, { recursive: true, mode: 0o700 });
+  const port = await freePort();
+  const { home, data, row } = copiedDataDir(join(dir, "live"), live, port);
+  const daemon = await fakeDaemon(t, live, [row], { replay: true });
+  const refused = startServe(t, ["--data-dir", data, "--port", String(port), "--socket", live, "--scratch", "--replay-daemon"], home, { TMPDIR: tmp });
+  const code = await Promise.race([new Promise<number | null>(resolve => refused.child.once("exit", resolve)), delay(30_000, "still running")]);
+  assert.notEqual(code, 0, `the replay serve started on the live socket:\n${refused.out.log}`);
+  assert.match(refused.out.log, /live daemon socket/);
+  assert.equal(daemon.connections(), 0, "the refused serve connected to the live daemon");
 });
