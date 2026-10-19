@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
+import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts } from "./agent-states.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
@@ -184,6 +185,15 @@ export interface WatchLine {
   calls?: CallMark[];
   /** This box's hung tool calls this minute (`hungCalls`), which `agents` counts as hung instead of working; absent when none. */
   hung?: HungCall[];
+  /** The services sessions handed off before their kernels were freed (`orphan-services.ts`), the first 5 named; absent when there are none. */
+  services?: ServicesLine;
+}
+/** How many handed-off services the records name, how many of them still run, and the first 5. */
+export interface ServicesLine { count: number; live: number; top: { session: string; unit: string; pid: number; live: boolean }[] }
+export function servicesLine(services: readonly OrphanServiceLine[]): ServicesLine | null {
+  if (!services.length) return null;
+  return { count: services.length, live: services.filter(service => service.live).length,
+    top: services.slice(0, 5).map(service => ({ session: service.session, unit: service.unit, pid: service.pid, live: service.live })) };
 }
 
 /**
@@ -414,6 +424,8 @@ export interface WatchSource {
   remotes?: () => readonly RemoteWatch[];
   /** This box's tool call marks and hung calls (src/hung-calls.ts), shared with Settings > Hosts; absent, no call is judged. */
   calls?: CallWatch;
+  /** The handed-off services on this box; absent, `listOrphanServices`. */
+  services?: () => Promise<readonly OrphanServiceLine[]>;
 }
 /** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
 export interface RemoteWatch { name: string; rows: readonly unknown[];
@@ -463,12 +475,13 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   let own = process.cpuUsage(started);
   const at = now();
   const chatIds = source.chats();
-  const [footprints, queue, chats, usable, memory, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
+  const [footprints, queue, chats, usable, memory, hosts, services] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
     (source.feed ?? readUsable)(at), (source.memory ?? memoryByGroup)().catch(() => null),
     chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
       const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title });
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
-    })))]);
+    }))), (source.services ?? listOrphanServices)().catch(() => [])]);
+  const handed = servicesLine(services);
   const resumed = process.cpuUsage();
   const latency = takeLatency();
   const marks = source.calls ? callMarks(rows, footprints.kernels ?? [], at) : [];
@@ -476,7 +489,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory,
     hung: new Set(hung.map(call => call.session)) }),
     ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
-    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {} };
+    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...handed ? { services: handed } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

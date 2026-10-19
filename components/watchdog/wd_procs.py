@@ -1,4 +1,5 @@
 """Process and pipe readings: one ps table, per-pid lsof, swap and load, and the shells that wedge a tool call."""
+import json
 import os
 import re
 import subprocess
@@ -9,6 +10,27 @@ from pathlib import Path
 from wd_common import _run
 
 MEMINFO = Path('/proc/meminfo')
+ORPHAN_SERVICES = Path.home() / '.prime' / 'agent' / 'orphan-services'
+
+
+def handed_off_pids(root=None):
+    """Pids of the services sessions handed off to scopes of their own before their kernels were freed, with their old shells.
+
+    user-history's orphan-services.ts writes one <session>.json per session. The old shell keeps a pipe to the gone kernel, so it can read as a
+    parked shell; the watchdog never kills these, and the session's delete stops their scope.
+    """
+    root = ORPHAN_SERVICES if root is None else root
+    pids = set()
+    for path in root.glob('*.json') if root.is_dir() else []:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        for handoff in record.get('handoffs', []) if isinstance(record, dict) else []:
+            for service in handoff.get('services', []) if isinstance(handoff, dict) else []:
+                if isinstance(service, dict):
+                    pids.update(str(p) for p in [service.get('pid'), service.get('pgid'), *service.get('members', [])] if isinstance(p, int))
+    return pids
 
 
 def swap_used_gib():
@@ -142,7 +164,7 @@ def pipe_blockers(worker_pid, min_age_min=15):
         pid, addr = parts[1], parts[5]
         if addr in addrs and pid not in tree:
             hits.setdefault(pid, set()).add(addr)
-    out, table = [], _ps_table()
+    out, table, handed = [], _ps_table(), handed_off_pids()
     for pid in hits:
         if pid not in table:
             continue
@@ -156,7 +178,7 @@ def pipe_blockers(worker_pid, min_age_min=15):
         shellish = cmd.split()[0].endswith(('bash', 'sh', 'zsh')) or cmd.startswith('nohup')
         out.append(dict(pid=pid, ppid=ppid, stat=stat, etime=etime, age_min=round(_etime_min(etime), 1),
                         cpu_s=cpu, pct=pct, cmd=cmd[:200],
-                        safe_to_kill=bool(orphan and idle and shellish and old_enough)))
+                        safe_to_kill=bool(orphan and idle and shellish and old_enough and pid not in handed)))
     return out
 
 
@@ -198,10 +220,12 @@ def stuck_cell_procs(worker_pid, min_age_min=20):
 def kill_stuck_cell(worker_pid, min_age_min=20, dry_run=False):
     """Kill the wedged cell's shell + its pipeline, never the kernel and never the worker."""
     procs = stuck_cell_procs(worker_pid, min_age_min)
-    killed, table = [], _ps_table()
+    killed, table, handed = [], _ps_table(), handed_off_pids()
     for p in procs:
         deep = [g for c in p['children'] for g in _children(c, table)]
-        targets = deep + p['children'] + [p['pid']]
+        targets = [t for t in deep + p['children'] + [p['pid']] if t not in handed]
+        if not targets:
+            continue
         if not dry_run:
             _run('kill', *targets)
         killed.append({'shell': p['pid'], 'age_min': p['age_min'], 'cmds': p['child_cmds'], 'targets': targets})
@@ -267,8 +291,10 @@ def parked_shells(min_age_min=10):
     separates a blocking `subprocess.run(capture_output=True)` from a job the agent backgrounded
     to a file on purpose.
     """
-    out, table = [], _ps_table()
+    out, table, handed = [], _ps_table(), handed_off_pids()
     for pid, (ppid, _, etime, tm, pct, cmd) in table.items():
+        if pid in handed:
+            continue
         if not re.search(r'(bash|/bin/sh|zsh) -', cmd) or 'grep' in cmd:
             continue
         try:

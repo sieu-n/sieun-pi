@@ -25,7 +25,7 @@ const { ThreadHub } = await import("../src/chat-threads.ts");
 const { Chats } = await import("../src/chats.ts");
 const { IdIndex } = await import("../src/id-index.ts");
 const { loadRecord } = await import("../src/chat-brief.ts");
-const { ScheduledJobsLeft, SAVED_SESSION_ARCHIVE, archiveSavedSession, resumeSince } = await import("../src/saved-archive.ts");
+const { ScheduledJobsLeft, ServicesStopPending, SAVED_SESSION_ARCHIVE, archiveSavedSession, resumeSince } = await import("../src/saved-archive.ts");
 const { source } = await import("./chats-helpers.ts");
 test.after(() => rm(home, { recursive: true, force: true }));
 
@@ -33,7 +33,7 @@ const OLD = ["attach_snapshot", "event_sequence", "delete_rlm_subagent", "abort_
 const NEW = [...OLD, SAVED_SESSION_ARCHIVE];
 const RESIDENT = "Cannot archive a resident session; stop it with kill";
 
-type Answer = { success: true } | { success: false; error: string };
+type Answer = { success: true } | { success: false; error: string; errorInfo?: unknown };
 type Archived = { sessionPath: string; clientId: unknown; protocol: unknown; acked: boolean };
 
 /** A supervisor socket with its own hello, which answers archive_saved_session with `answer` and records each one and its ack. */
@@ -431,6 +431,52 @@ test("the idle unload's rewrite after its own stop never reopens a thread whose 
   assert.equal(await restarted.keepListed(f.id, 0), false, "a service start forgets its archive times, and the queue file still holds the archive");
   assert.equal(f.state(), "archived");
   assert.equal((await f.pending()).length, 1);
+});
+
+/** Prime's answer when it archived the session and cancelled its jobs but could not read a handed-off service's receipt (contract addendum 2026-10-19T01:07Z). */
+const STOP_PENDING: Answer = { success: false, error: "Detached handoff ownership is unresolved", errorInfo: { code: "ownership_unresolved", sessionId: "s",
+  unresolved: [{ handoffId: "h-b", errorClass: "EACCES", sessionId: "s" }], intentPersisted: true, sessionArchived: true } };
+
+test("an archive whose only open part is Prime's stop of a handed-off service says the jobs are cancelled, and queues no archive retry", async t => {
+  const f = await fixture(t, { known: NEW, box: NEW, answer: () => STOP_PENDING });
+  await assert.rejects(f.chats.archive(f.id), (error: unknown) => error instanceof ServicesStopPending && !(error instanceof ScheduledJobsLeft) &&
+    /scheduled jobs are cancelled/.test(error.message) && /h-b: EACCES/.test(error.message) && !/may still run|not cancelled/.test(error.message));
+  assert.equal(await f.archivedChat(), true, "the owner's archive holds");
+  assert.equal(f.state(), "archived");
+  assert.deepEqual(await f.pending(), [], "Prime finishes its own stop intent, so the app keeps no archive retry");
+  f.later(1_000);
+  f.turn("agent_message");
+  f.later(3_600_000);
+  await f.hub.cancels!.drain();
+  assert.equal(f.box!.archives.length, 1, "an authorized agent reply is never followed by a second archive");
+  assert.deepEqual(f.sent, [], "never a kill");
+});
+
+test("a queued retry that Prime answers with a pending service stop ends the retry, and an agent reply after it reissues nothing", async t => {
+  let answer: Answer = { success: false, error: "The supervisor is draining" };
+  const f = await fixture(t, { known: NEW, box: NEW, answer: () => answer });
+  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  assert.equal((await f.pending()).length, 1);
+  answer = STOP_PENDING;
+  f.later(61_000);
+  await f.hub.cancels!.drain();
+  assert.equal(f.box!.archives.length, 2);
+  assert.deepEqual(await f.pending(), [], "the jobs are cancelled, so the retry ends");
+  f.turn("agent_message");
+  f.later(3_600_000);
+  await f.hub.cancels!.drain();
+  assert.equal(f.box!.archives.length, 2, "no archive after the agent reply");
+});
+
+test("a queued retry whose session answered an authorized agent message is dropped before any archive goes out", async t => {
+  const failing = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
+  await assert.rejects(failing.chats.archive(failing.id), ScheduledJobsLeft);
+  failing.later(1_000);
+  failing.turn("agent_message");
+  failing.later(61_000);
+  await failing.hub.cancels!.drain();
+  assert.equal(failing.box!.archives.length, 1, "the resume rule drops the retry, so the archive is not reissued over the new work");
+  assert.deepEqual(await failing.pending(), []);
 });
 
 test("archiveSavedSession reads a link that closes before the answer as failed", async t => {

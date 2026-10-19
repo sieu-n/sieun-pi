@@ -8,7 +8,7 @@ import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from 
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
-import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, takesSavedArchive } from "./saved-archive.ts";
+import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
 import { isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
@@ -1327,7 +1327,8 @@ export class ThreadHub {
    * Archive the way the terminal agents view deactivates an agent (Ctrl+X): tell open tabs, drop this server's own attachment, stop the session
    * and its scheduled jobs, record the native archived state in its session file, and hide the row at once. A resident session gets a kill; one
    * no worker holds, or one the kill finds already ended ("Unknown active session"), gets `archiveSaved`. When its daemon did not confirm the
-   * stop, the archive still holds here and it throws ScheduledJobsLeft.
+   * stop, the archive still holds here and it throws ScheduledJobsLeft. When the daemon archived it and cancelled its jobs but holds the stop of
+   * a handed-off service for a receipt it could not read, it throws ServicesStopPending and queues nothing, since Prime finishes that stop itself.
    */
   async archive(id: string): Promise<void> {
     this.archiveStarts.set(id, Date.now());
@@ -1349,11 +1350,17 @@ export class ThreadHub {
     await this.dispose(id);
     const killed = summary.activeSessionId !== undefined && await this.archiveKill(id, summary.activeSessionId) === "stopped";
     const host = this.catalog.hostOf(id), sessionPath = this.catalog.daemonPath(summary);
-    const left = killed || !sessionPath ? undefined : await this.archiveSaved(id, host, sessionPath);
+    const saved = killed || !sessionPath ? undefined : await this.archiveSaved(id, host, sessionPath);
     this.setSessionState(summary, "archived");
     this.catalog.holdLifecycle(id, "archived");
     if (summary.lifecycle !== "archived" || summary.activeSessionId) void this.catalog.refresh().catch(() => {});
-    if (left === undefined) { await this.cancels?.done(id); return; }
+    if (saved === undefined || "services" in saved) await this.cancels?.done(id);
+    if (saved === undefined) return;
+    if ("services" in saved) {
+      throw new ServicesStopPending(`The thread is archived and its scheduled jobs are cancelled. A service it handed off still runs, because ${host ?? "this box"}'s ` +
+        `Prime could not read its receipt (${saved.services}). Prime keeps that stop and finishes it at its next start or owner stop, archive or delete.`);
+    }
+    const left = saved.jobs;
     if (!this.cancels || !sessionPath) throw new ScheduledJobsLeft(`The thread is archived, but its scheduled jobs may still run: ${left}.`);
     const queued = await this.cancels.add({ id, host, sessionPath, archivedAt, error: left }).then(() => true, () => false);
     throw new ScheduledJobsLeft(queued
@@ -1379,9 +1386,10 @@ export class ThreadHub {
    * unload's kill already ended the jobs. The command goes out only under the hello of its own connection, and a daemon with it cancels the
    * saved tree's jobs. When it refuses the session as resident at the owner's archive, the archive kills that session's own active session,
    * as it kills any resident session, and asks once more if the kill finds it gone again. A session loaded after a confirmed archive is left
-   * alone: an archived thread may answer a later agent message. Returns why the jobs may still be armed, or undefined.
+   * alone: an archived thread may answer a later agent message. Returns why the jobs may still be armed (`jobs`), the receipts whose service
+   * stop Prime still holds (`services`), or undefined.
    */
-  private async archiveSaved(id: string, host: string | null, sessionPath: string): Promise<string | undefined> {
+  private async archiveSaved(id: string, host: string | null, sessionPath: string): Promise<{ jobs: string } | { services: string } | undefined> {
     const where = host ? `${host}'s daemon` : "this box's daemon";
     const known = this.catalog.helloOf(host);
     if (known && !takesSavedArchive(known)) return undefined;
@@ -1389,18 +1397,19 @@ export class ThreadHub {
       try {
         const client = await this.hostDaemon(host);
         if (!takesSavedArchive(client.hello ?? await client.waitForHello(host ? 3000 : LOCAL_HELLO_MS))) return undefined;
-      } catch (error) { return `${where} did not answer (${error instanceof Error ? error.message : String(error)})`; }
+      } catch (error) { return { jobs: `${where} did not answer (${error instanceof Error ? error.message : String(error)})` }; }
     }
     for (let round = 0; round < 2; round++) {
       const answer = await archiveSavedSession(this.catalog.socketPathFor(host), sessionPath, 30000);
       if (answer.kind === "unsupported" || answer.kind === "archived") return undefined;
-      if (answer.kind === "failed") return `${where} answered: ${answer.error}`;
+      if (answer.kind === "stopPending") return { services: answer.unresolved };
+      if (answer.kind === "failed") return { jobs: `${where} answered: ${answer.error}` };
       await this.catalog.refresh().catch(() => {});
       const active = (await this.catalog.summary(id))?.activeSessionId;
-      if (!active) return `${where} holds the session in a worker it does not list as this thread's`;
+      if (!active) return { jobs: `${where} holds the session in a worker it does not list as this thread's` };
       if (await this.archiveKill(id, active) === "stopped") return undefined;
     }
-    return `the session loaded and stopped again on ${where} during the archive`;
+    return { jobs: `the session loaded and stopped again on ${where} during the archive` };
   }
 
   /**
@@ -1428,6 +1437,7 @@ export class ThreadHub {
     if (since === "unproven") return { outcome: "again", error: "a user prompt or a service-sent message came in after the archive, which may be a cron run or a wake, so the cancel waits for the owner to archive or reopen the thread" };
     const answer = await archiveSavedSession(this.catalog.socketPathFor(entry.host), entry.sessionPath, 30000);
     if (answer.kind === "archived") return { outcome: "done" };
+    if (answer.kind === "stopPending") return { outcome: "done", note: `its jobs are cancelled, and Prime keeps the stop of the handed-off services whose receipts it could not read (${answer.unresolved})` };
     if (answer.kind === "unsupported") return { outcome: "done", note: "its daemon no longer lists saved_session_archive" };
     if (answer.kind === "resident") return { outcome: "again", error: "the daemon holds the session in a worker" };
     if (answer.error.startsWith(UNKNOWN_SAVED)) return { outcome: "done", note: answer.error };
