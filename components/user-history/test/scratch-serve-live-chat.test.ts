@@ -151,8 +151,15 @@ test("a scratch serve refuses the live daemon socket, and with --live-reads-only
   const daemon = await fakeDaemon(t, live, [row]);
   const args = ["--data-dir", data, "--port", String(port), "--socket", live, "--scratch"];
 
+  // The release run at 06:2xZ on 10-19 refused on the port's identity check ("Port 35597 did not answer"), which came first. A port that
+  // accepts and never answers stands in for that, and the live socket rule still answers.
+  const held = new Set<Socket>();
+  const silent = createNetServer(socket => { held.add(socket); socket.on("error", () => {}); });
+  await new Promise<void>(resolve => silent.listen(port, "127.0.0.1", resolve));
   const refused = startServe(t, args, home, { TMPDIR: tmp });
   const code = await Promise.race([new Promise<number | null>(resolve => refused.child.once("exit", resolve)), delay(30_000, "still running")]);
+  for (const socket of held) socket.destroy();
+  await new Promise(resolve => silent.close(resolve));
   assert.notEqual(code, 0, `the serve started on the live socket:\n${refused.out.log}`);
   assert.match(refused.out.log, /live daemon socket/);
   assert.equal(daemon.connections(), 0, "the refused serve connected to the live daemon");

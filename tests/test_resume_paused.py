@@ -25,6 +25,14 @@ def at(minutes_ago):
     return (NOW - dt.timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
 
 
+class PassClock(dt.datetime):
+    """A wall clock stopped at 10-18 04:25Z, for a fixture taken from that morning's Mac pass."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 18, 4, 25, tzinfo=dt.timezone.utc).astimezone(tz)
+
+
 def assistant(minutes_ago, stop, error=None):
     message = {"role": "assistant", "stopReason": stop, "content": []}
     if error:
@@ -1235,6 +1243,8 @@ class ResumePausedTests(unittest.TestCase):
                 self.assertEqual([(p["reason"], p["errored_at"]) for p in report["paused"]], [("error", "2026-10-18T04:18:25.152Z")] if job == "token hook" else [])
 
     def test_a_mac_job_stopped_after_a_warm_pass_found_it_gets_no_continue(self):
+        # The pass runs at 04:25Z on 10-18, a few minutes after the stop, since save_state drops a send older than a day: on the wall clock
+        # this test lost its record from 10-19 04:18Z.
         second_job = self.MAC_JOB.replace("sub-df01e456/01a14d38-d851-77a8-969c-29b2acca24f6", "sub-5e1f0a77/01a14d39-0000-77a8-969c-29b2acca2500")
         record = second_job.rsplit("/", 1)[0] + "/rlm-subagent.json"
         chat = self.MAC_JOB.split("/session-artifacts/")[1].split("/")[0]
@@ -1253,7 +1263,8 @@ class ResumePausedTests(unittest.TestCase):
                 sent = []
                 box.send = lambda target, text: (sent.append(target), stop(files), '{"deliveryStatus": "delivered"}')[-1]
                 with patch.dict(resume_paused.UNLOADED, unloaded, clear=True), patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
-                        patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"):
+                        patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                        patch.object(resume_paused.dt, "datetime", PassClock):
                     for dry_run in (True, False):
                         args = argparse.Namespace(message="continue", since_minutes=0, dry_run=dry_run, include_children=False, direct=True, only="",
                                                   state=str(self.root / "state.json"))

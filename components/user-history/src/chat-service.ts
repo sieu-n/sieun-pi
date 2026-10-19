@@ -344,17 +344,18 @@ async function serve(options: Options): Promise<void> {
       process.stdout.write("The chat stopped cleanly. The login item stays idle until chat start or the next login.\n"); return;
     }
   }
-  const existing = listenFd === null ? await running(service) : null;
-  if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   const scratch = await isScratch(options, service.directory);
   if (scratch && options.adopt === "live") throw new Error("A scratch serve only reads, so it cannot adopt the live chats. Drop --adopt-live, or serve the live data dir without --scratch.");
   if (options.liveReadsOnly && !scratch) throw new Error("--live-reads-only is for a scratch serve: add --scratch, or serve a copy of the data dir.");
   if (options.replayDaemon && (!scratch || options.liveReadsOnly)) throw new Error("--replay-daemon is for a scratch serve on a recorded fake daemon: add --scratch, and drop --live-reads-only.");
   // At 12:17Z on 10-18 a --scratch serve on a copy of browser-chat and the live socket opened 01a14d31, which its copied own-chats.json named,
   // and reloaded its extension, which rebuilt the chat's Python kernel. The live socket takes an explicit flag, and even then only reads.
+  // These refusals read only the flags and the socket, so they come before the port's identity check, which a busy port or a slow box can fail.
   if (scratch && !options.liveReadsOnly && await isLiveSocket(service.config.socketPath)) {
     throw new Error(`A scratch serve refuses the live daemon socket ${service.config.socketPath}. Point --socket at a fake daemon, or pass --live-reads-only to read the live sessions; the serve then still sends only reads (no attach, reload, restart, setting or message).`);
   }
+  const existing = listenFd === null ? await running(service) : null;
+  if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   // A scratch serve on the live dir still keeps off everything the main instance owns: the daemon, the bridges, Slack, Tailscale and login.
   const primary = service.primary && !scratch;
   if (scratch) process.stderr.write(`${new Date().toISOString()} scratch serve: it only reads; no wakes, briefs, check-ins, duties, job cleanup, archives, resumes, reopens, adopts or pool writes (${service.directory})\n`);
