@@ -56,7 +56,7 @@ async function fixture(t: TestContext) {
   };
   const unloader = new IdleUnloader({
     rows: () => [listed], localRows: () => [], idleMs: () => 10 * MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
-    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, title: () => null,
+    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, release: async () => true, title: () => null,
     request: async (_row, type) => type === "get_state" ? { success: true, data: { isSessionActive: false } } : kill(),
     // The chat backend's wiring for a thread in threads.json that the owner did not archive as a chat.
     stopped: async (row, _isChat, since) => { await hub.keepListed(row.sessionId, since); },

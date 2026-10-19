@@ -93,6 +93,11 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
  */
 export class Dormancy {
   private readonly since = new Map<string, number>();
+  /**
+   * Dormant chats let go of asleep in their provider retry (`ThreadHub.restAsleep`): the idle unload kills each right after, and until then the
+   * catalog still lists its open turn as work, which must not attach it again.
+   */
+  private readonly asleep = new Set<string>();
   /** Each silent child told to its chat, with the time it went silent, so no later detach tells the same silent spell again. */
   private readonly toldSilent = new Map<string, number>();
   readonly now: () => number;
@@ -133,7 +138,7 @@ export class Dormancy {
   }
 
   has(id: string): boolean { return this.since.has(id); }
-  forget(id: string): void { this.since.delete(id); }
+  forget(id: string): void { this.since.delete(id); this.asleep.delete(id); }
 
   /** The daemon's idle time, or "off" when the settings file cannot be read (logged), so a bad file never detaches a chat. */
   minutes(): IdleEvictionMinutes {
@@ -153,8 +158,10 @@ export class Dormancy {
     return minutes !== "off" && this.now() - activeAt >= minutes * 60_000 && !await this.held(id);
   }
 
-  sleep(id: string, idleMs: number, how: "detached" | "left detached" | "detached to recycle its worker"): void {
+  sleep(id: string, idleMs: number, how: "detached" | "left detached" | "detached to recycle its worker" | "detached asleep in its provider retry"): void {
     this.since.set(id, this.now());
+    if (how === "detached asleep in its provider retry") this.asleep.add(id);
+    else this.asleep.delete(id);
     this.before.delete(id);
     process.stderr.write(`dormant ${id.slice(0, 8)}: idle ${Math.floor(idleMs / 60_000)} min, ${how}\n`);
   }
@@ -164,6 +171,7 @@ export class Dormancy {
     const since = this.since.get(id);
     if (since === undefined) return false;
     this.since.delete(id);
+    this.asleep.delete(id);
     process.stderr.write(`wake ${id.slice(0, 8)}: ${trigger}, dormant ${Math.floor((this.now() - since) / 60_000)} min\n`);
     return true;
   }
@@ -188,12 +196,13 @@ export class Dormancy {
    * The dormant chats a catalog update shows at work, or with message activity after the detach while a worker holds them: an agent message
    * or a child's report woke the session with no client attached. An evicted session's row falls back to its file time, so a saved row never counts.
    * A row at work only through silent jobs (`silentSince`) does not count, or a chat detached past its silent child would attach again at once.
+   * Nor does the open turn of a chat let go of asleep in its provider retry: only new activity wakes it, such as a retry that fired.
    */
   woken(rows: readonly SessionRow[]): string[] {
     return rows.flatMap(row => {
       const since = this.since.get(row.id);
       if (since === undefined) return [];
-      return this.atWork(row) || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since) ? [row.id] : [];
+      return (!this.asleep.has(row.id) && this.atWork(row)) || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since) ? [row.id] : [];
     });
   }
 

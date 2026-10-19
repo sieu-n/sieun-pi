@@ -377,6 +377,28 @@ export class ThreadHub {
     return await this.detach(id, thread, "detached to recycle its worker");
   }
 
+  /**
+   * Lets go of a pinned chat asleep in its provider retry right before the idle unload stops it (src/idle-unload.ts `retrying`), and keeps it
+   * dormant until a send, an open, an agent message or its revive needs it: the kill would close the session under the attach, and the closed
+   * attach would open it again at once (`keepPinnedLive`). A chat with no thread in the hub opens saved first, so `Chats.revive` reads its
+   * failed turn and reopens it once pi-pool admits its tree. A duty that holds the chat, or an open or resume under way, keeps it. True when the
+   * chat is let go now.
+   */
+  async restAsleep(id: string): Promise<boolean> {
+    if (!this.pinned.has(id) || this.resuming.has(id) || this.opening.has(id) || await this.dormant.held(id)) return false;
+    const thread = this.threads.get(id) ?? await this.open(id, true, false);
+    if (this.resuming.has(id) || this.threads.get(id) !== thread) return false;
+    const live = thread.live;
+    this.dormant.sleep(id, this.dormant.now() - thread.activeAt, "detached asleep in its provider retry");
+    if (live) {
+      thread.flush();
+      thread.live = null;
+      live.unsubscribe();
+      await live.connection.dispose().catch(() => {});
+    }
+    return true;
+  }
+
   /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */
   private evict(kind: "live" | "saved"): void {
     const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !thread.opening && !this.pinned.has(thread.id))

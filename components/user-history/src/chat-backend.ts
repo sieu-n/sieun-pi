@@ -329,9 +329,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
-  // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job asleep in
-  // Prime's provider retry once pi-pool holds its tree past the quiet window, since Prime's own sweeps fail under load and count a retry as
-  // work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
+  // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job or chat
+  // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, since Prime's own sweeps fail under load and count a
+  // retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
   // (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that knows which chats
   // a tab or the pool holds.
   const unloader_ = new IdleUnloader({
@@ -345,9 +345,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     waking: async now => new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session)),
     // A session asleep in Prime's provider retry stops when its transcript ends on the failed reply and pi-pool serves its tree (keyed by the
     // root session) only past the unload's minutes. Only this box's sessions: another box's pool decides for its own. The job sweep's resume
-    // pass continues it once the pool or the token hook lets its tree in (resume_paused.py unload_stop_holds).
-    held: (rows, now, idleMs) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
-      tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }),
+    // pass continues a job once the pool or the token hook lets its tree in (resume_paused.py unload_stop_holds), and a chat's revive reopens
+    // the chat once pi-pool admits it (Chats.revive).
+    held: (rows, now, idleMs, chatIds) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
+      tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }, chatIds),
+    release: id => threads.restAsleep(id),
     own: async pids => {
       const footprints = await readFootprints([...pids]);
       return new Map(Object.entries(footprints.workers).map(([pid, worker]) => [Number(pid), worker.own ?? 0] as const));

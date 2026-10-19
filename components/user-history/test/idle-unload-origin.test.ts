@@ -76,7 +76,7 @@ function idleRow(activeSessionId: string): SessionSummary {
 function unloaderOn(client: DaemonClient, row: SessionSummary, stopped: string[], restorable = true, logs: string[] = []): IdleUnloader {
   return new IdleUnloader({
     rows: () => [row], localRows: () => [], idleMs: () => 10 * MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
-    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, title: () => null,
+    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, release: async () => true, title: () => null,
     request: (stop, type) => unloadRequest(client, stop.activeSessionId!, type, restorable),
     stopped: async stop => { stopped.push(stop.sessionId); },
     log: line => { logs.push(line); }, now: () => Date.now(),
@@ -193,7 +193,7 @@ async function threadFixture(t: TestContext) {
   const hub = new ThreadHub(join(dir, "daemon.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const unloader = new IdleUnloader({
     rows: () => [listed], localRows: () => [], idleMs: () => 10 * MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
-    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, title: () => null,
+    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, release: async () => true, title: () => null,
     request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type),
     stopped: async (row, _isChat, since) => { await hub.keepListed(row.sessionId, since); },
     log: () => {}, now: () => Date.now(),

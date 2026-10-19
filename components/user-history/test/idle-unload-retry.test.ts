@@ -47,9 +47,10 @@ test("the 01:11Z rows: each session asleep in its provider retry on a pool hold 
   const waiting = Object.keys(day.tails);
   assert.equal(waiting.length, 176);
   assert.ok(candidates.length >= 160, `${candidates.length} candidates`);
-  assert.ok(candidates.every(row => !chats.has(row.sessionId) && row.attachedClients === 0 && !row.isStreaming && !row.isRunningTools), "never a chat, a client or a turn at work");
+  assert.ok(candidates.every(row => row.attachedClients <= (chats.has(row.sessionId) ? 1 : 0) && !row.isStreaming && !row.isRunningTools),
+    "no client but the service's own attach on a chat, and no turn at work");
   const held = await providerWaits(candidates, at, TEN_MIN, reads());
-  for (const [id, until] of held) assert.ok(until > at + TEN_MIN && until <= at + HOLD_REACH_MS, id);
+  for (const [id, until] of held) assert.ok(until !== null && until > at + TEN_MIN && until <= at + HOLD_REACH_MS, id);
   assert.ok(held.size >= 140, `${held.size} held`);
   const before = unloadPlan(day.rows, input);
   const after = unloadPlan(day.rows, { ...input, held });
@@ -95,7 +96,7 @@ function harness(rows: SessionSummary[], held: ReadonlyMap<string, number>, stat
   const unloader = new IdleUnloader({
     rows: () => rows, localRows: () => [], idleMs: () => TEN_MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
     waking: async () => new Set(), held: async candidates => new Map([...held].filter(([id]) => candidates.some(row => row.sessionId === id))),
-    own: async () => new Map(), restNow: async () => false, title: () => null,
+    own: async () => new Map(), restNow: async () => false, release: async () => true, title: () => null,
     request: async (row, type) => { calls.push({ type, session: row.sessionId }); return type === "get_state" ? state(row) : { success: true }; },
     stopped: async row => { stopped.push(row.sessionId); }, log: line => { lines.push(line); }, now: () => at,
   });

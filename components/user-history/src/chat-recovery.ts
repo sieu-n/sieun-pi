@@ -124,12 +124,20 @@ export function revivalMessage(stall: Pick<Stall, "error" | "at" | "owner">): st
  * `pi-pool who`): on 10-18 Crawler VP (01a115e2) slept on a slot at 21:49:27Z with job reports queued behind it from 19:53Z, and the pool handed it
  * claude7 at once when a hand abort at 20:54:52Z woke it. Otherwise the restart goes at its time on the schedule (transient failures: 30 s, 1, 2 min first; owner turns: 30 s first); before that
  * the feed shows the wait to the owner. `woke`: the scheduler just woke from a sleep, and a transient stall restarts now.
+ * `stopped`: no worker runs the turn (the idle unload stopped the chat asleep in its provider retry, or a service start left it detached), so
+ * no retry of Prime's continues it; it restarts once the pool admits its tree (`admits`) and waits until then, since a restart before that
+ * only meets the same refusal and loads the chat for nothing.
  */
-export function stallAction(input: { stall: Stall; down: boolean; claude: ClaudeState | null; attempts: number; since: number; now: number; woke?: boolean; admits?: boolean }):
+export function stallAction(input: { stall: Stall; down: boolean; claude: ClaudeState | null; attempts: number; since: number; now: number; woke?: boolean; admits?: boolean; stopped?: boolean }):
   { kind: "restart"; message: string; abort: boolean } | { kind: "wait"; wait: ChatWait | null } | { kind: "none" } {
   const { stall, attempts, since, now } = input;
   const transient = !stall.aborted && failureCause(stall.error) === "transient";
   const restart = { kind: "restart" as const, message: revivalMessage(stall), abort: stall.retrying };
+  if (input.stopped) {
+    if (input.admits === true) return restart;
+    const until = stall.slotAt ?? input.claude?.freeAt ?? null;
+    return { kind: "wait", wait: stall.owner !== null && until !== null && until > now ? { kind: "account", until } : null };
+  }
   if (poolHolds(stall, now) && !(stall.queued > 0 && input.admits === true)) return { kind: "wait", wait: stall.owner === null ? null : { kind: "account", until: stall.slotAt! } };
   if (input.woke && transient) return restart;
   if (stall.retrying && stall.queued === 0 && !input.down) return { kind: "none" };
