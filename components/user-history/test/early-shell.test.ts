@@ -1,5 +1,6 @@
 // Guards the 10-18 12:42Z restart: a page shell sent during a chat service restart waited 12.1 s for the new process's catalog and bundle.
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { request } from "node:http";
@@ -90,7 +91,8 @@ test("on systemd's socket the early shell's own process answers shells while the
   process.env.HOME = home;
   try { await writePacked(bundleCacheDir(await clientSourceHash()), js, css); } finally { process.env.HOME = previousHome; }
   const fixture = new URL("./fixtures/early-start.mjs", import.meta.url).pathname;
-  const main = spawn("python3", ["-c", holder, process.execPath, fixture, dir, "1500"], { env: { ...process.env, HOME: home }, stdio: ["pipe", "pipe", "inherit"], detached: true, timeout: 30_000, killSignal: "SIGKILL" });
+  const gate = join(dir, "imported.gate");
+  const main = spawn("python3", ["-c", holder, process.execPath, fixture, dir, "0", gate], { env: { ...process.env, HOME: home }, stdio: ["pipe", "pipe", "inherit"], detached: true, timeout: 30_000, killSignal: "SIGKILL" });
   t.after(() => { try { process.kill(-main.pid!, "SIGKILL"); } catch { /* gone */ } });
   const lines = createInterface({ input: main.stdout! });
   const seen: string[] = [];
@@ -100,7 +102,8 @@ test("on systemd's socket the early shell's own process answers shells while the
   const port = Number(await new Promise<string>(resolve => lines.once("line", resolve)));
   const base = `http://127.0.0.1:${port}/cap/`;
   const nav = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
-  // The service thread stands still for 1.5 s; the shell comes from the other process meanwhile.
+  // The service thread stands still until the gate file exists; the shell comes from the other process meanwhile. A fixed 1.5 s stand-still
+  // ended before the shell came at a load of 280 on 10-19 (release of c29cf48b).
   const shell = await get(base + "?t=t1", nav);
   assert.match(shell.body, /data-chat-token="tok"/);
   assert.equal(seen.includes("imported"), false, "the shell came while the service thread was still importing");
@@ -110,6 +113,7 @@ test("on systemd's socket the early shell's own process answers shells while the
     const raw = connect(port, "127.0.0.1", () => raw.write("GET /cap/api/ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nhello"));
     let text = ""; raw.on("data", chunk => { text += chunk; if (text.includes("echo:hello")) { raw.destroy(); resolve(text); } }); raw.on("error", reject);
   });
+  writeFileSync(gate, "");
   await saw("imported");
   assert.equal(answered, false, "an API request waits for the real server");
   main.stdin!.write("take\n");

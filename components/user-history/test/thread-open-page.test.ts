@@ -62,6 +62,10 @@ test("thread open: the first frame holds the newest page and older pages read on
   assert.equal(first.snapshot.children, undefined, "the children are not in the snapshot frame");
   assert.ok(openRead < size / 2, `the open read ${openRead} bytes of a ${size}-byte session file`);
 
+  // The open's fill reads back to TAIL_BYTES behind the first frame, and rchar counts the whole process, so the page reads are measured after
+  // it ends: at a load of 280 on 10-19 the fill still ran during the first older page, which then read 11.4 MB of 36.9 MB.
+  await hub.open(ID);
+
   // Scroll back to the first message: every page reads its own bytes, and the pages join with no gap and no repeat.
   const all: ThreadMessage[] = [...page];
   let cursor = first.snapshot.older;

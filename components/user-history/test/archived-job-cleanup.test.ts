@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -39,6 +40,10 @@ test("a deleted job releases what it owns under a live chat and under an archive
   const live = "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb";
   const archived = "01a14210-4e7d-72c3-aa67-e3d476f4e728";
   const unknown = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
+  // The stray helper scans every process on the box, so each run's sessions get ids of their own: at 17:3xZ on 10-19 under a load of 280 one
+  // run's sweep found another run's stray by the shared session id and stopped it, and the other run logged "stopped no process".
+  const run = randomBytes(4).toString("hex");
+  const sessionId = (n: number) => `01a153f4-0000-7000-8000-${run}000${n}`;
   const scratch = join(home, "scratch");
   const write = (file: string, text = "x") => { mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, text); return file; };
   /** A job folder the daemon wrote: its record with `status`, its transcript, and its ownership record. */
@@ -52,21 +57,21 @@ test("a deleted job releases what it owns under a live chat and under an archive
   const tree = (name: string) => { write(join(scratch, name, "tree", "note.txt")); return join(scratch, name, "tree"); };
 
   const liveTree = tree("live-job");
-  job(live, "sub-l1", "deleted", "01a153f4-0000-7000-8000-000000000001", { paths: [liveTree], units: ["live-rig.service"] });
+  job(live, "sub-l1", "deleted", sessionId(1), { paths: [liveTree], units: ["live-rig.service"] });
   const archivedTree = tree("archived-job");
-  const archivedSession = "01a153f4-0000-7000-8000-000000000002";
+  const archivedSession = sessionId(2);
   const archivedDir = job(archived, "sub-a1", "deleted", archivedSession, { paths: [archivedTree], units: ["archived-rig.service"] });
   const stray = detached("exec sleep 600", home, { RLM_HARNESS_STATE_DIR: join(archivedDir, archivedSession, "harness") });
   const activeTree = tree("active-job");
-  job(archived, "sub-a2", "completed", "01a153f4-0000-7000-8000-000000000003", { paths: [activeTree], units: ["active-rig.service"] });
+  job(archived, "sub-a2", "completed", sessionId(3), { paths: [activeTree], units: ["active-rig.service"] });
   const busyTree = tree("busy-job");
   const sharedHelper = write(join(scratch, "shared", "helper.mjs"));
   const report = write(join(home, "work", "archived-job", "REPORT.md"));
-  job(archived, "sub-a3", "deleted", "01a153f4-0000-7000-8000-000000000004", { paths: [busyTree, join(scratch, "shared"), join(home, "work", "archived-job")], units: [] });
+  job(archived, "sub-a3", "deleted", sessionId(4), { paths: [busyTree, join(scratch, "shared"), join(home, "work", "archived-job")], units: [] });
   const busy = detached("exec sleep 600", busyTree);
   const reader = detached(`exec tail -f ${sharedHelper}`, home);
   const unknownTree = tree("unknown-job");
-  job(unknown, "sub-u1", "deleted", "01a153f4-0000-7000-8000-000000000005", { paths: [unknownTree], units: ["unknown-rig.service"] });
+  job(unknown, "sub-u1", "deleted", sessionId(5), { paths: [unknownTree], units: ["unknown-rig.service"] });
   pids.push(stray, busy, reader);
   await pause(50);
 
