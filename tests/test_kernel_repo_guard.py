@@ -32,6 +32,9 @@ class RepoGuardAtRunTime(KernelGuardBase):
         git.chmod(0o755)
         self.checkout = self.tmp.resolve() / "auto-sns-agent"
         shutil.copytree(SOURCE, self.checkout / "scripts/repo/agent/guards", ignore=shutil.ignore_patterns("*.test.mjs"))
+        # guards/agent-branch.mjs loads the dev-branch rule from HEAD's scripts/ci/branches.mjs.
+        (self.checkout / "scripts/ci").mkdir(parents=True)
+        shutil.copy(SOURCE.parents[2] / "ci/branches.mjs", self.checkout / "scripts/ci/branches.mjs")
         subprocess.run(["/usr/bin/git", "init", "-q", "-b", "sieun/dev", str(self.checkout)], check=True)
         subprocess.run(["/usr/bin/git", "-C", str(self.checkout), "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"], check=True)
         self.commit_guards()
@@ -40,7 +43,7 @@ class RepoGuardAtRunTime(KernelGuardBase):
     def commit_guards(self):
         """The guard loads from the checkout's HEAD, so the fixture commits its guard files."""
         git = ["/usr/bin/git", "-C", str(self.checkout), "-c", "user.name=t", "-c", "user.email=t@t"]
-        subprocess.run([*git, "add", "-A", "scripts/repo/agent/guards"], check=True)
+        subprocess.run([*git, "add", "-A", "scripts/repo/agent/guards", "scripts/ci"], check=True)
         subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "guards"], check=True)
 
     def run_in_checkout(self, session_dir, command):
@@ -64,15 +67,50 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assertEqual(self.fake_runs(), ["git push -q origin HEAD:refs/heads/sieun/dev"])
         self.assertEqual(self.logged()[-1]["verdict"], "owner-allow")
 
-    def test_a_ci_push_runs(self):
-        out = self.run_in_checkout(CRAWLER_OPS, "git push origin HEAD:refs/heads/ci/guard-everywhere")
+    def test_a_probe_ref_push_runs(self):
+        # Since 2026-10-19 a probe goes to refs/probe/<sha>, and a push to a ci/ branch is refused.
+        out = self.run_in_checkout(CRAWLER_OPS, "git push origin HEAD:refs/probe/guard-everywhere")
         self.assert_passed(out)
-        self.assertEqual(self.fake_runs(), ["git push origin HEAD:refs/heads/ci/guard-everywhere"])
+        self.assertEqual(self.fake_runs(), ["git push origin HEAD:refs/probe/guard-everywhere"])
 
     def test_a_shared_checkout_hazard_is_refused_after_os_chdir(self):
         out = self.run_in_checkout(CRAWLER_OPS, "git stash")
         self.assertIn("repo guard (git-hazard)", out["refused"] or "")
         self.assertEqual(self.fake_runs(), [])
+
+    def mark_shared(self):
+        """The full marker: HEAD holds the shared-index rule and .git/agent-shared-checkout holds the checkout's path."""
+        rule = self.checkout / "scripts/repo/agent/shared-index.mjs"
+        shutil.copy(SOURCE.parent / "shared-index.mjs", rule)
+        git = ["/usr/bin/git", "-C", str(self.checkout), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "add", str(rule)], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "rule"], check=True)
+        (self.checkout / ".git/agent-shared-checkout").write_text(f"{self.checkout}\n")
+
+    def run_from_home(self, command):
+        """A cell that names the checkout only inside an f-string, as bash(f"cd {R} && ..."), with the kernel left in the home dir."""
+        cell = f"R = {str(self.checkout)!r}\nr = await bash(f{('cd {R} && ' + command)!r})\n"
+        return self.run_cells(cell, env={"RLM_SESSION_DIR": CRAWLER_OPS, "GLOBAL_RULES_AUTO_SNS_AGENT": str(self.checkout), "REPO_GUARD_LOG": str(self.repo_log)})
+
+    def test_git_rm_in_the_marked_checkout_is_refused_and_points_at_a_scratch_tree(self):
+        # 10-19 21:58Z: bash(f"cd {R} && git rm -q x") ran in the shared checkout after its full marker went on.
+        self.mark_shared()
+        out = self.run_from_home("git rm -q a.txt")
+        self.assertIn("repo guard (git-shared-index-hazard)", out["refused"] or "")
+        self.assertIn("your own scratch tree", out["refused"])
+        self.assertEqual(self.fake_runs(), [])
+
+    def test_git_merge_file_on_loose_files_in_the_marked_checkout_is_refused(self):
+        self.mark_shared()
+        out = self.run_from_home("git merge-file /tmp/x/ours /tmp/x/base /tmp/x/theirs")
+        self.assertIn("repo guard (git-shared-index-hazard)", out["refused"] or "")
+        self.assertIn("git merge-file -p", out["refused"])
+        self.assertEqual(self.fake_runs(), [])
+
+    def test_git_rm_cached_and_merge_file_p_run_in_the_marked_checkout(self):
+        self.mark_shared()
+        self.assert_passed(self.run_from_home("git merge-file -p ours base theirs"))
+        self.assertEqual(self.fake_runs(), ["git merge-file -p ours base theirs"])
 
     def run_check_in_app(self, command):
         app = self.checkout / "apps/crawler-v3"
