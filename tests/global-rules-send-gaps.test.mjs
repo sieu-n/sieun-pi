@@ -200,6 +200,50 @@ test("be-1..be-4: our own email send entry points through convex run or the HTTP
   ]);
 });
 
+// A stand-in for this machine's Convex and its Vent, in a child process because the guard reads it with a blocking curl. /api/query answers
+// the VENT_URL of the admin key it gets: key "mock" names a Vent on /vent-mock that answers mode mock, key "real" one that answers mode real.
+const FAKE_LOCAL = `
+const http = require("node:http");
+const server = http.createServer((req, res) => {
+  const base = "http://127.0.0.1:" + server.address().port;
+  const key = String(req.headers.authorization || "").replace(/^Convex /, "");
+  const body = req.url === "/api/query" ? { status: "success", value: { name: "VENT_URL", value: base + "/vent-" + key } }
+    : req.url === "/vent-mock/healthz" ? { ok: true, mode: "mock" } : req.url === "/vent-real/healthz" ? { ok: true, mode: "real" } : null;
+  res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
+  res.end(JSON.stringify(body ?? {}));
+});
+server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+`;
+
+test("a convex run send against this machine's Convex passes only when its Vent answers mode mock", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", FAKE_LOCAL], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => child.kill());
+  const port = await new Promise((resolve) => child.stdout.once("data", (chunk) => resolve(String(chunk).trim())));
+  const local = `http://127.0.0.1:${port}`;
+  const send = "npx convex run search/senders/resendDomainActions:sendTestEmail '{\"toEmail\":\"delivered@resend.dev\"}'";
+  allowed("bash", [`${send} --url ${local} --admin-key mock`, `${send} --url=${local}/ --admin-key=mock`]);
+  blocked("bash", [
+    `${send} --url ${local} --admin-key real`,
+    `${send} --url https://tremendous-eel-825.convex.cloud --admin-key mock`,
+    `${send} --url ${local} --admin-key mock --prod`,
+    `${send} --deployment tremendous-eel-825`,
+    `${send} --url http://127.0.0.1:1 --admin-key mock`,
+    send,
+  ]);
+  const repo = join(root, "convex-repo");
+  mkdirSync(join(repo, "sub"), { recursive: true });
+  writeFileSync(join(repo, ".env.local"), `CONVEX_SELF_HOSTED_URL=${local}\nCONVEX_SELF_HOSTED_ADMIN_KEY=mock\n`);
+  allowed("bash", [send, `CONVEX_SELF_HOSTED_URL=${local} ${send}`], repo);
+  blocked("bash", [
+    `CONVEX_SELF_HOSTED_ADMIN_KEY=real ${send}`,
+    `CONVEX_DEPLOYMENT=prod:tremendous-eel-825 ${send}`,
+    `env CONVEX_DEPLOY_KEY=prod:x ${send}`,
+    `CONVEX_SELF_HOSTED_URL=https://convex.example.com ${send}`,
+    `cd sub && ${send}`,
+  ], repo);
+});
+
 test("cli-2 and cli-3: an aside agent prompt that sends is blocked with no exec word or with a flag before exec", () => {
   blocked("bash", [
     "aside 'Reply to the GeoNode support ticket and send it'",

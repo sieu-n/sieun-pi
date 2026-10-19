@@ -43,6 +43,9 @@ WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
 state = threading.local()
 WRITING = contextvars.ContextVar("global_rules_send_guard_writing", default=False)
+# The OWNER_OK token of the HTTP request a server in this process is answering, from its x-owner-ok header (wrap_asgi).
+REQUEST_OK = contextvars.ContextVar("global_rules_send_guard_request_ok", default="")
+OWNER_OK_HEADER = b"x-owner-ok"
 
 
 def load_targets() -> list:
@@ -92,6 +95,8 @@ def approval() -> str:
         frame = frame.f_back
     if os.environ.get("OWNER_OK"):
         texts.append(f"OWNER_OK={os.environ['OWNER_OK']}")
+    if REQUEST_OK.get():
+        texts.append(f"OWNER_OK={REQUEST_OK.get()}")
     return "\n".join(texts)
 
 
@@ -347,6 +352,8 @@ def request_body(request) -> str:
 
 
 def guarded_send(original, is_async: bool):
+    """A transport's handle_request, the point where an httpx request leaves the process. A client on a mock transport, such as a
+    mock-mode Vent's ModeTransport answering from its fakes, sends nothing out and is not judged."""
     if is_async:
         async def send(self, request, *args, **kwargs):
             on_http(request.method, str(request.url), request_body(request))
@@ -395,16 +402,39 @@ def wrap_sockets() -> None:
                 setattr(cls, name, guarded_write(original))
 
 
-HTTP_MODULES = ("httpx", "httpx2")
-
-
 def wrap_http(module) -> None:
-    """httpx and httpx2 open raw sockets, so the audit events miss their method and URL; check each request at Client.send."""
-    for cls_name, is_async in (("Client", False), ("AsyncClient", True)):
+    """httpx and httpx2 open raw sockets, so the audit events miss their method and URL; check each request where the network transport
+    takes it."""
+    for cls_name, method, is_async in (("HTTPTransport", "handle_request", False), ("AsyncHTTPTransport", "handle_async_request", True)):
         cls = getattr(module, cls_name, None)
-        original = getattr(cls, "send", None)
+        original = getattr(cls, method, None)
         if original is not None and not getattr(original, "send_guarded", False):
-            cls.send = guarded_send(original, is_async)
+            setattr(cls, method, guarded_send(original, is_async))
+
+
+def wrap_asgi(module) -> None:
+    """A Starlette or FastAPI server in this process, such as a Vent started from a kernel, judges the sends it makes for a request with
+    that request's x-owner-ok header as the approval, so an approved caller's send passes and any other send stays refused."""
+    cls = getattr(module, "Starlette", None)
+    original = getattr(cls, "__call__", None)
+    if original is None or getattr(original, "send_guarded", False):
+        return
+
+    async def call(self, scope, receive, send):
+        token = dict(scope.get("headers") or ()).get(OWNER_OK_HEADER, b"") if scope.get("type") == "http" else b""
+        if not token:
+            return await original(self, scope, receive, send)
+        reset = REQUEST_OK.set(token.decode("latin-1").strip())
+        try:
+            return await original(self, scope, receive, send)
+        finally:
+            REQUEST_OK.reset(reset)
+
+    call.send_guarded = True
+    cls.__call__ = call
+
+
+IMPORT_WRAPS = {"httpx": wrap_http, "httpx2": wrap_http, "starlette.applications": wrap_asgi}
 
 
 def wrap_mcp() -> None:
@@ -450,11 +480,11 @@ def guard_children() -> None:
 
 
 class WrapOnImport:
-    """Wraps httpx and httpx2 when a process imports them. Importing httpx up front cost each child Python 0.15 CPU s (183 of its 186 ms of
+    """Wraps httpx, httpx2 and Starlette when a process imports them. Importing httpx up front cost each child Python 0.15 CPU s (183 of its 186 ms of
     startup, measured with -X importtime on 10-18), and most children never use it."""
 
     def find_spec(self, name, path=None, target=None):
-        if name not in HTTP_MODULES:
+        if name not in IMPORT_WRAPS:
             return None
         for finder in sys.meta_path:
             if finder is self or not hasattr(finder, "find_spec"):
@@ -479,13 +509,13 @@ class WrappingLoader:
 
     def exec_module(self, module):
         self.inner.exec_module(module)
-        wrap_http(module)
+        IMPORT_WRAPS[module.__name__](module)
 
 
 def wrap_http_modules() -> None:
-    for name in HTTP_MODULES:
+    for name, wrap in IMPORT_WRAPS.items():
         if name in sys.modules:
-            wrap_http(sys.modules[name])
+            wrap(sys.modules[name])
     if not any(isinstance(finder, WrapOnImport) for finder in sys.meta_path):
         sys.meta_path.insert(0, WrapOnImport())
 

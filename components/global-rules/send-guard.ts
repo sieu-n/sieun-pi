@@ -101,7 +101,7 @@ export function refusal(what: string): string {
 		`global-rules send guard: refused, because ${what}. An email or a vendor ticket reply goes out only after the owner approves it (correction c37). ` +
 		"Draft the message instead, and add a For you todo on your chat's board that quotes the draft and the recipient, with choices such as " +
 		'"Send it" / "Not yet". After the owner approves it, run the same call again with OWNER_OK=<chat id>/<todo id> in it: an env prefix in bash ' +
-		"(`OWNER_OK=<chat>/<todo> curl ...`), or a `# OWNER_OK=<chat>/<todo>` line in an ipython cell. Reading mail, drafting, and GET requests stay allowed."
+		"(`OWNER_OK=<chat>/<todo> curl ...`), a `# OWNER_OK=<chat>/<todo>` line in an ipython cell, or an `x-owner-ok: <chat>/<todo>` header on a request to a local server such as Vent. Reading mail, drafting, and GET requests stay allowed."
 	);
 }
 
@@ -113,6 +113,11 @@ const UV_VALUE_FLAGS = /^(?:--with|--with-requirements|--project|--directory|-p|
 const MAX_SCRIPT_BYTES = 500000;
 const ASIDE_SUBCOMMANDS = new Set(["repl", "exec", "session", "skills", "guide", "account", "memory", "mcp", "help", "login", "logout", "version", "update", "tabs"]);
 const CONVEX_SEND_FN = /(?:^|[:/])(?:send|notify|invite|deliver|dispatch|reply|forward|dm)\w*$|(?:Send|Notify|Invite|Deliver|Dispatch|Reply|Forward)$/;
+const CONVEX_OTHER_TARGET = /^--(?:prod|preview-name|preview-create|deployment-name|deployment|env-file)(?:=|$)/;
+const LOOPBACK_URL = /^https?:\/\/(?:localhost|127\.\d+\.\d+\.\d+|\[::1\])(?::\d+)?\/?$/i;
+const ENV_NAME_VALUE = /^([A-Za-z_]\w*)=(.*)$/;
+/** A key in a script's vars that no shell name can be: set once the script runs `cd` or `pushd`, so the CLI's cwd is no longer the check's. */
+const MOVED = " moved";
 const OSA_SEND = /application\s+"?(?:Mail|Messages|Microsoft Outlook|Outlook)\b[\s\S]*\bsend\b|Application\s*\(\s*["'](?:Mail|Messages|Microsoft Outlook)["']\s*\)[\s\S]*\.\s*send\s*\(/;
 
 /** A script file an argv runs, read so its sends can be judged; null when it is missing, not a file, or too big. */
@@ -259,7 +264,7 @@ function judgeArgv(eff: string[], depth: number, out: Verdict[], cwd: string, va
 	if ((name === "vercel" || name === "vc") && /^teams?$/.test(args[0] ?? "") && args[1] === "invite") return push("`vercel teams invite` emails an invitation");
 	if (name === "convex" && args[0] === "run") {
 		const fn = args.slice(1).find((a) => !a.startsWith("-") && !a.startsWith("{"));
-		if (fn && CONVEX_SEND_FN.test(fn)) push(`\`convex run ${fn}\` runs a function that sends email or a message`);
+		if (fn && CONVEX_SEND_FN.test(fn) && !convexRunStaysLocal(args, cwd, vars)) push(`\`convex run ${fn}\` runs a function that sends email or a message`);
 		return;
 	}
 	if (name === "cua-driver" && /^(?:mcp|serve)$/.test(args[0] ?? "")) return push("this starts cua-driver's MCP server outside the cua-guard proxy, so its desktop sends go unchecked");
@@ -288,8 +293,78 @@ function judgeArgv(eff: string[], depth: number, out: Verdict[], cwd: string, va
 function collect(command: string, depth: number, out: Verdict[], cwd: string, vars: Map<string, string>): void {
 	if (depth > 4) return;
 	const { commands, nested } = lex(command);
-	for (const argv of expandVars(commands, vars)) judgeArgv(effective(argv), depth, out, cwd, vars);
+	for (const argv of expandVars(commands, vars)) {
+		const eff = effective(argv);
+		if (eff[0] === "cd" || eff[0] === "pushd") vars.set(MOVED, "1");
+		// `NAME=value cmd` and `env NAME=value cmd` set NAME for that command only.
+		const prefix = argv.slice(0, argv.length - eff.length).flatMap((w) => {
+			const m = w.match(ENV_NAME_VALUE);
+			return m ? [[m[1], m[2]] as [string, string]] : [];
+		});
+		judgeArgv(eff, depth, out, cwd, prefix.length ? new Map([...vars, ...prefix]) : vars);
+	}
 	for (const inner of nested) collect(inner, depth + 1, out, cwd, vars);
+}
+
+/** The NAME=value rows of a dotenv file, or none when it cannot be read. */
+function dotenvRows(path: string): Map<string, string> {
+	try {
+		const rows = readFileSync(path, "utf8").split("\n").flatMap((line) => {
+			const m = line.trim().match(/^(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$/);
+			return m ? [[m[1], m[2].replace(/^(['"])(.*)\1$/, "$2")] as [string, string]] : [];
+		});
+		return new Map(rows);
+	} catch {
+		return new Map();
+	}
+}
+
+/** The body curl prints for one short read, or null when the read fails. */
+function curlRead(args: string[], input = ""): string | null {
+	try {
+		// measured: 101 reads of the local Convex /api/query and the Vent /healthz on us-metal02 at load 62 to 103 (10-19) took at most 20 ms; 5 s also stays under the kernel judge's 30 s TIMEOUT, past which the kernel lets a check through.
+		return execFileSync("curl", ["-sS", "--fail", "--max-time", "5", ...args], { input, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] });
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * True when a `convex run` targets this machine's own Convex (a loopback URL) and that deployment's VENT_URL answers mode mock on /healthz.
+ * Every provider call from Convex goes through Vent, and a mock-mode Vent answers from its fakes, so the email or message never leaves.
+ * The target is the one the Convex CLI picks: --url with --admin-key first, else CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY from
+ * the command's prefix, the environment, .env.local and .env. A cloud selector anywhere (--prod, --deployment, CONVEX_DEPLOYMENT,
+ * CONVEX_DEPLOY_KEY), a `cd` before the run, two different URLs, a failed read or a real-mode Vent keeps the refusal.
+ */
+function convexRunStaysLocal(args: string[], cwd: string, vars: Map<string, string>): boolean {
+	if (args.some((a) => CONVEX_OTHER_TARGET.test(a))) return false;
+	const flag = (name: string): string | undefined => {
+		const i = args.findIndex((a) => a === name || a.startsWith(`${name}=`));
+		return i === -1 ? undefined : args[i].startsWith(`${name}=`) ? args[i].slice(name.length + 1) : args[i + 1];
+	};
+	let url = flag("--url");
+	let adminKey = flag("--admin-key");
+	if (!url || !adminKey) {
+		if (vars.has(MOVED)) return false;
+		const sources = [vars, new Map(Object.entries(process.env) as [string, string][]), dotenvRows(join(cwd, ".env.local")), dotenvRows(join(cwd, ".env"))];
+		const values = (key: string) => sources.map((s) => s.get(key)?.trim()).filter((v): v is string => Boolean(v));
+		if (values("CONVEX_DEPLOYMENT").length || values("CONVEX_DEPLOY_KEY").length) return false;
+		const urls = new Set([...(url ? [url] : []), ...values("CONVEX_SELF_HOSTED_URL")].map((u) => u.replace(/\/+$/, "")));
+		if (urls.size !== 1) return false;
+		url = [...urls][0];
+		adminKey ??= values("CONVEX_SELF_HOSTED_ADMIN_KEY")[0];
+	}
+	if (!adminKey || !LOOPBACK_URL.test(url)) return false;
+	const query = JSON.stringify({ path: "_system/cli/queryEnvironmentVariables:get", args: { name: "VENT_URL" }, format: "json" });
+	const env = curlRead(["-H", "@-", "-H", "Content-Type: application/json", "--data", query, `${url.replace(/\/+$/, "")}/api/query`], `Authorization: Convex ${adminKey}\n`);
+	try {
+		const ventUrl = (JSON.parse(env ?? "") as { value?: { value?: unknown } }).value?.value;
+		if (typeof ventUrl !== "string" || !/^https?:\/\//i.test(ventUrl)) return false;
+		const health = JSON.parse(curlRead([`${ventUrl.replace(/\/+$/, "")}/healthz`]) ?? "") as { mode?: unknown };
+		return health.mode === "mock";
+	} catch {
+		return false;
+	}
 }
 
 export function judgeSendShell(text: string, cwd = process.cwd()): Verdict[] {

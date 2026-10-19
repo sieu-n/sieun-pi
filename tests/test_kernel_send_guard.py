@@ -52,12 +52,33 @@ spec = json.loads(sys.stdin.read())
 guard = spec["guard"]
 exec(compile(open(guard).read(), guard, "exec"), {"__name__": "global_rules_send_guard", "__file__": guard})
 
-def mock_transport():
-    import httpx
-    def handle(request):
-        SEEN.append([request.method, str(request.url)])
-        return httpx.Response(200, json={"id": "fake"})
-    return httpx.MockTransport(handle)
+def mock_transport(is_async=False):
+    # httpx's own network transport over a fake connection pool: the guard judges the request where it would leave, and nothing leaves.
+    import httpcore, httpx
+    def answer(request):
+        url = request.url
+        SEEN.append([request.method.decode(), f"{url.scheme.decode()}://{url.host.decode()}{url.target.decode()}"])
+        return httpcore.Response(200, headers=[(b"content-type", b"application/json")], content=b'{"id": "fake"}')
+    class Pool:
+        def handle_request(self, request):
+            return answer(request)
+        async def handle_async_request(self, request):
+            return answer(request)
+        def close(self):
+            pass
+        async def aclose(self):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+    transport = httpx.AsyncHTTPTransport() if is_async else httpx.HTTPTransport()
+    transport._pool = Pool()
+    return transport
 
 async def bash(command):
     import subprocess
@@ -268,7 +289,7 @@ class HttpBuiltAtRunTime(KernelGuardBase):
         out = self.run_cells(
             "import httpx\n"
             "async def send_vendor_reply(ticket_id, body):\n"
-            "    async with httpx.AsyncClient(transport=mock_transport()) as c:\n"
+            "    async with httpx.AsyncClient(transport=mock_transport(True)) as c:\n"
             "        await c.put(f'https://acme.zendesk.com/api/v2/tickets/{ticket_id}.json', json={'ticket': {'comment': {'body': body}}})\n",
             "await send_vendor_reply(ticket_id=42, body='hi')\n",
         )
@@ -481,9 +502,22 @@ class ChildProcesses(KernelGuardBase):
         self.assertEqual(out["result"], {"httpx": False, "cache": None})
 
     def test_httpx_imported_after_install_is_wrapped(self):
-        out = self.run_cells("import httpx, httpx._client\nRESULT = [getattr(httpx.Client.send, 'send_guarded', False), getattr(httpx.AsyncClient.send, 'send_guarded', False)]\n")
+        out = self.run_cells(
+            "import httpx, httpx._client\n"
+            "RESULT = [getattr(httpx.HTTPTransport.handle_request, 'send_guarded', False), getattr(httpx.AsyncHTTPTransport.handle_async_request, 'send_guarded', False)]\n"
+        )
         self.assert_passed(out)
         self.assertEqual(out["result"], [True, True])
+
+    def test_a_client_on_a_mock_transport_sends_nothing_out_and_is_not_judged(self):
+        out = self.run_cells(
+            "import httpx\n"
+            "fake = httpx.MockTransport(lambda request: httpx.Response(200, json={'id': 'fake'}))\n"
+            "RESULT = httpx.Client(transport=fake).post('https://api.resend.com/emails', json={}).status_code\n"
+        )
+        self.assert_passed(out)
+        self.assertEqual(out["result"], 200)
+        self.assertEqual(self.sends(), [])
 
     def test_a_child_python_that_posts_to_a_mail_api_is_refused_inside_the_child(self):
         out = self.child(self.write("child_post.py", CHILD_POST))
@@ -662,3 +696,81 @@ class PlainGitSkipsOnlyPasses(KernelGuardBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+VENT_LIKE = """
+import asyncio, json, sys
+import httpx
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+sys.path.insert(0, sys.argv[1])
+from runner_helpers import mock_transport
+
+
+def relay(transport):
+    async def handle(request):
+        async with httpx.AsyncClient(transport=transport()) as client:
+            reply = await client.post("https://api.resend.com/emails", json={"to": "delivered@resend.dev"})
+        return JSONResponse({"status": reply.status_code})
+    return handle
+
+
+real = Starlette(routes=[Route("/resend/emails", relay(lambda: mock_transport(True)), methods=["POST"])])
+mock = Starlette(routes=[Route("/resend/emails", relay(lambda: httpx.MockTransport(lambda r: httpx.Response(200, json={}))), methods=["POST"])])
+
+
+async def call(app, token):
+    headers = {"x-owner-ok": token} if token else {}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8793") as client:
+        try:
+            return (await client.post("/resend/emails", headers=headers)).status_code
+        except Exception as error:
+            return type(error).__name__
+
+
+async def main():
+    chat = sys.argv[2]
+    print(json.dumps({
+        "real_approved": await call(real, f"{chat}/t1"),
+        "real_without": await call(real, None),
+        "real_held": await call(real, f"{chat}/t2"),
+        "mock_without": await call(mock, None),
+    }))
+
+
+asyncio.run(main())
+"""
+
+HELPERS = RUNNER[RUNNER.index("def mock_transport"):RUNNER.index("async def bash")].replace("SEEN.append", "SEEN_APPEND")
+
+
+class ServerInAChildProcess(KernelGuardBase):
+    """A Vent started from a kernel loads the guard through python-child. Its relay sends pass with the request's approved x-owner-ok header,
+    stay refused without one, and pass on a mock transport, which answers from fakes."""
+
+    def test_a_vent_like_server_sends_only_with_an_approved_owner_ok_header_or_on_a_mock_transport(self):
+        python = ("uv", "run", "--no-project", "--offline", "--quiet", "--with", "starlette", "--with", "httpx", "--python", sys.executable, "python")
+        if not shutil.which("uv") or subprocess.run([*python, "-c", "import starlette, httpx"], capture_output=True).returncode:
+            self.skipTest("starlette is not in the uv cache")
+        helpers = self.tmp / "helpers"
+        helpers.mkdir()
+        (helpers / "runner_helpers.py").write_text("SEEN_APPEND = lambda row: None\n" + HELPERS)
+        script = self.tmp / "vent_like.py"
+        script.write_text(VENT_LIKE)
+        cache = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True).stdout.strip()
+        out = self.run_cells(
+            "import json, os, subprocess, sys\n"
+            f"p = subprocess.run([sys.executable, {str(script)!r}, {str(helpers)!r}, {CHAT!r}], capture_output=True, text=True, timeout=120)\n"
+            "RESULT = {'code': p.returncode, 'out': p.stdout.strip().splitlines()[-1:] , 'stderr': p.stderr[-2000:]}\n",
+            python=python,
+            env={"UV_CACHE_DIR": cache},
+        )
+        self.assert_passed(out)
+        self.assertEqual(out["result"]["code"], 0, out)
+        self.assertEqual(json.loads(out["result"]["out"][0]), {
+            "real_approved": 200, "real_without": "SendRefused", "real_held": "SendRefused", "mock_without": 200,
+        })
+        lines = [(line["decision"], line["ownerOk"]) for line in self.sends() if "api.resend.com" in line["target"]]
+        self.assertEqual(lines, [("allowed", f"{CHAT}/t1"), ("refused", None), ("refused", f"{CHAT}/t2")])
