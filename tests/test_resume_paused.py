@@ -942,6 +942,28 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.sent, [(self.CI_TRAIN, "continue")])
         self.assertNotIn("sk-ant", json.dumps(report) + str(stdout.mock_calls))
 
+    def test_the_send_pass_runs_the_token_hooks_of_its_runs_at_once(self):
+        """On 10-19 the send pass ran the hook for 239 runs one at a time, 333 s of a 365 s pass, and chat restarts killed it before its sends."""
+        log = self.root / "hook-log"
+        hook = self.root / "pi-pool-token"
+        hook.write_text("#!/bin/sh\n" f'echo "start $(date +%s.%N)" >> "{log}"\nsleep 0.4\n' f'echo "end $(date +%s.%N)" >> "{log}"\nprintf sk-ant-oat01-secret\n')
+        hook.chmod(0o755)
+        names = [f"{index:012x}" for index in range(8)]
+        for name in names:
+            self.session(name, [{**assistant(30, "error", self.HOOK_ERROR), "message": {**assistant(30, "error", self.HOOK_ERROR)["message"], "provider": "anthropic"}}])
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                  only=",".join("0" * 24 + name for name in names), state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "TOKEN_HOOK", hook), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            resume_paused.resume(self.sessions, args, NOW)
+        running, most = 0, 0
+        for _, kind in sorted((float(stamp), kind) for kind, stamp in (line.split() for line in log.read_text().splitlines())):
+            running += 1 if kind == "start" else -1
+            most = max(most, running)
+        self.assertEqual(sorted(self.sent), sorted((name, "continue") for name in names))
+        self.assertEqual(log.read_text().count("start"), 8)
+        self.assertGreater(most, 1, "the hooks ran one at a time")
+
     def test_a_saved_job_maps_to_the_job_above_it_so_the_hook_check_asks_for_its_tree(self):
         chat = "01a11ba8-9d2c-727c-8ded-38f819ca9f29"
         job = self.root / "artifacts" / chat / "sub-738c756b" / "01a14130-7ba1-71ba-be87-6794d2b743b0.jsonl"

@@ -1064,6 +1064,22 @@ def stop_archive(entries, last):
     return None
 
 
+# Token hook runs at once in a send pass. One at a time each took 1.4 to 2.7 s on us-metal02 on 10-19, so the 239 runs cut on a token hook
+# error took 333 s of a 365 s pass, and chat restarts at 16:44Z, 16:49Z, 16:56Z, 17:05Z and 17:12Z killed every send pass before its sends.
+# 16 at once ran 32 hooks in 6.7 s.
+HOOK_RUNS = 16
+
+
+def prefetch_hooks(pairs, cache):
+    """Fills `cache` with hook_blocker's answer for each (root session id, provider) in `pairs`, 16 hooks at a time."""
+    todo = list(dict.fromkeys(pair for pair in pairs if pair not in cache))
+    if not todo:
+        return
+    with concurrent.futures.ThreadPoolExecutor(HOOK_RUNS) as pool:
+        answers = list(pool.map(lambda pair: hook_blocker(pair[0], pair[1], {}), todo))
+    cache.update(zip(todo, answers))
+
+
 def hook_blocker(root_session_id, provider, cache):
     """Why the token hook gives this tree no token now, or None when it gives one or there is no hook to run.
 
@@ -1455,6 +1471,21 @@ def save_state(path, state, now, keep_minutes):
     tmp.replace(path)
 
 
+def hook_pairs(sessions, only, by_id, entries_of):
+    """(tree, provider) for each run named with --only whose last message failed on the token hook: the hooks the send pass asks about,
+    so prefetch_hooks runs them together before the loop."""
+    pairs = []
+    for s in sessions:
+        if (s.get("sessionId") or s["id"]) not in only:
+            continue
+        sid = short_id(s)
+        entries = entries_of(sid)
+        msg = (last_message(entries) or {}).get("message") or {}
+        if msg.get("role") == "assistant" and msg.get("stopReason") == "error" and TOKEN_HOOK_ERROR.search(str(msg.get("errorMessage") or "")):
+            pairs.append((pool_tree(s, by_id.get(head_of(sid, by_id), s)), run_provider(entries)))
+    return pairs
+
+
 def find_paused(sessions, since_minutes, state, now, direct=False, only=frozenset(), check_hook=False):
     by_id = {short_id(s): s for s in sessions}
     tails = {}
@@ -1522,6 +1553,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         head = head_of(sid, by_id)
         STOPPED.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)", "head": head,
                         "head_session_id": head_session(head, s), "stopped_at": at, "stopped_by": why, **({"host": BOX.name} if BOX.remote else {})})
+
+    if check_hook and only:
+        prefetch_hooks(hook_pairs(sessions, only, by_id, entries_of), hooks)
 
     paused = []
     for s in sessions:
