@@ -89,10 +89,12 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 3. A title that says keep, stays, always, every ... is green, every ... reads clean or keeps working is upkeep, so it becomes a duty metric and never a plan step.
 4. A request with both parts gets one plan step for the fix and one duty metric for the keeping.
 5. A goal that reaches its done line closes, and its upkeep becomes a duty metric that puts a fix step back on the plan when it misses.
-6. A standing risk lives on a wiki risk page that a duty checks, never as a plan step.
-7. The chat and its check-in push every open step toward done in each run, by resuming its job, starting a fix job, or closing it with evidence.
+6. Goals are 3 to 6 measured outcomes in the owner's terms, like "Instagram profiles crawl at 10k a minute, held 6 h", with the work steps under the goal they serve.
+7. A problem that kept coming back in the thread becomes a duty metric, and a goal that is met and held long enough moves its metric into a duty.
+8. A standing risk lives on a wiki risk page that a duty checks, never as a plan step.
+9. The chat and its check-in push every open step toward done in each run, by resuming its job, starting a fix job, or closing it with evidence.
 
-[plan-and-duties](references/plan-and-duties.md) has the owner's words, the fix when he asks to fix plan and duties, and how a duty run works.
+[plan-and-duties](references/plan-and-duties.md) has the owner's words, the Crawler VP example, the fix when he asks to fix plan and duties, and how a duty run works.
 
 ## Upkeep
 

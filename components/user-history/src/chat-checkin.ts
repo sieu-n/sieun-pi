@@ -343,13 +343,17 @@ export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end" | 
   const due = precheck.goals.flatMap(push => { const line = goalDueLine(push); return line ? [line] : []; });
   const stuck = precheck.end.filter(entry => !OK_STATES.has(entry.state)).length;
   const upkeep = (precheck.risks ?? []).filter(item => upkeepWords(item.text));
+  const metGoals = precheck.goals.filter(push => push.trend?.kind === "met");
   const items = [...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
     ...jobLine ? [`${jobLine.replace(/^Check-in: /, "The server already ")} Check in this run that each one reported; start a job in place of one that did not.`] : [],
     ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner. Push each one toward done in this run: resume its job, start a fix job, ` +
       "or close it with the evidence you checked, and give a step only the owner can unblock a For you todo. The detail file lists them."] : [],
     ...upkeep.length ? [`${upkeep.length === 1 ? `${upkeep[0]!.id} ${quote(upkeep[0]!.text)} reads` : `${upkeep.length} open goals and steps, like ${upkeep[0]!.id} ` +
       `${quote(upkeep[0]!.text)}, read`} like upkeep, and the plan holds only tasks that finish. Make the keeping a duty metric, close the item with a note ` +
-      "naming the duty, and keep only a fix that is still open as a step with a \"Done when\" line."] : []];
+      "naming the duty, and keep only a fix that is still open as a step with a \"Done when\" line."] : [],
+    ...metGoals.length ? [`${metGoals.length === 1 ? `${metGoals[0]!.goal.id} ${quote(metGoals[0]!.goal.text)} meets` : `${metGoals.length} goals, like ` +
+      `${metGoals[0]!.goal.id} ${quote(metGoals[0]!.goal.text)}, meet`} ${metGoals.length === 1 ? "its" : "their"} target. Once it has held long enough, ` +
+      "such as 6 h for a rate, close the goal and move its metric into a duty that puts a fix step back when it slips."] : []];
   return [
     `## Goals\n${goals.length ? goals.join("\n") : "The chat has no open goal."}`,
     `## Due this run\n${items.length ? items.map((line, at) => `${at + 1}. ${line}`).join("\n") : "Nothing is due: every goal moves on pace with a live owner. End in one short turn."}`,

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { planRiskSteps } from "../src/checkin-findings.ts";
 import { checkInPrompt } from "../src/chat-checkin.ts";
+import type { GoalPush } from "../src/checkin-goals.ts";
 import { applyBoardOp } from "../src/shared/chat-board.ts";
 import { upkeepWords } from "../src/shared/upkeep-title.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -30,8 +31,10 @@ test("plan_add saves an upkeep goal and flags it", () => {
   assert.doesNotMatch(applyBoardOp(board, { op: "plan_add", text: "Fix the crawler login" }, "agent", "2026-10-19T14:00:00Z", () => "p999").summary, /upkeep/);
 });
 
-test("the check-in counts the open upkeep goal and asks to make it a duty metric", () => {
+test("the check-in asks to make an open upkeep goal a duty metric, and a met goal's metric too", () => {
   const risks = planRiskSteps(board);
   assert.deepEqual(risks.map(item => item.id), ["p453"]);
   assert.match(checkInPrompt({ goals: [], end: [], risks }, null), /p453 .* reads like upkeep.*duty metric/);
+  const met = { goal: board.plan[0]!, stale: false, act: "on_pace", words: [], trend: { kind: "met" } } as unknown as GoalPush;
+  assert.match(checkInPrompt({ goals: [met], end: [], risks: [] }, null), /meets its target.*move its metric into a duty/);
 });

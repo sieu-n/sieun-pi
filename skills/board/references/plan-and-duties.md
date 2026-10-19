@@ -14,6 +14,10 @@ Read this before you add a goal, a step or a duty, and when the owner says "fix 
 8. A goal that reaches its done line closes, and any upkeep it leaves becomes a duty metric that puts a fix step back on the plan when it misses.
 9. The chat and its check-in push every open step toward done in each run, by resuming its job, starting a fix job, or closing it with evidence.
 10. Only a blocker the chat cannot clear goes to For you, and everything around it is ready so the owner's part takes seconds.
+11. Goals are a few outcomes in the owner's terms, 3 to 6 open at a time, each measured with a current value, a target and when it was read, and each one finishes.
+12. The work steps sit under the goal they serve, and a step that no owner intent backs is dropped with a note.
+13. A problem that kept coming back in the thread, fixed or hit more than once, becomes a duty metric, not a plan step.
+14. A goal that is met and held long enough, such as 6 h for a throughput goal, closes, and its metric moves into a duty that puts a fix step back when it slips.
 
 ## The owner's words
 
@@ -31,6 +35,34 @@ The owner, 2026-10-19 about 13:40Z, after the AI harness chat's goal "Every duty
 2. "duties are things that need constant montiroing thus set a heartbeat."
 3. "things like "i need to keep X working" should NOT be registered as a zombie plan. ALL PLANS SHOULD BE EPHEMERAL, and the Chat (and Chat-check-in) MUST BE DESIGNED SO THAT IT ACTIVELY PERSUES AND CLEARS ALL THE TASKS."
 4. "Duties are similar, but a flexible, sensible agent-centric way of keeping something in good shape. The goal should be really well aligned with human intent, and agent essentially acts as an engineer. What can be automated via script -> automate. however check and analyze observability that and make SENSIBLE decisions is the only goal. if a rule is unsensible -> change rule. no nitpicking, should have real impact, and the system in question error prone."
+
+The owner, 2026-10-19 about 15:32Z, on how crawler-v3's plans should look (msg mvfe8foz, then mvfe930k):
+
+1. "for example of instagram crawling workers, i think set it NOW to <plans>: they aren't achieved yet p1- achieve 10k profiles/min throughput instagram profile consistently for 6h + p2- nothing is backlogging ... p3- confidently discover and index ALL instagram creators (1000follower+)in the world (initial crawl) should be 200M + p4- make a system where all profiles are updated at least once every 2 week p5- make the crawler durable ... actually simulate this. p6- setup an ALerting system where alerts come DIRECTLY to that crawler VP thread"
+2. "<duties>: ... Keep crawler running actively - Check the Observability and Metrics - Geonode mbps >=100mbps always - (when p1, p2,p4 is achieved, withinnitial stability 6h+ check, they now should come to duty.)"
+3. "when p6 is achieved, it is your duty to keep LGTM and Grafana dashbaords up to date to any changes, and carefully tune the alerts system. if it's false alert -> try to reduce it change condition. if alert missed it ... add that alert"
+4. "이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼." In English, he asked to push every thread to this shape, to analyze the owner's intent in each thread, and to group problems that kept coming back into duties.
+
+## The main example, the Crawler VP's Instagram board
+
+The owner set this plan for the Crawler VP's Instagram crawling on 10-19. It has six measured goals, and none of them is met yet. The done lines are the checks he named.
+
+| Goal | Done when |
+|---|---|
+| p1 Instagram profiles crawl at 10k a minute | The rate holds at 10k profiles a minute or more for 6 h on the crawler dashboard |
+| p2 Nothing backlogs | Every crawl queue's backlog stays flat or falls for 6 h |
+| p3 Every Instagram creator with 1,000+ followers is found and indexed | The initial crawl has indexed about 200M creators |
+| p4 Every profile is refreshed at least every 2 weeks | No indexed profile's last refresh is older than 14 days |
+| p5 The crawler survives failures | A simulated box, proxy and database failure each recovers with no lost work |
+| p6 Alerts reach the Crawler VP thread directly | A test alert from Grafana wakes the Crawler VP thread |
+
+The duties hold the upkeep in his words.
+
+1. "Keep crawler running actively" is a duty whose metric reads the live crawl rate.
+2. "Check the Observability and Metrics" is a duty that reads the dashboards he would open.
+3. "Geonode mbps >=100mbps always" is a duty metric with a target of 100 Mbps.
+4. When p1, p2 and p4 are met and held for 6 h, each goal closes and its number becomes a metric in the crawler duty, which puts a fix step back on the plan when it slips.
+5. When p6 is met, a duty keeps the LGTM and Grafana dashboards current with each change and tunes the alerts. A false alert gets its condition changed, and a missed problem gets a new alert.
 
 ## What goes where
 
@@ -50,15 +82,17 @@ The owner, 2026-10-19 about 13:40Z, after the AI harness chat's goal "Every duty
 
 ## Fix the plan
 
-1. Read `board.open()` and `board.get(id)` for each open goal, and tag each open goal and step as task, upkeep, risk, or done or stale.
-2. Close each done or stale step in the same batch, done with the evidence you checked or dropped with the reason.
-3. Move each upkeep item into a duty metric, as in "Fix the duties" below, then close or remove it and name the duty in its goal's note.
-4. When that duty's check script does not exist yet, replace the upkeep item with one task step, "Build the duty <name>", with a job and the note "Done when the duty is in the duty file and its precheck runs once". Close it in the same turn the duty is written and its precheck has run.
-5. Move each risk to one line on the chat's wiki risk page with how it is checked and what to do when it fires, make sure a duty metric counts the risks that fire, then remove the step and name the page and the duty in its goal's note.
-6. A goal whose open steps were all upkeep or risk closes, with a note naming the duty and the page that now hold it.
-7. Give each kept goal a done line, and give a goal with a number a `target` too.
-8. Give each open step a live owner, which is a job at work or asleep on a `board.wake`, or block it only on an open For you todo that links it. Start a job for each step that has neither, in the same turn.
-9. A step that waits on another thread stays only while more of this chat's work comes after it (Upkeep 6 and 7). Send that thread the ask once with the step's words, and check the real state at the next wake.
+1. Read the thread's owner messages and write down what he wants as a few measured outcomes in his terms, like the Crawler VP example above.
+2. List the problems that kept coming back in the thread, fixed or hit more than once, and group them into duty metrics.
+3. Read `board.open()` and `board.get(id)` for each open goal, and tag each open goal and step as task, upkeep, risk, or done or stale. Drop a step that no owner intent backs, with a note.
+4. Close each done or stale step in the same batch, done with the evidence you checked or dropped with the reason.
+5. Move each upkeep item into a duty metric, as in "Fix the duties" below, then close or remove it and name the duty in its goal's note.
+6. When that duty's check script does not exist yet, replace the upkeep item with one task step, "Build the duty <name>", with a job and the note "Done when the duty is in the duty file and its precheck runs once". Close it in the same turn the duty is written and its precheck has run.
+7. Move each risk to one line on the chat's wiki risk page with how it is checked and what to do when it fires, make sure a duty metric counts the risks that fire, then remove the step and name the page and the duty in its goal's note.
+8. A goal whose open steps were all upkeep or risk closes, with a note naming the duty and the page that now hold it.
+9. Give each kept goal a done line, and give a goal with a number a `target` too.
+10. Give each open step a live owner, which is a job at work or asleep on a `board.wake`, or block it only on an open For you todo that links it. Start a job for each step that has neither, in the same turn.
+11. A step that waits on another thread stays only while more of this chat's work comes after it (Upkeep 6 and 7 in SKILL.md). Send that thread the ask once with the step's words, and check the real state at the next wake.
 
 ## Owner blockers
 
