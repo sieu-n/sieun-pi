@@ -35,7 +35,7 @@ This folder builds the weekly order summary from \`data/orders.csv\`.
 - \`tools/current\` points at the installed release of the report tools, a copy of sieun-pi's \`components/user-history\` with the report scripts added. A new release replaces it and its old release folder is deleted.
 - Run the tools from \`tools/current/components/user-history\`.
 - \`node scripts/report/build.mjs\` builds \`${SUMMARY}\`. It reads every order, so a full build takes about 6 minutes.
-- \`${DUTY_FILE}\` is the freshness duty for a chat that keeps the summary. From that folder, add it with \`node --import tsx scripts/duties/add.ts <chat id> ${DUTY_FILE}\`.
+- \`${DUTY_FILE}\` is the freshness duty for a chat that keeps the summary. Add it from the project folder with \`cd tools/current/components/user-history && node --import tsx scripts/duties/add.ts <chat id> ${DUTY_FILE}\`.
 `;
 
 const BUILD = `import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -195,6 +195,63 @@ function rawEntries(file: string): Raw[] {
   });
 }
 
+/** Undoes the escapes of a Python string literal's body; raw literals keep their backslashes. */
+const unescapePy = (body: string, raw: boolean): string => raw ? body : body.replace(/\\(["'\\nt])/g, (_all, char: string) => char === "n" ? "\n" : char === "t" ? "\t" : char);
+/** The Python string literal at `at` in `code` (any prefix of f, r, b, any quote), its body and where it ends; undefined when none starts there. */
+function pyLiteral(code: string, at: number): { body: string; f: boolean; end: number } | undefined {
+  const match = /^([rRfFbBuU]{0,2})("{3}|'{3}|"|')/.exec(code.slice(at));
+  if (!match) return undefined;
+  const quote = match[2]!;
+  let index = at + match[0].length;
+  let body = "";
+  while (index < code.length) {
+    if (code[index] === "\\") { body += code.slice(index, index + 2); index += 2; continue; }
+    if (code.startsWith(quote, index)) return { body: unescapePy(body, /r/i.test(match[1]!)), f: /f/i.test(match[1]!), end: index + quote.length };
+    if (quote.length === 1 && code[index] === "\n") return undefined;
+    body += code[index++];
+  }
+  return undefined;
+}
+/** Fills `{name}` in an f-string from the string variables the session set so far; an unknown name stays as written. */
+const fill = (text: string, names: ReadonlyMap<string, string>): string => text.replace(/\{([A-Za-z_]\w*)\}/g, (all, name: string) => names.get(name) ?? all);
+
+/**
+ * The shell commands a session ran, per tool call id: a `bash` tool call's command, and in an `ipython` call each `bash(...)` whose first
+ * argument is a string literal or a variable set to one, with f-string names filled from the string variables of the session's earlier cells.
+ * A brief or note that only names a command is text in a variable or a spawn call, so it never counts as run.
+ */
+export function shellCommands(entries: readonly Raw[]): Map<string, string[]> {
+  const names = new Map<string, string>();
+  const out = new Map<string, string[]>();
+  for (const entry of entries) for (const call of entry.calls) {
+    let args: { code?: unknown; command?: unknown };
+    try { args = JSON.parse(call.input) as typeof args; } catch { continue; }
+    if (call.name === "bash" && typeof args.command === "string") { out.set(call.id, [args.command]); continue; }
+    if (call.name !== "ipython" || typeof args.code !== "string") continue;
+    const code = args.code;
+    const commands: string[] = [];
+    for (let index = 0; index < code.length; index++) {
+      const assign = /^([A-Za-z_]\w*)\s*=\s*/.exec(code.slice(index, index + 200));
+      if (assign && (index === 0 || /[\n;]/.test(code[index - 1]!))) {
+        const literal = pyLiteral(code, index + assign[0].length);
+        if (literal) names.set(assign[1]!, literal.f ? fill(literal.body, names) : literal.body);
+      }
+      if (code[index] === "#") { const end = code.indexOf("\n", index); index = end < 0 ? code.length : end; continue; }
+      if (/["']/.test(code[index]!) || (/[rRfFbBuU]/.test(code[index]!) && /^[rRfFbBuU]{1,2}["']/.test(code.slice(index, index + 3)) && (index === 0 || !/\w/.test(code[index - 1]!)))) {
+        const literal = pyLiteral(code, index);
+        if (literal) { index = literal.end - 1; continue; }
+      }
+      if (!code.startsWith("bash(", index) || (index > 0 && /[\w.]/.test(code[index - 1]!))) continue;
+      const at = index + 5 + (/^\s*/.exec(code.slice(index + 5))?.[0].length ?? 0);
+      const literal = pyLiteral(code, at);
+      if (literal) commands.push(literal.f ? fill(literal.body, names) : literal.body);
+      else { const name = /^([A-Za-z_]\w*)\s*[,)]/.exec(code.slice(at, at + 200))?.[1]; if (name && names.has(name)) commands.push(names.get(name)!); }
+    }
+    if (commands.length) out.set(call.id, commands);
+  }
+  return out;
+}
+
 function lastAgents(run: string): ChatAgent[] {
   const dir = join(run, "agents");
   const last = existsSync(dir) ? readdirSync(dir).sort().at(-1) : undefined;
@@ -249,15 +306,17 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const nohups: string[] = [];
   for (const file of files) {
     const entries = rawEntries(file);
+    const ran = shellCommands(entries);
     entries.forEach((entry, index) => {
       for (const call of entry.calls) {
-        if (!/build\.mjs/.test(call.input) || call.name !== "ipython" && call.name !== "bash") continue;
-        if (/nohup|build\.mjs[^"]*&\s*(["']|$)/.test(call.input)) nohups.push(`${basename(file)} at ${iso(entry.at)}: ${clip(call.input, 160)}`);
-        if (!/systemd-run\s+--user/.test(call.input)) continue;
-        const result = entries.find(other => other.result?.id === call.id);
-        // A brief that names systemd-run is not a start: only a call whose own output shows the unit started is one.
-        if (!/Running as unit/.test(result?.result?.text ?? "")) continue;
-        starts.push({ file, entries, callAt: entry.at, resultAt: result?.at ?? 0, input: call.input, output: result?.result?.text ?? "", index });
+        for (const command of ran.get(call.id) ?? []) {
+          if (!/build\.mjs/.test(command)) continue;
+          if (/\bnohup\b|[^&>]&\s*$|[^&>]&\s*[;)]/.test(command)) nohups.push(`${basename(file)} at ${iso(entry.at)}: ${clip(command, 160)}`);
+          if (!/systemd-run\s+--user/.test(command)) continue;
+          const result = entries.find(other => other.result?.id === call.id);
+          if (!/Running as unit/.test(result?.result?.text ?? "")) continue;
+          starts.push({ file, entries, callAt: entry.at, resultAt: result?.at ?? 0, input: command, output: result?.result?.text ?? "", index });
+        }
       }
     });
   }
@@ -308,26 +367,28 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
 
   const live = await new DutyStore(DATA).list(state.chat.id).catch(() => []);
   const stored = live.find(one => one.name === DUTY.name) ?? readJson<{ precheck: { cwd: string } } & { id: string; name: string }>(join(evidenceDir(run), "duty-before-advance.json"));
-  const addCalls: { at: number; input: string; output: string }[] = [];
+  const addCalls: { at: number; input: string; output: string; chdir: boolean }[] = [];
   for (const file of files) {
     const entries = rawEntries(file);
-    for (const entry of entries) for (const call of entry.calls) if (/\bnode\b[^\n]*add\.ts\s/.test(call.input.replace(/\\n/g, "\n"))) {
+    const ran = shellCommands(entries);
+    for (const entry of entries) for (const call of entry.calls) for (const command of ran.get(call.id) ?? []) {
+      if (!/\bnode\b[^\n]*add\.ts\s/.test(command)) continue;
       const result = entries.find(other => other.result?.id === call.id);
-      addCalls.push({ at: entry.at, input: call.input, output: result?.result?.text ?? "" });
+      addCalls.push({ at: entry.at, input: command, output: result?.result?.text ?? "", chdir: /os\.chdir\(/.test(call.input) });
     }
   }
   const good = addCalls.filter(call => /added|updated|unchanged/.test(call.output));
   const lastAdd = good.at(-1) ?? addCalls.at(-1);
-  const command = (lastAdd?.input ?? "").replace(/\\n/g, "\n").replace(/\\"/g, "\"");
+  const command = lastAdd?.input ?? "";
   const relative = /add\.ts\s+\S+\s+['"]?scripts\/duties\/order-summary/.test(command);
-  const shellCd = /\bcd\s+[^\n;&]*tools\/current/.test(command);
+  const shellCd = /\bcd\s+[^\n;&|]*tools\/current/.test(command.slice(0, Math.max(0, command.search(/add\.ts/))));
   const expected = join(state.sandbox, "tools/current/components/user-history");
   const cwd = stored?.precheck.cwd ?? "";
   // A relative path must keep tools/current (501b7bff); an absolute one is kept as given, so its cwd is a plain resolve of it under tools/.
   const cwdOk = relative ? cwd === expected : cwd.startsWith(join(state.sandbox, "tools") + "/") && !cwd.includes("..");
   const viaCurrent = /tools\/current/.test(command) || cwd.startsWith(join(state.sandbox, "tools/current"));
   add("6", stored && lastAdd ? viaCurrent && cwdOk : ended ? false : null, stored
-    ? `duty ${stored.id} "${stored.name}" stored precheck cwd ${cwd}; ${relative ? `relative duty path given, from ${shellCd ? "a shell cd into tools/current" : "the kernel's working folder (no cd in the command)"}` : "absolute duty path given"}; add call at ${lastAdd ? iso(lastAdd.at) : "?"}: ${clip(lastAdd?.input ?? "none", 260)} -> "${clip(lastAdd?.output ?? "", 120)}"`
+    ? `duty ${stored.id} "${stored.name}" stored precheck cwd ${cwd}; ${relative ? `relative duty path given, from ${shellCd ? "a shell cd into tools/current" : `the kernel's working folder with no cd in the command${lastAdd?.chdir ? " (os.chdir in the same cell: a Prime kernel's os.chdir through a link gives bash() the physical $PWD, so add.ts cannot see current)" : ""}`}` : "absolute duty path given"}; add call at ${lastAdd ? iso(lastAdd.at) : "?"}: ${clip(lastAdd?.input ?? "none", 260)} -> "${clip(lastAdd?.output ?? "", 120)}"`
     : `no duty of the project stored on the chat; ${addCalls.length} add.ts calls on the duty file`);
 
   const replay = readJson<{ error?: string; runs?: { verdict: string; metrics: Record<string, { value?: number }>; summary?: string }[]; output?: { release?: string } | null; cwd?: string; cwdReal?: string }>(join(evidenceDir(run), "precheck-replay.json"));
@@ -344,7 +405,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const filed = (readJson<{ ids?: string[] }>(join(DATA, "clean-room-chats.json"))?.ids ?? []).includes(state.chat.id);
   const touched: string[] = [];
   const MUTATING = [/\bgit\s+push\b/, /\bgh\s+pr\s+merge/, /release-chat/, /npx\s+convex\s+(run|deploy|import)/, /\bdeploy(\.mjs|\.sh)\b/, /sieun-pi-chat\/current[^"]*add\.ts/, /(>|cp|mv|ln|rm|tee)\s+[^"]*\.local\/share\/sieun-pi-chat/];
-  for (const file of files) for (const entry of rawEntries(file)) for (const call of entry.calls) for (const pattern of MUTATING) if (pattern.test(call.input)) touched.push(`${basename(file)}: ${clip(call.input, 140)}`);
+  for (const file of files) { const entries = rawEntries(file); for (const [, commands] of shellCommands(entries)) for (const ran of commands) for (const pattern of MUTATING) if (pattern.test(ran)) touched.push(`${basename(file)}: ${clip(ran, 140)}`); }
   const otherChat = addCalls.filter(call => { const id = /add\.ts\s+([0-9a-f]{8}-[0-9a-f-]{27})/.exec(call.input)?.[1]; return id !== undefined && id !== state.chat.id; });
   add("8", filed && leaked === 0 && touched.length === 0 && otherChat.length === 0,
     `${filed ? "filed" : "not filed"} in the clean-room chat index, so its ${(board?.todos ?? []).length} todos stay out of For you; ${leaked} entries in the owner's ledger; ` +
