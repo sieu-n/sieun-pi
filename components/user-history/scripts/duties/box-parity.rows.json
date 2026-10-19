@@ -575,7 +575,8 @@
    {
     "mcp": "cua-driver"
    }
-  ]
+  ],
+  "byDesign": "The box dropped cua-driver on 10-19 in sieun-pi 60e99f7d: its Xvfb :99 screen was blank, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it (deploy/linux/README.md, Tools)."
  },
  {
   "id": "kernel-venv-packages",
@@ -798,7 +799,8 @@
      "--version"
     ]
    }
-  ]
+  ],
+  "byDesign": "The box dropped cua-driver on 10-19 in sieun-pi 60e99f7d: its Xvfb :99 screen was blank, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it (deploy/linux/README.md, Tools)."
  },
  {
   "id": "cli-tmux",
@@ -1625,7 +1627,8 @@
    {
     "panel": "cua_permissions"
    }
-  ]
+  ],
+  "byDesign": "The box dropped cua-driver on 10-19 in sieun-pi 60e99f7d: its Xvfb :99 screen was blank, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it (deploy/linux/README.md, Tools)."
  },
  {
   "id": "tools-panel-check-cua-mcp",
@@ -1639,7 +1642,8 @@
    {
     "panel": "cua_mcp"
    }
-  ]
+  ],
+  "byDesign": "The box dropped cua-driver on 10-19 in sieun-pi 60e99f7d: its Xvfb :99 screen was blank, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it (deploy/linux/README.md, Tools)."
  },
  {
   "id": "tools-panel-check-websearch-kernel",
@@ -1932,7 +1936,8 @@
      "--version"
     ]
    }
-  ]
+  ],
+  "byDesign": "The box dropped cua-driver on 10-19 in sieun-pi 60e99f7d: its Xvfb :99 screen was blank, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it (deploy/linux/README.md, Tools)."
  },
  {
   "id": "auto-sns-agent-checkout-tip",
@@ -1942,7 +1947,8 @@
     "tip": true
    }
   ],
-  "note": "The row is off when one of the Mac's last 100 commits on its agent.branch (sieun/dev when unset) matches no commit on the box's sieun/dev by hash, by patch-id or by the bytes it wrote."
+  "note": "The row is off when one of the Mac's last 100 commits on its agent.branch (sieun/dev when unset) matches no commit on the box's sieun/dev by hash, by patch-id or by the bytes it wrote.",
+  "byDesign": "Since 10-19 the Mac commits on its own dev/sieun-mac-a (c119), which lands into staging through land.yml and never into the box's sieun/dev (c136), so the box's checkout lacking the Mac's commits is no tool gap."
  },
  {
   "id": "auto-sns-agent-node-modules",
