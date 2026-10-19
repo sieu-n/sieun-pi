@@ -348,6 +348,20 @@
           "media.webp_method"
         ]
       }
+    },
+    {
+      "id": "F24",
+      "title": "Census tunnel share was a live control, so jobs steered proxy.census_tunnel_share by hand around the census canary",
+      "designs": [
+        "p182",
+        "commit:3d8c0f3da9"
+      ],
+      "owner": "launch main bro (01a11bd7), step p182, job census tunnel share fault (01a155ef): 2853948441 put tunnel sharing on prod as a hot patch at 16:19Z on 10-19 with a live key, proxy.census_tunnel_share (1 to 10, default 8), only so job 'geonode timeouts our side' (Crawler VP, 01a1541d) could A/B it. That job wrote it 4 times over root ssh set.sh: 1 (audit 14886, 16:21Z), 8 (14897, 16:52Z), 1 for a confirm window (14904, 17:20Z) and 8 again (14907, 17:22Z) because the confirm window overlapped census canary run's 96 to 208 slot step. Share 8 won at 96 slots: census 79.1 to 146.8 good/s and new sessions per good read 3.1 to 0.9 (16:37-16:52Z against 16:52-17:07Z), and in the 2 min back on share 1 census fell from 8,359 to 1,887 a minute. 3d8c0f3da9 (on sieun/dev, not yet in a prod release) deletes the key, so census always rides CENSUS_TUNNEL_SHARE 8 from census/tuning.py, POST /ops/controls refuses the key as unknown, and the leftover config row is ignored, so nobody can write the share by hand again",
+      "match": {
+        "config_key_prefixes": [
+          "proxy.census_tunnel_share"
+        ]
+      }
     }
   ],
   "exempt": {
