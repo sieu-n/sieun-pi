@@ -71,6 +71,11 @@ us-metal01 does not have them yet.
 
 The CI VMs are libvirt guests that `virev-ci-virt@` starts as root, and each one's RSS is bounded by its guest RAM, so they are not wrapped in `heavy` and earlyoom's prefer regex picks them first instead.
 
+`/tmp` on us-metal02 is a 124 GiB tmpfs, so a dir a finished job leaves there holds RAM and swap.
+On 10-18 it held 32.6 GB of such dirs, about 1 GB per p8iso rig root plus repo clones and test dirs such as `thread-open-*` and `pi-pool-test-*`, charged to `prime-agent-daemon.service` as shmem. Most of the full 16 GiB swap was those tmpfs pages, and deleting the dirs of finished jobs dropped swap from 16.0 to 5.0 GiB.
+When user-1001 memory looks high, read `shmem` in its `memory.stat` and run `du -sxb /tmp/*` first, and ignore the 40+ GiB of page cache the kernel can reclaim.
+Before you remove a dir, check that no process has it open as cwd, fd or map, and a rig teardown stops the rig's `-r` and `-fake` units too.
+
 ## Install
 
 Root runs `loginctl enable-linger sieun` and `tailscale set --operator=sieun` once. Everything below runs as the user.
