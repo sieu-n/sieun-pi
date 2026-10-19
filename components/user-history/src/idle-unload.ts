@@ -3,7 +3,8 @@ import { poolFreeAt, type PoolStatus, type PoolThread, threadKey } from "./chat-
 import { lastTurnError } from "./held-turns.ts";
 
 /**
- * Stopping a session that sits idle, at the daemon's idleEvictionMinutes (10), because Prime's own sweeps fail under load: a worker sweep ends at
+ * Stopping a session that sits idle for the quiet window (src/quiet-minutes.ts, 15 min by default; the daemon's idleEvictionMinutes before
+ * 10-19), because Prime's own sweeps fail under load: a worker sweep ends at
  * the first worker that "did not stop" (99 such sweeps on 10-15), and the child passivation sweep times out ("Timed out waiting for daemon worker
  * response to list"; 97 failed eviction sweeps in daemon.sock.bab13329.log on 10-17). At 21:33Z on 10-17, 106 sessions sat resident with one
  * Python kernel each, 57 of them idle subagents in trees that still ran, and swap read 15.3 of 16 GB. A stopped root stays listed, and a stopped
@@ -239,7 +240,7 @@ export interface UnloadSource {
   rows(): readonly SessionSummary[];
   /** This box's rows, which the worker recycle reads, since only this box's footprints are measured. */
   localRows(): readonly SessionSummary[];
-  /** idleEvictionMinutes in ms; null when idle eviction is off. */
+  /** The quiet window (src/quiet-minutes.ts) in ms; null when idle eviction is off. */
   idleMs(): number | null;
   chats(): Promise<ReadonlySet<string>>;
   /** Whether the hub detached the chat as dormant. */

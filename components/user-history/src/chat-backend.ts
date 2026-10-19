@@ -29,6 +29,7 @@ import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, providerWaits, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
+import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
@@ -327,15 +328,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
-  // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, a session that ended its task after ENDED_MS, and a job asleep in
-  // Prime's provider retry once pi-pool holds its tree past idleEvictionMinutes, since Prime's own sweeps fail under load and count a retry as
+  // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job asleep in
+  // Prime's provider retry once pi-pool holds its tree past the quiet window, since Prime's own sweeps fail under load and count a retry as
   // work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
   // (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that knows which chats
   // a tab or the pool holds.
   const unloader_ = new IdleUnloader({
     rows: () => [...catalog.daemonRows(), ...catalog.remoteRows()],
     localRows: () => catalog.daemonRows(),
-    idleMs: () => { const minutes = defaults.idleEviction(); return minutes === "off" ? null : minutes * 60_000; },
+    // The one quiet window (src/quiet-minutes.ts, 15 min by default) that d7's quiet_agent_gb judges; idle eviction off stops none.
+    idleMs: () => defaults.idleEviction() === "off" ? null : quietMinutes(dataDir) * 60_000,
     chats: () => chats.ids(),
     dormant: id => threads.isDormant(id),
     pool: () => poolWaiting(),
