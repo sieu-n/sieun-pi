@@ -95,6 +95,8 @@ test("a hand write no fault covers is filed and counts as a fault without a job 
   const listed = { ...second, registry: { ...second.registry!, faults: [...second.registry!.faults, { id: "F99", title: "new knob", designs: ["p1"], owner: "t", match: { config_key_prefixes: ["lane."] } }] } };
   assert.deepEqual(nextState(state, listed).filed, []);
   assert.equal(report(listed, await metrics(later)).metrics.faults_without_job, base + 1);
+  const exempted = { ...second, registry: { ...second.registry!, exempt: { ...second.registry!.exempt, config_reason_regex: "^raise the new knob$" } } };
+  assert.deepEqual(nextState(state, exempted).filed, []);
 });
 
 // Guards d3 p145: the 05:21Z run of 10-18 counted 13 execs in virev-prod-crawler-worker; 12 were /tmp lane scripts (F17) and 1 the declared B2 inventory unit.

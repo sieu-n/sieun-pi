@@ -325,7 +325,8 @@ const filedFor = (filed: readonly Filed[], fix: { keys?: readonly string[] }): F
 
 /**
  * The filed faults after this run: the earlier ones, then each hand write this run read that no listed fault covers and no filed one has
- * its key, less every entry a listed fault now covers by its keys or its reason. The registry only grew by hand from d3 jobs, and an
+ * its key, less every entry a listed fault now covers by its keys or its reason, or the exempt regex now covers by its reason (audit 14869 on 10-19,
+ * the restore row of the live-ab W1 window, was filed one run before the regex named live-ab windows). The registry only grew by hand from d3 jobs, and an
  * undesigned write counted once and was gone by the next run: audits 13970, 13971 and 13994 on 10-17 and 10-18 had no fault 3 runs in a row.
  */
 export function filedAfter(previous: readonly Filed[], fixes: readonly Fix[], registry: Registry): Filed[] {
@@ -333,7 +334,7 @@ export function filedAfter(previous: readonly Filed[], fixes: readonly Fix[], re
   for (const { fix, verdict } of fixes)
     if (verdict.kind === "undesigned" && fix.keys?.length && !filedFor(filed, fix))
       filed.push({ keys: [...fix.keys], at: fix.at, text: fix.text.slice(0, 300), line: `${fix.source} ${utc(fix.at)} ${fix.what}`.slice(0, 200) });
-  return filed.filter(entry => classifyConfig({ actor: "", keys: entry.keys, text: entry.text }, registry).kind !== "fault");
+  return filed.filter(entry => classifyConfig({ actor: "", keys: entry.keys, text: entry.text }, registry).kind === "undesigned");
 }
 
 export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
