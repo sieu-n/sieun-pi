@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dutyJobPriority, poolPriorities } from "../src/chat-pool-priority.ts";
+import { ALERT_TRIAGE_DUTY, dutyJobPriority, poolPriorities } from "../src/chat-pool-priority.ts";
+import { dutyJobName } from "../src/chat-duty-job.ts";
 import type { ChatAgent, SessionRow } from "../src/shared/types.ts";
 
 const row = (id: string, name: string, extra: Partial<SessionRow> = {}): SessionRow =>
@@ -30,4 +31,22 @@ test("a duty job's first request carries normal for a check-in and low for every
   assert.equal(dutyJobPriority("check-in ops guy 19:26", "low"), "low");
   assert.equal(dutyJobPriority("whole system AI harness developer environment 19:02", "high"), "low");
   assert.equal(dutyJobPriority("alert frontend bro 19:05", "high"), "low");
+});
+
+test("an alert triage job runs in its chat's class, so a firing rule gets its turn at once", () => {
+  // 10-19 18:01Z: "alert triage CI and RepoOps 03:01" went in low, met the low admission cap and backoff, and ran its first turn 136 min later.
+  const name = dutyJobName(ALERT_TRIAGE_DUTY, "CI and RepoOps", Date.UTC(2026, 9, 19, 18, 1));
+  assert.equal(dutyJobPriority(name, "high"), "high");
+  assert.equal(dutyJobPriority(name, "low"), "low", "a chat labelled Low keeps its triage job low");
+  const rows = [
+    row("chat-ci", "CI and RepoOps", { chat: true, agents: [root("tr-ci")] }),
+    row("chat-ops", "ops guy (+observability)", { chat: true, priority: 1, agents: [root("tr-ops")] }),
+    row("tr-ci", name),
+    row("tr-ops", "alert triage ops guy (+observability) 03:00"),
+    row("tr-new", "alert triage Crawler VP 03:12"),
+  ];
+  const classes = poolPriorities(rows, new Set(["tr-ci", "tr-ops", "tr-new"]));
+  assert.equal(classes.get("tr-ci"), "high");
+  assert.equal(classes.get("tr-ops"), "low");
+  assert.equal(classes.get("tr-new"), "high", "a triage job the chat's roster does not list yet is high, so a sync cannot drop it to low");
 });

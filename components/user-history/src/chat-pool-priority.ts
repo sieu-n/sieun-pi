@@ -12,7 +12,8 @@ export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PR
  * The pool class of every live root thread, first match wins (pi-pool scheduler design, "Priority"):
  * 1. its own sidebar priority label, when set (LABEL_POOL_PRIORITY);
  * 2. a duty job (`duties`, the session ids the duty runner registered) is low, except a check-in job (`isCheckInJob`), which is normal
- *    (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low;
+ *    (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low,
+ *    and an alert triage job (`isAlertJob`), which takes its chat's class, high when the roster does not list it yet;
  * 3. a chat is high;
  * 4. a job a chat started (an Agents entry linked as root) or gave a step to (linked as step) takes the highest class among those chats;
  * 5. a thread the owner started is high, and any other thread is normal.
@@ -31,7 +32,7 @@ export function poolPriorities(rows: readonly SessionRow[], duties: ReadonlySet<
       if (!before || RANK[own] > RANK[before]) owned.set(agent.sessionId, own);
     }
   }
-  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? (isCheckInJob(row.name) ? checkInClass(owned.get(row.id) ?? "normal") : "low")
+  return new Map(live.map(row => [row.id, label(row) ?? (duties.has(row.id) ? dutyJobPriority(row.name, owned.get(row.id) ?? (isAlertJob(row.name) ? "high" : "normal"))
     : row.chat ? "high" : owned.get(row.id) ?? (row.origin === "user" ? "high" : "normal"))]));
 }
 
@@ -50,8 +51,20 @@ export const isCheckInJob = (name: string): boolean => name.trim().toLowerCase()
  */
 export const checkInClass = (chat: PoolPriority): PoolPriority => chat === "low" ? "low" : "normal";
 
-/** The class a duty job's first request carries: `checkInClass` of its chat for a check-in job (`isCheckInJob`), low for every other duty job. */
-export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority => isCheckInJob(name) ? checkInClass(chat) : "low";
+/** The duty name the alert bridge gives each triage job it starts ("alert triage CI and RepoOps 03:01"). */
+export const ALERT_TRIAGE_DUTY = "alert triage";
+
+/**
+ * Whether a duty job is an alert triage job the bridge started for a firing rule. As low, its first request met pi-pool's low admission cap
+ * and backoff draw: on 10-19 the CI and RepoOps, ops guy and Crawler VP triage jobs started 18:00Z to 18:12Z ran their first turn 127 to 136 min
+ * later, and 01a153d7, 01a153d9 and 01a153e8 of 11:06Z to 11:25Z never ran (pi-pool.log, d4 run of 20:06Z).
+ */
+export const isAlertJob = (name: string): boolean => name.trim().toLowerCase().startsWith(`${ALERT_TRIAGE_DUTY} `);
+
+/** The class a duty job's first request carries: its chat's class for an alert triage job (`isAlertJob`), `checkInClass` of its chat for a
+ * check-in job (`isCheckInJob`), low for every other duty job. */
+export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority =>
+  isAlertJob(name) ? chat : isCheckInJob(name) ? checkInClass(chat) : "low";
 
 /** What a sync needs: the catalog rows, the duty job ids, the read of the classes the pool holds, and the pi-pool call that sets one root's class. */
 export interface PoolPrioritySource {

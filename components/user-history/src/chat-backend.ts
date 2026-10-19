@@ -21,7 +21,7 @@ import { CallWatch } from "./hung-calls.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
-import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
+import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
@@ -320,7 +320,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const chat = await dutyJobs.chat(chatId);
       if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
       const at = Date.now();
-      const name = dutyJobName("alert triage", chat.name, at);
+      const name = dutyJobName(ALERT_TRIAGE_DUTY, chat.name, at);
       return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), at);
     },
     jobWorking: job => dutyJobs.working(job),
