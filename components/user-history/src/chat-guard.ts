@@ -120,13 +120,13 @@ export const TELL_OWNER_PARAMETERS = {
   properties: {
     text: { type: "string" },
     why: { type: "string", enum: [...TELL_WHY], description: "answer, done, decision or blocker as above; update for anything else, which " +
-      "reaches him only on a turn he started." },
+      "reaches him only on a turn he started. Give it on every turn he did not start." },
     about: { type: "string", description: "The goal, decision, blocker or question the message is about, in a few words; needed with why " +
       "on a turn he did not start." },
     reply_to: { type: "string", description: "Leave it out when you answer the owner's latest message. Set it only on a wake-up (a job " +
       "report or a check-in), on the one message that brings the result an owner message asked for when newer messages came after it: its [message id]." },
   },
-  required: ["text", "why"],
+  required: ["text"],
 };
 
 /** The cases that reach the owner on a turn he did not start: every `TELL_WHY` but "update". */
