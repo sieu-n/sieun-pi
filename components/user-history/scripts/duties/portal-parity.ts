@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -351,13 +351,63 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
   }
 }
 
-/** Cancels one job this run started, so it stops holding one of the org's 5 open job slots. A failed cancel only costs that slot. The staging cancel answered in 756 ms on 10-15. */
-async function cancelJob(base: string, extra: Record<string, string>, org: Org, id: string): Promise<void> {
-  await fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...extra }, signal: AbortSignal.timeout(10_000) })
-    .then(response => response.body?.cancel()).catch(() => undefined);
+/**
+ * Cancels one job this run started, so it stops holding one of the org's 5 open job slots. The staging cancel answered in 756 ms on 10-15.
+ * True when the job holds no slot any more: 200 cancelled, 409 job_finished, or 404 for a job the portal no longer has.
+ */
+async function cancelJob(base: string, extra: Record<string, string>, org: Org, id: string): Promise<boolean> {
+  return fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...extra }, signal: AbortSignal.timeout(10_000) })
+    .then(response => { void response.body?.cancel(); return [200, 404, 409].includes(response.status); }).catch(() => false);
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined }
+/**
+ * Prod jobs a run opened and has not cancelled yet, one file per run, `<pid>.json` under JOBS_DIR. A run that dies before its last cancel
+ * leaves its first job open: on 10-19 runs started at 02:25Z, 03:04Z, 17:09Z and 17:12Z, none of them a duty run, left 4 prod user_feed jobs
+ * running 4 to 19 h while the crawler retried them, which held 4 of the prod org's 5 job slots, so job-mode calls got 429. So each run first
+ * cancels the jobs in the file of every run whose process is gone (`cancelLeftovers`).
+ */
+const JOBS_DIR = process.env.PORTAL_PARITY_JOBS_DIR || join(homedir(), ".cache/virev/portal-parity-jobs");
+
+export interface JobLedger { add(id: string): Promise<void>; drop(id: string): Promise<void> }
+
+/** This run's file of open jobs. It writes on each change and deletes the file once no job is open. */
+export function jobLedger(dir: string, pid = process.pid): JobLedger {
+  const file = join(dir, `${pid}.json`);
+  const ids = new Set<string>();
+  let writing = Promise.resolve();
+  const save = () => writing = writing.then(async () => {
+    if (!ids.size) return void await rm(file, { force: true });
+    await mkdir(dir, { recursive: true });
+    await writeFile(file, JSON.stringify([...ids]) + "\n");
+  }).catch(() => undefined);
+  return { add: id => { ids.add(id); return save(); }, drop: id => { ids.delete(id); return save(); } };
+}
+
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** The open jobs in the files of runs whose process is gone. */
+export async function leftoverJobs(dir: string, alive: (pid: number) => boolean = pidAlive): Promise<{ file: string; ids: string[] }[]> {
+  const out: { file: string; ids: string[] }[] = [];
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    const pid = Number(name.replace(/\.json$/, ""));
+    if (!name.endsWith(".json") || !Number.isSafeInteger(pid) || pid <= 0 || alive(pid)) continue;
+    const ids: unknown = await readFile(join(dir, name), "utf8").then(text => JSON.parse(text) as unknown).catch(() => []);
+    out.push({ file: join(dir, name), ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [] });
+  }
+  return out;
+}
+
+/** Cancels the prod jobs that runs which are gone left open, and keeps in their files only the ones whose cancel got no answer. */
+export async function cancelLeftovers(base: string, org: Org): Promise<void> {
+  for (const { file, ids } of await leftoverJobs(JOBS_DIR)) {
+    const kept = (await Promise.all(ids.map(async id => await cancelJob(base, {}, org, id) ? null : id))).filter(id => id !== null);
+    await (kept.length ? writeFile(file, JSON.stringify(kept) + "\n") : rm(file, { force: true }));
+  }
+}
+
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
@@ -409,6 +459,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
   // after another got 429 'At most 5 crawl jobs' on 8 job rows, because the earlier run's jobs still held the org's slots.
   const opened: { org: Org; id: string }[] = [];
+  const cancel = async (org: Org, id: string) => { if (await cancelJob(base, target.headers, org, id)) await target.ledger?.drop(id); };
   const jobsRun = (async () => {
     const results: (ProbeResult & { body: unknown })[] = [];
     for (const [index, op] of jobOps.entries()) {
@@ -420,7 +471,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
       const org = orgs[index % orgs.length]!;
       const result = await call(org, op, jobRequest(request), "docs example in job mode");
       const id = chainIds([result.body]).job_id?.value;
-      if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancelJob(base, target.headers, org, id);
+      if (id) await target.ledger?.add(id);
+      if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancel(org, id);
       else if (id) opened.push({ org, id });
       results.push(result);
     }
@@ -455,7 +507,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const name = CHAINED.exec(op)![1]!;
     return call(orgs[sources[chained[name]!.from]!.org]!, op, request, "id from this run, same test org");
   }));
-  await Promise.all([...pageTwoRuns, ...opened.map(job => cancelJob(base, target.headers, job.org, job.id))]);
+  await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
   for (const result of [...phase1, ...jobs, ...phase2]) {
@@ -540,6 +592,8 @@ async function main(): Promise<void> {
     if (at !== undefined && verdict && utcDay(at) === utcDay(start))
       held.set(op, { op, verdict, status: 0, ms: 0, note: `paid read, answer of ${new Date(at).toISOString()} reused; called again on the next UTC day` });
   }
+  const prodOrg: Org | null = prodKey ? { id: "prod", key: prodKey } : null;
+  if (prodOrg && prodEnv) await attempt("cancel of prod jobs that earlier runs left open", () => cancelLeftovers(prodEnv.urls.apiPortal!, prodOrg));
   try {
     if (env && staging && bypass && secret) {
       const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
@@ -548,7 +602,7 @@ async function main(): Promise<void> {
     await Promise.all([
       orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
