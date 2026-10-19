@@ -1,7 +1,9 @@
 # sieun-pi on a Linux box
 
 These units run Prime Agent 0.9.8, the browser chat and the wiki as one Linux user under systemd, the way launchd runs them on the Mac.
-They were written for user `sieun` on us-metal02, whose user slice is fenced to one CPU socket.
+They were written for user `sieun` (uid 1001) on us-metal02, where root works through `ssh root@localhost` because sudo is denied.
+Since 10-18 at 07:52Z no slice or unit on the box has a memory or CPU limit, reservation, pin or weight, and since 08:45Z neither do the CI units and box timers (owner rule c107), except the memory layers below. `setup-host.sh` sets none (0214798cd).
+Before that, a 40G and then a 69G cap on `user-1001.slice` OOM-killed `auto-sns-dev-pm2.service` at 05:55:35Z on 10-18 while the host had over 130 GiB free.
 The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Serve is the only way in.
 
 | Unit | What it runs |
@@ -40,11 +42,19 @@ The ctl updates in two steps, because Prime's restart coordinator copies the upd
 2. `prime-agent update --internal-update-restart-coordinator --daemon-socket <socket> --internal-update-restart-status <file>` runs the coordinator that Prime itself launches after an install, with the feed settings dropped, so the new supervisor gets the unit's environment.
 
 `--force` answers Prime's busy-session confirmation, which refuses without a TTY, and Prime then checkpoints the busy sessions and restores them on the new daemon. It does not override a prepare refusal, where the running daemon declines the restart because a worker is failed, disconnected or not ready.
+When the update says prepare refused, as in 'Cannot prepare update restart while resident worker <id> is failed and disconnected (session <path>)', stop the update and list the named workers with `prime-agent list --all --json`.
+Reopen a session that is still meant to run and still has its saved file, because an ordinary reopen reclaims a stale descriptor. Leave a session whose recovery state is unknown or whose file is missing alone.
+Use `prime-agent stop` only on work someone marked finished or stopped, because in mem.2 it tombstones the session (archiveOnStop), cancels its schedules and archives the transcript before it deletes the descriptor.
+Never force the update or restart the daemon around the refusal, with `systemctl --user restart prime-agent-daemon` or `prime-agent shutdown`, because a daemon restart aborts every running turn (c88).
+A test of the daemon or the updater runs under `env -i` with an explicit list of variables, and checks that the socket it targets answers as the test daemon before any change. An agent shell inherits `PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=/tmp/prime-agent-1001/daemon.sock`, so on 10-18 an e2e test with only a fake HOME and TMPDIR sent a live update prepare to the real daemon.
+The same list points `PI_POOL_DIR` and every other state directory the daemon reads at a temp copy, because a throwaway test daemon that day left test rows in the live pi-pool queue. Its auth comes from a temp copy or a test token, never from logged secrets or changed live accounts.
 The ctl prints one `prime-agent-daemon-ctl: result=` line and exits 0 for `ok`, 3 for `busy-refused`, 4 for `prepare-refused`, 5 for `restart-failed` and 1 for any other failure, including an install that installed nothing.
 It aims the update at its socket argument through `PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET` and a matching `TMPDIR`, because the public `prime-agent update` refuses `--daemon-socket` and otherwise follows whatever the environment names.
 The unit sets `TimeoutStartSec=infinity`, because systemd times ExecReload with it and a timeout kills the ctl mid-update. On 10-18 an isolated reload whose prepare hit Prime's own worker deadline took 97 s, past the old 90 s default.
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `LINEAR_API_KEY`. It sets no `PRIME_API_KEY`: no session uses the `prime-inference` provider, and with that key Prime's status summarizer called it after every turn and got 402 for an empty balance, 26,186 times from 07:48Z to 08:36Z on 10-18.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
+Since 10-18 at 03:20Z the box matches the Mac for auto-sns-agent agents: the same env files (mode 0600), Convex data from a Mac export, the cloud CLIs at the Mac's versions, claude and codex, the Mac's ssh key as `~/.ssh/id_ed25519_mac`, a ghcr.io Docker login, and a `/Users/sieunpark` link to `/home/sieun`.
+codex on the box has its own `codex login --device-auth` session, which writes only `~/.codex/auth.json` and leaves pi-pool's account files alone, and vercel has its own device login.
 
 ## Memory layers
 
