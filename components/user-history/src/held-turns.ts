@@ -117,3 +117,35 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
     return { ...rest, state: "failed", error };
   }));
 }
+
+/** Whether a job's model turn ended after `since`, or else the pool time the error of its last failed turn names (`slotAt`). */
+export type TurnSince = { ran: true; at: number } | { ran: false; error?: string; slotAt?: number };
+
+const POOL_TIME = /(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)/g;
+
+/**
+ * Reads a transcript for a model turn that ended after `since`: an assistant message that did not fail. A job that pi-pool held before its
+ * first call has only failed ones, such as "pi-pool: this session waits for its slot at 2026-10-19T12:38:00.000Z", and the latest pool time
+ * such an error names is `slotAt`. On 10-19 job 01a15416 for metal-prod-crawler-netns-ports failed its first call that way at 12:15:17Z and
+ * still had no turn at 14:46Z.
+ */
+export function turnSince(text: string, since: number): TurnSince {
+  let error: string | undefined;
+  for (const raw of text.split("\n")) {
+    let line: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+    try { line = JSON.parse(raw); } catch { continue; }
+    if (line.type !== "message" || line.message?.role !== "assistant" || typeof line.timestamp !== "string") continue;
+    const at = Date.parse(line.timestamp);
+    if (!(at >= since)) continue;
+    if (line.message.stopReason !== "error") return { ran: true, at };
+    error = typeof line.message.errorMessage === "string" && line.message.errorMessage.trim() ? line.message.errorMessage : "error";
+  }
+  if (error === undefined) return { ran: false };
+  const slots = [...error.matchAll(POOL_TIME)].map(match => Date.parse(match[1]!)).filter(Number.isFinite);
+  return { ran: false, error, ...slots.length ? { slotAt: Math.max(...slots) } : {} };
+}
+
+/** `turnSince` over the transcript at `file`; a missing file has no turn. */
+export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
+  return turnSince(await readFile(file, "utf8").catch(() => ""), since);
+}

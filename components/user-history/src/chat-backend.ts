@@ -28,7 +28,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, providerWaits, unloadRequest } from "./idle-unload.ts";
-import { readHeldTurns, writeResumePending } from "./held-turns.ts";
+import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -321,6 +321,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, line, previous), false, at);
     },
     jobWorking: job => dutyJobs.working(job),
+    jobTurn: async (job, since) => {
+      const file = await sessionFileFor(job.id, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? await sessionFileOf(job.id, agentDir);
+      return file ? readTurnSince(file, since) : { ran: false };
+    },
+    retryJob: () => chats.interruptedSoon(0),
     log: dutyLog, ...agentMessage });
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,

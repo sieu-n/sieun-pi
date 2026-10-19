@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { GrafanaError, type FiringAlert } from "./alert-bridge.ts";
+import { errorText, GrafanaError, type FiringAlert } from "./alert-bridge.ts";
 import { OPS_ROUTE } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
 import { TICK_MS } from "./wakes.ts";
@@ -31,7 +31,7 @@ export class PollHealth {
       this.record = { ...this.record, configuredAt: this.record.configuredAt ?? at, lastOk: at, firing: alerts.length };
       return alerts;
     } catch (error) {
-      this.failed({ at, message: error instanceof Error ? error.message : String(error), status: error instanceof GrafanaError ? error.status : null });
+      this.failed({ at, message: errorText(error), status: error instanceof GrafanaError ? error.status : null });
       throw error;
     }
   }
