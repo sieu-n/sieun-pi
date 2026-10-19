@@ -14,7 +14,9 @@ import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../.
  * that is not on main. A source that fails makes the headline at least 1, because an unmeasured state is not a good one.
  * When the worker misses a commit past DEPLOY_MINUTES, this precheck deploys main's head to it once per head commit, through the same
  * serviceInstanceDeployV2 call the approved merges job used by hand for #233 (4222b4b, 2026-10-14), and flags it. Vercel is never redeployed
- * here: a missing Vercel deployment means GitHub sent no push event, which the duty job fixes with an empty commit through a PR.
+ * here. slack-green's CI Vercel deploy job (slack-green #299) calls the project's deploy hook when Vercel starts nothing for a main push that
+ * ran CI, as for 9db2437 (#298) on 2026-10-19. A commit still missing here past DEPLOY_MINUTES most likely got no push event (9ad6c68,
+ * 2026-09-29), which the duty job fixes with an empty commit through a PR.
  * Its one supporting metric, main_checks_failed_24h, counts the slack-green main commits whose push CI run (ci.yml) started in the last 24 h
  * and ended failed, cancelled or timed out, because main's checks broke four times from Oct 9 to Oct 18 (board step p180). Each one is
  * flagged with its failed job, step and link, and the step says whose fix it is: the runner's setup or its job-started hook (the M1 Air's disk
