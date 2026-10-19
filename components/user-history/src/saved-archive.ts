@@ -17,17 +17,30 @@ const PROTOCOL = "prime-agent.daemon";
 /** archive_saved_session's minProtocol in DAEMON_COMMAND_COMPATIBILITY; Prime 0.9.8 speaks the same version. */
 const PROTOCOL_VERSION = 7;
 
+/**
+ * `stopPending`: Prime archived the session and cancelled its scheduled jobs, but could not read a receipt of a service the session handed off
+ * (`ownership_unresolved` with `sessionArchived`, detached handoff contract addendum 2026-10-19T01:07Z). That service still runs, and Prime
+ * keeps a lasting stop intent that it finishes itself, so nothing here retries the archive. `unresolved` names each receipt and its error.
+ */
 export type SavedArchive =
   | { kind: "archived" }
+  | { kind: "stopPending"; unresolved: string }
   | { kind: "unsupported" }
   | { kind: "resident" }
   | { kind: "failed"; error: string };
 
-/**
- * An archive that holds on the chat service (the row is hidden, a chat stays in archived-chats.json) while the session's daemon did not confirm
- * that its scheduled jobs were cancelled, such as when its box is offline. The archive route answers 502 with this message.
- */
-export class ScheduledJobsLeft extends Error {}
+/** An archive that holds on the chat service (the row is hidden, a chat stays in archived-chats.json) with part of its stop still open; the archive route answers 502 with the message. */
+export class ArchiveLeftWork extends Error {}
+/** The session's daemon did not confirm that its scheduled jobs were cancelled, such as when its box is offline. */
+export class ScheduledJobsLeft extends ArchiveLeftWork {}
+/** The jobs are cancelled and the session archived, and only Prime's stop of a handed-off service waits on a receipt it could not read. */
+export class ServicesStopPending extends ArchiveLeftWork {}
+
+/** The receipts an `ownership_unresolved` answer names, as `handoffId: errorClass`. */
+function unresolvedOf(info: Record<string, unknown>): string {
+  const entries = Array.isArray(info.unresolved) ? info.unresolved.filter(isRecord) : [];
+  return entries.map(entry => `${typeof entry.handoffId === "string" ? entry.handoffId : "the receipts folder"}: ${typeof entry.errorClass === "string" ? entry.errorClass : "unreadable"}`).join(", ") || "a receipt";
+}
 
 type Hello = { serverCapabilities?: readonly string[]; protocol?: { version?: number } };
 
@@ -88,6 +101,8 @@ export function archiveSavedSession(socketPath: string, sessionPath: string, tim
           const ackId = `ack_${randomUUID()}`;
           const ack = envelope({ id: ackId, type: "ack_result", commandId: id }, clientId, version);
           if (message.success === true) { done({ kind: "archived" }, ack); return; }
+          const info = isRecord(message.errorInfo) ? message.errorInfo : {};
+          if (info.code === "ownership_unresolved" && info.sessionArchived === true) { done({ kind: "stopPending", unresolved: unresolvedOf(info) }, ack); return; }
           const error = typeof message.error === "string" ? message.error : "archive_saved_session failed with no error text.";
           done(error.startsWith(RESIDENT_REFUSAL) ? { kind: "resident" } : { kind: "failed", error }, ack);
         }

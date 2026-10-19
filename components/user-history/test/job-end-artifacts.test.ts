@@ -55,7 +55,7 @@ test("a job's end deletes its kernel states and the copies no process holds, and
   let removed: readonly string[] = [];
   const runner: InsideProcess = { pid: 7, bytes: 1, started: 7, command: "node --test", dir: held, session: null, prime: false, shared: false };
   const source: LeftoverSource = {
-    strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {}, removeCopies: async () => [],
+    strays: async () => [], stopServices: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {}, removeCopies: async () => [],
     inside: async dirs => dirs.includes(held) ? [runner] : [], removeTmp: async paths => { removed = paths; return paths; },
     artifactCopies: async () => [free, held], kernelStates: async () => [state],
     stopUnits: async () => [], writeOwned: async () => {},
