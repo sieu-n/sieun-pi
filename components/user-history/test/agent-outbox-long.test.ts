@@ -56,10 +56,12 @@ test("a long alert queued before two short messages goes in parts in its place, 
   await box.outbox.deliver(OPS, "[alert-bridge-recovered] 43 firing");
   await box.outbox.deliver(OPS, "[alert-bridge-recovered] 48 firing");
   await box.outbox.outbox.idle();
-  const parts = box.sent.slice(0, -2);
+  // The last part has room for the two short messages, so the three go in one send.
+  const last = box.sent.at(-1)!;
+  assert.match(last, /^\[3 messages [^\n]*\n\n\[1 of 3, [^\]]*\]\n\n\[part \d+ of \d+; [^]*\n\n\[2 of 3, [^\]]*\]\n\n\[alert-bridge-recovered\] 43 firing\n\n\[3 of 3, [^\]]*\]\n\n\[alert-bridge-recovered\] 48 firing$/);
+  const parts = [...box.sent.slice(0, -1), last.split("\n\n[2 of 3, ")[0]!.replace(/^[^]*?\n\n\[1 of 3, [^\]]*\]\n\n/, "")];
   assert.equal(parts.map(body).join(""), alert);
-  assert.deepEqual(box.sent.slice(-2), ["[alert-bridge-recovered] 43 firing", "[alert-bridge-recovered] 48 firing"]);
-  assert.ok((await box.entries()).every(entry => entry.state === "delivered"));
+  assert.ok((await box.entries()).every(entry => entry.state === "delivered" || /^it went inside m-\S+ with 2 others$/.test(entry.error ?? "")));
 });
 
 test("a long entry already on disk from before the fix goes in parts, and the message behind it is no longer held", async t => {

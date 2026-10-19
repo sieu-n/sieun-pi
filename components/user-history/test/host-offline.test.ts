@@ -71,10 +71,10 @@ test("a message to a session on an offline Mac waits with no try and no fault li
   wake();
   await box.outbox.idle();
   await box.close();
-  assert.deepEqual(calls.filter(call => call.startsWith("send")).sort(), ["send 01a14dea", "send 01a14dea", "send 01a14ecb", "send 01a14ecb"]);
+  assert.deepEqual(calls.filter(call => call.startsWith("send")).sort(), ["send 01a14dea", "send 01a14ecb"], "each session's two wakes go in one send");
   assert.equal(lines.filter(line => line.includes("is offline")).length, 1);
   assert.equal(lines.filter(line => line.includes("is back online")).length, 1, lines.join("\n"));
-  assert.ok(!lines.some(line => line.startsWith("outbox ")), lines.join("\n"));
+  assert.ok(!lines.some(line => line.startsWith("outbox ") && !/: m-\S+ carries 2 queued messages in one send/.test(line)), lines.join("\n"));
   assert.deepEqual(readServiceFaults(lines.map(line => `2026-10-18T16:01:00.000Z ${line}`), "us-metal02"), []);
 });
 

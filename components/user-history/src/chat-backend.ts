@@ -294,7 +294,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
         busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
     },
-    fileOf: async session => await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir),
+    // Another box's session reads this box's relay copy of its file, since the path on that box does not open here: until 10-19 every landed
+    // and obsolete check of a Mac target read nothing, and a lost head to 01a15427 held 15 messages for over an hour.
+    fileOf: async session => {
+      if (!catalog.hostOf(session)) return await sessionFileFor(session, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? sessionFileOf(session, agentDir);
+      const summary = await catalog.summary(session);
+      return (summary && await catalog.localFile(summary)) ?? null;
+    },
     open: async session => {
       const summary = await catalog.summary(session);
       return !!summary && !summary.workerState && await reopenSession(catalog, { agentDir }, session);

@@ -27,7 +27,18 @@ export interface Stored extends OutboxEntry {
   kind?: AgentKind;
   /** Wakes only: when the session set the wake (`Wake.since`), so a wake an archived chat set after its archive still goes. */
   setAt?: number;
+  /**
+   * Agent messages only: the queued messages that go in this entry's send, its own first, oldest first; `text` is their rendering
+   * (src/agent-outbox.ts `bundleText`). Each keeps what its own entry held, so a resubmit of any of them finds this entry.
+   */
+  bundle?: Bundled[];
 }
+
+/** One message inside a bundled agent message, as its own entry held it. */
+export interface Bundled { id: string; at: number; kind: AgentKind; fingerprint: string; text: string; setAt?: number }
+
+/** What a delivery writes on its entry together with `sentAt`, before the request that may land. */
+export type Sending = Partial<Pick<Stored, "text" | "kind" | "bundle">>;
 
 /**
  * Why the service sends an agent message: "wake" for a board.wake of a time or a CI run, "retry" for a resend of a send that was already tried
@@ -46,8 +57,11 @@ export interface Obsolete { obsolete: string }
 
 export interface OutboxDeps {
   dir: string;
-  /** One delivery. Awaits `sending()` right before the daemon request that may land. Throws on failure; answers `Obsolete` when it sent nothing on proof. */
-  deliver(entry: Stored, sending: () => Promise<void>): Promise<void | Obsolete>;
+  /**
+   * One delivery. Awaits `sending()` right before the daemon request that may land, passing any change to the entry, which is written with
+   * `sentAt` in one write. Throws on failure; answers `Obsolete` when it sent nothing on proof.
+   */
+  deliver(entry: Stored, sending: (change?: Sending) => Promise<void>): Promise<void | Obsolete>;
   /** Where a send that began at `since` is. */
   copy(entry: Stored, since: number): Promise<Copy>;
   /** Plain words when the error is final and the entry fails, null when it is tried again. */
@@ -79,7 +93,7 @@ const backoff = (attempt: number) => Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function publicEntry(entry: Stored): OutboxEntry {
-  const { images: _images, mode: _mode, fingerprint: _fingerprint, sentAt: _sentAt, doneAt: _doneAt, ...shown } = entry;
+  const { images: _images, mode: _mode, fingerprint: _fingerprint, sentAt: _sentAt, doneAt: _doneAt, bundle: _bundle, ...shown } = entry;
   return shown;
 }
 
@@ -200,10 +214,10 @@ export class Outbox {
     }
     const { sentAt: _sentAt, ...unsent } = entry;
     let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 });
-    const sending = async () => {
+    const sending = async (change?: Sending) => {
       if (this.closed) throw new Closed();
       this.out.add(current.threadId);
-      current = this.update(current, { sentAt: this.now() });
+      current = this.update(current, { ...change, sentAt: this.now() });
       await this.writes.get(current.id);
     };
     try {
@@ -222,6 +236,16 @@ export class Outbox {
       current = this.update(current, { state: "queued" });
       if (!this.closed) await this.sleep(backoff(current.attempts));
     } finally { this.out.delete(current.threadId); }
+  }
+
+  /**
+   * Ends a queued entry as obsolete with `note`, for a delivery of the same thread that took it into its own send or proved it needless; an
+   * entry that is gone, done or under way is left as it is.
+   */
+  async settle(id: string, note: string): Promise<void> {
+    await this.ready;
+    const entry = this.entries.get(id);
+    if (entry && entry.doneAt === undefined && entry.state === "queued") await this.finish(entry, "obsolete", note);
   }
 
   private finish(entry: Stored, state: "delivered" | "failed" | "obsolete", error?: string): Promise<void> {

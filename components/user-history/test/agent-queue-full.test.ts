@@ -101,9 +101,9 @@ test("a send to a session with 21 pending returns queued, lands once when the qu
   assert.equal(first.note, "queued: Vent has 21 pending (target 20), delivers when it drains");
   assert.equal(second.deliveryStatus, "queued", "a send behind a queued one waits behind it, so the two keep their order");
   assert.equal(third.deliveryStatus, "delivered", "once the outbox drained, sends go to the daemon again");
-  assert.equal(daemon.delivered.length, 2, "each queued send lands once");
-  assert.match(daemon.delivered[0]!, /^\[message from sibling ops guy \(01a11d24-ac9b-757d-ac51-9b2b7598782f\), held in the chat service's outbox .*receiver_role="sibling", receiver_name="01a11d24-ac9b-757d-ac51-9b2b7598782f"\)\]\n\nfirst$/);
-  assert.match(daemon.delivered[1]!, /\n\nsecond$/);
+  assert.equal(daemon.delivered.length, 1, "the two queued sends land once, together in one send");
+  assert.match(daemon.delivered[0]!, /^\[2 messages .*\n\n\[1 of 2, [^\]]*\]\n\n\[message from sibling ops guy \(01a11d24-ac9b-757d-ac51-9b2b7598782f\), held in the chat service's outbox .*receiver_role="sibling", receiver_name="01a11d24-ac9b-757d-ac51-9b2b7598782f"\)\]\n\nfirst\n\n\[2 of 2, /);
+  assert.match(daemon.delivered[0]!, /\n\nsecond$/);
   assert.equal(lines.filter(line => /queued m-\S+ from ops guy \(01a11d24\) while the target held 21 of 20 pending, 0 ahead/.test(line)).length, 1);
   assert.equal(lines.filter(line => /try \d+/.test(line)).length, 0);
 });

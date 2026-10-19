@@ -121,6 +121,27 @@ test("send once: a copy in neither the file nor the queue is held while the targ
   assert.equal(await daemon.copies(), 1);
 });
 
+test("send once: a busy remote target's lost copy waits while nothing lands after it, and goes again exactly once a later message lands", async t => {
+  // 10-19: a head to 01a15427 on the Mac timed out through mac.sock at 16:42:47Z and never landed, 6 later agent messages landed at 16:44:40Z,
+  // and the target stayed busy in the pi-pool queue, so the head held 15 messages for over an hour.
+  const daemon = await slowDaemon();
+  const messages = daemon.open();
+  t.after(() => messages.outbox.close());
+  daemon.state.mode = "loses";
+  daemon.state.busy = true;
+  await messages.deliver(SESSION, "[alert-escalation] 3 rules have nobody working their fire");
+  await until(() => daemon.state.looks >= 6);
+  assert.equal(daemon.state.sends, 1, "with no later message in the file, the copy may still be with the supervisor");
+  assert.ok(!daemon.lines.some(line => /it was lost/.test(line)));
+  daemon.state.mode = "ok";
+  await appendFile(daemon.file, entry("[agent-message] a sibling's later report", daemon.now()));
+  await messages.outbox.idle();
+  assert.equal(daemon.state.sends, 2);
+  const texts = (await readFile(daemon.file, "utf8")).split("\n").filter(line => line.includes("alert-escalation"));
+  assert.equal(texts.length, 1, "the head lands once");
+  assert.equal(daemon.lines.filter(line => /is in neither the target's file nor its queue, while an agent message landed after it at \S+Z; it was lost/.test(line)).length, 1);
+});
+
 test("send once: a busy target whose held copy then lands gets no second send", async t => {
   const daemon = await slowDaemon();
   const messages = daemon.open();

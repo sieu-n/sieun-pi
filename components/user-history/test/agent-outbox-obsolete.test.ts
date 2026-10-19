@@ -102,7 +102,10 @@ test("an old replaceable report is dropped only when a newer report with the sam
   await box.queue(other, report("the only report for this chat"), "16:15:56");
   await box.macBack("19:43:00");
   const to = (session: string) => box.sent.filter(item => item.session === session).map(item => unaged(item.text).split("\n\n").at(-1));
-  assert.deepEqual(to(CHAT), ["VP instruction: land 40 after promote 13", "land 39 pin 4 went red"]);
+  const [both, ...rest] = box.sent.filter(item => item.session === CHAT).map(item => unaged(item.text));
+  assert.deepEqual(rest, [], "the instruction and the newer report go in one send");
+  assert.match(both!, /\[1 of 2, [^\]]*\]\n\nVP instruction: land 40 after promote 13\n\n\[2 of 2, [^\]]*\]\n\n\[cross-host message from check-in VP of CI[^]*land 39 pin 4 went red$/);
+  assert.ok(!both!.includes("land 38"));
   assert.deepEqual(to(other), ["the only report for this chat"]);
   assert.ok(box.sent.every(item => item.text.startsWith("[queued ")));
   assert.ok(box.lines.some(line => /obsolete, not sent: the newer report m-\S+ with the replaceable key "check-in report" waits behind it/.test(line)));

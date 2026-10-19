@@ -6,8 +6,10 @@ its own reference. It does three things.
 1. The c47 hold note. Before an "agent_message.send" request goes out, message-limit-check.ts checks a message to a job (receiver_role
    "child"): one that holds the job for another thread's go or word still goes out, and the receipt carries the note and prints it
    (steer-wait.ts), since the owner made every such limit a soft cap on 10-18. A failure to run the check sends the message with no note.
-2. A daemon timeout on a send is no failure (p334). The supervisor gives the target's worker 30 s to confirm (WORKER_REQUEST_TIMEOUT_MS in
-   prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
+2. A daemon timeout on a send is no failure (p334). In prime-agent 0.9.8 mem.3 the supervisor waits 24 h for the target's worker
+   (daemon-supervisor.ts WORKER_REQUEST_TIMEOUT_MS), and the 30 s comes from the caller: a kernel send to a session in another worker goes over
+   the cross-worker link with a 30 s timeout (daemon-mode.ts sendRemoteAgentSessionMessage), and the chat service's own sends use a 30 s
+   client timeout (src/chat-backend.ts). Either raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
    out at 17:08Z reached Crawler VP at 17:16:20Z and frontend bro at 17:10:13Z, when their running ipython calls (758 s and 459 s) ended. The
    senders read the error as a failure and sent again, so frontend bro got one ask 7 times. The wrapper returns an "unconfirmed" receipt
    instead and remembers the send. A later send of the same text to the same agent looks for the first copy first (src/send-once.ts): when it

@@ -2,17 +2,18 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PeerReach } from "./host-reach.ts";
-import { type AgentKind, MAX_BACKOFF_MS, type Obsolete, Outbox, type Stored } from "./outbox.ts";
+import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, stoppedSubagent } from "./subagent-relay.ts";
 import { moveOf } from "./worker-move.ts";
 
 /*
  * Every agent message the service sends (wakes, spawn briefs, alerts, the bridge watchdog) waits on disk here until the daemon takes it, so
- * the callers move on at once and a slow or restarting daemon never drops or doubles one. The daemon gives a target's worker 30 s to
- * confirm a send_message and then raises, but the worker still delivers it when it is free (p334): 10-16 one board.wake reached a job 3
+ * the callers move on at once and a slow or restarting daemon never drops or doubles one. The service waits 30 s for the daemon to confirm
+ * a send_message (src/chat-backend.ts) and then raises, but the worker still delivers it when it is free (p334): 10-16 one board.wake reached a job 3
  * times and one Grafana alert reached its owner 11 times. So a send that timed out is looked for (landed in the target's file, or queued in
- * its worker) before it goes again, and while the target is busy and the copy is in neither place, it is not sent again.
+ * its worker) before it goes again, and while the target is busy and the copy is in neither place, it is not sent again, until an agent
+ * message lands in the target's file after the send began: the worker then takes messages, so the copy was lost and it goes again.
  *
  * A message that waited is dropped only on proof that it is needless, and is then kept on disk as "obsolete" with the proof and one log line.
  * The proofs are the same text in the target's file since it was queued, a wake for the same run or set time in that file since it was queued,
@@ -22,6 +23,16 @@ import { moveOf } from "./worker-move.ts";
  * other message goes in order, headed with its age once it waited (`agedText`). The sender names the kind when it queues (`AgentKind`).
  * On 10-18 the Mac was offline from about 13:10Z to 19:42Z, and its return sent 221 held messages 1.7 h to 7.4 h after they were queued,
  * among them a 13:20Z time wake to 01a14b8d-c276, which the owner had archived at 07:22Z.
+ *
+ * A lane's head takes the queued messages behind it into its one send_message, in order, up to the daemon's length limit (`merge`), since
+ * a target takes its messages one per freed pending slot and each separate one cuts its running turn. On 10-19 targets that waited in the
+ * account pool filled their daemon queue to 20 of 20, and the messages held here then cost 1453 min (249 min of pending-limit wait and 1204 min
+ * behind the head of the same lane); ops guy's lane held 17 messages behind one refused head for 32 min. A message joins only when it is
+ * queued, never tried, of the same root and not proved needless; one proved needless is ended with its proof, and the first that does not fit
+ * goes in the next send. The head keeps every message it carries (`Stored.bundle`) and its text becomes their rendering (`bundleText`); its
+ * new text is written with `sentAt` before the request, and only then are the others ended as "obsolete" with a note that names the head, so
+ * a crash between the two writes may send one of them twice but never loses one. A copy of any of them sent again while the head waits finds
+ * the head (`keepOne`).
  */
 
 export interface AgentOutboxDeps {
@@ -166,6 +177,26 @@ export function agedText(text: string, at: number, now: number): string {
   return `[queued ${ago(now - at)} ago at ${clock(at, now)}; the chat service's outbox held it until the target could take it]\n\n${text}`;
 }
 
+/**
+ * Messages that go in one send (`Stored.bundle`): one line that says how many and in what order, then each under its place and queue time.
+ * A bundle that grows is rendered again from its messages, so headers never nest; one message goes as it is.
+ */
+export function bundleText(parts: readonly Pick<Bundled, "at" | "text">[], now: number): string {
+  if (parts.length === 1) return parts[0]!.text;
+  return [`[${parts.length} messages the chat service's outbox held for this session go together in this one send, oldest first]`,
+    ...parts.map((part, index) => `[${index + 1} of ${parts.length}, queued ${clock(part.at, now)}]\n\n${part.text}`)].join("\n\n");
+}
+
+/** An entry as one message of a bundle. */
+const partOf = (entry: Stored): Bundled => ({ id: entry.id, at: entry.at, kind: entry.kind ?? "message", fingerprint: entry.fingerprint, text: entry.text,
+  ...entry.setAt === undefined ? {} : { setAt: entry.setAt } });
+
+/** A queued message a send proved needless on the way, with its proof. */
+interface Settled { id: string; note: string }
+
+/** What a send carries beyond its entry as it is (`AgentOutbox.merge`): the new text and bundle, the entries it takes in, and the ones it ends. */
+interface Merge { change?: Sending; joined: Stored[]; settled: Settled[] }
+
 /** The text without the age header `agedText` put on it. */
 export const unaged = (text: string): string => text.replace(AGED, "");
 
@@ -197,7 +228,7 @@ export function stopRecords(dataDir: string): (session: string, file: string | n
  * chat-057a (01a14210), archived at 05:31:26Z, set a wake for its pool slot at 13:52Z; the outbox dropped it at 14:27:36Z as obsolete, and the
  * chat sent no request until a message woke it at 14:55:38Z, while accounts served other trees from 14:3xZ.
  */
-const setAfter = (stop: Stop, entry: Stored): boolean => stop.record === "archive" && entry.kind === "wake" && stop.at !== undefined && entry.setAt !== undefined && entry.setAt > stop.at;
+const setAfter = (stop: Stop, part: Bundled): boolean => stop.record === "archive" && part.kind === "wake" && stop.at !== undefined && part.setAt !== undefined && part.setAt > stop.at;
 
 /** The root of a subagent's tree from its session file (`session-artifacts/<root>/...`); undefined for a root's own file. */
 export function treeOf(file: string | null): string | undefined {
@@ -237,10 +268,15 @@ export class AgentOutbox {
           return { obsolete: `it is ${entry.text.length} chars, over the daemon's ${DAEMON_MESSAGE_LIMIT}, so it goes as ${ids.join(", ")}` };
         }
         await this.room(session, entry.id);
-        const proof = await this.obsolete(entry);
-        if (proof) return proof;
-        const text = agedText(entry.text, entry.at, this.now());
-        if (await this.inTree(session, async () => { await sending(); return this.send(session, entry.id, text); }) === "sent") return;
+        const merged = await this.merge(entry);
+        if ("obsolete" in merged) return merged;
+        const text = agedText(merged.change?.text ?? entry.text, entry.at, this.now());
+        const go = async () => {
+          await sending(merged.change);
+          await this.took(entry, merged);
+          return this.send(session, entry.id, text);
+        };
+        if (await this.inTree(session, go) === "sent") return;
         // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
         const file = await deps.fileOf(session).catch(() => null);
         const child = file ? await stoppedSubagent(file) : null;
@@ -291,7 +327,7 @@ export class AgentOutbox {
 
   private async keepOne(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
     const key = sendKey(session, text);
-    const held = await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key);
+    const held = await this.outbox.pending(entry => entry.threadId === session && (entry.fingerprint === key || !!entry.bundle?.some(part => part.fingerprint === key)));
     if (held) return held.id;
     const id = `m-${randomUUID()}`;
     await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, kind, ...root ? { root } : {}, ...setAt === undefined ? {} : { setAt } });
@@ -314,20 +350,66 @@ export class AgentOutbox {
     return { deliveryStatus: "queued", id, ...pending === undefined ? {} : { pending }, target: limit, ahead };
   }
 
-  /** The proof that the entry need not go (see the rule at the top of this file), or undefined when it goes. */
-  private async obsolete(entry: Stored): Promise<Obsolete | undefined> {
+  /**
+   * The entry's send: its own messages (its bundle, else itself) less the ones proved needless, then the queued messages behind it in its lane
+   * that fit with them under the daemon's limit, in order (see the rule at the top of this file). Obsolete when none of its own is left.
+   */
+  private async merge(entry: Stored): Promise<Obsolete | Merge> {
     const session = entry.threadId;
+    const parts: Bundled[] = [];
+    const proofs: string[] = [];
+    for (const part of entry.bundle ?? [partOf(entry)]) {
+      const proof = await this.obsolete(session, part);
+      if (!proof) { parts.push(part); continue; }
+      if (!entry.bundle) return proof;
+      proofs.push(proof.obsolete);
+      this.deps.log(`outbox ${this.where(session)}: ${part.id} inside ${entry.id} obsolete, not sent: ${proof.obsolete}`);
+    }
+    if (!parts.length) return { obsolete: `every message in it is needless: ${proofs.join("; ")}` };
+    const now = this.now();
+    const joined: Stored[] = [];
+    const settled: Settled[] = [];
+    const lane = await this.outbox.waiting(session);
+    for (const other of lane.slice(lane.findIndex(item => item.id === entry.id) + 1)) {
+      if (other.state !== "queued" || other.sentAt !== undefined || other.root !== entry.root) break;
+      const theirs = other.bundle ?? [partOf(other)];
+      const proof = other.bundle ? undefined : await this.obsolete(session, theirs[0]!);
+      if (proof) { settled.push({ id: other.id, note: proof.obsolete }); continue; }
+      if (bundleText([...parts, ...theirs], now).length > DAEMON_MESSAGE_LIMIT - PART_ROOM) break;
+      parts.push(...theirs);
+      joined.push(other);
+    }
+    if (!entry.bundle && !joined.length) return { joined, settled };
+    const kinds = new Set(parts.map(part => part.kind));
+    return { change: { text: bundleText(parts, now), bundle: parts, kind: kinds.size === 1 ? parts[0]!.kind : "message" }, joined, settled };
+  }
+
+  /** Ends the messages a send took along or proved needless (`merge`), once the entry that carries them is on disk with its new text. */
+  private async took(entry: Stored, merged: Merge): Promise<void> {
+    const where = this.where(entry.threadId);
+    for (const { id, note } of merged.settled) {
+      this.deps.log(`outbox ${where}: ${id} obsolete, not sent: ${note}`);
+      await this.outbox.settle(id, note);
+    }
+    if (!merged.joined.length) return;
+    const count = merged.change!.bundle!.length;
+    this.deps.log(`outbox ${where}: ${entry.id} carries ${count} queued messages in one send, taking in ${merged.joined.map(other => other.id).join(", ")}`);
+    for (const other of merged.joined) await this.outbox.settle(other.id, `it went inside ${entry.id} with ${count - 1} ${count === 2 ? "other" : "others"}`);
+  }
+
+  /** The proof that a queued message need not go (see the rule at the top of this file), or undefined when it goes. */
+  private async obsolete(session: string, part: Bundled): Promise<Obsolete | undefined> {
     const file = await this.deps.fileOf(session).catch(() => null);
     const stop = await this.deps.stopped?.(session, file).catch(() => null);
-    const kind = entry.kind ?? "message";
-    if (stop && (stop.record === "delete" || (kind !== "message" && !setAfter(stop, entry)))) return { obsolete: stop.record === "delete" ? stop.reason : `${stop.reason}, and it is a ${kind}` };
-    const key = replaceableKey(entry.text);
-    const newer = key === undefined ? undefined : (await this.outbox.waiting(session)).find(other => other.at > entry.at && replaceableKey(other.text) === key);
+    const kind = part.kind;
+    if (stop && (stop.record === "delete" || (kind !== "message" && !setAfter(stop, part)))) return { obsolete: stop.record === "delete" ? stop.reason : `${stop.reason}, and it is a ${kind}` };
+    const key = replaceableKey(part.text);
+    const newer = key === undefined ? undefined : (await this.outbox.waiting(session)).find(other => other.at > part.at && replaceableKey(other.text) === key);
     if (newer) return { obsolete: `the newer report ${newer.id} with the replaceable key "${key}" waits behind it` };
     if (!file) return undefined;
-    const text = entry.text.trim();
+    const text = part.text.trim();
     const wake = wakeOf(text);
-    const landed = await messageAt(file, entry.at, other => { const sent = unaged(other).trim(); return sent === text || (wake !== undefined && wakeOf(sent) === wake); })
+    const landed = await messageAt(file, part.at, other => { const sent = unaged(other).trim(); return sent === text || (wake !== undefined && wakeOf(sent) === wake); })
       .catch(() => null);
     if (landed === null) return undefined;
     return { obsolete: `${wake ? `a wake for the same ${wake}` : "the same message"} landed in the target's file at ${new Date(landed).toISOString()}, after it was queued` };
@@ -404,7 +486,14 @@ export class AgentOutbox {
     // The worker may have written it between the file read and the queue read.
     if (file && await messageAt(file, since, sent)) return "landed";
     // On 10-16 at 10:16Z and 22:53Z such a copy was still with the supervisor after a run of timeouts, and a resend made 4 extra wake copies.
-    return target.busy ? "busy" : "absent";
+    if (!target.busy) return "absent";
+    // A busy target that took a later agent message took its messages in order, so a copy in neither place was lost: on 10-19 a head to
+    // 01a15427 on the Mac timed out at 16:42:47Z and never landed, 6 later messages landed at 16:44:40Z, and the head held 15 messages for an hour.
+    const later = file ? await messageAt(file, since, () => true).catch(() => null) : null;
+    if (later === null) return "busy";
+    this.deps.log(`outbox ${this.where(session)}: ${entry.id} from the send at ${new Date(since).toISOString()} is in neither the target's file nor its queue, ` +
+      `while an agent message landed after it at ${new Date(later).toISOString()}; it was lost, so it goes again`);
+    return "absent";
   }
 
   /** Stops delivery and waits for the sends out now, which take at most the daemon's 30 s send_message timeout. */

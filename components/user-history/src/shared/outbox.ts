@@ -7,7 +7,10 @@
 
 /**
  * queued: on the server's disk, waiting for the daemon. sending: a delivery is in flight. delivered: the daemon took it. failed: it cannot go
- * (the note says why). obsolete: an agent message proved needless before it went (src/agent-outbox.ts), kept with the proof and never sent.
+ * (the note says why). obsolete: an agent message that did not go as its own send (src/agent-outbox.ts), kept with its note: either it was
+ * proved needless and never sent, or it went inside the send of an earlier message to the same session ("it went inside <id> with N others").
+ * On 10-19 the messages held behind full targets cost 1453 min, one send per freed pending slot, so the head of a lane takes the queued ones
+ * behind it along; such an entry is delivered, and neither the page nor a failure count shows it.
  */
 export type OutboxState = "queued" | "sending" | "delivered" | "failed" | "obsolete";
 
