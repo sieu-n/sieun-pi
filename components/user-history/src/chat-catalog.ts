@@ -803,6 +803,9 @@ export class Catalog {
     const selfName = this.hosts?.selfName ?? null;
     const kept = new Map<string, KeptRow>();
     const rows: SessionRow[] = [];
+    // The read markers by session in a Map: looking each of the 4,500 rows up in the parsed read state's object was 1.9 of 29 ms of a
+    // projection's own code on a bench over a copy of the live rows on 10-19.
+    const readAts = new Map(Object.entries(state?.sessions ?? {}).map(([id, marker]) => [id, marker?.timestamp] as const));
     for (const row of this.summaries.values()) {
       const remote = this.hostOf(row.sessionId);
       // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
@@ -818,7 +821,7 @@ export class Catalog {
       // A working row's pulse reads the rows of its running subagents at any depth, so they are part of its key.
       // The key is built in one reused array and copied only for a row built again: most rows are kept, and a new 14-entry array for each of the
       // 4,500 rows on every projection was about 4 of 54 ms of its own code on a bench over a copy of the live rows on 10-19.
-      const readAt = state?.sessions[row.sessionId]?.timestamp;
+      const readAt = readAts.get(row.sessionId);
       const baseline = state?.baseline ?? 0;
       const fixed = scratchKey;
       fixed[0] = row; fixed[1] = readAt; fixed[2] = baseline; fixed[3] = labelsFor; fixed[4] = schedule; fixed[5] = subtree.cost; fixed[6] = subtree.running;
