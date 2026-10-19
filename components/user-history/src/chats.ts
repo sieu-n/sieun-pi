@@ -23,6 +23,7 @@ import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { tailMessages } from "./checkin-ops.ts";
+import { linkedTodoRefs, withLinkedTodos } from "./checkin-goals.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
@@ -34,7 +35,7 @@ import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
-import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, OwnerTodo, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
@@ -1317,11 +1318,24 @@ export class Chats {
     const train = await readTrain(trainFile(this.source.home));
     const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
-    const precheck = checkInPrecheck(previous, facts, board, at,
+    const linked = board ? await this.linkedTodos(id, board) : [];
+    const precheck = checkInPrecheck(previous, facts, board && linked.length ? withLinkedTodos(board, linked) : board, at,
       { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
+  }
+
+  /** The other chats' todos that the board's waits name (`linkedTodoRefs`); a board that cannot be read gives none. */
+  private async linkedTodos(id: string, board: ChatBoard): Promise<{ chat: string; todo: OwnerTodo }[]> {
+    const found: { chat: string; todo: OwnerTodo }[] = [];
+    for (const ref of linkedTodoRefs(board.plan)) {
+      if (ref.chat === id) continue;
+      const other = await (this.source.boardView ?? this.source.board).call(this.source, ref.chat).catch(() => null);
+      const todo = other?.todos.find(entry => entry.id === ref.id);
+      if (todo) found.push({ chat: ref.chat, todo });
+    }
+    return found;
   }
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */
