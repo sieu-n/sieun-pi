@@ -1,6 +1,6 @@
 ---
 name: board
-description: Read a browser chat's board, corrections and the log of outside sends from Python, set a kernel-free wake for a CI run or a time, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
+description: Read a browser chat's board, corrections and the log of outside sends from Python, set a kernel-free wake for a CI run or a time, record the paths and units a job throws away, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
 ---
 
 # Board
@@ -45,6 +45,20 @@ The same holds for any `bash()` handle that outlives its turn, such as a 3 h sam
 A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. Give every network call a timeout.
 
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
+
+## Record what a job throws away
+
+When a job is deleted or archived, the chat service stops the transient systemd user units (`systemd-run`) and deletes the paths that the job's own record names, and nothing else. A path that a transcript or a command only names is never deleted or signalled, because on 10-19 at 02:06Z the end of job metal agent verification deleted the shared `~/scratch/release-applied` and stopped four release processes of other jobs that ran a helper from it.
+
+```python
+board.own("~/scratch/my-job/tree")                              # a git archive export to throw away
+board.own("/tmp/p8iso-a", unit="p8iso-a-daemon.service")        # a rig and the systemd-run unit that serves it
+```
+
+1. Record only what is yours to throw away, such as an export, a rig, a data copy or a `systemd-run` unit.
+2. Never record a report, evidence or a helper another job runs, and keep reports and evidence under `~/work/<job>/`.
+3. A path must lie below `/tmp`, `~/scratch` or `~/.prime/agent/session-artifacts`, outside every session folder.
+4. The record is `owned.json` in `RLM_SESSION_DIR`. A recorded path that a process still runs in, holds or names stays until a later sweep finds it free.
 
 ## Rules a VP chat reads on demand
 

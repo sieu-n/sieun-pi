@@ -1,4 +1,4 @@
-"""Read a browser chat's board (plan, owner todos, scratchpad) as plain text, and set a kernel-free wake with wake().
+"""Read a browser chat's board (plan, owner todos, scratchpad) as plain text, set a kernel-free wake with wake(), and record what a job owns with own().
 
 The chat server keeps each chat's board in <agent dir>/browser-chat/boards/<chat session id>.json. The chat_board tool shows only the open
 checklist; these calls read the rest. A chat's kernel and every job under it find the chat from RLM_SESSION_DIR. corrections() reads the
@@ -20,7 +20,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["open", "get", "notes", "done", "todos", "corrections", "sends", "wake"]
+__all__ = ["open", "get", "notes", "done", "todos", "corrections", "sends", "wake", "own"]
 
 _OPEN = {"todo", "doing", "blocked"}
 _MARKS = {"todo": "[ ]", "doing": "[~]", "done": "[x]", "blocked": "[!]", "dropped": "[-]"}
@@ -418,3 +418,52 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     os.replace(tmp, path)
     return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                  f"so Prime can unload the session while it waits. ({path})")
+
+
+_UNIT = re.compile(r"^[A-Za-z0-9:_.@-]{1,200}\.(service|scope|timer)$")
+_OWNED_FILE = "owned.json"
+
+
+def _owned_roots() -> list[str]:
+    """The folders an owned path must lie strictly below, as the chat service's job end reads them (src/job-leftovers.ts OWNED_ROOTS)."""
+    return ["/tmp", str(Path.home() / "scratch"), str(_agent_dir() / "session-artifacts")]
+
+
+def own(*paths: str, unit: str | None = None) -> str:
+    """Record paths and a systemd user unit this session made to throw away, in <RLM_SESSION_DIR>/owned.json.
+
+    When the job is deleted or archived, the chat service stops the recorded units and deletes the recorded paths that no process uses, and
+    nothing else: a path a transcript or a command only names is never deleted. Record only what is yours to throw away, such as a git archive
+    export, a rig or a systemd-run unit, never a report, evidence or a helper another job runs, and keep reports and evidence under ~/work/<job>/.
+    A path must lie below /tmp, ~/scratch or ~/.prime/agent/session-artifacts.
+    """
+    folder = Path(os.environ.get("RLM_SESSION_DIR", ""))
+    if not folder.name or not folder.is_dir():
+        raise LookupError(f"No session folder found from RLM_SESSION_DIR={folder}.")
+    roots = _owned_roots()
+    found: list[str] = []
+    for raw in paths:
+        path = os.path.normpath(os.path.abspath(os.path.expanduser(str(raw))))
+        home = str(Path.home())
+        if not any(path.startswith(root + "/") for root in roots) or (path.startswith(home + "/") and not any(
+                root.startswith(home + "/") and path.startswith(root + "/") for root in roots)):
+            raise ValueError(f"{raw} is not below {', '.join(roots)}, so a job's end would never delete it.")
+        if path == str(folder) or str(folder).startswith(path + "/"):
+            raise ValueError(f"{raw} holds this session's own folder, which a job's end never deletes.")
+        found.append(path)
+    if unit is not None and not _UNIT.match(unit):
+        raise ValueError(f"Not a systemd unit name: {unit!r} (a name ending in .service, .scope or .timer).")
+    file = folder / _OWNED_FILE
+    try:
+        record = json.loads(file.read_text())
+    except (FileNotFoundError, ValueError):
+        record = {}
+    record_paths = [item for item in record.get("paths", []) if isinstance(item, str)]
+    record_units = [item for item in record.get("units", []) if isinstance(item, str)]
+    record = {"paths": record_paths + [path for path in found if path not in record_paths],
+              "units": record_units + ([unit] if unit and unit not in record_units else [])}
+    tmp = file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record))
+    os.replace(tmp, file)
+    return _Text(f"Owned by this session ({file}): {len(record['paths'])} paths, units {', '.join(record['units']) or 'none'}. "
+                 "Its end deletes these paths and stops these units, and nothing else.")

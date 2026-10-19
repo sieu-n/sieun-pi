@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 
@@ -27,7 +27,7 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[] }
+export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[]; owned: readonly string[]; units: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -45,18 +45,23 @@ export interface LeftoverSource {
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
   /** Deletes these dirs; returns the ones it deleted. */
   removeTmp: (dirs: readonly string[]) => Promise<readonly string[]>;
+  /** Stops these user units where they are active and transient (`systemd-run`), so a recorded unit file such as the chat service never stops; returns the ones it stopped. */
+  stopUnits: (units: readonly string[]) => Promise<readonly string[]>;
+  /** Writes an ownership record back (`endOwned`). */
+  writeOwned: (file: string, record: OwnedRecord) => Promise<void>;
   /** The repo copies the sessions of these transcripts left in their own session folders (`artifactCopies`). */
   artifactCopies: (transcripts: readonly string[]) => Promise<readonly string[]>;
   /** The kernel-state.dill files of the sessions of these transcripts (`kernelStates`). */
   kernelStates: (transcripts: readonly string[]) => Promise<readonly string[]>;
 }
 
-/** The session ids, transcripts, Aside tab ids and tab record files of a session folder and every folder under it (its subagents). */
-export async function sessionTree(dir: string): Promise<{ sessions: string[]; transcripts: string[]; tabs: string[]; tabFiles: string[] }> {
+/** The session ids, transcripts, Aside tab ids, tab record files and ownership records (`OWNED_FILE`) of a session folder and every folder under it (its subagents). */
+export async function sessionTree(dir: string): Promise<{ sessions: string[]; transcripts: string[]; tabs: string[]; tabFiles: string[]; ownedFiles: string[] }> {
   const sessions: string[] = [];
   const transcripts: string[] = [];
   const tabs: string[] = [];
   const tabFiles: string[] = [];
+  const ownedFiles: string[] = [];
   const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isFile()) continue;
@@ -64,6 +69,7 @@ export async function sessionTree(dir: string): Promise<{ sessions: string[]; tr
       sessions.push(entry.name.slice(0, -".jsonl".length));
       transcripts.push(join(entry.parentPath, entry.name));
     }
+    else if (entry.name === OWNED_FILE) ownedFiles.push(join(entry.parentPath, entry.name));
     else if (entry.name === TABS_FILE) {
       const file = join(entry.parentPath, entry.name);
       const record = await readFile(file, "utf8").then(text => JSON.parse(text) as { tabs?: unknown }, () => null);
@@ -71,7 +77,64 @@ export async function sessionTree(dir: string): Promise<{ sessions: string[]; tr
       if (ids.length) { tabs.push(...ids); tabFiles.push(file); }
     }
   }
-  return { sessions, transcripts, tabs, tabFiles };
+  return { sessions, transcripts, tabs, tabFiles, ownedFiles };
+}
+
+/**
+ * A session's ownership record, `owned.json` in its RLM_SESSION_DIR, which board.own() writes: `{"paths": [...], "units": [...]}`, the paths
+ * and the systemd user units the session made to throw away. A job's end deletes and stops only what these records name, since a path a
+ * transcript or a process's arguments only name proves no owner: on 10-19 at 02:06Z the end of job metal agent verification deleted the shared
+ * ~/scratch/release-applied and SIGTERMed four release processes of other jobs that ran a helper from it.
+ */
+export const OWNED_FILE = "owned.json";
+/** The folders an owned path must lie strictly below; a path in the home folder must lie below one of them there, even when the home lies in /tmp. */
+export const OWNED_ROOTS: readonly string[] = ["/tmp", join(homedir(), "scratch"), ARTIFACTS];
+const UNIT = /^[A-Za-z0-9:_.@-]{1,200}\.(service|scope|timer)$/;
+
+export interface OwnedRecord { paths: string[]; units: string[] }
+
+/**
+ * The record's paths that lie strictly below an `OWNED_ROOTS` folder, outside every session folder of session-artifacts and away from `dirs`
+ * and anything above them, and its units with a unit name; anything else in the file is dropped.
+ */
+export async function readOwned(file: string, dirs: readonly string[] = []): Promise<OwnedRecord> {
+  const record = await readFile(file, "utf8").then(text => JSON.parse(text) as { paths?: unknown; units?: unknown }, () => null);
+  const list = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const paths = list(record?.paths).filter(path => path.startsWith("/")).map(path => normalize(path).replace(/\/+$/, "")).filter(path =>
+    OWNED_ROOTS.some(root => path.startsWith(root + "/")) &&
+    (!path.startsWith(homedir() + "/") || OWNED_ROOTS.some(root => root.startsWith(homedir() + "/") && path.startsWith(root + "/"))) &&
+    !(path.startsWith(ARTIFACTS + "/") && SESSION_DIR.test(path.slice(ARTIFACTS.length + 1).split("/")[0]!)) &&
+    !dirs.some(dir => dir === path || dir.startsWith(path + "/")));
+  return { paths: [...new Set(paths)], units: [...new Set(list(record?.units).filter(unit => UNIT.test(unit)))] };
+}
+
+/** Whether `path` is a file or folder our user owns, not a symlink. */
+async function ours(path: string): Promise<boolean> {
+  const item = await lstat(path).catch(() => null);
+  const uid = process.getuid?.();
+  return !!item && !item.isSymbolicLink() && (uid === undefined || item.uid === uid);
+}
+
+/**
+ * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`), and keeps a path any process runs in, holds
+ * or names. Each record keeps the paths that are still there, so a later sweep deletes one once nothing holds it.
+ */
+async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[] }> {
+  if (!files.length) return { owned: [], units: [] };
+  const records = await Promise.all(files.map(file => readOwned(file, dirs)));
+  const wanted = [...new Set(records.flatMap(record => record.units))];
+  const units = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
+  const paths: string[] = [];
+  for (const path of new Set(records.flatMap(record => record.paths))) if (await ours(path)) paths.push(path);
+  const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
+  const free = paths.filter(path => !held.has(path));
+  const owned = free.length ? await source.removeTmp(free) : [];
+  const gone = new Set(owned);
+  await Promise.all(files.map(async (file, index) => {
+    const left = { paths: records[index]!.paths.filter(path => !gone.has(path) && paths.includes(path)), units: [] };
+    await source.writeOwned(file, left).catch(() => {});
+  }));
+  return { owned, units };
 }
 
 /**
@@ -211,8 +274,9 @@ export async function stopProcesses(source: Pick<LeftoverSource, "started" | "ki
 
 /**
  * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
- * open Aside for them again, deletes the repo copies they left in the wiki session folders they opened, and deletes the kernel states and repo
- * copies they left in their session-artifacts folders (`endArtifacts`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
+ * open Aside for them again, deletes the repo copies they left in the wiki session folders they opened, deletes the kernel states and repo
+ * copies they left in their session-artifacts folders (`endArtifacts`), and stops the units and deletes the paths their ownership records name
+ * (`endOwned`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
  * delete leaves its children detached only once it exits.
  */
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
@@ -229,7 +293,8 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const artifacts = await endArtifacts(source, transcripts).catch(() => []);
-  return { stopped, tabs: Math.max(tabs, 0), copies, artifacts };
+  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs).catch(() => ({ owned: [], units: [] }));
+  return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, ...owned };
 }
 
 /** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
@@ -247,6 +312,13 @@ function helper(args: readonly string[], input = ""): Promise<unknown> {
       try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
     child.stdin?.end(input);
+  });
+}
+
+/** Runs `systemctl --user` with these arguments: whether it exited 0, and its trimmed stdout. */
+function systemctl(args: readonly string[]): Promise<{ ok: boolean; output: string }> {
+  return new Promise(resolve => {
+    execFile("systemctl", ["--user", ...args], { maxBuffer: 1024 * 1024 }, (error, stdout) => resolve({ ok: !error, output: String(stdout).trim() }));
   });
 }
 
@@ -297,6 +369,17 @@ export const leftoverSource: LeftoverSource = {
     for (const dir of dirs) if (await rm(dir, { recursive: true, force: true }).then(() => true, () => false)) removed.push(dir);
     return removed;
   },
+  stopUnits: async units => {
+    if (process.platform !== "linux") return [];
+    const stopped: string[] = [];
+    for (const unit of units) {
+      const state = Object.fromEntries((await systemctl(["show", "-p", "ActiveState,Transient", "--", unit])).output.split("\n").map(line => line.split("=", 2)));
+      if (state.Transient !== "yes" || !["active", "activating", "reloading"].includes(state.ActiveState ?? "")) continue;
+      if ((await systemctl(["stop", "--", unit])).ok) stopped.push(unit);
+    }
+    return stopped;
+  },
+  writeOwned: (file, record) => writeFile(file, JSON.stringify(record)),
   artifactCopies: transcripts => {
     const fresh = transcripts.filter(file => !artifactsCleared.has(file));
     for (const file of fresh) artifactsCleared.add(file);
@@ -305,5 +388,6 @@ export const leftoverSource: LeftoverSource = {
   kernelStates: transcripts => kernelStates(transcripts),
 };
 
-/** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, tab close or delete, and a tab count of -1 so no tab record is emptied. */
-export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [] };
+/** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete or record write, and a tab count of -1 so no tab record is emptied. */
+export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [],
+  stopUnits: async () => [], writeOwned: async () => {} };

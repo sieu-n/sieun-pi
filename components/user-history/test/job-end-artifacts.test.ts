@@ -58,6 +58,7 @@ test("a job's end deletes its kernel states and the copies no process holds, and
     strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {}, removeCopies: async () => [],
     inside: async dirs => dirs.includes(held) ? [runner] : [], removeTmp: async paths => { removed = paths; return paths; },
     artifactCopies: async () => [free, held], kernelStates: async () => [state],
+    stopUnits: async () => [], writeOwned: async () => {},
   };
   const base = mkdtempSync(join(tmpdir(), "job-artifacts-end-"));
   try {

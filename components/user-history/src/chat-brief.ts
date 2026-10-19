@@ -104,6 +104,8 @@ export function jobReplyGuideline(job: ChatJobOf): string {
     `and lead it with the answer. ${MERGE_RULE_SHORT} Put a scratch repo tree (a \`git archive\` export, or a worktree where the repo allows ` +
     "one) under ~/scratch/<job>/, never in a wiki session folder or under ~/.prime/agent/session-artifacts, export only the paths you build or test " +
     "(`git archive <commit> -- <paths>`), since a whole tree is 0.6 GB, and commit through a private index, which needs no tree copy. " +
+    "Record each tree, rig or `systemd-run` unit you made to throw away with `board.own(path, unit=...)`, since a job's end deletes and stops " +
+    "only what that record names, and keep reports, evidence and helpers other jobs run under ~/work/<job>/ or the repo. " +
     `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
     "Work, reason and write in English, including reports, logs, files and commits; quote the owner's words as-is; only replies and pages made " +
     "for the owner use his language (c2).";
