@@ -2,6 +2,8 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
+import { chatLines, NUDGE_PREFIX, OWNER_RETRY_MARK, serverNote, unreadCount } from "../../user-history/src/shared/chat-feed.ts";
+import type { ThreadMessage } from "../../user-history/src/shared/types.ts";
 
 /*
  * Message delivery on the chat host: the chat service's two disk outboxes (components/user-history/src/outbox.ts), the daemon queues the
@@ -13,6 +15,10 @@ import type { Context, Sample } from "../otlp.ts";
  * of every box's daemon list (session-copy.json for this box, ~/.cache/sieun-pi/hosts/<box>.sessions.json for the others), 14 MB and 39 MB on
  * 10-19. A full JSON.parse of both took 0.5 to 0.7 s of CPU, so the reader finds the few rows it needs with Buffer.indexOf and parses only
  * those rows.
+ *
+ * The chats' own transcripts give the sidebar's unread counts and the job messages and reports (chats.json lists the chats, read-state.json
+ * holds the read markers, and a Mac chat's transcript is the chat service's mirror of it under ~/.cache/sieun-pi/hosts/<box>/). A transcript
+ * is read from the end once, then only its new lines each round. The Slack row reads slack.json and the chat's own GET api/slack answer.
  */
 
 /** Which outbox: "agent" holds what the service sends to sessions (src/agent-outbox.ts), "owner" the owner's composer sends (src/owner-outbox.ts). */
@@ -95,7 +101,7 @@ export async function readOutbox(dir: string, outbox: OutboxName, cache: Map<str
  * One daemon list copy: the box it lists, its busy rows (`busyRows`), and its bytes, read only when a lookup needs them in this round. The
  * copies are rewritten only when a row changes (none changed in a 40 s watch on 10-19), so a copy whose size and mtime held keeps its busy rows.
  */
-export interface Copy { host: string; busy: Row[]; bytes: () => Buffer | null }
+export interface Copy { host: string; busy: Row[]; bytes: () => Buffer | null; changed?: boolean }
 
 const ROW_START = Buffer.from(',{"id":"');
 const FIRST_ROW = Buffer.from('[{"id":"');
@@ -154,12 +160,13 @@ async function readCopies(ctx: Context): Promise<Copy[]> {
     const load = () => bytes === undefined ? (bytes = (() => { try { return readFileSync(file); } catch { return null; } })()) : bytes;
     const stamp = `${info.size}:${info.mtimeMs}`;
     let held = kept.get(file);
-    if (held?.stamp !== stamp) {
+    const changed = held?.stamp !== stamp;
+    if (changed) {
       const read = load();
       held = { stamp, busy: read ? busyRows(read) : [] };
       kept.set(file, held);
     }
-    return { host, busy: held.busy, bytes: load };
+    return { host, busy: held!.busy, bytes: load, changed };
   }));
   return copies.filter((copy): copy is Copy => copy !== null);
 }
@@ -171,15 +178,18 @@ async function readCopies(ctx: Context): Promise<Copy[]> {
  */
 class Names {
   private readonly trees: Map<string, Tree & { at: number; found: boolean }>;
-  private readonly names: Map<string, { name: string; at: number }>;
+  private readonly names: Map<string, { name: string; at: number; found: boolean }>;
+  /** A copy was rewritten this round, so a chat (chats.json) no copy listed before, such as a new one, is looked up again. */
+  private readonly changed: boolean;
   private readonly used = new Set<string>();
   private readonly ctx: Context;
   private readonly copies: readonly Copy[];
   constructor(ctx: Context, copies: readonly Copy[]) {
     this.ctx = ctx;
     this.copies = copies;
+    this.changed = copies.some(copy => copy.changed);
     this.trees = state(ctx, "delivery.trees", () => new Map<string, Tree & { at: number; found: boolean }>());
-    this.names = state(ctx, "delivery.names", () => new Map<string, { name: string; at: number }>());
+    this.names = state(ctx, "delivery.names", () => new Map<string, { name: string; at: number; found: boolean }>());
   }
 
   /** The target's tree; an entry's `root` says it when the sender gave one, else the target's row does. */
@@ -198,15 +208,20 @@ class Names {
     return tree;
   }
 
-  /** The chat's name as the sidebar shows it; a chat no copy lists reads "unknown chat". */
-  name(root: string): string {
+  /**
+   * The chat's name as the sidebar shows it; a chat no copy lists reads "unknown chat". `chat` marks a chats.json chat, looked up again on each
+   * copy rewrite until a copy lists it, so a new chat gets its name within a round; other unlisted roots (deleted sessions) wait for `refresh`.
+   */
+  name(root: string, chat = false): string {
     this.used.add(root);
-    return this.names.get(root)?.name ?? this.lookName(root);
+    const held = this.names.get(root);
+    return held && (held.found || !chat || !this.changed) ? held.name : this.lookName(root);
   }
 
   private lookName(root: string): string {
-    const name = rowName(findRow(this.copies, root)) ?? this.names.get(root)?.name ?? "unknown chat";
-    this.names.set(root, { name, at: this.ctx.now });
+    const listed = rowName(findRow(this.copies, root));
+    const name = listed ?? this.names.get(root)?.name ?? "unknown chat";
+    this.names.set(root, { name, at: this.ctx.now, found: listed !== null });
     return name;
   }
 
@@ -305,8 +320,10 @@ export function outboxSamples(entries: readonly { outbox: OutboxName; entry: Ent
 }
 
 /** The daemon queue numbers per chat: the queued input the thread's queue chips show, and the unfinished actions against the pending limit. */
-export function daemonSamples(copies: readonly Copy[], names: Pick<Names, "chatOf">): Sample[] {
+export function daemonSamples(copies: readonly Copy[], names: Pick<Names, "chatOf">, chats: readonly { host: string; chat: string }[] = []): Sample[] {
   const queued = new Tally();
+  // Each chat starts at 0, so the queue panel has a line for every chat while nothing is queued.
+  for (const { host, chat } of chats) queued.add({ host, chat }, 0);
   const unfinished = new Tally();
   const full = new Tally();
   for (const copy of copies) {
@@ -370,20 +387,346 @@ export function sendSamples(sends: readonly OutsideSend[], names: Pick<Names, "n
   ];
 }
 
+/** A message a job, another agent or the server sent the chat (a `job` line of chatLines): when, and who sent it. */
+interface JobLine { at: number; source: string; from: string }
+
+/**
+ * One chat's transcript as the reader keeps it: the byte its next unread line starts at, the messages from the owner's last message at or
+ * before his read marker on (all that unreadCount needs, since an owner message starts a fresh turn and breaks every fold), and the job lines
+ * of the last 24 h.
+ */
+export interface Transcript { file: string; offset: number; messages: ThreadMessage[]; jobs: JobLine[]; host?: string; unread?: { since: number; count: number } }
+
+/** The transcript's unread count, kept until its messages or the read marker change (chat-catalog.ts `unreadOf` does the same). */
+export function unreadOf(transcript: Transcript, since: number): number {
+  if (transcript.unread?.since !== since) transcript.unread = { since, count: unreadCount(transcript.messages, since) };
+  return transcript.unread.count;
+}
+
+const TEXT_KEEP = 512;
+const clip = (text: string): string => text.length > TEXT_KEEP ? text.slice(0, TEXT_KEEP) : text;
+const textOf = (content: unknown): string => typeof content === "string" ? content
+  : Array.isArray(content) ? content.flatMap(part => part?.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n\n") : "";
+
+/**
+ * A session file entry as the message the chat's hub holds (session-tail.ts `historyMessages`), cut to the fields chatLines and unreadCount
+ * read: texts are clipped, images, thinking and tool arguments other than tell_owner's are dropped. Null for an entry that is no message.
+ */
+export function entryMessage(entry: Record<string, any>): ThreadMessage | null {
+  const timestamp = new Date(entry.timestamp).getTime();
+  if (entry.type === "custom_message") return { role: "custom", customType: String(entry.customType), content: clip(textOf(entry.content)), timestamp };
+  if (entry.type === "compaction") return { role: "compactionSummary", summary: "", tokensBefore: Number(entry.tokensBefore) || 0, timestamp };
+  if (entry.type === "branch_summary") return entry.summary ? { role: "branchSummary", summary: "", timestamp } : null;
+  if (entry.type !== "message" || typeof entry.message !== "object" || entry.message === null) return null;
+  const message = entry.message;
+  const at = typeof message.timestamp === "number" ? message.timestamp : timestamp;
+  if (message.role === "user") {
+    const text = textOf(message.content);
+    return { role: "user", content: text.length > 2 * TEXT_KEEP ? text.slice(0, 2 * TEXT_KEEP) + (text.includes(OWNER_RETRY_MARK) ? OWNER_RETRY_MARK : "") : text, timestamp: at };
+  }
+  if (message.role === "assistant") {
+    const content = (Array.isArray(message.content) ? message.content : []).flatMap((part: any) =>
+      part?.type === "text" ? [{ type: "text", text: clip(String(part.text ?? "")) }]
+      : part?.type === "toolCall" ? [{ type: "toolCall", id: String(part.id), name: String(part.name),
+        arguments: part.name === "tell_owner" ? { text: clip(String(part.arguments?.text ?? "")), reply_to: part.arguments?.reply_to } : {} }] : []);
+    return { role: "assistant", content, provider: "", model: "", stopReason: message.stopReason, timestamp: at,
+      ...typeof message.errorMessage === "string" ? { errorMessage: clip(message.errorMessage) } : {} } as ThreadMessage;
+  }
+  if (message.role === "toolResult") return { role: "toolResult", toolCallId: String(message.toolCallId), toolName: String(message.toolName ?? ""),
+    content: [{ type: "text", text: clip(textOf(message.content)) }], isError: message.isError === true, timestamp: at };
+  if (message.role === "bashExecution") return { role: "bashExecution", command: "", output: "", cancelled: false, truncated: false, timestamp: at };
+  return null;
+}
+
+/** An owner message: a user message the owner typed, or the server's restart of his unanswered one. It starts a turn the owner owns. */
+export const ownerStart = (message: ThreadMessage): boolean => {
+  if (message.role !== "user") return false;
+  const text = textOf(message.content).trim();
+  return !serverNote(text) || text.includes(OWNER_RETRY_MARK);
+};
+
+/** The message as a job line (ReportCard's and JobDrawer's `reportsFor` source), or null. `source` is "agent" for an agent message, else the server note. */
+export function jobLine(message: ThreadMessage): JobLine | null {
+  if (message.role !== "custom" && message.role !== "user") return null;
+  const line = chatLines([message])[0];
+  if (line?.kind !== "job") return null;
+  const source = message.role === "custom" ? "agent" : textOf(message.content).startsWith(NUDGE_PREFIX) ? "nudge" : line.from;
+  return { at: line.at, source, from: line.from };
+}
+
+const ENTRY_HEAD = /^\{"type":"[^"]*","id":"[^"]*","parentId":(?:null|"[^"]*"),"timestamp":"([^"]*)"/;
+const ENTRY_TAIL = /"timestamp":"([^"]*)"\}$/;
+/** An entry's own time from its line's bytes: up front for most entries, at the end for custom ones, else from a full parse. */
+function entryTime(bytes: Buffer): number {
+  const head = ENTRY_HEAD.exec(bytes.toString("utf8", 0, Math.min(bytes.length, 300)));
+  const tail = head ? null : ENTRY_TAIL.exec(bytes.toString("utf8", Math.max(0, bytes.length - 120)));
+  const stamp = head?.[1] ?? tail?.[1];
+  if (stamp) return Date.parse(stamp);
+  try { return Date.parse((JSON.parse(bytes.toString("utf8")) as { timestamp?: string }).timestamp ?? ""); } catch { return NaN; }
+}
+
+/** Whether a line can hold a job line: a user message or an agent message, judged from its first bytes without a parse. */
+const mayBeJob = (bytes: Buffer): boolean => {
+  const head = bytes.toString("utf8", 0, Math.min(bytes.length, 300));
+  return head.includes('"role":"user"') || head.includes('"customType":"agent_message"');
+};
+
+function lineMessage(bytes: Buffer): ThreadMessage | null {
+  try { return entryMessage(JSON.parse(bytes.toString("utf8"))); } catch { return null; }
+}
+
+const CHUNK_BYTES = 1 << 20;
+
+/**
+ * A transcript read from its end, in 1 MiB chunks, back to the owner's last message at or before `since` and past the last 24 h. Past that
+ * owner message only the lines that can be job lines are parsed, so a 78 MB transcript costs the bytes of one day, once.
+ */
+export async function readTranscriptEnd(file: string, since: number, now: number, chunkBytes = CHUNK_BYTES): Promise<Transcript> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const messages: ThreadMessage[] = [];
+    const jobs: JobLine[] = [];
+    let bounded = false;
+    let pos = size;
+    let tail = Buffer.alloc(0);
+    let end = size;
+    let first = true;
+    while (pos > 0) {
+      const start = Math.max(0, pos - chunkBytes);
+      const chunk = Buffer.alloc(pos - start);
+      await handle.read(chunk, 0, chunk.length, start);
+      pos = start;
+      let data = tail.length ? Buffer.concat([chunk, tail]) : chunk;
+      if (first) {
+        // A last line with no newline is still being written; the forward read takes it once it ends.
+        const last = data.lastIndexOf(0x0a);
+        if (last < 0) { tail = data; continue; }
+        end = start + last + 1;
+        data = data.subarray(0, last + 1);
+        first = false;
+      }
+      let stop = data.length;
+      let done = false;
+      while (stop > 0) {
+        const newline = stop >= 2 ? data.lastIndexOf(0x0a, stop - 2) : -1;
+        if (newline < 0 && start > 0) break;
+        const bytes = data.subarray(newline + 1, data[stop - 1] === 0x0a ? stop - 1 : stop);
+        stop = newline + 1;
+        if (!bytes.length) continue;
+        if (bounded) {
+          const at = entryTime(bytes);
+          if (Number.isFinite(at) && now - at >= DAY_MS) { done = true; break; }
+          if (!mayBeJob(bytes)) continue;
+        }
+        const message = lineMessage(bytes);
+        if (!message) continue;
+        if (!bounded) messages.push(message);
+        const job = jobLine(message);
+        if (job && now - job.at < DAY_MS) jobs.push(job);
+        if (!bounded && ownerStart(message) && message.timestamp <= since) bounded = true;
+      }
+      if (done) break;
+      tail = data.subarray(0, stop);
+    }
+    return { file, offset: end, messages: messages.reverse(), jobs: jobs.reverse() };
+  } finally { await handle.close(); }
+}
+
+/** Adds the lines written since the last round, keeps a line still being written for the next one, and starts over when the file shrank. */
+export async function readTranscriptNew(kept: Transcript, since: number, now: number): Promise<Transcript> {
+  const size = await stat(kept.file).then(info => info.size, () => -1);
+  if (size < 0) return kept;
+  if (size < kept.offset) return readTranscriptEnd(kept.file, since, now);
+  if (size > kept.offset) {
+    const handle = await open(kept.file, "r");
+    try {
+      const buffer = Buffer.alloc(size - kept.offset);
+      await handle.read(buffer, 0, buffer.length, kept.offset);
+      const last = buffer.lastIndexOf(0x0a);
+      if (last >= 0) {
+        for (let at = 0; at <= last;) {
+          const newline = buffer.indexOf(0x0a, at);
+          const message = newline > at ? lineMessage(buffer.subarray(at, newline)) : null;
+          at = newline + 1;
+          if (!message) continue;
+          kept.messages.push(message);
+          const job = jobLine(message);
+          if (job) kept.jobs.push(job);
+        }
+        kept.offset += last + 1;
+        delete kept.unread;
+      }
+    } finally { await handle.close(); }
+  }
+  const owner = kept.messages.findLastIndex(message => ownerStart(message) && message.timestamp <= since);
+  if (owner > 0) { kept.messages = kept.messages.slice(owner); delete kept.unread; }
+  kept.jobs = kept.jobs.filter(job => now - job.at < DAY_MS);
+  return kept;
+}
+
+/** Where a chat's transcript is on this box: its own session file, else the newest mirror of another box's (src/host-mirror.ts). */
+async function transcriptFile(home: string, host: string, id: string): Promise<{ file: string; host: string } | null> {
+  const name = `${id}.jsonl`;
+  const local = join(home, ".prime/agent/sessions", name);
+  if (await stat(local).then(() => true, () => false)) return { file: local, host };
+  const mirror = join(home, ".cache/sieun-pi/hosts");
+  let best: { file: string; host: string; at: number } | null = null;
+  for (const box of await readdir(mirror, { withFileTypes: true }).catch(() => [])) {
+    if (!box.isDirectory()) continue;
+    for (const top of ["Users", "home"]) {
+      for (const user of await readdir(join(mirror, box.name, top)).catch(() => [] as string[])) {
+        const file = join(mirror, box.name, top, user, ".prime/agent/sessions", name);
+        const info = await stat(file).catch(() => null);
+        if (info && (!best || info.mtimeMs > best.at)) best = { file, host: box.name, at: info.mtimeMs };
+      }
+    }
+  }
+  return best && { file: best.file, host: best.host };
+}
+
+/** The chats (chats.json `ids`) and the owner's read marker of each (read-state.json, the later of the baseline and the chat's marker). */
+async function chatList(dir: string): Promise<{ id: string; since: number }[]> {
+  const ids = await readFile(join(dir, "chats.json"), "utf8").then(raw => (JSON.parse(raw) as { ids?: unknown }).ids, () => []);
+  const read = await readFile(join(dir, "read-state.json"), "utf8").then(raw => JSON.parse(raw) as { baseline?: number; sessions?: Record<string, { timestamp?: number }> }, () => ({}));
+  const baseline = typeof read.baseline === "number" ? read.baseline : 0;
+  return (Array.isArray(ids) ? ids : []).filter((id): id is string => typeof id === "string")
+    .map(id => ({ id, since: Math.max(baseline, read.sessions?.[id]?.timestamp ?? 0) }));
+}
+
+/** How many jobs ranked by messages sent in the last 24 h go out one by one. Their name goes in `sender`, since Alloy's `job` label is "harness". */
+const TOP_REPORTERS = 10;
+
+/** The unread and job message numbers of the chats, per chat by name. */
+export function chatSamples(chats: readonly { chat: string; since: number; transcript: Transcript }[], now: number): Sample[] {
+  const unread: Sample[] = [];
+  const counts: Sample[] = [];
+  const reporters: { chat: string; job: string; count: number }[] = [];
+  let unreadAll = 0;
+  for (const { chat, since, transcript } of chats) {
+    const count = unreadOf(transcript, since);
+    unreadAll += count;
+    unread.push({ name: "harness.delivery.unread", kind: "gauge", value: count, labels: { chat },
+      help: "Feed rows of the chat the owner has not read, the sidebar's unread count (shown as 99+ past 99), 0 when he read them all." });
+    const day = new Map<string, number>();
+    const recent = new Map<string, number>();
+    const senders = new Map<string, number>();
+    let newest = -Infinity;
+    for (const job of transcript.jobs) {
+      day.set(job.source, (day.get(job.source) ?? 0) + 1);
+      if (now - job.at < WINDOW_MS) recent.set(job.source, (recent.get(job.source) ?? 0) + 1);
+      if (job.source !== "agent") continue;
+      senders.set(job.from, (senders.get(job.from) ?? 0) + 1);
+      newest = Math.max(newest, job.at);
+    }
+    for (const [source, value] of recent) counts.push({ name: "harness.delivery.job_messages_30m", kind: "gauge", value, labels: { chat, source },
+      help: "Messages jobs, agents and the server sent the chat in the last 30 min, per chat and source (agent, check-in, jobs and the other server notes)." });
+    for (const [source, value] of day) counts.push({ name: "harness.delivery.job_messages_24h", kind: "gauge", value, labels: { chat, source },
+      help: "Messages jobs, agents and the server sent the chat in the last 24 h, per chat and source." });
+    counts.push({ name: "harness.delivery.reporting_jobs_24h", kind: "gauge", value: senders.size, labels: { chat },
+      help: "Jobs and agents that sent the chat at least one message in the last 24 h." });
+    if (Number.isFinite(newest)) counts.push({ name: "harness.delivery.last_report_age", kind: "gauge", unit: "s", value: Math.max(0, now - newest) / 1000, labels: { chat },
+      help: "Age of the newest message a job or agent sent the chat, within the last 24 h." });
+    for (const [job, value] of senders) reporters.push({ chat, job, count: value });
+  }
+  const ranked = reporters.sort((a, b) => b.count - a.count || a.job.localeCompare(b.job)).slice(0, TOP_REPORTERS);
+  return [
+    { name: "harness.delivery.unread_all", kind: "gauge", help: "Unread feed rows summed over every chat.", value: unreadAll },
+    ...unread,
+    ...counts,
+    ...ranked.map(({ chat, job, count }, index) => ({ name: "harness.delivery.top_reporters_24h", kind: "gauge" as const, value: count,
+      labels: { rank: String(index + 1), chat, sender: job }, help: "The ten jobs that sent their chat the most messages in the last 24 h, ranked, by chat and sender name." })),
+  ];
+}
+
+/** The part of the chat's GET api/slack answer (SlackBridge.view) that lives only in the chat's memory. */
+interface SlackLive { state: string; tokenSource: string | null; at: number }
+
+/**
+ * Asks the chat for its Slack view in the background and returns the last answer. The round never waits on the chat, so a busy or stuck chat
+ * leaves an old answer, whose age goes out, instead of holding up the feed.
+ */
+function slackLive(ctx: Context, dir: string): { last: SlackLive | null; asking: Promise<void> | null } {
+  const held = state(ctx, "delivery.slack", () => ({ last: null as SlackLive | null, asking: null as Promise<void> | null }));
+  if (!held.asking) {
+    const asking: Promise<void> = readFile(join(dir, "instance.json"), "utf8")
+      .then(raw => fetch(new URL("api/slack", (JSON.parse(raw) as { url: string }).url)))
+      .then(response => response.ok ? response.json() as Promise<{ state?: unknown; tokenSource?: unknown } | null> : null)
+      .then(view => { if (view && typeof view.state === "string") held.last = { state: view.state, tokenSource: typeof view.tokenSource === "string" ? view.tokenSource : null, at: Date.now() }; })
+      .catch(() => {})
+      .finally(() => { if (held.asking === asking) held.asking = null; });
+    held.asking = asking;
+  }
+  return held;
+}
+
+interface SlackFile { enabled?: boolean; links?: Record<string, { archived?: boolean; posted?: string[] }> }
+
+export function slackSamples(file: SlackFile | null, live: SlackLive | null, names: Pick<Names, "name">, now: number): Sample[] {
+  const links = Object.entries(file?.links ?? {}).filter(([, link]) => !link.archived);
+  const posted = new Tally();
+  for (const [id, link] of links) {
+    const chat = names.name(id);
+    posted.add({ chat }, 0);
+    for (const key of link.posted ?? []) if (now - Number(key.split(":")[0]) < DAY_MS) posted.add({ chat });
+  }
+  return [
+    { name: "harness.delivery.slack_enabled", kind: "gauge", help: "1 when the Slack bridge is switched on in Settings > Slack.", value: file?.enabled ? 1 : 0 },
+    { name: "harness.delivery.slack_synced_chats", kind: "gauge", help: "Chats synced to a Slack channel now, the Settings > Slack count.", value: links.length },
+    ...posted.samples({ name: "harness.delivery.slack_posted_24h", kind: "gauge", help: "Chat replies the bridge posted to the chat's Slack channel in the last 24 h, by reply time." }),
+    ...live ? [
+      { name: "harness.delivery.slack_connected", kind: "gauge" as const, help: "1 when the chat's Slack socket is on, Settings > Slack's state.", value: live.state === "on" ? 1 : 0 },
+      { name: "harness.delivery.slack_state", kind: "gauge" as const, help: "The Slack bridge's state (off, no-tokens, no-owner, connecting, on, problem) and where its tokens came from, as 1.",
+        value: 1, labels: { state: live.state, token_source: live.tokenSource ?? "none" } },
+      { name: "harness.delivery.slack_answer_age", kind: "gauge" as const, unit: "s" as const, help: "Age of the chat's last answer about its Slack state.", value: Math.max(0, now - live.at) / 1000 },
+    ] : [],
+  ];
+}
+
+/** Each chat's transcript, read from its end the first time and from the saved offset after; a chat that left chats.json is let go. */
+async function readChats(ctx: Context, dir: string): Promise<{ id: string; host: string; since: number; transcript: Transcript }[]> {
+  const kept = state(ctx, "delivery.transcripts", () => new Map<string, Transcript>());
+  const chats = await chatList(dir);
+  const listed = new Set(chats.map(chat => chat.id));
+  for (const id of kept.keys()) if (!listed.has(id)) kept.delete(id);
+  // One chat at a time: the first round reads a day of each transcript, and 19 at once held 19 sets of chunks and parses (363 MB peak on 10-19).
+  const read: { id: string; host: string; since: number; transcript: Transcript }[] = [];
+  for (const { id, since } of chats) {
+    const held = kept.get(id);
+    // A mirror found before is kept while it exists and the chat has no session file here, so a round costs two stats, not a mirror search.
+    const local = join(ctx.home, ".prime/agent/sessions", `${id}.jsonl`);
+    const known = held && held.file !== local && held.host && await stat(held.file).then(() => true, () => false)
+      && !await stat(local).then(() => true, () => false) ? { file: held.file, host: held.host } : null;
+    const where = known ?? await transcriptFile(ctx.home, ctx.host, id);
+    if (!where) { kept.delete(id); continue; }
+    const transcript = held?.file === where.file ? await readTranscriptNew(held, since, ctx.now) : await readTranscriptEnd(where.file, since, ctx.now);
+    transcript.host = where.host;
+    kept.set(id, transcript);
+    read.push({ id, host: where.host, since, transcript });
+  }
+  return read;
+}
+
 export async function read(ctx: Context): Promise<Sample[]> {
   if (!ctx.chatHost) return [];
   const dir = join(ctx.home, ".prime/agent/browser-chat");
-  const [agent, owner, copies] = await Promise.all([
+  const slack = slackLive(ctx, dir);
+  const [agent, owner, copies, chats, slackFile] = await Promise.all([
     readOutbox(join(dir, "agent-outbox"), "agent", state(ctx, "delivery.agent", () => new Map<string, Entry>())),
     readOutbox(join(dir, "outbox"), "owner", state(ctx, "delivery.owner", () => new Map<string, Entry>())),
     readCopies(ctx),
+    readChats(ctx, dir),
+    readFile(join(dir, "slack.json"), "utf8").then(raw => JSON.parse(raw) as SlackFile, () => null),
   ]);
   const sends = await readSends(join(dir, "sends.jsonl"), state(ctx, "delivery.sends", () => ({ offset: 0, sends: [] as OutsideSend[] })), ctx.now);
   const names = new Names(ctx, copies);
+  const named = chats.map(chat => ({ ...chat, chat: names.name(chat.id, true) }));
   const samples = [
     ...outboxSamples([...agent.map(entry => ({ outbox: "agent" as const, entry })), ...owner.map(entry => ({ outbox: "owner" as const, entry }))], names, ctx.now),
-    ...daemonSamples(copies, names),
+    ...daemonSamples(copies, names, named.map(({ host, chat }) => ({ host, chat }))),
     ...sendSamples(sends, names, ctx.now),
+    ...chatSamples(named, ctx.now),
+    ...slackSamples(slackFile, slack.last, names, ctx.now),
   ];
   names.refresh();
   return samples;

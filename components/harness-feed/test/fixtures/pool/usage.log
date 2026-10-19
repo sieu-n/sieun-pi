@@ -1,0 +1,8 @@
+{"ts": "2026-10-19T10:00:01", "event": "turn_released"}
+{"ts": "2026-10-19T10:00:05", "event": "usage_sample", "accounts": 3, "failed": []}
+{"ts": "2026-10-19T10:01:05", "event": "usage_sample", "accounts": 2, "failed": ["two@example.com"]}
+{"ts": "2026-10-19T10:02:00", "event": "usage_refresh", "providers": ["anthropic"], "accounts": 30, "failed": ["one@example.com", "two@example.com"], "errors": {}}
+{"ts": "2026-10-19T10:02:30", "event": "usage_refresh", "providers": ["anthropic"], "accounts": "thirty", "failed": []}
+{"ts": "2026-10-19T10:02:31", "event": "turn_admitted", "kind": "slot", "waited_s": 4, "note": "usage_sample"}
+{"ts": "2026-10-19T10:02:40", "event": "usage_sample", "accounts": 1, "failed": []
+{"ts": "2026-10-19T10:03:05", "event": "usage_sample", "accounts": 1, "failed": []}

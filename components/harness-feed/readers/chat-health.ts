@@ -1,3 +1,4 @@
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
@@ -7,7 +8,12 @@ import type { DaemonFault } from "../../user-history/src/daemon-faults.ts";
 import { readReopenedSends, readServiceFaults, readSupervisorFaults } from "../../user-history/src/daemon-faults.ts";
 import { harnessSlow, workerMisses } from "../../user-history/src/harness-slow.ts";
 import { quietMinutes } from "../../user-history/src/quiet-minutes.ts";
-import { sessionRows } from "./session-copy.ts";
+import { stepOwner } from "../../user-history/src/checkin-steps.ts";
+import { BUCKETS, bucketOf, inSidebar, sidebarSections } from "../../user-history/src/client/organize.ts";
+import { readPulse, type PulseLevel } from "../../user-history/src/shared/pulse.ts";
+import type { PlanItem, Pulse, SessionRow, ThreadSchedule } from "../../user-history/src/shared/types.ts";
+import type { ThreadOrigin } from "../../user-history/src/thread-origin.ts";
+import { copyIndex, sessionRows, type CopyRow } from "./session-copy.ts";
 
 // The chat's responsiveness and its agents, from the files the live chat service writes on its box: the usable watch's minute lines
 // (src/mac-usable-watch.ts), service.log, the supervisor's daemon logs, pi-pool.log, the catalog copies, unloaded.json and d7's last run.
@@ -50,6 +56,7 @@ type Tail = { offset: number; rest: Buffer };
 type Stamped<T> = { at: number; value: T };
 
 interface State {
+  sidebar: SidebarState;
   watch: Map<string, Tail>;
   lines: WatchLine[];
   service?: Tail;
@@ -554,6 +561,475 @@ export function judgeMinutes(input: { now: number; watch: readonly WatchLine[]; 
   return out;
 }
 
+// ---- the sidebar, each chat's agents and the tool calls (chat-catalog.ts `project`, client/organize.ts, chat-agents.ts, shared/turns.ts) ----
+
+/** A thread the sidebar lists, with the fields client/organize.ts sorts and groups it by. */
+type SidebarRow = Pick<SessionRow, "id" | "name" | "working" | "unread" | "archived" | "origin" | "priority" | "lastActivityAt" | "created" | "status" | "subagentsRunning"> & {
+  chat?: true; schedule?: ThreadSchedule; pulse?: Pulse; failure?: string };
+/** Small JSON files the chat service writes, read again only when their mtime or size changes. */
+type JsonCache = Map<string, { key: string; value: unknown }>;
+/** One live session file read from a saved offset: its open run, its tool calls still waiting for a result, and the line still being written. */
+interface RunTail { offset: number; rest: Buffer; settled: boolean; runStart: number; open: Map<string, { tool: string; at: number }>; mtimeMs: number }
+/** A tool call that got its result, at the result's time, with its run time in seconds when the result or its call names one. */
+type ToolEvent = { at: number; tool: string; error: boolean; s: number | null };
+interface SidebarState {
+  json: JsonCache;
+  /** fileOrigin's final answers by session file, and the not yet final ones with the row's write key then (thread-origin.ts `ThreadOrigins`). */
+  origins: Map<string, ThreadOrigin>;
+  undecided: Map<string, { key: string; origin: ThreadOrigin }>;
+  listed: WeakMap<CopyRow, boolean>;
+  byRow: WeakMap<CopyRow, ThreadOrigin>;
+  /** Each row object's name and times as the sidebar shows them, built once: an unchanged copy keeps its row objects. */
+  fixed: WeakMap<CopyRow, Pick<SidebarRow, "name" | "lastActivityAt" | "created">>;
+  /** The merged rows and trees of the copies, kept until one of the copies' row lists changes. */
+  merged?: { lists: readonly (readonly CopyRow[])[]; rows: ReturnType<typeof mergeCopies>; trees: ReturnType<typeof treesOf> };
+  schedules: Map<string, { mtimeMs: number; schedule: ThreadSchedule | null }>;
+  tails: Map<string, RunTail>;
+  tools: ToolEvent[];
+}
+
+async function cachedJson(cache: JsonCache, file: string): Promise<unknown> {
+  const info = await stat(file).catch(() => null);
+  if (!info) { cache.delete(file); return null; }
+  const key = `${info.size}:${info.mtimeMs}`;
+  const known = cache.get(file);
+  if (known?.key === key) return known.value;
+  const value = JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
+  cache.set(file, { key, value });
+  return value;
+}
+const idsOf = (value: unknown): Set<string> => new Set(isRecord(value) && Array.isArray(value.ids) ? value.ids.filter((id): id is string => typeof id === "string") : []);
+
+/** chat-catalog.ts `nativeStatus`. */
+const nativeStatus = (row: CopyRow): string => row.roster ?? (!row.live ? "inactive" : row.activity === "working" || row.sessionActive ? "running" : "idle");
+/** chat-catalog.ts `settledOnFailure` and `daemonSaysFailed`. */
+const settledOnFailure = (row: CopyRow): boolean => row.taskState === "error" && Boolean(row.summary);
+const daemonSaysFailed = (row: CopyRow): boolean => row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
+
+/**
+ * The catalog's rows (chat-catalog.ts `index`): the top-level rows of this box's copy and the other boxes' copies, one per session id, the one a
+ * daemon runs over a saved one and this box's when both or neither do; every other row is a subagent row. `remote` holds the rows another box lists.
+ */
+export function mergeCopies(own: readonly CopyRow[], others: readonly (readonly CopyRow[])[]): { top: CopyRow[]; children: CopyRow[]; remote: Set<CopyRow> } {
+  const ownIds = new Set(own.map(row => row.id));
+  const top = new Map<string, CopyRow>();
+  const children: CopyRow[] = [];
+  const remote = new Set<CopyRow>();
+  for (const [index, rows] of [own, ...others].entries()) for (const row of rows) {
+    if (index > 0 && !ownIds.has(row.id)) remote.add(row);
+    if (!row.topLevel) { children.push(row); continue; }
+    const existing = top.get(row.id);
+    if (!existing || (row.live && !existing.live)) top.set(row.id, row);
+  }
+  return { top: [...top.values()], children, remote };
+}
+
+/** chat-catalog.ts `childrenByParent` (one row per session id, a live one over a saved one) and `runningByParent`. */
+function treesOf(children: readonly CopyRow[]): { all: Map<string, CopyRow[]>; running: Map<string, CopyRow[]> } {
+  const byId = new Map<string, CopyRow>();
+  for (const row of children) { const existing = byId.get(row.id); if (!existing || (!existing.live && row.live)) byId.set(row.id, row); }
+  const all = new Map<string, CopyRow[]>(), running = new Map<string, CopyRow[]>();
+  const add = (map: Map<string, CopyRow[]>, row: CopyRow) => { const list = map.get(row.parent!) ?? []; list.push(row); map.set(row.parent!, list); };
+  for (const row of byId.values()) if (row.parent) add(all, row);
+  for (const row of children) if (row.parent && nativeStatus(row) === "running") add(running, row);
+  return { all, running };
+}
+
+/** chat-catalog.ts `subtreeOf`: running subagents at any depth and every subagent listed below the row. */
+function subtreeOf(row: CopyRow, children: ReadonlyMap<string, CopyRow[]>): { running: number; total: number } {
+  let running = 0, total = 0;
+  const seen = new Set([row.id]);
+  const pending = [...children.get(row.id) ?? []];
+  for (let child = pending.pop(); child; child = pending.pop()) {
+    if (seen.has(child.id)) continue;
+    seen.add(child.id);
+    total++;
+    if (nativeStatus(child) === "running") running++;
+    pending.push(...children.get(child.id) ?? []);
+  }
+  return { running, total };
+}
+
+/**
+ * chat-catalog.ts `pulseOf`: the row's freshness, its activity the latest of its own and of any running subagent below it. The catalog copy on
+ * disk is written every few minutes (261 s old at 19:57Z on 10-19), so `written` adds the last write of a loaded session's file on this box.
+ */
+function pulseOf(row: CopyRow, running: ReadonlyMap<string, CopyRow[]>, written: (row: CopyRow) => number = () => 0): Pulse {
+  let at = Math.max(row.activityAt, written(row));
+  const seen = new Set([row.id]);
+  const pending = [...running.get(row.id) ?? []];
+  for (let child = pending.pop(); child; child = pending.pop()) {
+    if (seen.has(child.id)) continue;
+    seen.add(child.id);
+    at = Math.max(at, child.activityAt, written(child));
+    pending.push(...running.get(child.id) ?? []);
+  }
+  return { streaming: row.streaming, tools: row.tools, bash: row.bash, children: row.runningChildren, ...at > 0 ? { activityAt: new Date(at).toISOString() } : {},
+    ...row.summary ? { summary: row.summary } : {}, ...row.taskState !== null ? { summaryCurrent: true as const } : {}, ...row.heardAt ? { silentSince: row.heardAt } : {},
+    ...row.statusLabel === "failed" || row.workerState === "failed" ? { failed: true } : {} };
+}
+
+/** chat-catalog.ts `parseSchedules` over one session's scheduled-jobs.json, the store the daemon's cron_list reads: active before paused, then the next run. */
+export function scheduleOf(value: unknown): ThreadSchedule | null {
+  let best: ThreadSchedule | null = null;
+  for (const job of isRecord(value) && Array.isArray(value.jobs) ? value.jobs : []) {
+    if (!isRecord(job) || (job.status !== "active" && job.status !== "paused")) continue;
+    const schedule: ThreadSchedule = { kind: job.source === "heartbeat" || job.source === "rlm_heartbeat" ? "heartbeat" : "cron", status: job.status,
+      expression: isRecord(job.schedule) && typeof job.schedule.expression === "string" ? job.schedule.expression : "", ...typeof job.nextRunAt === "string" ? { nextRunAt: job.nextRunAt } : {} };
+    if (!best || (schedule.status === "active" && best.status === "paused") || (schedule.status === best.status && (schedule.nextRunAt ?? "~") < (best.nextRunAt ?? "~"))) best = schedule;
+  }
+  return best;
+}
+
+/** The schedule of each of this box's loaded top-level sessions: cron_list asks only the loaded workers of this box's daemon. */
+async function readSchedules(state: SidebarState, artifacts: string, rows: readonly CopyRow[]): Promise<Map<string, ThreadSchedule>> {
+  const out = new Map<string, ThreadSchedule>();
+  const seen = new Set<string>();
+  await Promise.all(rows.map(async row => {
+    const file = join(artifacts, row.id, "scheduled-jobs.json");
+    seen.add(file);
+    const info = await stat(file).catch(() => null);
+    if (!info) { state.schedules.delete(file); return; }
+    let known = state.schedules.get(file);
+    if (known?.mtimeMs !== info.mtimeMs) {
+      known = { mtimeMs: info.mtimeMs, schedule: scheduleOf(JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown) };
+      state.schedules.set(file, known);
+    }
+    if (known.schedule) out.set(row.id, known.schedule);
+  }));
+  for (const file of state.schedules.keys()) if (!seen.has(file)) state.schedules.delete(file);
+  return out;
+}
+
+/**
+ * thread-origin.ts `fileOrigin`, copied because thread-origin.ts has TS parameter properties: a session whose file names it (`session_info`)
+ * before its first `session_state` or message was created named, by an agent's rlm.create_session. `final` is false while the head has neither.
+ */
+function fileOrigin(sessionFile: string): { origin: ThreadOrigin; final: boolean } {
+  let fd: number;
+  try { fd = openSync(sessionFile, "r"); } catch { return { origin: "user", final: false }; }
+  try {
+    const chunk = Buffer.alloc(64 * 1024);
+    let pending = "", offset = 0, named = false;
+    while (offset < 4 * 1024 * 1024) {
+      const read = readSync(fd, chunk, 0, chunk.length, offset);
+      if (read === 0) break;
+      offset += read;
+      pending += chunk.toString("utf8", 0, read);
+      for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
+        const type = /^\{"type":"([a-z_]+)"/.exec(pending.slice(0, newline))?.[1];
+        pending = pending.slice(newline + 1);
+        if (type === "session_info") named = true;
+        else if (type === "session_state" || type === "message") return { origin: named ? "agent" : "user", final: true };
+      }
+    }
+    return { origin: named ? "agent" : "user", final: false };
+  } finally { closeSync(fd); }
+}
+
+/** thread-origin.ts `ThreadOrigins.resolver`: a clean-room chat is an agent's, a thread the chat created or a chat is the person's, else its file's head decides. */
+function originOf(state: SidebarState, row: CopyRow, created: ReadonlySet<string>, cleanRoom: ReadonlySet<string>, chats: ReadonlySet<string>): ThreadOrigin {
+  if (cleanRoom.has(row.id)) return "agent";
+  if (created.has(row.id) || chats.has(row.id) || !row.file) return "user";
+  const read = state.byRow.get(row);
+  if (read) return read;
+  const origin = fileDecides(state, row, row.file);
+  state.byRow.set(row, origin);
+  return origin;
+}
+/** What the file said for each row object, so an unchanged row is not looked up by path again (thread-origin.ts `byRow` and `fileDecides`). */
+function fileDecides(state: SidebarState, row: CopyRow, file: string): ThreadOrigin {
+  const known = state.origins.get(file);
+  if (known) return known;
+  const key = `${row.activityAt}|${row.messages}`;
+  const pending = state.undecided.get(file);
+  if (pending?.key === key) return pending.origin;
+  const { origin, final } = fileOrigin(file);
+  if (final) { state.origins.set(file, origin); state.undecided.delete(file); }
+  else state.undecided.set(file, { key, origin });
+  return origin;
+}
+
+/** chat-catalog.ts `isListed`: another box's rows by its daemon's word, this box's saved rows only while their file is on disk. */
+function listed(state: SidebarState, row: CopyRow, remote: boolean): boolean {
+  if (row.live) return true;
+  if (row.messages === 0 && !row.name?.trim()) return false;
+  if (remote) return true;
+  let known = state.listed.get(row);
+  if (known === undefined) { known = row.file !== null && existsSync(row.file); state.listed.set(row, known); }
+  return known;
+}
+
+// The session file's run and tool calls (shared/turns.ts: a user prompt or a waking custom message opens a run; an assistant reply that stops
+// for anything but a tool call ends it; chat-projection.ts takes a tool's run time from its result's `details.durationMs`).
+const PROMPT_TYPES = new Set(["agent_message", "heartbeat_prompt", "async_bash_completion", "goal_context", "rlm_child_terminal_notice", "rlm_child_failure", "prime-agent.update_restart"]);
+const ASSISTANT = Buffer.from('"role":"assistant"');
+const STOP = /"stopReason":"(\w+)"/;
+
+/** Folds one session file line into its tail, and a tool result into `events`. */
+export function foldRunLine(tail: RunTail, line: string, events: ToolEvent[]): void {
+  const role = line.includes('"role":"toolResult"') ? "toolResult" : line.includes('"role":"assistant"') ? "assistant" : line.includes('"role":"user"') ? "user"
+    : line.startsWith('{"type":"custom_message"') ? "custom" : null;
+  if (!role) return;
+  let entry: { type?: unknown; customType?: unknown; timestamp?: unknown; message?: Record<string, unknown> };
+  try { entry = JSON.parse(line) as typeof entry; } catch { return; }
+  const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+  const message = isRecord(entry.message) ? entry.message : null;
+  if (role === "custom") {
+    if (entry.type === "custom_message" && typeof entry.customType === "string" && PROMPT_TYPES.has(entry.customType) && tail.settled && Number.isFinite(at)) { tail.settled = false; tail.runStart = at; }
+    return;
+  }
+  if (entry.type !== "message" || !message || message.role !== role) return;
+  if (role === "user") { if (tail.settled && Number.isFinite(at)) { tail.settled = false; tail.runStart = at; } return; }
+  if (role === "assistant") {
+    for (const part of Array.isArray(message.content) ? message.content : [])
+      if (isRecord(part) && part.type === "toolCall" && typeof part.id === "string") tail.open.set(part.id, { tool: typeof part.name === "string" ? part.name : "unknown", at });
+    if (typeof message.stopReason === "string" && message.stopReason !== "toolUse") { tail.settled = true; tail.open.clear(); }
+    return;
+  }
+  const id = typeof message.toolCallId === "string" ? message.toolCallId : "";
+  const call = tail.open.get(id);
+  tail.open.delete(id);
+  const end = typeof message.timestamp === "number" ? message.timestamp : at;
+  const ms = isRecord(message.details) && typeof message.details.durationMs === "number" ? message.details.durationMs : call && Number.isFinite(call.at) ? end - call.at : null;
+  if (Number.isFinite(end)) events.push({ at: end, tool: typeof message.toolName === "string" ? message.toolName : call?.tool ?? "unknown", error: message.isError === true,
+    s: ms === null || !Number.isFinite(ms) ? null : Math.max(0, ms) / 1000 });
+}
+
+/**
+ * The tail of a session file first seen: its lines are read back from the end, 1 MiB at a time, to the last assistant reply that ended a run,
+ * so the read covers only the open run and a settled file costs one chunk. The lines then fold forward, and later rounds read from the end.
+ */
+export async function firstRunTail(file: string, events: ToolEvent[]): Promise<RunTail | null> {
+  let handle;
+  try { handle = await open(file, "r"); } catch { return null; }
+  try {
+    const { size } = await handle.stat();
+    const { mtimeMs } = await handle.stat();
+    const tail: RunTail = { offset: size, rest: Buffer.alloc(0), settled: true, runStart: 0, open: new Map(), mtimeMs };
+    const lines: Buffer[] = [];
+    let end = size, carry = Buffer.alloc(0), first = true, found = false;
+    while (end > 0 && !found) {
+      const from = Math.max(0, end - (1 << 20));
+      const chunk = Buffer.alloc(end - from);
+      await handle.read(chunk, 0, chunk.length, from);
+      let bytes = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+      if (first) {
+        const last = bytes.lastIndexOf(10);
+        tail.rest = Buffer.from(bytes.subarray(last + 1));
+        bytes = bytes.subarray(0, last + 1);
+        first = false;
+      }
+      let stop = bytes.length;
+      // Buffer.lastIndexOf counts a negative offset from the end, so a line that starts the buffer is looked for only while 2 bytes remain.
+      for (;;) {
+        const newline = stop >= 2 ? bytes.lastIndexOf(10, stop - 2) : -1;
+        if (newline < 0 && from > 0) { carry = Buffer.from(bytes.subarray(0, stop)); break; }
+        const line = bytes.subarray(newline + 1, stop);
+        stop = newline + 1;
+        if (line.length > 1) {
+          lines.push(line);
+          if (line.includes(ASSISTANT)) {
+            const reason = STOP.exec(line.subarray(line.lastIndexOf('"stopReason":"')).toString("utf8"))?.[1];
+            if (reason && reason !== "toolUse") { found = true; break; }
+          }
+        }
+        if (newline < 0) break;
+      }
+      end = from;
+    }
+    for (const line of lines.reverse()) foldRunLine(tail, line.toString("utf8").trimEnd(), events);
+    return tail;
+  } finally { await handle.close(); }
+}
+
+/** Reads the new lines of every live session file on this box, and drops the tails of sessions that are no longer loaded. */
+async function readRuns(state: SidebarState, rows: readonly CopyRow[], now: number): Promise<void> {
+  const files = new Set<string>();
+  await Promise.all(rows.map(async row => {
+    if (!row.file || files.has(row.file)) return;
+    files.add(row.file);
+    const known = state.tails.get(row.file);
+    if (!known) { const tail = await firstRunTail(row.file, state.tools); if (tail) state.tails.set(row.file, tail); return; }
+    const info = await stat(row.file).catch(() => null);
+    if (!info) { state.tails.delete(row.file); return; }
+    known.mtimeMs = info.mtimeMs;
+    if (info.size === known.offset) return;
+    const read = await readNew(row.file, { offset: known.offset, rest: known.rest }, 0);
+    if (!read) { state.tails.delete(row.file); return; }
+    if (read.tail.offset < known.offset) { known.settled = true; known.open.clear(); }
+    known.offset = read.tail.offset;
+    known.rest = read.tail.rest;
+    for (const line of read.lines) foldRunLine(known, line, state.tools);
+  }));
+  for (const file of state.tails.keys()) if (!files.has(file)) state.tails.delete(file);
+  state.tools = state.tools.filter(event => event.at >= now - WINDOW_MS);
+}
+
+/** chat-agents.ts `Shown`, as far as the feed reads it: whether the agent works or failed, whether it ended, and its last activity. */
+type AgentShown = { working: boolean; failed: boolean; ended: boolean; at: number };
+const OPEN_STEP = new Set(["todo", "doing", "blocked"]);
+
+/**
+ * chat-agents.ts `chatAgents` for one chat, from the files: its subagent sessions (one per RLM child id), the roots the job registry lists under
+ * it, and the owners of its open plan steps. The hub's child snapshots and the chat's transcript (roots it named only there, and the threads it
+ * messaged) are the chat service's memory, so they are left out.
+ */
+export function chatAgentsOf(input: { self: CopyRow; name: string; children: readonly CopyRow[]; tree: ReadonlyMap<string, CopyRow[]>; roots: readonly string[];
+  plan: readonly PlanItem[]; rowOf: (who: string) => SidebarRow | undefined }): AgentShown[] {
+  const agents: AgentShown[] = [];
+  const sessions = new Set<string>();
+  const childIds = new Set<string>();
+  for (const row of input.children) {
+    if (row.childId && childIds.has(row.childId)) continue;
+    if (row.childId) childIds.add(row.childId);
+    sessions.add(row.id);
+    const running = nativeStatus(row) === "running";
+    agents.push({ working: running || subtreeOf(row, input.tree).running > 0 || row.runningChildren, failed: !running && daemonSaysFailed(row), ended: !running, at: row.activityAt });
+  }
+  const thread = (row: SidebarRow | undefined) => {
+    if (!row || row.id === input.self.id || sessions.has(row.id)) return;
+    sessions.add(row.id);
+    agents.push({ working: row.working || row.subagentsRunning > 0, failed: !row.working && Boolean(row.failure), ended: false, at: Date.parse(row.lastActivityAt ?? row.created ?? "") || 0 });
+  };
+  for (const root of input.roots) thread(input.rowOf(root));
+  const walk = (items: readonly PlanItem[]) => { for (const item of items) {
+    const owners = OPEN_STEP.has(item.status) ? [item.sessionId, stepOwner(item)].filter((who): who is string => who !== undefined) : [];
+    if (owners.length && !owners.some(who => who === input.self.id || who === input.name)) thread(owners.map(input.rowOf).find(Boolean));
+    walk(item.children ?? []);
+  } };
+  walk(input.plan);
+  return agents;
+}
+
+const PULSE_LEVEL: Record<PulseLevel, number> = { live: 1, quiet: 2, stalled: 3, failed: 4 };
+
+/** The sidebar's sections and pulses, each chat's subagents, agents and open turn, and the tool calls of every live session on this box. */
+async function sidebarSamples(ctx: Context, state: SidebarState, dataDir: string, mirror: string): Promise<Sample[]> {
+  const { now } = ctx;
+  const others = (await readdir(mirror).catch(() => [] as string[])).filter(name => name.endsWith(".sessions.json"));
+  const [own, ...rest] = await Promise.all([copyIndex(join(dataDir, "session-copy.json")), ...others.map(name => copyIndex(join(mirror, name)))]);
+  if (!own!.length && !rest.some(rows => rows.length)) return [];
+  const json = (name: string) => cachedJson(state.json, join(dataDir, name));
+  const [chatsValue, threadsValue, cleanValue, archivedValue, readValue, jobsValue] = await Promise.all(
+    ["chats.json", "threads.json", "clean-room-chats.json", "archived-chats.json", "read-state.json", "chat-jobs.json"].map(json));
+  const chats = idsOf(chatsValue), created = idsOf(threadsValue), cleanRoom = idsOf(cleanValue), archivedByOwner = idsOf(archivedValue);
+  const baseline = isRecord(readValue) && typeof readValue.baseline === "number" ? readValue.baseline : 0;
+  const marks = isRecord(readValue) && isRecord(readValue.sessions) ? readValue.sessions : {};
+  const lists = [own!, ...rest];
+  if (!state.merged || state.merged.lists.length !== lists.length || state.merged.lists.some((list, index) => list !== lists[index])) {
+    const rows = mergeCopies(own!, rest);
+    state.merged = { lists, rows, trees: treesOf(rows.children) };
+  }
+  const { rows: { top, remote }, trees } = state.merged;
+  const ownLive = own!.filter(row => row.live);
+  const [schedules] = await Promise.all([readSchedules(state, join(ctx.home, ".prime/agent/session-artifacts"), ownLive.filter(row => row.topLevel)), readRuns(state, ownLive, now)]);
+  const written = (row: CopyRow): number => row.file && !remote.has(row) ? state.tails.get(row.file)?.mtimeMs ?? 0 : 0;
+
+  const rows: SidebarRow[] = [];
+  const copyOf = new Map<string, CopyRow>();
+  for (const row of top) {
+    if (!listed(state, row, remote.has(row))) continue;
+    const subtree = subtreeOf(row, trees.all);
+    const running = nativeStatus(row) === "running";
+    const working = row.live && (running || row.runningChildren || subtree.running > 0);
+    const chat = chats.has(row.id);
+    const mark = isRecord(marks[row.id]) && typeof (marks[row.id] as Record<string, unknown>).timestamp === "number" ? (marks[row.id] as { timestamp: number }).timestamp : 0;
+    const schedule = remote.has(row) ? undefined : schedules.get(row.id);
+    let fixed = state.fixed.get(row);
+    if (!fixed) {
+      fixed = { name: row.name?.replace(/\s+/g, " ").trim() || row.id.slice(0, 8), ...row.activityAt ? { lastActivityAt: new Date(row.activityAt).toISOString() } : {},
+        ...row.created ? { created: new Date(row.created).toISOString() } : {} };
+      state.fixed.set(row, fixed);
+    }
+    rows.push({ id: row.id, ...fixed, working, archived: row.lifecycle === "archived" || archivedByOwner.has(row.id),
+      unread: (chat || !working) && row.messages > 0 && row.activityAt > Math.max(baseline, mark), origin: originOf(state, row, created, cleanRoom, chats), priority: 0,
+      status: !row.live ? "saved" : running ? "running" : "idle", subagentsRunning: Math.max(subtree.running, row.runningChildren ? 1 : 0),
+      ...chat ? { chat: true as const } : {}, ...schedule ? { schedule } : {}, ...working ? { pulse: pulseOf(row, trees.running, written) } : {},
+      ...!running && settledOnFailure(row) ? { failure: row.summary! } : {} });
+    copyOf.set(row.id, row);
+  }
+  rows.sort((left, right) => copyOf.get(right.id)!.activityAt - copyOf.get(left.id)!.activityAt);
+  const out: Sample[] = [];
+  const shown = rows.filter(row => inSidebar(row as SessionRow, { archived: false, agentCreated: false })) as SessionRow[];
+  const sections = sidebarSections(shown, "current", "grouped");
+  const help = "Threads the sidebar lists by section (chats, heartbeats, other threads) and bucket (needs response, working, idle), archived and agent-created ones hidden (client/organize.ts).";
+  for (const [section, list] of [["chats", sections.chats], ["heartbeats", sections.beats], ["threads", sections.groups.flatMap(group => group.rows)]] as const)
+    for (const bucket of BUCKETS) out.push(gauge("harness.chat.sidebar_rows", help, list.filter(row => bucketOf(row) === bucket).length, { section, bucket }));
+  const levels = new Map<PulseLevel, number>([["live", 0], ["quiet", 0], ["stalled", 0], ["failed", 0]]);
+  for (const row of shown) if (row.working && row.pulse) { const level = readPulse(row.pulse, now).level; levels.set(level, levels.get(level)! + 1); }
+  for (const [level, value] of levels) out.push(gauge("harness.chat.pulse_rows", "Working threads in the sidebar by their pulse: live, quiet after 1 min, stalled after 5 min or a silent worker, or failed (shared/pulse.ts).", value, { level }));
+
+  // Each listed chat: its pulse, subagents, agents and open turn.
+  const byId = new Map<string, SidebarRow>(), byName = new Map<string, SidebarRow>();
+  for (const row of rows) { if (!byId.has(row.id)) byId.set(row.id, row); if (!byName.has(row.name)) byName.set(row.name, row); }
+  const rowOf = (who: string) => byId.get(who) ?? byName.get(who);
+  const jobs = isRecord(jobsValue) && isRecord(jobsValue.jobs) ? Object.entries(jobsValue.jobs).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1])) : [];
+  let longestTurn = 0;
+  for (const tail of state.tails.values()) if (!tail.settled && tail.runStart) longestTurn = Math.max(longestTurn, now - tail.runStart);
+  for (const chat of sections.chats) {
+    const copy = copyOf.get(chat.id)!;
+    const labels = { chat: chat.name };
+    const reading = chat.working && chat.pulse ? readPulse(chat.pulse, now) : null;
+    out.push(gauge("harness.chat.chat_pulse", "The chat's pulse in the sidebar: 0 not working, 1 live, 2 quiet, 3 stalled, 4 failed (shared/pulse.ts readPulse).", reading ? PULSE_LEVEL[reading.level] : 0, labels));
+    if (reading) out.push(gauge("harness.chat.chat_quiet", "How long a working chat and its running subagents have gone without activity (shared/pulse.ts quietMs).", reading.quietMs / 1000, labels, "s"));
+    const direct = (trees.all.get(chat.id) ?? []).filter(row => row.childId);
+    const status = { running: 0, failed: 0, done: 0 };
+    let longestRun = 0;
+    for (const row of direct) {
+      const running = nativeStatus(row) === "running";
+      status[running ? "running" : daemonSaysFailed(row) ? "failed" : "done"]++;
+      if (running && row.created) longestRun = Math.max(longestRun, now - row.created);
+    }
+    for (const [key, value] of Object.entries(status)) out.push(gauge("harness.chat.chat_subagents", "The chat's own subagents by state, as its Subagents list groups them: running, failed or done (chat-catalog.ts rosterChildren).", value, { ...labels, status: key }));
+    out.push(gauge("harness.chat.chat_subagent_run_longest", "How long the chat's longest running subagent has run since it was created.", longestRun / 1000, labels, "s"));
+    const subtree = subtreeOf(copy, trees.all);
+    out.push(gauge("harness.chat.chat_subtree", "Subagents at any depth below the chat, running and listed in all, as the sidebar and the thread header count them (chat-catalog.ts subtreeOf).", subtree.running, { ...labels, kind: "running" }),
+      gauge("harness.chat.chat_subtree", "Subagents at any depth below the chat, running and listed in all, as the sidebar and the thread header count them (chat-catalog.ts subtreeOf).", subtree.total, { ...labels, kind: "total" }));
+    const board = await cachedJson(state.json, join(dataDir, "boards", `${chat.id}.json`));
+    const agents = chatAgentsOf({ self: copy, name: chat.name, children: trees.all.get(chat.id) ?? [], tree: trees.all,
+      roots: jobs.filter(([, entry]) => entry.chat === chat.name || entry.chat === chat.id || entry.chatId === chat.id).map(([key]) => key),
+      plan: isRecord(board) && Array.isArray(board.plan) ? board.plan as PlanItem[] : [], rowOf });
+    const states = { working: 0, failed: 0, done: 0, idle: 0 };
+    for (const agent of agents) states[agent.working ? "working" : agent.failed ? "failed" : agent.ended ? "done" : "idle"]++;
+    for (const [key, value] of Object.entries(states)) out.push(gauge("harness.chat.chat_agents", "The chat's agents on its board's Agents card and under its sidebar row, by state: its subagents, the roots it started and its open steps' owners (chat-agents.ts).", value, { ...labels, state: key }));
+    const ages = agents.filter(agent => agent.at > 0).map(agent => ({ working: agent.working, age: Math.max(0, now - agent.at) / 1000 }));
+    if (ages.length) out.push(gauge("harness.chat.chat_agent_age", "Seconds since the chat's most recent agent activity (newest), and since the quietest working agent's (quietest_working), as the sidebar ages its jobs.", Math.min(...ages.map(age => age.age)), { ...labels, kind: "newest" }, "s"));
+    const working = ages.filter(age => age.working);
+    if (working.length) out.push(gauge("harness.chat.chat_agent_age", "Seconds since the chat's most recent agent activity (newest), and since the quietest working agent's (quietest_working), as the sidebar ages its jobs.", Math.max(...working.map(age => age.age)), { ...labels, kind: "quietest_working" }, "s"));
+    const tail = copy.file && !remote.has(copy) ? state.tails.get(copy.file) : undefined;
+    out.push(gauge("harness.chat.turn_run", "How long the chat's own open run has gone since the prompt or message that started it; 0 when it is not running (shared/turns.ts).",
+      tail && !tail.settled && tail.runStart ? (now - tail.runStart) / 1000 : 0, labels, "s"));
+  }
+  out.push(gauge("harness.chat.turn_run_longest", "The longest open run of any loaded session on the chat's box, since the prompt or message that started it.", longestTurn / 1000, undefined, "s"));
+
+  // Tool calls of the last 30 minutes and the ones running now, by tool.
+  const byTool = new Map<string, { calls: number; errors: number; seconds: number; slowest: number; running: number; longest: number }>();
+  const toolOf = (tool: string) => { let known = byTool.get(tool); if (!known) { known = { calls: 0, errors: 0, seconds: 0, slowest: 0, running: 0, longest: 0 }; byTool.set(tool, known); } return known; };
+  for (const event of state.tools) {
+    if (event.at < now - WINDOW_MS) continue;
+    const tool = toolOf(event.tool);
+    tool.calls++;
+    if (event.error) tool.errors++;
+    if (event.s !== null) { tool.seconds += event.s; tool.slowest = Math.max(tool.slowest, event.s); }
+  }
+  for (const tail of state.tails.values()) for (const call of tail.open.values()) {
+    const tool = toolOf(call.tool);
+    tool.running++;
+    if (Number.isFinite(call.at)) tool.longest = Math.max(tool.longest, (now - call.at) / 1000);
+  }
+  for (const [tool, value] of byTool) {
+    const labels = { tool };
+    out.push(gauge("harness.chat.tool_calls_30", "Tool calls of the loaded sessions on the chat's box that returned in the last 30 minutes, by tool.", value.calls, labels),
+      gauge("harness.chat.tool_errors_30", "Tool calls that returned an error in the last 30 minutes, by tool (the work row's red mark).", value.errors, labels),
+      gauge("harness.chat.tool_time_30", "Seconds the tool calls of the last 30 minutes ran in all, by tool, so time over calls is the mean (shared/turns.ts toolDurationMs).", value.seconds, labels, "s"),
+      gauge("harness.chat.tool_slowest_30", "The slowest tool call of the last 30 minutes, by tool.", value.slowest, labels, "s"),
+      gauge("harness.chat.tools_running", "Tool calls running now in the loaded sessions on the chat's box, by tool.", value.running, labels),
+      gauge("harness.chat.tool_running_longest", "How long the longest tool call running now has run, by tool.", value.longest, labels, "s"));
+  }
+  return out;
+}
+
 // ---- samples ----
 
 const gauge = (name: string, help: string, value: number, labels?: Record<string, string>, unit?: Sample["unit"]): Sample =>
@@ -604,7 +1080,8 @@ export function boxSamples(line: WatchLine): Sample[] {
 
 export async function read(ctx: Context): Promise<Sample[]> {
   if (!ctx.chatHost) return [];
-  const state = (ctx.state.get("chat-health") ?? { watch: new Map(), lines: [], serviceStamp: "", holdLines: [], serviceFaults: [], reopened: [], opens: [], starts: [],
+  const state = (ctx.state.get("chat-health") ?? { sidebar: { json: new Map(), origins: new Map(), undecided: new Map(), listed: new WeakMap(), byRow: new WeakMap(), fixed: new WeakMap(), schedules: new Map(), tails: new Map(), tools: [] },
+    watch: new Map(), lines: [], serviceStamp: "", holdLines: [], serviceFaults: [], reopened: [], opens: [], starts: [],
     poolLines: [], daemon: new Map(), supervisorLines: [], catalogs: new Map() }) as State;
   ctx.state.set("chat-health", state);
   const { now } = ctx;
@@ -613,8 +1090,9 @@ export async function read(ctx: Context): Promise<Sample[]> {
   await readWatchLines(state, join(dataDir, "mac-usable"), now, Math.max(2 * WINDOW_MS, WINDOW_MS + quietMs + 2 * MINUTE));
   const latest = state.lines.at(-1);
   const box = latest?.host ?? ctx.host;
-  const [pending] = await Promise.all([
+  const [pending, sidebar] = await Promise.all([
     readResumePending(join(dataDir, "resume-pending.json"), now),
+    sidebarSamples(ctx, state.sidebar, dataDir, join(ctx.home, ".cache/sieun-pi/hosts")),
     readService(state, join(dataDir, "service.log"), box, now),
     readPool(state, join(process.env.PI_POOL_DIR || join(ctx.home, ".config", "pi-pool"), "pi-pool.log"), now),
     readDaemonLogs(state, join(ctx.home, ".prime/agent/logs"), now),
@@ -631,7 +1109,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
     pool: readPoolLog(state.poolLines.map(line => line.value), now), faults, misses });
 
   const help30 = "Minutes of the last 30 by d7's Whole system rule (whole-system.ts measure): clean, dirty for each cause, unknown, unwatched and offline.";
-  const out: Sample[] = [];
+  const out: Sample[] = [...sidebar];
   const kinds: [string, number][] = [["clean", minutes.clean], ["unknown", minutes.unknown], ["unwatched", minutes.unwatched], ["usable", minutes.usable], ["held", minutes.held],
     ["free_slot", minutes.freeSlot], ["cell_wait", minutes.cellWait], ["daemon_fail", minutes.daemonFail], ["cpu_busy", minutes.cpuBusy], ["harness_unusable", minutes.harness],
     ["other_unusable", minutes.other], ["unattributed_unusable", minutes.unattributed], ["offline", minutes.offline]];
@@ -650,8 +1128,9 @@ export async function read(ctx: Context): Promise<Sample[]> {
   for (const host of hosts) {
     const own = quiet.filter(minute => minute.host === host);
     out.push(gauge("harness.chat.quiet_minutes_30", "Box minutes of the last 30 that sat past the quiet window with no session working (d7 quiet_agents).", own.length, { host }));
-    if (own.length) out.push(gauge("harness.chat.quiet_agent_memory", "The most Agent sessions memory the box held in a minute past the quiet window with nobody working (d7 quiet_agent_gb).",
-      Math.max(...own.map(minute => minute.gb)) * GIB, { host }, "By"));
+    // A box with no quiet minute sends 0, so the headline panel has a value for every box.
+    out.push(gauge("harness.chat.quiet_agent_memory", "The most Agent sessions memory the box held in a minute past the quiet window with nobody working (d7 quiet_agent_gb); 0 when no minute was quiet.",
+      Math.max(0, ...own.map(minute => minute.gb)) * GIB, { host }, "By"));
   }
   out.push(gauge("harness.chat.quiet_window", "The quiet window after which Agent sessions should drop under 5 GB (quiet-minutes.ts).", quietMs / 1000, undefined, "s"));
   if (latest) {

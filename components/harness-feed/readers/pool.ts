@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
@@ -71,7 +73,7 @@ function runCli(bin: string, args: readonly string[]): Promise<PoolPart> {
 /** What pi-pool prints for a command it does not know (vend.py USAGE), as chat-pool.ts readSnapshot checks it. */
 const UNKNOWN_COMMAND = /^usage: pi-pool \[command\]/;
 
-export interface Snapshot { queue: PoolPart; config: PoolPart; ls: Partial<Record<Provider, PoolPart>> }
+export interface Snapshot { queue: PoolPart; config: PoolPart; who: PoolPart | null; ls: Partial<Record<Provider, PoolPart>> }
 export interface Read { snapshot: Snapshot; hookd: boolean | null; seconds: number }
 
 /**
@@ -99,11 +101,11 @@ export async function readPool(dir: string, bin: string, accounts: boolean, run:
     if (!isRecord(value) || !isPart(value.queue) || !isPart(value.config) || !Array.isArray(value.threads)) throw new Error("pi-pool returned an invalid snapshot");
     const thread = value.threads[0];
     const ls = isRecord(thread) && isRecord(thread.ls) ? thread.ls : {};
-    snapshot = { queue: value.queue, config: value.config, ls: Object.fromEntries(PROVIDERS.flatMap(provider => isPart(ls[provider]) ? [[provider, ls[provider]]] : [])) };
+    snapshot = { queue: value.queue, config: value.config, who: isRecord(thread) && isPart(thread.who) ? thread.who : null, ls: Object.fromEntries(PROVIDERS.flatMap(provider => isPart(ls[provider]) ? [[provider, ls[provider]]] : [])) };
   } else if (UNKNOWN_COMMAND.test(part.err.trimStart())) {
-    const [queue, config, ...ls] = await Promise.all([run(["queue", "--json"]), run(["config"]),
+    const [queue, config, who, ...ls] = await Promise.all([run(["queue", "--json"]), run(["config"]), accounts ? run(["who", "--json"]) : null,
       ...accounts ? PROVIDERS.map(provider => run(["ls", "--json", "--provider", provider])) : []]);
-    snapshot = { queue: queue!, config: config!, ls: Object.fromEntries(ls.map((entry, n) => [PROVIDERS[n]!, entry])) };
+    snapshot = { queue: queue!, config: config!, who: who ?? null, ls: Object.fromEntries(ls.map((entry, n) => [PROVIDERS[n]!, entry!])) };
   } else throw new Error("pi-pool snapshot failed: " + (part.err.trim() || `exit code ${part.code}`).slice(0, 300));
   return { snapshot, hookd, seconds: (performance.now() - started) / 1000 };
 }
@@ -167,7 +169,18 @@ export function accountState(row: PoolAccount): typeof ACCOUNT_STATES[number] {
 const poolConfig = (value: unknown): PoolConfig | null => isRecord(value)
   ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))) : null;
 
-export function accountSamples(provider: Provider, listing: unknown, config: PoolConfig | null, now: number): Sample[] {
+/**
+ * The account `who --json` with no session resolves for `provider`, the row the Accounts table marks "Next request" (AccountsSettings.svelte
+ * `inUse` with no thread, from chat-pool.ts parsePoolResolution): its id, or null when no account takes a new thread now and the pool waits.
+ */
+export function nextRequestAccount(who: unknown, provider: Provider): string | null | undefined {
+  if (!isRecord(who) || !isRecord(who.providers)) return undefined;
+  const said = who.providers[provider];
+  if (!isRecord(said) || typeof said.error === "string") return undefined;
+  return text(said.account);
+}
+
+export function accountSamples(provider: Provider, listing: unknown, config: PoolConfig | null, now: number, who: unknown = null): Sample[] {
   const rows = poolRows(listing, provider);
   const held = heldTrees(listing), resets = resetsLeft(listing);
   const out: Sample[] = [];
@@ -176,6 +189,9 @@ export function accountSamples(provider: Provider, listing: unknown, config: Poo
     for (const window of row.windows) {
       out.push({ name: "harness.pool.account_window_used", kind: "gauge", unit: "1", help: "Share of an account's usage window spent, as the Accounts table shows it (5h, week, 30d or a model cap).",
         value: window.pct / 100, labels: { ...labels, window: window.label } });
+      if (window.resetsAt !== null && window.resetsAt > now) out.push({ name: "harness.pool.account_window_resets", kind: "gauge", unit: "s",
+        help: "Time until the account's usage window resets, the Accounts table's \"resets in\"; absent when pi-pool has no reset time for it.",
+        value: (window.resetsAt - now) / 1000, labels: { ...labels, window: window.label } });
     }
     const blockedUntil = Math.max(row.limitedUntil ?? 0, row.cooldownUntil ?? 0);
     out.push(
@@ -191,6 +207,10 @@ export function accountSamples(provider: Provider, listing: unknown, config: Poo
     const left = resets.get(row.id);
     if (left !== undefined) out.push({ name: "harness.pool.account_resets_left", kind: "gauge", help: "Banked usage-limit resets left on the Claude account, at its last read.", value: left, labels });
   }
+  const next = nextRequestAccount(who, provider);
+  if (next !== undefined) out.push({ name: "harness.pool.next_request_account", kind: "gauge",
+    help: "1 on the account a new chat's first request goes to, the Accounts table's \"Next request\" badge; account \"none\" when no account takes it now and it waits.",
+    value: 1, labels: { account: next === null ? "none" : rows.find(row => row.id === next)?.label ?? next, provider } });
   const summary = poolSummary({ provider, rows, resolution: null }, poolCaps(config, null), now);
   for (const meter of summary.meters) {
     out.push({ name: "harness.pool.provider_used", kind: "gauge", unit: "1", help: "The sidebar pool meter: mean share spent over accounts not turned off, blocked accounts counted full.",
@@ -244,7 +264,75 @@ export function hourSamples(hours: TurnHour[]): Sample[] {
   return out;
 }
 
+/**
+ * The end lines of usage reads in pi-pool.log: `usage_refresh`, which `pi-pool refresh` writes when a Settings > Accounts refresh ends
+ * (commands.py cmd_refresh, the run UsageRefreshes in chat-pool.ts streams), and `usage_sample`, which the minute timer's `pi-pool sample`
+ * writes (usage.py cmd_sample). `failed` lists the labels of the accounts whose read failed. The log's `ts` is local time in the writer's zone,
+ * and on us-metal02 it mixes UTC and KST, so the 30 min window counts lines by when this reader first saw them, never by `ts`.
+ */
+export interface UsageRead { accounts: number; failed: string[] }
+export interface UsageLog { offset: number; rest: string; decoder: StringDecoder; refresh: UsageRead | null; sample: UsageRead | null;
+  /** Samples and refreshes this reader saw appended, with the epoch ms it saw them; the first scan of the file adds none. */
+  seen: { at: number; kind: "refresh" | "sample"; read: UsageRead }[] }
+const RECENT_MS = 30 * 60_000;
+
+export const usageLog = (): UsageLog => ({ offset: 0, rest: "", decoder: new StringDecoder("utf8"), refresh: null, sample: null, seen: [] });
+
+export function addUsageLine(log: UsageLog, line: string, seenAt: number | null): void {
+  const kind = line.includes('"usage_refresh"') ? "refresh" : line.includes('"usage_sample"') ? "sample" : null;
+  if (!kind) return;
+  let row: unknown;
+  try { row = JSON.parse(line); } catch { return; }
+  if (!isRecord(row) || row.event !== `usage_${kind}` || typeof row.accounts !== "number") return;
+  const read = { accounts: row.accounts, failed: Array.isArray(row.failed) ? row.failed.filter((label): label is string => typeof label === "string") : [] };
+  log[kind] = read;
+  if (seenAt !== null) log.seen.push({ at: seenAt, kind, read });
+}
+
+/** Reads the bytes added to `path` since the last call; a file that shrank is read again from the start. The first call's lines set only the last reads. */
+export async function catchUpUsage(log: UsageLog, path: string, now: number): Promise<void> {
+  const size = (await stat(path)).size;
+  const first = log.offset === 0;
+  if (size < log.offset) Object.assign(log, usageLog(), { seen: log.seen });
+  if (size > log.offset) {
+    const file = await open(path, "r");
+    try {
+      const chunk = Buffer.alloc(Math.min(size - log.offset, 8 << 20));
+      while (log.offset < size) {
+        const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, size - log.offset), log.offset);
+        if (!bytesRead) break;
+        log.offset += bytesRead;
+        const lines = (log.rest + log.decoder.write(chunk.subarray(0, bytesRead))).split("\n");
+        log.rest = lines.pop() ?? "";
+        for (const line of lines) addUsageLine(log, line, first ? null : now);
+      }
+    } finally { await file.close(); }
+  }
+  log.seen = log.seen.filter(entry => now - entry.at <= RECENT_MS);
+}
+
+export function usageSamples(log: UsageLog): Sample[] {
+  const out: Sample[] = [];
+  for (const kind of ["refresh", "sample"] as const) {
+    const read = log[kind];
+    if (!read) continue;
+    const labels = { run: kind };
+    out.push({ name: "harness.pool.usage_read_accounts", kind: "gauge", help: "Accounts the last usage read asked for: a Settings > Accounts refresh (run refresh) or the minute timer (run sample).",
+      value: read.accounts, labels },
+      { name: "harness.pool.usage_read_failed", kind: "gauge", help: "Accounts whose usage read failed in the last refresh or timer sample.", value: read.failed.length, labels });
+    const recent = log.seen.filter(entry => entry.kind === kind);
+    out.push({ name: "harness.pool.usage_reads_recent", kind: "gauge", help: "Usage reads of this kind that ended in the last 30 min.", value: recent.length, labels },
+      { name: "harness.pool.usage_read_failed_recent", kind: "gauge", help: "Failed account reads in usage reads of this kind that ended in the last 30 min.",
+        value: recent.reduce((sum, entry) => sum + entry.read.failed.length, 0), labels });
+  }
+  for (const account of new Set(log.refresh?.failed ?? [])) {
+    out.push({ name: "harness.pool.usage_refresh_failed_account", kind: "gauge", help: "1 for each account whose read failed in the last Settings > Accounts usage refresh.", value: 1, labels: { account } });
+  }
+  return out;
+}
+
 const HISTORY = "pool.history";
+const USAGE = "pool.usage";
 
 export async function read(ctx: Context): Promise<Sample[]> {
   const dir = poolDir(ctx);
@@ -254,13 +342,18 @@ export async function read(ctx: Context): Promise<Sample[]> {
   let history = ctx.state.get(HISTORY) as ((now?: number) => Promise<TurnHour[]>) | undefined;
   if (!history) { history = turnHistory(join(dir, "pi-pool.log")); ctx.state.set(HISTORY, history); }
   const remoteUrl = isRecord(remote) && typeof remote.url === "string" ? (() => { try { return new URL(remote.url as string); } catch { return null; } })() : null;
-  const [reading, hours, serveUp, remoteUp] = await Promise.all([
+  let usage = ctx.state.get(USAGE) as UsageLog | undefined;
+  if (!usage) { usage = usageLog(); ctx.state.set(USAGE, usage); }
+  const log = usage;
+  // A box with remote.json reads usage on the box that holds the accounts, so its own log has only old lines.
+  const [reading, hours, serveUp, remoteUp, usageRead] = await Promise.all([
     readPool(dir, poolBin(ctx), remote === null).then(value => ({ value, error: null }), (error: unknown) => ({ value: null, error })),
     history(ctx.now),
     isRecord(serve) && typeof serve.host === "string" && typeof serve.port === "number" ? tcpUp(serve.host, serve.port) : null,
     remoteUrl ? tcpUp(remoteUrl.hostname, Number(remoteUrl.port || (remoteUrl.protocol === "https:" ? 443 : 80))) : null,
+    remote === null ? catchUpUsage(log, join(dir, "pi-pool.log"), ctx.now).then(() => true, () => false) : false,
   ]);
-  const out: Sample[] = [...hourSamples(hours)];
+  const out: Sample[] = [...hourSamples(hours), ...usageRead ? usageSamples(log) : []];
   const up = (service: string, value: number) => out.push({ name: "harness.pool.service_up", kind: "gauge", help: "1 when the pool's resident service answers: hookd on hook.sock, serve on its port, or the remote pool this box uses.",
     value, labels: { service } });
   if (serveUp !== null) up("serve", serveUp);
@@ -277,7 +370,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
   out.push(...queueSamples(json(snapshot.queue), ctx.now));
   for (const provider of PROVIDERS) {
     const listing = json(snapshot.ls[provider]);
-    if (listing !== null) out.push(...accountSamples(provider, listing, config, ctx.now));
+    if (listing !== null) out.push(...accountSamples(provider, listing, config, ctx.now, json(snapshot.who ?? undefined)));
   }
   return out;
 }

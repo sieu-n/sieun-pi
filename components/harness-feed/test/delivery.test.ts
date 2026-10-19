@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Context, Sample } from "../otlp.ts";
-import { busyRows, findRow, messageKind, read, readOutbox, readSends, rowAt } from "../readers/delivery.ts";
+import { busyRows, findRow, messageKind, read, readOutbox, readSends, readTranscriptEnd, readTranscriptNew, rowAt, slackSamples } from "../readers/delivery.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/delivery/home", import.meta.url));
 const NOW = 1792430000000;
 const CHAT = "01a115e2-9544-7204-b8db-8ce4d5319048";
+const TRANSCRIPT = join(FIXTURE, `.prime/agent/sessions/${CHAT}.jsonl`);
+const MINUTE = 60_000;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
 const context = (home: string, chatHost = true): Context => ({ home, host: "us-metal02", platform: "linux", now: NOW, chatHost, state: new Map() });
@@ -101,4 +103,70 @@ test("readSends reads only appended lines and starts over after a truncation", a
     writeFileSync(file, JSON.stringify({ decision: "allowed", layer: "kernel", chat: null, at: new Date(NOW).toISOString() }) + "\n");
     assert.deepEqual((await readSends(file, kept, NOW)).map(send => send.decision), ["allowed"]);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("read gives each chat's unread rows, job messages and reports from its own transcript or the Mac mirror", async () => {
+  const samples = await read(context(FIXTURE));
+  assert.equal(pick(samples, "harness.delivery.unread", { chat: "Crawler VP" })[0]?.value, 3);
+  assert.equal(pick(samples, "harness.delivery.unread", { chat: "mac-management" })[0]?.value, 2);
+  assert.equal(pick(samples, "harness.delivery.unread_all")[0]?.value, 5);
+  assert.equal(pick(samples, "harness.delivery.job_messages_24h", { chat: "Crawler VP", source: "agent" })[0]?.value, 3);
+  assert.equal(pick(samples, "harness.delivery.job_messages_24h", { chat: "Crawler VP", source: "check-in" })[0]?.value, 1);
+  assert.equal(pick(samples, "harness.delivery.job_messages_30m", { chat: "Crawler VP", source: "agent" })[0]?.value, 2);
+  assert.equal(pick(samples, "harness.delivery.job_messages_30m", { chat: "mac-management" }).length, 0);
+  assert.equal(pick(samples, "harness.delivery.reporting_jobs_24h", { chat: "Crawler VP" })[0]?.value, 2);
+  assert.equal(pick(samples, "harness.delivery.last_report_age", { chat: "Crawler VP" })[0]?.value, 540);
+  assert.equal(pick(samples, "harness.delivery.last_report_age", { chat: "mac-management" })[0]?.value, 2400);
+  assert.deepEqual(pick(samples, "harness.delivery.top_reporters_24h").map(s => [s.labels!.rank, s.labels!.chat, s.labels!.sender, s.value]),
+    [["1", "Crawler VP", "ux-email", 2], ["2", "mac-management", "mac-job", 1], ["3", "Crawler VP", "seo", 1]]);
+  assert.equal(pick(samples, "harness.delivery.daemon_queued", { host: "mac", chat: "mac-management" })[0]?.value, 0);
+  assert.equal(pick(samples, "harness.delivery.slack_enabled")[0]?.value, 1);
+  assert.equal(pick(samples, "harness.delivery.slack_synced_chats")[0]?.value, 1);
+  assert.equal(pick(samples, "harness.delivery.slack_posted_24h", { chat: "Crawler VP" })[0]?.value, 2);
+});
+
+test("readTranscriptEnd reads the same from any chunk size and leaves a half-written last line for later", async () => {
+  const whole = await readTranscriptEnd(TRANSCRIPT, NOW - 20 * MINUTE, NOW);
+  const small = await readTranscriptEnd(TRANSCRIPT, NOW - 20 * MINUTE, NOW, 64);
+  assert.deepEqual(small, whole);
+  assert.equal(whole.offset, readFileSync(TRANSCRIPT).lastIndexOf(10) + 1);
+  assert.equal(whole.messages[0]?.role, "user");
+  assert.equal(whole.messages.length, 10);
+  assert.deepEqual(whole.jobs.map(job => job.from), ["ux-email", "check-in", "ux-email", "seo"]);
+});
+
+test("readTranscriptNew adds whole new lines only and drops what an advanced read marker no longer needs", async () => {
+  const home = scratch();
+  try {
+    const file = join(home, `.prime/agent/sessions/${CHAT}.jsonl`);
+    const kept = await readTranscriptEnd(file, NOW - 20 * MINUTE, NOW);
+    const bytes = readFileSync(file);
+    const partial = bytes.subarray(bytes.lastIndexOf(10) + 1).toString();
+    const owner = JSON.stringify({ type: "message", id: "n1", parentId: null, timestamp: new Date(NOW - MINUTE).toISOString(),
+      message: { role: "user", content: [{ type: "text", text: "still being written" }], timestamp: NOW - MINUTE } });
+    assert.ok(owner.startsWith(partial));
+    const report = JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from child:late]\n\nlate report",
+      display: true, id: "n2", parentId: null, timestamp: new Date(NOW).toISOString() });
+    appendFileSync(file, owner.slice(partial.length) + "\n" + report.slice(0, 20));
+    const after = await readTranscriptNew(kept, NOW - 20 * MINUTE, NOW);
+    assert.equal(after.messages.at(-1)?.role, "user");
+    assert.equal(after.jobs.length, 4);
+    appendFileSync(file, report.slice(20) + "\n");
+    const read = await readTranscriptNew(after, NOW, NOW);
+    assert.equal(read.messages[0]?.timestamp, NOW - MINUTE);
+    assert.equal(read.messages.length, 2);
+    assert.deepEqual(read.jobs.map(job => job.from).at(-1), "late");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("slackSamples gives the chat's Slack state when it answered and leaves it out when it has not", () => {
+  const names = { name: (id: string) => id === CHAT ? "Crawler VP" : "unknown chat" };
+  const file = { enabled: true, links: { [CHAT]: { posted: [`${NOW - 1000}:text`] } } };
+  const live = slackSamples(file, { state: "on", tokenSource: "environment", at: NOW - 5000 }, names, NOW);
+  assert.equal(pick(live, "harness.delivery.slack_connected")[0]?.value, 1);
+  assert.equal(pick(live, "harness.delivery.slack_state", { state: "on", token_source: "environment" })[0]?.value, 1);
+  assert.equal(pick(live, "harness.delivery.slack_answer_age")[0]?.value, 5);
+  assert.equal(pick(slackSamples(file, { state: "problem", tokenSource: null, at: NOW }, names, NOW), "harness.delivery.slack_connected")[0]?.value, 0);
+  assert.equal(pick(slackSamples(file, null, names, NOW), "harness.delivery.slack_connected").length, 0);
+  assert.equal(pick(slackSamples(null, null, names, NOW), "harness.delivery.slack_synced_chats")[0]?.value, 0);
 });

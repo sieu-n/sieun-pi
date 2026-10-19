@@ -35,17 +35,33 @@ export interface DutyLast {
   shown?: DutyRunRecord;
   /** The newest run whose measure after its job (`effectiveRun`) is met or missed: the fleet's green test. */
   measured?: DutyRunRecord;
+  /** The last RUN_STRIP runs, oldest first, slimmed: the card's run strip (`history`). */
+  recent: DutyRunRecord[];
+  /** The measured runs from the newest one that met every target on, oldest first, slimmed: every run a metric's miss streak can reach (`metricStreaks`). */
+  streak: DutyRunRecord[];
 }
+/** The runs the Duties card's strip shows, `history(view, 14)` in src/client/duties.svelte.ts. */
+export const RUN_STRIP = 14;
 interface RunsTail { ino: bigint; offset: number; duties: Map<string, DutyLast> }
+
+/** The fields of a run the strip and the streaks read; the summary and flagged items stay out of memory. */
+const slimRun = (run: DutyRunRecord): DutyRunRecord => ({ duty: run.duty, at: run.at, trigger: run.trigger, ms: 0, verdict: run.verdict, metrics: run.metrics ?? {}, summary: "",
+  ...(run.fixes ? { fixes: run.fixes } : {}), ...(run.after ? { after: { ...run.after, summary: "" } } : {}) });
 
 /** Folds one run record into its duty's newest records. */
 export function foldRun(duties: Map<string, DutyLast>, record: DutyRunRecord, effective: (run: DutyRunRecord) => { verdict: string }): void {
   if (typeof record?.duty !== "string" || typeof record.at !== "number") return;
-  const last = duties.get(record.duty) ?? {};
+  const last = duties.get(record.duty) ?? { recent: [], streak: [] };
   last.newest = record;
   if (record.verdict !== "skipped") last.shown = record;
+  const slim = slimRun(record);
+  last.recent.push(slim);
+  if (last.recent.length > RUN_STRIP) last.recent.shift();
   const verdict = effective(record).verdict;
   if (verdict === "met" || verdict === "missed") last.measured = record;
+  // A run that met every target ends every metric's streak, so nothing older can count.
+  if (verdict === "met") last.streak = [slim];
+  else if (verdict === "missed") last.streak.push(slim);
   duties.set(record.duty, last);
 }
 
@@ -170,6 +186,40 @@ export function toolProblems(output: unknown, rechecks: string, since: number): 
 const gauge = (name: string, help: string, value: number, labels?: Record<string, string>, unit?: Sample["unit"]): Sample =>
   ({ name, kind: "gauge", help, value, ...(unit ? { unit } : {}), ...(labels ? { labels } : {}) });
 
+/**
+ * One duty's table and strip as the Duties card shows them, and its miss streaks: per metric its target, and the value and verdict of the
+ * newest run that is not skipped, after its job (`lastRun` and `effectiveRun` in DutyList.svelte); the strip's runs by verdict (`history`,
+ * `judgedRun`); and per missed metric its streak, whether it is stuck and its fix (`metricStreaks`, `dutyCard`). A fix counts live as the run
+ * recorded it while its step is still open on the board, as `dutyFleet` drops a closed one; the card's own live test reads the chat's agent
+ * rows, which only the chat server holds. Returns the stuck metrics with no live fix.
+ */
+function dutyMetrics(app: App, out: Sample[], label: Record<string, string>, metrics: readonly { key: string; target: number }[], last: Partial<DutyLast>, openSteps: ReadonlySet<string>): number {
+  const shown = last.shown ? app.effectiveRun(last.shown).metrics ?? {} : {};
+  for (const metric of app.verdictMetrics(metrics as Parameters<App["verdictMetrics"]>[0])) {
+    const at = { ...label, metric: metric.key };
+    out.push(gauge("harness.duties.metric_target", "The duty metric's target.", metric.target, at));
+    const result = shown[metric.key];
+    if (!result) continue;
+    out.push(gauge("harness.duties.metric_value", "The duty metric's value in the newest run that was not skipped, after its job.", result.value, at));
+    out.push(gauge("harness.duties.metric_met", "1 when that value met the metric's target.", result.met ? 1 : 0, at));
+  }
+  const strip = new Map<string, number>([["met", 0], ["missed", 0], ["error", 0], ["skipped", 0]]);
+  for (const run of last.recent ?? []) {
+    const verdict = app.judgedRun(run, metrics as Parameters<App["judgedRun"]>[1]).verdict;
+    strip.set(verdict, (strip.get(verdict) ?? 0) + 1);
+  }
+  if (last.recent?.length) for (const [verdict, n] of strip) out.push(gauge("harness.duties.recent_runs", `The duty's last ${RUN_STRIP} runs by verdict, as the card's run strip shows them.`, n, { ...label, verdict }));
+  let stuckNoFix = 0;
+  for (const streak of app.metricStreaks([...last.streak ?? []].reverse())) {
+    const fix = streak.fix && openSteps.has(streak.fix.step) ? (streak.fix.live ? "live" : "idle") : "none";
+    const at = { ...label, metric: streak.key };
+    out.push(gauge("harness.duties.metric_misses", "Measured runs in a row, after their job, that missed this metric.", streak.misses, at));
+    out.push(gauge("harness.duties.metric_stuck", "1 when the metric missed 3 runs in a row with no move toward its target, so the next run must change approach.", streak.stuck ? 1 : 0, { ...at, fix }));
+    if (streak.stuck && fix !== "live") stuckNoFix++;
+  }
+  return stuckNoFix;
+}
+
 const CHECK_IN_KEYS = ["goal_gaps", "stuck_steps", "no_done_line", "plan_risks"] as const;
 const D9_KEYS = ["duties_green_pct", "stuck_steps_all", "plan_upkeep_all", "stuck_duties"] as const;
 
@@ -207,13 +257,18 @@ export async function read(ctx: Context): Promise<Sample[]> {
       schedule: { kind: "every", minutes: setting.everyMs / 60_000 } as DutySchedule, createdAt: file.checkIn?.createdAt ?? 0 };
     const all = [checkIn, ...file.duties];
     const states = new Map<string, number>();
-    let green = 0, judged = 0, overdue = 0;
+    let green = 0, judged = 0, overdue = 0, stuckNoFix = 0;
+    const board: ChatBoard | null = await boards.view(id).catch(() => null);
+    const openSteps = new Set<string>();
+    const walkOpen = (items: ChatBoard["plan"]) => { for (const item of items) { if (item.status === "todo" || item.status === "doing" || item.status === "blocked") openSteps.add(item.id); walkOpen(item.children); } };
+    walkOpen(board?.plan ?? []);
     for (const duty of all) {
       const last = tail.duties.get(duty.id) ?? {};
       const label = { chat, duty: duty.name };
       const view = { duty: { ...duty, ownerWords: "", goal: "" }, paused: duty.status !== "active", running: false, runs: last.shown ? [last.shown] : [] };
       const dot = app.dutyState(view as Parameters<App["dutyState"]>[0]);
       states.set(dot, (states.get(dot) ?? 0) + 1);
+      stuckNoFix += dutyMetrics(app, out, label, duty.metrics, last, openSteps);
       if (duty.status !== "active") continue;
       if (last.measured) {
         const met = app.effectiveRun(last.measured).verdict === "met";
@@ -239,6 +294,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
       out.push(gauge("harness.duties.count", "The chat's duties, the check-in included, by the dot the Duties card shows: met, missed (off target), error, paused or new.", states.get(dot) ?? 0, { chat, state: dot }));
     }
     if (judged) out.push(gauge("harness.duties.green_share", "Share of the chat's active duties whose newest measured run met every target, as the fleet counts it.", green / judged, { chat }, "1"));
+    out.push(gauge("harness.duties.stuck_no_fix", "Missed metrics of the chat's duties that are stuck (3 misses in a row with no move) and whose run named no live fix job on an open step.", stuckNoFix, { chat }));
     out.push(gauge("harness.duties.overdue", `Active duties with no run more than ${OVERDUE_GRACE_MS / 60_000} min after their schedule said.`, overdue, { chat }));
 
     // The check-in, as its card shows it: the newest run that is not skipped, its after-job measure first.
@@ -261,11 +317,10 @@ export async function read(ctx: Context): Promise<Sample[]> {
     }
 
     // The plan, as the board stores it.
-    const board: ChatBoard | null = await boards.view(id).catch(() => null);
     if (!board) continue;
-    let open = 0;
-    const walk = (items: ChatBoard["plan"]) => { for (const item of items) { if (item.status === "todo" || item.status === "doing" || item.status === "blocked") open++; walk(item.children); } };
-    walk(board.plan);
+    out.push(gauge("harness.plan.for_you_open", "Open For you todos on the chat's board, as the sidebar and the board's For you list count them.", board.todos.filter(todo => !todo.done).length, { chat }));
+    out.push(gauge("harness.plan.for_you_asks", "Open For you todos an agent asked, as the chat header's waiting-on-you dot counts them (openAgentTodos).", board.todos.filter(todo => !todo.done && todo.from === "agent").length, { chat }));
+    const open = openSteps.size;
     const counts = app.planCounts(board.plan);
     out.push(gauge("harness.plan.open_steps", "Open plan items (todo, doing or blocked) at every level of the chat's board.", open, { chat }));
     out.push(gauge("harness.plan.items", "Plan items that are not dropped, done or not, as the sidebar line counts them.", counts.total, { chat }));

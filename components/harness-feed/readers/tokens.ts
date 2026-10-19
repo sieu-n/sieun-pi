@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { fileLines } from "../../user-history/src/file-lines.ts";
 import { cacheHealth } from "../../user-history/src/shared/cache-health.ts";
 import type { ThreadMessage } from "../../user-history/src/shared/types.ts";
 import { promisify } from "node:util";
 import type { Context, Sample } from "../otlp.ts";
-import { sessionRows } from "./session-copy.ts";
+import { copyIndex, type CopyRow } from "./session-copy.ts";
 
 /**
  * The tokens group. Token, cost, cache and throughput numbers are in LGTM already: components/usage-feed sends Prime's five prime_agent_*
@@ -15,6 +16,8 @@ import { sessionRows } from "./session-copy.ts";
  * 2. On the chat host, each chat's lifetime cost and tokens as the chat app shows them: the thread's own session usage (the ContextMeter's
  *    session cost), its subagents (the child-usage job costs, chat-catalog.ts childUsage) and the root job sessions chat-jobs.json gives it.
  *    It reads the session copies the chat service saves (session-peer.ts, at most every 5 min) one row at a time, and only after a copy changed.
+ * 3. On the chat host, the numbers the app computes from files or one query: the Settings > Usage query health, the Agents card rates (top 10),
+ *    each chat's context ring, cache warning, compactions and Prompt view parts, and the Tools page's skills tokens.
  */
 
 const run = promisify(execFile);
@@ -132,28 +135,8 @@ async function feedHealth(ctx: Context): Promise<Sample[]> {
   return samples;
 }
 
-/** The fields of one daemon session row (SessionSummary in a SessionPeer copy) the chat costs need. */
-export type Row = { id: string; parent: string | null; name: string | null; input: number; output: number; cost: number; file: string | null; window: number };
-
-/** One session row's usage fields; any other row field is left out. */
-export function rowOf(row: Record<string, unknown>): Row | null {
-  if (typeof row?.sessionId !== "string") return null;
-  const usage = (row.usage ?? {}) as Record<string, unknown>;
-  const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
-  return { id: row.sessionId, parent: typeof row.parentSessionId === "string" ? row.parentSessionId : null,
-    name: typeof row.sessionName === "string" ? row.sessionName : null, input: count(usage.inputTokens), output: count(usage.outputTokens), cost: count(usage.cost),
-    file: typeof row.sessionFile === "string" ? row.sessionFile : null, window: count((row.model as Record<string, unknown> | undefined)?.contextWindow) };
-}
-
-/** The usage fields of every row of a SessionPeer copy, streamed one row at a time (`sessionRows`). */
-export async function copyRows(file: string): Promise<Row[]> {
-  const rows: Row[] = [];
-  for await (const raw of sessionRows(file)) {
-    const row = rowOf(raw);
-    if (row) rows.push(row);
-  }
-  return rows;
-}
+/** The fields of one daemon session row (SessionSummary in a SessionPeer copy) the chat costs, rates and context ring need. */
+export type Row = Pick<CopyRow, "id" | "parent" | "name" | "input" | "output" | "cost" | "file" | "window" | "model">;
 
 /** A file's parsed form, loaded again only when its size or mtime changed. */
 async function cached<T>(ctx: Context, file: string, load: (file: string) => Promise<T>, empty: T): Promise<T> {
@@ -183,7 +166,7 @@ export function chatUsage(chatIds: readonly string[], jobs: Record<string, { cha
   const children = new Map<string, Row[]>();
   for (const { box, rows } of boxes) for (const row of rows) {
     if (!byId.has(row.id)) byId.set(row.id, { box, row });
-    if (row.parent) children.set(row.parent, [...children.get(row.parent) ?? [], row]);
+    if (row.parent) { const list = children.get(row.parent); if (list) list.push(row); else children.set(row.parent, [row]); }
   }
   const chats = chatIds.flatMap(id => { const found = byId.get(id); return found ? [{ id, ...found }] : []; });
   // A job entry without chatId names its chat as it was called then; entries with both give the old names of a renamed chat.
@@ -194,11 +177,14 @@ export function chatUsage(chatIds: readonly string[], jobs: Record<string, { cha
   const byName = new Map<string, Row>();
   for (const { row } of byId.values()) if (row.name && !byName.has(row.name)) byName.set(row.name, row);
   const jobsOf = new Map<string, Row[]>();
+  const chatSet = new Set(chatIds);
   for (const [key, job] of Object.entries(jobs)) {
     const chatId = job.chatId ?? (job.chat ? idByName.get(job.chat) : undefined);
     const row = byId.get(key)?.row ?? byName.get(key);
-    if (!chatId || !row || chatIds.includes(key)) continue;
-    jobsOf.set(chatId, [...jobsOf.get(chatId) ?? [], row, ...children.get(row.id) ?? []]);
+    if (!chatId || !row || chatSet.has(key)) continue;
+    const list = jobsOf.get(chatId) ?? [];
+    list.push(row, ...children.get(row.id) ?? []);
+    jobsOf.set(chatId, list);
   }
   const total = (rows: readonly Row[]) => rows.reduce((sum, row) => ({ input: sum.input + row.input, output: sum.output + row.output, cost: sum.cost + row.cost }), { input: 0, output: 0, cost: 0 });
   return chats.flatMap(({ id, box, row }) => {
@@ -222,10 +208,20 @@ async function loadRows(ctx: Context): Promise<Rows> {
     cached(ctx, join(chatDir, "chats.json"), file => readJson(file, json => (json as { ids?: string[] }).ids ?? []), [] as string[]),
     cached(ctx, join(chatDir, "chat-jobs.json"), file => readJson(file, json => (json as { jobs?: Jobs }).jobs ?? {}), {} as Jobs),
   ]);
-  // One copy at a time, so two copies' chunks and rows never sit in memory together.
+  // copyIndex parses a copy once per change for every reader of the feed; chat-health reads the same copies.
   const boxes: { box: string; rows: Row[] }[] = [];
-  for (const { box, file } of files) boxes.push({ box, rows: await cached(ctx, file, copyRows, [] as Row[]) });
+  for (const { box, file } of files) boxes.push({ box, rows: await copyIndex(file) });
   return { ids, jobs, boxes };
+}
+
+/** chatCosts of the last round again while the chat list, the job list and every copy's rows are the same objects, which `cached` keeps. */
+function costs(ctx: Context, rows: Rows): Sample[] {
+  const inputs = [rows.ids, rows.jobs, ...rows.boxes.map(box => box.rows)];
+  const held = ctx.state.get("tokens.costs") as { inputs: unknown[]; samples: Sample[] } | undefined;
+  if (held && held.inputs.length === inputs.length && held.inputs.every((input, index) => input === inputs[index])) return held.samples;
+  const samples = chatCosts(rows);
+  ctx.state.set("tokens.costs", { inputs, samples });
+  return samples;
 }
 
 function chatCosts({ ids, jobs, boxes }: Rows): Sample[] {
@@ -261,11 +257,13 @@ export type Tail = {
   measured: boolean;
   /** input + cache read + cache write of the newest reply that reached the provider (prompt-view.ts lastInputTokens). */
   promptTokens: number | null;
+  /** The model of the newest assistant reply, for the context window when the session row names none. */
+  model: string | null;
   messages: ThreadMessage[];
   compactions: { at: number; tokensBefore: number }[];
 };
 
-export const emptyTail = (): Tail => ({ offset: 0, usageTokens: null, trailingTokens: 0, measured: false, promptTokens: null, messages: [], compactions: [] });
+export const emptyTail = (): Tail => ({ offset: 0, usageTokens: null, trailingTokens: 0, measured: false, promptTokens: null, model: null, messages: [], compactions: [] });
 
 const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const eb = (usage: Usage): number => num(usage.totalTokens) || num(usage.input) + num(usage.output) + num(usage.cacheRead) + num(usage.cacheWrite);
@@ -298,6 +296,7 @@ export function foldLine(tail: Tail, line: string): void {
   if (!message?.role) return;
   if (message.role === "assistant" && message.usage) {
     const usage = message.usage;
+    if (message.model) tail.model = message.model;
     const prompt = num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite);
     if (prompt > 0) tail.promptTokens = prompt;
     if (message.stopReason !== "aborted" && message.stopReason !== "error" && eb(usage) > 0) {
@@ -357,7 +356,7 @@ function localFile(ctx: Context, box: string, file: string): string {
 }
 
 /** The ContextMeter ring, cache health and compactions of every chat, from its session file. */
-async function chatTails(ctx: Context, chats: { chat: string; box: string; row: Row }[]): Promise<Sample[]> {
+async function chatTails(ctx: Context, chats: { chat: string; box: string; row: Row }[], windows: Map<string, number>): Promise<Sample[]> {
   const samples: Sample[] = [];
   const help = {
     share: "Share of the chat's context window in use, as Prime's getContextUsage counts it (the thread header ring).",
@@ -377,10 +376,12 @@ async function chatTails(ctx: Context, chats: { chat: string; box: string; row: 
     const tail = await readTail(file, (ctx.state.get(slot) as Tail | undefined) ?? emptyTail(), ctx.now);
     ctx.state.set(slot, tail);
     const labels = { chat };
-    if (tail.measured && tail.usageTokens !== null && row.window > 0) {
+    // A session row the daemon has not loaded names no model; its window is the one another row gives the same model.
+    const window = row.window || (tail.model ? windows.get(tail.model) ?? 0 : 0);
+    if (tail.measured && tail.usageTokens !== null && window > 0) {
       const tokens = tail.usageTokens + tail.trailingTokens;
       samples.push({ name: "harness.tokens.context", kind: "gauge", help: help.tokens, value: tokens, labels },
-        { name: "harness.tokens.context_share", kind: "gauge", unit: "1", help: help.share, value: tokens / row.window, labels });
+        { name: "harness.tokens.context_share", kind: "gauge", unit: "1", help: help.share, value: tokens / window, labels });
     }
     if (tail.promptTokens !== null) samples.push({ name: "harness.tokens.prompt_measured", kind: "gauge", help: help.prompt, value: tail.promptTokens, labels });
     const health = cacheHealth(tail.messages.slice(-PAGE_MESSAGES));
@@ -401,8 +402,6 @@ async function chatTails(ctx: Context, chats: { chat: string; box: string; row: 
 /** Characters per token of Prime's <skill> blocks and the fixed lines around them, the Tools page's numbers (chat-skills.ts). */
 export const SKILL_CHARS_PER_TOKEN = 2.45;
 export const SKILLS_HEADER_TOKENS = 146;
-/** The bytes read from each end of a prompt capture: the Anthropic payload puts system and tools last, OpenAI Responses puts instructions first. */
-const CAPTURE_END_BYTES = 256 * 1024;
 
 /** prompt-view.ts SYSTEM_MARKS, with the part kind each mark opens; text before the first mark is the base system prompt. */
 const SYSTEM_MARKS: readonly [string, RegExp][] = [
@@ -414,7 +413,16 @@ const SYSTEM_MARKS: readonly [string, RegExp][] = [
   ["harness", /^# Continual Harness State$/m],
 ];
 
-export type PromptKinds = { system: number; instructions: number; skills: number; harness: number; tools: number; skillsChars: number };
+/** One `<skill>` block of Prime's skills list: its name, its SKILL.md path as Prime walked it, and its length. */
+export type SkillBlock = { name: string; location: string; chars: number };
+export type PromptKinds = { system: number; instructions: number; skills: number; harness: number; tools: number; skillBlocks: SkillBlock[] };
+
+const SKILL_BLOCK = /^ {2}<skill>\n[\s\S]*?\n {2}<\/skill>$/gm;
+
+/** The `<skill>` blocks of a skills list, each as chat-skills.ts skillBlock writes it. */
+export function skillBlocks(text: string): SkillBlock[] {
+  return [...text.matchAll(SKILL_BLOCK)].map(([block]) => ({ name: /<name>(.*?)<\/name>/.exec(block)?.[1] ?? "", location: /<location>(.*?)<\/location>/.exec(block)?.[1] ?? "", chars: block.length }));
+}
 
 /** One system prompt's tokens per part kind as prompt-view.ts systemParts splits it, each part ceil(chars / 4) (estimateTokens). */
 export function systemKinds(text: string): Omit<PromptKinds, "tools"> {
@@ -431,14 +439,33 @@ export function systemKinds(text: string): Omit<PromptKinds, "tools"> {
   const end = text.indexOf("</available_skills>");
   if (end >= 0) { const after = end + "</available_skills>".length; if (text.slice(after).trim()) marks.push({ at: after, kind: "instructions" }); }
   marks.sort((a, b) => a.at - b.at);
-  const out = { system: 0, instructions: 0, skills: 0, harness: 0, skillsChars: 0 };
+  const out: Omit<PromptKinds, "tools"> = { system: 0, instructions: 0, skills: 0, harness: 0, skillBlocks: [] };
   const head = text.slice(0, marks[0]?.at ?? text.length);
   if (head.trim()) out.system += Math.ceil(head.length / 4);
   marks.forEach((mark, index) => {
     const body = text.slice(mark.at, marks[index + 1]?.at ?? text.length);
     out[mark.kind as "system"] += Math.ceil(body.length / 4);
-    if (mark.kind === "skills") out.skillsChars += body.length;
+    if (mark.kind === "skills") out.skillBlocks.push(...skillBlocks(body));
   });
+  return out;
+}
+
+/**
+ * The user texts prompt-view.ts userSource files under instructions ([corrections], [message id: ...]) or harness ([harness-digest], [*-refinement]),
+ * found as JSON string values in a captured payload without parsing all of it. A digest stops at its "[compaction-summary]", which is conversation.
+ */
+const MESSAGE_KINDS = /"(?:text|content)":"\[(harness-digest\]|corrections\]|message id: |[a-z]+-refinement\])/g;
+
+export function messageKinds(text: string): { instructions: number; harness: number } {
+  const out = { instructions: 0, harness: 0 };
+  for (const match of text.matchAll(MESSAGE_KINDS)) {
+    const value = valueAt(text, match.index + match[0].indexOf(":") + 1);
+    if (typeof value !== "string") continue;
+    const digest = match[1] === "harness-digest]";
+    const cut = digest ? value.indexOf("\n\n[compaction-summary]") : -1;
+    const body = cut < 0 ? value : value.slice(0, cut);
+    out[digest || match[1]!.endsWith("-refinement]") ? "harness" : "instructions"] += Math.ceil(body.length / 4);
+  }
   return out;
 }
 
@@ -478,38 +505,36 @@ export function toolTokens(tools: unknown): number {
   }, 0);
 }
 
-/** The system, instructions, skills, harness and tools tokens of a captured provider request (prompt-capture.ts), from the two ends of the file. */
+/**
+ * The system, instructions, skills, harness and tools tokens of a captured provider request (prompt-capture.ts). The system prompt and tools are
+ * found from the ends of the file (the Anthropic payload puts them last, OpenAI Responses puts instructions first), and the instructions and
+ * harness texts among the messages by their prefix.
+ */
 export async function captureKinds(file: string): Promise<PromptKinds | null> {
-  const handle = await open(file, "r").catch(() => null);
-  if (!handle) return null;
+  const text = await readFile(file, "utf8").catch(() => null);
+  if (text === null) return null;
   try {
-    const { size } = await handle.stat();
-    const read = async (position: number, length: number) => {
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, position);
-      return buffer.subarray(0, bytesRead).toString("utf8");
-    };
-    const head = await read(0, Math.min(size, CAPTURE_END_BYTES));
-    const tail = size > CAPTURE_END_BYTES ? await read(size - CAPTURE_END_BYTES, CAPTURE_END_BYTES) : head;
-    const at = head.indexOf('"instructions":');
-    const instructions = at >= 0 && at < 4096 ? valueAt(head, at + '"instructions":'.length) : null;
-    const toolsAt = tail.lastIndexOf('"tools":');
-    const tools = lastKey(tail, "tools");
-    const system = typeof instructions === "string" ? instructions : lastKey(tail, "system", toolsAt > 0 ? toolsAt : tail.length);
+    const at = text.indexOf('"instructions":');
+    const instructions = at >= 0 && at < 4096 ? valueAt(text, at + '"instructions":'.length) : null;
+    const toolsAt = text.lastIndexOf('"tools":');
+    const tools = lastKey(text, "tools");
+    const system = typeof instructions === "string" ? instructions : lastKey(text, "system", toolsAt > 0 ? toolsAt : text.length);
     // payloadParts: a first system block under 200 chars, before others, is the provider identity line (kind system).
     const blocks = typeof system === "string" ? [system] : Array.isArray(system) ? system.map(block => (block as { text?: unknown })?.text).filter((text): text is string => typeof text === "string") : [];
     if (!blocks.length) return null;
-    const out: PromptKinds = { system: 0, instructions: 0, skills: 0, harness: 0, skillsChars: 0, tools: toolTokens(tools) };
-    blocks.forEach((text, index) => {
-      if (blocks.length > 1 && index === 0 && text.length < 200) { out.system += Math.ceil(text.length / 4); return; }
-      const kinds = systemKinds(text);
-      for (const key of ["system", "instructions", "skills", "harness", "skillsChars"] as const) out[key] += kinds[key];
+    const out: PromptKinds = { system: 0, instructions: 0, skills: 0, harness: 0, skillBlocks: [], tools: toolTokens(tools) };
+    blocks.forEach((block, index) => {
+      if (blocks.length > 1 && index === 0 && block.length < 200) { out.system += Math.ceil(block.length / 4); return; }
+      const kinds = systemKinds(block);
+      for (const key of ["system", "instructions", "skills", "harness"] as const) out[key] += kinds[key];
+      out.skillBlocks.push(...kinds.skillBlocks);
     });
+    const messages = messageKinds(text);
+    out.instructions += messages.instructions;
+    out.harness += messages.harness;
     return out;
   } catch {
     return null;
-  } finally {
-    await handle.close();
   }
 }
 
@@ -526,8 +551,11 @@ export const summaryQueries = (since: number): { promql: string; range: boolean 
   { promql: `sum by (kind) (rate(${ALL}[1m]))`, range: true },
   { promql: `sum by (kind) (increase(${ALL}[1m]))`, range: true },
 ];
-/** Usage.rates over the last minute: output tokens per second of generation time for every session that made a call. */
-const LIVE_RATES = `sum by (session) (increase(prime_agent_session_output_tokens_total{${JOB}}[1m])) / sum by (session) (increase(prime_agent_session_generation_seconds_total{${JOB}}[1m]))`;
+/**
+ * Usage.rates over the last minute: output tokens per second of generation time for every session that made a call. `> 0` drops the idle sessions'
+ * 0 / 0, which were 739 of 810 answers on 10-19 and which the reader skipped anyway.
+ */
+const LIVE_RATES = `sum by (session) (increase(prime_agent_session_output_tokens_total{${JOB}}[1m])) / sum by (session) (increase(prime_agent_session_generation_seconds_total{${JOB}}[1m])) > 0`;
 /** How many live agents the Agents card rates go out as, by rank. */
 export const TOP_AGENTS = 10;
 
@@ -611,21 +639,121 @@ function chatList({ ids, boxes }: Rows): Chat[] {
   return ids.flatMap(id => { const found = byId.get(id); return found ? [{ id, chat: found.row.name ?? id.slice(0, 8), ...found }] : []; });
 }
 
-/** The Prompt view's tokens per part kind of each chat's newest captured request, and the Tools page's skills tokens. */
+const captureFile = (ctx: Context, id: string) => join(ctx.home, ".prime/agent/browser-chat/prompts", `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+
+/** The Prompt view's tokens per part kind of each chat's newest captured request, and the Tools page's skills tokens of that prompt. */
 async function chatPrompts(ctx: Context, chats: Chat[], measured: Map<string, number>): Promise<Sample[]> {
-  const dir = join(ctx.home, ".prime/agent/browser-chat/prompts");
   const samples: Sample[] = [];
   for (const { id, chat } of chats) {
-    const kinds = await cached(ctx, join(dir, `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.json`), captureKinds, null);
+    const kinds = await cached(ctx, captureFile(ctx, id), captureKinds, null);
     if (!kinds) continue;
     const parts: Record<string, number> = { system: kinds.system, instructions: kinds.instructions, skills: kinds.skills, harness: kinds.harness, tools: kinds.tools };
     const prompt = measured.get(chat);
     if (prompt !== undefined) parts.conversation = Math.max(0, prompt - Object.values(parts).reduce((a, b) => a + b, 0));
     for (const [part, value] of Object.entries(parts)) samples.push({ name: "harness.tokens.prompt_part", kind: "gauge", value, labels: { chat, part },
       help: "Tokens of the chat's newest prompt by part as the Prompt view estimates them (chars / 4); conversation is the measured prompt minus the other parts." });
-    samples.push({ name: "harness.tokens.skills", kind: "gauge", value: Math.round(kinds.skillsChars / SKILL_CHARS_PER_TOKEN), labels: { chat },
-      help: "Tokens the skills list adds to the chat's prompt, at the Tools page's 2.45 chars per token (chat-skills.ts)." });
+    samples.push({ name: "harness.tokens.skills", kind: "gauge", value: skillTokens(ctx.home, kinds.skillBlocks).total, labels: { chat },
+      help: "Tokens the skills list adds to the chat's prompt, counted as the Tools page counts them (chat-skills.ts)." });
   }
+  return samples;
+}
+
+type SkillGroup = "global" | "built-in" | "repo";
+
+/** chat-skills.ts sources by where Prime found the SKILL.md: ~/.prime/agent/skills or ~/.agents/skills, a Prime release's skills/, else the repo. */
+export function skillGroup(home: string, location: string): SkillGroup {
+  if ([".prime/agent/skills/", ".agents/skills/"].some(dir => location.startsWith(`${home}/${dir}`))) return "global";
+  return location.includes("/prime-agent/releases/") ? "built-in" : "repo";
+}
+
+/** The Tools page count of a skills list: each block's chars over 2.45, rounded per skill, plus the fixed header lines when any block is listed. */
+export function skillTokens(home: string, blocks: readonly SkillBlock[]): { total: number; groups: Record<SkillGroup | "header", number>; skills: { name: string; group: SkillGroup; tokens: number }[] } {
+  const skills = blocks.map(block => ({ name: block.name, group: skillGroup(home, block.location), tokens: Math.round(block.chars / SKILL_CHARS_PER_TOKEN) }));
+  const groups = { global: 0, "built-in": 0, repo: 0, header: skills.length ? SKILLS_HEADER_TOKENS : 0 };
+  for (const skill of skills) groups[skill.group] += skill.tokens;
+  return { total: groups.global + groups["built-in"] + groups.repo + groups.header, groups, skills };
+}
+
+/** How many of the newest session files firstPrompt reads (chat-skills.ts FIRST_PROMPT_SCAN). */
+export const FIRST_PROMPT_SCAN = 200;
+
+type FirstUsage = { tokens: number; at: number } | "no" | "wait";
+
+/**
+ * chat-skills.ts firstUsage with its null split in two: "no" for a child session, another cwd or a first reply without usage, which stays so,
+ * and "wait" for a session with no reply yet or a line still being written, which a later round reads again.
+ */
+export async function firstUsage(file: string, cwd: string): Promise<FirstUsage> {
+  for await (const line of fileLines(file)) {
+    let entry: { type?: string; cwd?: string; parentSession?: string; message?: { role?: string; timestamp?: number; usage?: Record<string, unknown> } };
+    try { entry = JSON.parse(line) as typeof entry; } catch { return "wait"; }
+    if (entry.type === "session") { if (entry.cwd !== cwd || entry.parentSession) return "no"; continue; }
+    if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    const usage = entry.message.usage ?? {};
+    const tokens = ["input", "cacheRead", "cacheWrite"].reduce((sum, key) => sum + (typeof usage[key] === "number" ? usage[key] : 0), 0);
+    return tokens > 0 && typeof entry.message.timestamp === "number" ? { tokens, at: entry.message.timestamp } : "no";
+  }
+  return "wait";
+}
+
+type FirstScan = { dirKey: string; names: string[]; no: Set<string>; waits: Map<string, number>; found: { sessionId: string; tokens: number; at: number } | null };
+
+/**
+ * chat-skills.ts firstPrompt, kept between rounds: the newest root session started in `cwd` whose first reply has usage. The folder is listed
+ * again only after its mtime moved, a "no" file is never read again, and a "wait" file only after it grew.
+ */
+export async function firstPrompt(state: Map<string, unknown>, dir: string, cwd: string): Promise<FirstScan["found"]> {
+  const info = await stat(dir).catch(() => null);
+  if (!info) return null;
+  const scan = (state.get("tokens.firstPrompt") as FirstScan | undefined) ?? { dirKey: "", names: [], no: new Set<string>(), waits: new Map<string, number>(), found: null };
+  state.set("tokens.firstPrompt", scan);
+  if (scan.dirKey !== String(info.mtimeMs)) {
+    scan.names = (await readdir(dir)).filter(name => name.endsWith(".jsonl")).sort().reverse().slice(0, FIRST_PROMPT_SCAN);
+    scan.dirKey = String(info.mtimeMs);
+    const listed = new Set(scan.names);
+    for (const name of scan.no) if (!listed.has(name)) scan.no.delete(name);
+    for (const name of scan.waits.keys()) if (!listed.has(name)) scan.waits.delete(name);
+  }
+  let found: FirstScan["found"] = null;
+  for (const name of scan.names) {
+    const sessionId = name.slice(0, -".jsonl".length);
+    if (scan.found?.sessionId === sessionId) { found = scan.found; break; }
+    if (scan.no.has(name)) continue;
+    const size = (await stat(join(dir, name)).catch(() => null))?.size ?? -1;
+    if (scan.waits.get(name) === size) continue;
+    const usage = await firstUsage(join(dir, name), cwd).catch(() => "wait" as const);
+    if (usage === "no") { scan.no.add(name); scan.waits.delete(name); continue; }
+    if (usage === "wait") { scan.waits.set(name, size); continue; }
+    scan.waits.delete(name);
+    found = { sessionId, ...usage };
+    break;
+  }
+  scan.found = found;
+  return found;
+}
+
+/**
+ * The Settings > Tools and skills numbers (chat-skills.ts skillsView): the tokens the skills list adds to a new session in the repo, by group and
+ * by skill, and that session's measured first prompt. The list is the one Prime sent in that session's captured request, read once per session.
+ */
+async function toolsPage(ctx: Context): Promise<Sample[]> {
+  const repo = process.env.HARNESS_REPO || join(ctx.home, "Documents/Github/auto-sns-agent");
+  const first = await firstPrompt(ctx.state, join(ctx.home, ".prime/agent/sessions"), repo);
+  if (!first) return [];
+  const samples: Sample[] = [{ name: "harness.tokens.first_prompt", kind: "gauge", value: first.tokens,
+    help: "Prompt tokens of the first call of the newest root session started in the repo, input plus cache read and write (chat-skills.ts firstPrompt)." }];
+  let held = ctx.state.get("tokens.firstSkills") as { sessionId: string; blocks: SkillBlock[] } | undefined;
+  if (held?.sessionId !== first.sessionId) {
+    const kinds = await captureKinds(captureFile(ctx, first.sessionId));
+    held = kinds ? { sessionId: first.sessionId, blocks: kinds.skillBlocks } : undefined;
+    if (held) ctx.state.set("tokens.firstSkills", held);
+  }
+  if (!held) return samples;
+  const { groups, skills } = skillTokens(ctx.home, held.blocks);
+  for (const [group, value] of Object.entries(groups)) samples.push({ name: "harness.tokens.skills_group", kind: "gauge", value, labels: { group },
+    help: "Tokens the skills list adds to every new session in the repo, by the Tools page's groups; header is the fixed lines around the list." });
+  for (const skill of skills) samples.push({ name: "harness.tokens.skill", kind: "gauge", value: skill.tokens, labels: { skill: skill.name, group: skill.group },
+    help: "Tokens one skill's entry adds to every new session in the repo, its block's chars over 2.45 as the Tools page counts it." });
   return samples;
 }
 
@@ -635,8 +763,10 @@ export async function read(ctx: Context): Promise<Sample[]> {
   const rowsLoaded = loadRows(ctx);
   const [health, app, rows] = await Promise.all([feedHealth(ctx), appQuery(ctx, ask), rowsLoaded]);
   const chats = chatList(rows);
-  const [agents, tails] = await Promise.all([agentRates(ask, rows, chats), chatTails(ctx, chats)]);
+  const windows = new Map<string, number>();
+  for (const { rows: list } of rows.boxes) for (const row of list) if (row.model && row.window > 0) windows.set(row.model, row.window);
+  const [agents, tails] = await Promise.all([agentRates(ask, rows, chats), chatTails(ctx, chats, windows)]);
   const measured = new Map(tails.filter(s => s.name === "harness.tokens.prompt_measured").map(s => [s.labels!.chat!, s.value]));
-  const prompts = await chatPrompts(ctx, chats, measured);
-  return [...health, ...chatCosts(rows), ...app, ...agents, ...tails, ...prompts];
+  const [prompts, tools] = await Promise.all([chatPrompts(ctx, chats, measured), toolsPage(ctx)]);
+  return [...health, ...costs(ctx, rows), ...app, ...agents, ...tails, ...prompts, ...tools];
 }

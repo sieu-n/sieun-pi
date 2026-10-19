@@ -3,7 +3,29 @@
  "rev": 3,
  "updatedAt": "2026-10-19T11:00:00Z",
  "scratch": [],
- "todos": [],
+ "todos": [
+  {
+   "id": "t1",
+   "text": "a",
+   "done": false,
+   "from": "agent",
+   "at": "2026-10-19T11:00:00Z"
+  },
+  {
+   "id": "t3",
+   "text": "c",
+   "done": false,
+   "from": "owner",
+   "at": "2026-10-19T11:00:00Z"
+  },
+  {
+   "id": "t2",
+   "text": "b",
+   "done": true,
+   "from": "agent",
+   "at": "2026-10-19T11:00:00Z"
+  }
+ ],
  "lastIds": {
   "p": 5,
   "t": 0

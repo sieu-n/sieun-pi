@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { d7Cuts, judgeMinutes, read, readNew, runningRows } from "../readers/chat-health.ts";
+import { d7Cuts, judgeMinutes, read, readNew, runningRows, scheduleOf } from "../readers/chat-health.ts";
 import type { Context, Sample } from "../otlp.ts";
 
 // The fixture home holds the files the live chat service writes on its box, with every time in 11:00Z to 12:00Z on 10-19:
@@ -59,7 +59,7 @@ test("the fixture's 30 minutes read as d7's Whole system rule reads them", async
     // The Mac sat with nobody working from 11:00:30Z, so all its 29 lines in the window are past the 15 min quiet window; 11:50Z held 6.5 GB.
     assert.equal(value(samples, "harness.chat.quiet_minutes_30", { host: "mac" }), 29);
     assert.equal(value(samples, "harness.chat.quiet_agent_memory", { host: "mac" }), 6.5 * 1024 ** 3);
-    assert.equal(value(samples, "harness.chat.quiet_agent_memory", { host: "us-metal02" }), undefined);
+    assert.equal(value(samples, "harness.chat.quiet_agent_memory", { host: "us-metal02" }), 0, "a box with no quiet minute sends 0");
     assert.equal(value(samples, "harness.chat.hung_calls"), 1);
     assert.equal(value(samples, "harness.chat.agents", { host: "us-metal02", state: "working" }), 5);
     assert.equal(value(samples, "harness.chat.agents", { host: "us-metal02", state: "hung" }), 1);
@@ -140,4 +140,97 @@ test("readNew keeps a line still being written for the next round and starts a f
     await writeFile(file, "new\n");
     assert.deepEqual((await readNew(file, second!.tail, 8))?.lines, ["new"], "a file that shrank is read from its start");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the sidebar, the chat's subagents and agents, its open run and the tool calls read as the chat app reads them", async () => {
+  const home = await mkdtemp(join(tmpdir(), "chat-health-sidebar-"));
+  const data = join(home, ".prime/agent/browser-chat");
+  const sessions = join(home, ".prime/agent/sessions");
+  const at = (time: string) => `2026-10-19T${time}Z`;
+  const file = (id: string) => join(sessions, `${id}.jsonl`);
+  const ids = { chat: "c0000000-0000-7000-8000-000000000001", root: "c0000000-0000-7000-8000-000000000002", needs: "c0000000-0000-7000-8000-000000000003",
+    beat: "c0000000-0000-7000-8000-000000000004", archived: "c0000000-0000-7000-8000-000000000005" };
+  const top = (id: string, fields: Record<string, unknown>) => ({ id: id.slice(0, 12), lifecycle: "live", runtimeKind: "top-level", rlmDepth: 0, sessionId: id, sessionFile: file(id), messageCount: 5, ...fields });
+  const sub = (id: string, parent: string, childId: string, fields: Record<string, unknown>) => ({ id: id.slice(0, 12), lifecycle: "live", runtimeKind: "subagent", rlmDepth: 1, sessionId: id,
+    parentSessionId: parent, rlmChildId: childId, messageCount: 3, ...fields });
+  const live = { activeSessionId: "a1", rosterStatus: "running", activity: "working" };
+  try {
+    await mkdir(sessions, { recursive: true });
+    await mkdir(join(data, "boards"), { recursive: true });
+    await mkdir(join(home, ".prime/agent/session-artifacts", ids.beat), { recursive: true });
+    await writeFile(join(data, "session-copy.json"), JSON.stringify({ version: 1, fullAt: 1, rows: [
+      top(ids.chat, { ...live, sessionName: "Crawler VP", lastActivityAt: at("11:59:30") }),
+      sub("s0000000-0000-7000-8000-000000000001", ids.chat, "sub-1", { ...live, created: at("11:30:00"), lastActivityAt: at("11:59:00") }),
+      sub("s0000000-0000-7000-8000-000000000002", ids.chat, "sub-2", { taskState: "error", summary: "Model request failed: overloaded", lastActivityAt: at("11:20:00") }),
+      sub("s0000000-0000-7000-8000-000000000003", ids.chat, "sub-3", { lastActivityAt: at("11:10:00") }),
+      sub("s0000000-0000-7000-8000-000000000004", "s0000000-0000-7000-8000-000000000003", "sub-4", { rlmDepth: 2, lastActivityAt: at("11:05:00") }),
+      top(ids.root, { activeSessionId: "a2", rosterStatus: "idle", activity: "idle", sessionName: "metal box owner", lastActivityAt: at("11:50:00") }),
+      top(ids.needs, { sessionName: "a question", lastActivityAt: at("11:40:00") }),
+      top(ids.beat, { ...live, sessionName: "tiktok shop", lastActivityAt: at("11:58:00"), lastHeardFromAt: at("11:52:00") }),
+      top(ids.archived, { lifecycle: "archived", sessionName: "old", lastActivityAt: at("11:45:00") }),
+    ] }));
+    await writeFile(join(data, "chats.json"), JSON.stringify({ ids: [ids.chat] }));
+    await writeFile(join(data, "threads.json"), JSON.stringify({ ids: [ids.needs, ids.beat, ids.archived] }));
+    await writeFile(join(data, "read-state.json"), JSON.stringify({ baseline: Date.parse(at("11:00:00")), sessions: { [ids.chat]: { entryId: "x", timestamp: Date.parse(at("11:59:50")) } } }));
+    await writeFile(join(data, "chat-jobs.json"), JSON.stringify({ jobs: { "metal box owner": { chat: "Crawler VP", at: 1 } } }));
+    await writeFile(join(data, "boards", `${ids.chat}.json`), JSON.stringify({ v: 2, rev: 1, todos: [], updatedAt: at("11:00:00"),
+      plan: [{ id: "p1", text: "ask", status: "doing", sessionId: ids.needs, children: [] }, { id: "p2", text: "done", status: "done", sessionId: ids.archived, children: [] }] }));
+    await writeFile(join(home, ".prime/agent/session-artifacts", ids.beat, "scheduled-jobs.json"), JSON.stringify({ jobs: [
+      { id: "j1", status: "cancelled", source: "cron" }, { id: "j2", status: "active", source: "rlm_heartbeat", schedule: { kind: "interval", expression: "30m" } }] }));
+    // The root was created named by an agent's rlm.create_session, so the sidebar hides it; the other files hold one message.
+    await writeFile(file(ids.root), [{ type: "session" }, { type: "session_info", name: "metal box owner" }, { type: "session_state" }].map(line => JSON.stringify(line)).join("\n") + "\n");
+    for (const id of [ids.needs, ids.beat]) await writeFile(file(id), JSON.stringify({ type: "message", timestamp: at("11:00:00"), message: { role: "user", content: "hi", timestamp: 0 } }) + "\n");
+    const entry = (time: string, message: Record<string, unknown>) => JSON.stringify({ type: "message", timestamp: at(time), message: { timestamp: Date.parse(at(time)), ...message } });
+    // A run settled at 11:00:05Z, its tool result before the settle line, then the open run from 11:58Z: an ipython error and a bash call still running.
+    await writeFile(file(ids.chat), [
+      entry("10:59:59", { role: "toolResult", toolCallId: "old", toolName: "read", isError: false }),
+      entry("11:00:05", { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }),
+      JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from child:a]", timestamp: at("11:58:00") }),
+      entry("11:58:10", { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "ipython", arguments: {} }], stopReason: "toolUse" }),
+      entry("11:58:12", { role: "toolResult", toolCallId: "t1", toolName: "ipython", isError: true, details: { durationMs: 2000 } }),
+      entry("11:59:00", { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "bash", arguments: {} }], stopReason: "toolUse" }),
+    ].join("\n") + "\n");
+    await utimes(file(ids.chat), new Date(at("11:59:30")), new Date(at("11:59:30")));
+    await utimes(file(ids.beat), new Date(at("11:52:00")), new Date(at("11:52:00")));
+    const ctx: Context = { home, host: "us-metal02", platform: "linux", now: Date.parse(at("12:00:00")), chatHost: true, state: new Map() };
+    const samples = await read(ctx);
+    const rows = (section: string, bucket: string) => value(samples, "harness.chat.sidebar_rows", { section, bucket });
+    assert.equal(rows("chats", "working"), 1);
+    assert.equal(rows("heartbeats", "working"), 1);
+    assert.equal(rows("threads", "needs"), 1, "the agent-created root and the archived thread stay out");
+    assert.equal(rows("threads", "idle"), 0);
+    assert.equal(value(samples, "harness.chat.pulse_rows", { level: "live" }), 1);
+    assert.equal(value(samples, "harness.chat.pulse_rows", { level: "stalled" }), 1, "the heartbeat's worker went silent at 11:52Z");
+    const chat = { chat: "Crawler VP" };
+    assert.equal(value(samples, "harness.chat.chat_pulse", chat), 1);
+    assert.equal(value(samples, "harness.chat.chat_quiet", chat), 30);
+    for (const [status, want] of [["running", 1], ["failed", 1], ["done", 1]] as const) assert.equal(value(samples, "harness.chat.chat_subagents", { ...chat, status }), want, status);
+    assert.equal(value(samples, "harness.chat.chat_subtree", { ...chat, kind: "total" }), 4);
+    assert.equal(value(samples, "harness.chat.chat_subagent_run_longest", chat), 1800);
+    for (const [state, want] of [["working", 1], ["failed", 1], ["done", 1], ["idle", 2]] as const)
+      assert.equal(value(samples, "harness.chat.chat_agents", { ...chat, state }), want, `${state}: three subagents, the root and the open step's owner`);
+    assert.equal(value(samples, "harness.chat.chat_agent_age", { ...chat, kind: "newest" }), 60);
+    assert.equal(value(samples, "harness.chat.chat_agent_age", { ...chat, kind: "quietest_working" }), 60);
+    assert.equal(value(samples, "harness.chat.turn_run", chat), 120);
+    assert.equal(value(samples, "harness.chat.tool_calls_30", { tool: "ipython" }), 1);
+    assert.equal(value(samples, "harness.chat.tool_errors_30", { tool: "ipython" }), 1);
+    assert.equal(value(samples, "harness.chat.tool_time_30", { tool: "ipython" }), 2);
+    assert.equal(value(samples, "harness.chat.tool_calls_30", { tool: "read" }), undefined, "the first read stops at the reply that settled the last run");
+    assert.equal(value(samples, "harness.chat.tools_running", { tool: "bash" }), 1);
+    assert.equal(value(samples, "harness.chat.tool_running_longest", { tool: "bash" }), 60);
+
+    // The bash call returns and the run settles: the next round reads only the appended lines.
+    await writeFile(file(ids.chat), [entry("12:00:10", { role: "toolResult", toolCallId: "t2", toolName: "bash", isError: false }),
+      entry("12:00:15", { role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop" })].join("\n") + "\n", { flag: "a" });
+    const next = await read({ ...ctx, now: Date.parse(at("12:00:30")) });
+    assert.equal(value(next, "harness.chat.turn_run", chat), 0);
+    assert.equal(value(next, "harness.chat.tools_running", { tool: "bash" }), 0);
+    assert.equal(value(next, "harness.chat.tool_slowest_30", { tool: "bash" }), 70, "a result with no durationMs runs from its call's line to its own time");
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("a session's schedule is its active job before a paused one, as parseSchedules picks it", () => {
+  assert.equal(scheduleOf({ jobs: [{ status: "cancelled", source: "rlm_heartbeat" }] }), null);
+  assert.deepEqual(scheduleOf({ jobs: [{ status: "paused", source: "cron", schedule: { expression: "0 * * * *" } }, { status: "active", source: "heartbeat", schedule: { expression: "30m" } }] }),
+    { kind: "heartbeat", status: "active", expression: "30m" });
 });

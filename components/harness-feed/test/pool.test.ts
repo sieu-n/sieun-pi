@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Context, Sample } from "../otlp.ts";
-import { accountSamples, hourSamples, queueSamples, read, readPool, type PoolPart } from "../readers/pool.ts";
+import { accountSamples, catchUpUsage, hourSamples, queueSamples, read, readPool, usageLog, usageSamples, type PoolPart } from "../readers/pool.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pool");
 const snapshot = JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
@@ -59,12 +59,86 @@ test("account samples match the Accounts table and the sidebar meters", () => {
   assert.equal(value(samples, "harness.pool.account_usage_age", one), 100);
   assert.equal(value(samples, "harness.pool.account_resets_left", one), 3);
   assert.equal(value(samples, "harness.pool.account_resets_left", two), undefined);
+  assert.equal(value(samples, "harness.pool.account_window_resets", { ...one, window: "5h" }), 3600);
+  assert.equal(value(samples, "harness.pool.account_window_resets", { ...one, window: "week" }), 86400);
+  assert.equal(samples.filter(s => s.name === "harness.pool.next_request_account").length, 0);
   // The sidebar: the off account drops out, the limited one counts full in both meters.
   assert.equal(value(samples, "harness.pool.provider_used", { provider: "anthropic", window: "5h" }), 0.7);
   assert.equal(value(samples, "harness.pool.provider_used", { provider: "anthropic", window: "week" }), 0.6);
   assert.equal(value(samples, "harness.pool.provider_usable_accounts", { provider: "anthropic" }), 1);
   assert.equal(value(samples, "harness.pool.provider_accounts", { provider: "anthropic" }), 2);
   assert.equal(value(samples, "harness.pool.provider_next_free", { provider: "anthropic" }), 3600);
+});
+
+test("the next-request account comes from who with no session, and none when the pool waits", () => {
+  const who = parsed(snapshot.threads[0].who);
+  const claude = accountSamples("anthropic", parsed(snapshot.threads[0].ls.anthropic), null, NOW, who).filter(s => s.name === "harness.pool.next_request_account");
+  assert.deepEqual(claude.map(s => [s.labels, s.value]), [[{ account: "one@example.com", provider: "anthropic" }, 1]]);
+  const codex = accountSamples("openai-codex", parsed(snapshot.threads[0].ls["openai-codex"]), null, NOW, who).filter(s => s.name === "harness.pool.next_request_account");
+  assert.deepEqual(codex.map(s => s.labels), [{ account: "none", provider: "openai-codex" }]);
+  const failed = accountSamples("anthropic", parsed(snapshot.threads[0].ls.anthropic), null, NOW, { providers: { anthropic: { error: "no index" } } });
+  assert.equal(failed.some(s => s.name === "harness.pool.next_request_account"), false);
+});
+
+test("a window with no reset time or one already past sends no reset series", () => {
+  const listing = { provider: "anthropic", rows: [{ id: "x", email: "x@example.com", usable: true, windows: [
+    { kind: "session", label: "5h", pct: 10, resets_at: null }, { kind: "weekly", label: "week", pct: 10, resets_at: NOW / 1000 - 5 }] }] };
+  assert.equal(accountSamples("anthropic", listing, null, NOW).some(s => s.name === "harness.pool.account_window_resets"), false);
+});
+
+const usageValue = (samples: Sample[], name: string, run?: string): number | undefined => value(samples, name, run ? { run } : {});
+
+test("the first scan of pi-pool.log sets the last refresh and sample but counts none as recent", async () => {
+  const log = usageLog();
+  await catchUpUsage(log, join(FIXTURES, "usage.log"), NOW);
+  const samples = usageSamples(log);
+  // The bad refresh line (accounts not a number), the turn line that names usage_sample and the cut line are skipped.
+  assert.equal(usageValue(samples, "harness.pool.usage_read_accounts", "refresh"), 30);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_failed", "refresh"), 2);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_accounts", "sample"), 1);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_failed", "sample"), 0);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "refresh"), 0);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "sample"), 0);
+  assert.deepEqual(samples.filter(s => s.name === "harness.pool.usage_refresh_failed_account").map(s => s.labels?.account), ["one@example.com", "two@example.com"]);
+});
+
+test("lines appended after the first scan count as recent for 30 min, and a cut line waits for its end", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pool-"));
+  const path = join(dir, "pi-pool.log");
+  copyFileSync(join(FIXTURES, "usage.log"), path);
+  const log = usageLog();
+  await catchUpUsage(log, path, NOW);
+  appendFileSync(path, JSON.stringify({ ts: "x", event: "usage_sample", accounts: 4, failed: ["one@example.com"] }) + "\n" + '{"ts": "x", "event": "usage_ref');
+  await catchUpUsage(log, path, NOW + 60_000);
+  let samples = usageSamples(log);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "sample"), 1);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_failed_recent", "sample"), 1);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_accounts", "sample"), 4);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "refresh"), 0);
+  appendFileSync(path, 'resh", "accounts": 2, "failed": []}\n');
+  await catchUpUsage(log, path, NOW + 120_000);
+  samples = usageSamples(log);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "refresh"), 1);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_failed", "refresh"), 0);
+  assert.equal(samples.some(s => s.name === "harness.pool.usage_refresh_failed_account"), false);
+  await catchUpUsage(log, path, NOW + 60_000 + 30 * 60_000 + 1);
+  samples = usageSamples(log);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "sample"), 0);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "refresh"), 1);
+});
+
+test("a log that shrank is read again from the start", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pool-"));
+  const path = join(dir, "pi-pool.log");
+  copyFileSync(join(FIXTURES, "usage.log"), path);
+  const log = usageLog();
+  await catchUpUsage(log, path, NOW);
+  writeFileSync(path, JSON.stringify({ event: "usage_sample", accounts: 5, failed: [] }) + "\n");
+  await catchUpUsage(log, path, NOW + 30_000);
+  const samples = usageSamples(log);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_accounts", "sample"), 5);
+  assert.equal(usageValue(samples, "harness.pool.usage_reads_recent", "sample"), 1);
+  assert.equal(usageValue(samples, "harness.pool.usage_read_accounts", "refresh"), undefined);
 });
 
 test("a codex pool has no 5h meter", () => {
@@ -86,6 +160,7 @@ test("readPool asks for no thread on a box whose accounts live elsewhere, and fa
     if (args[0] === "snapshot") return { code: 2, out: "", err: "usage: pi-pool [command] ...\n" };
     if (args[0] === "queue") return snapshot.queue;
     if (args[0] === "config") return snapshot.config;
+    if (args[0] === "who") return snapshot.threads[0].who;
     return snapshot.threads[0].ls[args[3] as string];
   };
   const remote = await readPool(dir, "/nonexistent", false, old);
@@ -93,10 +168,13 @@ test("readPool asks for no thread on a box whose accounts live elsewhere, and fa
   assert.deepEqual(asked[0], ["snapshot", "--json"]);
   assert.equal(remote.hookd, null);
   assert.deepEqual(Object.keys(remote.snapshot.ls), []);
+  assert.equal(remote.snapshot.who, null);
   asked.length = 0;
   const local = await readPool(dir, "/nonexistent", true, old);
   assert.deepEqual(asked[0], ["snapshot", "--json", "--thread", "", ""]);
   assert.deepEqual(Object.keys(local.snapshot.ls).sort(), ["anthropic", "openai-codex"]);
+  assert.deepEqual(asked.map(args => args.join(" ")).sort(), ["config", "ls --json --provider anthropic", "ls --json --provider openai-codex", "queue --json", "snapshot --json --thread  ", "who --json"]);
+  assert.equal(local.snapshot.who, snapshot.threads[0].who);
 });
 
 test("read runs the installed CLI once with no session, and adds the hour from pi-pool.log", async () => {
@@ -107,6 +185,7 @@ test("read runs the installed CLI once with no session, and adds the hour from p
   writeFileSync(join(dir, "pi-pool.log"), [
     { ts, event: "turn_admitted", kind: "slot", waited_s: 10 }, { ts, event: "turn_admitted", kind: "slot", waited_s: 30 },
     { ts, event: "turn_admitted", kind: "owner", waited_s: 0 }, { ts, event: "turn_released" }, { ts, event: "turn_released" },
+    { ts, event: "usage_refresh", providers: ["anthropic"], accounts: 3, failed: ["two@example.com (team)"], errors: {} },
   ].map(line => JSON.stringify(line)).join("\n") + "\n");
   const argv = join(dir, "argv.log");
   const saved = { dir: process.env.PI_POOL_DIR, bin: process.env.PI_POOL_BIN, log: process.env.PI_POOL_ARGV_LOG,
@@ -121,6 +200,9 @@ test("read runs the installed CLI once with no session, and adds the hour from p
     assert.equal(value(samples, "harness.pool.turns_finished_hour"), 2);
     assert.equal(value(samples, "harness.pool.queue_wait_median_hour"), 20);
     assert.equal(value(samples, "harness.pool.provider_accounts", { provider: "openai-codex" }), 1);
+    assert.equal(value(samples, "harness.pool.next_request_account", { account: "one@example.com", provider: "anthropic" }), 1);
+    assert.equal(value(samples, "harness.pool.usage_read_failed", { run: "refresh" }), 1);
+    assert.equal(value(samples, "harness.pool.usage_refresh_failed_account", { account: "two@example.com (team)" }), 1);
     assert.equal(samples.some(s => s.name === "harness.pool.service_up"), false);
   } finally {
     for (const [key, name] of [["dir", "PI_POOL_DIR"], ["bin", "PI_POOL_BIN"], ["log", "PI_POOL_ARGV_LOG"], ["session", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"]] as const) {

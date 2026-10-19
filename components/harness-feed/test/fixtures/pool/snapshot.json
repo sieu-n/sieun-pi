@@ -15,7 +15,7 @@
    "model": null,
    "who": {
     "code": 0,
-    "out": "{\"providers\": {}}",
+    "out": "{\"session\": null, \"priority\": \"normal\", \"providers\": {\"anthropic\": {\"account\": \"a1\", \"email\": \"one@example.com\", \"label\": \"one@example.com\", \"reason\": \"new\", \"pinned\": false, \"selection\": {\"mode\": \"auto\"}, \"wait\": null}, \"openai-codex\": {\"account\": null, \"email\": null, \"label\": null, \"reason\": \"wait\", \"pinned\": false, \"selection\": {\"mode\": \"auto\"}, \"wait\": {\"account\": \"c1\", \"slot_at\": 1792430600}}}}",
     "err": ""
    },
    "ls": {
