@@ -16,6 +16,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet, goalsWithoutDoneLine, planRiskSteps,
   noDoneLineLine, riskStepsLine } from "./checkin-findings.ts";
+import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
@@ -315,7 +316,8 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("One session carries too much (split these into your own jobs per part)", flagged.filter(slice => slice.kind === "one_session_load").map(slice => slice.excerpt)),
     ...section("Heartbeats the check-in or a duty covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
     ...section("Open goals and no duty", flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.excerpt)),
-    ...section("Plan and duties (owner 10-18, c110: the plan holds only finishable work with a done line; standing risks go to a wiki risk page and a duty)",
+    ...section("Plan and duties (owner 10-18 and 10-19, c110: the plan holds only tasks that finish, each with a done line; upkeep is a duty metric, and a " +
+      "standing risk goes to a wiki risk page that a duty checks)",
       [...precheck.noDoneLine?.length ? [noDoneLineLine(precheck.noDoneLine)] : [], ...precheck.risks?.length ? [riskStepsLine(precheck.risks)] : []]),
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
     ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
@@ -336,13 +338,18 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
  * open goal's number, gap, trend, days to target and pace, and the actions due this run in plain words, with no list of step ids and no stock
  * rules. Every step finding stays in the run's detail file and its record.
  */
-export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end">, jobLine: string | null): string {
+export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end" | "risks">, jobLine: string | null): string {
   const goals = precheck.goals.map(push => `- ${goalPromptLine(push)}`);
   const due = precheck.goals.flatMap(push => { const line = goalDueLine(push); return line ? [line] : []; });
   const stuck = precheck.end.filter(entry => !OK_STATES.has(entry.state)).length;
+  const upkeep = (precheck.risks ?? []).filter(item => upkeepWords(item.text));
   const items = [...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
     ...jobLine ? [`${jobLine.replace(/^Check-in: /, "The server already ")} Check in this run that each one reported; start a job in place of one that did not.`] : [],
-    ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner; give each a live owner, a For you todo or a close. The detail file lists them.`] : []];
+    ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner. Push each one toward done in this run: resume its job, start a fix job, ` +
+      "or close it with the evidence you checked, and give a step only the owner can unblock a For you todo. The detail file lists them."] : [],
+    ...upkeep.length ? [`${upkeep.length === 1 ? `${upkeep[0]!.id} ${quote(upkeep[0]!.text)} reads` : `${upkeep.length} open goals and steps, like ${upkeep[0]!.id} ` +
+      `${quote(upkeep[0]!.text)}, read`} like upkeep, and the plan holds only tasks that finish. Make the keeping a duty metric, close the item with a note ` +
+      "naming the duty, and keep only a fix that is still open as a step with a \"Done when\" line."] : []];
   return [
     `## Goals\n${goals.length ? goals.join("\n") : "The chat has no open goal."}`,
     `## Due this run\n${items.length ? items.map((line, at) => `${at + 1}. ${line}`).join("\n") : "Nothing is due: every goal moves on pace with a live owner. End in one short turn."}`,

@@ -123,6 +123,8 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
   return [
     `# ${job}: the check-in of the chat "${chat.name}"`,
     `You are the check-in job "${job}" of the chat "${chat.name}", started ${localTime(at)}. The owner's words for the check-in (verbatim):\n\n> ${CHECK_IN_WORDS}`,
+    "The plan holds only tasks that finish, and this run pushes each open step toward done: resume its job, start a fix job, or close it with the " +
+      "evidence you checked. Upkeep is a duty metric, so a goal or step whose title says keep, stays, always or every ... is green leaves the plan.",
     `The chat's session id is ${chat.id}. Its board is ${chat.board}, and its conversation is ${join(agentDir, "sessions", `${chat.id}.jsonl`)}.`,
     prompt,
     "## How to act",
@@ -276,6 +278,11 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "the live pages, and other threads' last messages.",
       "Fix the issues you find and check what the duty specifies. You decide what to check and what to start from what you find: control flow " +
         "is decided by agents, not by loops in code.",
+      "Work like the engineer who owns this system. Script what can be scripted, read the monitoring the owner would read (his dashboard, the live " +
+        "page, the real logs), and decide from what you see. When a duty rule or metric does not make sense, change or drop it: edit its duty JSON or " +
+        `check script under ${join(USER_HISTORY, "scripts/duties")}, apply it with \`node --import tsx scripts/duties/add.ts ${chat.id} <duty.json>\`, ` +
+        "or delete a whole duty with `scripts/duties/remove.ts`, and say why in your report. Skip nitpicks and spend the run only where it has real " +
+        "impact on a system that breaks easily.",
       ...focus,
       "Split work by the job rules: one goal per job, one subagent per unit of output, and work of 1 to 3 tool calls stays inline. Start " +
         "subagents with `await rlm.spawn(brief, name=...)`, all at once, each brief ending with `await agent_message.send(report, receiver_role=\"parent\")`; " +

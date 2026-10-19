@@ -4,6 +4,7 @@ import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-d
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
   targetMet, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
+import { upkeepWords } from "./shared/upkeep-title.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
@@ -25,25 +26,36 @@ export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] =>
 /** The goal the alert bridge filed firing alerts under until 10-18; the bridge now starts a triage job per firing rule and files no step. */
 export const ALERT_GOAL_TEXT = "Firing prod alerts";
 /**
- * The open steps that hold a standing risk instead of finishable work. The owner on 10-18 (c110): "stop being paranoid in plan under p45, p221.
- * these should be modeled separately, like in a doc tracking all the known vps infra risks and a duty that checks these." ops guy's p221 held 9
- * such open steps, like p315 "us-metal01 filesystem fills within 30 days". A firing alert is held by the alert bridge's triage job and counted
- * by the chat's duty, so a risk is an open leaf step under "Firing prod alerts".
+ * The open items that are no task that finishes. A standing risk is one kind. The owner on 10-18 (c110): "stop being paranoid in plan under
+ * p45, p221. these should be modeled separately, like in a doc tracking all the known vps infra risks and a duty that checks these." ops guy's
+ * p221 held 9 such open steps, like p315 "us-metal01 filesystem fills within 30 days". A firing alert is held by the alert bridge's triage job
+ * and counted by the chat's duty, so a risk is an open leaf step under "Firing prod alerts". Upkeep is the other kind: an open goal or step whose
+ * title reads like upkeep (`upkeepWords`), such as the AI harness chat's "Every duty in every chat is green", open at 102 of 109 on 10-19.
  */
 export function planRiskSteps(board: ChatBoard | null): PlanItem[] {
   const found: PlanItem[] = [];
   for (const goal of openGoals(board?.plan ?? [])) {
-    if (goal.text.trim() !== ALERT_GOAL_TEXT) continue;
-    walkItems(goal.children, item => { if (OPEN.has(item.status) && !item.children.length) found.push(item); });
+    if (goal.text.trim() === ALERT_GOAL_TEXT) walkItems(goal.children, item => { if (OPEN.has(item.status) && !item.children.length) found.push(item); });
+    else walkItems([goal], item => { if (OPEN.has(item.status) && upkeepWords(item.text)) found.push(item); });
   }
   return found;
 }
 export const noDoneLineLine = (goals: readonly PlanItem[]): string =>
   `${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")} ${goals.length === 1 ? "has" : "have"} no done line: give each a note that starts with "Done when" ` +
   "and the check the owner would make by hand, or a target (board skill, references/plan-and-duties.md)";
-export const riskStepsLine = (steps: readonly PlanItem[]): string =>
-  `${plural(steps.length, "open step")} hold standing risks or resolved alerts (${steps.slice(0, 5).map(step => step.id).join(", ")}${steps.length > 5 ? " and more" : ""}): ` +
-  "close each whose alert resolved, and move each standing risk to the chat's wiki risk page with a duty metric that checks it (board skill, references/plan-and-duties.md)";
+/** The plan-and-duties line for `planRiskSteps` items: one sentence for the standing risks and one for the upkeep titles. */
+export function riskStepsLine(items: readonly PlanItem[]): string {
+  const upkeep = items.filter(item => upkeepWords(item.text));
+  const risks = items.filter(item => !upkeepWords(item.text));
+  const ids = (list: readonly PlanItem[]) => `${list.slice(0, 5).map(item => item.id).join(", ")}${list.length > 5 ? " and more" : ""}`;
+  return [
+    ...risks.length ? [`${plural(risks.length, "open step")} ${risks.length === 1 ? "holds a standing risk or a resolved alert" : "hold standing risks or resolved alerts"} ` +
+      `(${ids(risks)}): close each whose alert resolved, and move each standing risk to the chat's wiki risk page with a duty metric that checks it`] : [],
+    ...upkeep.length ? [`${upkeep.map(item => `${item.id} ${quote(item.text)}`).slice(0, 3).join(", ")}${upkeep.length > 3 ? ` and ${upkeep.length - 3} more` : ""} ` +
+      `${upkeep.length === 1 ? "reads" : "read"} like upkeep, and the plan holds only tasks that finish: make the keeping a duty metric that checks it the way the ` +
+      "owner would, close the item with a note naming the duty, and keep only a fix that is still open as a step with a \"Done when\" line"] : [],
+  ].join(". ") + " (board skill, references/plan-and-duties.md)";
+}
 
 /** The open goals with no step under them: a step filed as a goal. */
 export const looseGoals = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !goal.children.length);

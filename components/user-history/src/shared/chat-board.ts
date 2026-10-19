@@ -1,6 +1,7 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
 import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
+import { upkeepWords } from "./upkeep-title.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus } from "./types.ts";
@@ -471,7 +472,8 @@ const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…"
 /**
  * Applies one op. The board is not mutated; the result has `rev + 1` and `updatedAt: now`. `summary` is one plain sentence in the actor's
  * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result. An agent's summary
- * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo or a c47 wait.
+ * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo, a c47 wait or an
+ * upkeep title.
  */
 export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
   if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
@@ -486,7 +488,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     if (actor === "agent") {
       flags.push(...softFlags(op));
       if (next.plan) {
-        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan));
+        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan));
         const open = openCount(next.plan);
         if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
         next = { ...next, plan: markMerges(next.plan) };
@@ -1018,6 +1020,19 @@ function goWaits(before: ChatBoard, plan: readonly PlanItem[]): string[] {
     const wait = stepGoWait(item);
     if (wait) flags.push(`${item.id} ${quote(item.text)} ${goWaitText(wait)}. ${GO_WAIT_FIX} Set the step to that action, and give it a waitFor ` +
       "only for a real event the action needs, like a run's result.");
+  });
+  return flags;
+}
+/** The agent's plan change against zombie plans (owner 10-19, src/shared/upkeep-title.ts): an open item whose new or changed title reads like upkeep. */
+function upkeepTitles(before: ChatBoard, plan: readonly PlanItem[]): string[] {
+  const was = new Map<string, string>();
+  walk(before.plan, item => was.set(item.id, item.text));
+  const flags: string[] = [];
+  walk(plan, item => {
+    const words = OPEN_STATUSES.has(item.status) && was.get(item.id) !== item.text ? upkeepWords(item.text) : null;
+    if (words) flags.push(`${item.id} ${quote(item.text)} reads like upkeep (${quote(words)}), and a plan holds only tasks that finish. Make the keeping a ` +
+      "duty metric and close this item, or retitle it as the one fix it is with a \"Done when\" note. A request with both parts gets one step for the fix " +
+      "and one duty metric for the keeping (board skill, references/plan-and-duties.md).");
   });
   return flags;
 }

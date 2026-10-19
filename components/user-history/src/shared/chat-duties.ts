@@ -394,6 +394,6 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     { key: "goal_gaps", label: "Open goals off pace or with no live job that owns their number", op: "<=", target: 0, headline: true },
     { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0 },
     { key: "no_done_line", label: "Open goals with no done line (no target and no \"Done when\" note)", op: "<=", target: 0 },
-    { key: "plan_risks", label: "Open plan steps that hold a standing risk, not finishable work", op: "<=", target: 0 },
+    { key: "plan_risks", label: "Open plan items that hold a standing risk or upkeep, not a task that finishes", op: "<=", target: 0 },
   ],
 };

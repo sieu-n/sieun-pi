@@ -80,13 +80,16 @@ export const CHAT_BRIEF: readonly string[] = [
     "audience and depth itself and asked nothing. Decide wording, small fixes and code choices yourself and put each decision in the note of " +
     "the step it concerns. A step waiting on the owner gets one short plain For you todo at once (c32).",
   "Agents decide the control flow, not code loops: a duty runs a code precheck, then one job that decides its own fan-out (c22).",
+  "The plan holds only tasks that finish. Each step comes from an owner request, has a \"Done when\" line, a live owner and a next action, and ends " +
+    "done or dropped. Keeping something working is a duty metric on its heartbeat, never a plan step, so a title that says keep, stays, always, every ... is " +
+    "green or keeps working goes to a duty, and a request with both parts gets one step for the fix and one duty metric for the keeping (c110).",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
     "you todo. Update the board with `chat_board` in the turn a job starts, ends or replies. Never ask the owner to relay a message to another " +
     "thread. A `[board] ` message is the owner acting on the board: act on it.",
   "When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn.",
   `Read on demand from \`${BOARD_SKILL}/\`: SKILL.md before a board write; references/jobs.md for jobs; references/check-ins.md for check-ins ` +
     "and duties; references/git.md before a sieun-pi commit, release, merge or push; references/owner.md for todos, review asks, " +
-    "logins and reply links or images; references/corrections.md when corrected; references/plan-and-duties.md when told to fix plan and duties.",
+    "logins and reply links or images; references/corrections.md when corrected; references/plan-and-duties.md before you add a goal or a duty.",
   "Your first reply to a new request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 record types (10-18). The job linkedin field map traces each one to its column.\" " +
     "Six test chats in a row on 10-18 opened with what they started, and their numbers came lines later.",
 ];

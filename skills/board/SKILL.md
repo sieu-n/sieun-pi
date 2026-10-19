@@ -70,12 +70,12 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 4. `references/owner.md` covers owner todos, review asks, logins, and links, images and diagrams in a reply.
 5. `references/corrections.md` covers what to do when the owner corrects how a chat works.
 6. `references/clean-room.md` covers the clean-room run that closes a harness, skill or tool change.
-7. `references/plan-and-duties.md` covers what goes in the plan, in duties and on a risk page, and the fix when the owner asks to fix plan and duties.
+7. `references/plan-and-duties.md` covers what goes in the plan, in duties and on a risk page, how a duty run works, and the fix when the owner asks to fix plan and duties.
 
 ## Plan shape
 
 1. The plan is a nested checklist where top items are goals and their children are steps.
-2. Every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build and Verify.
+2. Every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build and Verify. Its note starts with "Done when" and the check the owner would make by hand.
 3. Each step carries its real status, including blocked steps nobody works on yet, so the owner sees the whole path.
 4. Link a job on the step it does, not on the goal. Goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide (blocked), Build (blocked), Verify (todo).
 5. A step's `job` names its owner, which is a job name or another thread as `thread:<id>` or its session name.
@@ -84,9 +84,15 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 
 ## Plan and duties
 
-The plan holds only work that can finish, from the owner's requests, and every step of it gets done with no owner step except a blocker in For you. Duties hold the long-term upkeep of things easy to break, measured the way the owner would check by hand. A standing risk lives on a wiki risk page that a duty checks, never as a plan step. A goal reaches its done line, leaves the plan and becomes a duty metric that sends it back when it slips.
+1. A plan step is a task that finishes. It comes from an owner request, has a "Done when" line, a live owner and a next action, and ends done or dropped.
+2. A duty is standing upkeep of something that breaks easily, runs on a heartbeat, and acts like the engineer who owns that system.
+3. A title that says keep, stays, always, every ... is green, every ... reads clean or keeps working is upkeep, so it becomes a duty metric and never a plan step.
+4. A request with both parts gets one plan step for the fix and one duty metric for the keeping.
+5. A goal that reaches its done line closes, and its upkeep becomes a duty metric that puts a fix step back on the plan when it misses.
+6. A standing risk lives on a wiki risk page that a duty checks, never as a plan step.
+7. The chat and its check-in push every open step toward done in each run, by resuming its job, starting a fix job, or closing it with evidence.
 
-When the owner says "fix plan and duties based on the board skill and pursue completion of plans", follow [plan-and-duties](references/plan-and-duties.md) in that turn.
+[plan-and-duties](references/plan-and-duties.md) has the owner's words, the fix when he asks to fix plan and duties, and how a duty run works.
 
 ## Upkeep
 
@@ -103,7 +109,7 @@ When the owner says "fix plan and duties based on the board skill and pursue com
 
 ## chat_board ops
 
-Ops apply in order, all or none. A malformed op, an id that is not on the board, or an op only the owner may make refuses the whole batch with the reason and the fix. Text, lists and counts have soft targets (BOARD_LIMITS), and the c32 todo checks and c47 wait checks are flags too: the op is saved and its summary gets one more line that says what to fix, so fix it in the same turn.
+Ops apply in order, all or none. A malformed op, an id that is not on the board, or an op only the owner may make refuses the whole batch with the reason and the fix. Text, lists and counts have soft targets (BOARD_LIMITS), and the c32 todo checks, the c47 wait checks and the upkeep title check are flags too: the op is saved and its summary gets one more line that says what to fix, so fix it in the same turn.
 
 1. `plan_set {items:[{text,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?,children?}]}` replaces the plan. An item that keeps its id keeps its go, kind, requirements, target and duty when you leave them out.
 2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. New work goes under the goal it belongs to.

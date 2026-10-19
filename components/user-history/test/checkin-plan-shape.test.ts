@@ -18,14 +18,14 @@ test("a goal with neither a target nor a Done when note has no done line", () =>
   assert.deepEqual(goalsWithoutDoneLine(board).map(goal => goal.id), ["p221", "p45"]);
 });
 
-test("open steps under the alert goal count as standing risks, closed ones do not", () => {
-  assert.deepEqual(planRiskSteps(board).map(step => step.id), ["p315"]);
+test("open steps under the alert goal count as standing risks, closed ones do not, and an upkeep goal counts too", () => {
+  assert.deepEqual(planRiskSteps(board).map(step => step.id), ["p315", "p45"]);
 });
 
 test("the check-in measure counts both and flags each item", () => {
   const empty = { scope: [], gates: [], stalled: [], goals: [], blocked: [], done: [], loose: [], extra: [], underClosed: [], held: [], waitsMet: [], noProgress: null, stale: [], fold: [] };
   const out = convergenceMisses("chat", [], { ...empty, noDoneLine: goalsWithoutDoneLine(board), risks: planRiskSteps(board) }, {}, 7_200_000, Date.now());
   assert.equal(out.metrics.no_done_line, 2);
-  assert.equal(out.metrics.plan_risks, 1);
-  assert.deepEqual(out.flagged.map(slice => [slice.kind, slice.item]), [["no_done_line", "p221"], ["no_done_line", "p45"], ["plan_risks", "p315"]]);
+  assert.equal(out.metrics.plan_risks, 2);
+  assert.deepEqual(out.flagged.map(slice => [slice.kind, slice.item]), [["no_done_line", "p221"], ["no_done_line", "p45"], ["plan_risks", "p315"], ["plan_risks", "p45"]]);
 });
