@@ -2,7 +2,7 @@ import type { PoolConfig } from "../shared/types.ts";
 
 /** pi-pool's defaults (`DEFAULTS` in pi-pool's pool/base.py) for the keys the app shows. */
 export const POOL_DEFAULTS = {
-  admit_5h_max_pct: 70,
+  admit_5h_max_pct: 100,
   low_admit_5h_max_pct: 50,
   seven_day_max_pct: 98,
   admit_slot_sec: 120,

@@ -764,7 +764,7 @@ class LsRowBuilding(unittest.TestCase):
 
     def test_rows_carry_usage_reason_and_flags(self):
         tree = sched.Tree(key=KEY.key, pin="c", current="b")
-        rows = status_view.build_rows([*ALL, account("remaining", "remaining@x", session_pct=99)],
+        rows = status_view.build_rows([*ALL, account("remaining", "remaining@x", weekly_pct=99)],
                                       tree, sched.Book(load={"a": 2}), {}, CFG, NOW)
         by_id = {r["id"]: r for r in rows}
         self.assertEqual(by_id["a"]["usage"], "10%/0%")

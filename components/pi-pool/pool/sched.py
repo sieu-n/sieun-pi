@@ -12,11 +12,11 @@ from . import base, registry
 #      credential ok), warm or cold. No move because of a cutoff, a better account,
 #      or another tree's move.
 #   R2 admit cap: Auto enters an account only under
-#      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
-#      seven_day_max_pct of its week and its Fable cap. The 5h figure is projected
-#      to the account's next read: the trees spending on it and the new one each
-#      add the account's own rate (observed_rate) for every minute from the read
-#      to the next one, or tree_5h_pct_per_min of its tier before it has one.
+#      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window, under
+#      seven_day_max_pct of its week and its Fable cap, and on a 5h read under
+#      STALE_USAGE_SEC old. admit_5h_max_pct is 100, the vendor limit, so the 5h
+#      window keeps a normal or high tree off an account only once the provider
+#      stops serving it.
 #   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
 #   R5 wait: an account passes R2 but R4 has no cell now, so the tree gets its own
@@ -66,16 +66,11 @@ class Book:
     `admitted`: {account id: ((at, tree key), ...)} over ADMISSION_KEEP_SEC.
     `waiting`: {account id: ((slot_at, tree key, rank), ...)} of the other trees.
     `load`: {account id: trees vended within active_session_sec}.
-    `spending`: {account id: other trees that sent a request there within
-    spending_tree_sec}.
-    `rates`: {account id: its own 5h % per spending tree-minute, observed_rate}.
     `parked`: {account id: other trees whose wait names it, a backoff included}, for
     the status counts: a backoff holds no cell, but its tree waits all the same."""
     admitted: dict = dataclasses.field(default_factory=dict)
     waiting: dict = dataclasses.field(default_factory=dict)
     load: dict = dataclasses.field(default_factory=dict)
-    spending: dict = dataclasses.field(default_factory=dict)
-    rates: dict = dataclasses.field(default_factory=dict)
     parked: dict = dataclasses.field(default_factory=dict)
 
 
@@ -231,57 +226,6 @@ def tier_units(a, cfg):
     return by_tier(a, cfg["tier_units"], 1) if a.provider == "anthropic" else 1
 
 
-def rate_reference(reads):
-    """The index of the read the last one is measured against: the newest at least
-    STALE_USAGE_SEC older, so a 1% step between reads minutes apart is not read as
-    a rate. None while the window has no such read."""
-    last = reads[-1][0]
-    old = [i for i, r in enumerate(reads[:-1]) if r[0] <= last - registry.STALE_USAGE_SEC]
-    return old[-1] if old else None
-
-
-def observed_rate(rec):
-    """R2: the account's own 5h % per spending tree-minute between its last read
-    and the reference read in the same window; None when there is no reference or
-    no tree spent between them. A read is a whole percent, so the change counts one
-    more point: the most the trees can have spent."""
-    reads = (rec or {}).get("reads") or []
-    ref = rate_reference(reads) if reads else None
-    if ref is None:
-        return None
-    (_, pct0, _, sec0), (_, pct1, _, sec1) = reads[ref], reads[-1]
-    tree_min = (sec1 - sec0) / 60
-    return (pct1 - pct0 + 1) / tree_min if tree_min >= 1 else None
-
-
-def projected_pct(a, book, cfg, now):
-    """R2: the 5h percentage the account will read at its next read, due
-    STALE_USAGE_SEC after the last one: the last read, plus the trees spending on it
-    now counted from the read, plus one more tree from now. The 10-13 Virev seat read
-    0% at 22:40 and took 9 trees at slot pace before a read could show them; it hit
-    100% at 23:04."""
-    window = registry.session_window({"windows": a.windows})
-    if a.provider != "anthropic" or window is None:
-        return a.session_pct
-    rate = book.rates.get(a.id) or by_tier(a, cfg["tree_5h_pct_per_min"], 0)
-    if not rate:
-        return a.session_pct
-    read_at = (window.get("sampledAt") or 0) / 1000
-    trees = book.spending.get(a.id, 0)
-    ahead = max(0.0, read_at + registry.STALE_USAGE_SEC - now)
-    return a.session_pct + rate * (trees * (now - read_at + ahead) + ahead) / 60
-
-
-def projection_clears_at(a, book, cfg, now, priority):
-    """When R2's projection lets the account take a tree again: now, or once the
-    read after the current one has landed."""
-    cap = admit_cap(cfg, priority)
-    if a.session_pct >= cap or projected_pct(a, book, cfg, now) < cap:
-        return now
-    read_at = (registry.session_window({"windows": a.windows})["sampledAt"] or 0) / 1000
-    return read_at + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC
-
-
 def slot_cap(a, cfg):
     """R4: trees the account admits per admit_slot_sec."""
     return max(1, round(cfg["admit_per_unit"] * tier_units(a, cfg)))
@@ -336,7 +280,7 @@ def first_open(a, t0, tree, rank, book, cfg, sole):
 
 def waits_for_rotation(accounts, cooldowns, cfg, now, priority, manual=False):
     """R5 backoff: no account takes this class of tree on its last read, so the pool
-    waits for rotation. A projection hold or an unsampled account clears at the next read."""
+    waits for rotation. An unsampled account clears at the next read."""
     return not any(admit_reason(a, cooldowns, cfg, now, priority, manual) in (None, "unsampled") for a in accounts)
 
 
@@ -374,12 +318,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     load = book.load
 
     def why_not(a):
-        if a is None:
-            return "missing"
-        why = admit_reason(a, cooldowns, cfg, now, p, manual=bool(manual))
-        if why is None and not manual and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):
-            return "projected"
-        return why
+        return "missing" if a is None else admit_reason(a, cooldowns, cfg, now, p, manual=bool(manual))
 
     admissible = [a for a in accounts if why_not(a) is None]
     sole = len(admissible) == 1
@@ -456,8 +395,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if tree.leave and cur is not None and tree.leave == cur.id and cur_why is None and not tree.wait:
         return Stay(cur, "stay", shadowed)
 
-    frees = [(a, max(admissible_at(a, cooldowns, cfg, now, p, manual=bool(manual)),
-                     now if manual else projection_clears_at(a, book, cfg, now, p)))
+    frees = [(a, admissible_at(a, cooldowns, cfg, now, p, manual=bool(manual)))
              for a in accounts if allowed(a) and not credential_reason(a, cooldowns, now)]
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
@@ -476,10 +414,8 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if slot_at == float("inf"):
         return Blocked(manual, "busy") if manual else None
     # The backoff is for a pool waiting on rotation: no account takes this class of
-    # tree on its last read. A projection hold or an unsampled account clears at the
-    # next read, and a tree out of moves (R6) waits for its own account, so those
-    # keep their short wait. On 10-18 at 11:10Z two low trees backed off 40 and 100
-    # min on projections while claude4 and claude12 read 3% and 4%.
+    # tree on its last read. An unsampled account clears at the next read, and a
+    # tree out of moves (R6) waits for its own account, so those keep their short wait.
     if waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):
         u = random.random() if draw is None else draw
         return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
@@ -531,9 +467,5 @@ def book_for(state, provider, key, cfg, now):
             continue
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
-    spending = in_use_counts({"sessions": {k: rec for k, rec in state["sessions"].items() if not (key and k == key.key)}},
-                             provider, now, cfg["spending_tree_sec"])
-    rates = {a: observed_rate(rec) for a, rec in (prov.get("read_history") or {}).items()}
     return Book(admitted, {a: tuple(v) for a, v in waiting.items()},
-                in_use_counts(state, provider, now, cfg["active_session_sec"]), spending,
-                {a: r for a, r in rates.items() if r is not None}, parked)
+                in_use_counts(state, provider, now, cfg["active_session_sec"]), parked)

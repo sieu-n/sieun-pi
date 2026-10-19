@@ -13,9 +13,6 @@ def setUpModule():
 
 P = "anthropic"
 FIVE, WEEK = 18000, 604800
-# The slot tests read their accounts once and admit many trees; R2's projection
-# would stop them first.
-NO_PROJECTION = dict(CFG, tree_5h_pct_per_min={})
 
 
 def window(pct, secs, reset_in, now=NOW):
@@ -153,7 +150,7 @@ class R1Stay(unittest.TestCase):
 
 
 class R2AdmitCap(unittest.TestCase):
-    def test_no_move_into_an_account_at_70_percent(self):
+    def test_no_move_into_an_account_at_the_admit_cap(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
         accounts = [acct("x", five=100), acct("hot", five=CFG["admit_5h_max_pct"], five_reset_in=1800)]
@@ -162,17 +159,17 @@ class R2AdmitCap(unittest.TestCase):
         self.assertEqual((type(d), d.slot_account.id, d.backoff), (sched.Wait, "hot", True))
         self.assertEqual(request(state, KEY, [acct("x", five=100), fresh("hot", 0, FIVE, NOW + 5)], NOW + 5).account.id, "hot")
 
-    def test_no_new_tree_into_an_account_at_70_percent(self):
+    def test_no_new_tree_into_an_account_at_the_week_cap(self):
         state = empty_state()
         new = tree_key("new")
-        d = decide(state, new, [acct("hot", five=75)])
+        d = decide(state, new, [acct("hot", week=CFG["seven_day_max_pct"])])
         self.assertIsInstance(d, sched.Wait)
 
     def test_explicit_pin_can_enter_above_auto_admission_cutoff(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "hot", "at": NOW, "by": "cli"}}
-        d = decide(state, KEY, [acct("a", five=20), acct("hot", five=72)])
+        d = decide(state, KEY, [acct("a", five=20), acct("hot", week=99)])
         self.assertIsInstance(d, sched.Admit)
         self.assertEqual(d.account.id, "hot")
         self.assertEqual(d.fallbacks, ())
@@ -217,7 +214,7 @@ class R4Slots(unittest.TestCase):
         waits = [(d.slot_account.id, d.slot_at) for d in first if isinstance(d, sched.Wait)]
         self.assertEqual(len(waits), 17)
         self.assertEqual(len(set(waits)), 17, "every waiter has its own slot")
-        admitted = run_until_admitted(state, keys, lambda at: self.accounts(), NOW, cfg=NO_PROJECTION)
+        admitted = run_until_admitted(state, keys, lambda at: self.accounts(), NOW)
         self.assertEqual(len(admitted), 20)
         for id, cap in (("p", 4), ("q", 1), ("r", 1)):
             self.assertLessEqual(max(per_bucket(admitted, id).values()), cap, id)
@@ -242,7 +239,7 @@ class R4Slots(unittest.TestCase):
             self.assertEqual((type(d), d.backoff), (sched.Wait, True))
         # Every draw is 0, so every waiter asks again each second: the worst case for R4.
         with draws(rest=0.0):
-            admitted = run_until_admitted(state, keys, accounts_at, NOW + 20, cfg=NO_PROJECTION)
+            admitted = run_until_admitted(state, keys, accounts_at, NOW + 20)
         self.assertEqual(len(admitted), 15)
         self.assertGreaterEqual(admitted[0][0], reset)
         self.assertLessEqual(max(per_bucket(admitted, "x").values()), 4)
@@ -253,8 +250,8 @@ class R5Wait(unittest.TestCase):
     def test_no_admissible_account_means_a_wait_never_a_hop_onto_a_depleted_one(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
-        accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=85, five_reset_in=1200),
-                    acct("z", five=99, five_reset_in=7000)]
+        accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=100, five_reset_in=1200),
+                    acct("z", five=100, five_reset_in=7000)]
         with draws(1200 / CFG["depleted_backoff_max_sec"]):
             d = limited(state, KEY, accounts, NOW, NOW + 3000)
         self.assertIsInstance(d, sched.Wait)
@@ -264,7 +261,7 @@ class R5Wait(unittest.TestCase):
         again = request(state, KEY, registry.with_pool_state(accounts, state, P), NOW + 5)
         self.assertEqual((type(again), again.vend.id, again.slot_at), (sched.Wait, "x", NOW + 1200))
         later = [acct("x", five=100, five_reset_in=1800), acct("y", five=0, five_reset_in=FIVE),
-                 acct("z", five=99, five_reset_in=5800)]
+                 acct("z", five=100, five_reset_in=5800)]
         d = request(state, KEY, registry.with_pool_state(later, state, P), NOW + 1200)
         self.assertEqual((type(d), d.account.id, d.reason), (sched.Admit, "y", "switch"))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
@@ -304,8 +301,8 @@ class R5Wait(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60, priority="high")
         with draws(0.75):
-            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=90)], NOW, NOW + 600)
-        again = request(state, KEY, [acct("x", five=80, five_reset_in=600), acct("y", five=90)], NOW + 900)
+            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=100)], NOW, NOW + 600)
+        again = request(state, KEY, [acct("x", five=100, five_reset_in=1800), acct("y", five=100)], NOW + 900)
         self.assertEqual((type(again), again.slot_at, again.backoff), (sched.Wait, d.slot_at, True))
 
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
@@ -314,7 +311,7 @@ class R5Wait(unittest.TestCase):
         state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 900, "since": NOW - 10}}
         busy = put(state, tree_key("busy"), on="z")
         state["providers"][P]["admissions"] = {"x": [[NOW, busy.key]]}
-        d = decide(state, KEY, [acct("x", five=60, tier="max 5x"), acct("y", five=80, five_reset_in=900)])
+        d = decide(state, KEY, [acct("x", five=60, tier="max 5x"), acct("y", five=100, five_reset_in=900)])
         self.assertIsInstance(d, sched.Wait)
         self.assertIsNone(d.vend)
 
@@ -438,18 +435,6 @@ class R5Backoff(unittest.TestCase):
         self.assertGreater(min(quarters.values()), 25)
         self.assertGreater(len(set(round(s) for s in slots)), 190)
 
-    def test_a_projection_hold_with_accounts_free_on_their_read_is_no_backoff(self):
-        """10-18 11:10Z: two new low trees backed off 40 and 100 min while claude4 and
-        claude12 read 3% and 4%, because the projection of their spending trees held them."""
-        state = empty_state()
-        accounts = [fresh("c4", 3, FIVE, NOW - 600, tier="max 5x"), fresh("c12", 4, FIVE, NOW - 600, tier="max 5x")]
-        for i in range(40):
-            put(state, tree_key(f"busy{i:02d}"), on=("c4", "c12")[i % 2], at=NOW - 30)
-        k = put(state, tree_key("new"), at=NOW - 60, priority="low")
-        d = request(state, k, accounts, NOW)
-        self.assertEqual((type(d), d.backoff), (sched.Wait, False))
-        self.assertLessEqual(d.slot_at, NOW + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
-
     def test_a_high_tree_backs_off_like_any_other(self):
         """The owner on 10-18, asked whether his own turns skip the backoff: "no don't"."""
         state = empty_state()
@@ -513,7 +498,7 @@ class R6MoveBudget(unittest.TestCase):
             reset = NOW + 3500 if t < NOW + 3400 else NOW + 9000
             return [fresh("x", 100, reset - t, t, "max 5x"), fresh("y", 5, 4 * 3600, t, "max 5x"),
                     fresh("z", 5, 4 * 3600, t, "max 5x")]
-        admitted = run_until_admitted(state, keys, accounts_at, NOW + 3000, cfg=NO_PROJECTION)
+        admitted = run_until_admitted(state, keys, accounts_at, NOW + 3000)
         self.assertEqual({a for _, _, a in admitted}, {"y", "z"})
         self.assertEqual(max(max(per_bucket(admitted, a).values()) for a in ("y", "z")), 1)
         self.assertGreaterEqual(min(at for at, _, _ in admitted), NOW + 3500)
@@ -583,14 +568,14 @@ class R7PriorityShare(unittest.TestCase):
     def test_a_high_waiter_goes_ahead_of_an_earlier_normal_one(self):
         state = empty_state()
         accounts = [acct("x", five=0, tier="max 5x")]
-        self.assertIsInstance(request(state, tree_key("first"), accounts, NOW, cfg=NO_PROJECTION), sched.Admit)
+        self.assertIsInstance(request(state, tree_key("first"), accounts, NOW), sched.Admit)
         n = put(state, tree_key("n"), at=NOW - 60)
         h = put(state, tree_key("h"), at=NOW - 60, priority="high")
-        dn = request(state, n, accounts, NOW + 1, cfg=NO_PROJECTION)
-        dh = request(state, h, accounts, NOW + 5, cfg=NO_PROJECTION)
+        dn = request(state, n, accounts, NOW + 1)
+        dh = request(state, h, accounts, NOW + 5)
         self.assertEqual((dn.backoff, dh.backoff), (False, False))
         self.assertEqual(dh.slot_at, dn.slot_at)
-        self.assertIsInstance(decide(state, n, accounts, now=dn.slot_at, cfg=NO_PROJECTION), sched.Wait)
+        self.assertIsInstance(decide(state, n, accounts, now=dn.slot_at), sched.Wait)
 
 
 class Pins(unittest.TestCase):
@@ -672,7 +657,7 @@ class Cli(unittest.TestCase):
     def test_limited_prints_the_tree_slot_as_retry_at(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
-        accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=90, five_reset_in=900)]
+        accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=100, five_reset_in=900)]
         with draws(900 / CFG["depleted_backoff_max_sec"]):
             rc, out, saved = self.run_cli(state, accounts, ["limited", "--until", str(NOW + 3000)])
         reply = json.loads(out)
@@ -780,7 +765,7 @@ class SwitchLog(unittest.TestCase):
     def test_a_waiting_tree_on_a_refused_account_gets_that_account(self):
         state = empty_state()
         put(state, KEY, on="b")
-        logged, out = self.run_vend(state, [acct("a", five=90), acct("b", five=100)])
+        logged, out = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
         self.assertEqual(out, "fixture-token")
         self.assertEqual([e for e, _ in logged if e in ("wait", "switch")], ["wait"])
 
@@ -790,12 +775,12 @@ class SwitchLog(unittest.TestCase):
         state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": NOW + 600, "since": NOW}}
         state["providers"][P]["admissions"] = {"b": [[NOW, "busy"]]}
         with self.assertRaises(SystemExit):
-            self.run_vend(state, [acct("a", five=90, five_reset_in=600), acct("b", five=30, tier="max 5x")])
+            self.run_vend(state, [acct("a", five=100, five_reset_in=600), acct("b", five=30, tier="max 5x")])
 
     def test_a_refused_request_logs_parked_with_the_accounts_that_take_its_class(self):
         state = empty_state()
         put(state, KEY, on="b")
-        logged, _ = self.run_vend(state, [acct("a", five=90), acct("b", five=100)])
+        logged, _ = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
         [parked] = [kw for e, kw in logged if e == "parked"]
         self.assertEqual((parked["session"], parked["room"], parked["at"]), (KEY.key, [], NOW))
         state["sessions"][KEY.key]["wait"] = {P: {"account": "c", "slot_at": NOW + 600, "since": NOW}}
@@ -803,16 +788,12 @@ class SwitchLog(unittest.TestCase):
         logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [["c@x"]])
 
-    def test_a_refusal_by_the_move_budget_or_a_projection_logs_no_room(self):
-        # 01a11a24 on 10-18: a low tree out of moves (R6) parked on claude9 from 16:50Z to 17:21Z for slots at claude9's next
-        # read, as R2 projected claude9 past the low cap, and every parked line named claude9, krenerd77 and three more as room.
+    def test_a_refusal_by_the_move_budget_logs_no_room(self):
+        # 01a11a24 on 10-18: a low tree out of moves (R6) parked on claude9 from 16:50Z to 17:21Z, and every parked line
+        # named claude9, krenerd77 and three more as room.
         state = empty_state()
         put(state, KEY, on="x", priority="low", moves=[NOW - 60])
         logged, _ = self.run_vend(state, [acct("x", five=100, five_reset_in=1800), acct("y", five=5)])
-        self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [[]])
-        state = empty_state()
-        put(state, KEY, on="b", priority="low")
-        logged, _ = self.run_vend(state, [acct("p", five=40, tier="max 5x"), acct("b", five=100)])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [[]])
 
     def test_a_tree_that_waited_logs_unparked_when_it_gets_an_account(self):
@@ -937,118 +918,80 @@ class StaleUsage(unittest.TestCase):
         self.assertEqual(len(later), 1)
 
 
-# What one Virev tree spent per minute on 10-13 22:40-23:04: 100% over 144 tree-minutes
-# (9 trees, each counted while it sent a request within 15 min; pi-pool.log vends and
-# the trees' transcripts).
-VIREV_1013_PCT_PER_TREE_MIN = 100 / 144
+# 2026-10-19 15:29:05Z, what the hook read for tree 01a14210 (high, 8 moves in 24 h) in the
+# shortage: its account claude-virev2 was limited until 16:20:00Z, and the old 70% cap, with its
+# projection of each read to the next one, held claude-virev5, claude-virev7 and claude-virev11 at
+# 41%, 39% and 63%. The reads, admissions and waits are those of a `pi-pool who` read of the tree
+# then. The two trees vended on each of those three seats at 15:28:30 are enough for that old
+# projection to hold it.
+DROUGHT = 1792423745.0
+DAY = DROUGHT - (15 * 3600 + 29 * 60 + 5)
 
 
-class ProjectedUsage(unittest.TestCase):
-    """R2: the 5h figure an account is admitted on is projected to its next read."""
+def utc(hms):
+    h, m, s = (int(x) for x in hms.split(":"))
+    return DAY + h * 3600 + m * 60 + s
 
-    def replay_1013(self, cfg):
-        """The nine trees ask for the seat at their 10-13 slots, a tree on it sends a
-        request every minute, and the seat is read every STALE_USAGE_SEC. Returns the
-        trees admitted and the seat's true 5h % at each read."""
+
+def drought_seat(id, five, read, tier="team 5x", limited_until=0, reset="17:00:00"):
+    windows = (fresh_window(five, FIVE, utc(reset), utc(read)), window(50, WEEK, 3 * 86400, now=utc(read)))
+    return dataclasses.replace(account(id, f"{id}@slack.green", session_pct=five, weekly_pct=50), tier=tier,
+                               windows=windows, limited_until=limited_until)
+
+
+class Drought1019(unittest.TestCase):
+    """R2: an Auto account takes trees up to the vendor limit. The owner on 10-19, to a todo
+    about accounts held at 41 to 63%: "Yes, take jobs until near the real limit"."""
+
+    TREE = "01a14210-4e7d-72c3-aa67-e3d476f4e728"
+
+    def pool(self):
+        return [drought_seat("claude-virev2", 100, "15:26:35", limited_until=utc("16:20:00"), reset="16:20:00"),
+                drought_seat("claude-virev5", 41, "15:21:32"), drought_seat("claude-virev7", 39, "15:22:32"),
+                drought_seat("claude-virev11", 63, "15:28:33"), drought_seat("claude-virev9", 16, "15:26:35"),
+                drought_seat("claude-virev10", 22, "15:26:35"),
+                drought_seat("claude16", 100, "15:26:35", tier="max 20x", limited_until=utc("15:30:00"), reset="15:30:00")]
+
+    def state(self):
         state = empty_state()
-        keys = [put(state, tree_key(name), on=VIREV, at=VIREV_BACK - 3 * 3600) for name in VIREV_TREES]
-        for i, key in enumerate(keys):
-            state["sessions"][key.key]["wait"] = {P: {"account": VIREV, "slot_at": VIREV_BACK + 120 * i, "since": VIREV_BACK - 3600}}
-        other = acct("claude10", five=100, five_reset_in=1200, week=80, tier="max 5x")
-        admitted, reads = {}, []
+        key = put(state, tree_key(self.TREE), on="claude-virev2", at=utc("15:20:00"), priority="high",
+                  moves=[DROUGHT - 3 * 3600 * i for i in range(1, 9)])
+        for seat in ("claude-virev5", "claude-virev7", "claude-virev11"):
+            for i in range(2):
+                put(state, tree_key(f"{seat}-{i}"), on=seat, at=utc("15:28:30"))
+        admissions = state["providers"][P]["admissions"]
+        for seat, tree in (("claude-virev9", "01a154a9"), ("claude-virev10", "01a140fb")):
+            put(state, tree_key(tree), on=seat, at=utc("15:28:00"))
+            admissions[seat] = [[utc("15:28:00"), tree]]
+        for seat, tree, slot in (("claude-virev9", "01a14b76", "15:30:00"), ("claude-virev10", "01a1180e", "15:30:00"),
+                                 ("claude16", "01a154a6", "15:30:00"), ("claude16", "01a14d31", "15:30:30"),
+                                 ("claude16", "01a14fcc", "15:31:30")):
+            put(state, tree_key(tree), at=utc("15:20:00"), priority="high")
+            state["sessions"][tree]["wait"] = {P: {"account": seat, "slot_at": utc(slot), "since": utc("15:20:00")}}
+        return state, key
 
-        def truth(t):
-            return VIREV_1013_PCT_PER_TREE_MIN * sum(t - at for at in admitted.values()) / 60
+    def test_the_head_tree_at_1529z_gets_a_seat_under_the_limit_now(self):
+        """The old cap of 70% with its projection gave Wait on claude16 at 15:31:00Z."""
+        state, key = self.state()
+        d = decide(state, key, self.pool(), now=DROUGHT)
+        to = d.account if isinstance(d, sched.Admit) else d.slot_account
+        got = (type(d).__name__, to.id, time.strftime("%H:%M:%S", time.gmtime(getattr(d, "slot_at", DROUGHT))))
+        self.assertEqual(got[0::2], ("Admit", "15:29:05"), got)
+        self.assertIn(to.id, ("claude-virev5", "claude-virev7", "claude-virev11"))
+        self.assertEqual((d.reason, d.left), ("switch", ("claude-virev2", "limited")))
 
-        due = {k.key: VIREV_BACK + 120 * i for i, k in enumerate(keys)}
-        by_key = {k.key: k for k in keys}
-        read_every = registry.STALE_USAGE_SEC
-        end = VIREV_BACK + 2 * read_every
-        read_at = None
-        while True:
-            name, now = min(due.items(), key=lambda kv: (kv[1], kv[0]))
-            if now >= end:
-                break
-            last = VIREV_BACK + (now - VIREV_BACK) // read_every * read_every
-            if last != read_at:
-                read_at = last
-                reads.append(truth(read_at))
-            seat = virev_seat((fresh_window(reads[-1], FIVE, VIREV_BACK + FIVE, read_at), VIREV_WINDOWS[1]))
-            d = request(state, by_key[name], [seat, dataclasses.replace(other, limited_until=now + 1200)], now, cfg)
-            if isinstance(d, (sched.Admit, sched.Stay)) and d.account.id == VIREV:
-                admitted.setdefault(name, now)
-                due[name] = now + 60
+    def test_a_seat_admits_on_a_99_percent_read_and_not_at_the_limit(self):
+        read = "15:28:05"
+        for five, limited_until, why in ((99, 0, None), (100, 0, "depleted"), (40, utc("16:00:00"), "limited")):
+            seat = drought_seat("seat", five, read, limited_until=limited_until)
+            self.assertEqual(sched.admit_reason(seat, {}, CFG, DROUGHT, "high"), why, five)
+            state = empty_state()
+            key = put(state, tree_key("new"), at=DROUGHT - 60, priority="high")
+            d = decide(state, key, [seat], now=DROUGHT)
+            if why is None:
+                self.assertEqual((type(d), d.account.id), (sched.Admit, "seat"))
             else:
-                due[name] = max(d.slot_at, now + 1) if isinstance(d, sched.Wait) else now + 60
-        return admitted, reads
-
-    def test_virev_seat_1013_read_every_20_min_stays_under_the_admit_cap(self):
-        admitted, reads = self.replay_1013(CFG)
-        self.assertEqual(len(reads), 2)
-        self.assertLess(max(reads), CFG["admit_5h_max_pct"], reads)
-        self.assertLess(len(admitted), len(VIREV_TREES))
-        unprojected, unprojected_reads = self.replay_1013(NO_PROJECTION)
-        self.assertEqual(len(unprojected), len(VIREV_TREES))
-        self.assertGreaterEqual(unprojected_reads[1], CFG["admit_5h_max_pct"])
-
-    def test_a_tree_waits_for_the_read_after_the_projection_reaches_the_cap(self):
-        read = VIREV_BACK - 60
-        seat = virev_seat((fresh_window(60, FIVE, VIREV_BACK + FIVE, read), VIREV_WINDOWS[1]))
-        state = empty_state()
-        put(state, tree_key("on"), on=VIREV, at=VIREV_BACK - 30)
-        d = request(state, tree_key("new"), [seat], VIREV_BACK)
-        self.assertEqual((type(d), d.backoff), (sched.Wait, False))
-        self.assertEqual(d.slot_at, read + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
-
-
-LIVE_1014 = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_1014_reads.json")))
-
-
-class OwnRate(unittest.TestCase):
-    """R2: an account's projection uses its own rate from its last two reads."""
-
-    def replay_live(self, name, tier, track=True):
-        """The live hour of 10-14 04:21 to 05:20 for one account: its reads and the
-        trees spending on it each minute, as pi-pool saw them. Returns, per minute
-        the account passed every other R2 check, (read %, own rate or None, whether
-        a new tree was held by the projection)."""
-        start = 1791925263.0
-        state, keys, out = empty_state(), [tree_key(f"s{i:02d}") for i in range(20)], []
-        for sec, pct, sampled, spending in LIVE_1014[name]:
-            now = start + sec
-            for i, key in enumerate(keys):
-                put(state, key, on=name, at=now - 30 if i < spending else now - 7200)
-            five = fresh_window(pct, FIVE, start + 4 * 3600, start + sampled)
-            seat = dataclasses.replace(acct(name, tier=tier), session_pct=pct, windows=(five, window(20, WEEK, 3 * 86400, now)))
-            if track:
-                vending.HookWriter(state).track_reads(P, [seat], sched.in_use_counts(state, P, now, CFG["spending_tree_sec"]), now)
-            if sched.admit_reason(seat, {}, CFG, now) is not None:
-                continue
-            book = sched.book_for(state, P, tree_key("probe"), CFG, now)
-            d = decide(state, tree_key("probe"), [seat], now)
-            out.append((pct, book.rates.get(name), isinstance(d, sched.Wait)))
-        return out
-
-    def test_the_live_hour_holds_neither_the_seat_nor_claude10_once_each_has_its_own_rate(self):
-        for name, tier, kind in (("virev_team", "team 5x", "team"), ("claude10_max5x", "max 5x", "max 5x")):
-            minutes = self.replay_live(name, tier)
-            own = [(pct, rate, held) for pct, rate, held in minutes if rate is not None]
-            self.assertGreater(len(own), 20, name)
-            self.assertEqual([m for m in own if m[2]], [], name)
-            self.assertTrue(any(25 <= pct <= 35 for pct, _, _ in own), name)
-            self.assertLess(max(rate for _, rate, _ in own), CFG["tree_5h_pct_per_min"][kind] / 2, name)
-            kind_only = self.replay_live(name, tier, track=False)
-            self.assertGreater(sum(held for pct, _, held in kind_only if 25 <= pct <= 35), 0, name)
-
-    def test_a_window_reset_drops_the_reads_before_it(self):
-        state, now = empty_state(), VIREV_BACK
-        writer = vending.HookWriter(state)
-        for at, pct, reset in ((now, 10, now + 3600), (now + 1200, 40, now + 3600), (now + 4000, 2, now + 4000 + FIVE)):
-            seat = dataclasses.replace(acct("seat", tier="team 5x"), windows=(fresh_window(pct, FIVE, reset, at),))
-            writer.track_reads(P, [seat], {"seat": 2}, at)
-            if pct == 40:
-                self.assertAlmostEqual(sched.book_for(state, P, None, CFG, at).rates["seat"], 31 / 40)
-        self.assertNotIn("seat", sched.book_for(state, P, None, CFG, now + 4000).rates)
+                self.assertEqual((type(d), d.backoff), (sched.Wait, True), five)
 
 
 if __name__ == "__main__":

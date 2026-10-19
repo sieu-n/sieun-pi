@@ -138,7 +138,7 @@ class LimitedSurvivesARestart(PoolFixture):
         reset_ms = (time.time() + 7200) * 1000
         self.write_index("openai-codex", {"version": 1, "accounts": CODEX_INDEX["accounts"] + [
             {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
-             "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]})
+             "windows": [{"windowSeconds": 18000, "usedPercentage": 100, "resetsAt": reset_ms}]}]})
         until = time.time() + 3600
         start = time.time()
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))

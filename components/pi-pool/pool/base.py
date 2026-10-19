@@ -44,9 +44,14 @@ DEFAULTS = {
     "refresh_skew_sec": 900,
     # R2: an account takes a tree that is not on it only under this 5h percentage
     # (low-priority trees: under low_admit_5h_max_pct) and under seven_day_max_pct
-    # of its week and of its Fable cap. A tree already on an account stays there
-    # until the provider stops serving it (429 or a window at 100%).
-    "admit_5h_max_pct": 70,
+    # of its week and of its Fable cap. 100 is the vendor limit, the point where
+    # serve_reason reads the provider's 5h window as exhausted; a 429 sets
+    # limited_until or a cooldown before that. The owner asked on 2026-10-19 ("Yes,
+    # take jobs until near the real limit") after a cap of 70 with a projection to
+    # the next read held 3 of 6 working accounts at 41 to 63% in a shortage. A tree
+    # already on an account stays there until the provider stops serving it (429 or
+    # a window at 100%).
+    "admit_5h_max_pct": 100,
     "low_admit_5h_max_pct": 50,
     "seven_day_max_pct": 98,
     # R4: an account admits admit_per_unit trees per tier unit (at least one) every
@@ -65,19 +70,6 @@ DEFAULTS = {
     # first word; anything else is 1. Measured 2026-10-12: a max 20x account took
     # about $7.5 of API-equivalent spend per 5h point, a max 5x or team seat $1.9.
     "tier_units": {"max 20x": 4, "max 5x": 1, "team": 1, "pro": 0.5},
-    # R2 projection: the 5h percentage one busy tree spends per minute, by
-    # the account's tier name or its first word, for an account with no rate of
-    # its own yet (sched.observed_rate: none in a window's first 20 min); a tier
-    # not listed is not projected. Measured from 23 windows on 10-12 and 10-13 that pi-pool.log shows
-    # going from their start (429 `until` - 5 h) to the 429, with each request's
-    # API-equivalent cost from the trees' transcripts: 100% cost a team seat $250,
-    # a max 5x $186 and a max 20x $601 (medians). A busy tree spent $1.71 a minute
-    # (the Virev seat 10-13 22:40-23:04: 9 trees, $246, 144 tree-minutes; second
-    # of the 23 windows, median $0.49). $1.71 / ($ per 1%) gives each rate.
-    "tree_5h_pct_per_min": {"team": 0.68, "max 5x": 0.92, "max 20x": 0.28},
-    # R2 projection: a tree is spending on an account while it sent a request
-    # there within this window, the window the rates above were measured with
-    "spending_tree_sec": 900,
     # R6: moves a tree may make in 24 h before it waits for its own account, and
     # the longest such wait, counted from the start of the tree's wait; when its own
     # account frees later, the tree moves anyway

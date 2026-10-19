@@ -69,15 +69,14 @@ class ManualSelection(unittest.TestCase):
                 d = self.choose([acct("a", five=99, week=99), B], pin="a", current="b", priority=priority)
                 self.assertEqual((type(d), d.account.id, d.fallbacks), (sched.Admit, "a", ()))
 
-    def test_manual_ignores_projection_and_clears_old_admission_backoff(self):
-        a = acct("a", five=77)
-        book = sched.Book(spending={"a": 10}, rates={"a": 10})
+    def test_manual_clears_old_admission_backoff(self):
+        a = acct("a", week=99)
         tree = sched.Tree(key="mine", pin="a", wait=("a", NOW + 600, NOW - 60), backoff=True)
-        d = sched.decide(tree, [a, B], book, {}, CFG, NOW)
+        d = sched.decide(tree, [a, B], sched.Book(), {}, CFG, NOW)
         self.assertEqual((type(d), d.account.id), (sched.Admit, "a"))
 
     def test_manual_above_auto_cutoff_waits_only_for_admission_slot(self):
-        a = acct("a", five=77)
+        a = acct("a", week=99)
         book = sched.Book(admitted={"a": ((NOW, "another"),)})
         tree = sched.Tree(key="mine", pin="a", priority="high")
         d = sched.decide(tree, [a, B], book, {}, CFG, NOW)
