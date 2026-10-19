@@ -409,7 +409,7 @@ class BusyPoolLock(unittest.TestCase):
                 stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
             stack.enter_context(unittest.mock.patch.object(vending, "credential_for",
                                                            side_effect=credential or (lambda a, cfg, refresh=True: ("fixture-token", "store"))))
-            stack.enter_context(unittest.mock.patch.object(base, "anthropic_refusal", return_value=None))
+            stack.enter_context(unittest.mock.patch.object(base, "anthropic_probe", return_value=base.ProbeAccepted()))
             stack.enter_context(unittest.mock.patch.object(base, "Flock", lock))
             stack.enter_context(unittest.mock.patch.object(time, "time", return_value=NOW))
             stack.enter_context(unittest.mock.patch.object(base, "save_json", side_effect=lambda *a: saved.append(a)))
@@ -683,8 +683,8 @@ class StoreLayout(unittest.TestCase):
         self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
 
 
-class AnthropicRefusal(unittest.TestCase):
-    """Only 401 and 403 refuse; rate limits and outages do not."""
+class AnthropicProbe(unittest.TestCase):
+    """Provider responses distinguish refusal from unavailable checks."""
 
     @staticmethod
     def raising(code, body):
@@ -696,22 +696,22 @@ class AnthropicRefusal(unittest.TestCase):
     def test_an_org_that_disallows_oauth_is_named(self):
         body = '{"error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}'
         with unittest.mock.patch.object(urllib.request, "urlopen", self.raising(403, body)):
-            self.assertEqual(base.anthropic_refusal("t"), "oauth not allowed for organization")
+            self.assertEqual(base.anthropic_probe("t"), base.ProbeRefused(base.OAUTH_OFF))
 
     def test_a_revoked_token_is_a_refusal(self):
         with unittest.mock.patch.object(urllib.request, "urlopen", self.raising(401, "{}")):
-            self.assertEqual(base.anthropic_refusal("t"), "token rejected (401)")
+            self.assertEqual(base.anthropic_probe("t"), base.ProbeRefused(base.TOKEN_REJECTED))
 
     def test_rate_limits_and_outages_are_not(self):
         for code in (400, 429, 500):
             with unittest.mock.patch.object(urllib.request, "urlopen", self.raising(code, "{}")):
-                self.assertIsNone(base.anthropic_refusal("t"))
+                self.assertEqual(base.anthropic_probe("t"), base.ProbeUnavailable())
 
     def test_consumer_terms_not_accepted_is_named(self):
         """The body Anthropic sent on 2026-10-08 for an account whose terms were pending."""
         with unittest.mock.patch.object(urllib.request, "urlopen", self.raising(400, TERMS_BODY)):
-            self.assertEqual(base.anthropic_refusal("t"), base.NEEDS_TERMS)
-            self.assertEqual(base.anthropic_refusal("t", infer=True), base.NEEDS_TERMS)
+            self.assertEqual(base.anthropic_probe("t"), base.ProbeRefused(base.NEEDS_TERMS))
+            self.assertEqual(base.anthropic_probe("t", infer=True), base.ProbeRefused(base.NEEDS_TERMS))
 
     def test_the_terms_check_sends_a_one_token_message(self):
         sent = []
@@ -719,7 +719,7 @@ class AnthropicRefusal(unittest.TestCase):
             sent.append((req.full_url, json.loads(req.data)))
             return contextlib.nullcontext()
         with unittest.mock.patch.object(urllib.request, "urlopen", fake):
-            self.assertIsNone(base.anthropic_refusal("t", infer=True))
+            self.assertEqual(base.anthropic_probe("t", infer=True), base.ProbeAccepted())
         self.assertEqual(sent[0][0], base.INFER_URL)
         self.assertEqual(sent[0][1]["max_tokens"], 1)
 

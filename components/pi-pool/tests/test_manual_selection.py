@@ -209,7 +209,7 @@ class VendSelection(unittest.TestCase):
                 stack.enter_context(patch.object(module, name, return_value=value))
             stack.enter_context(patch.object(vending, "credential_for", side_effect=credential or (
                 lambda a, cfg, refresh=True: ("fixture-token", "store"))))
-            stack.enter_context(patch.object(base, "anthropic_refusal", return_value=refusal))
+            stack.enter_context(patch.object(base, "anthropic_probe", return_value=base.ProbeRefused(refusal) if refusal else base.ProbeAccepted()))
             stack.enter_context(patch.object(base, "Flock", lock))
             stack.enter_context(patch.object(vending.time, "time", return_value=NOW))
             stack.enter_context(patch.object(base, "save_json", side_effect=lambda *args: saved.append(args)))

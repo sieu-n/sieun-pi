@@ -179,6 +179,9 @@ Picking an account selects Manual mode for the session tree, including its subag
 Off accounts remain selectable. The footer shows Auto or Manual and the chosen account.
 The next request uses only the Manual account, subject to its existing admission rules.
 If that account fails, the session reports the error or waits on that account without switching.
+Normal requests recheck a Manual account blocked by a provider refusal, including an Off account.
+Only a successful provider response clears that refusal. A timeout or transient error leaves it in place.
+Terms checks use inference because token counts do not enforce those terms.
 Choose Auto to clear the session pin. A global pool pin remains a separate all-session override.
 
 From a shell inside the session:

@@ -459,6 +459,21 @@ def apply_refusal(provider, account, refusal, cfg, now):
         base.save_json(base.STATE, state)
 
 
+def record_probe(state, account_id, result, expected, cfg, now):
+    prov = state["providers"]["anthropic"]
+    reasons = prov.get("cooldown_reasons") or {}
+    if (reasons.get(account_id), prov["cooldowns"].get(account_id)) != expected:
+        return False
+    if isinstance(result, base.ProbeRefused):
+        HookWriter(state).set_cooldown("anthropic", account_id, now + cfg["refused_cooldown_sec"], result.reason)
+        return True
+    if isinstance(result, base.ProbeAccepted) and expected[0] is not None:
+        prov["cooldowns"].pop(account_id, None)
+        reasons.pop(account_id, None)
+        return True
+    return False
+
+
 def cmd_probe(rest=()):
     """Probe every anthropic account with a still-valid access token for an
     API refusal, at most once per probe_interval_sec unless --force. Never
@@ -503,19 +518,19 @@ def probe_accounts(accounts, reasons, cfg, now):
             continue
         if not creds or (creds.get("expiresAt") or 0) / 1000 - now < 60:
             continue
-        # Only a message shows whether the terms were accepted since.
-        refusal = base.anthropic_refusal(creds["accessToken"], infer=reasons.get(a.id) == base.NEEDS_TERMS)
-        if refusal:
-            apply_refusal("anthropic", a, refusal, cfg, now)
-            lines.append(f"{a.label}: {refusal}")
-        elif a.id in reasons:
-            with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
-                state = registry.load_state()
-                p = state["providers"]["anthropic"]
-                p["cooldowns"].pop(a.id, None)
-                (p.get("cooldown_reasons") or {}).pop(a.id, None)
+        prov = registry.load_state()["providers"]["anthropic"]
+        expected = (reasons.get(a.id), prov["cooldowns"].get(a.id))
+        result = base.anthropic_probe(creds["accessToken"], infer=expected[0] == base.NEEDS_TERMS)
+        if isinstance(result, base.ProbeUnavailable):
+            continue
+        with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+            state = registry.load_state()
+            changed = record_probe(state, a.id, result, expected, cfg, now)
+            if changed:
                 base.save_json(base.STATE, state)
-            lines.append(f"{a.label}: accepted again")
+        if changed:
+            message = result.reason if isinstance(result, base.ProbeRefused) else "accepted again"
+            lines.append(f"{a.label}: {message}")
     base.log("probe", results=lines)
     return lines
 
@@ -637,6 +652,8 @@ def vend(provider):
     the extension the slot time. With no such account the hook exits non-zero
     with no token, and the extension turns that failure into the same wait.
     """
+    from . import remote
+    deadline = time.monotonic() + remote.TOKEN_WAIT_SEC
     cfg = base.config()
     accounts = registry.load_index(provider)
     key = registry.session_key()
@@ -676,6 +693,36 @@ def vend(provider):
         return
     if d is None:
         raise RuntimeError(f"no {provider} account can serve this session")
+    revalidated = None
+    if provider == "anthropic" and isinstance(d, sched.Blocked) and d.reason == "cooldown":
+        prov = state["providers"][provider]
+        expected = ((prov.get("cooldown_reasons") or {}).get(d.account_id), prov["cooldowns"].get(d.account_id))
+        selected = next((a for a in accounts if a.id == d.account_id), None)
+        if selected and expected[0] in (base.NEEDS_TERMS, base.OAUTH_OFF, base.TOKEN_REJECTED, "forbidden (403)"):
+            try:
+                probe_token, probe_source = credential_for(selected, cfg)
+            except Exception as e:
+                base.log("account_unusable", provider=provider, account=selected.label, error=str(e))
+            else:
+                # measured: remote's 9 s precedes Prime's 10 s cap; reserve the reschedule and vend state locks.
+                remaining = deadline - time.monotonic() - 2 * base.STATE_LOCK_TIMEOUT
+                result = (base.anthropic_probe(probe_token, infer=expected[0] == base.NEEDS_TERMS, timeout=remaining)
+                          if remaining > 0 else base.ProbeUnavailable())
+                if not isinstance(result, base.ProbeUnavailable):
+                    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+                        state = registry.load_state()
+                        changed = record_probe(state, selected.id, result, expected, cfg, time.time())
+                        if changed:
+                            base.save_json(base.STATE, state)
+                        if changed and isinstance(result, base.ProbeAccepted):
+                            revalidated = (selected.id, probe_token, probe_source)
+                            tree = sched.tree_for(state, key, provider)
+                            if (tree.pin or tree.pool_pin) != selected.id:
+                                raise RuntimeError("manual account selection changed during revalidation; request again")
+                            now = time.time()
+                            d, tree, wrote = schedule(state, key, provider, accounts, cfg, now)
+                            if wrote:
+                                base.save_json(base.STATE, state)
     if isinstance(d, sched.Blocked):
         selected = next((a for a in accounts if a.id == d.account_id), None)
         label = selected.label if selected else d.account_id
@@ -698,7 +745,7 @@ def vend(provider):
     errors = []
     for account in order:
         try:
-            token, source = credential_for(account, cfg)
+            token, source = revalidated[1:] if revalidated and account.id == revalidated[0] else credential_for(account, cfg)
         except Exception as e:
             errors.append(f"{account.label}: {e}")
             base.log("account_unusable", provider=provider, account=account.label, error=str(e))
@@ -708,12 +755,12 @@ def vend(provider):
         # Entering an account is rare (hours apart per tree), so it can afford one
         # no-spend probe; that is where an organization-level OAuth refusal shows
         # up, which usage figures and needsReauth never reflect.
-        if provider == "anthropic" and (source == "refreshed" or entering):
-            refusal = base.anthropic_refusal(token)
-            if refusal:
-                errors.append(f"{account.label}: {refusal}")
-                base.log("account_refused", provider=provider, account=account.label, error=refusal)
-                apply_refusal(provider, account, refusal, cfg, now)
+        if provider == "anthropic" and revalidated is None and (source == "refreshed" or entering):
+            result = base.anthropic_probe(token)
+            if isinstance(result, base.ProbeRefused):
+                errors.append(f"{account.label}: {result.reason}")
+                base.log("account_refused", provider=provider, account=account.label, error=result.reason)
+                apply_refusal(provider, account, result.reason, cfg, now)
                 continue
         prev = vended = None
         try:

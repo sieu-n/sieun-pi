@@ -1,6 +1,8 @@
 """Paths, config, the pool log and locks, the account store, the Keychain, token refresh,
 refusal probes and rotation journals."""
-import base64, fcntl, json, os, pwd, re, subprocess, time
+from __future__ import annotations
+
+import base64, dataclasses, fcntl, json, os, pwd, re, subprocess, time
 
 
 HOME = os.path.expanduser("~")
@@ -368,16 +370,25 @@ def account_refusal(text):
     return None
 
 
-def anthropic_refusal(access_token, infer=False):
-    """Why the API refuses this token, or None. Uses count_tokens: it costs
-    nothing, it is not rate limited like the usage endpoint, and it answers
-    with the same 403 as inference when the account's organization has OAuth
-    turned off (verified 2026-09-23 on an account whose usage figures looked
-    fine). 401 is a revoked token. `infer` sends a one-token message instead,
-    for the terms check, which count_tokens is not known to apply. Any other
-    answer (429, 5xx, network) is not a refusal."""
+@dataclasses.dataclass(frozen=True)
+class ProbeAccepted:
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class ProbeRefused:
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ProbeUnavailable:
+    pass
+
+
+def anthropic_probe(access_token, infer=False, timeout=None) -> ProbeAccepted | ProbeRefused | ProbeUnavailable:
+    """Check provider acceptance. Terms require inference, not count_tokens."""
     import urllib.error, urllib.request
-    url, payload, timeout = (
+    url, payload, default_timeout = (
         (INFER_URL, {"model": INFER_MODEL, "max_tokens": 1, "system": OAUTH_SYSTEM}, INFER_TIMEOUT) if infer
         else (PROBE_URL, {"model": PROBE_MODEL}, PROBE_TIMEOUT))
     body = json.dumps({**payload, "messages": [{"role": "user", "content": "ok"}]}).encode()
@@ -385,15 +396,17 @@ def anthropic_refusal(access_token, infer=False):
         "Authorization": f"Bearer {access_token}", "anthropic-beta": "oauth-2025-04-20",
         "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=timeout):
-            return None
+        with urllib.request.urlopen(req, timeout=default_timeout if timeout is None else min(timeout, default_timeout)):
+            return ProbeAccepted()
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            return TOKEN_REJECTED
+            return ProbeRefused(TOKEN_REJECTED)
         refusal = account_refusal(e.read().decode(errors="replace"))
-        return refusal or ("forbidden (403)" if e.code == 403 else None)
+        if refusal or e.code == 403:
+            return ProbeRefused(refusal or "forbidden (403)")
+        return ProbeUnavailable()
     except Exception:
-        return None
+        return ProbeUnavailable()
 
 
 def read_index(provider):
