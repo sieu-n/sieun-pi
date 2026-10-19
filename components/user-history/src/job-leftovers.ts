@@ -2,7 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative } from "node:path";
+import { pathToFileURL } from "node:url";
+import type { Host } from "./hosts.ts";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import { stopOrphanServices } from "./orphan-services.ts";
@@ -29,8 +31,13 @@ export const KILL_AFTER_MS = 10_000;
 const SESSION_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 const TABS_FILE = "aside-browser-tabs.json";
 
-/** `units` are the transient units the job's record names and the scopes of services its sessions handed off before their kernels were freed (`orphan-services.ts`), both stopped. */
-export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[]; owned: readonly string[]; units: readonly string[] }
+/**
+ * `units` are the transient units the job's record names and the scopes of services its sessions handed off before their kernels were freed
+ * (`orphan-services.ts`), both stopped. `elsewhere` are the units a record named on a box with no systemd (the Mac), which a Mac job started
+ * on us-metal02 over ssh, for the box that runs them to stop (`hostLeftovers`).
+ */
+export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[]; owned: readonly string[]; units: readonly string[];
+  elsewhere?: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -48,8 +55,11 @@ export interface LeftoverSource {
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
   /** Deletes these dirs; returns the ones it deleted. */
   removeTmp: (dirs: readonly string[]) => Promise<readonly string[]>;
-  /** Stops these user units where they are active and transient (`systemd-run`), so a recorded unit file such as the chat service never stops; returns the ones it stopped. */
-  stopUnits: (units: readonly string[]) => Promise<readonly string[]>;
+  /**
+   * Stops these user units where they are active and transient (`systemd-run`), so a recorded unit file such as the chat service never stops;
+   * returns the ones it stopped, or null on a box with no systemd, where the units run on another box.
+   */
+  stopUnits: (units: readonly string[]) => Promise<readonly string[] | null>;
   /** Writes an ownership record back (`endOwned`). */
   writeOwned: (file: string, record: OwnedRecord) => Promise<void>;
   /** The repo copies the sessions of these transcripts left in their own session folders (`artifactCopies`). */
@@ -124,11 +134,13 @@ async function ours(path: string): Promise<boolean> {
  * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`), and keeps a path any process runs in, holds
  * or names. Each record keeps the paths that are still there, so a later sweep deletes one once nothing holds it.
  */
-async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[] }> {
-  if (!files.length) return { owned: [], units: [] };
+async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[] }> {
+  if (!files.length) return { owned: [], units: [], elsewhere: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
-  const units = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
+  const answer = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
+  const units = answer ?? [];
+  const elsewhere = answer === null ? wanted : [];
   const paths: string[] = [];
   for (const path of new Set(records.flatMap(record => record.paths))) if (await ours(path)) paths.push(path);
   const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
@@ -139,7 +151,7 @@ async function endOwned(source: LeftoverSource, files: readonly string[], dirs: 
     const left = { paths: records[index]!.paths.filter(path => !gone.has(path) && paths.includes(path)), units: [] };
     await source.writeOwned(file, left).catch(() => {});
   }));
-  return { owned, units };
+  return { owned, units, elsewhere };
 }
 
 /**
@@ -299,8 +311,8 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const artifacts = await endArtifacts(source, transcripts).catch(() => []);
-  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs).catch(() => ({ owned: [], units: [] }));
-  return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, owned: owned.owned, units: [...handed, ...owned.units] };
+  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs).catch(() => ({ owned: [], units: [], elsewhere: [] }));
+  return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, owned: owned.owned, units: [...handed, ...owned.units], ...owned.elsewhere.length ? { elsewhere: owned.elsewhere } : {} };
 }
 
 /** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
@@ -376,7 +388,7 @@ export const leftoverSource: LeftoverSource = {
     return removed;
   },
   stopUnits: async units => {
-    if (process.platform !== "linux") return [];
+    if (process.platform !== "linux") return null;
     const stopped: string[] = [];
     for (const unit of units) {
       const state = Object.fromEntries((await systemctl(["show", "-p", "ActiveState,Transient", "--", unit])).output.split("\n").map(line => line.split("=", 2)));
@@ -398,3 +410,71 @@ export const leftoverSource: LeftoverSource = {
 /** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete or record write, and a tab count of -1 so no tab record is emptied. */
 export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [],
   stopUnits: async () => [], writeOwned: async () => {} };
+
+/** Runs this module's CLI (`main`) on another box with these arguments and returns what it printed. */
+export type RemoteLeftovers = (host: Host, args: readonly string[]) => Promise<Leftovers>;
+
+/** A session-artifacts path below ARTIFACTS as the CLI takes it, `<session>[/sub-...]`; null for anything else. */
+const ARTIFACT_PATH = /^[0-9a-f-]{36}(\/sub-[0-9a-f]+)*$/;
+const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Ends a gone job's leftovers on the box whose daemon runs the session that owns its folder, the first name below ARTIFACTS (a chat for its
+ * jobs, a root for itself). A Mac chat's job folders, owned.json records, detached processes and Aside tabs are all on the Mac, so the chat
+ * service on us-metal02 found no folder at their end and stopped nothing: on 10-19 the Mac's signup and add brand jobs recorded world units
+ * they started on us-metal02 over ssh in owned.json files only the Mac holds. The other box runs the cleanup itself (`main`, over ssh), and
+ * the units its records name that it has no systemd for are stopped here.
+ */
+export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session: string) => Host | null; remote?: RemoteLeftovers | undefined }): {
+  leftovers: (dir: string, session?: string) => Promise<Leftovers>; deleted: (chat: string) => Promise<Leftovers>;
+} {
+  const { local, hostOf, remote } = options;
+  const there = async (host: Host, args: readonly string[]): Promise<Leftovers> => {
+    const left = await remote!(host, args);
+    const stopped = left.elsewhere?.length ? await local.stopUnits(left.elsewhere).catch(() => []) ?? [] : [];
+    return { ...left, units: [...left.units, ...stopped] };
+  };
+  return {
+    leftovers: async (dir, session) => {
+      const path = relative(ARTIFACTS, dir);
+      const host = remote && ARTIFACT_PATH.test(path) ? hostOf(path.split("/")[0]!) : null;
+      return host ? there(host, ["end", path, ...session && SESSION.test(session) ? [session] : []]) : endLeftovers(local, dir, session);
+    },
+    deleted: async chat => {
+      const host = remote && SESSION.test(chat) ? hostOf(chat) : null;
+      return host ? there(host, ["deleted", chat]) : endLeftovers(local, await deletedFolders(join(ARTIFACTS, chat)));
+    },
+  };
+}
+
+/**
+ * The CLI over ssh in the other box's own sieun-pi checkout (`sieun-pi source`), as Settings > Tools and skills runs its checks there
+ * (chat-tools.ts `sshChecks`, whose ConnectTimeout=10 is the box's aside wrapper's).
+ */
+export const sshLeftovers: RemoteLeftovers = (host, args) => new Promise((resolve, reject) => {
+  if (!host.ssh) { reject(new Error(`hosts.json gives ${host.name} no ssh target`)); return; }
+  const command = `PATH="$HOME/.local/bin:$PATH"; cd "$(sieun-pi source)/components/user-history" && exec node --import tsx src/job-leftovers.ts ${args.map(arg => `'${arg}'`).join(" ")}`;
+  execFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, command], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    try { if (!error) { resolve(JSON.parse(String(stdout).trim().split("\n").at(-1) ?? "") as Leftovers); return; } } catch { /* reported below */ }
+    reject(new Error(`job leftovers on ${host.name}: ${(String(stderr) || String(stdout)).replace(/\s+/g, " ").trim().slice(0, 300) || error?.message || "no answer"}`));
+  });
+});
+
+/**
+ * `node --import tsx src/job-leftovers.ts end <session>[/sub-...] [session]` ends the leftovers of that folder under this box's ARTIFACTS, and
+ * `deleted <chat>` those of the chat's deleted jobs; each prints the Leftovers as one JSON line. The process stays up for the SIGKILL pass and
+ * the second strays read (`stopProcesses`, `endLeftovers`), which the service's unref'd timers would drop here.
+ */
+async function main(args: readonly string[]): Promise<void> {
+  const [kind, path, session] = args;
+  const source: LeftoverSource = { ...leftoverSource, later: (ms, run) => { setTimeout(run, ms); } };
+  let left: Leftovers;
+  if (kind === "end" && path && ARTIFACT_PATH.test(path) && (session === undefined || SESSION.test(session))) left = await endLeftovers(source, join(ARTIFACTS, path), session);
+  else if (kind === "deleted" && path && SESSION.test(path)) left = await endLeftovers(source, await deletedFolders(join(ARTIFACTS, path)));
+  else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat>");
+  process.stdout.write(JSON.stringify(left) + "\n");
+}
+
+if (process.argv[1] && isAbsolute(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main(process.argv.slice(2)).catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+}
