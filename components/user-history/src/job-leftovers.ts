@@ -160,7 +160,7 @@ export async function deletedFolders(chatDir: string): Promise<string[]> {
 }
 
 /** Top-level /tmp names every session shares (caches, sockets, Prime's own dir), never one job's tree. */
-const SHARED_TMP = /^(prime-agent-\d+|tsx-\d+|node-compile-cache|v8-compile-cache-\d+|pytest-of-.+|systemd-private-.+|tmux-\d+|ssh-.+|snap-private-tmp|jiti|\.[\w-]+-unix)$/;
+export const SHARED_TMP = /^(prime-agent-\d+|tsx-\d+|node-compile-cache|v8-compile-cache-\d+|pytest-of-.+|systemd-private-.+|tmux-\d+|ssh-.+|snap-private-tmp|jiti|\.[\w-]+-unix)$/;
 const TMP_NAME = "[A-Za-z0-9._+@-]+";
 
 function escaped(text: string): string { return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -326,12 +326,12 @@ async function endTmp(source: LeftoverSource, transcripts: readonly string[], di
   const held = new Set(using.filter(entry => entry.shared || (entry.prime && entry.session === null) || (entry.session !== null && !ended.has(entry.session))).map(entry => entry.dir));
   const free = trees.filter(dir => !held.has(dir));
   const rig = new Map(using.filter(entry => !entry.prime && free.includes(entry.dir)).map(entry => [entry.pid, entry]));
-  const stopped = await stop(source, [...rig.values()]);
+  const stopped = await stopProcesses(source, [...rig.values()]);
   return { stopped, removed: free.length ? await source.removeTmp(free) : [] };
 }
 
 /** SIGTERM to each process whose start time still matches, then SIGKILL after KILL_AFTER_MS to each one still running with that start time. */
-async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promise<RawProcess[]> {
+export async function stopProcesses(source: Pick<LeftoverSource, "started" | "kill" | "later">, found: readonly RawProcess[]): Promise<RawProcess[]> {
   const stopped: RawProcess[] = [];
   for (const entry of found) {
     if (entry.pid <= 1 || entry.pid === process.pid || entry.started === null || await source.started(entry.pid) !== entry.started) continue;
@@ -355,8 +355,8 @@ async function stop(source: LeftoverSource, found: readonly RawProcess[]): Promi
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
   const trees = await Promise.all((typeof dirs === "string" ? [dirs] : dirs).map(sessionTree));
   const sessions = [...new Set([...(session ? [session] : []), ...trees.flatMap(tree => tree.sessions)])];
-  const stopped = sessions.length ? await stop(source, await source.strays(sessions)) : [];
-  if (session) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stop(source, found)).catch(() => []); });
+  const stopped = sessions.length ? await stopProcesses(source, await source.strays(sessions)) : [];
+  if (session) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stopProcesses(source, found)).catch(() => []); });
   const ids = trees.flatMap(tree => tree.tabs);
   const tabs = ids.length ? await source.closeTabs(ids).catch(() => -1) : 0;
   if (tabs >= 0) for (const file of trees.flatMap(tree => tree.tabFiles)) {

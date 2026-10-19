@@ -10,7 +10,7 @@ import { ThreadHub } from "./chat-threads.ts";
 import { FirstPages } from "./first-page.ts";
 import { SessionAutoCompact } from "./session-autocompact.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
-import { checkInRecord } from "./chat-checkin.ts";
+import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
@@ -29,6 +29,7 @@ import { resumesNow } from "./cut-end.ts";
 import { IdleUnloader, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
+import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -358,6 +359,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
   }, 60_000);
   unloader?.unref();
+  // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
+  const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
+    waking: async () => new Set((await pendingWakes(join(dataDir, "wakes"), Date.now()).catch(() => [])).map(wake => wake.session)),
+    idleMs: () => { const minutes = defaults.idleEviction(); return minutes === "off" ? null : minutes * 60_000; }, log: dutyLog, everyMs: JOB_CLEANUP_EVERY_MS });
   const prioritySync = scratch ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
   if (!scratch) void poolPriorities.sync();
@@ -385,6 +390,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       await watchStopped;
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
+      stopTmpSweep();
       stopWakes();
       stopBriefs();
       stopAlerts();
