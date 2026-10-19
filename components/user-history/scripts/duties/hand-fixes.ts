@@ -79,7 +79,8 @@ export type RefState = { kind: "step"; status: string | null } | { kind: "git"; 
 /** `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable) and docker restart policy. */
 /** `networks` is the docker networks it joins, or undefined when the read did not list them. */
 export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string }; networks?: string[]; image?: string; created?: string }
-export interface BoxExec { container: string; service: string; running: boolean; command: string; networks?: string[] }
+/** `id` is the docker exec id; `lasted` is whether it still ran at the read's second sample, or undefined when the read took none. */
+export interface BoxExec { container: string; service: string; running: boolean; command: string; networks?: string[]; id?: string; lasted?: boolean }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
 /**
  * A process on the box that an ssh session left running on its own, with its script's text: parent pid 1 in a session-*.scope (nohup,
@@ -227,6 +228,8 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   const deploys: Deploy[] = [];
   const service = new Map<string, string>();
   const nets_ = new Map<string, string[]>();
+  const still = new Set<string>();
+  let resampled = false;
   for (const line of text.split("\n")) {
     const [tag, name, rest] = line.split("\t");
     if (!name || rest === undefined) continue;
@@ -244,12 +247,17 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
       const host = JSON.parse(Buffer.from(rest, "base64").toString("utf8")) as { command?: string; text?: string };
       hosts.push({ pid: Number(name), command: host.command ?? "", text: host.text ?? "" });
     } else if (tag === "E") {
-      const exec = JSON.parse(rest) as { Running?: boolean; ProcessConfig?: { entrypoint?: string; arguments?: string[] } };
+      const exec = JSON.parse(rest) as { ID?: string; Running?: boolean; ProcessConfig?: { entrypoint?: string; arguments?: string[] } };
       const networks = nets_.get(name);
       execs.push({ container: name, service: service.get(name) ?? "", running: exec.Running === true,
-        command: [exec.ProcessConfig?.entrypoint ?? "", ...(exec.ProcessConfig?.arguments ?? [])].join(" ").trim(), ...(networks ? { networks } : {}) });
+        command: [exec.ProcessConfig?.entrypoint ?? "", ...(exec.ProcessConfig?.arguments ?? [])].join(" ").trim(), ...(networks ? { networks } : {}),
+        ...(exec.ID ? { id: exec.ID } : {}) });
+    } else if (tag === "R") {
+      resampled = true;
+      for (const id of rest.split(/\s+/).filter(Boolean)) still.add(id);
     }
   }
+  if (resampled) for (const exec of execs) if (exec.id) exec.lasted = still.has(exec.id);
   return { containers, execs, hosts, deploys };
 }
 
@@ -289,7 +297,7 @@ export const reachesTier = (item: { networks?: readonly string[] }): boolean =>
 const STDIN_SCRIPT = /\s(?:-|-s)$/;
 /** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
 export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] =>
-  execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command) && !(exempt && new RegExp(exempt).test(exec.command)) && reachesTier(exec));
+  execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command) && !(exempt && new RegExp(exempt).test(exec.command)) && reachesTier(exec) && exec.lasted !== false);
 
 /** The script a session process runs: the first argument ending in .py, .mjs, .js, .ts or .sh. */
 export function scriptOf(command: string): string | null {
@@ -446,6 +454,12 @@ export const eventsSql = (after: number): string =>
   `select account_id, at, outcome, coalesce(error_code, '') as error_code from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
 
 /** The one read-only box read: every container's status, compose service and running exec sessions, each exec's command, and the ok prod deploys. */
+/**
+ * Seconds between the box read's two exec samples. An exec counts only when it still runs at the second: at 19:50Z on 10-19 a one-shot
+ * ClickHouse 'show tables' in crawler-api counted as a hand writer, and the hand lane writers it means to count run for hours.
+ * measured: the whole precheck took 13.8 s on 10-19 19:5xZ, so 20 s more stays far under the runner's 120 s PRECHECK_TIMEOUT_MS
+ */
+export const EXEC_RESAMPLE_S = 20;
 export const BOX_SCRIPT = `set -u
 awk '$2 == "prod" && $3 == "deploy" && $5 == "ok:" { printf "D\\t%s\\t%s\\n", $1, $4 }' /srv/prod/releases/deploy.log
 for c in $(docker ps -a --format '{{.Names}}'); do
@@ -454,6 +468,10 @@ for c in $(docker ps -a --format '{{.Names}}'); do
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
     printf 'E\\t%s\\t%s\\n' "$c" "$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")"
   done
+done
+sleep ${EXEC_RESAMPLE_S}
+for c in $(docker ps --format '{{.Names}}'); do
+  printf 'R\\t%s\\t%s\\n' "$c" "$(docker inspect -f '{{range .ExecIDs}}{{.}} {{end}}' "$c")"
 done
 python3 - <<'PY'
 import base64, json, os, re

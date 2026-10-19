@@ -266,3 +266,12 @@ test("a container or exec on no prod or staging network is not a hand-run writer
   assert.deepEqual(oneOffs(containers, Date.parse("2026-10-19T16:00:00Z")).map(container => container.name), ["virev-prod-tiktok-signer-hand-1", "old-read"]);
   assert.deepEqual(handExecs(execs), []);
 });
+
+// 10-19 19:50Z: a one-shot read-only ClickHouse query run through docker exec in crawler-api counted as a hand writer. An exec counts only
+// when it still runs at the read's second sample; a read with no second sample counts every running exec, as before.
+test("an exec gone by the second sample is not a hand-run writer; one that lasts is", () => {
+  const exec = (id: string, script: string) => `E\tvirev-prod-crawler-api\t${JSON.stringify({ ID: id, Running: true, ProcessConfig: { entrypoint: "python", arguments: [script] } })}`;
+  const lines = ["C\tvirev-prod-crawler-api\trunning|crawler-api|e1 e2 ||||virev-prod,", exec("e1", "/tmp/er_er_57ced8.py"), exec("e2", "/tmp/cw_extra_writer.py")];
+  assert.deepEqual(handExecs(parseBox([...lines, "R\tvirev-prod-crawler-api\te2 "].join("\n")).execs).map(item => item.command), ["python /tmp/cw_extra_writer.py"]);
+  assert.equal(handExecs(parseBox(lines.join("\n")).execs).length, 2);
+});
