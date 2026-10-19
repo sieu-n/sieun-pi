@@ -40,25 +40,44 @@ export interface MachineView {
 export type PoolReading = { queue: unknown; config: unknown } | { error: string };
 export interface HostStats { machine: MachineView; pool: PoolReading }
 
-type CpuSample = { busy: number; total: number };
-function cpuSample(): CpuSample {
-  let busy = 0, total = 0;
-  for (const { times } of cpus()) {
+type CpuSample = { busy: number; total: number; cores: number };
+/**
+ * All cores' busy and total ticks, and the online core count. On Linux they come from /proc/stat's "cpu" and "cpuN" lines, with the fields
+ * libuv's os.cpus() sums (user, nice, system, idle, irq). os.cpus() also reads each core's cpufreq file, and on 10-19 at load 150 to 520 on
+ * us-metal02 a scratch serve's machineView spent 1.0 and 1.6 s of main thread in single os.cpus() calls, its two longest tasks.
+ */
+export function cpuSample(stat: string | null = process.platform === "linux" ? procStat() : null): CpuSample {
+  let busy = 0, total = 0, cores = 0;
+  if (stat !== null) {
+    for (const line of stat.split("\n")) {
+      if (/^cpu\d/.test(line)) { cores++; continue; }
+      if (!line.startsWith("cpu ")) continue;
+      const [user = 0, nice = 0, sys = 0, idle = 0, , irq = 0] = line.trim().split(/\s+/).slice(1).map(Number);
+      total = user + nice + sys + idle + irq;
+      busy = total - idle;
+    }
+    if (cores) return { busy, total, cores };
+  }
+  const all = cpus();
+  for (const { times } of all) {
     const sum = times.user + times.nice + times.sys + times.irq + times.idle;
     total += sum;
     busy += sum - times.idle;
   }
-  return { busy, total };
+  return { busy, total, cores: all.length };
+}
+function procStat(): string | null {
+  try { return readFileSync("/proc/stat", "utf8"); } catch { return null; }
 }
 let previous = cpuSample();
 let lastPercent = 0;
 /** Busy share of all cores since the previous call, so each poll reports the time since the one before. */
-function cpuPercent(): number {
+function cpuPercent(): { percent: number; cores: number } {
   const next = cpuSample();
   const total = next.total - previous.total;
   if (total > 0) lastPercent = Math.max(0, Math.min(100, (100 * (next.busy - previous.busy)) / total));
   previous = next;
-  return lastPercent;
+  return { percent: lastPercent, cores: next.cores };
 }
 
 const GB = 1024 ** 3;
@@ -247,9 +266,9 @@ async function linuxMemory(): Promise<MachineView["memory"]> {
 export async function machineView(): Promise<MachineView> {
   const platform = process.platform === "darwin" ? "darwin" : "linux";
   const memory = platform === "darwin" ? await macMemory() : await linuxMemory();
-  const percent = cpuPercent();
+  const { percent, cores } = cpuPercent();
   const [one = 0, five = 0, fifteen = 0] = loadavg();
-  return { platform, cpu: { percent, cores: cpus().length, load: [one, five, fifteen] }, memory };
+  return { platform, cpu: { percent, cores, load: [one, five, fifteen] }, memory };
 }
 
 /** The installed pi-pool CLI, ~/.local/bin/pi-pool, or PI_POOL_BIN. */
