@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
-import { countRisks, diskDaysMin, oomKills24h, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { readFile } from "node:fs/promises";
+import { DUTY_FILE, countRisks, diskDaysMin, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -39,7 +40,7 @@ test("oom_kills_24h sums both boxes, names each box with a kill and its last kil
   assert.deepEqual(result.flagged.map(slice => slice.excerpt), ["us-metal02: 42 OOM kills outside heavy scopes in the last 24 h, the last kill of any kind at about 16:52Z on 10-19"]);
   const fallback = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 45, sinceBootAt: Date.parse("2026-10-14T20:47:00Z") }], 0);
   assert.match(fallback.flagged[0]!.excerpt, /us-metal02: 45 OOM kills outside heavy scopes in \/proc\/vmstat since its boot at 20:47Z on 10-14/);
-  assert.deepEqual(oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 0 }], 0), { kills: 0, heavy: 0, flagged: [] });
+  assert.deepEqual(oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 0 }], 0), { kills: 0, heavy: 0, explained: 0, flagged: [] });
   assert.throws(() => oomKills24h([{ box: "us-metal01", kills: 0 }], 0), /no node_vmstat_oom_kill of us-metal02/);
 });
 
@@ -64,4 +65,27 @@ test("a kill inside a heavy scope counts as heavy_scope_kills, a slice line only
   const outside = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 4, ...mixed }], 0);
   assert.equal(outside.kills, 2);
   assert.match(outside.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes and 2 more inside heavy scopes in the last 24 h; the journal names prime-agent-daemon.service, run-p1-i2.scope$/);
+});
+
+// Guards p468 (10-20): p456 fixed the us-metal02 kills up to 16:52Z on 10-19, yet they held oom_kills_24h at 41 for a whole day and the duty
+// asked for a new job each run, so the kills a fix step explains count apart as oom_kills_explained.
+test("oom_kills_24h leaves out the kills up to the newest until a fix step explains, names that step, and counts a newer kill outside", () => {
+  const explained = parseExplained({ explainedKills: [{ box: "us-metal02", until: "2026-10-19T10:00:00Z", step: "p400" },
+    { box: "us-metal02", until: "2026-10-19T16:52:00Z", step: "p456" }] });
+  const by = explained.get("us-metal02")!;
+  assert.deepEqual(by, { box: "us-metal02", until: Date.parse("2026-10-19T16:52:00Z"), step: "p456" });
+  assert.throws(() => parseExplained({ explainedKills: [{ box: "us-metal02", until: "soon", step: "p456" }] }), /explainedKills 0 needs/);
+  assert.equal(parseExplained({}).size, 0);
+  const held = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 46, explained: 41, heavy: 5, by }], 0);
+  assert.deepEqual([held.kills, held.heavy, held.explained], [0, 5, 41]);
+  assert.deepEqual(held.flagged.map(slice => slice.excerpt), ["us-metal02: no OOM kill outside heavy scopes (5 inside) since 16:52Z on 10-19; p456 explains the 41 kills up to 16:52Z on 10-19"]);
+  const newer = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 43, explained: 41, units: ["sf-bill-q.service"], by }], 0);
+  assert.equal(newer.kills, 2);
+  assert.equal(newer.flagged[0]!.kind, "oom");
+  assert.match(newer.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes since 16:52Z on 10-19; the journal names sf-bill-q.service; p456 explains the 41 kills/);
+});
+
+test("the checked-in duty file names p456 for the us-metal02 kills up to 16:52Z on 10-19", async () => {
+  const explained = parseExplained(JSON.parse(await readFile(DUTY_FILE, "utf8")));
+  assert.equal(explained.get("us-metal02")?.step, "p456");
 });
