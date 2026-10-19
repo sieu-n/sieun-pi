@@ -69,6 +69,37 @@ export function pendingCounts(error: unknown): { pending: number; limit: number 
 export const DAEMON_PENDING_LIMIT = 20;
 
 /**
+ * The longest text prime-agent 0.9.8's send_message takes. On 10-19 it refused a 17019-char alert escalation to ops guy (01a11af8) on every
+ * try from 15:46Z ("Agent session message is too long: 17019 chars exceeds 16384"), and that one entry held every later message to the chat.
+ */
+export const DAEMON_MESSAGE_LIMIT = 16_384;
+
+/** Room a text leaves under the limit for the age line `agedText` may put over it. */
+const PART_ROOM = 512;
+/** Room a part's body leaves for its part line, so a part fits whole and is never split again. */
+const PART_LINE = 160;
+
+/**
+ * The text as the parts the daemon takes, in order, each opening with its place ("[part 2 of 3; ...]"); a text that fits is one part as it is.
+ * A part ends at the last line break in its second half, else at its room, never inside a surrogate pair.
+ */
+export function messageParts(text: string, limit = DAEMON_MESSAGE_LIMIT): string[] {
+  if (text.length <= limit - PART_ROOM) return [text];
+  const room = limit - PART_ROOM - PART_LINE;
+  const bodies: string[] = [];
+  let rest = text;
+  while (rest.length > room) {
+    const lineEnd = rest.lastIndexOf("\n", room - 1);
+    let end = lineEnd >= room / 2 ? lineEnd + 1 : room;
+    if (end === room && /[\uD800-\uDBFF]/.test(rest[end - 1]!)) end--;
+    bodies.push(rest.slice(0, end));
+    rest = rest.slice(end);
+  }
+  if (rest) bodies.push(rest);
+  return bodies.map((body, index) => `[part ${index + 1} of ${bodies.length}; the chat service split one message the daemon takes only up to ${limit} chars of]\n\n${body}`);
+}
+
+/**
  * An agent_message.send the daemon refused for the target's pending message limit, which the sender's kernel hands to the outbox instead of
  * raising (message-limit-check.py, owner c98: a limit is a target, never a refusal).
  */
@@ -199,6 +230,12 @@ export class AgentOutbox {
     this.outbox = new Outbox({ dir, log: deps.log, where: session => this.where(session), ...deps.sleep ? { sleep: deps.sleep } : {}, ...deps.now ? { now: deps.now } : {},
       deliver: async (entry, sending) => {
         const session = entry.threadId;
+        const parts = messageParts(entry.text);
+        if (parts.length > 1) {
+          const ids: string[] = [];
+          for (const part of parts) ids.push(await this.keepOne(session, part, entry.root, entry.kind, entry.setAt));
+          return { obsolete: `it is ${entry.text.length} chars, over the daemon's ${DAEMON_MESSAGE_LIMIT}, so it goes as ${ids.join(", ")}` };
+        }
         await this.room(session, entry.id);
         const proof = await this.obsolete(entry);
         if (proof) return proof;
@@ -245,8 +282,14 @@ export class AgentOutbox {
     await this.keep(session, text, root, kind, setAt);
   }
 
-  /** `deliver`, answering the id of the entry that holds the message. */
+  /** `deliver`, answering the id of the entry that holds the message, or its first part when it goes in parts (`messageParts`). */
   private async keep(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
+    const ids: string[] = [];
+    for (const part of messageParts(text)) ids.push(await this.keepOne(session, part, root, kind, setAt));
+    return ids[0]!;
+  }
+
+  private async keepOne(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
     const key = sendKey(session, text);
     const held = await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key);
     if (held) return held.id;
