@@ -32,3 +32,13 @@ test("when that job is not live, the check-in steers or restarts it on its step 
   assert.match(line, /Add no new step/);
   assert.doesNotMatch(line, /Add a push step/);
 });
+
+// From 10-18 17:00Z to 10-19 17:00Z, VP of CI p1 was steered 85 times with the same message while its number stood still.
+test("a goal still after its steers gets its blocker acted on, not the same steer alone", () => {
+  const still = { p1: { readings: [{ value: 2, at: now - 7_200_000 }, { value: 2, at: now - 3_600_000 }, { value: 2, at: now - 600_000 }], still: 3 } };
+  const [push] = goalPushes(board, views("working"), still as never, 30 * 60_000, now).pushes;
+  assert.match(goalDueLine(push!) ?? "", /did not move in the last \d+ check-ins[\s\S]*act on that blocker/);
+  const first = { p1: { readings: [{ value: 1, at: now - 600_000 }], still: 0 } };
+  const [moving] = goalPushes(board, views("working"), first as never, 30 * 60_000, now).pushes;
+  assert.doesNotMatch(goalDueLine(moving!) ?? "", /did not move in the last/);
+});

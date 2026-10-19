@@ -76,6 +76,11 @@ export function lastTurnError(tail: string): string | undefined {
 }
 
 const TAIL_BYTES = 64 * 1024;
+/** The one session transcript in a spawned child's folder, by its id; undefined when the folder holds none or several. */
+async function soleSession(dir: string): Promise<string | undefined> {
+  const files = (await readdir(dir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl");
+  return files.length === 1 ? files[0]!.slice(0, -6) : undefined;
+}
 async function tailOf(file: string): Promise<string> {
   const size = (await stat(file).catch(() => null))?.size;
   if (!size) return "";
@@ -105,7 +110,9 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
     let text = "";
     if (fact.key.startsWith("thread:")) text = await tail(join(agentDir, "sessions", `${fact.key.slice("thread:".length)}.jsonl`));
     else {
-      const session = fact.sessionId ?? sessionOf(fact.key);
+      // A spawned child whose row carries no session id still has its own folder, sub-<id>/, under the chat: VP of CI's sub-583d2972 and
+      // metal-management's sub-1582194f were restarted at 01:05Z on 10-19 while both transcripts ended on a pool slot wait.
+      const session = fact.sessionId ?? sessionOf(fact.key) ?? (fact.key.startsWith("sub-") ? await soleSession(join(artifacts, fact.key)) : undefined);
       if (!session) return fact;
       // A job started with rlm.create_session is a root under sessions/; a spawned one sits under its chat's session-artifacts.
       text = await tail(join(agentDir, "sessions", `${session}.jsonl`));

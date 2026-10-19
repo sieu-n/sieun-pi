@@ -417,5 +417,11 @@ export function goalDueLine(push: GoalPush): string | null {
       "work needs an output that no open step owns"
     : push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title}, a live job of the goal or a new one, and send it this message`
     : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to a live job of the goal or a new one, and send it this message`;
-  return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}`;
+  // From 10-18 17:00Z to 10-19 17:00Z check-ins pushed 31 goals 451 times and 7 of them moved: VP of CI p1 was steered 85 times and Vent p1 76
+  // times with the same message while the number stood still. A goal still after a steer gets its blocker acted on, not the same steer again.
+  const stuck = push.trend?.kind === "still" && push.trend.runs >= 2 && (push.owner || push.stepJob)
+    ? `\n\nThe number did not move in the last ${push.trend.runs} check-ins, so this message alone has not moved it. Read the job's last report ` +
+      "first. When it names a blocker, act on that blocker in this run: start a job on it, or add the For you todo when only the owner can move it. " +
+      "Send the job only what is new, and tell the chat in one line what holds the number." : "";
+  return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}${stuck}`;
 }
