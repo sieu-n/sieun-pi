@@ -158,8 +158,8 @@ An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing
 
 - A script browser, such as a rig that loads an unpacked extension into a persistent profile, runs on us-metal02: copy the files with `scp` or `rsync`, then run it with `ssh us-metal02`, which loads `playwright-core` from `~/.prime/agent/skills/aside-browser/box/node_modules` with the `no-netlink-chromium.py` wrapper there.
 - A Playwright spec or shot script against the Mac's 5180 runs through `node apps/virev-demo/scripts/shot-browser.mjs --run <command>` in auto-sns-agent, which puts its browser on us-metal02.
-- The Chat page from the Mac duty's probe is the one exception, since it times the Mac's own network path in one short headless run a day.
-- The Whole system duty (d7) counts every Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
+- The Chat page from the Mac duty's probe is the one exception, since it times the Mac's own network path in one short headless run a day, and it marks its browser with `CHAT_PAGE_MAC_PROBE=1`.
+- The Whole system duty (d7) counts every other Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
 
 ## Browser rules
 

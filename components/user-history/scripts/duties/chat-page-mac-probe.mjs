@@ -66,7 +66,8 @@ async function switches(browser) {
 }
 
 const started = Date.now();
-const browser = await chromium.launch({ headless: true });
+// CHAT_PAGE_MAC_PROBE marks this browser as the one Mac browser d7's mac_test_browsers leaves out (src/worker-footprint.py `test_browsers`).
+const browser = await chromium.launch({ headless: true, env: { ...process.env, CHAT_PAGE_MAC_PROBE: "1" } });
 try {
   const loads = [];
   for (let index = 0; index < config.loads; index++) loads.push(await coldLoad(browser).catch(error => ({ error: String(error.message ?? error).slice(0, 300) })));
