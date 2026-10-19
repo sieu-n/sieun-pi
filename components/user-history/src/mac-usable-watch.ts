@@ -7,7 +7,7 @@ import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
 import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
-import { type AgentCounts, agentCounts } from "./agent-states.ts";
+import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
 
@@ -129,6 +129,14 @@ export function parseUsableRaw(value: unknown, now: number): HostUsable | null {
  * part its sessions' work holds (`workBytes`); absent on lines written before 10-18 07:5xZ.
  */
 export interface WorkerLine { pid: number; gb: number; sessions: number; root: string; tree: string; workGb?: number }
+/**
+ * Every Prime worker with its footprint, its lead chat tree (`root`, `tree` cut to 60 characters), its live sessions and how many of them
+ * work (src/agent-states.ts: streaming, a tool call or a compaction; a retry or pool wait, a wait on a subagent and a hung call are no work).
+ * Prime runs a chat and all its jobs in one worker, so d7's quiet_agent_gb sums the workers whose sessions have not worked for the quiet window
+ * (whole-system.ts `quietTrees`). `top` names only the 5 largest: at 17:52Z on 10-19 us-metal02 ran 71 workers with 119 sessions working and
+ * no box had gone 15 min with none since 14:29Z, so the box-wide reading never came. Absent on lines written before 10-20.
+ */
+export interface WorkerTree { pid: number; gb: number; root: string; tree: string; sessions: number; working: number }
 /** A chat tree and how many of its sessions a count holds. */
 export interface TreeCount { root: string; tree: string; count: number }
 export interface QueueLine {
@@ -151,6 +159,8 @@ export interface WaitingTree { tree: string; oldestWaitS: number; slots: number 
  * then unknown, not zero.
  */
 export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
+  /** Every worker of the box (`WorkerTree`); absent on lines written before 10-20 and when its relay or footprint helper did not answer. */
+  byWorker?: WorkerTree[];
   /** The box's Agent sessions as Settings > Hosts reads them (`agentLine`); absent on lines written before 10-19 and when its relay did not answer. */
   agents?: AgentLine; swapGb: number | null; error?: string;
   /** Tailscale read the box offline, so its relay was not asked (src/host-reach.ts); absent on lines written before 10-18 16:xxZ. */
@@ -167,6 +177,8 @@ export interface WatchLine {
   /** Every other box in hosts.json; absent on older lines. */
   hosts?: HostWatchLine[];
   workers: number; workerGb: number; top: WorkerLine[];
+  /** Every worker of this box (`WorkerTree`); absent on lines written before 10-20. */
+  byWorker?: WorkerTree[];
   /** The live chat roots; absent on lines written before it was counted. */
   chatsLive?: number;
   live: number; working: number;
@@ -292,12 +304,22 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   const tree = treeOf(byId, input.title);
   const live = rows.filter(row => row.live);
   const working = live.filter(row => row.working);
-  const top = Object.entries(input.footprints.workers).map(([pid, tree_]) => ({ pid: Number(pid), bytes: tree_.bytes }))
-    .sort((a, b) => b.bytes - a.bytes).slice(0, 5).map(({ pid, bytes }): WorkerLine => {
-      const on = live.filter(row => row.worker === pid);
-      const lead = topTrees(on, tree, 1)[0];
-      return { pid, gb: round(bytes / GB), sessions: on.length, root: lead?.root ?? "", tree: lead?.tree ?? "", workGb: round(workBytes(input.footprints, byId, pid) / GB) };
-    });
+  const sized = Object.entries(input.footprints.workers).map(([pid, tree_]) => ({ pid: Number(pid), bytes: tree_.bytes })).sort((a, b) => b.bytes - a.bytes);
+  const top = sized.slice(0, 5).map(({ pid, bytes }): WorkerLine => {
+    const on = live.filter(row => row.worker === pid);
+    const lead = topTrees(on, tree, 1)[0];
+    return { pid, gb: round(bytes / GB), sessions: on.length, root: lead?.root ?? "", tree: lead?.tree ?? "", workGb: round(workBytes(input.footprints, byId, pid) / GB) };
+  });
+  const atWork = new Map<number, number>();
+  for (const raw of input.rows) {
+    if (agentState(raw, input.hung) !== "working" || !isRecord(raw) || typeof raw.workerPid !== "number") continue;
+    atWork.set(raw.workerPid, (atWork.get(raw.workerPid) ?? 0) + 1);
+  }
+  const byWorker = sized.map(({ pid, bytes }): WorkerTree => {
+    const on = live.filter(row => row.worker === pid);
+    const lead = topTrees(on, tree, 1)[0];
+    return { pid, gb: round(bytes / GB), root: lead?.root ?? "", tree: (lead?.tree ?? "").slice(0, 60), sessions: on.length, working: atWork.get(pid) ?? 0 };
+  });
   const queue = input.queue && queueLine(input.queue, input.now, id => {
     const row = byId.get(id);
     return row ? tree(row).tree : input.title(id) ?? id.slice(0, 8);
@@ -314,7 +336,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     usable: input.usable ?? null, chatsLive,
     workers: Object.keys(input.footprints.workers).length,
     workerGb: round(Object.values(input.footprints.workers).reduce((sum, worker) => sum + worker.bytes, 0) / GB),
-    top, live: live.length, working: working.length,
+    top, byWorker, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
     ...input.footprints.test_browsers?.length ? { testBrowsers: input.footprints.test_browsers.map(browser => ({ pid: browser.pid, started: browser.started,
@@ -464,7 +486,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] }] } : null, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
-    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working, agents, swapGb: line.mac.swapGb,
+    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
+      working: line.working, agents, swapGb: line.mac.swapGb,
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };

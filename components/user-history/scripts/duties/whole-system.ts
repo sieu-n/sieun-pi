@@ -10,7 +10,7 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -28,7 +28,9 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   /** Tailscale read the box offline that minute (HostWatchLine.offline). */
   offline?: true;
   /** The Playwright or Puppeteer browsers agents ran on the box that minute; only the Mac's helper lists them (HostWatchLine.testBrowsers). */
-  testBrowsers?: readonly TestBrowserLine[] }
+  testBrowsers?: readonly TestBrowserLine[];
+  /** Every worker of the box that minute (WatchLine.byWorker); absent on lines written before 10-20. */
+  byWorker?: readonly WorkerTree[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
@@ -57,12 +59,13 @@ export function hostViews(line: WatchLine): HostView[] {
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {} },
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {} };
+        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
+        ...host.byWorker ? { byWorker: host.byWorker } : {} };
     }),
   ];
 }
@@ -442,6 +445,63 @@ export function quietAgents(lines: readonly WatchLine[], from: number, to: numbe
   return found;
 }
 
+/** A worker in one watch minute whose sessions had not worked for the quiet window: its pid, lead chat tree, GB and the first line of that stretch. */
+export interface QuietTree { pid: number; root: string; tree: string; gb: number; since: number }
+/**
+ * One box's quiet memory in one watch minute: `gb` sums the workers in `trees`, or is the whole box's Agent sessions when no session of the box
+ * had worked for the quiet window (`whole`, from `quietAgents`).
+ */
+export interface QuietReading { host: string; at: number; gb: number; trees: QuietTree[]; whole?: QuietMinute }
+
+/**
+ * Every box minute in [`from`, `to`) with the workers (WatchLine.byWorker) none of whose sessions had worked in any line for `quietMs`. Prime
+ * runs a chat and all its jobs in one worker, so a worker is a tree, and a quiet tree should have dropped its memory by then while the rest of
+ * the box works. A worker's stretch starts at its first line with no session working, and breaks on a line where one works, on a line with no
+ * `byWorker`, and on a gap over QUIET_GAP_MS; lines from before `from` count toward it. A box minute with `byWorker` gives a reading even with no
+ * quiet tree (0 GB), so d7 reads one every run while autonomous jobs work day and night. At 17:52Z on 10-19 us-metal02 ran 119 sessions working
+ * over 71 workers and had not gone 15 min with none since 14:29Z.
+ */
+export function quietTrees(lines: readonly WatchLine[], from: number, to: number, quietMs: number): QuietReading[] {
+  const stretches = new Map<string, Map<number, number>>();
+  const last = new Map<string, number>();
+  const found: QuietReading[] = [];
+  for (const line of lines) {
+    const at = Date.parse(line.at);
+    if (!(at < to)) continue;
+    for (const view of hostViews(line)) {
+      const before = last.get(view.name);
+      last.set(view.name, at);
+      if (!view.byWorker) { stretches.delete(view.name); continue; }
+      const held = before !== undefined && at - before <= QUIET_GAP_MS ? stretches.get(view.name) ?? new Map<number, number>() : new Map<number, number>();
+      const next = new Map<number, number>();
+      for (const worker of view.byWorker) if (worker.working === 0) next.set(worker.pid, held.get(worker.pid) ?? at);
+      stretches.set(view.name, next);
+      if (at < from) continue;
+      const trees = view.byWorker.flatMap(worker => {
+        const since = next.get(worker.pid);
+        return since !== undefined && at - since >= quietMs ? [{ pid: worker.pid, root: worker.root, tree: worker.tree, gb: worker.gb, since }] : [];
+      }).sort((a, b) => b.gb - a.gb);
+      found.push({ host: view.name, at, gb: Math.round(100 * trees.reduce((sum, tree) => sum + tree.gb, 0)) / 100, trees });
+    }
+  }
+  return found;
+}
+
+/**
+ * Each box minute's quiet reading: the whole box's Agent sessions where the box sat quiet (`quietAgents`), else the GB of its quiet trees
+ * (`quietTrees`).
+ */
+export function quietReadings(lines: readonly WatchLine[], from: number, to: number, quietMs: number): QuietReading[] {
+  const whole = new Map(quietAgents(lines, from, to, quietMs).map(minute => [`${minute.host} ${minute.at}`, minute] as const));
+  const readings = quietTrees(lines, from, to, quietMs).map(reading => {
+    const box = whole.get(`${reading.host} ${reading.at}`);
+    whole.delete(`${reading.host} ${reading.at}`);
+    return box ? { ...reading, gb: box.agents.gb, whole: box } : reading;
+  });
+  for (const box of whole.values()) readings.push({ host: box.host, at: box.at, gb: box.agents.gb, trees: [], whole: box });
+  return readings.sort((a, b) => a.at - b.at);
+}
+
 /**
  * The hung tool calls (src/hung-calls.ts) in the newest watch line of the window that judges them, or undefined when no line in the window was
  * written by a watch that judges calls (lines before 10-19 12Z carry neither `calls` nor `hung`, and agents.hung).
@@ -554,6 +614,17 @@ const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an un
   (agents.swapGb ? ` (${agents.swapGb} GB of it in swap)` : "") + (agents.cacheGb !== undefined ? ` with ${agents.cacheGb} GB of file cache beside it` : "") +
   `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
   (agents.hung ? `, ${agents.idle} idle and ${agents.hung} in a hung tool call` : ` and ${agents.idle} idle`);
+/**
+ * A box minute's quiet trees in the flag's words: their GB, the 5 largest by tree, pid, GB and the time their stretch began, and the workers
+ * still at work beside them.
+ */
+function quietTreeWords(reading: QuietReading, quietWords: number): string {
+  const named = reading.trees.slice(0, 5).map(tree => `${tree.tree || tree.root.slice(0, 8) || "no live session"} (pid ${tree.pid}, ${tree.gb} GB, quiet since ${clock(tree.since)})`);
+  const rest = reading.trees.length - named.length;
+  return `${reading.host}'s ${reading.trees.length} ${reading.trees.length === 1 ? "tree" : "trees"} with no session working for ${quietWords} min or more held ${reading.gb} GB ` +
+    `at ${clock(reading.at)}${named.length ? `: ${named.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}` : ""}. The rest of the box had a session at work, so its whole ` +
+    `Agent sessions reading is no quiet number. The target is under ${QUIET_TARGET_GB} GB for what quiet trees hold.`;
+}
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 /** What `planCounts` reads: the chats with their duty runs, their live boards and the owners of their open steps. */
 export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named">;
@@ -699,8 +770,10 @@ export function measure(input: Inputs): PrecheckOutput {
   }
   const { stuck, redDuties } = planCounts(input);
   const quietMs = input.quietMs ?? QUIET_MINUTES * MINUTE;
-  const quiet = quietAgents(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
-  const worst = quiet.reduce<QuietMinute | undefined>((top, minute) => !top || minute.agents.gb >= top.agents.gb ? minute : top, undefined);
+  const quiet = quietReadings(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
+  const worst = quiet.reduce<QuietReading | undefined>((top, reading) => !top || reading.gb >= top.gb ? reading : top, undefined);
+  const worstByHost = new Map<string, QuietReading>();
+  for (const reading of quiet) if ((worstByHost.get(reading.host)?.gb ?? -1) <= reading.gb) worstByHost.set(reading.host, reading);
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
   const browsers = testBrowsers(latest);
@@ -710,7 +783,7 @@ export function measure(input: Inputs): PrecheckOutput {
     queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length,
     cell_holds_30: poolHeld.filter(hold => hold.cell).length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
-    ...worst ? { quiet_agent_gb: worst.agents.gb } : {},
+    ...worst ? { quiet_agent_gb: worst.gb } : {},
     oversized_procs: oversize.length,
     mac_test_browsers: browsers.length,
     usable_min_30: usable,
@@ -732,6 +805,7 @@ export function measure(input: Inputs): PrecheckOutput {
     cut_jobs_held: cutHeld.length,
     ...hung ? { hung_calls: hung.calls.length } : {},
   };
+  for (const [name, reading] of worstByHost) metrics[`quiet_agent_gb_${name.replace(/[^A-Za-z0-9]+/g, "_")}`] = reading.gb;
   for (const [name, count] of perHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
     metrics[`usable_min_30_${key}`] = count.usable;
@@ -757,10 +831,11 @@ export function measure(input: Inputs): PrecheckOutput {
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
   const quietWords = Math.round(quietMs / MINUTE);
-  if (worst) flagged.push({ kind: "quiet_agents", excerpt: `${worst.host}'s Agent sessions held ${agentWords(worst.agents)} at ${clock(worst.at)}, ` +
-    `${Math.round((worst.at - worst.since) / MINUTE)} min into a stretch with no session working that began by ${clock(worst.since)}; ` +
-    `the target is under ${QUIET_TARGET_GB} GB once ${quietWords} min pass with nobody working. ${quiet.length} box minutes in the window sat past that mark.` });
-  else flagged.push({ kind: "gap", excerpt: `No box went ${quietWords} min with no session working in the last 30 minutes, so quiet_agent_gb has no minute to judge` });
+  if (worst?.whole) flagged.push({ kind: "quiet_agents", excerpt: `${worst.host}'s Agent sessions held ${agentWords(worst.whole.agents)} at ${clock(worst.at)}, ` +
+    `${Math.round((worst.at - worst.whole.since) / MINUTE)} min into a stretch with no session working that began by ${clock(worst.whole.since)}; ` +
+    `the target is under ${QUIET_TARGET_GB} GB once ${quietWords} min pass with nobody working. ${quiet.filter(reading => reading.whole).length} box minutes in the window sat past that mark.` });
+  else if (worst) flagged.push({ kind: "quiet_agents", excerpt: quietTreeWords(worst, quietWords) });
+  else flagged.push({ kind: "gap", excerpt: `No box line in the last 30 minutes listed its workers or went ${quietWords} min with no session working, so quiet_agent_gb has no minute to judge` });
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });

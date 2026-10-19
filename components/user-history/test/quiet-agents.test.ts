@@ -78,9 +78,12 @@ test("the quiet window is one setting: minutes inside it are not judged, and a b
   const recent = evening(101.26, at => at <= Date.parse("2026-10-18T23:35:30Z"));
   assert.deepEqual(quietAgents(recent, RUN - 31 * MIN, RUN, 15 * MIN), [], "11 min after the last turn is inside the window");
   assert.equal(quietAgents(recent, RUN - 31 * MIN, RUN, 10 * MIN).length, 1, "a 10 min setting judges 23:46Z");
-  const busy = measure({ now: RUN, watch: evening(101.26, () => true), log: { holds: [] }, chats: [], quietMs: 15 * MIN });
+  const busyLines = evening(101.26, () => true);
+  assert.equal(measure({ now: RUN, watch: busyLines, log: { holds: [] }, chats: [], quietMs: 15 * MIN }).metrics.quiet_agent_gb, 0,
+    "a box at work whose lines list its workers reads what its quiet trees hold, here none (test/quiet-trees.test.ts)");
+  const busy = measure({ now: RUN, watch: busyLines.map(({ byWorker: _byWorker, ...line }) => line), log: { holds: [] }, chats: [], quietMs: 15 * MIN });
   assert.equal(busy.metrics.quiet_agent_gb, undefined);
-  assert.match(judge(duty.metrics, busy).summary, /not measured: the precheck gave no value for quiet_agent_gb \(No box went 15 min with no session working/);
+  assert.match(judge(duty.metrics, busy).summary, /not measured: the precheck gave no value for quiet_agent_gb \(No box line in the last 30 minutes listed its workers or went 15 min with no session working/);
   const gap = evening(101.26, at => at <= lastTurn).filter(line => Date.parse(line.at) < Date.parse("2026-10-18T23:30:00Z") || Date.parse(line.at) > Date.parse("2026-10-18T23:34:00Z"));
   assert.ok(quietAgents(gap, RUN - 31 * MIN, RUN, 15 * MIN).every(minute => minute.since >= Date.parse("2026-10-18T23:34:00Z")), "a watch gap restarts the stretch");
 });
