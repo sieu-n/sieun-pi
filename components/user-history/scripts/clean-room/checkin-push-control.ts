@@ -133,10 +133,8 @@ function agentsOf(dir: string, chat: { id: string; name: string }): { jobs: Map<
   return { jobs, duty, first };
 }
 /**
- * (i): the first reply names a measured number and does not open by putting the answer off. A date, a clock time, "top N" and the task's own
- * numbers are no measurement. A put-off word counts before the first measured number, or anywhere when the reply has none: a reply that gives
- * its number and then names the job it started answers first (r3e's Reddit reply read "all 7 Reddit crawl operations are blocked live" before
- * "I started the job", and the unit list read no number in it).
+ * (i): the first reply names a measured number (c52). A date, a clock time, "top N" and the task's own numbers are no measurement. Where the
+ * number sits in the reply is free: the owner dropped the number-first rule on 10-19.
  */
 /**
  * Whether the job had finished by `at`: the last Agents card snapshot at or before it that lists the job shows it done. A spawned helper hands
@@ -152,10 +150,8 @@ export function firstReply(events: readonly SessionEvent[], since: number, task 
   const own = new Set(task.match(/\d+/g) ?? []);
   const plain = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2})?Z?\b|\btop \d+\b|\b\d+ of \d+\b(?= gaps| failures| (?:written|measured))/gi, " ");
   const numbers = [...plain.matchAll(/(?<![\w.])\d[\d,.]*%?(?![\w])/g)].filter(match => !own.has(match[0]!.replace(/[,.%]+$/, "")));
-  const firstAt = numbers[0]?.index ?? plain.length;
-  const defers = plain.slice(0, firstAt).match(/nothing is measured yet|i started|i've started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
-  return { id: "i", ok: reply ? numbers.length > 0 && defers.length === 0 : false, detail: reply
-    ? `numbers ${numbers.map(match => match[0]).join(", ") || "none"}; put-off words before the first number ${defers.map(word => `"${word}"`).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
+  return { id: "i", ok: reply ? numbers.length > 0 : false, detail: reply
+    ? `numbers ${numbers.map(match => match[0]).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
 }
 const taskText = (name: string): string => TASKS[name] ?? "";
 

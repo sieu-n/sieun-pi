@@ -193,7 +193,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const head = findSession(state.chat.id);
   const firstReply = head.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= state.windowStart)?.text ?? "";
   const measured = firstReply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|days?|h|hours?)\b/gi) ?? [];
-  const defers = firstReply.match(/nothing is measured yet|i started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
+  const defers = firstReply.match(/nothing is measured yet|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
   checks.push({ id: "i", ok: firstReply ? measured.length > 0 && defers.length === 0 : false, detail: firstReply
     ? `measured numbers ${measured.length ? measured.join(", ") : "none"}; put-off words ${defers.length ? defers.map(word => `"${word}"`).join(", ") : "none"}. First reply: "${clip(firstReply, 700)}"` : "the chat has not replied" });
 
