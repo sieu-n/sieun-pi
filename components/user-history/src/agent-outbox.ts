@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
 import type { PeerReach } from "./host-reach.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
@@ -208,15 +209,21 @@ export interface Stop { record: "delete" | "archive"; reason: string; at?: numbe
 
 /**
  * The records that stop a target: `deleted-jobs.json` lists the jobs the cleanup deleted, by root and job folder
- * (`session-artifacts/<root>/<job>/<session>.jsonl`), and `archived-chats.json` the chats the owner archived.
+ * (`session-artifacts/<root>/<job>/<session>.jsonl`), and `archived-chats.json` the chats the owner archived. A clean-room test chat
+ * (`clean-room-chats.json`) that is archived was torn down, so it and every session of its tree take only a message, whenever they set a wake.
  */
 export function stopRecords(dataDir: string): (session: string, file: string | null) => Promise<Stop | null> {
   const read = async (name: string): Promise<unknown> => JSON.parse(await readFile(join(dataDir, name), "utf8").catch(() => "null"));
+  const ids = async (name: string): Promise<unknown[]> => { const index = await read(name) as { ids?: unknown } | null; return Array.isArray(index?.ids) ? index.ids : []; };
   return async (session, file) => {
     const job = file ? /\/session-artifacts\/([0-9a-f-]{36})\/([^/]+)\/[^/]+\.jsonl$/.exec(file) : null;
     const deleted = job ? (await read("deleted-jobs.json") as Record<string, Record<string, unknown>> | null)?.[job[1]!]?.[job[2]!] : undefined;
     if (typeof deleted === "number") return { record: "delete", reason: `the cleanup deleted the target job ${job![2]} at ${new Date(deleted).toISOString()}` };
     const archived = await read("archived-chats.json") as { ids?: unknown; at?: Record<string, unknown> } | null;
+    const root = treeOf(file) ?? session;
+    if (Array.isArray(archived?.ids) && archived.ids.includes(root) && (await ids(CLEAN_ROOM_CHATS_FILE)).includes(root)) {
+      return { record: "archive", reason: `the clean-room teardown archived the test chat ${root}` };
+    }
     if (!Array.isArray(archived?.ids) || !archived.ids.includes(session)) return null;
     const at = archived.at?.[session];
     return { record: "archive", reason: "the owner archived the target chat", ...typeof at === "number" ? { at } : {} };

@@ -249,7 +249,7 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 /** A due wake the service could not send this tick: held by the old fleet budget, or a send the daemon failed. */
-const WAKE_HELD = /^wakes: wake (\w{8}) for .*; tried again next tick$/;
+const WAKE_HELD = /^wakes: wake ([\w-]+) for .*; tried again next tick$/;
 /**
  * A run wake whose run read failed this tick. On 10-18 the CI cache answered "not in the cache" for three slack-green runs every 2 min for 60
  * to 71 h, and the jobs that set those wakes were never woken, while queue_holds_30 read 0.

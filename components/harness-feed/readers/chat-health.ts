@@ -255,7 +255,7 @@ export function quietAgents(lines: readonly WatchLine[], from: number, to: numbe
 // ---- service.log, pi-pool.log and the supervisor's logs ----
 
 const TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
-const WAKE_HELD = /^wakes: wake (\w{8}) for .*; tried again next tick$/;
+const WAKE_HELD = /^wakes: wake ([\w-]+) for .*; tried again next tick$/;
 const RUN_UNREADABLE = /^wakes: run (\d+): /;
 const STARTED_AFTER = /^fleet budget: (\S+) (.+) starts after (\d+) s$/;
 const HOLD_GAP_MS = 5 * MINUTE;

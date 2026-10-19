@@ -128,10 +128,10 @@ export class Wakes {
         const root = wakes.find(({ wake }) => wake.root)?.wake.root;
         await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
         for (const { file } of wakes) await rm(file, { force: true });
-        this.deps.log(`wakes: woke ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
+        this.deps.log(`wakes: woke ${session} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
         return true;
       } catch (error) {
-        this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+        this.deps.log(`wakes: wake ${session} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
         return false;
       } finally { await this.moved(); }
     }));
