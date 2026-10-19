@@ -125,6 +125,36 @@ for (const provider of ['anthropic', 'openai-codex']) {
     await run.footer();
     assert.match(run.state.widgets.at(-1), /^account Manual off-id · consumer_terms$/);
   });
+
+  test(`${provider} Manual hook waits for its selected account without changing identity`, async () => {
+    const slotAt = Date.now() / 1000 + 120;
+    const run = session({ provider, selection: manual, info: { wait: { account: manual.account_id, slot_at: slotAt } } });
+    const result = await run.message({
+      ...failure(403, provider),
+      errorMessage: `Failed to resolve API key for provider "${provider}" from shell command: /x/bin/pi-pool-token`,
+      diagnostics: [{ type: 'agent_lifecycle_failure', details: { reason: 'hook failed' } }],
+    });
+    assert.equal(result.diagnostics.length, 1);
+    assert.equal(result.diagnostics[0].type, 'provider_stream_failure');
+    assert.equal(result.diagnostics[0].details.status, 429);
+    assert.ok(result.diagnostics[0].details.retryAfterMs > 0);
+    assert.match(result.errorMessage, /Manual Off account remains selected; this session waits for its slot/);
+    assert.deepEqual(run.state.calls.map(([verb]) => verb), ['who']);
+    assert.deepEqual(run.state.selection, manual);
+  });
+
+  test(`${provider} Manual auth refusal wins over a matching old wait`, async () => {
+    const run = session({ provider, selection: manual, info: { error: 'needs-reauth', wait: { account: manual.account_id, slot_at: 12345 } } });
+    const message = {
+      ...failure(403, provider),
+      errorMessage: `Failed to resolve API key for provider "${provider}" from shell command: /x/bin/pi-pool-token`,
+      diagnostics: [{ type: 'agent_lifecycle_failure' }],
+    };
+    const result = await run.message(message);
+    assert.deepEqual(result.diagnostics, message.diagnostics);
+    assert.match(result.errorMessage, /needs-reauth/);
+    assert.doesNotMatch(result.errorMessage, /waits for its slot/);
+  });
 }
 
 test('Manual footer ignores an old vend and its proposed next account', async () => {

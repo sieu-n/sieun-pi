@@ -458,6 +458,11 @@ Manual mode keeps the original provider failure and diagnostics. It never rewrit
 429, refusal or token-hook failure to retry on another identity. The following rotation
 rules apply only to Auto.
 
+A token-hook failure with a scheduled wait for the selected Manual account waits until
+that slot and retries the same account. The message names the account and slot time.
+An authentication error or a wait for a different account remains a failure, with the
+pool's error included, so a stale wait cannot hide a blocked Manual selection.
+
 Usage figures come from samples that can be 15 minutes old, so the provider's
 own 429 is the first sign that an account is used up. The extension handles it on
 `message_end`:

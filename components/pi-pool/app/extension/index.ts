@@ -259,7 +259,7 @@ function waitMs(slotAt: number): number {
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 
-function manualFailure(message: AssistantMessage, selection: Extract<Selection, { mode: "manual" }>): AgentMessage {
+function manualFailure(message: AssistantMessage, selection: Extract<Selection, { mode: "manual" }>): AssistantMessage {
 	return { ...message, errorMessage: `${message.errorMessage ?? ""} pi-pool: ${selectionName(selection)} remains selected.`.trim() };
 }
 
@@ -356,8 +356,17 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 	if (!message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")) return undefined;
 	const info = (await who(true))?.providers?.[message.provider];
 	if (!info) return undefined;
-	if (info.selection.mode === "manual") return manualFailure(message, info.selection);
 	const wait = info.wait;
+	if (info.selection.mode === "manual") {
+		// A wait for this exact pin is transient; an old wait or an auth refusal is not.
+		if (!info.error && wait?.account === info.selection.account_id && typeof wait.slot_at === "number") {
+			const label = info.current?.id === info.selection.account_id ? info.current.label ?? info.current.email : undefined;
+			const said = `pi-pool: ${selectionName(info.selection, label)} remains selected; this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
+			return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);
+		}
+		const result = manualFailure(message, info.selection);
+		return info.error ? { ...result, errorMessage: `${result.errorMessage} ${info.error}` } : result;
+	}
 	if (wait && typeof wait.slot_at === "number") {
 		const said = `pi-pool: this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
 		return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);
