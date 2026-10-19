@@ -330,7 +330,6 @@ It runs Prime Agent 0.9.8 on macOS. Every item below is public or installable.
 | sieun-pi | The skills, extensions and rules in this repository. | This repo: `npm install --global --ignore-scripts 'git+https://github.com/sieu-n/sieun-pi.git'` |
 | Aside | The browser agents drive through the `aside-browser` skill and the `aside` MCP server. | Third party: app from [aside.com/download](https://aside.com/download), CLI with `curl -fsSL https://releases.aside.com/install.sh \| bash` |
 | cua-driver | Reads and clicks native macOS apps through MCP. | Third party: `/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"` ([repo](https://github.com/trycua/cua)) |
-| Paper | Lets agents read and edit Paper design files through MCP. | Third party: install [Paper Desktop](https://paper.design/docs/mcp); it installs the `paper` CLI. |
 
 ### What sieun-pi installs
 
@@ -365,14 +364,13 @@ Merge this into `~/.prime/agent/settings.json`. Replace `<you>` with your macOS 
       "disabledTools": ["browser_click", "browser_dialog", "browser_download", "browser_navigate", "browser_pointer",
         "browser_prepare", "browser_set_input_files", "browser_type", "get_browser_state", "page",
         "kill_app", "install_extension", "install_ffmpeg", "escalate_session", "get_session_state"]
-    },
-    "paper": { "type": "stdio", "command": "/Users/<you>/.paper/bin/paper", "args": ["mcp"], "startupTimeoutMs": 30000, "callTimeoutMs": 130000 }
+    }
   }
 }
 ```
 
 - Prime runs an MCP `command` without a shell, so `~` and `$HOME` do not expand. Use a name on the daemon's `PATH` or a full path.
-- On the author's Mac, `aside` and `cua-driver` are links in `~/.local/bin`. Paper's CLI sits in `~/.paper/bin`, which is not on `PATH`, so it needs the full path.
+- On the author's Mac, `aside` and `cua-driver` are links in `~/.local/bin`.
 - The `cua-driver` list turns off its browser tools, so browser work goes through Aside. It also turns off tools that kill apps or install software.
 - The `waitForUsage` block waits up to about 5 hours for a usage limit to reset. It does not park the session, because pi-pool moves a limited session to another account first.
 - To hide a skill you do not use, add `"-/Users/<you>/.prime/agent/skills/<name>"` to a `"skills"` list.

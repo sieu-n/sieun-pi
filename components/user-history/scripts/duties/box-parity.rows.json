@@ -578,20 +578,6 @@
   ]
  },
  {
-  "id": "mcp-paper",
-  "tool": "MCP paper",
-  "mac": [
-   {
-    "const": "ok"
-   }
-  ],
-  "box": [
-   {
-    "mcp": "paper"
-   }
-  ]
- },
- {
   "id": "kernel-venv-packages",
   "tool": "kernel venv packages",
   "probes": [
@@ -2347,20 +2333,6 @@
   "box": [
    {
     "panel": "aside_account"
-   }
-  ]
- },
- {
-  "id": "tools-panel-check-paper-mcp",
-  "tool": "tools-panel check paper_mcp",
-  "mac": [
-   {
-    "const": "ok"
-   }
-  ],
-  "box": [
-   {
-    "panel": "paper_mcp"
    }
   ]
  },

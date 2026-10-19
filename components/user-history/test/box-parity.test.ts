@@ -52,12 +52,12 @@ test("judgeRows counts misses, folds in panel outcomes and keeps intended and by
     { id: "poppler", tool: "cli pdftotext", probes: [{ version: ["pdftotext", "-v"], intended: "no Linux build" }] },
     { id: "hermes", tool: "cli hermes", probes: [{ which: "hermes" }], byDesign: "Mac-only agent" },
     { id: "panel", tool: "tools-panel check gh_auth", mac: [{ const: "ok" }], box: [{ panel: "gh_auth" }] },
-    { id: "panel-off", tool: "tools-panel check paper_mcp", mac: [{ const: "ok" }], box: [{ panel: "paper_mcp" }] },
+    { id: "panel-off", tool: "tools-panel check aside_tabs", mac: [{ const: "ok" }], box: [{ panel: "aside_tabs" }] },
   ];
   const mac = output("mac", { pnpm: ["v:10.33.0"], poppler: ["v:26.08.0"], hermes: ["ok"], panel: ["ok"], "panel-off": ["ok"] });
   const box = output("box", { pnpm: ["v:10.32.1"], poppler: ["v:26.07.0"], hermes: ["absent"], panel: ["panel"], "panel-off": ["panel"] });
   const panel = new Map([["gh_auth", { status: "fail" as const, fixer: "agent" as const, detail: "not logged in", fix: "log in" }],
-    ["paper_mcp", { status: "off" as const, detail: "Paper closed" }]]);
+    ["aside_tabs", { status: "off" as const, detail: "the Mac is asleep" }]]);
   const result = judgeRows(rows, mac, box, panel);
   assert.deepEqual(result.off.map(verdict => verdict.row.id), ["pnpm", "panel"]);
   assert.match(result.off[1]!.why, /not logged in/);

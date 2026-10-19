@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { CHECKS, type Deps, type ExecResult, runChecks, toOutput } from "../scripts/duties/skills-and-tools.ts";
+import type { DutyStore } from "../src/chat-duty-store.ts";
+import { dailyRun } from "../src/chat-tools.ts";
+import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
 
 const asideTabs = CHECKS.find(check => check.id === "aside_tabs")!;
 const deps = (platform?: NodeJS.Platform): Deps => ({
@@ -136,12 +142,12 @@ test("skill_paths runs check-skill-paths.mjs with the modules it imports at HEAD
   assert.ok(dead.status === "fail" && dead.detail.includes("apps/x.ts"), JSON.stringify(dead));
 });
 
-const macChecks = CHECKS.filter(check => ["aside_tabs", "aside_account", "paper_mcp"].includes(check.id));
+const macChecks = CHECKS.filter(check => ["aside_tabs", "aside_account"].includes(check.id));
 const tailscale = (online: boolean) => JSON.stringify({ Peer: { "nodekey:1": { DNSName: "main-dev-sieuns-macbook-pro-m2max.tail0c093d.ts.net.", TailscaleIPs: ["100.66.173.18"], Online: online, LastSeen: "2026-10-18T11:10:00Z" } } });
 const macDeps = (online: boolean, account: ExecResult, calls: string[]): Deps => ({
   ...deps("linux"),
   now: () => Date.parse("2026-10-18T13:24:00Z"),
-  readFile: async () => JSON.stringify({ mcpServers: { aside: { command: "aside", args: ["mcp"] }, paper: { command: "/usr/bin/ssh", args: ["mac", "paper", "mcp"] } } }),
+  readFile: async () => JSON.stringify({ mcpServers: { aside: { command: "aside", args: ["mcp"] }} }),
   mcp: async command => { calls.push(`mcp ${command}`); return { tools: [], error: "the server exited with code 255 before answering" }; },
   exec: async (file, args) => {
     calls.push(`${file} ${args.join(" ")}`);
@@ -152,14 +158,14 @@ const macDeps = (online: boolean, account: ExecResult, calls: string[]): Deps =>
 });
 const TIMED_OUT = { code: 124, stdout: "", stderr: "", ms: 10_002 };
 
-test("an offline Mac turns aside_tabs, aside_account and paper_mcp off, with no owner fix and one Tailscale probe", async () => {
+test("an offline Mac turns aside_tabs and aside_account off, with no owner fix and one Tailscale probe", async () => {
   const calls: string[] = [];
   const results = await runChecks(macDeps(false, TIMED_OUT, calls), macChecks);
   for (const { check, outcome } of results) {
     assert.equal(outcome.status, "off", `${check.id} ${JSON.stringify(outcome)}`);
     assert.ok(outcome.detail.includes("MacBook Pro is offline (Tailscale last seen 2h ago)"), outcome.detail);
   }
-  assert.deepEqual(toOutput(results, 0).metrics, { checks_failed: 0, owner_fixes: 0, cua_failed: 0, websearch_failed: 0, checks_run: 3 });
+  assert.deepEqual(toOutput(results, 0).metrics, { checks_failed: 0, owner_fixes: 0, cua_failed: 0, websearch_failed: 0, checks_run: 2 });
   assert.deepEqual(calls, ["ssh -G mac", "tailscale status --json"]);
 });
 
@@ -172,4 +178,16 @@ test("aside_account on an online Mac keeps a signed-out reply as the owner's fix
 test("aside_account on an online Mac calls a timeout a reach problem, not a sign-in", async () => {
   const outcome = await CHECKS.find(check => check.id === "aside_account")!.run(macDeps(true, TIMED_OUT, []));
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("ssh mac true") && !outcome.fix.includes("sign in"), JSON.stringify(outcome));
+});
+
+test("dailyRun drops a flagged check that CHECKS no longer has", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "daily-run-"));
+  const detail = join(dir, "out.json");
+  await writeFile(detail, JSON.stringify({ flagged: [{ kind: "off", item: "aside_tabs", excerpt: "Mac asleep" }, { kind: "off", item: "paper_mcp", excerpt: "Paper closed" }] }));
+  const duty = { id: "d5", name: "Skills and tools", precheck: { command: ["node", "scripts/duties/skills-and-tools.ts"] } } as unknown as Duty;
+  const record = { duty: "d5", at: 1, detail, verdict: "met", metrics: {}, summary: "" } as unknown as DutyRunRecord;
+  const store = { dir, chats: async () => ["c1"], list: async () => [duty], runs: async () => [record] } as unknown as DutyStore;
+  const run = await dailyRun(store);
+  assert.deepEqual(run?.problems.map(problem => problem.id), ["aside_tabs"]);
+  await rm(dir, { recursive: true, force: true });
 });

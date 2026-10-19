@@ -18,10 +18,10 @@ import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.t
  * A `--only` run is the duty job's re-check after a fix; it is also appended to RECHECKS_FILE (RECHECKS_FILE env overrides the path).
  */
 
-export type Group = "computer use" | "web search" | "browser" | "mcp" | "prime skills" | "accounts" | "peers" | "service clis" | "repo skills";
+export type Group = "computer use" | "web search" | "browser" | "prime skills" | "accounts" | "peers" | "service clis" | "repo skills";
 /** Who fixes a failure: the duty job itself, or the owner (a sign-in only he can do, a password, a key, a macOS grant, a paid install). */
 export type Fixer = "agent" | "owner";
-/** pass; fail with who fixes it; off = installed but not running on purpose (Paper Desktop closed), never a failure. */
+/** pass; fail with who fixes it; off = installed but not reachable on purpose (the Mac asleep), never a failure. */
 export type Outcome = { status: "pass"; detail: string } | { status: "fail"; fixer: Fixer; detail: string; fix: string } | { status: "off"; detail: string };
 /** `first` checks run before the rest, because they change what the others read (cua_version installs a new cua-driver and restarts its daemon). */
 export interface Check { id: string; group: Group; tool: string; first?: true; run: (deps: Deps) => Promise<Outcome> }
@@ -106,12 +106,12 @@ async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
   return false;
 }
 
-/** Whether host `mac` is up, for the checks that reach the Mac's Aside and Paper over ssh from the linux box. */
+/** Whether host `mac` is up, for the checks that reach the Mac's Aside over ssh from the linux box. */
 export type MacReach = { online: true } | { online: false; detail: string };
 const macReaches = new WeakMap<Deps, Promise<MacReach>>();
 /**
- * On linux, `aside` (~/.local/bin/aside-mac) and the paper MCP run over `ssh mac`, so a closed MacBook Pro failed aside_tabs, aside_account and
- * paper_mcp at once on 10-18 13:24Z and told the owner to sign in to Aside. Tailscale's peer entry says whether the Mac is up without a network
+ * On linux, `aside` (~/.local/bin/aside-mac) runs over `ssh mac`, so a closed MacBook Pro failed aside_tabs and aside_account
+ * at once on 10-18 13:24Z and told the owner to sign in to Aside. Tailscale's peer entry says whether the Mac is up without a network
  * wait; it runs once per run (one promise per Deps), and anything it cannot read counts as online so the checks run as before.
  */
 function macReach(deps: Deps): Promise<MacReach> {
@@ -126,7 +126,7 @@ async function probeMac(deps: Deps): Promise<MacReach> {
   if (!host) return { online: true };
   const reach = peerReach((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: 10_000 })).stdout, host);
   if (reach.online) return reach;
-  return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside and Paper answer again when it wakes` };
+  return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside answers again when it wakes` };
 }
 const MAC_REACH_FIX = "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check";
 
@@ -387,19 +387,6 @@ export const CHECKS: readonly Check[] = [
     if (line) return PASS(brief(line[0], 100));
     if (result.code !== 0) return FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
     return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
-  } },
-  { id: "paper_mcp", group: "mcp", tool: "Paper MCP", run: async deps => {
-    const mac = await macReach(deps);
-    if (!mac.online) return { status: "off", detail: mac.detail };
-    const server = await mcpServer(deps, "paper");
-    if (typeof server === "string") return missingServer("paper", server);
-    const answer = await deps.mcp(server.command, server.args ?? [], { name: "list_resources", arguments: { limit: 1 } }, MCP_TIMEOUT_MS);
-    if (answer.error || !answer.tools.length) return FAIL("agent", `MCP handshake: ${answer.error ?? "no tools"}`, "run `paper mcp` and read why the relay does not start");
-    const result = answer.result as { isError?: boolean; content?: { text?: string }[] } | undefined;
-    const text = result?.content?.map(item => item.text ?? "").join(" ") ?? "";
-    if (result?.isError && /isn't running/.test(text)) return { status: "off", detail: "Paper Desktop is closed; agents must not open it" };
-    if (result?.isError) return FAIL("agent", `list_resources: ${brief(text, 200)}`, "open the Paper relay logs and find why the read call fails");
-    return PASS(`${answer.tools.length} tools, desktop answers`);
   } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {
     const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: 15_000 });

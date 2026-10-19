@@ -10,6 +10,7 @@ import type { ToolCheck, ToolKind, ToolsDailyRun, ToolsRecheck, ToolsView } from
 /** The Skills and tools duty's checks that Settings > Tools and skills runs live, in CHECKS order. websearch_query is a paid Virev search. */
 const TOOL_CHECK_IDS = new Set(["aside_tabs", "aside_account", "websearch_kernel", "websearch_query", "cua_permissions", "cua_mcp"]);
 const TOOL_CHECKS = CHECKS.filter(check => TOOL_CHECK_IDS.has(check.id));
+const CHECK_IDS = new Set(CHECKS.map(check => check.id));
 /** How long one live result serves view(false), so opening the tab again does not pay for another search. */
 export const TOOLS_CACHE_MS = 5 * 60_000;
 
@@ -52,7 +53,10 @@ async function latestRechecks(file: string, since: number): Promise<Map<string, 
   return latest;
 }
 
-/** The newest run of any duty whose precheck runs skills-and-tools.ts, across every chat, with the checks its saved output flagged as failing or off. */
+/**
+ * The newest run of any duty whose precheck runs skills-and-tools.ts, across every chat, with the checks its saved output flagged as failing or off.
+ * A flagged check that CHECKS no longer has is dropped, so a removed check (paper_mcp, 10-19) leaves the panel at once instead of after the next run.
+ */
 export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> {
   let newest: { chatId: string; duty: Duty; record: DutyRunRecord } | undefined;
   for (const chatId of await store.chats()) {
@@ -68,7 +72,7 @@ export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> 
   const output = record.detail ? await readFile(record.detail, "utf8").then(text => JSON.parse(text) as Partial<PrecheckOutput> | null).catch(() => undefined) : undefined;
   const problems = (Array.isArray(output?.flagged) ? output.flagged : []).flatMap((slice): ToolsDailyRun["problems"] => {
     const status = slice?.kind === "off" ? "off" : slice?.kind === "fail_agent" || slice?.kind === "fail_owner" ? "fail" : undefined;
-    return status && typeof slice.item === "string" ? [{ id: slice.item, status, text: String(slice.excerpt ?? "") }] : [];
+    return status && typeof slice.item === "string" && CHECK_IDS.has(slice.item) ? [{ id: slice.item, status, text: String(slice.excerpt ?? "") }] : [];
   });
   const rechecks = await latestRechecks(join(store.dir, RECHECKS_FILE), record.at);
   for (const problem of problems) { const recheck = rechecks.get(problem.id); if (recheck) problem.recheck = recheck; }

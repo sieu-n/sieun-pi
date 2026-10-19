@@ -32,7 +32,7 @@ def nvm_bin():
 def search_path():
     nvm = nvm_bin()
     dirs = [HOME + "/.local/bin", HOME + "/.bun/bin"] + nvm + [HOME + "/.local/share/pnpm", HOME + "/.local/node/bin", "/opt/homebrew/bin", "/opt/homebrew/sbin",
-            "/usr/local/bin", HOME + "/.docker/bin", "/usr/bin", "/bin", "/snap/bin", HOME + "/bin", HOME + "/.cargo/bin", HOME + "/go/bin", HOME + "/.paper/bin", "/usr/sbin", "/sbin"]
+            "/usr/local/bin", HOME + "/.docker/bin", "/usr/bin", "/bin", "/snap/bin", HOME + "/bin", HOME + "/.cargo/bin", HOME + "/go/bin", "/usr/sbin", "/sbin"]
     seen = []
     for d in dirs + os.environ.get("PATH", "").split(":"):
         if d and d not in seen:

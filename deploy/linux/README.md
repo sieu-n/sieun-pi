@@ -71,7 +71,7 @@ prime-agent --version   # 0.9.8
 # Bun for the poteto-mode scripts
 curl -fsSL https://bun.sh/install | bash && export PATH=$HOME/.bun/bin:$PATH
 
-# settings.json first, so apply keeps it; the Tools section below adds the aside and cua-driver MCP servers (Paper is macOS only)
+# settings.json first, so apply keeps it; the Tools section below adds the aside and cua-driver MCP servers
 mkdir -p ~/.prime/agent && install -m 0600 /dev/stdin ~/.prime/agent/settings.json <<'EOF'
 {"telemetry":{"enabled":false},"defaultProvider":"anthropic","defaultModel":"claude-opus-5-5","defaultThinkingLevel":"high",
  "packages":[],"bundledSkills":{"websearch":false},
