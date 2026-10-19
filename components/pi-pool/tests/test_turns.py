@@ -408,6 +408,12 @@ class Cli(unittest.TestCase):
         self.assertEqual([e["kind"] for e in logged], ["ahead", "owner"])
         self.assertEqual(logged[1]["waited_s"], 0.0)
 
+    def test_owner_turn_does_nothing_while_the_queue_is_off(self):
+        """10-19: the box wrote 3,956 owner marks with its queue off, each under the pool flock."""
+        self.set("agent_queue_on", "0")
+        self.assertEqual(json.loads(self.run_cli("owner-turn", "boss").stdout), {"session": "boss", "state": "off"})
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "state.json")))
+
     def test_off_admits_everything_records_nothing_and_keeps_the_limit(self):
         self.set("agent_queue_on", "0")
         saved = read(os.path.join(self.dir, "config.json"))

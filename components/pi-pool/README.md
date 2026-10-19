@@ -612,7 +612,7 @@ One run of one session holds one working slot from its first model call to its a
 - With `--wait` the command prints one line each time its place changes and blocks until it prints the admitted or off line.
 - `--renew` renews a running session's lease, and a session whose slot lapsed works again at once and never queues.
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
-- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue.
+- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue. While the queue is off it does nothing and prints `{"session","state":"off"}`.
 - `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
 - `pi-pool snapshot --json [--thread <session> <model>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints, with "" for no session or model. The chat service reads the pool this way, one process per 2 s at most, where on 10-18 at 11:44Z it ran those commands about 3 times a second (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`: the class `priority --session <session>` keeps on that tree's record as the pool reads it (`normal` when the record has none), its sidebar label, and null priority when the tree has no record yet. The chat service reads it before it sets a class, so a restart sets only the roots whose record holds another class.
 - `pi-pool prod set '{"trees": {...}, "sessions": {...}, "until": <epoch sec>}'` names the trees and sessions on prod work, whose runs start at once as kind `prod`, and `pi-pool prod clear` drops the record.
@@ -638,7 +638,7 @@ A queued run gets one `pi-pool-queue` entry in its transcript that reads "Queued
 Stop reaches the waiting handler through `ctx.signal`, kills the wait and drops the entry (`tests/native/queue.mjs`).
 While the run holds its slot, its model calls renew the lease at most once every 5 minutes, and a timer releases the slot when it finds the session idle, because agent_end does not fire on some aborts.
 A run stuck in one tool call makes no model call, so its slot lapses after `lease_s` and its next model call takes it back at once: at 11:02 KST on 10-14 four runs held slots 2,653 to 2,937 s inside one bash or aside_browser call, kept by the old timer renewal.
-Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt.
+Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt, on the box that runs the session, and over ssh for a session on another box (`ownerTurnMarker` in components/user-history/src/chat-pool.ts).
 The extension marks none, because every prompt the daemon delivers reads as input source `interactive`: on 10-14 that hook marked 21 [job] notices, 6 [brief check] notes and 51 duty and check-in briefs as owner turns.
 A failed admit lets the run go, so a broken pool never stops the Mac's agents.
 

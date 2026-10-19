@@ -473,6 +473,10 @@ def cmd_owner_turn(rest):
     """The session's next admit is an owner turn. A queued run of the session starts now."""
     if len(rest) != 1 or rest[0].startswith("--"):
         raise SystemExit("usage: pi-pool owner-turn <session>")
+    # The box wrote 3,956 marks on 10-19 with its queue off, each under the pool flock that every token request takes.
+    if limits(base.config())[0] is None:
+        emit({"session": rest[0], "state": "off"})
+        return 0
 
     def mark(state, turns, now):
         answer, events = mark_owner(turns, rest[0], now, int(base.config()["lease_s"]))
