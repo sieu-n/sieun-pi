@@ -12,8 +12,7 @@ import { loadHosts, roleUrl } from "../../src/hosts.ts";
  * seeing today's numbers for both repos. auto-sns-agent's scripts/dev/code-health-daily.mjs writes them under the systemd user timer
  * code-health.timer (06:00 KST) on the wiki host, into apps/llm-wiki/content/.wiki/code-health.duckdb, the page, and a dated copy on the store box.
  * - report_days_7d reads the store: days of the last 7 KST days with metric rows for both repos.
- * - report_age_h reads the page the wiki serves and finds the store day whose numbers it shows, with code_health_page.py's own formatting.
- * - ranked_metrics_shown counts the 8 metrics the agent-code-metrics page ranks whose page rows show the newest store day's numbers for both repos.
+ * - ranked_metrics_shown reads the page the wiki serves and counts the 8 metrics the agent-code-metrics page ranks whose page rows show the newest store day's numbers for both repos, with code_health_page.py's own formatting.
  * - backup_age_h reads the newest dated copy on the store box.
  * - source_errors reads the step lines of the last run in the timer's log.
  * An input it cannot read sets its metric to UNMEASURED, so the run misses and the flagged items say why.
@@ -52,8 +51,8 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 
 export interface PageRow { repo: string; label: string; now: string }
 export interface Hotspot { repo: string; path: string }
-/** One store day as the helper prints it: repos with rows, runs, backfilled repos, and the table rows and top files code_health_page.py would render for it. */
-export interface StoreDay { repos: string[]; runs: { run_id: string; repo: string; ranAt: number | null }[]; backfilled: string[];
+/** One store day as the helper prints it: repos with rows, backfilled repos, and the table rows and top files code_health_page.py would render for it. */
+export interface StoreDay { repos: string[]; backfilled: string[];
   rows: (PageRow & { metric: string })[]; hotspots: Hotspot[] }
 /** The timer's state from systemd: when it last fired and whether its run is going now. */
 export interface TimerState { lastTrigger: number | null; running: boolean }
@@ -97,18 +96,6 @@ export function pageRows(html: string): PageRow[] {
 /** The repo and path of each row of the page's top files table. */
 export function pageHotspots(html: string): Hotspot[] {
   return sectionRows(html, "hotspots").filter(row => row.cells.length === 5).map(row => ({ repo: row.cells[0]!, path: row.cells[1]! }));
-}
-
-/** The newest store day whose rows for both repos are the rows the page shows, or null when the page shows no day of the store. */
-export function shownDay(page: PageRow[], days: Record<string, StoreDay>): string | null {
-  const key = (row: PageRow): string => `${row.repo}\t${row.label}\t${row.now}`;
-  const shown = new Set(page.map(key));
-  if (!REPOS.every(repo => page.some(row => row.repo === repo))) return null;
-  const match = Object.keys(days).sort().reverse().find(day => {
-    const rows = days[day]!.rows.filter(row => REPOS.includes(row.repo as (typeof REPOS)[number]));
-    return rows.length > 0 && rows.length === page.length && rows.every(row => shown.has(key(row)));
-  });
-  return match ?? null;
 }
 
 /** The newest store day with rows for both repos, or null. */
@@ -176,7 +163,6 @@ for n in range(count):
     q = lambda sql: con.execute(sql, [day]).fetchall()
     days[str(day)] = {
         "repos": [r for (r,) in q("SELECT DISTINCT repo FROM metrics WHERE day = ? ORDER BY repo")],
-        "runs": [{"run_id": a, "repo": b, "ranAt": c} for a, b, c in q("SELECT run_id, repo, epoch_ms(ran_at) FROM runs WHERE day = ?")],
         "backfilled": [r for (r,) in q("SELECT DISTINCT repo FROM metrics WHERE day = ? AND metric = 'backfilled' AND value = 1")],
         "rows": [{"repo": r["repo"], "metric": r["metric"], "label": r["label"], "now": ch.shown(r["value"], r["unit"])} for r in ch.headline(con, day)],
         "hotspots": [{"repo": r["repo"], "path": r["path"]} for r in ch.hotspots(con, day)],
@@ -220,7 +206,7 @@ async function newestBackup(exec: Exec): Promise<{ file: string; at: number }> {
 export async function measure(exec: Exec, fetchPage: () => Promise<string>, readLog: () => Promise<string>, now: number): Promise<PrecheckOutput> {
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: string, excerpt: string): void => { flagged.push({ at: now, kind, excerpt: excerpt.slice(0, 400) }); };
-  const metrics = { report_days_7d: UNMEASURED, report_age_h: UNMEASURED, backup_age_h: UNMEASURED, source_errors: UNMEASURED, ranked_metrics_shown: UNMEASURED };
+  const metrics = { report_days_7d: UNMEASURED, backup_age_h: UNMEASURED, source_errors: UNMEASURED, ranked_metrics_shown: UNMEASURED };
   const timer = await timerState(exec).catch((error: unknown) => { flag("source_error", `systemctl: ${message(error)}`); return { lastTrigger: null, running: false }; });
   flag("timer", `code-health.timer last fired ${timer.lastTrigger ? new Date(timer.lastTrigger).toISOString() : "never on this host"}, run going now: ${timer.running}`);
 
@@ -234,15 +220,7 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
     try {
       const html = await fetchPage();
       const page = pageRows(html);
-      const day = shownDay(page, days);
       const newest = newestDay(days);
-      if (!day) flag("page", `the page's ${page.length} table rows match no store day of the last 9 for both repos`);
-      else {
-        const runEnds = days[day]!.runs.filter(run => REPOS.some(repo => run.run_id.startsWith(`${repo}-`))).flatMap(run => run.ranAt ?? []);
-        const ranAt = runEnds.length ? Math.max(...runEnds) : Date.parse(`${day}T06:00:00+09:00`);
-        metrics.report_age_h = Math.round((now - ranAt) / HOUR * 10) / 10;
-        flag("page", `the page shows ${day}, from runs that ended ${new Date(ranAt).toISOString()}; newest store day with both repos is ${newest ?? "none"}`);
-      }
       const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!) : RANKED.map(({ name }) => ({ name, gaps: ["no store day of the last 9 has rows for both repos"] }));
       metrics.ranked_metrics_shown = ranked.filter(metric => !metric.gaps.length).length;
       flag("ranked", `${metrics.ranked_metrics_shown} of ${RANKED.length} ranked metrics show ${newest ?? "the newest day"}'s numbers for both repos on the page`);
