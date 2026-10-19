@@ -17,7 +17,7 @@
    */
   const PLOT = { left: 44, right: 8, top: 10, bottom: 22, height: 190 };
   const GROUPS: { id: UsageGroup; label: string }[] = [{ id: "none", label: "All" }, { id: "box", label: "By host" }, { id: "model", label: "By model" }, { id: "kind", label: "By kind" }];
-  const WINDOW_LABEL: Record<UsageWindow, string> = { "1h": "1h", "24h": "24h", "7d": "7d", "30d": "30d" };
+  const WINDOW_LABEL: Record<UsageWindow, string> = { "1h": "1h", "24h": "24h", "7d": "7d", "30d": "30d", "90d": "90d" };
   const isWindow = (value: string | null): value is UsageWindow => WINDOWS.includes(value as UsageWindow);
   const isGroup = (value: string | null): value is UsageGroup => GROUPS.some(entry => entry.id === value);
 

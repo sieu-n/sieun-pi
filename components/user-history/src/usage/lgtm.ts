@@ -128,7 +128,7 @@ function sparks(series: readonly Range[], start: number, end: number, stepS: num
 }
 
 const STEP_S: Record<UsageBucket, number> = { minute: 60, hour: 3600, day: 86_400 };
-const WINDOW_S: Record<UsageWindow, number> = { "1h": 3600, "24h": 86_400, "7d": 7 * 86_400, "30d": 30 * 86_400 };
+const WINDOW_S: Record<UsageWindow, number> = { "1h": 3600, "24h": 86_400, "7d": 7 * 86_400, "30d": 30 * 86_400, "90d": 90 * 86_400 };
 /** The most keys a stacked chart lists; the rest fold into "other". */
 const MAX_KEYS = 8;
 /** The spark of the per-second card and the sidebar: the rate over the last 10 min at the 10 s export interval of CONTRACT.md. */

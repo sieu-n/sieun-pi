@@ -33,7 +33,7 @@ export function readFeed(value: unknown): UsageFeed | null {
 }
 
 export const BUCKET_MS: Record<UsageBucket, number> = { minute: 60_000, hour: 3_600_000, day: 86_400_000 };
-export const WINDOW_MS: Record<UsageWindow, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 };
+export const WINDOW_MS: Record<UsageWindow, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, "90d": 90 * 86_400_000 };
 export const WINDOWS: readonly UsageWindow[] = USAGE_WINDOWS;
 
 /** The buckets a window offers, the default first. A choice never draws more than about 1,500 bars. */
@@ -43,6 +43,7 @@ export function bucketsFor(window: UsageWindow): readonly UsageBucket[] {
     case "24h": return ["hour", "minute"];
     case "7d": return ["hour", "day"];
     case "30d": return ["day", "hour"];
+    case "90d": return ["day"];
   }
 }
 export const defaultBucket = (window: UsageWindow): UsageBucket => bucketsFor(window)[0]!;

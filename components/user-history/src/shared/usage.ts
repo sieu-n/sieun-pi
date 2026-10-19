@@ -36,8 +36,9 @@ export type UsageSummary = {
 export type UsageDown = { state: "error"; at: number; error: string };
 export type UsageFeed = UsageSummary | UsageDown;
 
-export type UsageWindow = "1h" | "24h" | "7d" | "30d";
-export const USAGE_WINDOWS: readonly UsageWindow[] = ["1h", "24h", "7d", "30d"];
+/** 90d reaches the first token log on 08-14 (the owner on 10-19: "can you upload this box and mac historical usage here"); staging Prometheus keeps 90 days. */
+export type UsageWindow = "1h" | "24h" | "7d" | "30d" | "90d";
+export const USAGE_WINDOWS: readonly UsageWindow[] = ["1h", "24h", "7d", "30d", "90d"];
 export type UsageBucket = "minute" | "hour" | "day";
 export const USAGE_BUCKETS: readonly UsageBucket[] = ["minute", "hour", "day"];
 /** `box` stacks per machine, `model` per model, and `kind` stacks the token kinds (output, input, cache write, cache read) in one bar. */
