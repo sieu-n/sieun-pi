@@ -36,8 +36,10 @@ export interface JobFact {
   lastMessage?: JobMessage;
   /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
   sessionId?: string;
-  /** Its turn waits for a working slot in the Mac-wide turn queue (`pi-pool queue --json`). */
+  /** Its turn waits for a working slot in its box's turn queue (`pi-pool queue --json`). */
   queued?: QueuePlace;
+  /** Its run holds a working slot in its box's turn queue: it streams from the model or runs a tool call, within pi-pool's 1,800 s lease. */
+  inTurn?: true;
   /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
   wake?: string;
   /** Its session has no first prompt (state `unstarted`): when it was spawned, and when the chat service last sent its brief. */

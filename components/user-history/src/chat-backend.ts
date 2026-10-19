@@ -15,7 +15,8 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority } from "./chat-pool.ts";
-import { boardQueueRead, queueReader } from "./chat-turn-queue.ts";
+import { relayStats } from "./chat-hosts.ts";
+import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
 import { CallStopper } from "./hung-stop.ts";
@@ -181,9 +182,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
   const queueReading = boardQueueRead;
-  const queued = queueReader(queueReading);
+  // A Mac chat's jobs wait in the Mac's pool, so its check-in, its agents and its duties read every box's queue (`hostsQueueRead`).
+  const hostsReading = hostsQueueRead(queueReading, () => catalog.remoteHosts().map(({ host }) => () => relayStats(host)));
+  const queued = queueReader(hostsReading);
   const poolWaiting = async (): Promise<Set<string>> => {
-    const pool = await queueReading().catch(() => null);
+    const pool = await hostsReading().catch(() => null);
     return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
   };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
@@ -249,7 +252,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Token usage of every box comes from LGTM only (src/usage/lgtm.ts); nothing is queried until a page subscribes or the Agents card asks for rates.
   const usage = new Usage(grafanaPrometheus(join(dataDir, "grafana-alerts.json")));
   catalog.ratesSource = ids => usage.rates(ids);
-  catalog.queueSource = queued;
+  catalog.queueSource = async () => (await queued()).queued;
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });

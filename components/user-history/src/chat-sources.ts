@@ -15,7 +15,8 @@ import type { JobResumes } from "./job-resume.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { Leftovers } from "./job-leftovers.ts";
-import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { PoolPlaces } from "./chat-turn-queue.ts";
+import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export type SubagentDelete = "deleted" | "not_held" | "running";
 
@@ -270,8 +271,8 @@ export interface CheckInSource {
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /** Where the sessions of the cut jobs pi-pool holds are kept across restarts (`PoolHeldJobs`); absent: kept in memory only. */
   poolHeldFile?: string;
-  /** The sessions the Mac-wide turn queue holds (`queueReader`), which the check-in reads as queued, not stalled; absent or failing: none. */
-  queue?: () => Promise<ReadonlyMap<string, QueuePlace>>;
+  /** The sessions every box's turn queue holds (`queueReader`), queued or working, which the check-in reads as waiting, not stalled; absent or failing: none. */
+  queue?: () => Promise<PoolPlaces>;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
   /** The newest correction each chat's `/refine` or `[correction check]` covered (`<data dir>/correction-checks.json`, keys `<chat>` and `<chat>:ask`). Absent: none is sent. */

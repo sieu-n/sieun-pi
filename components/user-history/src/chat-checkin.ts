@@ -251,7 +251,8 @@ function jobLine(fact: JobFact, now: number): string {
   const last = fact.activityAt !== undefined ? `, last activity ${ago(now - fact.activityAt)} ago` : "";
   const step = fact.item ? `, on ${fact.item.id} ${quote(fact.item.text)} (${fact.item.status})` : "";
   const error = fact.state === "failed" && fact.error ? `, error: ${clip(fact.error, 120)}` : "";
-  const queued = fact.queued ? `, queued ${fact.queued.position} of ${fact.queued.total} for a working slot for ${ago(now - fact.queued.since)}` : "";
+  const queued = fact.queued ? `, queued ${fact.queued.position} of ${fact.queued.total} for a working slot for ${ago(now - fact.queued.since)}` :
+    fact.inTurn ? ", in its turn (streaming or in a tool call)" : "";
   const said = fact.lastMessage ? `, last message at ${clockTime(fact.lastMessage.at)}: ${quote(fact.lastMessage.text)}` : "";
   return `${ownerLabel(fact)}: ${state}${queued}${quiet || last}${step}${error}${said}`;
 }

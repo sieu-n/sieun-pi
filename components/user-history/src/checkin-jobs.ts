@@ -7,7 +7,7 @@ import { zTime } from "./checkin-goals.ts";
  * quiescence wait cancelled", and in the AI harness chat 9 jobs sat 1 to 3 hours with no progress and no report while its check-ins steered
  * none. Each run, a job of the chat with no progress for one check-in interval gets a nudge that says what it owes; after two intervals, or
  * when its last turn ended in an error, the server restarts it with that message. Progress is a report that carries a fact (`factsAt`) or a
- * change to a step it owns; activity alone is not. A job asleep on a board.wake, queued for a slot, or cancelled is left alone, and so is a job
+ * change to a step it owns; activity alone is not. A job asleep on a board.wake, queued for a slot or holding one, or cancelled is left alone, and so is a job
  * the owner holds (`held.job`, a thread of a chat whose check-in he paused) or whose every open step he holds (`held.step`: For you, parked by
  * his correction, or a waitUntil still ahead). On 10-18 the old job "checkin pushes goals" owned 6 steps that all waited on For you t51 for
  * the owner's focus pause, and each check-in counted it as a job to push.
@@ -35,9 +35,10 @@ export function jobPushes(facts: readonly JobFact[], views: readonly StepView[],
     const since = !before ? mark || now : mark > before.mark ? mark : before.since;
     const memo: JobMemo = { mark, since, ...(before?.pushed !== undefined ? { pushed: before.pushed } : {}) };
     kept[fact.key] = memo;
-    // A job waiting on the token pool is not pushed, and the wait does not count as time with no progress (`poolWait`).
-    if (poolWait(fact)) { memo.since = now; return []; }
-    if (fact.wake || fact.queued || (memo.pushed !== undefined && now - memo.pushed < everyMs && memo.pushed >= since)) return [];
+    // A job waiting on the token pool, queued for a working slot or in its turn (streaming or in a tool call) is not pushed, and the wait does
+    // not count as time with no progress: a restart aborts the waiting model request and puts the job at the end of the queue again.
+    if (poolWait(fact) || fact.queued || fact.inTurn) { memo.since = now; return []; }
+    if (fact.wake || (memo.pushed !== undefined && now - memo.pushed < everyMs && memo.pushed >= since)) return [];
     if (held.job?.(fact) || (owned.length && held.step && owned.every(held.step))) return [];
     const idleMs = now - since;
     const failed = fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined);

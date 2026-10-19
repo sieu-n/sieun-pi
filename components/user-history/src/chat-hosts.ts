@@ -30,7 +30,7 @@ export function parsePool(value: unknown, title: (id: string) => string | null):
   } catch (error) { return { state: "unread", error: message(error) }; }
 }
 
-async function relayStats(host: Host): Promise<HostStats> {
+export async function relayStats(host: Host): Promise<HostStats> {
   const response = await fetch(`http://${host.address}:${host.relayPort}/v1/host`, { headers: { authorization: `Bearer ${await hostToken(host)}` }, signal: AbortSignal.timeout(RELAY_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status}`);
   return await response.json() as HostStats;
