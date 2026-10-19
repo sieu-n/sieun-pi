@@ -2,7 +2,7 @@
 
 These units run Prime Agent 0.9.8, the browser chat and the wiki as one Linux user under systemd, the way launchd runs them on the Mac.
 They were written for user `sieun` (uid 1001) on us-metal02, where root works through `ssh root@localhost` because sudo is denied.
-Since 10-18 at 07:52Z no slice or unit on the box has a memory or CPU limit, reservation, pin or weight, and since 08:45Z neither do the CI units and box timers (owner rule c107), except the memory layers below. `setup-host.sh` sets none (0214798cd).
+Since 10-18 at 07:52Z no slice or unit on the box has a memory or CPU limit, reservation, pin or weight, and since 08:45Z neither do the CI units and box timers (owner rule c107), except the memory and CPU layers below. `setup-host.sh` sets none (0214798cd).
 Before that, a 40G and then a 69G cap on `user-1001.slice` OOM-killed `auto-sns-dev-pm2.service` at 05:55:35Z on 10-18 while the host had over 130 GiB free.
 The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Serve is the only way in.
 
@@ -76,6 +76,16 @@ The CI VMs are libvirt guests that `virev-ci-virt@` starts as root, and each one
 On 10-18 it held 32.6 GB of such dirs, about 1 GB per p8iso rig root plus repo clones and test dirs such as `thread-open-*` and `pi-pool-test-*`, charged to `prime-agent-daemon.service` as shmem. Most of the full 16 GiB swap was those tmpfs pages, and deleting the dirs of finished jobs dropped swap from 16.0 to 5.0 GiB.
 When user-1001 memory looks high, read `shmem` in its `memory.stat` and run `du -sxb /tmp/*` first, and ignore the 40+ GiB of page cache the kernel can reclaim.
 Before you remove a dir, check that no process has it open as cwd, fd or map, and a rig teardown stops the rig's `-r` and `-fake` units too.
+
+## CPU layers
+
+The page https://cho.sh/ko/1983DC says one greedy process should slow down and never take the box down, and the ways back in must stay protected. On 10-19 the owner answered t84 that CPU priority on us-metal02 follows that page and that metal-management owns it, which lifts c107 for these weights. None of them is a cap, so an idle box still gives any process every core.
+At 17:1xZ on 10-19 the box ran 73 of 80 cores busy with CPU pressure "some" at 71%, and the chat service used 0.6 cores while its event loop stalled up to 13.8 s and api/accounts took 15.9 s (/home/sieun/work/d7-clean-min-root-cause/findings.md).
+Root sets the layers up with `deploy/linux/cpu/setup-cpu.sh`, which converges on every run and restarts no unit, and `python3 -B -m unittest tests/test_cpu_layers.py` checks the files.
+
+1. `ssh.service`, `tailscaled.service`, `sieun-pi-chat.service`, `pi-pool-serve.service` and `pi-pool-hookd.service` run at `CPUWeight=1000`, 10 times the default, from a `cpu-weight.conf` drop-in and `set-property --runtime` now. The chat's weight makes systemd turn the cpu controller on in the user manager's `app.slice`, so since 19:47Z on 10-19 each unit there is its own CPU group at weight 100 instead of every process sharing one group.
+2. The Prime supervisor, its workers and their job commands share `prime-agent-daemon.service`'s cgroup, so the unit keeps the default weight and the root service `cpu-protect.service` runs `cpu-protect.py` every 2 s instead. It sets nice -10 on every thread of every `prime-agent` process, which inside one cgroup weighs 9548 against 1024 for nice 0, the same 10 to 1. A command forked from a worker inherits -10, so each pass puts every other thread of the unit below 0 back to 0, and a job that niced itself up keeps its value.
+   Two threaded child cgroups (core at weight 1000, jobs at 100) were tried on a test unit first. They keep systemd's `ExecReload` working, but systemd's `cgroup.kill` fails on them with "Operation not supported", and host-stats.ts `leafCgroups` would stop seeing the daemon's memory because a threaded child has no `memory.stat`, so the nice split is the live one.
 
 ## Install
 

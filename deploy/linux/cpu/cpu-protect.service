@@ -1,0 +1,10 @@
+[Unit]
+Description=Nice -10 for the Prime supervisor and its workers, 0 for their job commands (CPU layer 2 of deploy/linux/README.md, owner's t84 answer 10-19)
+After=user@1001.service
+
+[Service]
+ExecStart=/usr/bin/python3 -B /usr/local/lib/cpu-protect/cpu-protect.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
