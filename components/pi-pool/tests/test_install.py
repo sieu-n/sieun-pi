@@ -1,6 +1,7 @@
 """install.py against a throwaway git checkout and HOME: what ships, the links,
 the atomic flip, rollback, and the two refusals."""
-import json, os, shutil, subprocess, tempfile, unittest
+import importlib.util, json, os, shutil, subprocess, tempfile, unittest
+from unittest import mock
 from pathlib import Path
 
 from fixture_isolation import isolate_test_module
@@ -16,6 +17,13 @@ HOOK = """#!/bin/sh
 [ -e "$PI_POOL_DIR/hook-fails" ] && grep -q "$(cat "$PI_POOL_DIR/hook-fails")" "$(dirname "$0")/../vend.py" && exit 3
 printf 'fixture-token-%s' 0123456789abcdefghij
 """
+
+
+def load_installer():
+    spec = importlib.util.spec_from_file_location("pool_installer", INSTALLER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Install(unittest.TestCase):
@@ -158,6 +166,40 @@ class Install(unittest.TestCase):
         self.assertFalse((bin_dir / "pi-pool-token.py").exists())
         self.assertEqual(out["client"], "no cc; bin/pi-pool-token is the Python hook")
 
+    def add_node_test(self):
+        self.commit("native test", **{"tests/test_ok.py": """import subprocess, unittest
+class T(unittest.TestCase):
+    def test_node(self):
+        self.assertEqual(subprocess.check_output(["node", "-p", "6 * 7"], text=True).strip(), "42")
+"""})
+
+    def test_non_login_path_discovers_current_users_node_for_staged_tests(self):
+        self.add_node_test()
+        caller_home = self.base / "caller"
+        node = caller_home / ".local/bin/node"
+        node.parent.mkdir(parents=True)
+        node.symlink_to(shutil.which("node"))
+        code, out = self.run_installer(env=dict(os.environ, HOME=str(caller_home), PATH="/usr/bin:/bin:/usr/sbin:/sbin"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("OK", out["tests"])
+
+    def test_resolved_node_path_reaches_the_client_compiler(self):
+        self.add_client()
+        caller_home = self.base / "caller"
+        node = caller_home / ".local/bin/node"
+        node.parent.mkdir(parents=True)
+        node.symlink_to(shutil.which("node"))
+        tools = self.base / "tools"
+        tools.mkdir()
+        marker = self.base / "compiler-node.txt"
+        compiler = tools / "cc"
+        compiler.write_text(f"#!/bin/sh\nnode -p '6 * 7' > '{marker}' || exit 1\nexec '{shutil.which('cc')}' \"$@\"\n")
+        compiler.chmod(0o755)
+        code, out = self.run_installer(env=dict(os.environ, HOME=str(caller_home), PATH=f"{tools}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(marker.read_text().strip(), "42")
+        self.assertEqual(out["client"], f"built with {compiler}")
+
     def test_only_committed_source_ships(self):
         (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")
         code, out = self.run_installer()
@@ -244,19 +286,98 @@ class Install(unittest.TestCase):
         self.assertEqual((self.home / ".local/bin/pi-pool").read_text(), "someone else's\n")
 
 
+class InstallerEnvironment(unittest.TestCase):
+    def setUp(self):
+        self.installer = load_installer()
+        self.temporary = tempfile.TemporaryDirectory(prefix="pi-pool-node-")
+        self.addCleanup(self.temporary.cleanup)
+        self.home = Path(self.temporary.name)
+        self.node = shutil.which("node")
+        self.assertIsNotNone(self.node, "installer tests require Node.js")
+
+    def node_at(self, directory):
+        directory.mkdir(parents=True)
+        (directory / "node").symlink_to(self.node)
+        return directory
+
+    def test_caller_path_has_precedence_and_other_environment_is_unchanged(self):
+        caller = self.node_at(self.home / "caller")
+        self.node_at(self.home / ".local/bin")
+        environment = {"PATH": str(caller), "FIXTURE": "preserved"}
+        resolved = self.installer.installer_environment(environment, self.home)
+        self.assertEqual(resolved, environment)
+        self.assertIsNot(resolved, environment)
+
+    def test_empty_and_non_login_path_append_only_the_discovered_node_directory(self):
+        directory = self.node_at(self.home / ".local/bin")
+        for path in ("", "/usr/bin:/bin:/usr/sbin:/sbin"):
+            with self.subTest(path=path):
+                environment = {"PATH": path, "FIXTURE": "preserved"}
+                which = shutil.which
+                with mock.patch.object(self.installer.shutil, "which", side_effect=lambda tool, path: None if path == environment["PATH"] else which(tool, path=path)):
+                    resolved = self.installer.installer_environment(environment, self.home)
+                self.assertEqual(resolved["PATH"], path + os.pathsep + str(directory) if path else str(directory))
+                self.assertEqual(environment, {"PATH": path, "FIXTURE": "preserved"})
+                self.assertEqual(resolved["FIXTURE"], "preserved")
+                done = subprocess.run(["node", "-p", "6 * 7"], env=resolved, capture_output=True, text=True)
+                self.assertEqual((done.returncode, done.stdout.strip()), (0, "42"), done.stderr)
+
+    def test_user_node_installations_are_discovered_without_resolving_away_the_bin_directory(self):
+        for relative in (".local/node/bin", ".hermes/node/bin"):
+            with self.subTest(relative=relative):
+                home = self.home / relative.replace("/", "-")
+                directory = self.node_at(home / relative)
+                resolved = self.installer.installer_environment({"PATH": ""}, home)
+                self.assertEqual(resolved["PATH"], str(directory))
+
+    def test_resolving_the_environment_twice_does_not_duplicate_path_entries(self):
+        self.node_at(self.home / ".local/bin")
+        first = self.installer.installer_environment({"PATH": ""}, self.home)
+        self.assertEqual(self.installer.installer_environment(first, self.home), first)
+
+    def test_missing_node_fails_before_install_or_staging(self):
+        environment = dict(os.environ, PATH="/fixture/no-node")
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(self.installer.shutil, "which", return_value=None), \
+                mock.patch.object(self.installer, "install") as install, \
+                mock.patch.object(self.installer.sys, "argv", ["install.py", "--home", str(self.home)]), \
+                mock.patch("sys.stderr") as stderr:
+            self.assertEqual(self.installer.main(), 1)
+        install.assert_not_called()
+        message = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("Node.js is required", message)
+        self.assertIn("add its bin directory to PATH", message)
+        self.assertIn("Searched PATH=", message)
+        self.assertFalse((self.home / ".local/share/pi-pool").exists())
+
+    def test_main_uses_current_users_home_and_shares_resolved_environment_with_install(self):
+        resolved = dict(os.environ, PATH="/fixture/resolved")
+        with mock.patch.object(self.installer, "installer_environment", return_value=resolved) as resolve, \
+                mock.patch.object(self.installer, "install", side_effect=lambda *args: {"path": os.environ["PATH"]}) as install, \
+                mock.patch.dict(os.environ), \
+                mock.patch.object(self.installer.sys, "argv", ["install.py", "--home", str(self.home)]), \
+                mock.patch("sys.stdout") as stdout:
+            self.assertEqual(self.installer.main(), 0)
+        self.assertEqual(resolve.call_args.args[1], Path.home())
+        install.assert_called_once_with(self.home, "HEAD", None)
+        self.assertIn("/fixture/resolved", "".join(call.args[0] for call in stdout.write.call_args_list))
+
+    def test_status_and_rollback_do_not_require_node(self):
+        for command in ("status", "rollback"):
+            with self.subTest(command=command), \
+                    mock.patch.object(self.installer, "installer_environment") as resolve, \
+                    mock.patch.object(self.installer, command, return_value={}), \
+                    mock.patch.object(self.installer.sys, "argv", ["install.py", command]), \
+                    mock.patch("sys.stdout"):
+                self.assertEqual(self.installer.main(), 0)
+                resolve.assert_not_called()
+
+
 class MacPython(unittest.TestCase):
     """10-18: launchd refuses the Command Line Tools Python access to ~/Documents, where the Mac checkout lives."""
 
-    def load(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("pool_installer", INSTALLER)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
     def test_a_flip_restarts_pi_pool_serve_only_when_it_runs(self):
-        from unittest import mock
-        installer = self.load()
+        installer = load_installer()
         for active, expect in ((0, ["is-active", "restart"]), (3, ["is-active"])):
             with self.subTest(active=active):
                 calls = []
@@ -270,7 +391,7 @@ class MacPython(unittest.TestCase):
                 self.assertEqual(calls, expect)
 
     def test_macos_reruns_under_homebrew_python(self):
-        installer = self.load()
+        installer = load_installer()
         yes = lambda path: True
         self.assertEqual(installer.mac_python("Darwin", "/usr/bin/python3", yes), "/opt/homebrew/bin/python3")
         self.assertIsNone(installer.mac_python("Darwin", "/opt/homebrew/bin/python3", yes))

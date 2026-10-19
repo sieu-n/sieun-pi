@@ -41,6 +41,22 @@ class InstallError(Exception):
     pass
 
 
+def installer_environment(environment, home):
+    env = dict(environment)
+    path = env.get("PATH", os.defpath)
+    if shutil.which("node", path=path):
+        return env
+    directories = (home / ".local/bin", home / ".local/node/bin", home / ".hermes/node/bin",
+                   Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/bin"))
+    searched = os.pathsep.join(str(directory) for directory in directories)
+    node = shutil.which("node", path=searched)
+    if not node:
+        raise InstallError("Node.js is required for the staged pool tests. Install Node.js or add its bin directory "
+                           f"to PATH and rerun this installer. Searched PATH={path!r} and {searched}")
+    env["PATH"] = path + os.pathsep + str(Path(node).parent) if path else str(Path(node).parent)
+    return env
+
+
 def root_of(home):
     return home / ".local/share/pi-pool"
 
@@ -426,6 +442,7 @@ def main():
     home = Path(args.home)
     try:
         if args.command == "install":
+            os.environ.update(installer_environment(os.environ, Path.home()))
             out = install(home, args.ref, args.borrow)
         elif args.command == "rollback":
             out = rollback(home)
