@@ -181,9 +181,9 @@ const { default: extension } = await import(pathToFileURL(process.argv[1]));
 let command;
 extension({ on() {}, registerCommand(name, options) { assert.equal(name, 'account'); command = options; } });
 assert.deepEqual(await command.getArgumentCompletions(''), [
-  { value: 'claude@example.test', label: 'claude@example.test' },
-  { value: 'codex@example.test', label: 'codex@example.test' },
-  { value: 'follow', label: 'follow' },
+  { value: 'claude@example.test', label: 'Manual claude@example.test' },
+  { value: 'codex@example.test', label: 'Manual codex@example.test' },
+  { value: 'follow', label: 'Auto' },
 ]);
 """
         self.run_command(["node", "--input-type=module", "-e", script,
