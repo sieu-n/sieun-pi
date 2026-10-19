@@ -228,16 +228,17 @@ function goalTarget(value: unknown): GoalTarget {
   return out;
 }
 
-/** Metric words that make lower better: a wait, a time, a latency, a delay or lag, misses, errors, failures, cancels and stuck items. */
-const LOWER_IS_BETTER = /\b(waits?|waiting|times?|latenc(?:y|ies)|durations?|delays?|lag|miss(?:es|ed)?|errors?|fail(?:s|ed|ures?)?|cancel(?:l?ed|s)?|stuck)\b/i;
 /**
- * Which way a goal's number must go to reach its target: `<=` for lower is better, else `>=`. The target's `direction` decides, then its metric
- * words. VP of CI's p1 "m1-air job start wait from the push, p90" read 157.8 against 10 min and p60 "passed land run time, p50" 141.7 against
- * 45 min, and both were taken as at target on 10-18, which hid the two biggest CI goals from goal_gaps. A target of 0 is always lower is better,
- * and a metric's words count across underscores: AI harness p529 "stuck_steps_all" 6 of target 0 read as done on 10-18.
+ * The direction a target with none reads from its own numbers: a target of 0 is lower is better, since no number goes under it, and a target
+ * under its current reading is lower is better, over it higher is better. Undefined when it is unmeasured or reads exactly its target. The
+ * metric's words never decide: VP of CI's p186 "7-day median, land dispatch to green staging" read 63.8 against 45 min as met on 10-19 because
+ * no word in it named a wait, and "failure counts" in a 0 of 100% goal read as met for the same reason the other way.
  */
-export const targetOp = (target: Pick<GoalTarget, "metric" | "direction"> & Partial<Pick<GoalTarget, "target">>): ">=" | "<=" =>
-  target.direction ? (target.direction === "down" ? "<=" : ">=") : target.target === 0 || LOWER_IS_BETTER.test(target.metric.replace(/_/g, " ")) ? "<=" : ">=";
+export const inferredDirection = (target: Pick<GoalTarget, "target" | "current">): GoalTarget["direction"] =>
+  target.target === 0 ? "down" : target.current === undefined || target.current === target.target ? undefined : target.current > target.target ? "down" : "up";
+/** Which way a goal's number must go to reach its target: `<=` for lower is better, else `>=`. Its stored `direction` decides, else `inferredDirection`. */
+export const targetOp = (target: Pick<GoalTarget, "target" | "current" | "direction">): ">=" | "<=" =>
+  (target.direction ?? inferredDirection(target)) === "down" ? "<=" : ">=";
 /**
  * The target to store when an op sets `next` over `kept`: the newer reading of the same metric wins. A check-in job writes the number its
  * precheck read, which can be older than a reading taken since (AI harness p453 10-17: a check-in wrote 29.7% back over the 31.5% that
@@ -245,11 +246,21 @@ export const targetOp = (target: Pick<GoalTarget, "metric" | "direction"> & Part
  * the time of this write, is no newer than anything: in r3c on 10-18 the chat stamped 2 of 10 at 00:45Z at 00:42Z, and the job's real 3 and 6
  * of 10 a minute later read "no change".
  */
-export function newerReading(next: GoalTarget, kept: GoalTarget | undefined, now?: string): GoalTarget {
+function newerReading(next: GoalTarget, kept: GoalTarget | undefined, now?: string): GoalTarget {
   if (!kept?.measuredAt || kept.current === undefined || kept.metric !== next.metric) return next;
   if (now !== undefined && Date.parse(kept.measuredAt) > Date.parse(now)) return next;
   if (next.measuredAt && Date.parse(next.measuredAt) >= Date.parse(kept.measuredAt)) return next;
   return { ...next, current: kept.current, measuredAt: kept.measuredAt, ...(kept.source !== undefined ? { source: kept.source } : {}) };
+}
+/**
+ * The target an op stores over `kept`: `newerReading`, with a direction that never flips once set. The op's own direction wins, then the one
+ * the item stored, then `inferredDirection` of the stored numbers. A check-in that sends the whole target without a direction keeps the one the
+ * chat set: VP of CI's p186 lost its "down" that way on 10-19 and read 63.8 against 45 min as met.
+ */
+export function storedTarget(next: GoalTarget, kept: GoalTarget | undefined, now: string): GoalTarget {
+  const target = newerReading(next, kept, now);
+  const direction = next.direction ?? kept?.direction ?? inferredDirection(target);
+  return direction ? { ...target, direction } : target;
 }
 /** Whether a measured goal reaches its target in its direction (`targetOp`). */
 export const targetMet = (target: GoalTarget): boolean =>
@@ -515,7 +526,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const kept = itemId === input.id ? find(board.plan, itemId)?.item : undefined;
         const job = planJob(input.job);
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
-        const target = input.target ? newerReading(input.target, kept?.target, now) : kept?.target;
+        const target = input.target ? storedTarget(input.target, kept?.target, now) : kept?.target;
         const duty = input.duty ?? kept?.duty;
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
@@ -529,7 +540,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) measuredBy(op.target, now);
-      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: op.target } : {}),
+      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: storedTarget(op.target, undefined, now) } : {}),
         ...(op.duty ? { duty: op.duty } : {}), children: [] };
       if (op.parent === undefined) {
         const area = actor === "agent" ? sameAreaGoal(board.plan, item.text) : undefined;
@@ -577,9 +588,9 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.duty === null) { delete next.duty; if (item.duty) parts.push("unlinked its duty metric"); }
       else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
-      else if (op.target && JSON.stringify(newerReading(op.target, item.target, now)) !== JSON.stringify(item.target)) {
+      else if (op.target && JSON.stringify(storedTarget(op.target, item.target, now)) !== JSON.stringify(item.target)) {
         measuredBy(op.target, now);
-        next.target = newerReading(op.target, item.target, now);
+        next.target = storedTarget(op.target, item.target, now);
         parts.push(`set its target: ${targetText(next.target)}${next.target.current !== op.target.current ? ", keeping its newer reading" : ""}`);
       }
       if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);

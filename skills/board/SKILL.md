@@ -145,7 +145,7 @@ The owner picking a design on a demo is not a go. Offer the go choice first, wor
 
 ### Targets
 
-`target: {metric,target,unit,current?,measuredAt?,source?,cadence?}` on a top-level goal is its measurable target, and higher is better. Give a goal one when it has a measurable outcome. Each time you measure, send the whole target with current, measuredAt (ISO) and source together. Use `cadence: "daily"` when a daily duty measures it.
+`target: {metric,target,unit,current?,measuredAt?,source?,cadence?,direction?}` on a top-level goal is its measurable target. Give a goal one when it has a measurable outcome. Set `direction` to `"down"` when lower is better, such as a wait or a run time, and to `"up"` when higher is better. Without one, the board stores the direction its numbers show when the target is set, so a target under its current reading is lower is better, and a target of 0 is always lower is better. The stored direction stays on later writes that leave it out, and only an op that names a new direction changes it. Each time you measure, send the whole target with current, measuredAt (ISO) and source together. Use `cadence: "daily"` when a daily duty measures it.
 
 The check-in lists every goal short of its target or not measured. Push the step that closes the largest gap, because waiting steps are not progress (c23).
 

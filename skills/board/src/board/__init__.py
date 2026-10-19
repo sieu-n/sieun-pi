@@ -113,14 +113,12 @@ def _has_open(item: dict) -> bool:
     return item.get("status") in _OPEN or any(_has_open(child) for child in item.get("children", []))
 
 
-_LOWER_IS_BETTER = re.compile(r"\b(waits?|waiting|times?|latenc(?:y|ies)|durations?|delays?|lag|miss(?:es|ed)?|errors?|fail(?:s|ed|ures?)?|cancel(?:l?ed|s)?|stuck)\b", re.I)
-
-
 def _lower_is_better(target: dict) -> bool:
-    """The goal's direction as targetOp in chat-board.ts reads it: its direction, else a target of 0 or lower-is-better metric words."""
+    """The goal's direction as targetOp in chat-board.ts reads it: its stored direction, else a target of 0 or under its current reading."""
     if target.get("direction"):
         return target["direction"] == "down"
-    return target["target"] == 0 or bool(_LOWER_IS_BETTER.search(target["metric"].replace("_", " ")))
+    current = target.get("current")
+    return target["target"] == 0 or (current is not None and current > target["target"])
 
 
 def _target_text(target: dict) -> str:

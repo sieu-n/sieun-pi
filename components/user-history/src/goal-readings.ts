@@ -1,10 +1,10 @@
-import { targetOp } from "./shared/chat-board.ts";
+import { inferredDirection, targetOp } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID, type MetricResult } from "./shared/chat-duties.ts";
 import type { BoardOp, ChatBoard, PlanItem } from "./shared/types.ts";
 
 const walk = (items: readonly PlanItem[], visit: (item: PlanItem) => void): void => { for (const item of items) { visit(item); walk(item.children, visit); } };
 const words = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-type Reading = { key: string; value: number };
+type Reading = { key: string; value: number; op: MetricResult["op"] };
 
 /**
  * The board ops that write a duty run's measures into the goals they measure: a top-level goal with a target, where the goal or an item under it
@@ -31,22 +31,24 @@ export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: numb
     if (!target || goal.status === "done" || goal.status === "dropped") continue;
     const measured = Date.parse(target.measuredAt ?? "");
     if (Number.isFinite(measured) && measured >= at) continue;
+    // A target with no direction yet, unmeasured or at its target, takes the direction of the duty metric that measures it.
+    const known = target.direction ?? inferredDirection(target);
     const goalWords = new Set(words(target.metric));
     const own = goal.duty?.startsWith(`${CHECK_IN_DUTY_ID}/`) ? undefined : goal.duty;
     let named: Reading | undefined;
-    const open = new Map<string, number>();
+    const open = new Map<string, MetricResult>();
     walk([goal], item => {
       if (named || !item.duty?.startsWith(`${dutyId}/`) || (own && item.duty !== own)) return;
       const key = item.duty.slice(dutyId.length + 1);
       const result = metrics[key];
-      if (!result || result.value < 0 || result.target !== target.target || result.op !== targetOp(target)) return;
-      if (own || words(key).every(word => goalWords.has(word))) named = { key, value: result.value };
-      else if (item.status !== "done" && item.status !== "dropped") open.set(key, result.value);
+      if (!result || result.value < 0 || result.target !== target.target || (known && result.op !== targetOp(target))) return;
+      if (own || words(key).every(word => goalWords.has(word))) named = { key, value: result.value, op: result.op };
+      else if (item.status !== "done" && item.status !== "dropped") open.set(key, result);
     });
     const only = open.size === 1 ? [...open][0] : undefined;
-    const reading = named ?? (only && { key: only[0], value: only[1] });
+    const reading = named ?? (only && { key: only[0], value: only[1].value, op: only[1].op });
     if (!reading) continue;
-    ops.push({ op: "plan_update", id: goal.id, target: { ...target, current: reading.value, measuredAt: new Date(at).toISOString(),
+    ops.push({ op: "plan_update", id: goal.id, target: { ...target, direction: known ?? (reading.op === "<=" ? "down" : "up"), current: reading.value, measuredAt: new Date(at).toISOString(),
       source: `duty ${dutyId} metric ${reading.key}, its run at ${new Date(at).toISOString().slice(0, 16)}Z` } });
   }
   return ops;

@@ -124,7 +124,8 @@ export interface PlanItem {
 }
 /**
  * A goal's target, as the chat set it: `metric` reaches `target` (a non-negative number, in `unit`). `direction` "down" means lower is better,
- * such as a wait or a run time, and "up" higher; absent, the metric's words decide (`targetOp`). `current`, `measuredAt` (ISO) and `source`
+ * such as a wait or a run time, and "up" higher. A target given without one stores the one its numbers show when set (`storedTarget`), and
+ * keeps it after. `current`, `measuredAt` (ISO) and `source`
  * (how it was measured) are the last measurement, all three or none. `cadence: "daily"` marks a metric a daily duty measures: its measurement
  * goes stale after 24 h instead of 2 check-in intervals.
  */

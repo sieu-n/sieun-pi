@@ -211,7 +211,7 @@ function chatJobRules(): string[] {
       "design before build.",
     releaseGo.preapproval ? MERGE_RULE : `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
     "A goal can carry a target: when you measure it, apply plan_update with its whole target, like " +
-      "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\"}}`. " +
+      "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\",\"direction\":\"up\"}}`. Give direction \"down\" when lower is better, such as a wait. " +
       "Close the largest gap first: start or steer the job that moves the number.",
     "Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent " +
       "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`) and send it to the chat, which asks Fable for a probe slot; " +
