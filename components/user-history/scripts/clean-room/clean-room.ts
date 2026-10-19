@@ -60,6 +60,7 @@ import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 import { softCaps } from "./soft-caps.ts";
+import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
 import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
 import { wakeLive } from "./wake-live.ts";
@@ -67,7 +68,7 @@ import { wakeLive } from "./wake-live.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools,
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
