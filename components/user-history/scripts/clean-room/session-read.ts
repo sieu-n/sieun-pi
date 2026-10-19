@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatBoard } from "../../src/shared/types.ts";
@@ -86,10 +86,10 @@ export function sessionFiles(id: string): string[] {
   const files = [join(SESSIONS, `${id}.jsonl`)].filter(existsSync);
   const walk = (dir: string): void => {
     if (!existsSync(dir)) return;
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (name.endsWith(".jsonl") && !name.startsWith(id)) files.push(path);
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl") && !entry.name.startsWith(id)) files.push(path);
     }
   };
   walk(join(ARTIFACTS, id));
@@ -101,10 +101,10 @@ export function sessionFile(id: string, roots: readonly string[] = []): string |
   if (existsSync(root)) return root;
   const find = (dir: string, depth: number): string | undefined => {
     if (depth > 4 || !existsSync(dir)) return undefined;
-    for (const name of readdirSync(dir)) {
-      const path = join(dir, name);
-      if (name === `${id}.jsonl`) return path;
-      if (statSync(path).isDirectory()) { const found = find(path, depth + 1); if (found) return found; }
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.name === `${id}.jsonl`) return path;
+      if (entry.isDirectory()) { const found = find(path, depth + 1); if (found) return found; }
     }
     return undefined;
   };

@@ -19,13 +19,13 @@ const clip = (text: string, length = 200): string => (text.length > length ? tex
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
 
 /** One tool call with its result, from a session file. */
-interface Call { session: string; at: number; tool: string; input: string; ok: boolean; output: string }
-interface Session { id: string; file: string; cwd: string; calls: Call[]; texts: { at: number; role: string; customType: string; fromId: string; relation: string; text: string }[] }
+export interface Call { session: string; at: number; tool: string; input: string; ok: boolean; output: string }
+export interface Session { id: string; file: string; cwd: string; calls: Call[]; texts: { at: number; role: string; customType: string; fromId: string; relation: string; text: string }[] }
 
 const blockText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.map(block => typeof block === "object" && block && "text" in block && typeof block.text === "string" ? block.text : "").join("\n") : "";
 
-function readCalls(file: string): Session {
+export function readCalls(file: string): Session {
   const id = file.split("/").at(-1)!.replace(/\.jsonl$/, "");
   const session: Session = { id, file, cwd: "", calls: [], texts: [] };
   const pending = new Map<string, Call>();
@@ -73,7 +73,7 @@ function familyIds(run: string, state: RunState): Set<string> {
 }
 
 /** The session files of the family: each root's own file and every subagent file under its session-artifacts folder. */
-function familySessions(run: string, state: RunState): Session[] {
+export function familySessions(run: string, state: RunState): Session[] {
   const files = new Set<string>();
   for (const id of familyIds(run, state)) {
     for (const file of sessionFiles(id)) if (/\/[0-9a-f]{8}-[0-9a-f-]{27}\.jsonl$/.test(file)) files.add(file);

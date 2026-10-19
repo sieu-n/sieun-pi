@@ -42,6 +42,7 @@ import { checkinJobSteer } from "./checkin-job-steer.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
 import { type ArchiveMark, chatEntries, chatToolsReopen, FOLLOW_UP } from "./chat-tools-reopen.ts";
 import { reopenFirstMessage } from "./reopen-first-message.ts";
+import { boxBrowserDefault } from "./box-browser-default.ts";
 import { boxTools } from "./box-tools.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { advanceRelease, detachedReport } from "./detached-report.ts";
@@ -68,7 +69,7 @@ import { wakeLive } from "./wake-live.ts";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
-  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-tools": boxTools,
+  "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
