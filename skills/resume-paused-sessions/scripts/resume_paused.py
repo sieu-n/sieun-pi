@@ -712,12 +712,18 @@ def owner_archived(path):
     record = read_record(ARCHIVED_CHATS, lambda data: isinstance(data, dict) and isinstance(data.get("ids"), list)
                          and all(isinstance(sid, str) for sid in data["ids"]))
     archived = set(record["ids"]) if record else set()
+    return Path(path).stem in archived or artifacts_root(path) in archived
+
+
+def artifacts_root(path):
+    """The top-level session whose session-artifacts tree holds the job file at `path` (ARTIFACTS_DIR/<root>/sub-*/.../<id>.jsonl), or None
+    for a thread. That session's worker serves the job, so pi-pool files the job's requests under its tree."""
     try:
         parts = Path(path).relative_to(ARTIFACTS_DIR).parts
     except ValueError:
         parts = Path(path).parts
         parts = parts[parts.index("session-artifacts") + 1:] if "session-artifacts" in parts else ()
-    return Path(path).stem in archived or (len(parts) > 1 and parts[0] in archived)
+    return parts[0] if len(parts) > 1 else None
 
 
 def rlm_ledger_path():
@@ -1148,6 +1154,13 @@ def head_of(sid, by_id):
         cur = parent
 
 
+def pool_tree(session, head_row):
+    """The session pi-pool keys this run's tree by: the top-level session above its job file, else the head `head_of` found. head_of follows
+    parentActiveSessionId, which goes stale once the chat's worker stops. At 03:13Z on 10-19 chat-057a was archived, so its jobs were their own
+    heads, `pi-pool who --session <job>` answered "matches no known session", and the pass sent six of them continue into the tree's backoff."""
+    return artifacts_root(session.get("sessionFile") or "") or head_row.get("sessionId") or head_row["id"]
+
+
 def is_busy(session):
     return session.get("activity") == "working" or any(session.get(flag) for flag in BUSY_FLAGS)
 
@@ -1430,8 +1443,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         except RecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             return {"retry_blocked": f"its stop record did not read: {error}"}
-        root = by_id.get(head, s)
-        blocker = account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts, strict=True)
+        blocker = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
         return {"retry_blocked": blocker} if blocker else mark
 
     if BOX.remote:
@@ -1555,8 +1567,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             redriven = last_user_at(entries_of(head))
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
-        root = by_id.get(head, s)
-        root_id, provider = root.get("sessionId") or root["id"], run_provider(entries_of(sid))
+        root_id, provider = pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid))
         if verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
             blocker = hook_blocker(root_id, provider, hooks) if check_hook else None
         else:

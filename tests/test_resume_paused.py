@@ -788,6 +788,56 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.sent, [(sid, "continue")])
         self.assertTrue(resume_paused.unload_stop_holds({"lifecycle": "archived"}, ("error", "Connection error.")), "a network error the unload met stays stopped")
 
+    def test_a_job_whose_chat_is_archived_asks_pi_pool_for_its_chats_tree_and_stays_held(self):
+        # scratch deletion (01a151ed), a job of chat-057a (01a14210) on 10-19: claude7 hit its 5h cap at 02:29:12Z, and the tree's waits ran
+        # to an R5 backoff. The idle unload stopped the job at 02:45:25Z on this 429. The job sweep held it at 02:56Z and 03:05Z, while the
+        # chat's live row (aa7d4447f2b5) matched the job's parentActiveSessionId. The chat was archived from 03:09:29Z to 03:13:47Z. The 03:13Z
+        # pass then asked `pi-pool who --session` for the job's own id, read "matches no known session" as no hold, and sent continue. The tree
+        # was in a backoff to 03:48:04Z, so the job met another 429 at 03:13:50Z, and five jobs beside it did the same.
+        chat, job = "01a14210-4e7d-72c3-aa67-e3d476f4e728", "01a151ed-902d-76f8-b557-01b17eef435f"
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
+                   "[request_id: req_011CgApuNeo5FoYbNkkDXnA6] pi-pool: claude7@slack.green is limited until 2026-10-19T05:59:59.000Z; "
+                   "this session waits for its slot at 2026-10-19T03:02:00.000Z. Try again in 19 minutes.")
+        path = self.root / "artifacts" / chat / "sub-033898b9" / f"{job}.jsonl"
+        path.parent.mkdir(parents=True)
+        entries = [{"type": "message", "timestamp": "2026-10-19T02:11:25.900Z", "message": {"role": "user", "content": [{"type": "text", "text": "find what deleted the scratch trees"}]}},
+                   {"type": "message", "timestamp": "2026-10-19T02:43:25.274Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                           "content": [], "errorMessage": limited}},
+                   {"type": "session_state", "timestamp": "2026-10-19T02:45:25.805Z", "state": {"status": "archived"}},
+                   {"type": "session_state", "timestamp": "2026-10-19T02:45:26.346Z", "state": {"status": "active"}}]
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        rows = [{"id": chat, "sessionId": chat, "lifecycle": "archived", "activity": "idle", "sessionName": "chat-057a", "runtimeKind": "top-level",
+                 "sessionFile": str(self.root / "sessions" / f"{chat}.jsonl"), "lastActivityAt": "2026-10-19T03:09:29.880Z"},
+                {"id": job, "sessionId": job, "lifecycle": "live", "activity": "idle", "sessionName": "scratch deletion", "runtimeKind": "subagent",
+                 "sessionFile": str(path), "lastActivityAt": "2026-10-19T02:45:26.346Z", "parentActiveSessionId": "aa7d4447f2b5", "parentSessionId": chat}]
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        asked = []
+
+        def run(wait, now):
+            def pool(cmd, **kwargs):
+                if cmd[1] == "ls":
+                    return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": [{"id": "claude7", "usable": wait is None}]}), "")
+                asked.append(cmd[cmd.index("--session") + 1])
+                if asked[-1] != chat:
+                    # The answer pi-pool gave for the job's id on us-metal02 at 06:12Z on 10-19: it keys a tree by its root session.
+                    return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"error": f"--session {asked[-1]} matches no known session"}), "")
+                body = {"providers": {"anthropic": {"account": None if wait else "claude7", "wait": wait}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.dict(resume_paused.UNLOADED, {job: resume_paused.parse_ts("2026-10-19T02:45:26.100Z")}, clear=True), \
+                    patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                    patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                    patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
+                    patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                    patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+                return resume_paused.resume(rows, args, now)
+
+        # pi-pool.log, 03:13:48Z: "wait ... session 01a14210-... account claude7@slack.green slot_at 2026-10-19T03:48:03 ... backoff true".
+        held = run({"account": "claude7", "slot_at": 1792381684}, dt.datetime(2026, 10, 19, 3, 13, 40, tzinfo=dt.timezone.utc))
+        self.assertEqual((held["paused"], self.sent, asked), ([], [], [chat]), "the pool holds the chat's tree")
+        report = run(None, dt.datetime(2026, 10, 19, 6, 24, tzinfo=dt.timezone.utc))
+        self.assertEqual([(p["reason"], p["errored_at"]) for p in report["paused"]], [("error", "2026-10-19T02:43:25.274Z")])
+        self.assertEqual(self.sent, [(job[-12:], "continue")])
+
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
         seen = self.root / "hook-session"
