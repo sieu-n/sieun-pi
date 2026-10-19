@@ -4,16 +4,18 @@ to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project
 
 visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc) and 28-day
 sign-ups with their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
-inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`, retries included.
+inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`, re-asks included.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 
@@ -91,12 +93,29 @@ def visits() -> dict[str, Any]:
     return out
 
 
-# A row that came back 5xx or with no answer (a connection error, http 0) is asked again after each wait here. Google's API error guide
-# says to retry 500, 502, 503 and 504 with exponential backoff (developers.google.com/workspace/drive/api/guides/handle-errors), and on
-# 10-18 05:21 one 500 "Internal error encountered" for /ko/blog/kol-key-opinion-leader read PASS when inspected again minutes later.
-# Two waits, 1 s then 2 s, keep a URL that fails every time at about 3 x 7.4 s + 3 s = 25 s, inside the 120 s precheck target
-# (src/shared/chat-duties.ts PRECHECK_TARGET_MS). Each retry spends one more inspection of the 2,000 a day, added to the quota file.
-INSPECT_RETRY_WAITS_S = (1, 2)
+# Google's URL Inspection API sometimes answers 500 "Internal error encountered" or 503 for minutes at a time. On 10-18 at 16:45:11Z
+# a 32-thread run met one: 81 calls failed until 16:48:36Z, many of them the old 1 s and 2 s retries of URLs that had just failed,
+# and calls from 16:49:22Z answered 200 (Vent prod vent.call rows). So the first 5xx, 429 or unanswered call stops the run from starting
+# more calls, and the failed and unasked URLs are asked once more after Google's Retry-After or, with none, after REASK_WAIT_S.
+# Google's API error guide says to retry 500, 502, 503 and 504 with backoff (developers.google.com/workspace/drive/api/guides/handle-errors).
+# measured: the 10-18 failure ran from the first 500 at 16:45:24Z to the last at 16:48:36Z, and calls at 16:49:22Z, 238 s in, answered 200
+REASK_WAIT_S = 240
+NOT_ASKED = "not asked: URL Inspection failed earlier in this run"
+
+
+def _failed(row: dict[str, Any]) -> bool:
+    return row["http"] == 0 or row["http"] == 429 or row["http"] >= 500
+
+
+def _retry_after_s(value: str | None) -> float | None:
+    if not value:
+        return None
+    if value.strip().isdigit():
+        return float(value)
+    try:
+        return max(0.0, (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds())
+    except (TypeError, ValueError):
+        return None
 
 
 def inspect(urls: list[str]) -> dict[str, Any]:
@@ -107,6 +126,8 @@ def inspect(urls: list[str]) -> dict[str, Any]:
     left = INSPECT_DAILY_QUOTA - gsc._quota_used(pt_day)
     asked = urls[: max(0, left)]
     sess = gsc.session(write=True)
+    stop = threading.Event()
+    retry_after: list[float] = []
 
     def attempt(url: str) -> dict[str, Any]:
         try:
@@ -118,31 +139,38 @@ def inspect(urls: list[str]) -> dict[str, Any]:
         except ValueError:
             payload = {}
         st = payload.get("inspectionResult", {}).get("indexStatusResult", {})
-        return {"url": url, "http": resp.status_code, "verdict": st.get("verdict"), "coverage_state": st.get("coverageState"),
-                "error": (payload.get("error") or {}).get("message")}
+        row = {"url": url, "http": resp.status_code, "verdict": st.get("verdict"), "coverage_state": st.get("coverageState"),
+               "error": (payload.get("error") or {}).get("message")}
+        if _failed(row) and (wait := _retry_after_s(getattr(resp, "headers", {}).get("Retry-After"))) is not None:
+            retry_after.append(wait)
+        return row
 
     def one(url: str) -> tuple[dict[str, Any], int]:
+        if stop.is_set():
+            return {"url": url, "http": 0, "verdict": None, "coverage_state": None, "error": NOT_ASKED}, 0
         row = attempt(url)
-        tries = 1
-        for wait in INSPECT_RETRY_WAITS_S:
-            if row["http"] != 0 and row["http"] < 500:
-                break
-            time.sleep(wait)
-            row = attempt(url)
-            tries += 1
-        if tries > 1:
-            row["tries"] = tries
-        return row, tries
+        if _failed(row):
+            stop.set()
+        return row, 1
 
-    # Measured 10-12: one inspection takes about 7.4 s, and 32 parallel calls inspected 32 URLs in 8.5 s, all HTTP 200. That is about
-    # 230 a minute, under Google's 600 a minute per property (virev_seo.config INSPECT_PER_MINUTE). The 2,000 a day quota is checked above.
-    with ThreadPoolExecutor(32) as pool:
-        done = list(pool.map(one, asked))
-    rows = [row for row, _ in done]
+    def run(batch: list[str]) -> list[tuple[dict[str, Any], int]]:
+        stop.clear()
+        # Measured 10-12: one inspection takes about 7.4 s, and 32 parallel calls inspected 32 URLs in 8.5 s, all HTTP 200. That is
+        # about 230 a minute, under Google's 600 a minute per property (virev_seo.config INSPECT_PER_MINUTE).
+        with ThreadPoolExecutor(32) as pool:
+            return list(pool.map(one, batch))
+
+    done = run(asked)
     spent = sum(tries for _, tries in done)
+    again = [row["url"] for row, _ in done if _failed(row)]
+    if again:
+        time.sleep(max(retry_after) if retry_after else REASK_WAIT_S)
+        redone = {row["url"]: (row, tries) for row, tries in run(again)}
+        spent += sum(tries for _, tries in redone.values())
+        done = [(redone[row["url"]][0], 0) if row["url"] in redone else (row, 0) for row, _ in done]
     if spent:
         gsc._quota_add(pt_day, spent)
-    return {"pt_day": pt_day, "quota_left_before": left, "rows": rows, "not_asked": urls[len(asked):]}
+    return {"pt_day": pt_day, "quota_left_before": left, "rows": [row for row, _ in done], "not_asked": urls[len(asked):]}
 
 
 def main() -> None:
