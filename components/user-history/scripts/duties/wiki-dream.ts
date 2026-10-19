@@ -12,7 +12,8 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
- * - wiki-health's stale list plus `git log --first-parent` and `git ls-tree` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
+ * - wiki-health's stale list plus `git log --first-parent` and `git ls-tree` in auto-sns-agent say which pages are behind their code (pagesBehindCode);
+ * - the wiki host batch's journal (`journalctl --user -u wiki-box-commit`) says which written pages it keeps leaving out of git (unlandedPages).
  * wiki-health judges the pages as committed at HEAD, so an uncommitted page edit in the shared checkout neither hides nor adds a problem.
  * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
  * An input it cannot read counts in `source_errors` and writes 999999 for the metrics that input feeds, so the run misses and says why.
@@ -28,6 +29,17 @@ export const CHURN_MS = 7 * DAY;
 export const FLAGGED_MAX = 80;
 const HEALTH_TIMEOUT_MS = 100_000;
 const GIT_TIMEOUT_MS = 20_000;
+/** journalctl read this unit's last 48 h (11,603 lines) in under 1 s on us-metal02 on 2026-10-19. */
+const JOURNAL_TIMEOUT_MS = 20_000;
+/** The wiki host batch's systemd user unit (auto-sns-agent scripts/repo/agent/wiki-box-commit.mjs, every 5 min). */
+export const BOX_UNIT = "wiki-box-commit";
+/**
+ * A page counts as unlanded when the batch left it out in its latest run and in a run at least this long before it. In the
+ * 48 h of journal up to 2026-10-19 16:51Z (439 runs), 15 of 39 finished left-out streaks ended within 15 min, as the writer
+ * fixed the page, and none ended between 15 and 30 min. The long ones held pages out for hours: email-finder-round4 for
+ * 950 min, then its fix was reset on disk and lost while wiki_problems read 0.
+ */
+export const UNLANDED_MS = 30 * 60_000;
 
 /** Runs a program with no shell in `cwd` and gives its stdout; throws on a nonzero exit or a timeout. */
 export type Exec = (file: string, args: readonly string[], options: { cwd: string; timeoutMs: number }) => Promise<string>;
@@ -259,9 +271,49 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
   return slices.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
 }
 
+const CONTENT = "apps/llm-wiki/content/";
+const LEFT_OUT = /^wiki-box-commit: left out (\S+): (.*)$/;
+/** One finished run of the wiki host batch: its start time and the pages it left out (wiki-content paths) with the batch's reason. */
+export interface BoxRun { at: number; leftOut: Map<string, string> }
+
+/**
+ * Parses `journalctl -o short-unix` output of the wiki-box-commit unit into its finished runs, oldest first. A run starts at
+ * systemd's "Starting" line and ends at its "Finished" or "Failed with result" line; lines outside a run are skipped.
+ */
+export function parseBoxJournal(text: string): BoxRun[] {
+  const runs: BoxRun[] = [];
+  let open: BoxRun | undefined;
+  for (const line of text.split("\n")) {
+    const match = /^(\d+(?:\.\d+)?) \S+ [^:]+: (.*)$/.exec(line);
+    if (!match) continue;
+    const at = Number(match[1]) * 1000;
+    const body = match[2]!;
+    if (body.startsWith(`Starting ${BOX_UNIT}.service`)) open = { at, leftOut: new Map() };
+    else if (open && (body.startsWith(`Finished ${BOX_UNIT}.service`) || body.startsWith(`${BOX_UNIT}.service: Failed with result`))) { runs.push(open); open = undefined; }
+    else if (open) {
+      const left = LEFT_OUT.exec(body);
+      if (left) open.leftOut.set(left[1]!.startsWith(CONTENT) ? left[1]!.slice(CONTENT.length) : left[1]!, left[2]!);
+    }
+  }
+  return runs;
+}
+
+export interface UnlandedPage { path: string; reason: string; session: boolean; firstAt: number; lastAt: number; runs: number }
+/** Pages the latest run left out that a run at least UNLANDED_MS earlier also left out, with the latest reason. Session pages are marked. */
+export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
+  const latest = runs[runs.length - 1];
+  if (!latest) return [];
+  return [...latest.leftOut].flatMap(([path, reason]) => {
+    const seen = runs.filter(run => run.leftOut.has(path));
+    const firstAt = seen[0]!.at;
+    if (latest.at - firstAt < UNLANDED_MS) return [];
+    return [{ path, reason, session: path.startsWith("sessions/"), firstAt, lastAt: latest.at, runs: seen.length }];
+  });
+}
+
 /** The order the job reads flagged items in, with a cap per kind; the list stops at FLAGGED_MAX. */
 export const FLAG_ORDER: readonly [string, number][] = [
-  ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
+  ["source_error", 6], ["unlanded", 20], ["unlanded_session", 10], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
   ["missing_meta", 6], ["stale_vs_code", 30], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
   ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
@@ -285,8 +337,11 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 }
 
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
-/** The sync problems wiki_problems adds up; pages_behind_code replaces the engine's mtime-based stale_vs_code. */
-const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code"] as const;
+/**
+ * The sync problems wiki_problems adds up; pages_behind_code replaces the engine's mtime-based stale_vs_code, and unlanded counts
+ * curated pages written on the wiki host that its batch keeps out of git, which wiki-health cannot see because it reads HEAD.
+ */
+const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "unlanded"] as const;
 
 /** Measures everything and builds the precheck output. Each input that fails adds a source_error item and 999999 for the metrics it feeds. */
 export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRecord[]): Promise<PrecheckOutput & { info: Record<string, number> }> {
@@ -309,6 +364,13 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }, error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
+  const box = await deps.exec("journalctl", ["--user", "-u", BOX_UNIT, "--since", `@${Math.floor((now - DAY) / 1000)}`, "-o", "short-unix", "--no-pager"],
+    { cwd: deps.repos.wiki, timeoutMs: JOURNAL_TIMEOUT_MS }).then(text => {
+    const runs = parseBoxJournal(text);
+    if (!runs.length) throw new Error(`no finished ${BOX_UNIT} run in the last 24 h`);
+    return { runs: runs.length, pages: unlandedPages(runs) };
+  }).catch(error => fail(`journalctl ${BOX_UNIT}`, error));
+
   const stalePages = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   let behind: ReturnType<typeof pagesBehindCode> | undefined;
   if (stalePages) {
@@ -325,6 +387,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
   metrics.pages_behind_code = behind?.length ?? UNMEASURED;
+  metrics.unlanded = box ? box.pages.filter(page => !page.session).length : UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
@@ -348,10 +411,16 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     repo_fact_memories: harness?.repoFacts ?? UNMEASURED, memory_glide_plan: glide(MEMORY_GLIDE, now), new_corrections: corrections?.length ?? UNMEASURED,
     new_memories: harness?.fresh.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
     open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED,
+    box_runs_24h: box?.runs ?? UNMEASURED, unlanded_sessions: box ? box.pages.filter(page => page.session).length : UNMEASURED,
     recurred_7d: classes?.recurred.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
   };
 
   const slices: FlaggedSlice[] = [...errors];
+  const iso = (at: number): string => new Date(at).toISOString().slice(0, 16) + "Z";
+  for (const page of box?.pages ?? []) {
+    slices.push({ kind: page.session ? "unlanded_session" : "unlanded", item: page.path, at: page.lastAt,
+      excerpt: clip(`the wiki host batch left it out of git in ${page.runs} runs from ${iso(page.firstAt)} to ${iso(page.lastAt)}: ${page.reason}`, 400) });
+  }
   const back = new Set((classes?.back ?? []).map(([slug]) => slug));
   for (const [slug, row] of classes?.recurred ?? []) {
     const when = back.has(slug) ? "after its current fix" : `before its current fix (${row.fixedAt})`;
