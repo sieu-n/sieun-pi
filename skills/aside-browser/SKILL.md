@@ -125,6 +125,7 @@ Every REPL call, `run()` and the private `_repl()` alike, passes a send check th
 
 A click by coordinates, such as `page.mouse.click(x, y)`, is checked when it runs.
 The check reads the element under the point and refuses Send on a webmail page, Send or Submit on a ticket or social page, and a click into a support chat widget's frame.
+On a social page the check reads the REPL code itself, so code that pairs a click or `keyboard.press` with Enter or a Send, Submit, Reply or Post word is refused even when the page sends nothing (`_sends` in `src/aside_browser/__init__.py`). On 2026-10-18 the CI GitHub App setup job hit that on `github.com/apps/<app>/installations/new`, a GitHub page outside `sieu-n`, `virev-ai` and `/settings`, and a click on a button picked by a label without those words, such as `getByRole('button', {name: 'Save'})`, or by its id passed.
 
 GitHub sign-in pages (`github.com/login`, `/login/oauth`, `/login/device` and `/sessions`) count as no post, so an agent finishes a GitHub sign-in there itself (c4).
 Slack stays allowed, because both Slack workspaces are the owner's own.
