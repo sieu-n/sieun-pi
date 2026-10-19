@@ -1,6 +1,7 @@
 import type { DaemonClient, SessionSummary } from "prime-agent";
 import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
+import type { UnloadReceipt } from "./unloaded.ts";
 
 /**
  * Stopping a session that sits idle for the quiet window (src/quiet-minutes.ts, 15 min by default; the daemon's idleEvictionMinutes before
@@ -292,6 +293,8 @@ export interface UnloadSource {
    * `since` is when this stop began, so an explicit archive from then on wins.
    */
   stopped(row: SessionSummary, isChat: boolean, since: number): Promise<void>;
+  /** Writes one unload receipt (src/unloaded.ts UNLOAD_RECEIPTS): `sent` before the kill, `stopped` or `failed` after its answer. Absent, none. */
+  receipt?(receipt: UnloadReceipt): Promise<void>;
   /**
    * Hands the session's detached services to scopes of their own and then sends the idle kill (`detached-handoff.ts`), for a session the
    * guard kept. Absent, a kept session waits until its service exits. With `resume` it only finishes a handoff a crash left unfinished, and
@@ -420,7 +423,7 @@ export class IdleUnloader {
     if (plan.length) {
       // Each stop is bounded on its own (STOP_BOUND_MS). The sweep's line names the stops done by then; a later one logs its own line.
       const named = (row: SessionSummary): string => {
-        const name = row.sessionName?.trim() || row.sessionId.slice(0, 8);
+        const name = row.sessionName?.trim() || row.sessionId;
         const until = held.get(row.sessionId);
         if (until === undefined) return name;
         return until === null ? `${name} (waits on pi-pool, which names no time)` : `${name} (waits on pi-pool until ${new Date(until).toISOString().slice(11, 16)}Z)`;
@@ -446,13 +449,13 @@ export class IdleUnloader {
       const gb = ((own.get(worker.pid) ?? 0) / 1024 ** 3).toFixed(2);
       if (worker.attached.length) {
         const detached = await Promise.all(worker.attached.map(id => source.restNow(id, RECYCLE_QUIET_MS)));
-        if (detached.some(Boolean)) source.log(`idle unload: worker ${worker.pid} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => source.title(id) ?? id.slice(0, 8)).join(", ")} to recycle it`);
+        if (detached.some(Boolean)) source.log(`idle unload: worker ${worker.pid} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => source.title(id) ?? id).join(", ")} to recycle it`);
         continue;
       }
       // Deepest first, one after another, as before: the worker exits once its last session stops.
       this.track((async () => {
         const names: string[] = [];
-        for (const row of worker.stop) if (await this.stop(row, chats)) names.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
+        for (const row of worker.stop) if (await this.stop(row, chats)) names.push(row.sessionName?.trim() || row.sessionId);
         if (names.length) source.log(`idle unload: recycled worker ${worker.pid} (${gb} GB of its own) by stopping ${names.length} quiet sessions: ${names.join(", ")}`);
       })());
     }
@@ -467,7 +470,7 @@ export class IdleUnloader {
     for (const row of await unfinished) {
       if (live.has(row.sessionId) || this.out.has(row.sessionId)) continue;
       const resumed = await handOff(row, true);
-      if (resumed) this.source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${resumed.done ? "finished the handoff a crash left open" : `the handoff a crash left open: ${resumed.error}`}`);
+      if (resumed) this.source.log(`idle unload: ${row.sessionId}: ${resumed.done ? "finished the handoff a crash left open" : `the handoff a crash left open: ${resumed.error}`}`);
     }
   }
 
@@ -486,7 +489,7 @@ export class IdleUnloader {
     const known = this.out.get(row.sessionId);
     if (known) return known;
     const run = this.stopNow(row, chats, retry).catch(error => {
-      this.source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+      this.source.log(`idle unload: ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }).finally(() => { this.out.delete(row.sessionId); });
     this.out.set(row.sessionId, run);
@@ -497,30 +500,35 @@ export class IdleUnloader {
     const source = this.source;
     const failed = (answer: { error: string }): false => {
       if (skipUntilRowChanges(answer.error)) this.gone.add(goneKey(row));
-      source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${answer.error}${skipUntilRowChanges(answer.error) ? "; skipped until its row changes" : ""}`);
+      source.log(`idle unload: ${row.sessionId}: ${answer.error}${skipUntilRowChanges(answer.error) ? "; skipped until its row changes" : ""}`);
       return false;
     };
     const since = source.now();
     const state = await source.request(row, "get_state");
     if (!state.success) return failed(state);
-    if (stateBusy(state.data, retry, source.handOff !== undefined)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
+    if (stateBusy(state.data, retry, source.handOff !== undefined)) { source.log(`idle unload: ${row.sessionId}: the daemon shows it at work since the row was listed; kept`); return false; }
     // The service lets go of a chat first: the kill closes the session under its attach, and the hub would open it again at once.
-    if (retry && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the service holds the chat for a duty or an open; kept`); return false; }
+    if (retry && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId}: the service holds the chat for a duty or an open; kept`); return false; }
     // A handoff a crash left open ends with its own kill: after its commit no detached group is left for the guard to refuse.
+    const receipt = (phase: UnloadReceipt["phase"], error?: string) => source.receipt?.({ at: new Date(source.now()).toISOString(), phase, sessionId: row.sessionId,
+      activeSessionId: row.activeSessionId ?? "", why: retry ? "pool wait" : "idle", ...error === undefined ? {} : { error } })
+      .catch(failure => source.log(`idle unload: ${row.sessionId}: receipt: ${failure instanceof Error ? failure.message : String(failure)}`));
+    await receipt("sent");
     const resumed = source.handOff ? await source.handOff(row, true) : null;
-    if (resumed && !resumed.done) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, the handoff a crash left open: ${resumed.error}`); return false; }
-    if (resumed) source.log(`idle unload: ${row.sessionId.slice(0, 8)}: finished the handoff a crash left open`);
+    if (resumed && !resumed.done) { await receipt("failed", resumed.error); source.log(`idle unload: ${row.sessionId}: kept, the handoff a crash left open: ${resumed.error}`); return false; }
+    if (resumed) source.log(`idle unload: ${row.sessionId}: finished the handoff a crash left open`);
     else {
       const killed = await source.request(row, "kill");
       // The daemon's guard kept a detached service. With a handoff source the services move to scopes of their own and the kill goes out
       // again; without one only this sweep skips the session, and once the service exits the next sweep stops it.
       if (!killed.success && killed.detachedHold) {
         const handed = source.handOff && row.activeSessionId ? await source.handOff(row) : null;
-        if (!handed?.done) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, it holds detached processes${handed ? `; handoff: ${handed.error}` : ""}`); return false; }
-        source.log(`idle unload: ${row.sessionId.slice(0, 8)}: handed its detached services to their own scopes`);
+        if (!handed?.done) { await receipt("failed", handed?.error ?? killed.error); source.log(`idle unload: ${row.sessionId}: kept, it holds detached processes${handed ? `; handoff: ${handed.error}` : ""}`); return false; }
+        source.log(`idle unload: ${row.sessionId}: handed its detached services to their own scopes`);
       }
-      else if (!killed.success) return failed(killed);
+      else if (!killed.success) { await receipt("failed", killed.error); return failed(killed); }
     }
+    await receipt("stopped");
     this.gone.add(goneKey(row));
     await source.stopped(row, chats.has(row.sessionId), since);
     return true;

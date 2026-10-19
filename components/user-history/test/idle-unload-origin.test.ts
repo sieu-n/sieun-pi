@@ -278,7 +278,7 @@ test("a guard daemon's refusal skips the session for that sweep only, and the ne
     await unloader.settled();
     assert.deepEqual(daemon.sent.map(command => command.type), ["get_state", "kill"]);
     assert.deepEqual(stopped, []);
-    assert.deepEqual(logs, ["idle unload: 01a14e20: kept, it holds detached processes"], "no error line and no skip until the row changes");
+    assert.deepEqual(logs, ["idle unload: 01a14e20-0000-7000-8000-000000000001: kept, it holds detached processes"], "no error line and no skip until the row changes");
     options.refuse = false;
     await unloader.sweep();
     await unloader.settled();
@@ -301,7 +301,7 @@ test("without idle_unload_detached_guard in the hello the same answer is logged 
     const unloader = unloaderOn(client, idleRow("w1"), [], true, logs);
     await unloader.sweep();
     await unloader.settled();
-    assert.deepEqual(logs, [`idle unload: 01a14e20: ${REFUSAL.error}`]);
+    assert.deepEqual(logs, [`idle unload: 01a14e20-0000-7000-8000-000000000001: ${REFUSAL.error}`]);
   } finally {
     client.close();
     await daemon.close();

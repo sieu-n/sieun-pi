@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -38,4 +38,18 @@ async function write(file: string, sessions: readonly string[], at: number): Pro
   for (const session of sessions) kept[session] = new Date(at).toISOString();
   const temp = `${file}.${process.pid}.tmp`;
   await writeFile(temp, JSON.stringify(kept)).then(() => rename(temp, file));
+}
+
+/**
+ * One line of UNLOAD_RECEIPTS per idle kill: `sent` right before the kill goes out, then `stopped` or `failed` with the daemon's answer. On
+ * 10-19 at 16:22:14-17Z 17 kills timed out after 30 s, the service log named each by the first 8 characters of its session id, and nothing
+ * else was written, so rb-p161-p143 (01a154b8-96c6-765e-ac87-ffc09f8fc16d) went archived at 16:22:16Z with no record that the unload had
+ * asked: a `sent` line with no `stopped` line now says exactly that.
+ */
+export const UNLOAD_RECEIPTS = "unload-receipts.jsonl";
+export interface UnloadReceipt { at: string; phase: "sent" | "stopped" | "failed"; sessionId: string; activeSessionId: string; why: "idle" | "pool wait"; error?: string }
+
+/** Appends one receipt line; one write per line, so lines from concurrent stops do not interleave. */
+export function writeReceipt(dataDir: string, receipt: UnloadReceipt): Promise<void> {
+  return appendFile(join(dataDir, UNLOAD_RECEIPTS), JSON.stringify(receipt) + "\n");
 }

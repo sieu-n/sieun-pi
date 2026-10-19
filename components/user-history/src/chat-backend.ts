@@ -20,7 +20,7 @@ import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
-import { ARTIFACTS, deletedFolders, dryLeftoverSource, endLeftovers, leftoverSource } from "./job-leftovers.ts";
+import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
@@ -29,7 +29,7 @@ import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, providerWaits, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
-import { recordUnloaded } from "./unloaded.ts";
+import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -208,12 +208,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     jobs: dutyJobs, poolAdmits,
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
+  // A gone job's leftovers end on the box whose daemon runs its folder's session; a replay serve stops nothing anywhere.
+  const jobEnds = hostLeftovers({ local: replay ? dryLeftoverSource : leftoverSource, remote: replay ? undefined : sshLeftovers,
+    hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
-      leftovers: (dir, session) => endLeftovers(replay ? dryLeftoverSource : leftoverSource, dir, session),
-      deletedLeftovers: async chat => endLeftovers(replay ? dryLeftoverSource : leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
+      leftovers: (dir, session) => jobEnds.leftovers(dir, session),
+      deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       // resume_paused.py sends its continues to the live daemon itself, so a replay serve only reads the cut jobs.
@@ -361,13 +364,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     // kill_origin (src/idle-unload.ts NO_BARE_KILL).
     request: (row, type) => unloadRequest(catalog.clientFor(row.activeSessionId!), row.activeSessionId!, type, !catalog.hostOf(row.sessionId)),
     stopped: async (row, isChat, since) => {
-      await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+      await recordUnloaded(dataDir, [row.sessionId], Date.now()).catch(error => dutyLog(`idle unload: record ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`));
       // The daemon's kill writes the archived state, which would hide the session from agent_message and the list. Every session it stopped
       // is rewritten as active, not only chats and threads.json threads: on 10-18 the jobs 'parity prod promote 12' and 'meta ads advertisers
       // push' stayed archived after the 12:53:07Z sweep. A chat he archived stays archived, and so does a thread an archive reached since `since`.
       const listed = isChat || !(await chats.archivedIds()).has(row.sessionId);
-      if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+      if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`));
     },
+    receipt: entry => writeReceipt(dataDir, entry),
     log: dutyLog,
     now: () => Date.now(),
   });

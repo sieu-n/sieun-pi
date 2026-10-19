@@ -93,7 +93,7 @@ test("a chat's stop lets go of the service's attach before the kill, and a chat 
     assert.deepEqual(mine, [`get_state ${candidate.sessionId}`, `release ${candidate.sessionId}`, `kill ${candidate.sessionId}`]);
   }
   assert.equal(calls.includes(`kill ${keep!.sessionId}`), false);
-  assert.ok(lines.some(line => line.includes(`${keep!.sessionId.slice(0, 8)}: the service holds the chat for a duty or an open; kept`)), lines.join("\n"));
+  assert.ok(lines.some(line => line.includes(`${keep!.sessionId}: the service holds the chat for a duty or an open; kept`)), lines.join("\n"));
   assert.ok(lines.some(line => line.includes("(waits on pi-pool, which names no time)")), lines.join("\n"));
 });
 
