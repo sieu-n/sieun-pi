@@ -7,7 +7,7 @@ import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts"
 import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
-import { measureCache, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
+import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
@@ -229,8 +229,9 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${deps.roots.find(root => root.name === skill.root)?.transcripts ? "agent read in a Prime transcript" : "view event"} since ${since.slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
-  // An LGTM failure leaves the cache shares out and flags it, so the skill checks still report and the shares never read green.
-  const cache = await deps.cache().catch((error: unknown) => ({ metrics: {}, flagged: [{ kind: "cache_error", excerpt: `The cache read shares could not be read from LGTM: ${error instanceof Error ? error.message : String(error)}` }] }));
+  // An LGTM failure is no data: both shares read NO_DATA, a miss, and the skill checks still report.
+  const cache = await deps.cache().catch((error: unknown) => ({ metrics: Object.fromEntries(Object.keys(WINDOWS).map(key => [key, NO_DATA])),
+    flagged: [{ kind: "cache_error", excerpt: `no data: the cache read shares could not be read from LGTM: ${error instanceof Error ? error.message : String(error)}` }] }));
   const untracked = skills.filter(skill => skill.lastRead === undefined).length;
   if (untracked) flagged.push({ kind: "untracked", excerpt: `${untracked} skills have no read tracking (no llm-wiki view events for their root), so unread_14d leaves them out` });
   const prune = new Set([...failures.map(result => result.skill), ...unread.map(skill => skill.id)]);

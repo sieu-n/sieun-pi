@@ -11,8 +11,13 @@ import type { Prometheus, Sample } from "../../src/usage/lgtm.ts";
 
 export const WINDOWS = { cache_read_ratio_1h: "1h", cache_read_ratio_24h: "24h" } as const;
 export type CacheMetric = keyof typeof WINDOWS;
-/** A window with fewer finished calls is no data: the metric reads 100 and a flagged line says so. */
+/** A window with fewer finished calls is no data. */
 export const MIN_CALLS = 20;
+/**
+ * The share a window with no data reads: under every target, so no data is a miss with the reason "no data". It read 100 until 10-19, and
+ * at 15:30Z that day LGTM held no prime_agent series, because the Prime OTLP exporter was not installed yet, so both shares read a false green.
+ */
+export const NO_DATA = 0;
 const TOP = 3;
 const JOB = 'job="prime-agent"';
 
@@ -62,8 +67,8 @@ export async function measureCache(prometheus: Prometheus, targets: Record<Cache
     const window = windowShare(tokens, calls);
     const alsoFailed = window.failures ? ` (${window.failures} more ended in an error)` : "";
     if (window.calls < MIN_CALLS) {
-      metrics[key] = 100;
-      flagged.push({ kind: key, excerpt: `no data: ${window.calls} calls in the window, under ${MIN_CALLS}, so it reads 100${alsoFailed}` });
+      metrics[key] = NO_DATA;
+      flagged.push({ kind: key, excerpt: `no data: ${window.calls} calls in the window, under ${MIN_CALLS}, so it counts as a miss${alsoFailed}` });
       continue;
     }
     metrics[key] = window.share;
