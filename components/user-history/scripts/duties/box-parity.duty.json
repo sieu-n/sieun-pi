@@ -1,7 +1,7 @@
 {
   "name": "Box tools parity",
   "ownerWords": "(10-18, goal p1) make us-metal02, the Linux box, match the owner's MacBook Pro for every tool, for auto-sns-agent and sieun-pi.\n\n(10-18, relayed by the AI harness chat) things are meant to be first written in plan -> achieved ->  cleared & written on duty for maintanence only -> and valiantly persued whenever not met. JUST DO IT",
-  "goal": "us-metal02 keeps matching the owner's MacBook Pro for every tool auto-sns-agent and sieun-pi agents use: each of the 167 audit rows has what the Mac has, in presence, version and a real call that works on the box. The Mac's auto-sns-agent sieun/dev follows the box's shared tip, the box carries no resource cap the owner did not ask for (c107), and ssh on the box's public address stays closed outside the tailnet.",
+  "goal": "us-metal02 keeps matching the owner's MacBook Pro for every tool auto-sns-agent and sieun-pi agents use: each of the 167 audit rows has what the Mac has, in presence, version and a real call that works on the box. The box carries no resource cap the owner did not ask for (c107), and ssh on the box's public address stays closed outside the tailnet.",
   "metrics": [
     {
       "key": "tool_rows_off",
@@ -9,12 +9,6 @@
       "op": "<=",
       "target": 0,
       "headline": true
-    },
-    {
-      "key": "mac_behind_box",
-      "label": "Commits on the box's sieun/dev that the Mac's sieun/dev lacks",
-      "op": "<=",
-      "target": 0
     },
     {
       "key": "resource_limits_set",
@@ -39,5 +33,5 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Fix every miss until the run is green, with one subagent per miss: one per tool_row_off item, one per resource_limit item, one for mac_behind_box and one for public_ssh_open. Never only report. A tool row: read its item in the flagged list, make the box match the Mac (install or upgrade the CLI into ~/.local/bin without root, copy the config or credential from the Mac with its mode kept, restart the box unit, or fix the failing call), and re-run `node --import tsx scripts/duties/box-parity.ts` in sieun-pi components/user-history to see the row match. A Mac value that is wrong and the box's right (an expired Mac login) asks nothing of the box. A resource limit: remove the setting from its unit, drop-in, systemd-run call or container config, with no replacement cap (c107), and reload or restart only that unit. mac_behind_box: find why the Mac's checkout stopped following the box's shared sieun/dev and fix that sync, never by pushing or rewriting history. public_ssh_open: reload deploy/linux/ssh-public-guard.nft through ssh-public-guard.service and find what removed it. A wrong check gets a fix with a test in sieun-pi (scripts/duties/box-parity.ts, box-parity-probe.py or box-parity.rows.json). Reach the Mac only with short timeout-wrapped `ssh mac` reads and copies, never start a session there, and never send anything outside. Only a password, 2FA or paid plan goes to the owner, as one For you item."
+  "onMiss": "Fix every miss until the run is green, with one subagent per miss: one per tool_row_off item, one per resource_limit item and one for public_ssh_open. Never only report. A tool row: read its item in the flagged list, make the box match the Mac (install or upgrade the CLI into ~/.local/bin without root, copy the config or credential from the Mac with its mode kept, restart the box unit, or fix the failing call), and re-run `node --import tsx scripts/duties/box-parity.ts` in sieun-pi components/user-history to see the row match. A Mac value that is wrong and the box's right (an expired Mac login) asks nothing of the box. A resource limit: remove the setting from its unit, drop-in, systemd-run call or container config, with no replacement cap (c107), and reload or restart only that unit. public_ssh_open: reload deploy/linux/ssh-public-guard.nft through ssh-public-guard.service and find what removed it. A wrong check gets a fix with a test in sieun-pi (scripts/duties/box-parity.ts, box-parity-probe.py or box-parity.rows.json). Reach the Mac only with short timeout-wrapped `ssh mac` reads and copies, never start a session there, and never send anything outside. Only a password, 2FA or paid plan goes to the owner, as one For you item."
 }

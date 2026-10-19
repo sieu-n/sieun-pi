@@ -1950,7 +1950,7 @@
     "tip": true
    }
   ],
-  "note": "The box holds the shared tip since 10-18 11:23Z; the row is off when one of the Mac's last 100 sieun/dev commits matches no box commit by hash, by patch-id or by the bytes it wrote."
+  "note": "The row is off when one of the Mac's last 100 commits on its agent.branch (sieun/dev when unset) matches no commit on the box's sieun/dev by hash, by patch-id or by the bytes it wrote."
  },
  {
   "id": "auto-sns-agent-node-modules",

@@ -5,10 +5,10 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { compareVersions, containerLimits, foldName, followWindowS, judgeRows, type LimitContext, macBehind, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
+import { compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits }
   from "../scripts/duties/box-parity.ts";
 
-const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, checkout: {}, versions: {}, ms: 1 });
+const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, versions: {}, ms: 1 });
 
 test("shortfall takes the Mac as the standard and lets a box set hold more", () => {
   assert.equal(shortfall("v:10.33.0", "v:10.33.0"), null);
@@ -127,7 +127,7 @@ test("the probe runs a version row with a cwd on the Mac, since a pinned package
   writeFileSync(join(home, "repo/package.json"), JSON.stringify({ packageManager: "pnpm@10.32.1" }));
   const rows: Row[] = [{ id: "repo", tool: "cli pnpm", probes: [{ version: ["pnpm", "--version"], cwd: "~/repo" }] },
     { id: "bare", tool: "cli pnpm", probes: [{ version: ["pnpm", "--version"] }] }];
-  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, boxTip: null, known: {} })).toString("base64");
+  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, known: {} })).toString("base64");
   const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
   assert.deepEqual([out.values.repo, out.values.bare], [["v:10.32.1"], ["v:10.33.0"]]);
 });
@@ -142,36 +142,34 @@ test("the probe reads files on the Mac side and refuses calls there", () => {
   writeFileSync(join(home, "skills/a/SKILL.md"), "x");
   const rows: Row[] = [{ id: "skill", tool: "skill a", probes: [{ path: "~/skills/a/SKILL.md" }, { ls: "~/skills" }, { path: "~/skills/b/SKILL.md" }] },
     { id: "call", tool: "cli gh", mac: [{ run: ["gh", "auth", "status"] }], box: [{ const: "ok" }] }];
-  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, boxTip: null, known: {} })).toString("base64");
+  const arg = Buffer.from(JSON.stringify({ host: "mac", rows, known: {} })).toString("base64");
   const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
   assert.deepEqual(out.values.skill, ["ok", 'set:["a"]', "absent"]);
   assert.match(out.values.call![0]!, /^fail: run is not a read/);
 });
 
-test("macBehind counts only box commits the Mac's follower has had a full turn to take", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "box-parity-git-"));
-  const now = Date.parse("2026-10-18T12:35:00Z");
-  const git = (args: string[], landedS?: number) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
-    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
-      ...(landedS === undefined ? {} : { GIT_COMMITTER_DATE: `@${Math.round(now / 1000) - landedS} +0000` }) } }).trim();
-  git(["init", "-q", "-b", "sieun/dev"]);
-  const land = (name: string, agoS: number) => {
-    const id = git(["commit-tree", "-m", name, ...(name === "a" ? [] : ["-p", git(["rev-parse", "sieun/dev"])]), git(["mktree"])], agoS);
-    git(["update-ref", "-m", `land ${name}`, "refs/heads/sieun/dev", id], agoS);
-    return id;
+test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-tip-"));
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  mkdirSync(repo, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
+    env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  git("init", "-q", "-b", "sieun/dev");
+  git("commit", "-q", "--allow-empty", "-m", "shared");
+  const shared = git("rev-parse", "HEAD").slice(0, 10);
+  git("checkout", "-q", "-b", "dev/mac");
+  writeFileSync(join(repo, "own.txt"), "own");
+  git("add", "own.txt");
+  git("commit", "-q", "-m", "own");
+  const own = git("rev-parse", "HEAD").slice(0, 10);
+  const run = (host: "mac" | "box") => {
+    const arg = Buffer.from(JSON.stringify({ host, rows: [{ id: "tip", tool: "checkout tip", probes: [{ tip: true }] }], known: {} })).toString("base64");
+    const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+    return out.values.tip![0]!;
   };
-  const a = land("a", 300);
-  const b = land("b", 200);
-  const window = followWindowS("<key>StartInterval</key><integer>60</integer>");
-  assert.equal(window, 76);
-  const fresh = land("c", 20);
-  const young = await macBehind(repo, fresh, { tip: b }, now, window);
-  assert.ok("behind" in young && young.behind === 0, JSON.stringify(young));
-  assert.match(young.excerpt, new RegExp(`plus 1 newer the follower has not had its turn on \\(${fresh.slice(0, 10)}\\)`));
-  const old = await macBehind(repo, fresh, { tip: a }, now, window);
-  assert.ok("behind" in old && old.behind === 1, JSON.stringify(old));
-  const later = await macBehind(repo, fresh, { tip: b }, now + 100_000, window);
-  assert.ok("behind" in later && later.behind === 1 && !later.excerpt.includes("newer"), JSON.stringify(later));
-  assert.equal(followWindowS("<plist></plist>"), undefined);
+  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [shared]);
+  git("config", "agent.branch", "dev/mac");
+  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [own, shared]);
+  assert.deepEqual((JSON.parse(run("box").slice(8)) as { ids: string[] }).ids, [shared]);
+  assert.match(shortfall(run("mac"), run("box"))!, new RegExp(`box lacks 1 of the Mac's 2: ${own}`));
 });
-

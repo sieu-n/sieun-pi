@@ -5,7 +5,7 @@ and folder presence, hashes, JSON keys, localhost ports, one `launchctl list`, a
 npm package.json); a CLI whose path carries no version is run with `--version` once and cached by its path and mtime.
 On the box it also makes the real calls: logins, kernel imports and MCP initialize plus tools/list. Python 3.9 stdlib, because ssh on the
 Mac starts /usr/bin/python3.
-Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "boxTip": sha|null, "known": {cli: version read}}>
+Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "known": {cli: version read}}>
 A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>" or "set:<json list>".
 """
 import base64, configparser, glob, hashlib, json, os, re, select, socket, subprocess, sys, threading, time
@@ -278,16 +278,28 @@ def path_key(path, blob):
     return hashlib.sha1((path + "\0" + blob).encode()).hexdigest()[:12]
 
 
+# The box's shared branch, where every checkout's work lands.
+SHARED = "sieun/dev"
+
+
+def branch(host):
+    """The branch a host's commits are read from: the box's shared branch, or the Mac checkout's own `agent.branch` (c119), as asa-tip-sync reads it."""
+    if host == "box":
+        return SHARED
+    done = subprocess.run(["git", "-C", REPO, "config", "--get", "agent.branch"], capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+    return done.stdout.strip() or SHARED
+
+
 def commits(host):
-    """The last sieun/dev commits as "commits:<json>", so the precheck counts a Mac commit as on the box under another hash.
+    """The host's last commits on branch(host) as "commits:<json>", so the precheck counts a Mac commit as on the box under another hash.
 
     Each commit gives its 10-character hash, the `git patch-id --stable` of its diff without context lines (a merge diffs against its first
     parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
     sends its last 100 as one list entry each; the box sends the hashes, patch-ids and path keys of its last 2000 as three flat lists.
     """
     count = "100" if host == "mac" else "2000"
-    diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", "sieun/dev"]
     try:
+        diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", branch(host)]
         raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H"] + diff).decode("utf-8", "replace")
         patches = git_bytes(["patch-id", "--stable"], git_bytes(["log", "-p", "-U0", "--format=commit %H"] + diff)).decode()
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
@@ -307,7 +319,7 @@ def commits(host):
     return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]]] for sha in order])
 
 
-def probe(spec, host, tip):
+def probe(spec, host):
     kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "intended", "shared"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
@@ -361,25 +373,11 @@ def probe(spec, host, tip):
     return "=" + brief(done.stdout, 200) if kind == "out" else "ok"
 
 
-def safe(spec, host, tip):
+def safe(spec, host):
     try:
-        return probe(spec, host, tip)
+        return probe(spec, host)
     except Exception as error:
         return "fail: probe error " + brief(repr(error))
-
-
-def checkout(box_tip):
-    done, text = run(["git", "-C", REPO, "rev-parse", "sieun/dev"])
-    if done is None or done.returncode != 0:
-        return {"error": "git rev-parse sieun/dev: " + brief(text)}
-    out = {"tip": done.stdout.strip()}
-    if box_tip:
-        counted, text = run(["git", "-C", REPO, "rev-list", "--left-right", "--count", box_tip + "...sieun/dev"])
-        if counted is not None and counted.returncode == 0:
-            out["boxOnly"], out["macOnly"] = [int(n) for n in counted.stdout.split()]
-        else:
-            out["countError"] = brief(text)
-    return out
 
 
 def main():
@@ -387,14 +385,13 @@ def main():
     host = payload["host"]
     KNOWN.update(payload.get("known") or {})
     start = time.time()
-    tip = checkout(payload.get("boxTip"))
     jobs = [(row["id"], spec) for row in payload["rows"] for spec in row.get(host, row.get("probes", []))]
     with ThreadPoolExecutor(max_workers=16) as pool:
-        results = list(pool.map(lambda job: (job[0], safe(job[1], host, tip)), jobs))
+        results = list(pool.map(lambda job: (job[0], safe(job[1], host)), jobs))
     values = {}
     for row_id, value in results:
         values.setdefault(row_id, []).append(value)
-    print(json.dumps({"host": host, "values": values, "checkout": tip, "versions": READ_VERSIONS, "ms": int((time.time() - start) * 1000)}))
+    print(json.dumps({"host": host, "values": values, "versions": READ_VERSIONS, "ms": int((time.time() - start) * 1000)}))
 
 
 if __name__ == "__main__":

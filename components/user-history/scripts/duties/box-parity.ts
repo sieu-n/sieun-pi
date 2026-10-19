@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -8,15 +8,13 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
 
 /**
  * The Box tools parity duty's precheck (`node --import tsx scripts/duties/box-parity.ts`): whether us-metal02 still matches the owner's MacBook Pro
- * for every tool auto-sns-agent and sieun-pi agents use (owner 10-18). No model call, nothing sent outside. Four numbers:
+ * for every tool auto-sns-agent and sieun-pi agents use (owner 10-18). No model call, nothing sent outside. Three numbers:
  * - `tool_rows_off`: rows of box-parity.rows.json (the 167 rows of the 10-18 audit, /home/sieun/box-tools-parity/gap-table.md) where the box lacks
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
  *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler) and a row with `byDesign`
  *   are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail starts with the probe's `shared` text comes from a service both hosts use, such as Google on Virev, so it is no box gap.
- * - `mac_behind_box`: commits on the box's auto-sns-agent sieun/dev, the shared tip since 10-18 11:23Z, that the Mac's sieun/dev lacks, counting
- *   only those the Mac's follower has had a full turn to take (see followWindowS).
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
@@ -26,8 +24,6 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * STATE_FILE keeps the Mac CLI versions the probe had to run, keyed by path and mtime, so later runs only read the Mac.
  */
 
-const HOME = homedir();
-const REPO = process.env.LLM_WIKI_REPO || join(HOME, "Documents/Github/auto-sns-agent");
 const HERE = import.meta.dirname;
 const MAC = process.env.MAC_SSH_HOST || "mac";
 const OUTSIDE = process.env.METAL_SSH_HOST || "us-metal01";
@@ -36,9 +32,7 @@ const MAC_TIMEOUT_S = 90;
 
 export type Probe = Record<string, unknown>;
 export interface Row { id: string; tool: string; probes?: Probe[]; mac?: Probe[]; box?: Probe[]; note?: string; byDesign?: string }
-/** The Mac's sieun/dev tip and, when the Mac holds the box tip, the commits only the box has (`boxOnly`) and only the Mac has (`macOnly`). */
-export interface Checkout { tip?: string; boxOnly?: number; macOnly?: number; error?: string; countError?: string }
-export interface ProbeOutput { host: "mac" | "box"; values: Record<string, string[]>; checkout: Checkout; versions: Record<string, unknown>; ms: number }
+export interface ProbeOutput { host: "mac" | "box"; values: Record<string, string[]>; versions: Record<string, unknown>; ms: number }
 export interface RowVerdict { row: Row; why: string }
 export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; matched: number }
 
@@ -68,7 +62,7 @@ type MacCommit = [id: string, patch: string, paths: string[]];
 interface BoxCommits { ids: string[]; patches: string[]; bytes: string[] }
 
 /**
- * Which of the Mac's last sieun/dev commits the box lacks, from the probe's `commits:` values. A Mac commit is on the box when the box has its hash,
+ * Which of the Mac's last commits on its branch the box's sieun/dev lacks, from the probe's `commits:` values. A Mac commit is on the box when the box has its hash,
  * a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every path it touched, a commit
  * that wrote the same bytes there, which covers a wiki page batch the box wrote again in other commits.
  */
@@ -244,16 +238,16 @@ const exec: Exec = (file, args, options = {}) => new Promise((resolve, reject) =
 });
 
 const PROBE = join(HERE, "box-parity-probe.py");
-const probeArg = (host: "mac" | "box", rows: readonly Row[], boxTip: string | undefined, known: Record<string, unknown>) =>
-  Buffer.from(JSON.stringify({ host, rows, boxTip: boxTip ?? null, known })).toString("base64");
+const probeArg = (host: "mac" | "box", rows: readonly Row[], known: Record<string, unknown>) =>
+  Buffer.from(JSON.stringify({ host, rows, known })).toString("base64");
 
 async function probeBox(rows: readonly Row[]): Promise<ProbeOutput> {
-  return JSON.parse(await exec("python3", [PROBE, probeArg("box", rows, undefined, {})], { timeoutMs: 80_000 })) as ProbeOutput;
+  return JSON.parse(await exec("python3", [PROBE, probeArg("box", rows, {})], { timeoutMs: 80_000 })) as ProbeOutput;
 }
 
-async function probeMac(rows: readonly Row[], boxTip: string | undefined, known: Record<string, unknown>): Promise<ProbeOutput> {
+async function probeMac(rows: readonly Row[], known: Record<string, unknown>): Promise<ProbeOutput> {
   const script = await readFile(PROBE, "utf8");
-  const text = await exec("timeout", [String(MAC_TIMEOUT_S), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=40", MAC, "/usr/bin/python3", "-", probeArg("mac", rows, boxTip, known)],
+  const text = await exec("timeout", [String(MAC_TIMEOUT_S), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=40", MAC, "/usr/bin/python3", "-", probeArg("mac", rows, known)],
     { input: script, timeoutMs: (MAC_TIMEOUT_S + 5) * 1000 });
   return JSON.parse(text) as ProbeOutput;
 }
@@ -315,64 +309,19 @@ async function outsideSsh(): Promise<{ ssh: string; control: string }> {
   return { ssh: `${ssh} (${address}:22)`.replace(/^open \(.*/, "open"), control };
 }
 
-/** launchd's ai.virev.asa-tip-sync job, which runs the Mac's follower every StartInterval seconds. */
-const FOLLOW_PLIST = join(HERE, "../../../../deploy/mac/ai.virev.asa-tip-sync.plist");
-/** The longest follower run: its sync.log on 10-18 from 12:29:39Z to 12:34:04Z has fast-forward runs ending 65 to 68 s apart under StartInterval 60. */
-const FOLLOW_RUN_S = 8;
-
-/**
- * How long ago a box commit must have landed for a working follower to hold it. A commit that lands just after a run fetched waits for the next
- * run, which starts StartInterval after the last one ended, and is on the Mac when that run ends: one interval and two runs.
- */
-export function followWindowS(plist: string): number | undefined {
-  const interval = Number(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist)?.[1]);
-  return interval > 0 ? interval + 2 * FOLLOW_RUN_S : undefined;
-}
-
-const reflogDate = (ms: number): string => new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, " +0000");
-const shortIds = (text: string): string[] => text.split("\n").filter(Boolean).map(id => id.slice(0, 10));
-
-/**
- * Commits on the box's sieun/dev that the Mac's sieun/dev lacks. Since 10-18 11:23Z the box holds the shared tip and the Mac follows it. Counted
- * on the box when it holds the Mac tip, else on the Mac when the Mac holds the box tip. Only commits sieun/dev held `windowS` before `readAt` (the
- * reflog) count, since the follower has not had its turn on newer ones; those and the commits only the Mac has are named but not counted.
- */
-export async function macBehind(repo: string, boxTip: string | undefined, mac: Checkout, readAt: number, windowS: number | undefined):
-  Promise<{ behind: number; excerpt: string } | { error: string }> {
-  if (!boxTip) return { error: `the box has no sieun/dev in ${repo}` };
-  if (!mac.tip) return { error: `the Mac gave no sieun/dev tip: ${mac.error ?? "no answer"}` };
-  if (!windowS) return { error: `no StartInterval in ${FOLLOW_PLIST}, so the follower's turn is unknown` };
-  const git = (...args: string[]) => exec("git", ["-C", repo, ...args]);
-  const where = `box ${boxTip.slice(0, 10)}, Mac ${mac.tip.slice(0, 10)}`;
-  const counts = await git("rev-list", "--left-right", "--count", `${boxTip}...${mac.tip}`).then(text => text.trim().split(/\s+/).map(Number), () => undefined);
-  if (counts?.length !== 2) {
-    if (mac.boxOnly === undefined) return { error: `neither checkout holds the other's tip (${where}), so the count needs a fetch this read-only run does not do` };
-    return { behind: mac.boxOnly, excerpt: `auto-sns-agent sieun/dev: ${where}; the Mac lacks ${mac.boxOnly} of the box's commits${mac.macOnly ? ` and holds ${mac.macOnly} the box lacks` : ""} (counted on the Mac, with no follow window)` };
-  }
-  const [, ahead] = counts as [number, number];
-  const due = await git("rev-parse", "--verify", "-q", `sieun/dev@{${reflogDate(readAt - windowS * 1000)}}`).then(text => text.trim(), () => undefined);
-  const missing = shortIds(await git("rev-list", boxTip, `^${mac.tip}`));
-  const late = due ? new Set(shortIds(await git("rev-list", due, `^${mac.tip}`))) : new Set(missing);
-  const fresh = missing.filter(id => !late.has(id));
-  return { behind: late.size, excerpt: `auto-sns-agent sieun/dev: ${where}; the Mac lacks ${late.size} of the box's commits older than ${windowS} s` +
-    `${fresh.length ? `, plus ${fresh.length} newer the follower has not had its turn on (${fresh.slice(0, 6).join(", ")}${fresh.length > 6 ? ", ..." : ""})` : ""}` +
-    `${ahead ? `, and holds ${ahead} the box lacks` : ""}` };
-}
-
 const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
 
 export async function measure(rows: readonly Row[], known: Record<string, unknown>): Promise<{ output: PrecheckOutput; versions?: Record<string, unknown> }> {
   const at = Date.now();
-  const boxTip = await exec("git", ["-C", REPO, "rev-parse", "sieun/dev"]).then(text => text.trim(), () => undefined);
   const [mac, box, panel, limits, outside, guard] = await Promise.all([
-    settle(probeMac(rows, boxTip, known)), settle(probeBox(rows)), settle(panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
+    settle(probeMac(rows, known)), settle(probeBox(rows)), settle(panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
     exec("systemctl", ["show", "ssh-public-guard.service", "-p", "ActiveState,Result"]).then(text => Object.fromEntries(text.trim().split("\n").map(line => line.split("="))) as Record<string, string>, () => ({})),
   ]);
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
   const sourceError = (excerpt: string) => flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) });
 
-  if (mac instanceof Error) sourceError(`the Mac read over ssh failed, so tool rows and the Mac's checkout are not measured: ${mac.message}`);
+  if (mac instanceof Error) sourceError(`the Mac read over ssh failed, so tool rows are not measured: ${mac.message}`);
   else if (box instanceof Error) sourceError(`the box probe failed: ${box.message}`);
   else {
     const result = judgeRows(rows, mac, box, panel instanceof Error ? new Map() : panel);
@@ -382,15 +331,6 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
     for (const { row, why } of result.intended) flagged.push({ at, kind: "intended", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.byDesign) flagged.push({ at, kind: "by_design", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     flagged.push({ at, kind: "rows", excerpt: `${result.matched} of ${rows.length} rows match; the Mac read took ${mac.ms} ms and the box probe ${box.ms} ms` });
-  }
-
-  if (!(mac instanceof Error)) {
-    const windowS = await readFile(FOLLOW_PLIST, "utf8").then(followWindowS, () => undefined);
-    const count = await macBehind(REPO, boxTip, mac.checkout, at, windowS);
-    if ("behind" in count) {
-      metrics.mac_behind_box = count.behind;
-      flagged.push({ at, kind: "checkout", excerpt: count.excerpt });
-    } else sourceError(`checkout: ${count.error}`);
   }
 
   if (limits instanceof Error) sourceError(`resource limits: ${limits.message}`);
