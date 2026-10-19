@@ -13,6 +13,7 @@ import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
+import type { StoppedCall } from "../../src/hung-stop.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
@@ -511,6 +512,11 @@ export function hungNow(lines: readonly WatchLine[], from: number): { at: number
   return line ? { at: Date.parse(line.at), calls: line.hung ?? [] } : undefined;
 }
 
+/** The hung calls the watch stopped (src/hung-stop.ts) in the lines from `from` on, oldest first, each with its line's time. */
+export function stoppedSince(lines: readonly WatchLine[], from: number): { at: number; call: StoppedCall }[] {
+  return lines.filter(line => Date.parse(line.at) >= from).flatMap(line => (line.stopped ?? []).map(call => ({ at: Date.parse(line.at), call })));
+}
+
 export interface Inputs {
   now: number;
   /** The quiet window (src/quiet-minutes.ts) in ms; absent, QUIET_MINUTES. */
@@ -843,6 +849,9 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const call of hung?.calls ?? []) flagged.push({ kind: "hung_call", chat: call.root, item: call.session, excerpt: `${call.tree}: ${call.name} (${call.session}) ` +
     `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +
     `${call.command ? ` (${call.command})` : ""}, at ${clock(hung!.at)}.` });
+  for (const { at, call } of stoppedSince(input.watch, start)) flagged.push({ kind: "hung_call_stopped", chat: call.root, item: call.session,
+    excerpt: `${call.tree}: ${call.name} (${call.session}) ran one tool call ${call.silentMin} min with no output at ${call.workCores} cores, so the watch stopped ` +
+    `its bash() command at ${clock(at)} and the call returned (${call.handles.map(handle => `${handle.pid} ${handle.command.slice(0, 80)}`).join("; ")}).` });
   const overruns = (input.queueOverruns ?? []).filter(entry => entry.at >= start && entry.at < start + WINDOW_MS);
   if (overruns.length) {
     const byTarget = new Map<string, QueueOverrun[]>();

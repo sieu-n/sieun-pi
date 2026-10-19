@@ -9,7 +9,8 @@ the kernel process's own bytes (`own`) and its largest non-Prime descendant (`ke
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 On macOS each Chrome for Testing or chrome-headless-shell main process is listed with the session that started it (`test_browsers`), since no agent browser may run there.
-`--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
+`--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--handles` reads
+"<kernel pid> <since epoch s>" lines and prints the bash() handles those kernels started since then (`handles`), which the watch stops when the call hangs (src/hung-stop.ts); `--started <pid>`
 prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
 cleanup keeps a dir any of them uses and signals none of them.
 """
@@ -298,6 +299,33 @@ def strays(table, sessions):
     return [entry for entry in found if entry]
 
 
+def handles(table, wanted):
+    """The Prime bash() handles each hung call started (src/hung-stop.ts): every shell a kernel of `wanted` ((kernel pid, since in epoch seconds)
+    pairs) started at or after `since`, with the pids of the shell and of every descendant that is no Prime process or shared service, the shell first.
+    A handle started before `since` belongs to an earlier cell and is left out. `since` is floored to the second, as the start times are."""
+    kids = {}
+    for pid, (ppid, _, _, _) in table.items():
+        kids.setdefault(ppid, []).append(pid)
+    found = []
+    for kernel, since in wanted:
+        if kernel not in table or kernel_of(kernel, table[kernel][3]) is None:
+            continue
+        for shell in kids.get(kernel, ()):
+            _, _, start, args = table[shell]
+            if not args or start is None or start < since or not HANDLE.search(" ".join(args[0])):
+                continue
+            pids, stack = [shell], list(kids.get(shell, ()))
+            while stack:
+                pid = stack.pop()
+                text = " ".join(table[pid][3][0]) if table[pid][3] else ""
+                if PRIME.search(text) or SHARED.search(text):
+                    continue
+                pids.append(pid)
+                stack.extend(kids.get(pid, ()))
+            found.append({"kernel": kernel, "pid": shell, "started": start, "command": command(args), "pids": pids})
+    return found
+
+
 def held_paths(pid):
     """(executable, cwd and open files) of a process from Linux /proc; (None, []) on macOS, where only its arguments and environment are read."""
     if sys.platform == "darwin":
@@ -378,6 +406,10 @@ if __name__ == "__main__":
         sys.exit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--inside":
         print(json.dumps({"inside": inside(scan(), [line.strip() for line in sys.stdin if line.strip().startswith("/")]), "cpu_s": cpu()}))
+        sys.exit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--handles":
+        wanted = [(int(kernel), int(since)) for kernel, since in (line.split() for line in sys.stdin if len(line.split()) == 2)]
+        print(json.dumps({"handles": handles(scan(), wanted), "cpu_s": cpu()}))
         sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"strays": strays(scan(), set(sys.argv[2].split(","))), "cpu_s": cpu()}))

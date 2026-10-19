@@ -9,6 +9,7 @@ import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
+import type { CallHandle, CallStopper, StoppedCall } from "./hung-stop.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
 
 /**
@@ -199,6 +200,8 @@ export interface WatchLine {
   calls?: CallMark[];
   /** This box's hung tool calls this minute (`hungCalls`), which `agents` counts as hung instead of working; absent when none. */
   hung?: HungCall[];
+  /** The hung calls whose bash() commands the watch signaled this minute (src/hung-stop.ts), left out of `hung`; absent when none. */
+  stopped?: StoppedCall[];
   /** The services sessions handed off before their kernels were freed (`orphan-services.ts`), the first 5 named; absent when there are none. */
   services?: ServicesLine;
   /** This box's agent test browsers (`TestBrowserLine`); absent when there are none. */
@@ -438,6 +441,9 @@ function runHelper(args: readonly string[], input: string): Promise<unknown> {
 }
 /** Runs the footprint helper with the worker pids on stdin. */
 export const readFootprints = async (pids: readonly number[]): Promise<Footprints> => await runHelper([], pids.join("\n") + "\n") as Footprints;
+/** The bash() handles each kernel started since the given second (worker-footprint.py `--handles`), for src/hung-stop.ts. */
+export const readCallHandles = async (wanted: readonly { kernel: number; since: number }[]): Promise<CallHandle[]> =>
+  (await runHelper(["--handles"], wanted.map(entry => `${entry.kernel} ${entry.since}`).join("\n") + "\n") as { handles: CallHandle[] }).handles;
 export interface WatchSource {
   dataDir: string;
   /** The daemon's raw session rows the catalog holds now; none before its first full list. */
@@ -459,6 +465,8 @@ export interface WatchSource {
   remotes?: () => readonly RemoteWatch[];
   /** This box's tool call marks and hung calls (src/hung-calls.ts), shared with Settings > Hosts; absent, no call is judged. */
   calls?: CallWatch;
+  /** Stops the commands of the hung calls `calls` judges (src/hung-stop.ts); absent, no call is stopped. */
+  stop?: CallStopper;
   /** The handed-off services on this box; absent, `listOrphanServices`. */
   services?: () => Promise<readonly OrphanServiceLine[]>;
 }
@@ -522,11 +530,13 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const resumed = process.cpuUsage();
   const latency = takeLatency();
   const marks = source.calls ? callMarks(rows, footprints.kernels ?? [], at) : [];
-  const hung = source.calls ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
+  const judged = source.calls ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
+  const { stopped, left: hung } = source.stop && judged.length ? await source.stop.stop(judged, footprints.kernels ?? []) : { stopped: [], left: judged };
+  if (stopped.length) source.calls?.release(stopped.map(call => call.session));
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory,
     hung: new Set(hung.map(call => call.session)) }),
     ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
-    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...handed ? { services: handed } : {} };
+    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...stopped.length ? { stopped } : {}, ...handed ? { services: handed } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

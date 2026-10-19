@@ -5,8 +5,9 @@ const MINUTE = 60_000;
  * its kernel burns CPU on its own. On 10-19 three such calls read working on Settings > Hosts for 9 to 13 h and kept us-metal02 from ever
  * reading 0 working, so d7's quiet_agent_gb had no quiet minute to judge from 01:43Z: restart-cold-start's `await h` on a rig whose tree used
  * 0.01 cores, fix4-ops-d2's node test under a defunct child, and p258-critical-path's kernel at about 1 core with 10 GB for 9 h. At 11:40Z a
- * fourth sat 148 min on an ssh to the Mac that used no CPU (mac-local-keys). Nothing here stops a call: d7's hung_calls names each one with its
- * session and chat, the duty's job tells that chat to interrupt or fix it, and Settings > Hosts counts it as hung instead of working.
+ * fourth sat 148 min on an ssh to the Mac that used no CPU (mac-local-keys). d7's hung_calls names each one with its
+ * session and chat, src/hung-stop.ts stops the bash() commands of a call with no progress so its await returns, and Settings > Hosts counts a call
+ * it could not stop as hung instead of working.
  */
 export const HUNG_SILENT_MS = 60 * MINUTE;
 /** How far back progress is read: the call's marks start this much before it reaches HUNG_SILENT_MS. */
@@ -38,7 +39,9 @@ export interface CallMark {
 
 /** A hung call as d7 and Settings > Hosts read it. */
 export interface HungCall { session: string; name: string; root: string; tree: string; silentMin: number; workCores: number; kernelCores: number; command: string | null;
-  why: "no progress" | "kernel burning" }
+  why: "no progress" | "kernel burning";
+  /** When the call went silent (its marks' `since`), ms; absent from lines before 10-19 21Z. */
+  since?: number }
 
 /** The kernel numbers the footprint helper (src/worker-footprint.py) reports, as the marks read them. */
 export interface KernelCpu { session: string; cpu_s?: number; work_cpu_s?: number; biggest: { command: string } | null }
@@ -77,7 +80,7 @@ export function hungCalls(history: readonly CallMark[], now: readonly CallMark[]
     const workCores = cores(work, span), kernelCores = cores(Math.max(0, kernel), span);
     const why = kernelCores >= BURNING_CORES ? "kernel burning" as const : workCores < PROGRESS_CORES ? "no progress" as const : null;
     if (!why) return [];
-    return [{ session: mark.session, ...name(mark.session), silentMin: Math.round((mark.at - mark.since) / MINUTE), workCores, kernelCores, command: mark.command, why }];
+    return [{ session: mark.session, ...name(mark.session), silentMin: Math.round((mark.at - mark.since) / MINUTE), workCores, kernelCores, command: mark.command, why, since: mark.since }];
   });
 }
 
@@ -103,6 +106,9 @@ export class CallWatch {
     this.marks.push(...marks);
     return this.latest;
   }
+
+  /** Drops calls the watch stopped (src/hung-stop.ts) from the newest minute's hung calls. */
+  release(sessions: readonly string[]): void { this.latest = this.latest.filter(call => !sessions.includes(call.session)); }
 
   /** The sessions of the newest minute's hung calls. */
   hung(): ReadonlySet<string> { return new Set(this.latest.map(call => call.session)); }
