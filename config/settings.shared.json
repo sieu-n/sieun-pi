@@ -15,7 +15,7 @@
     }
   },
   "steeringMode": "all",
-  "idleEvictionMinutes": 10,
+  "idleEvictionMinutes": 15,
   "skills": [
     "-../../.agents/skills/find-skills",
     "-prime-intellect/SKILL.md"
