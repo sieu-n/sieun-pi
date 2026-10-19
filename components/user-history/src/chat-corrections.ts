@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
+import { refineCovers } from "./correction-refine.ts";
 import { normal } from "./shared/brief-check.ts";
 
 export const CORRECTION_TOOL = "correction_add";
@@ -347,19 +348,29 @@ export function jobLedgerPrompt(ledger: Ledger | null): string {
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
 }
 
+/** What a chat's session file holds for the repeat count: the owner's words (`ownerTexts`) and the text of each `/refine` the service ran in it. */
+export interface ChatHistory { owner: readonly string[]; refines: readonly string[] }
+
 /**
- * Every repeat in [since, until] whose words the owner wrote in the repeat's chat (`owner` gives a chat's owner messages, `ownerSaid`), oldest
- * first, with its entry: the Chat health repeat_corrections count. Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
- * recorded its own notes as repeats: "(brief check, twice on 10-12) ..." on c59 and "(owner rule recalled by the release owner ...)" on c4. The
- * owner gave neither again, so neither counts.
+ * Every repeat in [since, until] the owner gave after the first correction was in force, oldest first, with its entry: the
+ * repeat_corrections_7d count. Two kinds of recorded repeat do not count.
+ * 1. Words the owner never wrote in the repeat's chat (`ownerSaid`). Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
+ *    recorded its own notes as repeats: "(brief check, twice on 10-12) ..." on c59 and "(owner rule recalled by the release owner ...)" on c4.
+ * 2. Words the chat's one `/refine` covered together with the first correction (`refineCovers`). The service refines once, when the turn that
+ *    recorded a correction ends, so such a repeat came while the chat was still answering it and before the fix ran. On 10-18 the owner wrote
+ *    "지금 자꾸 Mac에서 껐다켰다 하는 새끼 누구고 왜 그렇게 하는거야" (c103) at 05:16Z, then "Aside쓰면 깜빡이지를 않아 커서를 안가져가거든" at 05:21Z in the
+ *    same turn, and the 05:22Z refine named both.
  */
-export async function repeatsBetween(ledger: Ledger, since: number, until: number, owner: (chat: string) => Promise<readonly string[]>): Promise<{ entry: Correction; repeat: CorrectionRepeat }[]> {
+export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>): Promise<{ entry: Correction; repeat: CorrectionRepeat }[]> {
   const inWindow = ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
     .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; });
-  const said = new Map<string, readonly string[]>();
-  for (const chat of new Set(inWindow.map(({ repeat }) => repeat.chat.id))) said.set(chat, await owner(chat));
-  return inWindow.filter(({ repeat }) => ownerSaid(repeat.words, said.get(repeat.chat.id) ?? []))
-    .sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
+  const chats = new Map<string, ChatHistory>();
+  for (const chat of new Set(inWindow.map(({ repeat }) => repeat.chat.id))) chats.set(chat, await history(chat));
+  return inWindow.filter(({ entry, repeat }) => {
+    const chat = chats.get(repeat.chat.id) ?? { owner: [], refines: [] };
+    return ownerSaid(repeat.words, chat.owner) &&
+      !chat.refines.some(command => refineCovers(command, entry.id, entry.words) && refineCovers(command, entry.id, repeat.words));
+  }).sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
 
 /** A handoff in force: the correction that set it (not retired), the thread that owns the work, and its topics. */

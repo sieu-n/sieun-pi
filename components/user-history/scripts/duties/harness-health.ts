@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadSkillsFromDir } from "prime-agent";
-import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
-import { fileOwnerTexts } from "../../src/owner-history.ts";
+import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
+import { fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
@@ -53,8 +53,8 @@ export interface HarnessDeps {
   roots: readonly SkillRoot[]; views: (since: string) => Promise<View[]>; dataDir: string; now: number;
   /** The cache read shares from LGTM (`measureCache`) against the duty's targets. */
   cache: () => Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }>;
-  /** A chat's owner messages, for the repeats the owner gave (`repeatsBetween`). */
-  ownerTexts: (chat: string) => Promise<readonly string[]>;
+  /** A chat's owner words and `/refine` commands, for the repeats the owner gave (`repeatsBetween`). */
+  history: (chat: string) => Promise<ChatHistory>;
   /** The Prime Agent transcript files that changed since the given time, for the reads of `transcripts` roots. */
   transcripts: (since: number) => Promise<string[]>;
   smoke: SmokeEnv;
@@ -219,7 +219,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const listed = overlaps(skills, OVERLAP_LIST);
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
-  const repeats = await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.ownerTexts);
+  const repeats = await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
   const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
   const python = join(process.env.PRIME_AGENT_KERNEL_VENV || join(homedir(), ".prime/agent/kernel-venv"), "bin/python");
   const cache = () => measureCache(grafanaPrometheus(join(dataDir, "grafana-alerts.json")), cacheTargets);
   const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), cache,
-    ownerTexts: chat => fileOwnerTexts(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+    history: chat => fileChatHistory(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");
 }

@@ -25,12 +25,16 @@ const recordedIn = (ledger: Ledger, chat: string): Recorded[] => ledger.correcti
 ]);
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
+const refineItem = (id: string, words: string): string => `${id} "${oneLine(words)}"`;
+/** Whether a `/refine` command (`refineCommand`) was aimed at the owner's `words` recorded under correction `id`. */
+export const refineCovers = (command: string, id: string, words: string): boolean => command.includes(refineItem(id, words));
+
 /**
  * The session command that refines the harness on what the chat recorded: Prime runs `/refine` from prompt text in that chat's session. `global`
  * false (a clean-room chat) keeps the edit in that session, since the script, not the owner, wrote its messages.
  */
 export function refineCommand(recorded: readonly Pick<Recorded, "id" | "words" | "rule">[], global = true): string {
-  const items = recorded.map(item => `${item.id} "${oneLine(item.words)}" (rule: ${oneLine(item.rule)})`).join("; ");
+  const items = recorded.map(item => `${refineItem(item.id, item.words)} (rule: ${oneLine(item.rule)})`).join("; ");
   return `/refine${global ? " --global" : ""} The owner corrected an agent in this chat: ${items}. Make the smallest ${global ? "global " : ""}edit, a prompt ` +
     `note or memory in his terms, so every ${global ? "future session" : "later turn"} follows it, and fix any entry that says otherwise.`;
 }
