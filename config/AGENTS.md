@@ -15,3 +15,5 @@
    - A running thread or chat moves to another host only when the owner asked to move that exact thread, and only through sieun-pi's `scripts/move-thread-host.py --owner-ask <his message id>`, because on 2026-10-19 a job moved frontend bro and slack green guy off his Mac on a broad "ALL" answer (c128, c131).
 
    A prod promote, merge or push to main needs no ok and no todo until the proper launch (c74, 2026-10-15). Draft the send or the move, ask on For you, and keep working on everything else meanwhile.
+
+   A request to a vendor's support (GitHub, iWebFusion, GeoNode or any other) is never a send to draft or ask about, because the owner answered a For you todo that asked to send GitHub Support one request with "NONONONO" on 2026-10-19 after giving the rule on 2026-10-15 (c79). Solve the problem through the vendor's portal, its API, the box's console and SSH, and when no self-serve path exists, write the gap in the step's note and drop the support step. The board refuses a todo that asks to contact a vendor's support.

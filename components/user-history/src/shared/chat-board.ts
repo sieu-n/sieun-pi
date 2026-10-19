@@ -3,6 +3,7 @@ import { CHECK_IN_DUTY_ID } from "./chat-duties.ts";
 import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { upkeepWords } from "./upkeep-title.ts";
+import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus } from "./types.ts";
@@ -381,6 +382,11 @@ const REVIEW_ASK = /\b(?:review|look\s+(?:at|over|through)|(?:take|have)\s+a\s+l
 const HTTP_URL = /https?:\/\/\S/i;
 export const reviewAskWithoutLink = (todo: Pick<OwnerTodo, "text" | "links">): boolean =>
   REVIEW_ASK.test(todo.text) && !todo.links?.length && !HTTP_URL.test(todo.text);
+/** An agent's todo that asks to contact a vendor's support is refused (c79): the text and each choice are read. */
+function refuseVendorSupport(text: string, choices: readonly string[] | null | undefined): void {
+  const ask = [text, ...choices ?? []].map(vendorSupportAsk).find(hit => hit !== null);
+  if (ask) throw new BoardError("forbidden", `${VENDOR_SUPPORT_ERROR} It reads: "${ask}"`);
+}
 export const REVIEW_LINK_FLAG = "This todo asks the owner to review, look at or pick something, so it should carry what he opens: " +
   "add links [{label, target}] with each exact page, like {label: \"Connections on Staging\", target: \"http://localhost:5180/app/connections?line=staging\"}, " +
   "or put the URL in the text, with todo_update. \"Links are in the chat\" is not enough (c32).";
@@ -654,6 +660,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "todo_add": {
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
+      if (actor === "agent") refuseVendorSupport(op.text, op.choices);
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}),
         ...(op.links ? { links: op.links } : {}), from: actor, at: now };
       return done({ todos: [...board.todos, todo] },
@@ -667,6 +674,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (actor === "agent" && todo.answeredBy === "owner" && (op.text !== undefined && op.text !== todo.text || newChoices)) {
         throw new BoardError("forbidden", "The owner answered this todo; its question stays as asked. Add a new todo for a new question.");
       }
+      if (actor === "agent" && (op.text !== undefined && op.text !== todo.text || newChoices)) refuseVendorSupport(op.text ?? todo.text, op.choices !== undefined ? op.choices : todo.choices);
       const next: OwnerTodo = { ...todo };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== todo.text) {

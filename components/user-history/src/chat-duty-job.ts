@@ -225,7 +225,8 @@ function chatJobRules(): string[] {
     "Do what you can reach yourself: Convex data is read or written with `npx convex run` or a query using the deploy key and an identity; " +
       "never ask the owner for his browser or to act as him, and turn such a For you todo into a job.",
     "Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and " +
-      "put in For you with the draft and choices; it goes out only after the owner approves it there.",
+      "put in For you with the draft and choices; it goes out only after the owner approves it there. A vendor's support is never asked for help " +
+      "at all, not even with his ok: solve it through the portal, the API, the console and SSH (c79).",
     "Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.",
     "No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.",
   ];
