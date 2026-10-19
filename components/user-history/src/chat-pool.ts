@@ -414,6 +414,29 @@ export function poolAdmitsNow(parts: Pick<ThreadParts, "who" | "ls">, provider: 
   } catch { return false; }
 }
 
+/**
+ * When the pool next gives the tree of `parts` (read with `--session <tree root>`) a `provider` account, in epoch ms: `now` when it would now
+ * (`poolAdmitsNow`), the slot of a wait `who` holds the tree in, the end of the limit or cooldown of the account `who` names, or with no account
+ * named the earliest time any account frees up (`claudeStateOf`). Null when the pool does not say or a part fails to read.
+ */
+export function poolFreeAt(parts: Pick<ThreadParts, "who" | "ls">, provider: string, now: number): number | null {
+  if (!isPooled(provider)) return null;
+  try {
+    if (poolAdmitsNow(parts, provider, now)) return now;
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
+    if (!isRecord(said)) return null;
+    const slotAt = epochMs(isRecord(said.wait) ? said.wait.slot_at : null);
+    if (slotAt !== null && slotAt > now) return slotAt;
+    const rows = parsePoolRows(JSON.parse(partOut(parts.ls[provider])), provider);
+    const account = text(said.account);
+    if (!account) return claudeStateOf(rows, now).freeAt;
+    const row = rows.find(entry => entry.id === account);
+    const ends = [row?.limitedUntil, row?.cooldownUntil].filter((at): at is number => typeof at === "number" && at > now);
+    return ends.length ? Math.max(...ends) : null;
+  } catch { return null; }
+}
+
 /** `poolAdmitsNow` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
 export async function poolAdmits(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<boolean> {
   const thread = { session: tree, model: null };

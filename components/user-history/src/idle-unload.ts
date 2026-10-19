@@ -1,4 +1,6 @@
 import type { DaemonClient, SessionSummary } from "prime-agent";
+import { poolFreeAt, type PoolStatus, type PoolThread, threadKey } from "./chat-pool.ts";
+import { lastTurnError } from "./held-turns.ts";
 
 /**
  * Stopping a session that sits idle, at the daemon's idleEvictionMinutes (10), because Prime's own sweeps fail under load: a worker sweep ends at
@@ -29,16 +31,34 @@ const loaded = (row: SessionSummary): boolean => (row.lifecycle === "live" || ro
  */
 export type UnloadRow = SessionSummary & { holdsDetachedProcesses?: boolean };
 
-/** Nothing runs, waits or is scheduled in the session, no detached process of its own lives, and no client but the service's own attach (judged by the caller) holds it. */
-function still(row: UnloadRow, pool: ReadonlySet<string>): boolean {
+/** Nothing streams, runs a tool, bash or child, compacts, is queued or scheduled in the session, no detached process of its own lives, and no client but the service's own attach (judged by the caller) holds it. */
+function calm(row: UnloadRow, pool: ReadonlySet<string>): boolean {
   return loaded(row) && row.workerState === "ready" && !row.holdsDetachedProcesses &&
-    row.activity === "idle" && !row.isSessionActive && !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren &&
-    !row.isRunningTools && !row.directAttachedClients && !row.unfinishedActionCount &&
+    !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren && !row.isRunningTools && !row.directAttachedClients &&
     (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !pool.has(row.sessionId);
 }
 
+/** Nothing runs, waits or is scheduled in the session (`calm`, and no turn or action open). */
+function still(row: UnloadRow, pool: ReadonlySet<string>): boolean {
+  return calm(row, pool) && row.activity === "idle" && !row.isSessionActive && !row.unfinishedActionCount;
+}
+
+const unheld = (row: SessionSummary, attached: ReadonlySet<string>): boolean => !attached.has(row.sessionId) && row.attachedClients === 0;
+
 function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string> }): boolean {
-  return still(row, input.pool) && !input.attached.has(row.sessionId) && row.attachedClients === 0;
+  return still(row, input.pool) && unheld(row, input.attached);
+}
+
+/**
+ * A session the daemon lists as working that is only asleep in Prime's provider retry: its turn is open, yet nothing streams, runs, compacts or
+ * is queued in it. At 01:11Z on 10-19 176 sessions sat this way after a 429 (91) or pi-pool's token hook refusal "this session waits for its
+ * slot at" (85), with 148 workers and 176 kernels (31.2 GB) that the unload left alone, since Prime counts a retrying session as active
+ * (agent-session.ts `isRetrying`) and Prime's retry wait may last 8 days. The caller confirms from the transcript that the turn ended on a
+ * failed reply (`lastTurnError`) and from pi-pool that its tree waits past the unload's minutes (`poolHoldsPast`). A chat stays: `Chats.revive`
+ * restarts a chat, and the job sweep only continues sessions that are no chat.
+ */
+function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string> }): boolean {
+  return calm(row, input.pool) && row.activity === "working" && unheld(row, input.attached) && !input.chats?.has(row.sessionId);
 }
 
 /**
@@ -62,20 +82,52 @@ function busyAncestors(rows: readonly UnloadRow[]): Set<string> {
   return busy;
 }
 
+/** What `unloadPlan` and `retryCandidates` read besides the rows. */
+export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null; chats?: ReadonlySet<string>;
+  waking?: ReadonlySet<string>;
+  /** Sessions asleep in Prime's provider retry whose tree pi-pool holds past the unload's minutes, with when the hold ends (`poolHoldsPast`). */
+  held?: ReadonlyMap<string, number> }
+
+/**
+ * The rows that may be asleep in Prime's provider retry (`retrying`), quiet ENDED_MS since their last failed attempt with nothing at work below
+ * them, for the caller to check against their transcripts and pi-pool. Idle eviction off gives none.
+ */
+export function retryCandidates(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
+  if (input.idleMs === null) return [];
+  const busy = busyAncestors(rows);
+  return rows.filter(row => retrying(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= ENDED_MS);
+}
+
 /**
  * The rows the daemon lists that `unload` may stop (after ENDED_MS for a session that ended its task): a top-level session (a job, or a chat that is not in `attached`, the chats the service still
- * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it. `idleMs` null (idle
- * eviction off) stops none.
+ * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it, and each candidate
+ * asleep in its provider retry that `held` names. `idleMs` null (idle eviction off) stops none.
  */
-export function unloadPlan(rows: readonly SessionSummary[], input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null;
-  chats?: ReadonlySet<string>; waking?: ReadonlySet<string> }): SessionSummary[] {
+export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
   const { idleMs } = input;
   if (idleMs === null) return [];
   const busy = busyAncestors(rows);
   const ended = (row: SessionSummary): boolean => !input.chats?.has(row.sessionId) &&
     ((row.runtimeKind === "subagent" && row.repliedSinceTask === true) || row.taskState !== undefined || input.waking?.has(row.sessionId) === true);
   const wait = (row: SessionSummary): number => ended(row) ? Math.min(idleMs, ENDED_MS) : idleMs;
-  return rows.filter(row => quiet(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= wait(row));
+  const idle = rows.filter(row => quiet(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= wait(row));
+  const held = input.held ? retryCandidates(rows, input).filter(row => input.held!.has(row.sessionId)) : [];
+  return [...idle, ...held];
+}
+
+/**
+ * How far ahead a pool hold may end for the unload to stop a session asleep on it: the resume pass reads a failed turn for 24 h after it
+ * (resume_paused.py --since-minutes 1440), so a session stopped on a longer hold would get no continue. Such a session keeps Prime's own wait.
+ */
+export const HOLD_REACH_MS = 20 * 60 * 60_000;
+
+/**
+ * Whether the unload stops a session asleep in its provider retry whose tree pi-pool next serves at `freeAt` (epoch ms, null when the pool
+ * does not say): only when that comes after the unload's minutes and within HOLD_REACH_MS. A tree the pool would serve sooner is left to
+ * Prime's retry and the job sweep's abort (ab65b511), which continue it in place.
+ */
+export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number): boolean {
+  return freeAt !== null && freeAt > now + idleMs && freeAt <= now + HOLD_REACH_MS;
 }
 
 /**
@@ -167,7 +219,7 @@ export const NO_BARE_KILL = "Left to its daemon's idle eviction: that daemon has
 export async function unloadRequest(client: UnloadClient, activeSessionId: string, type: "get_state" | "kill", restorable = true): Promise<DaemonAnswer> {
   try {
     if (type === "get_state") return await client.request({ type, activeSessionId }, 30_000, { recoverable: false });
-    if (!client.hello) await client.waitForHello();
+    if (!client.hello) await client.waitForHello(30_000);
     const hello = client.hello;
     if (!hello) return { success: false, error: "The daemon connection closed before its hello; the kill was not sent." };
     if (!restorable && !takesKillOrigin(hello)) return { success: false, error: NO_BARE_KILL };
@@ -196,6 +248,11 @@ export interface UnloadSource {
   pool(): Promise<ReadonlySet<string>>;
   /** The sessions with a board.wake pending at `now`. */
   waking(now: number): Promise<ReadonlySet<string>>;
+  /**
+   * Of `rows` (`retryCandidates`), the ones whose transcript ends on a failed reply and whose tree pi-pool holds past the unload's minutes
+   * (`poolHoldsPast`), with when the hold ends.
+   */
+  held(rows: readonly SessionSummary[], now: number, idleMs: number): Promise<ReadonlyMap<string, number>>;
   /** Each worker's own footprint in bytes, by pid. */
   own(pids: readonly number[]): Promise<ReadonlyMap<number, number>>;
   restNow(id: string, quietMs: number): Promise<boolean>;
@@ -211,11 +268,63 @@ export interface UnloadSource {
   now(): number;
 }
 
-/** The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input, a background bash or a detached process it started. */
-function stateBusy(data: unknown): boolean {
-  const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<UnloadRow, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning" | "holdsDetachedProcesses">>;
-  return state.isSessionActive !== false || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true || state.holdsDetachedProcesses === true;
+/** What `providerWaits` reads: every row of this box (for each tree's root), which rows are this box's, a transcript's tail, and the pool. */
+export interface WaitReads {
+  all: readonly SessionSummary[];
+  local: (row: SessionSummary) => boolean;
+  tail: (sessionFile: string) => Promise<string>;
+  read: (threads: readonly PoolThread[]) => Promise<Pick<PoolStatus, "threads">>;
 }
+
+/**
+ * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`lastTurnError`) and whose tree, keyed by its
+ * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that is.
+ * One pool read covers every tree.
+ */
+export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads): Promise<Map<string, number>> {
+  const byId = new Map(reads.all.map(row => [row.sessionId, row] as const));
+  const rootOf = (row: SessionSummary): string => {
+    const seen = new Set([row.sessionId]);
+    let top = row;
+    for (let up = byId.get(top.parentSessionId ?? ""); up && !seen.has(up.sessionId); up = byId.get(up.parentSessionId ?? "")) { seen.add(up.sessionId); top = up; }
+    return top.sessionId;
+  };
+  const failed = await Promise.all(rows.filter(row => reads.local(row) && row.sessionFile && row.model?.provider)
+    .map(async row => lastTurnError(await reads.tail(row.sessionFile!).catch(() => "")) === undefined ? [] : [row]));
+  const waiting = failed.flat();
+  if (!waiting.length) return new Map();
+  const status = await reads.read([...new Set(waiting.map(rootOf))].map(session => ({ session, model: null })));
+  return new Map(waiting.flatMap(row => {
+    const parts = status.threads.get(threadKey({ session: rootOf(row), model: null }));
+    const freeAt = parts ? poolFreeAt(parts, row.model!.provider, now) : null;
+    return freeAt !== null && poolHoldsPast(freeAt, now, idleMs) ? [[row.sessionId, freeAt] as const] : [];
+  }));
+}
+
+/**
+ * The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input, a background bash or a
+ * detached process it started. For a session stopped while asleep in its provider retry (`retry`) the open turn is expected, and only a
+ * stream, a compaction, a bash or a detached process keeps it: a retry that fired since the row was listed streams.
+ */
+function stateBusy(data: unknown, retry: boolean): boolean {
+  const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<UnloadRow, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning" | "isRunningTools" | "holdsDetachedProcesses">>;
+  return (!retry && state.isSessionActive !== false) || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true ||
+    state.isRunningTools === true || state.holdsDetachedProcesses === true;
+}
+
+/**
+ * How long the sweep's line waits for one session's stop, its `get_state` and kill (30 s each) included. A stop still out then logs its own
+ * line once it stops the session, and the next sweep does not ask that session again while it is out. From 22Z on 10-18 to 01:03Z on 10-19
+ * the hung worker 114947 left the `get_state` of 01a150e1 timing out every minute.
+ */
+export const STOP_BOUND_MS = 75_000;
+/** How long the sweep waits for `held` (transcript tails and one pi-pool read) before it plans without it. */
+export const HELD_BOUND_MS = 20_000;
+
+const within = <T>(work: Promise<T>, ms: number, late: T): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([work, new Promise<T>(resolve => { timer = setTimeout(() => resolve(late), ms); timer.unref?.(); })]).finally(() => clearTimeout(timer));
+};
 const skipUntilRowChanges = (error: string): boolean => /Unknown active session/.test(error) || error === NO_BARE_KILL;
 
 /**
@@ -249,9 +358,28 @@ export class IdleUnloader {
     const pool = await source.pool();
     const now = source.now();
     const waking = await source.waking(now);
-    const plan = unloadPlan(source.rows(), { attached, pool, now, idleMs, chats, waking }).filter(row => !this.out.has(row.sessionId) && !this.gone.has(goneKey(row)));
+    const input: PlanInput = { attached, pool, now, idleMs, chats, waking };
+    const fresh = (row: SessionSummary): boolean => !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
+    const candidates = retryCandidates(source.rows(), input).filter(fresh);
+    const held = candidates.length && idleMs !== null
+      ? await within(source.held(candidates, now, idleMs).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number>(); }),
+        HELD_BOUND_MS, new Map<string, number>())
+      : new Map<string, number>();
+    const plan = unloadPlan(source.rows(), { ...input, held }).filter(fresh);
     if (plan.length) {
-      this.track(Promise.all(plan.map(async row => await this.stop(row, chats) ? [row.sessionName?.trim() || row.sessionId.slice(0, 8)] : [])).then(names => {
+      // Each stop is bounded on its own (STOP_BOUND_MS). The sweep's line names the stops done by then; a later one logs its own line.
+      const named = (row: SessionSummary): string => {
+        const name = row.sessionName?.trim() || row.sessionId.slice(0, 8);
+        const until = held.get(row.sessionId);
+        return until === undefined ? name : `${name} (waits on pi-pool until ${new Date(until).toISOString().slice(11, 16)}Z)`;
+      };
+      this.track(Promise.all(plan.map(row => {
+        const stop = this.stop(row, chats, held.has(row.sessionId));
+        return within(stop.then(done => done ? "stopped" as const : "kept" as const), STOP_BOUND_MS, "late" as const).then(outcome => {
+          if (outcome === "late") void stop.then(done => { if (done) source.log(`idle unload: stopped ${named(row)} after the sweep's ${STOP_BOUND_MS / 1000} s`); });
+          return outcome === "stopped" ? [named(row)] : [];
+        });
+      })).then(names => {
         const stopped = names.flat();
         if (stopped.length) source.log(`idle unload: stopped ${stopped.length} idle sessions: ${stopped.join(", ")}`);
       }));
@@ -289,10 +417,10 @@ export class IdleUnloader {
   }
 
   /** The session's stop, shared by every caller while it is under way; true once the daemon stopped it. */
-  private stop(row: SessionSummary, chats: ReadonlySet<string>): Promise<boolean> {
+  private stop(row: SessionSummary, chats: ReadonlySet<string>, retry = false): Promise<boolean> {
     const known = this.out.get(row.sessionId);
     if (known) return known;
-    const run = this.stopNow(row, chats).catch(error => {
+    const run = this.stopNow(row, chats, retry).catch(error => {
       this.source.log(`idle unload: ${row.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }).finally(() => { this.out.delete(row.sessionId); });
@@ -300,7 +428,7 @@ export class IdleUnloader {
     return run;
   }
 
-  private async stopNow(row: SessionSummary, chats: ReadonlySet<string>): Promise<boolean> {
+  private async stopNow(row: SessionSummary, chats: ReadonlySet<string>, retry: boolean): Promise<boolean> {
     const source = this.source;
     const failed = (answer: { error: string }): false => {
       if (skipUntilRowChanges(answer.error)) this.gone.add(goneKey(row));
@@ -310,7 +438,7 @@ export class IdleUnloader {
     const since = source.now();
     const state = await source.request(row, "get_state");
     if (!state.success) return failed(state);
-    if (stateBusy(state.data)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
+    if (stateBusy(state.data, retry)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
     const killed = await source.request(row, "kill");
     // The daemon's guard kept a detached service. Only this sweep skips the session: once the service exits, the next sweep stops it.
     if (!killed.success && killed.detachedHold) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, it holds detached processes`); return false; }

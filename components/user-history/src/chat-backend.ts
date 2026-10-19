@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { HostReach } from "./host-reach.ts";
@@ -25,8 +25,8 @@ import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-que
 import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
-import { resumesNow } from "./cut-end.ts";
-import { IdleUnloader, unloadRequest } from "./idle-unload.ts";
+import { resumesNow, tailLines } from "./cut-end.ts";
+import { IdleUnloader, providerWaits, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded } from "./unloaded.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -320,10 +320,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
     configFile: grafanaConfig, log: dutyLog, ...agentMessage });
-  // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, and a session that ended its task after ENDED_MS, since Prime's own
-  // sweeps fail under load. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait
-  // for a slow kill (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that
-  // knows which chats a tab or the pool holds.
+  // An idle root job, dormant chat or subagent stops after idleEvictionMinutes, a session that ended its task after ENDED_MS, and a job asleep in
+  // Prime's provider retry once pi-pool holds its tree past idleEvictionMinutes, since Prime's own sweeps fail under load and count a retry as
+  // work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
+  // (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that knows which chats
+  // a tab or the pool holds.
   const unloader_ = new IdleUnloader({
     rows: () => [...catalog.daemonRows(), ...catalog.remoteRows()],
     localRows: () => catalog.daemonRows(),
@@ -332,6 +333,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     dormant: id => threads.isDormant(id),
     pool: () => poolWaiting(),
     waking: async now => new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session)),
+    // A session asleep in Prime's provider retry stops when its transcript ends on the failed reply and pi-pool serves its tree (keyed by the
+    // root session) only past the unload's minutes. Only this box's sessions: another box's pool decides for its own. The job sweep's resume
+    // pass continues it once the pool or the token hook lets its tree in (resume_paused.py unload_stop_holds).
+    held: (rows, now, idleMs) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
+      tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }),
     own: async pids => {
       const footprints = await readFootprints([...pids]);
       return new Map(Object.entries(footprints.workers).map(([pid, worker]) => [Number(pid), worker.own ?? 0] as const));

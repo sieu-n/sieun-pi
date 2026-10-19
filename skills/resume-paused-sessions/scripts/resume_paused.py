@@ -76,9 +76,10 @@ workers SIGTERMed at 17:43:22Z left stuck steps root cause unloaded and out of
 the default list, and the owner's stop archived three step owners at 18:25Z;
 nothing resumed any of them.
 
-A session the chat service's idle unload stopped (browser-chat/unloaded.json) after its last turn failed on the token hook counts like one
-a restart archived: the unload stops a session soon after its turn ends, a failed turn included, and its archive hid the failure. Any
-other session the unload stopped, one that finished or was cut another way, stays stopped. The idle unload stopped 16 root jobs
+A session the chat service's idle unload stopped (browser-chat/unloaded.json) after its last turn failed on the token hook, or on a rate
+limit or pi-pool hold Prime still retried, counts like one a restart archived: the unload stops a session soon after its turn ends, a
+failed turn included, or while it sleeps on a pool hold, and its archive hid the failure. Any other session the unload stopped, one that
+finished or was cut another way, stays stopped. The idle unload stopped 16 root jobs
 and 27 check-ins between 0.2 and 1.5 min after a token hook failure in the 10-16 to 10-17 hook outage (ci train at 10:27:34Z on 10-16),
 and none got a continue after the hook worked again at 19:50Z on 10-17. Such a session is read from its file even when the daemon no
 longer lists it.
@@ -174,6 +175,8 @@ UNLOAD_MATCH_S = 60.0
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
 # The providers pi-pool vends tokens for; any other provider is not pooled and has no pool answer to read.
 POOLED_PROVIDERS = ("anthropic", "openai-codex")
+# A provider error Prime keeps retrying until an account serves the tree again: a rate limit, a used-up plan, or pi-pool's hold on the tree.
+PROVIDER_WAIT_ERROR = re.compile(r"rate.?limit|\b429\b|usage limit|waits for its slot", re.IGNORECASE)
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
@@ -1010,8 +1013,14 @@ def archived_by_unload(entries, unloaded_at):
 
 
 def unload_stop_holds(session, verdict):
-    """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook."""
-    return session.get("lifecycle") != "live" and not (verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]))
+    """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook, or on a rate limit or pi-pool
+    hold that Prime was still retrying when the unload stopped it: the unload stops a run asleep in its provider retry once pi-pool holds its
+    tree past the unload's minutes (components/user-history/src/idle-unload.ts providerWaits). The kill writes only the archive after the
+    failed reply, so such a run gets its continue once the hook or `pi-pool who` lets its tree in (account_blocker). At 01:11Z on 10-19 176
+    runs slept that way, 91 on a 429 and 85 on the hook's "waits for its slot", each with "waits for its slot at" in its error."""
+    if session.get("lifecycle") == "live" or verdict[0] != "error":
+        return session.get("lifecycle") != "live"
+    return not (TOKEN_HOOK_ERROR.search(verdict[1]) or PROVIDER_WAIT_ERROR.search(verdict[1]))
 
 
 def stop_archive(entries, last):

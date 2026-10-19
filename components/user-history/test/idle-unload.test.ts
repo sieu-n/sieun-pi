@@ -194,7 +194,7 @@ function harness(rows: SessionSummary[], answers: { kill?: (row: SessionSummary)
   const clock = { now: at15 };
   const unloader = new IdleUnloader({
     rows: () => rows, localRows: () => [], idleMs: () => TEN_MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
-    waking: async () => new Set(), own: async () => new Map(), restNow: async () => false, title: () => null,
+    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, title: () => null,
     request: async (row, type) => {
       calls.push({ type, session: row.sessionId, at: clock.now });
       if (type === "get_state") return answers.state?.(row) ?? { success: true, data: { isSessionActive: false, isStreaming: false, isCompacting: false, isBashRunning: false } };

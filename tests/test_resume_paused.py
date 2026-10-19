@@ -750,6 +750,44 @@ class ResumePausedTests(unittest.TestCase):
             rows = resume_paused.with_saved_owners([], resume_paused.saved_rows(set(ends)), set(ends))
             self.assertEqual(resume_paused.resume(rows, args, now)["paused"], [])
 
+    def test_a_run_the_idle_unload_stopped_asleep_on_a_429_is_resumed_once_pi_pool_lets_its_tree_in(self):
+        # new pages indexing (01a14d4b), a subagent under VP 01a11a24 on 10-19: its retry slept on this 429 from 00:46:55Z with a slot at 02:11:32Z,
+        # one of the 176 runs asleep in their provider retry at 01:11Z. The idle unload stops such a run; the kill writes only the archive.
+        sid, root = "01a14d4b-0dac-76cc-a069-bf3df2e441bc", "01a11a24-a46e-77ff-adf7-671d01d462e2"
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
+                   "[request_id: req_011CgAg29pGniWPK9QDpcW7a] pi-pool: claude11@slack.green is limited until 2026-10-19T03:00:00.000Z; "
+                   "this session waits for its slot at 2026-10-19T02:11:32.000Z. Try again in 85 minutes.")
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        entries = [{"type": "message", "timestamp": "2026-10-19T00:40:02.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "index the new pages"}]}},
+                   {"type": "message", "timestamp": "2026-10-19T00:46:55.774Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                           "content": [], "errorMessage": limited}},
+                   {"type": "session_state", "timestamp": "2026-10-19T01:21:40.100Z", "state": {"status": "archived"}},
+                   {"type": "session_state", "timestamp": "2026-10-19T01:21:40.300Z", "state": {"status": "active"}}]
+        (sessions / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        unloaded = {sid: resume_paused.parse_ts("2026-10-19T01:21:40.200Z")}
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+
+        def run(slot_at, now):
+            def pool(cmd, **kwargs):
+                body = {"provider": "anthropic", "rows": [{"id": "claude7", "usable": True}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": None if slot_at else "claude7", "wait": {"account": "claude11", "slot_at": slot_at} if slot_at else None}}}
+                self.assertIn(sid if cmd[1] == "who" else "--provider", cmd)
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                    patch.dict(resume_paused.UNLOADED, unloaded, clear=True), patch.object(resume_paused, "pool_bin", return_value="pi-pool"), \
+                    patch.object(resume_paused.subprocess, "run", side_effect=pool), patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                    patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+                rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({sid}), {sid})
+                return resume_paused.resume(rows, args, now)
+
+        held = run(dt.datetime(2026, 10, 19, 2, 11, 32, tzinfo=dt.timezone.utc).timestamp(), dt.datetime(2026, 10, 19, 1, 31, tzinfo=dt.timezone.utc))
+        self.assertEqual((held["paused"], held.get("stopped"), self.sent), ([], None, []), "the pool still holds the tree")
+        report = run(None, dt.datetime(2026, 10, 19, 2, 12, tzinfo=dt.timezone.utc))
+        self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]], [("error", sid, "2026-10-19T00:46:55.774Z")])
+        self.assertEqual(self.sent, [(sid, "continue")])
+        self.assertTrue(resume_paused.unload_stop_holds({"lifecycle": "archived"}, ("error", "Connection error.")), "a network error the unload met stays stopped")
+
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
         seen = self.root / "hook-session"
