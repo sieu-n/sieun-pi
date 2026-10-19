@@ -107,7 +107,9 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "answer him. On a turn he did not start (a job report, another thread, a check-in, a [job] notice, a wake, a duty run, an alert, a " +
   "restart), the default is no call: update the board and end the turn. Call it there only for a goal he asked for that finished, with " +
   "its result (why done), a decision only he can make (decision), a blocker only he can clear (blocker), or the answer to a question he " +
-  "asked (answer), and name that goal, decision, blocker or question in about; any other call there is kept as a note (c117). Write one " +
+  "asked (answer), and name that goal, decision, blocker or question in about. A finished goal he asked for, or a plan change he would " +
+  "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. Any other call there, and one with no " +
+  "why, is kept as a note (c117). Write one " +
   "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
   "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and " +
   "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
@@ -163,9 +165,12 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
   if (turn.owner || answers || declared) return { kind: "sent", text: TELL_OWNER_DONE };
-  return { kind: "held", text: `${TELL_OWNER_HELD}. The owner did not start this turn, so a message reaches him only with why set to done, ` +
-    "decision, blocker or answer and about naming that goal, decision, blocker or question. If it is one of those, call tell_owner again " +
-    "with both; if not, update the board and end the turn." };
+  const missing = named(input.why) ? "" : " This call named no why, and that is the only reason it was held. If it reports a goal he " +
+    "asked for that finished, call tell_owner again now with why done and about naming that goal, the same for a decision, blocker or answer.";
+  return { kind: "held", text: `${TELL_OWNER_HELD}.${missing} The owner did not start this turn, so a message reaches him only with why set to done, ` +
+    "decision, blocker or answer and about naming that goal, decision, blocker or question. A finished goal he asked for, or a plan change " +
+    "he would act on (a land order, a move), is done or decision, never update. If it is one of those, call tell_owner again with both; if " +
+    "not, update the board and end the turn." };
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;

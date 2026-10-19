@@ -23,7 +23,10 @@ test("on a job report the owner did not start, a relay is held as a note and a n
   const relay = tellOwner({ text: "The job took the gate fix and wrote a stub case.", why: "update" }, turn);
   assert.equal(relay.kind, "held");
   assert.ok(relay.text.startsWith(TELL_OWNER_HELD));
-  assert.equal(tellOwner({ text: "The job took the gate fix." }, turn).kind, "held");
+  const bare = tellOwner({ text: "The job took the gate fix." }, turn);
+  assert.equal(bare.kind, "held");
+  assert.match(bare.text, /named no why/, "on 10-19 ops guy's finished Grafana cleanup went with no why, and the plain held answer did not get a second call");
+  assert.doesNotMatch(relay.text, /named no why/);
   assert.equal(tellOwner({ text: "The gate fix is live.", why: "done" }, turn).kind, "held", "a case with no about stays a note");
   assert.deepEqual(tellOwner({ text: "The gate fix is live, the 12:16 stall case passes.", why: "done", about: "autovacuum stall fix" }, turn),
     { kind: "sent", text: TELL_OWNER_DONE });
