@@ -1,0 +1,11 @@
+[Unit]
+Description=Low OOM scores for the Prime daemon, its workers, the chat service and pi-pool (memory layer 5 of https://cho.sh/ko/1983DC, owner ask 2026-10-19)
+After=user@1001.service
+
+[Service]
+ExecStart=/usr/bin/python3 -B /usr/local/lib/oom-protect/oom-protect.py
+Restart=always
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

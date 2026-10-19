@@ -1,0 +1,5 @@
+# Memory layer 3 of https://cho.sh/ko/1983DC, set on the owner's ask of 2026-10-19. Installed as /etc/default/earlyoom.
+# SIGTERM the process with the highest oom_score when both available RAM and free swap fall under 5%, SIGKILL under 2%.
+# The regexes match /proc/<pid>/comm. Node processes all read node-MainThread, so the chat service and pi-pool (python3)
+# are kept by oom-protect.py's -900 score instead, and heavy-wrapped test runners are picked first by their score of 500.
+EARLYOOM_ARGS="-m 5,2 -s 5,2 -r 3600 --avoid '^(systemd|systemd-.+|init|sshd|sshd-session|tailscaled|dockerd|containerd|containerd-shim.*|earlyoom|prime-agent|pi-pool)$' --prefer '^(qemu:ci-.+|qemu-system-.+|vitest.*|jest.*|pytest|svelte-check|tsc|cc1plus|ld)$'"

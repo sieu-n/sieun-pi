@@ -46,6 +46,21 @@ The unit sets `TimeoutStartSec=infinity`, because systemd times ExecReload with 
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `LINEAR_API_KEY`. It sets no `PRIME_API_KEY`: no session uses the `prime-inference` provider, and with that key Prime's status summarizer called it after every turn and got 402 for an empty balance, 26,186 times from 07:48Z to 08:36Z on 10-18.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
 
+## Memory layers
+
+On 2026-10-19 the owner asked for the memory defense layers of https://cho.sh/ko/1983DC on us-metal02, so these layers are owner-asked exceptions to c107.
+Root sets them up with `deploy/linux/memory/setup-memory.sh`, which converges on every run, and `python3 -B -m unittest tests/test_memory_layers.py` checks the files.
+us-metal01 does not have them yet.
+
+1. A 64 GiB `/swapfile`, written with `dd` and listed in `/etc/fstab`, sits next to the 16 GiB partition for 80 GiB of swap. At 16:4xZ on 10-19 the 16 GiB partition was 100% full while the kernel OOM killer took 18 processes from 16:09Z to 16:40Z, and on 10-18 at 22:13Z it killed one Prime worker holding 52 GiB, so 64 GiB covers a full partition plus one runaway of that size.
+2. `zswap-zstd.service` turns zswap on with the zstd compressor at boot, because the kernel ships it off with lzo. zswap keeps its default pool of up to 20% of RAM, and the page picked it over zram because the compressed pages are charged to the process that made them.
+3. earlyoom reads `/etc/default/earlyoom` from `earlyoom.default`. It sends SIGTERM to the process with the highest `oom_score` when available RAM and free swap are both under 5%, and SIGKILL under 2%. Its avoid regex keeps systemd, sshd, tailscaled, dockerd, containerd, earlyoom, `prime-agent` and `pi-pool`, and its prefer regex takes the CI VMs (`qemu:ci-g*`) and named test runners first. The regexes match `/proc/<pid>/comm`, where every node process reads `node-MainThread`, so the next layer protects the chat service by score.
+4. `heavy <size> -- <cmd>` runs a job known to be heavy under `systemd-run --user --scope -p MemoryMax=<size> -p MemorySwapMax=0` with an `oom_score_adj` of 500. Past the size the kernel kills that job alone, and a box-wide shortage takes it before anything else. An example is `heavy 8G -- pnpm svelte-check`, since svelte-check peaked at 4.2 GB RSS on the box on 10-19. Without systemd, as on the Mac, it runs the command as is. setup-memory.sh installs it as `~/.local/bin/heavy`.
+5. ssh and tailscaled run at `OOMScoreAdjust=-500` from unit drop-ins. A user unit cannot lower its own score, so the root service `oom-protect.service` runs `oom-protect.py` every 5 s. It sets -900 on the main process of `prime-agent-daemon.service`, `sieun-pi-chat.service`, `pi-pool-serve.service` and `pi-pool-hookd.service`, and -500 on every Prime worker. Every other process in those units goes back to the user-unit default of 200, because a kernel or agent command forked from a worker inherits the worker's score and must stay killable.
+6. `/etc/sysctl.d/90-agent-memory.conf` sets `vm.swappiness=100`, `vm.watermark_scale_factor=125` and `vm.min_free_kbytes=1048576` (1 GiB, 0.4% of RAM).
+
+The CI VMs are libvirt guests that `virev-ci-virt@` starts as root, and each one's RSS is bounded by its guest RAM, so they are not wrapped in `heavy` and earlyoom's prefer regex picks them first instead.
+
 ## Install
 
 Root runs `loginctl enable-linger sieun` and `tailscale set --operator=sieun` once. Everything below runs as the user.

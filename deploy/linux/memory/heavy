@@ -1,0 +1,12 @@
+#!/bin/sh
+# heavy SIZE -- CMD [ARGS]: run a job known to be heavy in its own memory box, memory layer 4 of
+# https://cho.sh/ko/1983DC (owner ask, 2026-10-19). Past SIZE the kernel kills that job alone, with no swap, and its
+# oom_score_adj of 500 makes earlyoom and the kernel pick it before anything else when the whole box runs short.
+# Example: heavy 8G -- pnpm svelte-check. Where systemd is absent, as on the Mac, it runs CMD as is.
+set -eu
+if [ $# -lt 2 ]; then echo "usage: heavy <size such as 8G> -- <cmd> [args]" >&2; exit 2; fi
+size=$1; shift
+if [ "$1" = "--" ]; then shift; fi
+if [ $# -eq 0 ]; then echo "usage: heavy <size such as 8G> -- <cmd> [args]" >&2; exit 2; fi
+if ! command -v systemd-run >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then exec "$@"; fi
+exec systemd-run --user --scope --quiet -p MemoryMax="$size" -p MemorySwapMax=0 -- choom -n 500 -- "$@"

@@ -1,0 +1,13 @@
+[Unit]
+Description=zswap with zstd in front of swap (memory layer 2 of https://cho.sh/ko/1983DC, owner ask 2026-10-19)
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo zstd > /sys/module/zswap/parameters/compressor && echo Y > /sys/module/zswap/parameters/enabled'
+
+[Install]
+WantedBy=sysinit.target
