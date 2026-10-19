@@ -34,7 +34,7 @@ test("a failing reader reports ok 0 and leaves the others' samples", async () =>
   assert.match(errors.bad, /boom/);
 });
 
-test("every chat sample gets the box its chat runs on, in the board's box names, from the chat cost samples", () => {
+test("every chat sample gets the box its chat runs on, and every host sample the box it names, in the board's box names", () => {
   const samples = [
     { name: "harness.tokens.chat_cost_usd", kind: "gauge" as const, help: "C.", value: 1, labels: { chat: "frontend bro", part: "thread", runs_on: "mac" } },
     { name: "harness.tokens.chat_cost_usd", kind: "gauge" as const, help: "C.", value: 1, labels: { chat: "AI harness", part: "thread", runs_on: "us-metal02" } },
@@ -42,7 +42,9 @@ test("every chat sample gets the box its chat runs on, in the board's box names,
     { name: "harness.plan.items", kind: "gauge" as const, help: "P.", value: 3, labels: { chat: "AI harness" } },
     { name: "harness.plan.items", kind: "gauge" as const, help: "P.", value: 4, labels: { chat: "gone chat" } },
     { name: "harness.pool.waiting", kind: "gauge" as const, help: "W.", value: 0 },
+    { name: "harness.chat.agents", kind: "gauge" as const, help: "A.", value: 5, labels: { host: "mac", state: "idle" } },
+    { name: "harness.chat.agents", kind: "gauge" as const, help: "A.", value: 6, labels: { host: "us-metal02", state: "idle" } },
   ];
   tagRunsOn(samples);
-  assert.deepEqual(samples.map(s => (s.labels as Record<string, string> | undefined)?.runs_on), ["mbp", "us-metal02", "mbp", "us-metal02", undefined, undefined]);
+  assert.deepEqual(samples.map(s => (s.labels as Record<string, string> | undefined)?.runs_on), ["mbp", "us-metal02", "mbp", "us-metal02", undefined, undefined, "mbp", "us-metal02"]);
 });
