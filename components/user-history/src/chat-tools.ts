@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHECK_TIMEOUT_MS, CHECKS, checkReport, type CheckReport, RECHECKS_FILE, realDeps, realExec, runChecks, searchPath, type Deps, type Recheck } from "../scripts/duties/skills-and-tools.ts";
@@ -16,6 +16,8 @@ const TOOL_CHECKS = CHECKS.filter(check => TOOL_CHECK_IDS.has(check.id));
 const CHECK_IDS = new Set(CHECKS.map(check => check.id));
 /** How long one live result serves view(false), so opening the tab again does not pay for another search. */
 export const TOOLS_CACHE_MS = 5 * 60_000;
+/** `<data dir>/tool-checks.json`: the last live run's view, which the harness feed reads (components/harness-feed/readers/alerts-releases.ts). */
+export const TOOL_CHECKS_FILE = "tool-checks.json";
 /**
  * One box's `--results` run over ssh. Its checks run side by side, each cut at CHECK_TIMEOUT_MS; measured: the Mac's run of its six checks took
  * 9.4 s over ssh on 10-19, node and tsx starting included, so 30 s on top of the checks' own cap covers the start.
@@ -59,6 +61,8 @@ export interface ToolsOptions {
   remote?: RemoteChecks;
   /** This box's `tailscale status --json`, null when it cannot be read; another box Tailscale reads offline is not dialed. */
   tailscale?: () => Promise<string | null>;
+  /** Where each live run's view is written, through a temp file and a rename; none when absent. */
+  file?: string;
 }
 
 /**
@@ -106,7 +110,9 @@ export function toolChecks(options: ToolsOptions): { view(fresh: boolean): Promi
     const others = registry?.hosts.filter(host => host.name !== self?.name) ?? [];
     const status = others.length ? await tailscale().catch(() => null) : null;
     const hosts = await Promise.all([selfCard(self), ...others.map(host => remoteCard(host, status))]);
-    return last = { checkedAt: now(), hosts, registryError };
+    last = { checkedAt: now(), hosts, registryError };
+    if (options.file) await save(options.file, last);
+    return last;
   })().finally(() => { running = undefined; });
 
   return {
@@ -115,6 +121,12 @@ export function toolChecks(options: ToolsOptions): { view(fresh: boolean): Promi
       return { ...live, daily: options.dutyStore ? await dailyRun(options.dutyStore) : null };
     },
   };
+}
+
+/** Writes a live run's view through a temp file; a failed write leaves the last file, whose checkedAt then reads old. */
+async function save(file: string, view: Omit<ToolsView, "daily">): Promise<void> {
+  const temporary = `${file}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(view)}\n`).then(() => rename(temporary, file)).catch(() => {});
 }
 
 /** Each check's newest re-check after `since`, from the duty's re-check file; a missing file or a bad line counts as no re-check. */

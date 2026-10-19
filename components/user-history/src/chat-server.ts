@@ -40,7 +40,7 @@ import type { SdkSync } from "./chat-sdk.ts";
 import type { ThreadSide } from "./shared/thread-side.ts";
 import { hostsView, thisBox } from "./chat-hosts.ts";
 import { parseAgentQueueInput } from "./chat-agent-queue.ts";
-import { toolChecks } from "./chat-tools.ts";
+import { TOOL_CHECKS_FILE, toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
 import { feedBoard } from "./shared/board-delta.ts";
@@ -378,7 +378,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   const sendBuild = (send: (build: { version: string; assets: string[] }) => void) => {
     void Promise.resolve(bundle).then(built => send({ version: built.version, assets: [assetName("app", "js", built.js), assetName("app", "css", built.css), ...built.preload ?? []] }), () => {});
   };
-  const tools = toolChecks({ dutyStore: backend.duties?.store });
+  const tools = toolChecks({ dutyStore: backend.duties?.store, file: join(dirname(backend.boards.dir), TOOL_CHECKS_FILE) });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     rows: name => name === null ? backend.catalog.daemonRows() : backend.catalog.remoteHosts().find(({ host }) => host.name === name)?.rows ?? [],
     ...backend.calls ? { hung: () => backend.calls!.hung() } : {},

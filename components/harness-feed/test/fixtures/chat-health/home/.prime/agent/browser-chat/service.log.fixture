@@ -1,0 +1,19 @@
+2026-10-19T11:31:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:32:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:33:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:34:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:35:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:36:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:37:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:38:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:39:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:40:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:41:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:42:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:43:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:44:05.000Z wakes: wake abcd1234 for job x; tried again next tick
+2026-10-19T11:50:00.000Z catalog: copy written
+2026-10-19T11:52:10.000Z outbox 01a15409: send failed: Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message". Socket: /tmp/prime-agent-1001/daemon.sock
+2026-10-19T11:57:00.000Z daemon resume 01a15409: answered in 3.5 s
+2026-10-19T11:58:00.000Z open 01a15409 live 120 messages: attach 300ms, total 2500ms
+2026-10-19T11:59:00.000Z open 01a15410 live 20 messages: attach 100ms, total 900ms

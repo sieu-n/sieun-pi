@@ -1,0 +1,21 @@
+{
+ "at": 1792429700000,
+ "runs": [
+  {
+   "session": "job-b",
+   "reason": "error"
+  },
+  {
+   "session": "job-c",
+   "reason": "error"
+  },
+  {
+   "session": "01a15000-0000-7000-8000-000000000001",
+   "reason": "hung"
+  },
+  {
+   "session": "stranger",
+   "reason": "cut_off"
+  }
+ ]
+}

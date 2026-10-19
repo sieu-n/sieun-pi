@@ -1,0 +1,3 @@
+{"decision": "refused", "layer": "kernel", "chat": "01a115e2-9544-7204-b8db-8ce4d5319048", "session": "01a115e2-9544-7204-b8db-8ce4d5319048", "target": "POST https://x", "reason": "r", "ownerOk": null, "at": "2026-10-19T17:03:20.000Z"}
+{"decision": "allowed", "layer": "kernel", "chat": "01a115e2-9544-7204-b8db-8ce4d5319048", "session": "01a115e2-9544-7204-b8db-8ce4d5319048", "target": "POST https://x", "reason": "r", "ownerOk": "t1", "at": "2026-10-19T15:13:20.000Z"}
+{"decision": "ran", "layer": "transcript", "chat": null, "session": null, "target": "t", "reason": "r", "ownerOk": null, "at": "2026-10-16T17:13:20.000Z"}

@@ -30,6 +30,8 @@ command -v earlyoom >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install
 install -m 644 "$here/earlyoom.default" /etc/default/earlyoom
 systemctl enable earlyoom >/dev/null
 systemctl restart earlyoom
+# sieun reads earlyoom's kills from the system journal for harness-feed's memory row; the default ACL covers rotated journal files.
+setfacl -R -m u:sieun:rX -m d:u:sieun:rX /var/log/journal
 
 # 5. OOM scores: -500 for ssh and tailscaled at their next start and now, and -900 for the harness core by oom-protect.
 for unit in ssh tailscaled; do

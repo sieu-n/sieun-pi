@@ -1,0 +1,2 @@
+{"ts": "2026-10-19T11:33:00", "event": "parked", "provider": "anthropic", "session": "01a15500-0000-7000-8000-000000000001", "at": 1792409580.0, "slot_at": 1792410600.0, "backoff": true, "priority": "low", "room": ["claude18@slack.green"]}
+{"ts": "2026-10-19T11:33:00", "event": "parked", "provider": "anthropic", "session": "01a15500-0000-7000-8000-000000000002", "at": 1792409580.0, "slot_at": 1792411080.0, "backoff": false, "priority": "low", "room": ["claude18@slack.green"]}

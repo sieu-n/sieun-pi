@@ -1,0 +1,11 @@
+    1     0  12000 /sbin/launchd
+89573     1 111000 /Users/u/.local/share/prime-agent/releases/x/prime-agent --mode daemon --daemon-socket /var/folders/ab/T/prime-agent-501/daemon.sock
+29865 89573 500000 /Users/u/.local/share/prime-agent/releases/x/prime-agent --mode daemon --daemon-socket /var/folders/ab/T/prime-agent-501/worker-aa-bb.sock
+37191 89573 900000 /Users/u/.local/share/prime-agent/releases/x/prime-agent --mode daemon --daemon-socket /var/folders/ab/T/prime-agent-501/worker-aa-cc.sock
+36602 29865  27000 /usr/bin/python3 -m rlm.repl
+58311 37191  91000 /usr/bin/python3 -m rlm.repl
+58312 37191  91000 /usr/bin/python3 -m rlm.repl
+65000 58311 150000 /Users/u/Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --headless --user-data-dir=/tmp/x
+65229 65000 130000 /Users/u/Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions/145.0.7632.6/Helpers/Google Chrome for Testing Helper (Renderer).app/Contents/MacOS/Google Chrome for Testing Helper (Renderer) --type=renderer
+41331     1 352000 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+10386 89573 111000 /Users/u/.local/share/prime-agent/releases/x/prime-agent --version

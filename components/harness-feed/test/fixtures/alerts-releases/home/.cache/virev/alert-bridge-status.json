@@ -1,0 +1,12 @@
+{
+ "v": 1,
+ "ts": "2026-10-19T17:13:10.000Z",
+ "pid": 1,
+ "poll_every_s": 30,
+ "health": "ok",
+ "last_ok": "2026-10-19T17:13:05.000Z",
+ "last_error": null,
+ "firing_count": 33,
+ "alert_since": null,
+ "alert_sent_at": null
+}

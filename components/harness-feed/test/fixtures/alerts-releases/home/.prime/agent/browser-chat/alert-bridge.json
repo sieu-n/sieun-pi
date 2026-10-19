@@ -1,0 +1,69 @@
+{
+ "v": 3,
+ "rules": {
+  "01a115e2-9544-7204-b8db-8ce4d5319048/a-no-job": {
+   "chat": "01a115e2-9544-7204-b8db-8ce4d5319048",
+   "rule": "a-no-job",
+   "alertname": "A",
+   "startsAt": "2026-10-19T16:00:00.000Z",
+   "wokeAt": 1792429400000,
+   "firstWokeAt": 1792426400000,
+   "instances": {
+    "f1@x": {
+     "startsAt": "x",
+     "labels": {}
+    }
+   }
+  },
+  "01a115e2-9544-7204-b8db-8ce4d5319048/b-held": {
+   "chat": "01a115e2-9544-7204-b8db-8ce4d5319048",
+   "rule": "b-held",
+   "alertname": "B",
+   "startsAt": "x",
+   "wokeAt": 1792427000000,
+   "firstWokeAt": 1792427000000,
+   "instances": {},
+   "job": {
+    "id": "job-b",
+    "name": "triage b",
+    "at": 1792427060000,
+    "ranAt": 1792427600000
+   }
+  },
+  "01a115e2-9544-7204-b8db-8ce4d5319048/c-waiting": {
+   "chat": "01a115e2-9544-7204-b8db-8ce4d5319048",
+   "rule": "c-waiting",
+   "alertname": "C",
+   "startsAt": "x",
+   "wokeAt": 1792427300000,
+   "firstWokeAt": 1792427300000,
+   "escalatedAt": 1792429400000,
+   "instances": {},
+   "job": {
+    "id": "job-c",
+    "name": "triage c",
+    "at": 1792427360000
+   }
+  },
+  "01a115e2-9544-7204-b8db-8ce4d5319048/d-resolved": {
+   "chat": "01a115e2-9544-7204-b8db-8ce4d5319048",
+   "rule": "d-resolved",
+   "alertname": "D",
+   "startsAt": "x",
+   "wokeAt": 1792429700000,
+   "firstWokeAt": 1792429700000,
+   "resolvedAt": 1792429940000,
+   "instances": {}
+  },
+  "01a11af8-962e-773d-a19a-ee4104011987/e": {
+   "chat": "01a11af8-962e-773d-a19a-ee4104011987",
+   "rule": "e",
+   "alertname": "E",
+   "startsAt": "x",
+   "wokeAt": 1792422800000,
+   "firstWokeAt": 1792422800000,
+   "escalatedAt": 1792426400000,
+   "instances": {}
+  }
+ }
+}

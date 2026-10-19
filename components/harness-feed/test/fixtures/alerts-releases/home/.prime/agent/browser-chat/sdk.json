@@ -1,0 +1,6 @@
+{
+ "auto": false,
+ "failedTarget": "0.9.8",
+ "failedAt": "2026-10-12T02:38:31.291Z",
+ "error": "Command failed: which prime-agent"
+}

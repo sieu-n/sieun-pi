@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { CHECKS, type CheckReport, type Deps, hostChecks } from "../scripts/duties/skills-and-tools.ts";
-import { sshChecks, toolChecks } from "../src/chat-tools.ts";
+import { sshChecks, TOOL_CHECKS_FILE, toolChecks } from "../src/chat-tools.ts";
 import { parseHosts, type Host, type HostsRegistry } from "../src/hosts.ts";
 
 const host = (name: string, hostname: string, address: string, tools?: string[]) => ({
@@ -97,4 +100,23 @@ test("sshChecks runs the box's own checkout with --results and reads its JSON li
   assert.match(calls[0]!.at(-1)!, /\$\(sieun-pi source\)\/components\/user-history.*skills-and-tools\.ts --results --only aside_tabs$/);
   const failed = sshChecks(async () => ({ code: 255, stdout: "", stderr: "ssh: connect to host 100.0.0.2 port 22: Connection timed out", ms: 1 }));
   await assert.rejects(failed(target, ["aside_tabs"]), /ssh mac exit 255: ssh: connect to host/);
+});
+
+test("each live run writes its view to the file the harness feed reads, with no temp file left", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "tool-checks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, TOOL_CHECKS_FILE);
+  let clock = 1000;
+  const checks = toolChecks({ deps: deps(), load: async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }); }, remote: async () => [], now: () => clock, file });
+  const view = await checks.view(true);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as typeof view;
+  assert.equal(saved.checkedAt, 1000);
+  assert.deepEqual(saved.hosts, view.hosts);
+  assert.equal("daily" in saved, false);
+  clock = 2000;
+  await checks.view(false);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).checkedAt, 1000, "a cached view writes nothing");
+  await checks.view(true);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).checkedAt, 2000);
+  assert.deepEqual(readdirSync(dir), [TOOL_CHECKS_FILE]);
 });

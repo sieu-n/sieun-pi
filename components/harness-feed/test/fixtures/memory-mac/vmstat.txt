@@ -1,0 +1,7 @@
+nr_free_pages 123
+pswpin 12553759
+pswpout 43431918
+oom_kill 45
+zswpin 2461495
+zswpout 9959767
+zswpwb 906

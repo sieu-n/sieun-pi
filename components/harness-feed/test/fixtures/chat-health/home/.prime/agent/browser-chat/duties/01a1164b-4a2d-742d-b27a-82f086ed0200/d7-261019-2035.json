@@ -1,0 +1,21 @@
+{
+ "metrics": {
+  "clean_min_30": 12,
+  "queue_holds_30": 2,
+  "cell_holds_30": 1,
+  "hung_calls": 0,
+  "cut_jobs_held": 1
+ },
+ "flagged": [
+  {
+   "kind": "queue_hold",
+   "item": "cut job rb-p144 (01a154b8-78b9-705b-93a5-e1bf1902cee5)",
+   "excerpt": "cut job rb-p144 (01a154b8-78b9-705b-93a5-e1bf1902cee5) waited 12 min, 11:20Z to 11:32Z."
+  },
+  {
+   "kind": "queue_hold",
+   "item": "01a150e2-8d07-7254-a4ab-c6e47c0a40b8",
+   "excerpt": "pi-pool refused 01a150e2 for 68 min, 10:25Z to 11:33Z, waiting for a cell."
+  }
+ ]
+}

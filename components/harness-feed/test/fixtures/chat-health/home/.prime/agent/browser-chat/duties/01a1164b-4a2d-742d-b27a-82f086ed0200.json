@@ -1,0 +1,31 @@
+{
+ "version": 1,
+ "duties": [
+  {
+   "id": "d4",
+   "name": "Wiki dream",
+   "status": "active",
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/wiki-dream.ts"
+    ]
+   }
+  },
+  {
+   "id": "d7",
+   "name": "Whole system",
+   "status": "active",
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/whole-system.ts"
+    ]
+   }
+  }
+ ]
+}

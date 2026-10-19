@@ -1,0 +1,7 @@
+{
+ "pid": 999999999,
+ "sha": "def",
+ "startedAt": "2026-10-19T17:10:00.000Z",
+ "kickstart": true,
+ "rollback": false
+}

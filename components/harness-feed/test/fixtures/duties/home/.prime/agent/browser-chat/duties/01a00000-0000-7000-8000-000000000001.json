@@ -1,0 +1,202 @@
+{
+ "version": 1,
+ "checkIn": {
+  "createdAt": 1791547200000,
+  "runCount": 5,
+  "lastRunAt": 1792410900000
+ },
+ "duties": [
+  {
+   "id": "d1",
+   "name": "Fast loop",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "every",
+    "minutes": 30
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "x.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "active",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  },
+  {
+   "id": "d2",
+   "name": "Daily report",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "x.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "active",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  },
+  {
+   "id": "d3",
+   "name": "Parked",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "every",
+    "minutes": 30
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "x.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "paused",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  },
+  {
+   "id": "d4",
+   "name": "Never ran",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "every",
+    "minutes": 60
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "x.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "active",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  },
+  {
+   "id": "d5",
+   "name": "Chat system",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "every",
+    "minutes": 120
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "scripts/duties/chat-system.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "active",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  },
+  {
+   "id": "d6",
+   "name": "Skills and tools",
+   "ownerWords": "w",
+   "goal": "g",
+   "metrics": [
+    {
+     "key": "k",
+     "label": "K",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "04:30"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "scripts/duties/skills-and-tools.ts"
+    ],
+    "cwd": "/tmp",
+    "timeoutMs": 120000
+   },
+   "onMiss": "fix",
+   "status": "active",
+   "createdAt": 1792393200000,
+   "updatedAt": 1792393200000,
+   "runCount": 0
+  }
+ ]
+}

@@ -1,0 +1,3 @@
+[2026-10-19T11:45:05.000Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-19T11:55:01.000Z] supervisor: Supervisor command send_message failed: Error: Timed out waiting for daemon worker response to send_message
+[2026-10-19T11:56:01.000Z] supervisor: Supervisor command attach failed: Error: Active session 01a15510-09bf-75cf-97ab-9eaef26a42af is closing

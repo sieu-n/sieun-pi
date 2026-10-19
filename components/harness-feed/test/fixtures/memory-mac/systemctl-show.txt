@@ -1,0 +1,11 @@
+Id=earlyoom.service
+ActiveState=active
+MainPID=2414775
+
+Id=zswap-zstd.service
+ActiveState=active
+MainPID=0
+
+Id=oom-protect.service
+ActiveState=failed
+MainPID=0

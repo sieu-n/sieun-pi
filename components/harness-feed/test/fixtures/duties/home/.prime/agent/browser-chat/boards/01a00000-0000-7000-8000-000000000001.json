@@ -1,0 +1,74 @@
+{
+ "v": 2,
+ "rev": 3,
+ "updatedAt": "2026-10-19T11:00:00Z",
+ "scratch": [],
+ "todos": [],
+ "lastIds": {
+  "p": 5,
+  "t": 0
+ },
+ "plan": [
+  {
+   "id": "p1",
+   "text": "Goal with a number",
+   "status": "todo",
+   "target": {
+    "metric": "things",
+    "target": 10,
+    "unit": "",
+    "current": 12,
+    "measuredAt": "2026-10-19T11:30:00Z",
+    "source": "s",
+    "direction": "up"
+   },
+   "children": []
+  },
+  {
+   "id": "p2",
+   "text": "Goal with steps",
+   "status": "doing",
+   "children": [
+    {
+     "id": "p3",
+     "text": "s",
+     "status": "todo",
+     "children": []
+    },
+    {
+     "id": "p4",
+     "text": "s",
+     "status": "done",
+     "children": []
+    }
+   ]
+  },
+  {
+   "id": "p6",
+   "text": "Old number",
+   "status": "blocked",
+   "target": {
+    "metric": "m",
+    "target": 0,
+    "unit": "",
+    "current": 5,
+    "measuredAt": "2026-10-19T07:00:00Z",
+    "source": "s",
+    "direction": "down"
+   },
+   "children": []
+  },
+  {
+   "id": "p5",
+   "text": "Closed",
+   "status": "done",
+   "children": []
+  },
+  {
+   "id": "p7",
+   "text": "Dropped",
+   "status": "dropped",
+   "children": []
+  }
+ ]
+}

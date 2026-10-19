@@ -1,0 +1,9 @@
+earlyoom v1.9.0
+sending SIGTERM when mem avail <=  5.00% and swap free <=  5.00%,
+mem avail:  3000 of 253000 MiB ( 1.19%), swap free: 3500 of 81920 MiB ( 4.27%)
+low memory! at or below SIGTERM limits: mem  5.00%, swap  5.00%
+sending SIGTERM to process 4242 uid 1001 "vitest": oom_score 1500, oom_score_adj 500, VmRSS 7000 MiB, cmdline "node vitest run"
+escalating to SIGKILL after 0.500 seconds
+sending SIGKILL to process 4242 uid 1001 "vitest": oom_score 1500, oom_score_adj 500, VmRSS 7000 MiB, cmdline "node vitest run"
+process 4242 exited after 0.600 seconds
+-- cursor: s=abc;i=1f;b=boot;m=9;t=1;x=2
