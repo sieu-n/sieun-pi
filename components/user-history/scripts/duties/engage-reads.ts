@@ -63,6 +63,13 @@ export const CANARY_SHARE = 0.1;
 export const PROOF_DAYS = 2;
 /** Dead statuses, as `_DEAD_STATUSES` in apps/crawler-v3/src/control/metrics/health.py. */
 export const DEAD = ["challenged", "frozen", "disabled"] as const;
+/** A prod row parked by auto-sns-agent's scripts/engage_world_move.py export: the account reads in another world now, so prod no longer has it on hand.
+ * The same prefix as NOT_MOVED in apps/crawler-v3/src/platforms/instagram/engage/relogin_codes.py. */
+export const MOVED_PREFIX = "engage-world-move ";
+/** The prod accounts on hand: not dead and not moved to another world. On 10-19 15:06Z the capacity line counted 170 on hand and 165 healthy, and 3 of the
+ * 5 it called unable to read (23, 27 and 28) had moved to staging on 10-18 16:54Z, where 245 and 246 read on. */
+export const onHandOf = (accounts: readonly Account[]): Account[] =>
+  accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX));
 export type Cause = "instagram" | "first_login" | "bad_password" | "ours" | "unknown";
 /**
  * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (sieun/dev, 2026-10-12), plus the two codes prod accounts 55 and 74
@@ -284,12 +291,12 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const healthy = data.healthy + data.lapsed.waiting;
       const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
       metrics.prod_capacity_pages_day = healthy * rate;
-      const onHand = data.accounts.filter(account => !(DEAD as readonly string[]).includes(account.status)).length;
+      const onHand = onHandOf(data.accounts).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
       flagged.push({ at, kind: "capacity", excerpt: (proof
         ? `${counted} x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day, 0 Instagram verdicts at or under it) = ${fmt(healthy * rate)} pages a day. `
           + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}: only more accounts or a higher proven rate reach it` : ", enough once they are healthy"}.`
+          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}: only more accounts or a higher proven rate reach it` : ", enough once they are healthy"}.`
         : `${counted}, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate with 0 Instagram verdicts at or under it.`).slice(0, 600) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
