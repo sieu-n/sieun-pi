@@ -118,9 +118,10 @@ export interface BridgeWatchDeps {
   statusFile: string;
   configFile: string;
   deliver: (session: string, text: string, root?: string) => Promise<void>;
-  pollMs?: number;
   now?: () => number;
   wokeAt?: () => Promise<number | null>;
+  /** Hands the alerting state to the poll worker, which writes the status file after each poll (src/alert-poll.ts). */
+  alerting: (alerting: Alerting | null) => void;
   log: (line: string) => void;
 }
 
@@ -143,26 +144,30 @@ export class BridgeWatch {
         this.deps.log(`alerts: watchdog told ops guy the bridge is ${step.alerting ? healthOf(record, now, wokeAt) : "polling again"}`);
       } catch (error) { this.deps.log(`alerts: watchdog: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
     }
-    await this.write(statusOf(record, this.alerting, now, this.deps.pollMs ?? TICK_MS, wokeAt));
+    this.deps.alerting(this.alerting);
   }
 
-  private async restore(): Promise<Alerting | null> {
-    try {
-      const status = JSON.parse(await readFile(this.deps.statusFile, "utf8")) as Partial<BridgeStatus>;
-      const since = Date.parse(status.alert_since ?? ""), sentAt = Date.parse(status.alert_sent_at ?? "");
-      return Number.isFinite(since) && Number.isFinite(sentAt) ? { since, sentAt } : null;
-    } catch (error) {
-      if (!missing(error) && !(error instanceof SyntaxError)) this.deps.log(`alerts: watchdog status: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
-    }
-  }
+  private restore(): Promise<Alerting | null> { return readAlerting(this.deps.statusFile, this.deps.log); }
+}
 
-  private async write(status: BridgeStatus): Promise<void> {
-    await mkdir(dirname(this.deps.statusFile), { recursive: true });
-    const temporary = `${this.deps.statusFile}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(status)}\n`);
-    await rename(temporary, this.deps.statusFile);
+/** The watchdog's alerting state the status file kept over a restart; null when it has none. */
+export async function readAlerting(file: string, log: (line: string) => void): Promise<Alerting | null> {
+  try {
+    const status = JSON.parse(await readFile(file, "utf8")) as Partial<BridgeStatus>;
+    const since = Date.parse(status.alert_since ?? ""), sentAt = Date.parse(status.alert_sent_at ?? "");
+    return Number.isFinite(since) && Number.isFinite(sentAt) ? { since, sentAt } : null;
+  } catch (error) {
+    if (!missing(error) && !(error instanceof SyntaxError)) log(`alerts: watchdog status: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
+}
+
+/** Writes the status file that box-chat-heal and the Mac's mac_alert_bridge_* series read. */
+export async function writeStatus(file: string, status: BridgeStatus): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(status)}\n`);
+  await rename(temporary, file);
 }
 
 export function startBridgeWatch(deps: BridgeWatchDeps, everyMs = TICK_MS): () => void {

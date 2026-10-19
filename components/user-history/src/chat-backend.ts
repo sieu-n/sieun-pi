@@ -46,11 +46,11 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./sh
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
-import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
+import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { trainFile } from "./checkin-load.ts";
 import { startProdTurns } from "./prod-turns.ts";
-import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
-import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
+import { startBridgeWatch } from "./alert-bridge-health.ts";
+import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { sessionFileOf } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
@@ -313,10 +313,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return (await dutyJobs.start(chat, record.name || record.id, text(chat.name))).id;
     } });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
-  const pollHealth = new PollHealth();
-  const hookWatch = new TokenHookWatch({ sessionsDir: join(agentDir, "sessions") });
-  const stopAlerts = ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
-    alerts: () => pollHealth.poll(() => withHookAlert(readGrafanaAlerts(grafanaConfig), hookWatch)),
+  const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");
+  const alertPoll = ownChatsOnly ? null : startAlertPoll({ grafanaConfig, sessionsDir: join(agentDir, "sessions"), statusFile }, dutyLog);
+  const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
+    alerts: () => alertPoll.alerts(),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     startJob: async (chatId, line, previous) => {
       const chat = await dutyJobs.chat(chatId);
@@ -328,8 +328,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     jobWorking: job => dutyJobs.working(job),
     log: dutyLog, ...agentMessage });
   const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
-  const stopBridgeWatch = ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
-    configFile: grafanaConfig, log: dutyLog, ...agentMessage });
+  const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
+    alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job or chat
   // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, since Prime's own sweeps fail under load and count a
   // retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
@@ -415,6 +415,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopAlerts();
       stopProdTurns();
       stopBridgeWatch();
+      alertPoll?.stop();
       unwatchBoards();
       unobserveCompaction();
       duties.close();
