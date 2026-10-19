@@ -52,7 +52,7 @@ test("a goal counts as having no live job only when none of its open items has a
 
 test("the push list joins a chat's idle goals and stuck duties, and the follow-up reads the tag and an answer after it", () => {
   const goal = { id: "p5", text: "Ship C", status: "doing", children: [] } as unknown as ChatBoard["plan"][number];
-  assert.deepEqual(pushList({ idleGoals: [{ chat: "a", goals: [goal] }, { chat: "b", goals: [] }], stuckDuties: [{ chat: "a", line: "a: d1 red" }, { chat: "c", line: "c: d2 red" }] })
+  assert.deepEqual(pushList({ idleGoals: [{ chat: "a", goals: [goal] }, { chat: "b", goals: [] }], stuckDuties: [{ chat: "a", line: "a: d1 red" }, { chat: "c", line: "c: d2 red" }], upkeep: [] })
     .map(entry => [entry.chat, entry.goals.length, entry.duties.length]), [["a", 1, 1], ["c", 0, 1]]);
   const tag = "[d9 push 2026-10-19T16:00Z]";
   const sent = JSON.stringify({ type: "custom_message", customType: "agent_message", content: `[agent-message from x]\n\n${tag} give p5 a job` });
@@ -60,4 +60,13 @@ test("the push list joins a chat's idle goals and stuck duties, and the follow-u
   assert.deepEqual(pushReached([sent], tag), { delivered: true, read: false });
   assert.deepEqual(pushReached([answer, sent, answer], tag), { delivered: true, read: true });
   assert.deepEqual(pushReached([answer], tag), { delivered: false, read: false });
+});
+
+test("a chat whose only miss is plan items with no done line is on the push list with those items", () => {
+  // 10-19 20:22Z: 26 such items sat in 6 chats, and 4 of the chats (Crawler VP with 7) were on no push list, so no run messaged them.
+  const upkeep = planUpkeep("d", board);
+  const pushes = pushList({ idleGoals: [], stuckDuties: [{ chat: "c", line: "c: d2 red" }], upkeep });
+  assert.deepEqual(pushes.map(entry => [entry.chat, entry.duties.length, entry.upkeep.map(item => item.id)]), [["c", 1, []], ["d", 0, ["p453", "p454"]]]);
+  const output = chatSystemOutput({ names: new Map(), stuck: [], upkeep, fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d.md" });
+  assert.ok(output.flagged?.some(slice => slice.kind === "push" && slice.excerpt.includes("plan item")));
 });
