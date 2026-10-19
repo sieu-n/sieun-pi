@@ -47,8 +47,10 @@ test("provider keys count per location outside Vent, the alarm fallback Slack to
     "container virev-obs-grafana": ["SLACK_BOT_TOKEN_DEV"],
     "container virev-obs-digest": ["SLACK_BOT_TOKEN_DEV"],
     "box /srv/obs/secrets/obs.env.bak-20261013": ["SLACK_BOT_TOKEN_DEV"],
+    "github secrets repo": ["CLERK_SECRET_KEY", "STRIPE_SECRET_KEY"],
   }, unreadable: {} };
-  assert.equal(ventMetrics(reads({ keys }), 0).metrics.provider_keys_outside_vent, 4);
+  // The CI-only CLERK_SECRET_KEY repo secret is a Vent input; any other repo secret still counts.
+  assert.equal(ventMetrics(reads({ keys }), 0).metrics.provider_keys_outside_vent, 5);
   assert.equal(ventMetrics(reads({ keys: { ...keys, unreadable: { "convex staging tremendous-eel-825": "401" } } }), 0).metrics.provider_keys_outside_vent, UNMEASURED);
   assert.equal(inScope("container virev-prod-vent"), false);
   assert.equal(inScope("box /srv/prod/secrets/vent.env"), false);

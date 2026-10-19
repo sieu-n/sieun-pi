@@ -69,6 +69,10 @@ export const PROVIDER_KEYS = new Set([
  * Where SLACK_BOT_TOKEN_DEV may stay: the alarm paths of rows 69 (metal watch dead-man), 70 (Grafana contact points) and 71 (ci_watch), which
  * keep a direct Slack fallback for when Vent is down, and the files they read it from.
  */
+/** The repo secret CLERK_SECRET_KEY reaches only the CI job-local Vent: auto-sns-agent scripts/ci/tasks/search-e2e.sh unsets it
+ *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
+ *  (2d058da12). Only that name, only as a repo secret. */
+export const CI_VENT_INPUT = (location: string, name: string) => location === "github secrets repo" && name === "CLERK_SECRET_KEY";
 export const ALARM_FALLBACK = /^(tier apps\/infra\/\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
@@ -180,7 +184,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = names.filter(name => PROVIDER_KEYS.has(name) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)));
+    const here = names.filter(name => PROVIDER_KEYS.has(name) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }
