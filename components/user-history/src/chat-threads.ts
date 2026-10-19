@@ -1078,9 +1078,14 @@ export class ThreadHub {
 
   /** `trigger` names the call in the wake line when it attaches a dormant chat. */
   private async requireLive(id: string, trigger: string): Promise<{ thread: Thread; live: Live }> {
-    const thread = this.dormant.has(id) ? await this.resume(id, false, trigger) : await this.open(id);
+    const thread = await this.current(id, trigger);
     if (!thread.live) throw new ThreadError(409, "Reply to resume this thread first.");
     return { thread, live: thread.live };
+  }
+
+  /** The thread as it is now; a saved one has no live binding, since no worker runs it. A dormant chat is attached first. */
+  private async current(id: string, trigger: string): Promise<Thread> {
+    return this.dormant.has(id) ? await this.resume(id, false, trigger) : await this.open(id);
   }
 
   /**
@@ -1254,7 +1259,8 @@ export class ThreadHub {
   async settled(id: string, timeoutMs = 30_000): Promise<void> {
     const until = Date.now() + timeoutMs;
     for (;;) {
-      const { live } = await this.requireLive(id, "settled");
+      const { live } = await this.current(id, "settled");
+      if (!live) return;
       const state = await live.connection.getState();
       if (!state.isStreaming && !state.retryAttempt && !state.isBashRunning && !state.isCompacting) return;
       if (Date.now() >= until) throw new ThreadError(504, `the turn of ${id.slice(0, 8)} still runs ${Math.round(timeoutMs / 1000)} s after its abort`);
@@ -1262,8 +1268,13 @@ export class ThreadHub {
     }
   }
 
+  /**
+   * A saved thread runs no turn, so its abort has nothing to stop and returns. Before, it answered 409 "Reply to resume this thread first", and
+   * on 10-19 the check-in and job-steer restarts of saved jobs failed with it (7 jobs of chat 01a115e2 from 11:0xZ, and the metal box owner).
+   */
   async abort(id: string, trigger = "abort"): Promise<void> {
-    const { live } = await this.requireLive(id, trigger);
+    const { live } = await this.current(id, trigger);
+    if (!live) return;
     const state = await live.connection.getState();
     if (state.isCompacting) await live.connection.abortCompaction();
     if (state.isBashRunning) await live.connection.abortBash();
@@ -1276,7 +1287,7 @@ export class ThreadHub {
    * A chat gets this right after Stop, so job reports keep arriving; "No queued work to resume" means the pump is open with nothing waiting.
    */
   async resumeQueue(id: string): Promise<void> {
-    const { live } = await this.requireLive(id, "resume_queue");
+    const { live } = await this.requireResumed(id, "resume_queue");
     const response = await (await this.daemon(live.activeSessionId)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
