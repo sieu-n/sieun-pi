@@ -18,6 +18,9 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
+ *   A setting the owner asked for is listed as `owner_asked` with its layer and not counted: a CPUWeight setup-cpu.sh sets (CPU layer 1), the
+ *   daemon's nice from cpu-protect.py (CPU layer 2), and a `heavy` scope (memory layer 4), all in deploy/linux/README.md after the owner's 10-19
+ *   asks and his t84 answer. `parseLayers` reads them from those scripts, so a value that differs from its script still counts.
  * - `public_ssh_open`: 1 when port 22 on the box's public address answers from us-metal01 (METAL_SSH_HOST), or ssh-public-guard.service is not
  *   active; the probe also dials a closed port, so a refused answer proves the path reaches the box.
  * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
@@ -170,11 +173,57 @@ export const LIMIT_PROPS: readonly { prop: string; directive: string; unset: rea
   { prop: "AllowedCPUs", directive: "AllowedCPUs", unset: [""] },
   { prop: "CPUAffinity", directive: "CPUAffinity", unset: [""] },
 ];
-export const SHOW_PROPS = ["Id", "FragmentPath", "DropInPaths", "ActiveState", "MainPID", ...LIMIT_PROPS.map(limit => limit.prop)];
+export const SHOW_PROPS = ["Id", "FragmentPath", "DropInPaths", "ActiveState", "MainPID", "Description", ...LIMIT_PROPS.map(limit => limit.prop)];
 const VENDOR = /^\/(usr\/)?lib\//;
 
-export interface LimitContext { scope: "system" | "user"; defaultTasksMax: string; memTotal: number; read: (path: string) => string | undefined; niceOf: (pid: number) => number | undefined }
-export interface LimitFinding { key: string; excerpt: string }
+/** The settings the owner asked for on the box, as their scripts set them: unit weights keyed by scope and unit, the daemon's nice and `heavy`'s scope. */
+export interface Layers {
+  weights: ReadonlyMap<string, string>;
+  nice: { unit: string; value: number };
+  heavy: { swapMax: string; score: number };
+}
+export interface LimitContext {
+  scope: "system" | "user"; defaultTasksMax: string; memTotal: number; layers: Layers;
+  read: (path: string) => string | undefined; niceOf: (pid: number) => number | undefined;
+}
+export interface LimitFinding { key: string; excerpt: string; ownerAsked?: string }
+
+const CPU_LAYERS = "of deploy/linux/README.md, which the owner asked for in his t84 answer of 10-19";
+const MEMORY_LAYERS = "of deploy/linux/README.md, which the owner asked for on 10-19";
+
+/**
+ * The owner-asked layers from deploy/linux/cpu/setup-cpu.sh (its SYSTEM_WEIGHTS and USER_WEIGHTS tables, `$uid` as the box user's), cpu-protect.py
+ * (DAEMON and CORE_NICE) and memory/heavy (its systemd-run line). A script whose shape changed throws, so the metric says not measured.
+ */
+export function parseLayers(setupCpu: string, cpuProtect: string, heavy: string, uid: number): Layers {
+  const weights = new Map<string, string>();
+  for (const [table, scope] of [["SYSTEM_WEIGHTS", "system"], ["USER_WEIGHTS", "user"]] as const) {
+    const body = new RegExp(`^declare -A ${table}=\\(([^)]*)\\)`, "m").exec(setupCpu)?.[1];
+    if (!body) throw new Error(`setup-cpu.sh has no ${table} table`);
+    for (const [, unit, weight] of body.matchAll(/\[([^\]]+)\]=(\d+)/g)) weights.set(`${scope} ${unit!.replace("$uid", String(uid))}`, weight!);
+  }
+  const unit = /^DAEMON = "([^"]+)"/m.exec(cpuProtect)?.[1];
+  const nice = /^CORE_NICE = (-?\d+)/m.exec(cpuProtect)?.[1];
+  if (!unit || !nice) throw new Error("cpu-protect.py has no DAEMON or CORE_NICE");
+  const run = /systemd-run --user --scope .*-p MemoryMax="\$size" -p MemorySwapMax=(\S+) -- choom -n (-?\d+) --/.exec(heavy);
+  if (!run) throw new Error("heavy has no systemd-run --user --scope line with MemoryMax, MemorySwapMax and choom");
+  return { weights, nice: { unit, value: Number(nice) }, heavy: { swapMax: run[1]!, score: Number(run[2]) } };
+}
+
+/**
+ * A `heavy` scope: a systemd-run user scope with heavy's MemorySwapMax whose command, in the Description systemd-run gives it, is heavy's choom
+ * call. A scope whose command failed keeps its unit and settings with no process left, and still matches.
+ */
+const isHeavyScope = (unit: Record<string, string>, context: LimitContext): boolean =>
+  context.scope === "user" && /^run-p\d+-i\d+\.scope$/.test(unit.Id!) && unit.MemorySwapMax === context.layers.heavy.swapMax
+    && new RegExp(`^\\[systemd-run\\] (\\S*/)?choom -n ${context.layers.heavy.score} -- `).test(unit.Description ?? "");
+
+/** Why the owner asked for this setting on this unit, or undefined when no layer sets it to this value. */
+export function layerReason(unit: Record<string, string>, prop: string, value: string, context: LimitContext): string | undefined {
+  if (prop === "CPUWeight" && context.layers.weights.get(`${context.scope} ${unit.Id}`) === value) return `setup-cpu.sh sets it as CPU layer 1 ${CPU_LAYERS}`;
+  if ((prop === "MemoryMax" || prop === "MemorySwapMax") && isHeavyScope(unit, context)) return `\`heavy\` sets it as memory layer 4 ${MEMORY_LAYERS}`;
+  return undefined;
+}
 
 /** A unit name with its instance numbers and ids folded, so 12 CI guest scopes or 40 container scopes are one setting to fix. */
 export const foldName = (id: string): string => id.replace(/\\x2d/g, "-").replace(/[0-9a-f]{12,}/g, "<id>").replace(/(?<=[-@][a-z]?)\d+/g, "N");
@@ -195,13 +244,16 @@ export function unitLimits(unit: Record<string, string>, context: LimitContext):
     if (limit.prop.startsWith("Memory") && Number(value) >= context.memTotal) continue;
     const source = files.filter(file => new RegExp(`^\\s*${limit.directive}=`, "m").test(context.read(file) ?? "")).at(-1);
     if (source && VENDOR.test(source)) continue;
+    const ownerAsked = layerReason(unit, limit.prop, value, context);
     findings.push({ key: `${context.scope} ${foldName(unit.Id!)} ${limit.directive}`,
-      excerpt: `${context.scope} unit ${unit.Id} sets ${limit.directive} (${limit.prop}=${value}) ${source ? `in ${source}` : "at runtime"}` });
+      excerpt: `${context.scope} unit ${unit.Id} sets ${limit.directive} (${limit.prop}=${value}) ${source ? `in ${source}` : "at runtime"}`, ...ownerAsked ? { ownerAsked } : {} });
   }
   const pid = Number(unit.MainPID);
   if (unit.ActiveState === "active" && pid > 0 && unit.Nice === "0") {
     const nice = context.niceOf(pid);
-    if (nice) findings.push({ key: `${context.scope} ${foldName(unit.Id!)} nice`, excerpt: `${context.scope} unit ${unit.Id}: its main process ${pid} runs at nice ${nice}, which the unit does not set` });
+    const asked = context.scope === "user" && unit.Id === context.layers.nice.unit && nice === context.layers.nice.value;
+    if (nice) findings.push({ key: `${context.scope} ${foldName(unit.Id!)} nice`, excerpt: `${context.scope} unit ${unit.Id}: its main process ${pid} runs at nice ${nice}, which the unit does not set`,
+      ...asked ? { ownerAsked: `cpu-protect.py sets it as CPU layer 2 ${CPU_LAYERS}` } : {} });
   }
   return findings;
 }
@@ -255,6 +307,13 @@ const exec: Exec = (file, args, options = {}) => new Promise((resolve, reject) =
 });
 
 const PROBE = join(HERE, "box-parity-probe.py");
+const DEPLOY = join(HERE, "../../../../deploy/linux");
+
+async function readLayers(): Promise<Layers> {
+  const [setupCpu, cpuProtect, heavy] = await Promise.all(["cpu/setup-cpu.sh", "cpu/cpu-protect.py", "memory/heavy"].map(file => readFile(join(DEPLOY, file), "utf8")));
+  return parseLayers(setupCpu!, cpuProtect!, heavy!, process.getuid!());
+}
+
 const probeArg = (host: "mac" | "box", rows: readonly Row[], known: Record<string, unknown>) =>
   Buffer.from(JSON.stringify({ host, rows, known })).toString("base64");
 
@@ -278,6 +337,7 @@ async function panelOutcomes(rows: readonly Row[]): Promise<Map<string, Outcome>
 
 async function resourceLimits(): Promise<LimitFinding[]> {
   const memTotal = Number(/^MemTotal:\s+(\d+) kB/m.exec(await readFile("/proc/meminfo", "utf8"))?.[1] ?? NaN) * 1024;
+  const layers = await readLayers();
   const cache = new Map<string, string | undefined>();
   const files = new Map<string, string>();
   const read = (path: string) => files.get(path);
@@ -297,7 +357,7 @@ async function resourceLimits(): Promise<LimitFinding[]> {
       if (pid > 0) cache.set(`/proc/${pid}/stat`, await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined));
     }));
     const defaultTasksMax = manager.trim().split("=")[1] ?? "";
-    for (const unit of units) findings.push(...unitLimits(unit, { scope, defaultTasksMax, memTotal, read, niceOf }));
+    for (const unit of units) findings.push(...unitLimits(unit, { scope, defaultTasksMax, memTotal, layers, read, niceOf }));
   }
   const ids = (await exec("docker", ["ps", "-q"])).split("\n").filter(Boolean);
   const containers = await Promise.all(ids.map(id => exec("docker", ["inspect", id]).then(text => JSON.parse(text) as Container[], () => [] as Container[])));
@@ -353,10 +413,17 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
 
   if (limits instanceof Error) sourceError(`resource limits: ${limits.message}`);
   else {
-    const byKey = new Map<string, string[]>();
-    for (const finding of limits) byKey.set(finding.key, [...byKey.get(finding.key) ?? [], finding.excerpt]);
-    metrics.resource_limits_set = byKey.size;
-    for (const [key, excerpts] of byKey) flagged.push({ at, kind: "resource_limit", item: key, excerpt: `${excerpts[0]}${excerpts.length > 1 ? ` (and ${excerpts.length - 1} more like it)` : ""}`.slice(0, 600) });
+    const group = (findings: LimitFinding[]) => {
+      const byKey = new Map<string, LimitFinding[]>();
+      for (const finding of findings) byKey.set(finding.key, [...byKey.get(finding.key) ?? [], finding]);
+      return [...byKey].map(([key, same]) => ({ key, excerpt: `${same[0]!.excerpt}${same.length > 1 ? ` (and ${same.length - 1} more like it)` : ""}`, ownerAsked: same[0]!.ownerAsked }));
+    };
+    const counted = group(limits.filter(finding => !finding.ownerAsked));
+    metrics.resource_limits_set = counted.length;
+    for (const { key, excerpt } of counted) flagged.push({ at, kind: "resource_limit", item: key, excerpt: excerpt.slice(0, 600) });
+    for (const { key, excerpt, ownerAsked } of group(limits.filter(finding => finding.ownerAsked))) {
+      flagged.push({ at, kind: "owner_asked", item: key, excerpt: `${excerpt}; ${ownerAsked}`.slice(0, 600) });
+    }
   }
 
   const ssh = publicSsh(outside, guard);

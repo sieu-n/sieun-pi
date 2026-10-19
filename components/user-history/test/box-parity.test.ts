@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits, unpushedNote }
+import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, versions: {}, ms: 1 });
@@ -95,8 +95,11 @@ test("judgeRows takes a panel fail that the probe's shared text names as a match
   assert.deepEqual(judgeRows(rows, mac, box, fail("Virev search error (500)")).off.map(verdict => verdict.row.id), ["search"]);
 });
 
-const context = (files: Record<string, string>, nice: Record<number, number> = {}): LimitContext =>
-  ({ scope: "user", defaultTasksMax: "272774", memTotal: 1000, read: path => files[path], niceOf: pid => nice[pid] });
+const deploy = join(import.meta.dirname, "../../../deploy/linux");
+const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "cpu/cpu-protect.py"), "utf8"),
+  readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001);
+const context = (files: Record<string, string>, nice: Record<number, number> = {}, scope: "system" | "user" = "user"): LimitContext =>
+  ({ scope, defaultTasksMax: "272774", memTotal: 1000, layers, read: path => files[path], niceOf: pid => nice[pid] });
 
 test("unitLimits counts our unit files and runtime settings, and skips vendor files, defaults and RAM-sized limits", () => {
   const ours = { Id: "box-textfile.service", FragmentPath: "/home/sieun/.config/systemd/user/box-textfile.service", Nice: "10", IOSchedulingClass: "3", TasksMax: "272774" };
@@ -112,6 +115,38 @@ test("unitLimits counts our unit files and runtime settings, and skips vendor fi
   assert.match(unitLimits(runtime, context({}))[0]!.excerpt, /sets MemoryHigh \(MemoryHigh=500\) at runtime/);
   const wrapped = { Id: "r3g-collect.service", ActiveState: "active", MainPID: "42", Nice: "0" };
   assert.match(unitLimits(wrapped, context({}, { 42: 10 }))[0]!.excerpt, /main process 42 runs at nice 10/);
+});
+
+test("unitLimits lists a setting the deploy/linux layer scripts set as owner-asked, and counts one that differs from them (owner's t84 answer 10-19)", () => {
+  assert.equal(layers.weights.get("system user@1001.service"), "300");
+  assert.equal(layers.weights.get("user sieun-pi-chat.service"), "1000");
+  assert.deepEqual([layers.nice, layers.heavy], [{ unit: "prime-agent-daemon.service", value: -10 }, { swapMax: "0", score: 500 }]);
+  const asked = (unit: Record<string, string>, ...rest: Parameters<typeof context>) => unitLimits(unit, context(...rest)).map(finding => [finding.key, Boolean(finding.ownerAsked)]);
+  const dropin = "/etc/systemd/system/ssh.service.d/cpu-weight.conf";
+  assert.deepEqual(asked({ Id: "ssh.service", DropInPaths: dropin, CPUWeight: "1000" }, { [dropin]: "CPUWeight=1000\n" }, {}, "system"), [["system ssh.service CPUWeight", true]]);
+  assert.deepEqual(asked({ Id: "ssh.service", DropInPaths: dropin, CPUWeight: "500" }, { [dropin]: "CPUWeight=500\n" }, {}, "system"), [["system ssh.service CPUWeight", false]]);
+  assert.deepEqual(asked({ Id: "ssh.service", CPUWeight: "1000" }, {}, {}, "user"), [["user ssh.service CPUWeight", false]]);
+  assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "300" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
+  assert.deepEqual(asked({ Id: "dev.slice", CPUWeight: "300" }, {}, {}, "system"), [["system dev.slice CPUWeight", false]]);
+  const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "300" };
+  assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", true]]);
+  assert.deepEqual(asked({ ...daemon, CPUWeight: "[not set]" }, {}, { 7: -5 }), [["user prime-agent-daemon.service nice", false]]);
+  const chat = unitLimits({ ...daemon, Id: "sieun-pi-chat.service", CPUWeight: "[not set]" }, context({}, { 7: -10 }));
+  assert.equal(chat[0]!.ownerAsked, undefined);
+  const heavy = { Id: "run-p904848-i92945148.scope", Description: "[systemd-run] /usr/bin/choom -n 500 -- npx jest --ci", MemoryMax: "800", MemorySwapMax: "0" };
+  const both = (ownerAsked: boolean) => [["user run-pN-iN.scope MemoryMax", ownerAsked], ["user run-pN-iN.scope MemorySwapMax", ownerAsked]];
+  assert.deepEqual(asked(heavy, {}), both(true));
+  assert.match(unitLimits(heavy, context({}))[0]!.ownerAsked!, /`heavy` sets it as memory layer 4/);
+  assert.deepEqual(asked({ ...heavy, Description: "[systemd-run] npx jest --ci" }, {}), both(false));
+  assert.deepEqual(asked({ ...heavy, MemorySwapMax: "100" }, {}), both(false));
+  assert.deepEqual(asked(heavy, {}, {}, "system"), [["system run-pN-iN.scope MemoryMax", false], ["system run-pN-iN.scope MemorySwapMax", false]]);
+});
+
+test("parseLayers refuses a layer script whose shape it does not know", () => {
+  assert.throws(() => parseLayers("declare -A OTHER=([a]=1)\n", "", "", 1001), /no SYSTEM_WEIGHTS table/);
+  const cpu = "declare -A SYSTEM_WEIGHTS=([a]=1)\ndeclare -A USER_WEIGHTS=([b]=2)\n";
+  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\n", "", 1001), /no DAEMON or CORE_NICE/);
+  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", "exec systemd-run --user --scope -- \"$@\"\n", 1001), /heavy has no systemd-run/);
 });
 
 test("foldName folds instance numbers and ids so one setting on many units counts once", () => {
