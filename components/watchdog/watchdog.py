@@ -64,6 +64,10 @@ def snapshot():
                 last_input = ts
         awaiting = round((now - last_input).total_seconds() / 60, 1) \
             if (last_input and (not last_asst or last_input > last_asst)) else None
+        lm = (last_msg or {}).get('message') or {}
+        limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
+            'pi-pool' in (lm.get('errorMessage') or '') or
+            any((d.get('details') or {}).get('kind') == 'rate_limit' for d in (lm.get('diagnostics') or []) if isinstance(d, dict)))
         last_asst_min = round((now - last_asst).total_seconds() / 60, 1) if last_asst else None
         # A pending cell that deliberately sleeps/polls (pipeline watching, log tailing) looks
         # identical to a wedge from the outside: read the code before calling it frozen.
@@ -101,6 +105,7 @@ def snapshot():
             last_type=(evs[-1].get('type') if evs else None),
             stale_min=round((now - last_any).total_seconds() / 60, 1) if last_any else None,
             awaiting_min=awaiting,
+            limited=limited,
             last_asst_min=last_asst_min,
             sleepy=sleepy,
             busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
@@ -166,6 +171,12 @@ def classify(r, prev, repeats=None):
     if r.get('stopped') and r['life'] == 'live':
         return 'ARCHIVED', r['stopped']
     """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('limited'):
+        # The turn ended on a 429 or a pi-pool slot refusal, and the chat service's idle unload stops such a session while the pool holds
+        # its tree. resume_paused.py and the chat revive continue it once `pi-pool who` admits the tree. From 06:51Z to 08:31Z on 10-19
+        # this cycle sent 40 such sessions resume_queue and a message (SEO guy 609 min after its 429), each loaded a worker and a kernel
+        # again and met the same limit, and the unload stopped it 15 min later.
+        return 'POOL_WAIT', 'last turn failed on a provider rate limit or a pi-pool hold; the resume sweep continues it once the pool admits its tree'
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
         # Idle with input that never got an answer = a turn dropped (machine sleep, worker
         # restart). A session genuinely waiting on its user ends with an ASSISTANT message,
