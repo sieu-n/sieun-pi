@@ -92,13 +92,25 @@ export interface VentReads { share: ShareResult | { error: string }; webhooks: W
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
 const failed = <T extends object>(value: T | { error: string }): value is { error: string } => "error" in value && typeof (value as { error: unknown }).error === "string";
 
-/** Whether main's convex/http.ts still routes the source's own path, and whether convex/webhooks/vent.ts takes the source. */
-export function webhookVerdicts(http: string, ventRoute: string | null): WebhookVerdict[] {
-  return WEBHOOKS.map(({ source, path }) => ({
-    source,
-    direct: new RegExp(`path:\\s*['"]${path.replace(/[/-]/g, "\\$&")}['"]`).test(http),
-    vent: ventRoute !== null && new RegExp(`\\[\\s*['"]${source}['"]\\s*,`).test(ventRoute) && /webhooks\/vent/.test(ventRoute + http),
-  }));
+/**
+ * The webhook files at a ref: convex/http.ts, convex/webhooks/vent.ts, and since the webhook registry (sieun/dev, 2026-10-18) the source
+ * names convex/webhooks/registry.ts lists and the path each convex/webhooks/sources/<name>.ts declares, which receive.ts routes as is.
+ */
+export interface WebhookFiles { http: string; ventRoute: string | null; registry?: { names: string[]; paths: Record<string, string>; routed: boolean } }
+
+/** Whether the ref still routes the source's own path, and whether convex/webhooks/vent.ts takes the source. */
+export function webhookVerdicts({ http, ventRoute, registry }: WebhookFiles): WebhookVerdict[] {
+  const quoted = (path: string) => new RegExp(`path:\\s*['"]${path.replace(/[/-]/g, "\\$&")}['"]`);
+  const ventBySources = ventRoute !== null && /SOURCES\.find\(/.test(ventRoute) && /pathPrefix:\s*VENT_WEBHOOK_PREFIX/.test(ventRoute);
+  return WEBHOOKS.map(({ source, path }) => {
+    const listed = registry?.names.includes(source) ?? false;
+    return {
+      source,
+      direct: quoted(path).test(http) || (listed && registry?.routed === true && registry.paths[source] === path),
+      vent: ventRoute !== null && /webhooks\/vent/.test(ventRoute + http)
+        && (new RegExp(`\\[\\s*['"]${source}['"]\\s*,`).test(ventRoute) || (ventBySources && listed)),
+    };
+  });
 }
 
 /** A caller's own 4xx (429 is capacity, so it stays) or a call the caller cancelled, which the success rate leaves out. */
@@ -218,9 +230,17 @@ async function share(token: string | undefined, dir: string): Promise<ShareResul
 }
 
 async function webhooks(): Promise<WebhookVerdict[]> {
+  const show = (path: string) => run("git", ["show", `${REF}:${path}`]).catch(() => null);
   const http = await run("git", ["show", `${REF}:convex/http.ts`]);
-  const ventRoute = await run("git", ["show", `${REF}:convex/webhooks/vent.ts`]).catch(() => null);
-  return webhookVerdicts(http, ventRoute);
+  const [ventRoute, registryText, receive] = await Promise.all([show("convex/webhooks/vent.ts"), show("convex/webhooks/registry.ts"), show("convex/webhooks/receive.ts")]);
+  if (registryText === null) return webhookVerdicts({ http, ventRoute });
+  const names = (registryText.match(/SOURCES[^=]*=\s*\[([^\]]*)\]/)?.[1] ?? "").split(",").map(name => name.trim()).filter(Boolean);
+  const paths: Record<string, string> = {};
+  for (const name of names) {
+    const declared = (await show(`convex/webhooks/sources/${name}.ts`))?.match(/path:\s*['"](\/[^'"]+)['"]/)?.[1];
+    if (declared) paths[name] = declared;
+  }
+  return webhookVerdicts({ http, ventRoute, registry: { names, paths, routed: /path:\s*source\.path/.test(receive ?? "") } });
 }
 
 /** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and us-metal01. Values never leave this function. */

@@ -12,7 +12,7 @@ const UP = [{ url: "https://vent.virev.ai", status: 200 }, { url: "https://vent-
 function reads(overrides: Partial<VentReads> = {}): VentReads {
   return {
     share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
-    webhooks: webhookVerdicts("", VENT_ROUTE),
+    webhooks: webhookVerdicts({ http: "", ventRoute: VENT_ROUTE }),
     calls: [{ outcome: "success", status: "200", calls: 99 }, { outcome: "upstream_error", status: "502", calls: 1 }, { outcome: "refused", status: "401", calls: 50 }],
     keys: { locations: { "convex production befitting-sparrow-356": ["VENT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY"] }, unreadable: {} },
     health: UP,
@@ -37,7 +37,7 @@ test("a site whose code is on Vent but has no prod vent.call does not count, unl
 });
 
 test("direct webhook routes on main count as direct even when the Vent route exists", () => {
-  const output = ventMetrics(reads({ webhooks: webhookVerdicts(HTTP_DIRECT, VENT_ROUTE) }), 0);
+  const output = ventMetrics(reads({ webhooks: webhookVerdicts({ http: HTTP_DIRECT, ventRoute: VENT_ROUTE }) }), 0);
   assert.equal(output.metrics.through_vent_pct, round(100 * 2 / 6));
   assert.equal(output.flagged!.filter(flag => flag.kind === "webhook_direct").length, 4);
 });
@@ -85,3 +85,18 @@ test("vent-share.py takes each provider's Vent integrations from tables.py, by n
 });
 
 const round = (value: number) => Math.round(value * 10) / 10;
+
+// On sieun/dev since 2026-10-18 http.ts names no webhook path: registry.ts lists the sources, each sources/<name>.ts declares its path,
+// receive.ts routes source.path and vent.ts takes any listed source. Read with http.ts alone, all 4 hooks would have read "no direct route".
+const VENT_BY_SOURCES = "export const VENT_WEBHOOK_PREFIX = '/webhooks/vent/';\nconst source = SOURCES.find((entry) => entry.name === name);\nhttp.route({ pathPrefix: VENT_WEBHOOK_PREFIX, method: 'POST', handler: receiveFromVent });\n";
+const SOURCE_PATHS = { stripe: "/stripe-webhook", clerk: "/clerk-webhook", resend: "/resend-webhook", zernio: "/zernio-webhook" };
+
+test("registry webhook sources whose path receive.ts still routes read as direct, and as Vent once their path leaves", () => {
+  const names = ["stripe", "clerk", "resend", "zernio"];
+  const live = webhookVerdicts({ http: "registerWebhookRoutes(http);", ventRoute: VENT_BY_SOURCES, registry: { names, paths: SOURCE_PATHS, routed: true } });
+  assert.deepEqual(live.map(hook => [hook.direct, hook.vent]), [[true, true], [true, true], [true, true], [true, true]]);
+  const moved = webhookVerdicts({ http: "registerWebhookRoutes(http);", ventRoute: VENT_BY_SOURCES, registry: { names, paths: SOURCE_PATHS, routed: false } });
+  assert.equal(ventMetrics(reads({ webhooks: moved }), 0).metrics.through_vent_pct, 100);
+  const unlisted = webhookVerdicts({ http: "", ventRoute: VENT_BY_SOURCES, registry: { names: ["stripe"], paths: {}, routed: true } });
+  assert.deepEqual(unlisted.map(hook => hook.vent), [true, false, false, false]);
+});
