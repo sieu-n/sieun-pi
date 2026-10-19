@@ -71,3 +71,5 @@ prime-agent send --json <12-char-id> continue # deliveryStatus: delivered, deliv
 
 The 12-char id is the last 12 characters of the session UUID. Do not send `continue` to a run whose last message ended with `stopReason: "stop"` or `aborted`. Do not send it to a run that failed on a 400 request error or stopped days ago.
 
+To stop a run, `prime-agent stop <12-char id>` sends the daemon's kill, which appends a `session_state` line with status `archived` to the session file, so check it with `tail -n1 <sessionFile>`. Over ssh to the Mac, run it as `zsh -lic 'prime-agent stop <id>'`. The stop works only on a session that has a worker. A saved session with no worker, whose list id equals its UUID `sessionId`, answers "Unknown active session", and the daemon has no public command to archive it, because the catalog archive runs only when a worker closes. On 2026-10-18 the Mac relay cleanup archived the ci pools relay this way at 10:53:41Z, and at load 440 on the Mac a stop hung past 120 s while ssh refused new connections.
+
