@@ -316,6 +316,22 @@
           "deep_backfill."
         ]
       }
+    },
+    {
+      "id": "F22",
+      "title": "The feeder's fixed high water outlasts the lease TTL on a slow platform, so feeder.high_water is lowered by hand",
+      "designs": [
+        "01a14b8d-c276-77a6-affe-302ad42b09d7/p10",
+        "commit:5f94dc375b",
+        "commit:69e079b37f",
+        "commit:3a27e95f4a"
+      ],
+      "owner": "YouTube index gaps chat (01a14b8d), job youtube crawl restart (01a14bc0): on prod land 38 the feeder filled each platform to the fixed 20,000 feeder.high_water, YouTube drained about 1,200 an hour, the leases passed the 6 h FEEDER_LEASE_TTL_S, and the stale tasks blocked the feeder from 18:32Z to 22:05Z on 10-18, so the job wrote feeder.high_water 300 (audit 14445, 22:08Z) and 1800 (audit 14455, 22:27Z). 5f94dc375b sizes each platform's buffer to FEEDER_BUFFER_S (30 min) of its measured drain, 69e079b37f compares it with the feeder's own leases instead of the topic lag, and 3a27e95f4a floors it at crawl.concurrency, all in land 39 and on staging, so no buffer outlasts the lease TTL once a promote puts them on prod (prod runs land 38, 43490e7e9f, since 10-18 12:31Z). The 1800 row can stay: prod crawled 764 YouTube, 900 TikTok and 22,639 Instagram candidates in the hour to 10-19 15:10Z, so it caps only Instagram, at about 5 min of its drain, refilled every 2 s FEEDER_TICK_S, and nobody needs to write feeder.high_water by hand again",
+      "match": {
+        "config_key_prefixes": [
+          "feeder."
+        ]
+      }
     }
   ],
   "exempt": {
