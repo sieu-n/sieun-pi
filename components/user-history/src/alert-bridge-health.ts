@@ -133,7 +133,7 @@ export class BridgeWatch {
   async tick(): Promise<void> {
     const record = this.deps.health.record;
     if (record.configuredAt === null) return;
-    this.alerting ??= await this.restore();
+    if (this.alerting === undefined) this.alerting = await this.restore();
     const now = this.now();
     const wokeAt = outage(record, now)?.cause === "stale" ? await (this.deps.wokeAt ?? macWokeAt)() : null;
     const step = watchStep(record, this.alerting, now, this.deps.configFile, wokeAt);

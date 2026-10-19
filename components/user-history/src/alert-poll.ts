@@ -26,7 +26,7 @@ export function runPoll(input: PollInput, post: (frame: PollFrame) => void, onAl
   let polling = false;
   const write = async () => {
     if (health.record.configuredAt === null) return;
-    alerting ??= await readAlerting(input.statusFile, log);
+    if (alerting === undefined) alerting = await readAlerting(input.statusFile, log);
     const now = Date.now();
     await writeStatus(input.statusFile, statusOf(health.record, alerting, now, input.pollMs, process.platform === "darwin" ? await macWokeAt() : null));
   };
