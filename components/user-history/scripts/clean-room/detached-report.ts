@@ -90,7 +90,7 @@ function liveCommit(): string {
   return execFileSync("git", ["-C", REPO, "rev-parse", `${id}^{commit}`], { encoding: "utf8" }).trim();
 }
 
-function writeRelease(tools: string, id: string, commit: string): void {
+export function writeRelease(tools: string, id: string, commit: string): void {
   const root = join(tools, `release-${id}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const paths = ["package.json", "components/prime-relay", ...["src", "package.json", "tsconfig.json", "scripts/duties/add.ts"].map(path => `components/user-history/${path}`)];
@@ -107,12 +107,12 @@ function writeRelease(tools: string, id: string, commit: string): void {
 }
 
 /** The project folder the chat works in, outside the run folder, so the chat sees no run file. Its name carries the run's time only. */
-export function prepareProject(run: string): string {
+export function prepareProject(run: string, agentsMd: string = AGENTS_MD): string {
   const project = join(homedir(), "work", `order-reports-${basename(run)}`);
   if (existsSync(project)) throw new Error(`${project} already exists`);
   mkdirSync(join(project, "data"), { recursive: true, mode: 0o700 });
   mkdirSync(join(project, "out"), { recursive: true });
-  writeFileSync(join(project, "AGENTS.md"), AGENTS_MD);
+  writeFileSync(join(project, "AGENTS.md"), agentsMd);
   const monday = new Date(); monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
   const lines = ["order_id,day,region,amount_krw"];
   for (let index = 0; index < ORDERS; index++) {
@@ -176,10 +176,10 @@ export async function advanceRelease(run: string, until: number): Promise<void> 
   }
 }
 
-interface Raw { at: number; type?: string; role?: string; stopReason?: string; customType?: string; text: string; calls: { id: string; name: string; input: string }[]; result?: { id: string; error: boolean; text: string } }
+export interface Raw { at: number; type?: string; role?: string; stopReason?: string; customType?: string; text: string; calls: { id: string; name: string; input: string }[]; result?: { id: string; error: boolean; text: string } }
 const blockText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.map(block => typeof block === "object" && block && "text" in block && typeof block.text === "string" ? block.text : "").join("\n") : "";
-function rawEntries(file: string): Raw[] {
+export function rawEntries(file: string): Raw[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").flatMap(line => {
     if (!line.trim()) return [];
@@ -252,13 +252,13 @@ export function shellCommands(entries: readonly Raw[]): Map<string, string[]> {
   return out;
 }
 
-function lastAgents(run: string): ChatAgent[] {
+export function lastAgents(run: string): ChatAgent[] {
   const dir = join(run, "agents");
   const last = existsSync(dir) ? readdirSync(dir).sort().at(-1) : undefined;
   return last ? readJson<ChatAgent[]>(join(dir, last)) ?? [] : [];
 }
 /** Every session file of the chat's tree: the chat, its subagents, and each root job its agents list names. */
-function familyFiles(run: string, state: RunState): string[] {
+export function familyFiles(run: string, state: RunState): string[] {
   const ids = new Set([state.chat.id, ...lastAgents(run).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])]);
   return [...new Set([...ids].flatMap(id => sessionFiles(id)))];
 }
