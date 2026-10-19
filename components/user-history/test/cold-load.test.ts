@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { brotliDecompressSync } from "node:zlib";
 import { runInNewContext } from "node:vm";
 import WebSocket from "ws";
-import { bootFeedScript } from "../src/boot-feed.ts";
+import { bootFeedScript, bootTargetScript } from "../src/boot-feed.ts";
 import { pageTarget } from "../src/client/permalink.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { inlineJson } from "../src/first-page.ts";
@@ -94,6 +94,28 @@ test("the boot script reads the thread from the hash, else ?t=, the way the page
     const subs = JSON.parse(new URL(sockets[0]!).searchParams.get("subs")!) as Array<{ feed: string; id?: string }>;
     assert.equal(subs.find(sub => sub.feed === "thread")?.id ?? null, pageTarget({ hash, search })?.id ?? null, search + hash);
   }
+});
+
+// Guards the 10-19 Mac cold loads of a hash-only thread URL: the server never sees the hash, so the shell had no first page and no still view, and the chat showed after app.js at 1.52 to 1.66 s instead of 0.88 to 1.38 s with ?t=.
+test("a URL that names a thread only in its hash loads again with ?t=, before the shell asks for any asset", async t => {
+  const cases: Array<[string, string, string | null]> = [["", "", null], ["", "#01a14d31-6ec0", "/cap/?t=01a14d31-6ec0#01a14d31-6ec0"],
+    ["", "#01a14d31-6ec0@1792305420954", "/cap/?t=01a14d31-6ec0#01a14d31-6ec0@1792305420954"], ["?t=01a14d31-6ec0", "#01a14d31-6ec0@1792305420954", null],
+    ["?t=other", "#01a14d31-6ec0", "/cap/?t=01a14d31-6ec0#01a14d31-6ec0"], ["?x=1", "#01a14d31-6ec0", "/cap/?x=1&t=01a14d31-6ec0#01a14d31-6ec0"],
+    ["?t=01a14d31-6ec0", "", null], ["", "#not%20an%20id", null]];
+  for (const [search, hash, expected] of cases) {
+    const moves: string[] = [];
+    runInNewContext(bootTargetScript, { URLSearchParams, decodeURIComponent, location: { pathname: "/cap/", hash, search, replace: (to: string) => { moves.push(to); } } });
+    assert.deepEqual(moves, expected === null ? [] : [expected], search + hash);
+    if (expected) assert.equal(pageTarget({ hash, search })?.id, new URLSearchParams(expected.slice(5).split("#")[0]).get("t"), search + hash);
+  }
+  const backend = { close: async () => {}, chats: { ids: async () => new Set<string>() } } as unknown as ChatBackend;
+  const server = await startChatServer({ backend, bundle: { js: script, css: style, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+    identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-cold-target.sock" }, onStop: async () => {} });
+  t.after(() => server.close());
+  const shell = await get(server.url);
+  const html = shell.body.toString();
+  assert.ok(html.indexOf(`<script>${bootTargetScript}</script>`) >= 0 && html.indexOf(`<script>${bootTargetScript}</script>`) < html.indexOf('rel="preload"'), html);
+  assert.ok(String(shell.headers["content-security-policy"]).includes(`'sha256-${createHash("sha256").update(bootTargetScript).digest("base64")}'`));
 });
 
 // Guards the 10-18 07:30Z Aside reads from Korea after d74e001: the shell painted at 228 to 448 ms, but the newest message only at 1.25 to 1.63 s, because its socket is a new TCP and TLS connection through tailscale serve.

@@ -20,5 +20,18 @@ var socket=new WebSocket(url),boot={socket:socket,subs:subs,frames:[]};
 socket.onmessage=function(m){boot.frames.push(m.data)};window.__bootFeed=boot;
 }catch(e){}})();`;
 
-/** The CSP source that lets exactly this inline script run. */
+/**
+ * The head's first script, ahead of the stylesheet preload and app.js: a URL that names a thread only in its hash, such as a board link or
+ * an old bookmark, loads again with `?t=<id>`, which the server sees, so the shell carries that thread's first page and its still view
+ * (prepaint.ts). The hash parse is the one above. On 10-19 from the Mac (195 ms a round trip) a `#<id>` cold load showed the chat after
+ * app.js ran, at 1.52 to 1.66 s, and a `?t=<id>#<id>` one showed the still view at 0.88 to 1.38 s.
+ */
+export const bootTargetScript = `(function(){try{
+var raw=decodeURIComponent(location.hash.slice(1)),at=raw.lastIndexOf("@"),id=at>0&&/^\\d+$/.test(raw.slice(at+1))?raw.slice(0,at):raw;
+var query=new URLSearchParams(location.search);if(!/^[a-zA-Z0-9_.:-]{1,256}$/.test(id)||query.get("t")===id)return;
+query.set("t",id);location.replace(location.pathname+"?"+query+location.hash);
+}catch(e){}})();`;
+
+/** The CSP sources that let exactly these inline scripts run. */
+export const bootTargetHash = `'sha256-${createHash("sha256").update(bootTargetScript).digest("base64")}'`;
 export const bootFeedHash = `'sha256-${createHash("sha256").update(bootFeedScript).digest("base64")}'`;

@@ -1,13 +1,13 @@
-import { bootFeedHash, bootFeedScript } from "./boot-feed.ts";
+import { bootFeedHash, bootFeedScript, bootTargetHash, bootTargetScript } from "./boot-feed.ts";
 import { prepaintHash } from "./prepaint.ts";
 
 /** The page shell and its headers, with no import beyond the boot and still-view scripts, so a service that is still starting can send it (src/early-shell.ts). */
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootFeedHash + " " + prepaintHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self' " + bootTargetHash + " " + bootFeedHash + " " + prepaintHash + "; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 export function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
 /**
- * The page shell, in two parts. `shellHead` goes out at once: the script and style by their hashed names (`assetName`), so a later load
+ * The page shell, in two parts. `shellHead` goes out at once: first the script that moves a hash-only thread URL onto `?t=` (boot-feed.ts), then the script and style by their hashed names (`assetName`), so a later load
  * reads them from the browser's cache, and the inline boot script, which opens the feeds socket while app.js is still on its way
  * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load; a preload above
  * app.js asks for it first, since the chat's still view (prepaint.ts) paints once it arrives. `data-chats`
@@ -22,6 +22,7 @@ export function shellHead(csrfToken: string, version: string, wiki: string | nul
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Prime Agent chat</title>
+<script>${bootTargetScript}</script>
 <link rel="preload" href="${escapeAttribute(assets.css)}" as="style">
 <script type="module" src="${escapeAttribute(assets.js)}"></script>
 <link rel="manifest" href="manifest.webmanifest">
