@@ -18,7 +18,7 @@ const DEFAULT_URL = "https://pcpcicvhrcazmlpjrqho.supabase.co";
 /**
  * A post waits too long after 24 h: the owner asked for a "daily check for the review", so a run once a day sees each post within 24 h.
  * The duty JSON's targets (JSON has no comments): reviews_waiting_24h <= 0 because every real post gets a decision, and source_errors <= 0
- * because an unread source is a miss. The JSON sets no precheck timeoutMs, so the runner's PRECHECK_TIMEOUT_MS (120 s) applies; the first
+ * because an unread source is a miss. The JSON sets no precheck timeoutMs, so the runner's PRECHECK_TARGET_MS (120 s) applies; the first
  * run took 2.6 s. The onMiss grant of 14 days matches the past grants: 15 of the 18 granted posts in prod got 14 days (read 2026-10-12).
  */
 export const WAIT_MS = 24 * 60 * 60_000;

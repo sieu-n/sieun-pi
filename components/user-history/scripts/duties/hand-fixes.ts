@@ -40,7 +40,7 @@ const BOX = "root@64.34.205.243";
  *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
  *   promote 9's restart and the writer fell 66 min behind (s160); the one-off copy container's idle prod session held promote 9 (s154).
  * - source_errors is run detail. A source that failed turns every metric it feeds (NEEDS) into a miss and keeps its source_error flag.
- * The schedule, daily, is the owner's "daily check" in the audit brief. timeoutMs 120000 is the runner's cap, PRECHECK_TIMEOUT_MS.
+ * The schedule, daily, is the owner's "daily check" in the audit brief. timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS.
  */
 
 /**

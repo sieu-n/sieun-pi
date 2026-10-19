@@ -393,7 +393,7 @@ export function readBoxSync(text: string | Error, now: number, mac: PeerReach): 
 }
 
 const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
-  // No timeout or buffer size of its own: the runner's precheck timeout ends a hung run, and the outputs measured 2026-10-12 (pm2 jlist 40 KB,
+  // No timeout or buffer size of its own: the runner's precheck hard stop (precheckHardStopMs) ends a hung run, and the outputs measured 2026-10-12 (pm2 jlist 40 KB,
   // ps 13 KB) fit Node's default buffer.
   execFile(file, [...args], { encoding: "utf8", env: { ...process.env, ...env } },
     (error, stdout) => error ? reject(error) : resolve(stdout));

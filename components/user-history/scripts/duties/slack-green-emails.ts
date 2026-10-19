@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TIMEOUT_MS } from "../../src/shared/chat-duties.ts";
+import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
@@ -31,7 +31,7 @@ export const DAY_MS = 24 * 60 * 60_000;
  *   for the setup link and the 24 h connect reminder together.
  * - bounce_or_complaint_pct <= 4: Resend's warm-up guide (https://resend.com/docs/knowledge-base/warming-up.md) says to keep the bounce rate
  *   below 4% and the spam rate below 0.08%. One rate holds both, so every complaint is also listed on its own.
- * The JSON sets no precheck timeoutMs, so the runner's PRECHECK_TIMEOUT_MS (120 s) applies.
+ * The JSON sets no precheck timeoutMs, so the runner's PRECHECK_TARGET_MS (120 s) applies.
  */
 export const NUDGE_CAP = 2;
 /** PR #233 (4222b4b) removed the token expired email; it merged at this time. A token email after it is one the owner already turned down. */
@@ -256,8 +256,8 @@ export async function measureEmails(deps: EmailDeps, previous: EmailState | unde
   return { output: { metrics, flagged }, ...(sources.optedOut ? { state: { at, optedOut: sources.optedOut } } : {}) };
 }
 
-/** Each command stops 10 s before the runner's PRECHECK_TIMEOUT_MS, so a hung Railway call still ends as a source error with every metric written. */
-const COMMAND_TIMEOUT_MS = PRECHECK_TIMEOUT_MS - 10_000;
+/** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung Railway call still ends as a source error with every metric written. */
+const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));

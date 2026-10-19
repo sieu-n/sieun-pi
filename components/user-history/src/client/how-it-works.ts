@@ -1,5 +1,5 @@
 import { BOARD_LIMITS } from "../shared/chat-board.ts";
-import { ERROR_PAUSE_RUNS } from "../shared/chat-duties.ts";
+import { ERROR_RUNS_TARGET, PRECHECK_TARGET_MS } from "../shared/chat-duties.ts";
 import { CHECK_IN_MIN_MINUTES, type PoolConfig } from "../shared/types.ts";
 import { POOL_DEFAULTS, poolValue, type PoolKey } from "./pool-config.ts";
 
@@ -70,8 +70,10 @@ const CHAT_RULES: Rule[] = [
     text: "When a job goes quiet without reporting, the chat is told after this long.", source: { file: USER_HISTORY + "chats.ts", symbol: "NO_REPORT_GRACE_MS" } },
   { id: "job-cleanup", title: "Waiting job cleanup", value: q(PARK_IDLE_MS, "ms"), setting: CODE,
     text: "A finished job is deleted as soon as its report reaches the chat. A job whose only open work is a board wait is deleted after it has been quiet this long, with its brief, last report and wait saved on the step for a fresh job.", source: { file: USER_HISTORY + "chat-checkin.ts", symbol: "PARK_IDLE_MS" } },
-  { id: "duty-errors", title: "Duty errors before pause", value: q(ERROR_PAUSE_RUNS, "count"), setting: CODE,
-    text: "This many failed duty runs in a row pause the duty until you resume it.", source: { file: USER_HISTORY + "shared/chat-duties.ts", symbol: "ERROR_PAUSE_RUNS" } },
+  { id: "duty-errors", title: "Duty error streak target", value: q(ERROR_RUNS_TARGET, "count"), setting: CODE,
+    text: "Past this many failed duty runs in a row, each run's job is told the streak and to fix the precheck first. The duty keeps running.", source: { file: USER_HISTORY + "shared/chat-duties.ts", symbol: "ERROR_RUNS_TARGET" } },
+  { id: "precheck-target", title: "Duty precheck target", value: q(PRECHECK_TARGET_MS, "ms"), setting: { kind: "chat", where: "the duty's precheck timeoutMs" },
+    text: "A precheck past this target keeps running and finishes. Its run records the overrun, and the card shows it. Only the duty's schedule gap stops it.", source: { file: USER_HISTORY + "shared/chat-duties.ts", symbol: "PRECHECK_TARGET_MS" } },
 ];
 
 const POOL_RULES: Rule[] = [

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type DutyView, verdictMetrics } from "../shared/chat-duties.ts";
+    import { type DutyView, overrunWords, verdictMetrics } from "../shared/chat-duties.ts";
   import { CHANGE_APPROACH_MISSES, effectiveRun } from "../shared/duty-streak.ts";
   import type { PromptTarget } from "../shared/prompt-view.ts";
   import type { ChatAgent } from "../shared/types.ts";
@@ -34,7 +34,7 @@
   const runTitle = (view: DutyView, index: number): string => {
     const run = history(view)[index]!;
     const judged = judgedRun(run, view.duty.metrics);
-    return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORDS[judged.verdict]}${run.after ? " after its job" : ""}. ${run.error ?? judged.summary}`;
+    return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORDS[judged.verdict]}${run.after ? " after its job" : ""}. ${run.error ?? judged.summary}${run.overrun ? `; ${overrunWords(run.overrun)}` : ""}`;
   };
   const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped");
 
@@ -101,6 +101,7 @@
               </span>
             {/if}
           </p>
+          {#if last?.overrun}<p class="duty-overrun">In its last run {overrunWords(last.overrun)}.</p>{/if}
           {#if classes}<p>{classes}</p>{/if}
           {#if view.builtin && found}<p>The last check-in flagged {found}</p>{/if}
           {#if card.job}
@@ -198,6 +199,7 @@
   .miss-mark.stuck { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
   .miss-mark.gap { color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
   .duty-shape { color: var(--danger); }
+  .duty-overrun { color: var(--warning); }
   .duty-ok { color: var(--text-faint); }
   .duty-last { display: flex; align-items: center; gap: 8px; }
   .duty-verdict { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

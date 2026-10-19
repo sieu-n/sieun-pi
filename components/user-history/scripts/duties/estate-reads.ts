@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type DutyMetric, type FlaggedSlice, PRECHECK_TIMEOUT_MS } from "../../src/shared/chat-duties.ts";
+import { type DutyMetric, type FlaggedSlice, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 
 /**
  * Read-only access to the estate's Grafana for the launch main bro duty prechecks (engage-reads.ts, watchlist-green.ts).
@@ -19,10 +19,10 @@ export const PG = { prod: "estate_pg_prod", staging: "estate_pg_stg" } as const;
 export const PROM = { prod: "estate_prometheus", staging: "estate_prometheus_stg" } as const;
 export const UNMEASURED = 999_999;
 /**
- * Every source read ends by this deadline. The runner kills the precheck at PRECHECK_TIMEOUT_MS (120 s, src/shared/chat-duties.ts), and writing
- * the output took under 1 s in the 2026-10-12 runs, so the 10 s left keeps the output file even when a source hangs.
+ * Every source read ends by this deadline. The runner's soft precheck target is PRECHECK_TARGET_MS (120 s, src/shared/chat-duties.ts), and writing
+ * the output took under 1 s in the 2026-10-12 runs, so the 10 s left keeps the run inside its target even when a source hangs.
  */
-export const SOURCE_DEADLINE_MS = PRECHECK_TIMEOUT_MS - 10_000;
+export const SOURCE_DEADLINE_MS = PRECHECK_TARGET_MS - 10_000;
 export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
 export const DAY = 24 * HOUR;

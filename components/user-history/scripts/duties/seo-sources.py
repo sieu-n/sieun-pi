@@ -94,8 +94,8 @@ def visits() -> dict[str, Any]:
 # A row that came back 5xx or with no answer (a connection error, http 0) is asked again after each wait here. Google's API error guide
 # says to retry 500, 502, 503 and 504 with exponential backoff (developers.google.com/workspace/drive/api/guides/handle-errors), and on
 # 10-18 05:21 one 500 "Internal error encountered" for /ko/blog/kol-key-opinion-leader read PASS when inspected again minutes later.
-# Two waits, 1 s then 2 s, keep a URL that fails every time at about 3 x 7.4 s + 3 s = 25 s, inside the 120 s precheck timeout
-# (src/shared/chat-duties.ts PRECHECK_TIMEOUT_MS). Each retry spends one more inspection of the 2,000 a day, added to the quota file.
+# Two waits, 1 s then 2 s, keep a URL that fails every time at about 3 x 7.4 s + 3 s = 25 s, inside the 120 s precheck target
+# (src/shared/chat-duties.ts PRECHECK_TARGET_MS). Each retry spends one more inspection of the 2,000 a day, added to the quota file.
 INSPECT_RETRY_WAITS_S = (1, 2)
 
 

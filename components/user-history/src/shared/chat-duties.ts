@@ -43,9 +43,15 @@ export function verdictMetrics<M extends Pick<DutyMetric, "headline">>(metrics: 
 /**
  * The precheck: `command` is an argv run in `cwd` with no shell (a first word `node` is this server's node). It gets the env STATE_FILE (its JSON
  * state, kept between runs, only when it exits 0), LAST_RUNS_FILE (the duty's last 10 run records) and OUTPUT_FILE, and writes a `PrecheckOutput`
- * to OUTPUT_FILE. A nonzero exit, a timeout or bad JSON is an error run.
+ * to OUTPUT_FILE. A nonzero exit, the hard stop or bad JSON is an error run. `timeoutMs` is its soft target (PRECHECK_TARGET_MS by default): a
+ * precheck past it keeps running and its run records the overrun.
  */
 export interface DutyPrecheck { command: string[]; cwd: string; timeoutMs: number }
+/** How long a precheck that ran past its soft target took, and the target. */
+export interface PrecheckOverrun { ms: number; targetMs: number }
+/** The overrun in words for the card and the run's detail file. */
+export const overrunWords = (overrun: PrecheckOverrun): string =>
+  `the precheck took ${Math.round(overrun.ms / 1000)} s, over its ${Math.round(overrun.targetMs / 1000)} s target`;
 /**
  * `lastEventAt` names, per metric that counts events in a trailing window, the time of the newest event it counts. With it a miss streak tells a
  * count that no new event raised from one whose old events have not left the window yet (`MetricStreak.quietSince`).
@@ -100,6 +106,8 @@ export interface DutyRunRecord {
   duty: string; at: number; slot?: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
   metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string;
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
+  /** Set when the precheck ran past its soft target. */
+  overrun?: PrecheckOverrun;
   /** Per missed metric, the fix step the run found on the chat's board for it (a plan step whose `duty` is `<dutyId>/<metricKey>`). */
   fixes?: Record<string, FixLink>;
   /** The measure taken after this run's own job ended: the run's verdict once its fixes are in (`effectiveRun`). */
@@ -132,9 +140,19 @@ export const MORNING_BANDS: Readonly<Record<PoolPriority, readonly [number, numb
 export const CATCH_UP_MS = 6 * 60 * 60_000;
 /** A slot run this late counts as a catch-up rather than on schedule. */
 export const LATE_MS = 5 * 60_000;
-/** This many error runs in a row pause the duty until someone resumes it. */
-export const ERROR_PAUSE_RUNS = 3;
-export const PRECHECK_TIMEOUT_MS = 120_000;
+/**
+ * A soft target for error runs in a row (c98): a duty past it keeps running, and its run's findings and the card say how many runs in a row
+ * failed against this target. Until 10-19 the third error paused the duty until someone resumed it, a block that cited no measurement.
+ */
+export const ERROR_RUNS_TARGET = 3;
+/**
+ * The soft target for one precheck when the duty sets no `timeoutMs` (c98). A precheck past its target keeps running and finishes; the run
+ * records the overrun (`PrecheckOverrun`), its detail file and the card say it, and only the hard stop (`precheckHardStopMs` in
+ * src/chat-duty-run.ts) ends it. Measured on 10-19 over the 899 measured and error runs of every chat's duties on us-metal02 (10-11 to 10-19,
+ * `ms` in each chat's runs.jsonl): p50 3.1 s, p95 38.4 s, p99 101.4 s, longest finished run 157.1 s; ops guy's Grafana precheck took 188 s
+ * serially and was made parallel to fit the old hard cap of 120 s.
+ */
+export const PRECHECK_TARGET_MS = 120_000;
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const KEY = /^[a-z][a-z0-9_]{0,39}$/;
@@ -223,7 +241,7 @@ function sourceReasons(output: PrecheckOutput): string {
  * result, so it is neither met nor missed, and the summary names it with the precheck's source errors as the reason. Other numbers in the
  * output never change it. The summary leads with the headline, names each miss with its target or says the measured ones are on target, and
  * ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403 left Apps reach staging without demo_ci_ok, and the run must
- * still judge apps_picked and open_review_max_h; a run with no counted metric measured is an error, which pauses the duty after ERROR_PAUSE_RUNS.
+ * still judge apps_picked and open_review_max_h; a run with no counted metric measured is an error, which counts toward ERROR_RUNS_TARGET.
  */
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
   const note = shapeNote(metrics);
@@ -297,7 +315,7 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
-  const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? Math.min(precheck.timeoutMs, PRECHECK_TIMEOUT_MS) : PRECHECK_TIMEOUT_MS;
+  const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? precheck.timeoutMs : PRECHECK_TARGET_MS;
   return { id, name: name.trim(), ownerWords, goal: goal.trim(), metrics: parsedMetrics, schedule: parsedSchedule,
     precheck: { command: precheck.command as string[], cwd: precheck.cwd, timeoutMs }, onMiss: onMiss.trim(), ...(boardGoal ? { boardGoal } : {}),
     status: "active", createdAt: now, updatedAt: now, runCount: 0 };

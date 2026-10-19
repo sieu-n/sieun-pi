@@ -1,14 +1,14 @@
-import { execFile } from "node:child_process";
-import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { open as openFile, copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
-import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, headlineMetric, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
-  type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
+import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, overrunWords, parseSchedule, type Duty, type DutyJobRef,
+  type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
@@ -129,6 +129,14 @@ export function stuckAfterMs(schedule: DutySchedule): number {
 /** The time between two slots of a schedule; a daily duty's is a day. */
 export const intervalMs = (schedule: DutySchedule): number => schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
 
+/**
+ * The one hard stop of a precheck: its duty's schedule gap, and never less than its own soft target. A precheck still going holds every later
+ * slot of its duty (each gets a skipped record), so a hung one would hold the duty for good; stopped at the gap, it costs one slot. Every
+ * shorter stop is a soft target (`DutyPrecheck.timeoutMs`). On 10-19 the shortest gap of any duty was 30 min (AI harness d7), 11.5 times the
+ * longest finished precheck (157.1 s) and 47 times the p95 (38.4 s) over 899 runs of every chat's duties (PRECHECK_TARGET_MS).
+ */
+export const precheckHardStopMs = (duty: Pick<Duty, "schedule" | "precheck">): number => Math.max(intervalMs(duty.schedule), duty.precheck.timeoutMs);
+
 /** Why a run has no job when its start failed or a restart cut it off; a run with it is never started again. */
 export const NOT_STARTED = "the duty job did not start";
 /** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
@@ -211,7 +219,7 @@ function checkInMinutes(value: unknown): number {
  * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
  * starts none, and while the duty's last job still works a run measures but starts no job and says so in its summary, unless that job is stuck past
  * `stuckAfterMs` of its duty's schedule, which the run replaces. The run that starts a job retires the
- * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_PAUSE_RUNS times in a row pauses the duty; that run's job is told to fix it. The check-in duty's
+ * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_RUNS_TARGET times in a row or more keeps running on schedule, and each such run's job is told the streak and to fix it. The check-in duty's
  * schedule and precheck live on the chat server, which hands each run here (`checkIn`); its card reads and edits the chat's check-in setting.
  */
 export class Duties {
@@ -837,11 +845,9 @@ export class Duties {
       found.lastRunAt = started;
       if (slot !== null && found.schedule.kind === "daily") found.lastSlotAt = slot;
     });
-    const markRun = (pause: boolean) => this.store.update(chatId, duties => {
+    const markRun = () => this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
-      if (!found) return;
-      found.runCount += 1;
-      if (pause) { found.status = "paused"; found.updatedAt = this.now(); }
+      if (found) found.runCount += 1;
     });
     if ((await this.previous(chatId, dutyId, duty.schedule, at)) === null) return;
     const previous = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped");
@@ -849,28 +855,37 @@ export class Duties {
     const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);
     let record: DutyRunRecord;
     let flagged: FlaggedSlice[] = [];
+    // Wall time, so an overrun is measured even where tests fix `now`.
+    const precheckFrom = Date.now();
+    const overrunOf = (): { overrun: PrecheckOverrun } | Record<string, never> => {
+      const ms = Date.now() - precheckFrom;
+      return ms > duty.precheck.timeoutMs ? { overrun: { ms, targetMs: duty.precheck.timeoutMs } } : {};
+    };
     try {
       const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
       const judged = judge(duty.metrics, output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
-        ...(judged.verdict === "error" ? { error: judged.summary } : {}) };
+        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf() };
     } catch (error) {
       await rm(detail, { force: true });
-      record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500) };
+      record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500),
+        ...overrunOf() };
     }
-    const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
-    await markRun(pause);
+    if (record.overrun) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${overrunWords(record.overrun)}`);
+    const overrunLine = record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "";
+    const streak = record.verdict === "error" ? errorStreak([record, ...previous]) : 0;
+    await markRun();
     const misses = await this.missesOf(chatId, record, previous, duty.metrics);
     let findings: string;
     if (record.verdict === "error") {
-      findings = [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
-        "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`, stuckFindings(misses)].filter(Boolean).join("\n\n");
+      findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ` +
+        `${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine, stuckFindings(misses)].filter(Boolean).join("\n\n");
     } else {
       const file = await this.writeDetail(chatId, `${dutyId}-${runStamp(started)}`, [`# ${duty.name} run of ${new Date(started).toISOString()}`,
-        `Measured against the targets: ${record.summary}.`, ...record.detail ? [`The full precheck output is ${record.detail}.`] : [], flaggedSection(flagged)]);
+        `Measured against the targets: ${record.summary}.`, overrunLine, ...record.detail ? [`The full precheck output is ${record.detail}.`] : [], flaggedSection(flagged)]);
       const headline = headlineOf(duty.metrics, record);
-      findings = [briefFindings({ headline: headline?.words ?? null, flagged, ...headline ? { headlineKey: headline.key } : {}, detail: file }), stuckFindings(misses)]
+      findings = [briefFindings({ headline: headline?.words ?? null, flagged, ...headline ? { headlineKey: headline.key } : {}, detail: file }), overrunLine, stuckFindings(misses)]
         .filter(Boolean).join("\n\n");
     }
     this.steps.set(key, { at: started, step: "starting its job" });
@@ -894,16 +909,14 @@ export class Duties {
     await rm(outputFile, { force: true });
     const [command, ...args] = duty.precheck.command;
     const file = command === "node" ? this.host.node ?? process.execPath : command!;
+    const stderrFile = `${outputFile.replace(/\.json$/, "")}.stderr.log`;
     try {
-      await new Promise<void>((resolve, reject) => {
-        execFile(file, args, { cwd: duty.precheck.cwd, timeout: duty.precheck.timeoutMs, killSignal: "SIGKILL", maxBuffer: 1 << 20,
-          env: { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile } }, (error, _stdout, stderr) => {
-          if (!error) { resolve(); return; }
-          const timedOut = error.killed || error.signal === "SIGKILL";
-          const tail = String(stderr).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-          reject(new Error(timedOut ? `timed out after ${Math.round(duty.precheck.timeoutMs / 1000)} s` : `exit ${error.code ?? error.signal}${tail ? `: ${tail}` : ""}`));
-        });
-      });
+      try { await this.spawnPrecheck(duty, dir, file, args, stderrFile, { STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile }); }
+      catch (error) {
+        const tail = (await readFile(stderrFile, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+        throw new Error(`${message(error)}${tail ? `: ${tail}` : ""} (all of stderr: ${stderrFile})`);
+      }
+      await rm(stderrFile, { force: true });
       let output: unknown;
       try { output = JSON.parse(await readFile(outputFile, "utf8")); }
       catch { throw new Error("no valid JSON in OUTPUT_FILE"); }
@@ -913,6 +926,29 @@ export class Duties {
       if (mode === "run") await rename(nextState, stateFile);
       return output as PrecheckOutput;
     } finally { await rm(nextState, { force: true }); }
+  }
+
+  /**
+   * Runs the precheck command with its stderr in `stderrFile` and its stdout dropped, so no output size ends it. Past its soft target it keeps
+   * running and the log says so; only `precheckHardStopMs` kills it. Resolves on exit 0 and rejects with the exit or the hard stop otherwise.
+   */
+  private async spawnPrecheck(duty: Duty, dir: string, file: string, args: string[], stderrFile: string, env: Record<string, string>): Promise<void> {
+    const stderr = await openFile(stderrFile, "w", 0o600);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(file, args, { cwd: duty.precheck.cwd, stdio: ["ignore", "ignore", stderr.fd], env: { ...process.env, ...env } });
+        const targetS = Math.round(duty.precheck.timeoutMs / 1000);
+        const hardStopMs = precheckHardStopMs(duty);
+        let stopped = false;
+        const pastTarget = setTimeout(() => this.log(`duty ${basename(dir).slice(0, 8)}/${duty.id}: the precheck is past its ${targetS} s target and keeps ` +
+          `running, up to its hard stop of ${Math.round(hardStopMs / 60_000)} min`), duty.precheck.timeoutMs);
+        const hardStop = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, hardStopMs);
+        const end = (error?: Error) => { clearTimeout(pastTarget); clearTimeout(hardStop); if (error) reject(error); else resolve(); };
+        child.once("error", end);
+        child.once("close", (code, signal) => end(code === 0 ? undefined : new Error(stopped
+          ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min, its schedule gap (target ${targetS} s)` : `exit ${code ?? signal}`)));
+      });
+    } finally { await stderr.close(); }
   }
 
   close(): void { clearInterval(this.timer); }

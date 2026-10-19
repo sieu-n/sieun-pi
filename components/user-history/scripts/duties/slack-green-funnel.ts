@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TIMEOUT_MS } from "../../src/shared/chat-duties.ts";
+import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
@@ -41,7 +41,7 @@ export const DAYS = 28;
  *   The 24 h people count and the 7-day eligible and exposed counts stay in the detail as home_test_people_24h and the home_test slice.
  * signup_to_paid_pct and source_errors stay in the output for the run's detail file and are not declared. A source that fails sets the
  * headline to 0, a miss, with a source_error slice that says to fix the precheck first.
- * The duty JSON sets timeoutMs 120000, the runner's own cap PRECHECK_TIMEOUT_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
+ * The duty JSON sets timeoutMs 120000, the runner's soft target PRECHECK_TARGET_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
  * cache empty), later runs 10 s for the queries and 17.2 s in all.
  */
 export const HEADLINE = "on_topic_visit_to_paid_pct";
@@ -190,10 +190,10 @@ function python(): string {
 }
 
 /**
- * Each command stops 10 s before the runner's PRECHECK_TIMEOUT_MS, so a hung PostHog query still ends as a source error with every metric
+ * Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung PostHog query still ends as a source error with every metric
  * written. 10 s covers the rest of a run: the first full run took 17.2 s, of which the python queries took 10.2 s, so git, tar and node took 7 s.
  */
-const COMMAND_TIMEOUT_MS = PRECHECK_TIMEOUT_MS - 10_000;
+const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd, env: { ...process.env, ...options?.env } },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));

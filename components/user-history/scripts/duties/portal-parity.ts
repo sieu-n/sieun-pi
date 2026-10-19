@@ -49,7 +49,7 @@ export const ORGS = 3;
 /** Fake staging balance per org: the audit's full staging run cost about $0.27 (findings-brief.md), so $1 covers a third of a run several times. */
 const BALANCE_MICROS = 1_000_000;
 /**
- * The runner kills a precheck at 120 s (PRECHECK_TIMEOUT_MS in src/shared/chat-duties.ts). Page-1 calls stop at 70 s and page-2 and chained
+ * The runner's soft precheck target is 120 s (PRECHECK_TARGET_MS in src/shared/chat-duties.ts). Page-1 calls stop at 70 s and page-2 and chained
  * calls at 100 s after start, which leaves time for cleanup. A page 2 starts right after its own page 1. A call cut off this way is unprobed, never broken. On 2026-10-12 the slowest
  * staging answers were upstream timeouts at 32 s, and the audit's slowest crawler call took 12.7 s.
  */

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TIMEOUT_MS } from "../../src/shared/chat-duties.ts";
+import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 
 /**
  * The slack green guy's Slack green deploys duty's precheck (`node --import tsx scripts/duties/slack-green-deploys.ts`). No model call.
@@ -231,8 +231,8 @@ export async function measureDeploys(deps: DeployDeps, previous: DeployState): P
   return { output: deployMetrics(sources, now, redeploy), state };
 }
 
-/** Each command stops 10 s before the runner's PRECHECK_TIMEOUT_MS, so a hung call still ends as a source error with every metric written. */
-const COMMAND_TIMEOUT_MS = PRECHECK_TIMEOUT_MS - 10_000;
+/** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung call still ends as a source error with every metric written. */
+const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));
