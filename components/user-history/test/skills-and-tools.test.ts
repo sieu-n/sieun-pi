@@ -29,7 +29,7 @@ const deps = (platform?: NodeJS.Platform): Deps => ({
 test("aside_tabs on the linux box points the fix at the Mac over ssh", async () => {
   const outcome = await asideTabs.run(deps("linux"));
   assert.equal(outcome.status, "fail");
-  assert.ok(outcome.status === "fail" && outcome.fix.includes("ssh mac open -a Aside"), JSON.stringify(outcome));
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("aside-remote"), JSON.stringify(outcome));
 });
 
 test("aside_tabs on macOS keeps the local open -a Aside fix", async () => {
@@ -177,7 +177,7 @@ test("aside_account on an online Mac keeps a signed-out reply as the owner's fix
 
 test("aside_account on an online Mac calls a timeout a reach problem, not a sign-in", async () => {
   const outcome = await CHECKS.find(check => check.id === "aside_account")!.run(macDeps(true, TIMED_OUT, []));
-  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("ssh mac true") && !outcome.fix.includes("sign in"), JSON.stringify(outcome));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("check ssh to that Mac") && !outcome.fix.includes("sign in"), JSON.stringify(outcome));
 });
 
 test("dailyRun drops a flagged check that CHECKS no longer has", async () => {

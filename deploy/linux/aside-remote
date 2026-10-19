@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Runs the Aside CLI of a Mac that has Aside Browser, over ssh, because Aside has no Linux build and Remote Control
+# (aside host use) answers 403 on this account. ASIDE_REMOTE, or the first word of ~/.config/aside-remote/host, picks the Mac:
+# air is the always-on M2 Air (dbhost), mac is the owner's MacBook. Long-lived `aside mcp` servers share their own ssh master.
+target="${ASIDE_REMOTE:-$(head -c 64 "$HOME/.config/aside-remote/host" 2>/dev/null | awk '{print $1; exit}')}"
+case "${target:-mac}" in
+  air) host="a.@dbhost.tail0c093d.ts.net"; cli="/Users/a./.local/bin/aside" ;;
+  mac) host="mac"; cli="/Users/sieunpark/.local/bin/aside" ;;
+  *) echo "aside-remote: unknown target '$target' (use air or mac)" >&2; exit 2 ;;
+esac
+q=""
+for a in "$@"; do q+=" $(printf '%q' "$a")"; done
+mux=()
+[ "${1-}" = mcp ] && mux=(-o ControlMaster=auto -o ControlPersist=yes -o "ControlPath=$HOME/.ssh/cm/mcp-%r@%h:%p")
+exec /usr/bin/ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o LogLevel=ERROR "${mux[@]}" "$host" "exec $cli$q"

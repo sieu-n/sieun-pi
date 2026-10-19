@@ -56,7 +56,7 @@ export interface Deps {
   now: () => number;
   /** Waits between polls; tests pass one that returns at once. */
   sleep?: (ms: number) => Promise<void>;
-  /** "linux" on a headless box such as us-metal02, where xvfb.service and cua-driver.service run the display and the daemon; absent means macOS. */
+  /** "linux" on a headless box such as us-metal02, whose `aside` reaches a Mac over ssh; absent means macOS. */
   platform?: NodeJS.Platform;
   /** Writes the kernel venv's sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
   pinSkillPaths?: () => Promise<PinResult[]>;
@@ -103,8 +103,7 @@ async function mcpServer(deps: Deps, name: string): Promise<McpServer | string> 
 async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
   const running = async () => /daemon is running/.test((await deps.exec(paths(deps).cua, ["status"], { timeoutMs: 10_000 })).stdout);
   if (await running()) return true;
-  if (deps.platform === "linux") await deps.exec("systemctl", ["--user", "start", "cua-driver.service"], { timeoutMs: 10_000 });
-  else await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
+  await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
   for (let tries = 0; tries < 15; tries++) {
     if (await running()) return true;
     await (deps.sleep ?? (ms => new Promise<void>(done => setTimeout(done, ms))))(1000);
@@ -134,7 +133,7 @@ async function probeMac(deps: Deps): Promise<MacReach> {
   if (reach.online) return reach;
   return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside answers again when it wakes` };
 }
-const MAC_REACH_FIX = "the box's `aside` runs the Mac's Aside CLI over ssh (~/.local/bin/aside-mac), so check `ssh mac true`, open Aside on the Mac with `ssh mac open -a Aside`, and re-check";
+const MAC_REACH_FIX = "the box's `aside` runs a Mac's Aside CLI over ssh (~/.local/bin/aside, deploy/linux/aside-remote, its target in ~/.config/aside-remote/host), so check ssh to that Mac, check Aside runs there, and re-check";
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
@@ -285,16 +284,10 @@ export const CHECKS: readonly Check[] = [
     const started = status.daemon_running === false && await ensureCuaDaemon(deps);
     if (started) ({ result, status } = await ask());
     if (status.accessibility === true && status.screen_recording === true) return PASS(`accessibility and screen recording granted${started ? " (started the stopped daemon)" : ""}`);
-    // Linux has no grants: the daemon reports whether it reaches an X11 or Wayland display and the AT-SPI bus.
-    if ("x11" in status || "atspi" in status) {
-      if ((status.x11 === true || status.wayland === true) && status.atspi === true) return PASS(`${status.x11 === true ? "X11" : "Wayland"} display and AT-SPI reachable${started ? " (started the stopped daemon)" : ""}`);
-      return FAIL("agent", `x11 ${status.x11}, wayland ${status.wayland}, atspi ${status.atspi}`, "start the display and daemon with `systemctl --user start xvfb.service cua-driver.service` and read `cua-driver doctor`");
-    }
     if (status.accessibility === false || status.screen_recording === false)
       return FAIL("owner", `accessibility ${status.accessibility}, screen recording ${status.screen_recording}`, "run `cua-driver permissions grant` and click the macOS dialogs");
     return FAIL("agent", `grant status unknown (${status.daemon_running === false ? "the daemon did not start within 15 s" : failText(result)})`,
-      deps.platform === "linux" ? "run `systemctl --user start xvfb.service cua-driver.service`, read `cua-driver doctor`, and re-check"
-        : "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
+      "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
   } },
   { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", hostTool: "cua-driver", run: async deps => {
     const server = await mcpServer(deps, "cua-driver");

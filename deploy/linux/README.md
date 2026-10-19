@@ -13,8 +13,6 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `llm-wiki.service` | The one wiki server for every box, `pnpm run dev` in the auto-sns-agent checkout's `apps/llm-wiki` on 127.0.0.1:5176. It is not in the pm2 dev stack: since auto-sns-agent a6b71cc0bf, `dev-apps.cjs` has no llm-wiki entry, so `pnpm dev` no longer starts it. |
 | `box-devserver-heal.service`, `box-pm2-keep.timer` | Box copies of the Mac's `mac-devserver-heal` and `mac-pm2-keep` in `~/.local/share/box-devserver-heal`: restart a hung dev server, refill an empty daemon, and `pm2 save` when the app list changes. |
 | `wiki-box-commit.timer` | `wiki-box-commit.mjs` every 5 minutes on the wiki host, which commits the wiki pages written there onto the box's own `sieun/dev`, the tip. |
-| `xvfb.service` | A virtual X display `:99` at 1920x1080, because the box has no desktop. |
-| `cua-driver.service` | The cua-driver daemon on display `:99`, which the `cua-driver` MCP server talks to. |
 | `ci-cache.service`, `ci-head-fetch.timer` | The one GitHub Actions poller for auto-sns-agent, `scripts/dev/ci-cache.mjs poll` run from the head export of `origin/sieun/dev` through `run-from-head.mjs --follow-head`, which writes `~/.cache/virev/ci-runs.json` for `ci-run-status`, the gh shim and `board.wake(run=)`. The timer fetches `origin/sieun/dev` every 5 minutes so the poller follows the pushed head. |
 | `ci-monitor.timer` | `scripts/dev/ci-monitor.mjs run` every 10 minutes through `run-from-head.mjs`, which writes `snapshot.md`, `history.jsonl`, `state.json` and `dashboard/` in the wiki's `sessions/2026/10/08/0624-ci-access-monitor/logs` for `/playground/ci` and the VP of CI duties. It replaced the Mac's launchd `ai.virev.ci-monitor` on 2026-10-18 at 06:16Z. |
 | `secrets-watch.timer` | The secrets check every 15 minutes from the `sessions/2026/10/14/1121-secrets-self-heal/a/run` copy, with its state in `~/.cache/virev/secrets-watch`. It replaced the Mac's launchd `ai.virev.secrets-watch` on 2026-10-18 at 06:23Z. |
@@ -71,7 +69,7 @@ prime-agent --version   # 0.9.8
 # Bun for the poteto-mode scripts
 curl -fsSL https://bun.sh/install | bash && export PATH=$HOME/.bun/bin:$PATH
 
-# settings.json first, so apply keeps it; the Tools section below adds the aside and cua-driver MCP servers
+# settings.json first, so apply keeps it; the Tools section below adds the aside MCP server
 mkdir -p ~/.prime/agent && install -m 0600 /dev/stdin ~/.prime/agent/settings.json <<'EOF'
 {"telemetry":{"enabled":false},"defaultProvider":"anthropic","defaultModel":"claude-opus-5-5","defaultThinkingLevel":"high",
  "packages":[],"bundledSkills":{"websearch":false},
@@ -111,13 +109,11 @@ Update the pool with `/usr/bin/python3 -B components/pi-pool/install.py --ref <s
 
 ## Tools
 
-The Settings > Tools and skills panel checks each box in `~/.config/sieun-pi/hosts.json` for the tools its `tools` list names, on that box: `websearch`, `headless-browser` (aside-browser's box runner), `aside` and `cua-driver`. A tool a box does not list shows as not used on that host, never as a failure. us-metal02 lists all four, and the Mac lists `websearch`, `aside` and `cua-driver`. On Linux each tool needs these steps.
+The Settings > Tools and skills panel checks each box in `~/.config/sieun-pi/hosts.json` for the tools its `tools` list names, on that box: `websearch`, `headless-browser` (aside-browser's box runner), `aside` and `cua-driver`. A tool a box does not list shows as not used on that host, never as a failure. us-metal02 lists `websearch`, `headless-browser` and `aside`, and the Mac lists `websearch`, `aside` and `cua-driver`. The box has no cua-driver: its virtual display showed a blank screen with no apps, and from 10-12 to 10-19 box sessions made 38 cua-driver calls in 5 chats, none of which needed it. On Linux each tool needs these steps.
 
 1. Web search reads a Virev key from `"virev": {"type": "api_key", "key": "kb_live_..."}` in `~/.prime/agent/auth.json`. Run `uv sync` in `~/.prime/agent/skills/websearch`, and install `websearch`, `board` and `aside-browser` into the kernel venv from `~/.prime/agent/skills/<name>` with `uv pip install --python ~/.prime/agent/kernel-venv/bin/python -e`.
-2. Install the Aside CLI with `curl -fsSL https://releases.aside.com/install.sh | bash`. Aside Browser does not run here, so sign the CLI in with `aside login --email <owner email>`, confirm the code in Aside on the Mac (Settings > Account > Devices), and pick the Mac with `aside host use <host>`.
-3. Install cua-driver with `curl -fsSL https://cua.ai/driver/install.sh | CUA_DRIVER_NO_MODIFY_PATH=1 bash`.
-4. Xvfb comes from Ubuntu debs unpacked without root. Run `apt-get download xvfb xserver-common libxfont2 libfontenc1 x11-xkb-utils` and unpack each one with `dpkg-deb -x <deb> ~/.local/opt/xvfb`.
-5. Xvfb runs `/usr/bin/xkbcomp`, which the box lacks. Copy `usr/bin/Xvfb` to `Xvfb-localxkb` and replace its one `/usr/bin\0` string with `.\0` padded by NULs to 9 bytes, so it runs the unpacked `xkbcomp` from the unit's working directory.
-6. Install `cua-driver-x11` into `~/.local/bin`, then install and start `xvfb.service` and `cua-driver.service`.
-7. Add the servers to `settings.json` as in the main README, with `/home/sieun/.local/bin/aside` and `/home/sieun/.local/bin/cua-driver-x11` as the commands.
-8. The headless browser runs `~/.prime/agent/skills/aside-browser/box/box.mjs`; install it with `npm ci` in that folder, which needs Playwright's Chromium in `~/.cache/ms-playwright`.
+2. Aside Browser has no Linux build, and `aside host use` answers 403 for this account, so the box runs a Mac's Aside CLI over ssh. Install `deploy/linux/aside-remote` as `~/.local/bin/aside`. It runs the CLI on the Mac that `ASIDE_REMOTE` or the first word of `~/.config/aside-remote/host` names: `mac` is the owner's MacBook and the default, and `air` is the always-on M2 Air (`a.@dbhost`), which runs Aside under the launchd agent `local.aside-browser`.
+3. Xvfb comes from Ubuntu debs unpacked without root. Run `apt-get download xvfb xserver-common libxfont2 libfontenc1 x11-xkb-utils` and unpack each one with `dpkg-deb -x <deb> ~/.local/opt/xvfb`.
+4. Xvfb runs `/usr/bin/xkbcomp`, which the box lacks. Copy `usr/bin/Xvfb` to `Xvfb-localxkb` and replace its one `/usr/bin\0` string with `.\0` padded by NULs to 9 bytes, so it runs the unpacked `xkbcomp` from its working directory.
+5. Add the `aside` server to `settings.json` as in the main README, with `/home/sieun/.local/bin/aside` as the command.
+6. The box browser runs `~/.prime/agent/skills/aside-browser/box/box.mjs`; install it with `npm ci` in that folder, which needs Playwright's Chromium in `~/.cache/ms-playwright`.
