@@ -97,7 +97,8 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
     const entries = rawEntries(file);
     const ran = shellCommands(entries);
     for (const entry of entries) for (const call of entry.calls) for (const command of ran.get(call.id) ?? []) {
-      const viaScript = /add-duty\.sh/.test(command);
+      // Running the installer counts; reading it (cat, less, head, rg) does not. Run 20261019-1633 counted `cat tools/current/add-duty.sh` as an add.
+      const viaScript = /(^|[;&|(]\s*|\b(?:sh|bash|exec)\s+)(?:\S*\/)?add-duty\.sh\b/.test(command) && !/\b(cat|less|more|head|tail|rg|grep|sed|wc|ls|stat)\s+[^;&|]*add-duty\.sh/.test(command);
       const direct = /\bnode\b[^\n]*add\.ts\s/.test(command);
       if (!viaScript && !direct) continue;
       const output = entries.find(other => other.result?.id === call.id)?.result?.text ?? "";
