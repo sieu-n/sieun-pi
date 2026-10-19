@@ -17,7 +17,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - provider_keys_outside_vent: (location, key name) pairs where a provider key still sits in a deployment other than Vent, read with the
  *   cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data) plus Convex env lists and the tier files at origin/main.
  * - vent_hosts_down: how many of vent.virev.ai and vent-staging.virev.ai do not answer 200 on /healthz.
- * A source it cannot read gives 999999 for a count and -1 for a share, a source_errors count and a flagged slice, never a good-looking value.
+ * - code_vent_sites and tip_code_vent_sites: of the code_rows in-scope rows, how many go through Vent by code alone at main and at the
+ *   sieun/dev tip, with GeoNode the one allowed direct row, so the cutover's code progress reads before prod runs it.
+ * A source it cannot read gives 999999 for a count to drive down, -1 for a share or a count to drive up, a source_errors count and a flagged slice, never a good-looking value.
  * Targets in vent-gateway.duty.json and their sources: through_vent_pct 100 and vent_hosts_down 0 are the owner's "all external API/webhook
  * should pass here", provider_keys_outside_vent 0 is his "completely remove all legacy sdk, API keys from old deployments", and
  * vent_success_24h_pct 99 is the Vent chat's duty brief of 2026-10-18.
@@ -28,6 +30,8 @@ const SESSIONS = "apps/llm-wiki/content/sessions/2026/10/18";
 export const VENT_SHARE = join(dirname(fileURLToPath(import.meta.url)), "vent-share.py");
 const LISTERS = `${SESSIONS}/1610-vent-cutover-all-callers/data`;
 export const REF = "origin/main";
+/** The release tip, where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
+export const TIP = "origin/sieun/dev";
 const GRAFANA = "https://obs.virev.ai/api/ds/query";
 export const HOSTS = ["https://vent.virev.ai", "https://vent-staging.virev.ai"] as const;
 /** Convex deployments, from the cutover inventory's env-names-before.json (2026-10-18). */
@@ -152,6 +156,15 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
     metrics.in_scope_count = total;
     metrics.unlisted_direct_files = Object.keys(main?.new_direct ?? {}).length;
     for (const [path, lines] of Object.entries(main?.new_direct ?? {})) flagged.push({ at, kind: "unlisted_direct", item: path, excerpt: `${path} at main, outside the 70 sites, still reads a provider key or host: ${lines[0]}`.slice(0, 300) });
+    const tip = reads.share.refs[TIP];
+    if (!tip) sourceError(`vent share script result has no ${TIP} section`);
+    metrics.code_rows = main?.sites.length ?? tip?.sites.length ?? 0;
+    metrics.code_vent_sites = main ? main.sites.filter(row => row.status === "vent").length : UNMEASURED_PCT;
+    metrics.tip_code_vent_sites = tip ? tip.sites.filter(row => row.status === "vent").length : UNMEASURED_PCT;
+    for (const row of tip?.sites ?? []) {
+      if (row.status === "vent" || row.exception) continue;
+      flagged.push({ at, kind: "tip_site_direct", item: `row ${row.row}`, excerpt: `#${row.row} ${row.app} ${row.provider}: code at ${TIP} is ${row.status}${row.direct?.[0] ? `: ${row.direct[0]}` : ""}`.slice(0, 300) });
+    }
   }
 
   if (failed(reads.calls)) {
@@ -225,7 +238,7 @@ async function callRows(token: string): Promise<CallRow[]> {
 
 async function share(token: string | undefined, dir: string): Promise<ShareResult> {
   const out = join(dir, "vent-share.json");
-  await run("python3", [VENT_SHARE, "--ref", REF, "--traffic", "--json", out], { env: { ...process.env, ...(token ? { GRAFANA_AGENT_TOKEN: token } : {}) } });
+  await run("python3", [VENT_SHARE, "--ref", REF, "--ref", TIP, "--traffic", "--json", out], { env: { ...process.env, ...(token ? { GRAFANA_AGENT_TOKEN: token } : {}) } });
   return JSON.parse(await readFile(out, "utf8")) as ShareResult;
 }
 
@@ -287,7 +300,7 @@ async function main(): Promise<void> {
   const at = Date.now();
   const dir = await mkdtemp(join(tmpdir(), "vent-gateway-"));
   try {
-    const fetched = await run("git", ["fetch", "--quiet", "origin", "main"]).then(() => null, (error: unknown) => errorText(error));
+    const fetched = await run("git", ["fetch", "--quiet", "origin", "main", "sieun/dev"]).then(() => null, (error: unknown) => errorText(error));
     const token = await grafanaToken().catch((error: unknown) => ({ error: errorText(error) }));
     const tokenText = typeof token === "string" ? token : undefined;
     const [shareResult, hooks, calls, keys, hosts] = await Promise.all([
@@ -298,7 +311,7 @@ async function main(): Promise<void> {
       Promise.all(HOSTS.map(health)),
     ]);
     const result = ventMetrics({ share: shareResult, webhooks: hooks, calls, keys, health: hosts }, at);
-    if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main failed, so ${REF} may be old: ${fetched}`.slice(0, 300) });
+    if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main sieun/dev failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });

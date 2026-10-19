@@ -59,8 +59,8 @@ P = {
     "clerk": dict(strong=r"api\.clerk\.com|CLERK_(DEV_)?SECRET_KEY", sdk=r"svelte-clerk|@clerk/backend"),
     "notion": dict(strong=r"api\.notion\.com", sdk=r"(?!)"),
     "telegram": dict(strong=r"api\.telegram\.org|telegramSendMessageUrl", sdk=r"(?!)"),
-    "slack-webhook": dict(strong=r"hooks\.slack\.com|webhookUrl|webhook_url", sdk=r"(?!)"),
-    "posthog": dict(strong=r"posthog\.com|POSTHOG_KEY", sdk=r"posthog-node|/capture"),
+    "slack-webhook": dict(strong=r"hooks\.slack\.com|fetch\(\s*webhook_?[uU]rl", sdk=r"(?!)"),
+    "posthog": dict(strong=r"i\.posthog\.com|(?<!PUBLIC_)POSTHOG_KEY", sdk=r"posthog-node|/capture"),
     "cliproxy": dict(strong=r"CLIPROXY_(BASE_URL|API_KEY)|cliproxy_(base_url|api_key)|cliproxy\.virev|LITELLM_API_KEY", sdk=r"\b(Async)?(OpenAI|Anthropic)\(|\bnew (OpenAI|Anthropic)\b"),
     "openai-paid": dict(strong=r"api\.openai\.com|OPENAI_API_KEY|openai_api_key", sdk=r"\b(Async)?OpenAI\("),
     "elevenlabs": dict(strong=r"elevenlabs\.io|ELEVENLABS_API_KEY|elevenlabs_api_key", sdk=r"(?!)"),
@@ -72,7 +72,7 @@ P = {
     "zerobounce": dict(strong=r"zerobounce\.net|ZEROBOUNCE_API_KEY|zerobounce_api_key", sdk=r"(?!)"),
     "geonode": dict(strong=r"geonode\.(io|com)|proxy_url|proxy_endpoints", sdk=r"(?!)"),
     "grafana-slack": dict(strong=r"type:\s*slack|SLACK_BOT_TOKEN\w*|slack\.com/api", sdk=r"(?!)"),
-    "seo": dict(strong=r"indexnow|searchconsole|webmasters", sdk=r"(?!)"),
+    "seo": dict(strong=r"api\.indexnow\.org|bing\.com/indexnow|searchconsole\.googleapis\.com|googleapis\.com/webmasters/", sdk=r"(?!)"),
 }
 
 def provider_of(row: int, name: str) -> str:
@@ -101,11 +101,15 @@ CALLER = {"convex": "convex", "search": "search", "api-portal": "api-portal", "a
 # A Vent sign: the app's Vent helper, the Vent env names, or the Vent headers.
 VENT_RE = re.compile(
     r"\bVENT_(URL|KEY|INTEGRATION)\b|\bvent(Url|Fetch|Request|Auth|Headers|Client)\b|\bvent_(url|auth|headers|client|base)\b"
-    r"|\breadVent\b|X-Vent-|lib/server/vent['\"]|lib/vent['\"]|/vent\.(m?js|ts)['\"]|from \.+vent import|from (src\.)?vent import|import vent\b"
+    r"|\breadVent\b|(?i:x-vent-)|lib/server/vent['\"]|lib/vent['\"]|/vent\.(m?js|ts)['\"]|[-/]vent['\"]|from \.+vent import|from (src\.)?vent import|import vent\b"
+    r"|\b_?vent_(post|call|api|credential)\b|\bvent\.call\(|\bVentSession\b|VENT_PROVIDER_TOKEN"
 )
 COMMENT_RE = re.compile(r"^\s*(//|#|\*|/\*|<!--)")
 # stripe-node's fetch client matches the Stripe origin to rewrite it onto Vent (egress guard exception).
-ALLOW_RE = re.compile(r"\bSTRIPE_ORIGIN\s*=")
+# OAuth scope strings name a googleapis URL but make no call.
+ALLOW_RE = re.compile(r"\bSTRIPE_ORIGIN\s*=|googleapis\.com/auth/")
+# An SDK built with an empty key cannot call its provider (the @convex-dev/resend component).
+KEYLESS_RE = re.compile(r"apiKey:\s*(''|\"\")")
 
 
 def code_lines(path: str, text: str) -> list[tuple[int, str]]:
@@ -261,7 +265,7 @@ def imported_files(path: str, text: str, tree: "Tree") -> list[str]:
 
 def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozenset[int] = frozenset()) -> Verdict:
     sig = P[site.provider]
-    strong, sdk = re.compile(sig["strong"], re.I if site.provider == "seo" else 0), re.compile(sig["sdk"])
+    strong, sdk = re.compile(sig["strong"]), re.compile(sig["sdk"])
     v = Verdict("unclear")
     texts = {}
     for path in site.files:
@@ -271,7 +275,7 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
             continue
         texts[path] = text
         lines = code_lines(path, text)
-        has_vent = any(VENT_RE.search(l) for _, l in lines)
+        has_vent = any(VENT_RE.search(l) for _, l in lines) or bool(KEYLESS_RE.search(text))
         for n, l in lines:
             if VENT_RE.search(l):
                 v.vent.append(f"{path}:{n}")
@@ -284,8 +288,9 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
         # No sign in the site's own files: look one level into the modules they import.
         for path, text in list(texts.items()):
             for dep in imported_files(path, text, tree):
-                lines = code_lines(dep, tree.read(dep) or "")
-                has_vent = any(VENT_RE.search(l) for _, l in lines)
+                dep_text = tree.read(dep) or ""
+                lines = code_lines(dep, dep_text)
+                has_vent = any(VENT_RE.search(l) for _, l in lines) or bool(KEYLESS_RE.search(dep_text))
                 for n, l in lines:
                     if VENT_RE.search(l):
                         v.vent.append(f"{dep}:{n}")

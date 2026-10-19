@@ -11,7 +11,7 @@ const UP = [{ url: "https://vent.virev.ai", status: 200 }, { url: "https://vent-
 
 function reads(overrides: Partial<VentReads> = {}): VentReads {
   return {
-    share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
+    share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] }, "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
     webhooks: webhookVerdicts({ http: "", ventRoute: VENT_ROUTE }),
     calls: [{ outcome: "success", status: "200", calls: 99 }, { outcome: "upstream_error", status: "502", calls: 1 }, { outcome: "refused", status: "401", calls: 50 }],
     keys: { locations: { "convex production befitting-sparrow-356": ["VENT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY"] }, unreadable: {} },
@@ -99,4 +99,57 @@ test("registry webhook sources whose path receive.ts still routes read as direct
   assert.equal(ventMetrics(reads({ webhooks: moved }), 0).metrics.through_vent_pct, 100);
   const unlisted = webhookVerdicts({ http: "", ventRoute: VENT_BY_SOURCES, registry: { names: ["stripe"], paths: {}, routed: true } });
   assert.deepEqual(unlisted.map(hook => hook.vent), [true, false, false, false]);
+});
+
+// On 2026-10-19 the Vent cutover train checked the 7 rows the old rules read as direct or partial at sieun/dev 36d3466814 (#2, #13, #19, #35,
+// #36, #71, #77): each one goes through Vent, and the session's vent_share.py read 69 of 70 there. Each fixture holds the lines of the real file.
+const DETECTOR_CASES: Record<string, { row: number; provider: string; files: Record<string, string>; deps?: Record<string, string> }> = {
+  "#2 Resend component with an empty key": { row: 2, provider: "resend", files: {
+    "convex/search/senders/resendClient.ts": "import { components } from '../../_generated/api';\nimport { Resend } from '@convex-dev/resend';\n\nexport const resend = new Resend(components.resend, {\n\tapiKey: '',\n\ttestMode: false,\n});\n",
+    "convex/search/campaigns/scheduler.ts": "import { sendGmailEmail } from '../senders/gmailActions';\nimport { DEPLOYMENT_TAG, deploymentTagValue, resend } from '../senders/resendClient';\n" }, deps: {
+    "convex/search/senders/gmailActions.ts": "import { ventAuth, ventFetch, ventUrl } from '../../lib/vent';\n" } },
+  "#13 Drive OAuth scope string": { row: 13, provider: "google-drive", files: {
+    "convex/search/integrations/driveSyncActions.ts": "import { VENT_PROVIDER_TOKEN_HEADER, ventAuth, ventFetch, ventUrl } from '../../lib/vent';\nexport const DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';\n\treturn await ventFetch(ventUrl('google-drive', `/drive/v3${path}`), {\n\t\theaders: { ...ventAuth(), [VENT_PROVIDER_TOKEN_HEADER]: token },\n" } },
+  "#19 customer Slack webhook secret in x-vent-provider-token": { row: 19, provider: "slack-webhook", files: {
+    "convex/search/workflows/stepActions.ts": "import { VENT_PROVIDER_TOKEN_HEADER, ventAuth, ventFetch, ventUrl } from '../../lib/vent';\n\tconst webhookUrl = await integrationSecret(ctx, orgId, String(config.connectionId ?? ''), 'slack_webhook');\n\tif (!isSlackWebhookUrl(webhookUrl)) throw badRequest('stored Slack webhook URL is invalid');\n\tconst res = await ventFetch(ventUrl('slack-webhook-user', ''), {\n\t\theaders: { ...ventAuth(), [VENT_PROVIDER_TOKEN_HEADER]: slackWebhookSecret(webhookUrl) },\n" } },
+  "#35 svelte-clerk handler with the Backend API through clerk-vent": { row: 35, provider: "clerk", files: {
+    "apps/search/src/hooks.server.ts": "import { env } from '$env/dynamic/private';\nimport { withClerkHandler } from 'svelte-clerk/server';\nimport { clerkVentOptions, withVentTokens } from '$lib/server/clerk-vent';\n" } },
+  "#36 PostHog posts to ${VENT_URL}/posthog": { row: 36, provider: "posthog", files: {
+    "apps/search/src/lib/server/posthog.ts": "import { env as publicEnv } from '$env/dynamic/public';\nimport { readVent } from './vent';\n\treturn [publicEnv.PUBLIC_POSTHOG_KEY].find(isUsable);\n\tconst vent = readVent(privateEnv);\n" } },
+  "#71 ci_watch posts through _vent_post and keeps slack_api as the Vent-down fallback": { row: 71, provider: "slack", files: {
+    "apps/infra/ci-server/alert/ci_watch.py": "def _vent_post(cfg, payload):\n    try:\n        return _chat_post(cfg[\"vent_api\"], credential(cfg[\"vent_credential\"]), payload)\n    except urllib.error.HTTPError as e:\n        code = e.headers.get(\"x-vent-error\") or vent_error_code(e.read())\n\ndef slack_post(cfg, text) -> bool:\n    if credential(cfg.get(\"vent_credential\", \"\")):\n        body = _vent_post(cfg, payload)\n    if body is None:\n        body = _chat_post(cfg[\"slack_api\"], token, payload)\n",
+    "apps/infra/ci-server/alert/config.json.j2": "{\n  \"vent_api\": {{ ci.watch.vent_api | default('https://vent.virev.ai/slack-dev') | to_json }},\n  \"slack_api\": \"https://slack.com/api\",\n}\n" } },
+  "#77 IndexNow key-file config with the POSTs through vent.call": { row: 77, provider: "seo", files: {
+    "scripts/seo/virev_seo/indexnow.py": "from virev_seo import vent\nfrom virev_seo.config import INDEXNOW_KEY_DIR, INDEXNOW_ROOT_KEY_DIR, METRICS_DIR\nINDEXNOW_PATH = \"/indexnow/indexnow\"\nSENT_FILE = METRICS_DIR / \"indexnow-sent.json\"\nclass IndexNowError(RuntimeError):\n    pass\n    status, body = vent.call(\"indexnow\", INDEXNOW_PATH, payload)\n" } },
+};
+
+// A real bypass the narrowed rules must still catch: search's PostHog client at origin/main a8f85b4206 reads the private POSTHOG_KEY and
+// posts with posthog-node to us.i.posthog.com, with no Vent sign in the file.
+const BYPASS = { row: 36, provider: "posthog", files: {
+  "apps/search/src/lib/server/posthog.ts": "import { PostHog } from 'posthog-node';\nimport { env as privateEnv } from '$env/dynamic/private';\n\treturn [privateEnv.POSTHOG_KEY, privateEnv.PUBLIC_POSTHOG_KEY, publicEnv.PUBLIC_POSTHOG_KEY].find(isUsable);\n\t\t'https://us.i.posthog.com'\n" } };
+
+test("vent-share.py reads the 7 rows the cutover train checked as Vent, and still reads a direct PostHog client as direct", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
+  const code = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
+    "sys.modules['vs'] = vs; spec.loader.exec_module(vs)\nclass T:\n  def __init__(s, files): s.files, s.ref = files, 'fixture'\n  def read(s, p): return s.files.get(p)\n" +
+    "out = {}\nfor name, c in json.loads(sys.argv[2]).items():\n  site = vs.Site(c['row'], 'app', '', name, '', c['provider'], list(c['files']))\n" +
+    "  v = vs.judge(site, T({**c['files'], **c.get('deps', {})}))\n  out[name] = [v.status, v.direct]\nprint(json.dumps(out))";
+  const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify({ ...DETECTOR_CASES, bypass: BYPASS })], { encoding: "utf8" })) as Record<string, [string, string[]]>;
+  for (const name of Object.keys(DETECTOR_CASES)) assert.deepEqual(got[name], ["vent", name.startsWith("#71") ? got[name]![1] : []], name);
+  assert.equal(got.bypass![0], "direct");
+  assert.match(got.bypass![1].join("\n"), /posthog-node|POSTHOG_KEY|us\.i\.posthog\.com/);
+});
+
+test("the by-code counts read at main and at the sieun/dev tip, and a direct row at the tip is flagged for the cutover train", () => {
+  const share = { refs: {
+    "origin/main": { sha: "a", sites: [site(0, "direct"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] },
+    "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "partial", { direct: ["x.ts:1: fetch('https://api.stripe.com')"] }), site(63, "direct", { exception: "GeoNode" })] },
+  }, traffic: { production: { sites_with_vent_traffic: [1] } } };
+  const output = ventMetrics(reads({ share }), 0);
+  assert.deepEqual([output.metrics.code_rows, output.metrics.code_vent_sites, output.metrics.tip_code_vent_sites], [3, 1, 1]);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "tip_site_direct").map(flag => flag.item), ["row 1"]);
+  const noTip = ventMetrics(reads({ share: { refs: { "origin/main": share.refs["origin/main"] }, traffic: share.traffic } }), 0);
+  assert.equal(noTip.metrics.tip_code_vent_sites, UNMEASURED_PCT);
+  assert.equal(noTip.metrics.source_errors, 1);
 });
