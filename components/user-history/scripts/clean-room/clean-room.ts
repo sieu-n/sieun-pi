@@ -7,7 +7,8 @@
  * so every run is torn down (owner 10-18: "btw when blind test done always clean up").
  *
  *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir> [--chat <id>]
- *     (a scenario with a control chat also takes --control-name <name>, for when a timed-out create left the stock name taken)
+ *     (setup that stopped before its window line runs again with the same --run: it finds each create's outcome and never builds the project
+ *     again; --chat adopts a chat in its own folder without building anything; a scenario with a control chat also takes --control-name <name>)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
@@ -33,6 +34,7 @@ import { DutyStore } from "../../src/chat-duty-store.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
+import { adoptedWorkspace, type CreateIo, type CreateRecord, createOrAdopt, findSession, sessionFacts } from "./create-reconcile.ts";
 import { emptyBoard, parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
@@ -109,10 +111,43 @@ async function call(srv: Server, method: "GET" | "POST", route: string, body?: u
 const requestId = (): string => randomBytes(12).toString("hex");
 const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high" };
 
-/** Creates the test chat or a fixture thread through `POST api/threads`, the route the New chat dialog uses. */
-async function createThread(srv: Server, kind: "chat" | "thread", name: string, cwd: string, message: string): Promise<string> {
-  const result = await call(srv, "POST", "api/threads", { requestId: requestId(), cwd, message, name, kind, ...MODEL }) as { id: string };
-  return result.id;
+const SESSIONS = join(homedir(), ".prime/agent/sessions");
+
+/** `<run>/setup.pending.json`: the project setup built and every create it asked for, written before each POST and kept until the window starts. */
+interface Pending { sandbox: string; creates: Record<string, CreateRecord> }
+const pendingFile = (run: string): string => join(run, "setup.pending.json");
+
+/** One `POST api/threads`, the route the New chat dialog uses, with no client timeout: the server answers once its create settles. */
+async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateIo["post"]> {
+  let status = 0;
+  let text = "";
+  try {
+    const response = await fetch(srv.base + "api/threads", { method: "POST", headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
+      ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
+      body: JSON.stringify({ requestId: record.requestId, cwd: record.cwd, message: record.message, name: record.name, kind: record.kind, ...MODEL }) });
+    status = response.status;
+    text = await response.text();
+  } catch (error) { return { kind: "unknown", error: error instanceof Error ? `${error.message}${error.cause instanceof Error ? `: ${error.cause.message}` : ""}` : String(error) }; }
+  let body: { id?: unknown; error?: unknown } = {};
+  try { body = JSON.parse(text) as typeof body; } catch { /* a gateway page */ }
+  if (status === 200 && typeof body.id === "string") return { kind: "made", id: body.id };
+  if (typeof body.error === "string") return { kind: "refused", status, error: body.error };
+  return { kind: "unknown", error: `${status} ${text.slice(0, 300)}` };
+}
+
+/** Creates the test chat, its control or a fixture thread, or adopts the session an earlier try of the same create made (create-reconcile.ts). */
+async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string): Promise<{ id: string; name: string }> {
+  const save = (): void => writeJson(pendingFile(run), pending);
+  const record = pending.creates[role] ??= { kind, name, names: [name], cwd, message, requestId: requestId(), since: Date.now() };
+  const io: CreateIo = {
+    post: one => postCreate(srv, one),
+    find: async one => findSession(SESSIONS, one, new Set(await new IdIndex(join(DATA, "chats.json"), "Chat index").ids())),
+    archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, {}).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
+    deliver: async (id, text, rid) => { await call(srv, "POST", `api/threads/${id}/prompt`, { message: text, images: [], mode: "steer", requestId: rid }); },
+    save, log: line => log(run, line), newRequestId: requestId, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
+  };
+  const { id } = await createOrAdopt(record, io);
+  return { id, name: record.name };
 }
 const setCheckIn = (srv: Server, chat: string, body: Record<string, unknown>) => call(srv, "POST", `api/threads/${chat}/check-in`, body);
 /** This job's session id, sent as the agent that changes a check-in, so the setting names who paused it. */
@@ -143,30 +178,49 @@ async function setup(flags: Record<string, string>): Promise<void> {
   if (existsSync(join(run, "run.json"))) throw new Error(`${run} already holds a run`);
   mkdirSync(run, { recursive: true });
   copyFileSync(criteria, join(run, "criteria.md"));
-  const sandbox = scenario.prepare ? scenario.prepare(run) : scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
-  if (scenario.agentsMd) { mkdirSync(sandbox, { recursive: true }); writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox)); }
-  const everyMin = Number(need(flags, "every-min"));
-  const name = need(flags, "name");
-  const srv = await server();
-  const headMessage = scenario.headMessage(name);
-  const control = scenario.control && flags["control-name"] ? { ...scenario.control, name: flags["control-name"] } : scenario.control;
-  // --chat adopts a chat whose create the daemon answered after this script's fetch gave up (10-16 06:52Z: 171.7 s at load 82).
+  // A setup that stopped before its window line runs again with the same run folder: the project it built and its creates come from the
+  // pending file, and nothing is built twice. --chat adopts a chat by id in the folder its session runs in and builds nothing either.
+  const earlier = existsSync(pendingFile(run)) ? readJson<Pending>(pendingFile(run)) : undefined;
   const adopted = flags.chat;
-  const [chat, controlId] = await Promise.all([adopted ?? createThread(srv, "chat", name, sandbox, headMessage),
-    control ? createThread(srv, "chat", control.name, sandbox, control.message(control.name)) : Promise.resolve(undefined)]);
-  const adoptedAt = adopted ? Date.parse(/"timestamp":"([^"]+)"/.exec(readFileSync(join(homedir(), ".prime/agent/sessions", `${adopted}.jsonl`), "utf8"))?.[1] ?? "") : NaN;
+  const adoptedChat = adopted ? sessionFacts(join(SESSIONS, `${adopted}.jsonl`)) : undefined;
+  let sandbox: string;
+  if (adopted) sandbox = adoptedWorkspace(adoptedChat, earlier?.sandbox);
+  else if (earlier) {
+    if (!existsSync(earlier.sandbox)) throw new Error(`${run}: the project ${earlier.sandbox} that setup built is gone; setup never builds it again, so start a new run folder`);
+    sandbox = earlier.sandbox;
+  } else {
+    sandbox = scenario.prepare ? scenario.prepare(run) : scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
+    if (scenario.agentsMd) { mkdirSync(sandbox, { recursive: true }); writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox)); }
+  }
+  const pending: Pending = earlier ?? { sandbox, creates: {} };
+  writeJson(pendingFile(run), pending);
+  const everyMin = Number(need(flags, "every-min"));
+  const srv = await server();
+  const control = scenario.control && flags["control-name"] ? { ...scenario.control, name: flags["control-name"] } : scenario.control;
+  if (adopted && adoptedChat) {
+    const named = adoptedChat.name || need(flags, "name");
+    pending.creates.chat = { kind: "chat", name: named, names: [named], cwd: sandbox, message: scenario.headMessage(named), requestId: "", since: adoptedChat.at, id: adopted, adopted: true };
+  }
+  const asked = pending.creates.chat?.names[0] ?? need(flags, "name");
+  const [made, madeControl] = await Promise.all([createThread(srv, run, pending, "chat", "chat", asked, sandbox, scenario.headMessage(asked)),
+    control ? createThread(srv, run, pending, "control", "chat", control.name, sandbox, control.message(control.name)) : Promise.resolve(undefined)]);
+  const chat = made.id;
+  const name = made.name;
+  const headMessage = pending.creates.chat!.message;
+  const controlId = madeControl?.id;
+  const adoptedAt = pending.creates.chat!.adopted ? sessionFacts(join(SESSIONS, `${chat}.jsonl`))?.at ?? NaN : NaN;
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
-  log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger and it stays out of the owner's sidebar and For you`);
-  if (control && controlId) {
-    await setCheckIn(srv, controlId, { pause: "forever" });
-    log(run, `created control chat ${controlId} "${control.name}", filed the same way, and paused its check-in`);
+  log(run, `${pending.creates.chat!.adopted ? "adopted" : "created"} chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger and it stays out of the owner's sidebar and For you`);
+  if (control && madeControl) {
+    await setCheckIn(srv, madeControl.id, { pause: "forever" });
+    log(run, `created control chat ${controlId} "${madeControl.name}", filed the same way, and paused its check-in`);
   }
   const fixtures: Record<string, string> = {};
   const fixtureBriefs: string[] = [];
   let changes: string[] = [];
   const state: RunState = { scenario: scenario.name, chat: { id: chat, name }, fixtures, sandbox, everyMs: everyMin * 60_000, release: liveRelease(),
     board: flags.board ?? "", seeds: [headMessage], setupAt: Number.isNaN(adoptedAt) ? Date.now() : adoptedAt, windowStart: 0,
-    ...(control && controlId ? { control: { id: controlId, name: control.name } } : {}) };
+    ...(control && madeControl ? { control: { id: madeControl.id, name: madeControl.name } } : {}) };
   if (scenario.board) {
     await setCheckIn(srv, chat, { pause: "forever" });
     log(run, "paused its check-in while the board is seeded");
@@ -174,7 +228,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
     for (const fixture of scenario.fixtures) {
       const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
       const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
-      const id = await createThread(srv, "thread", fixture.name, sandbox, brief);
+      const { id } = await createThread(srv, run, pending, `fixture:${fixture.name}`, "thread", fixture.name, sandbox, brief);
       await registry.add([fixture.name, id], name, chat);
       fixtures[fixture.name] = id;
       fixtureBriefs.push(brief);
@@ -191,6 +245,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
   await setCheckIn(srv, chat, { everyMs: state.everyMs, ...(scenario.board ? { pause: null } : {}) });
   state.windowStart = state.setupAt;
   writeJson(join(run, "run.json"), state);
+  rmSync(pendingFile(run), { force: true });
   log(run, `check-in every ${everyMin} min on ${state.release}; the measured window started at ${new Date(state.windowStart).toISOString()} and nobody steps in`);
 }
 
