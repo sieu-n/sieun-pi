@@ -25,6 +25,8 @@ export interface Stored extends OutboxEntry {
   root?: string;
   /** Agent messages only: what the sender meant it as, set when it is queued (`AgentKind`); absent reads as "message". */
   kind?: AgentKind;
+  /** Wakes only: when the session set the wake (`Wake.since`), so a wake an archived chat set after its archive still goes. */
+  setAt?: number;
 }
 
 /**
@@ -34,7 +36,7 @@ export interface Stored extends OutboxEntry {
 export type AgentKind = "wake" | "retry" | "message";
 
 /** What a caller hands the outbox. */
-export type OutboxSubmit = Pick<Stored, "id" | "threadId" | "text" | "images" | "mode" | "fingerprint"> & { root?: string; kind?: AgentKind };
+export type OutboxSubmit = Pick<Stored, "id" | "threadId" | "text" | "images" | "mode" | "fingerprint"> & { root?: string; kind?: AgentKind; setAt?: number };
 
 /** Where a send that may have gone is. "unknown": the daemon did not answer, so it is looked for again later and not sent. */
 export type Copy = "landed" | "queued" | "absent" | "unknown";

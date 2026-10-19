@@ -138,8 +138,11 @@ export function agedText(text: string, at: number, now: number): string {
 /** The text without the age header `agedText` put on it. */
 export const unaged = (text: string): string => text.replace(AGED, "");
 
-/** A record that stopped the target: a deleted job takes nothing more, and an archived chat takes only a message (`AgentKind`). */
-export interface Stop { record: "delete" | "archive"; reason: string }
+/**
+ * A record that stopped the target: a deleted job takes nothing more, and an archived chat takes only a message (`AgentKind`) and the wakes it
+ * set after its archive (`at`, when the archive recorded its time).
+ */
+export interface Stop { record: "delete" | "archive"; reason: string; at?: number }
 
 /**
  * The records that stop a target: `deleted-jobs.json` lists the jobs the cleanup deleted, by root and job folder
@@ -151,10 +154,19 @@ export function stopRecords(dataDir: string): (session: string, file: string | n
     const job = file ? /\/session-artifacts\/([0-9a-f-]{36})\/([^/]+)\/[^/]+\.jsonl$/.exec(file) : null;
     const deleted = job ? (await read("deleted-jobs.json") as Record<string, Record<string, unknown>> | null)?.[job[1]!]?.[job[2]!] : undefined;
     if (typeof deleted === "number") return { record: "delete", reason: `the cleanup deleted the target job ${job![2]} at ${new Date(deleted).toISOString()}` };
-    const archived = await read("archived-chats.json") as { ids?: unknown } | null;
-    return Array.isArray(archived?.ids) && archived.ids.includes(session) ? { record: "archive", reason: "the owner archived the target chat" } : null;
+    const archived = await read("archived-chats.json") as { ids?: unknown; at?: Record<string, unknown> } | null;
+    if (!Array.isArray(archived?.ids) || !archived.ids.includes(session)) return null;
+    const at = archived.at?.[session];
+    return { record: "archive", reason: "the owner archived the target chat", ...typeof at === "number" ? { at } : {} };
   };
 }
+
+/**
+ * Whether the target set this wake after the owner archived it: an archived chat that still works on messages asks for its own wakes. On 10-19
+ * chat-057a (01a14210), archived at 05:31:26Z, set a wake for its pool slot at 13:52Z; the outbox dropped it at 14:27:36Z as obsolete, and the
+ * chat sent no request until a message woke it at 14:55:38Z, while accounts served other trees from 14:3xZ.
+ */
+const setAfter = (stop: Stop, entry: Stored): boolean => stop.record === "archive" && entry.kind === "wake" && stop.at !== undefined && entry.setAt !== undefined && entry.setAt > stop.at;
 
 /** The root of a subagent's tree from its session file (`session-artifacts/<root>/...`); undefined for a root's own file. */
 export function treeOf(file: string | null): string | undefined {
@@ -227,19 +239,19 @@ export class AgentOutbox {
   /**
    * Keeps `text` for `session` on disk and sends it in the background; resolves once it is on disk. A copy of a message still waiting for the
    * same target, with only its ISO times changed (`sendKey`), is the same message. `root` is started when the daemon does not find the target.
-   * `kind` says what the sender meant it as (`AgentKind`).
+   * `kind` says what the sender meant it as (`AgentKind`), and `setAt` when the session set a wake.
    */
-  async deliver(session: string, text: string, root?: string, kind: AgentKind = "message"): Promise<void> {
-    await this.keep(session, text, root, kind);
+  async deliver(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<void> {
+    await this.keep(session, text, root, kind, setAt);
   }
 
   /** `deliver`, answering the id of the entry that holds the message. */
-  private async keep(session: string, text: string, root?: string, kind: AgentKind = "message"): Promise<string> {
+  private async keep(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
     const key = sendKey(session, text);
     const held = await this.outbox.pending(entry => sendKey(entry.threadId, entry.text) === key);
     if (held) return held.id;
     const id = `m-${randomUUID()}`;
-    await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, kind, ...root ? { root } : {} });
+    await this.outbox.submit({ id, threadId: session, text, images: [], mode: "steer", fingerprint: key, kind, ...root ? { root } : {}, ...setAt === undefined ? {} : { setAt } });
     return id;
   }
 
@@ -265,7 +277,7 @@ export class AgentOutbox {
     const file = await this.deps.fileOf(session).catch(() => null);
     const stop = await this.deps.stopped?.(session, file).catch(() => null);
     const kind = entry.kind ?? "message";
-    if (stop && (stop.record === "delete" || kind !== "message")) return { obsolete: stop.record === "delete" ? stop.reason : `${stop.reason}, and it is a ${kind}` };
+    if (stop && (stop.record === "delete" || (kind !== "message" && !setAfter(stop, entry)))) return { obsolete: stop.record === "delete" ? stop.reason : `${stop.reason}, and it is a ${kind}` };
     const key = replaceableKey(entry.text);
     const newer = key === undefined ? undefined : (await this.outbox.waiting(session)).find(other => other.at > entry.at && replaceableKey(other.text) === key);
     if (newer) return { obsolete: `the newer report ${newer.id} with the replaceable key "${key}" waits behind it` };

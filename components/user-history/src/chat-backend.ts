@@ -304,7 +304,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     startRoot: async root => {
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     } });
-  const agentMessage = { deliver: (session: string, text: string, root?: string, kind?: AgentKind) => agentOutbox.deliver(session, text, root, kind) };
+  const agentMessage = { deliver: (session: string, text: string, root?: string, kind?: AgentKind, setAt?: number) => agentOutbox.deliver(session, text, root, kind, setAt) };
   const stopWakes = quiet ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: replay ? async () => ({ done: false }) : readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopBriefs = quiet ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
