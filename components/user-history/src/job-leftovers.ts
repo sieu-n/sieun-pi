@@ -13,7 +13,7 @@ import type { RawProcess } from "./mac-usable-watch.ts";
  * itself: every process that carries the RLM_HARNESS_STATE_DIR of the job's session or of a session under it (its subagents) and sits under no
  * kernel and no Prime process (worker-footprint.py `strays`), and every Aside tab those sessions opened (`aside-browser-tabs.json` in their
  * session folders). Shared services (PM2, Aside, cua-driver) and Prime's own processes are never named, so ops guy's pm2 dev servers stay.
- * It also deletes the repo copies a job left in its wiki session folders and the /tmp and ~/scratch trees it made, after stopping the rig processes in them,
+ * It also deletes the repo copies a job left in its wiki session folders, the /tmp trees it made and the repo copies in the ~/scratch trees it made, after stopping the rig processes in them,
  * and the kernel-state.dill files and repo copies its sessions left in session-artifacts.
  */
 
@@ -38,7 +38,7 @@ export interface LeftoverSource {
   later: (ms: number, run: () => void) => void;
   /** Deletes the repo copies left in the wiki session folders these transcripts opened (`removeRepoCopies`); returns the folders it deleted. */
   removeCopies: (transcripts: readonly string[]) => Promise<readonly string[]>;
-  /** The /tmp and ~/scratch trees the sessions of these transcripts made (`madeTmpTrees`, `madeScratchTrees`); `dirs` are the gone sessions' folders. */
+  /** The /tmp trees the sessions of these transcripts made and the repo copies in their ~/scratch trees (`madeTmpTrees`, `scratchCopies`); `dirs` are the gone sessions' folders. */
   tmpTrees: (transcripts: readonly string[], dirs: readonly string[]) => Promise<readonly string[]>;
   /** The processes that run in or hold these dirs (worker-footprint.py `--inside`). */
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
@@ -103,19 +103,39 @@ export async function repoCopies(folder: string): Promise<string[]> {
       if (!entry.isDirectory()) continue;
       const path = join(dir, entry.name);
       if (entry.name === "node_modules" || entry.name === ".venv") { copies.push(path); continue; }
-      const inside = await readdir(path, { withFileTypes: true }).catch(() => []);
-      const names = new Set(inside.map(item => item.name));
-      const apps = inside.some(item => item.name === "apps" && item.isDirectory()) ? await readdir(join(path, "apps"), { withFileTypes: true }).catch(() => []) : [];
-      const copy = names.has(".git") || names.has("pnpm-workspace.yaml") ||
-        inside.some(item => item.name === "scripts" && item.isDirectory() && existsSync(join(path, "scripts", "repo"))) ||
-        (names.has("HEAD") && names.has("objects") && names.has("refs")) ||
-        apps.some(app => app.isDirectory() && ["package.json", "pyproject.toml"].some(file => existsSync(join(path, "apps", app.name, file))));
-      if (copy) copies.push(path);
+      if (await isRepoCopy(path)) copies.push(path);
       else await walk(path);
     }
   };
   await walk(folder);
   return copies;
+}
+
+/** Whether a folder is a repo copy by the markers of `repoCopies`. */
+async function isRepoCopy(path: string): Promise<boolean> {
+  const inside = await readdir(path, { withFileTypes: true }).catch(() => []);
+  const names = new Set(inside.map(item => item.name));
+  const apps = inside.some(item => item.name === "apps" && item.isDirectory()) ? await readdir(join(path, "apps"), { withFileTypes: true }).catch(() => []) : [];
+  return names.has(".git") || names.has("pnpm-workspace.yaml") ||
+    inside.some(item => item.name === "scripts" && item.isDirectory() && existsSync(join(path, "scripts", "repo"))) ||
+    (names.has("HEAD") && names.has("objects") && names.has("refs")) ||
+    apps.some(app => app.isDirectory() && ["package.json", "pyproject.toml"].some(file => existsSync(join(path, "apps", app.name, file))));
+}
+
+/**
+ * What a job's end deletes in the ~/scratch trees a gone job made (`madeScratchTrees`): the repo copies below each tree (`repoCopies`), and the
+ * folders of a tree that is a repo copy itself, so the reports, logs and run output a job keeps beside them stay. On 10-19 at 01:27Z and 01:53Z
+ * the sweep of deleted jobs deleted ~/scratch/retire-2547, release-fold and saved-session-archive whole, minutes after chat 01a14210 had read
+ * their EVIDENCE.md, PASS.md and calls.jsonl, and the evidence of three finished jobs was lost. Of ~/scratch's 30.5 GB at 02:16Z, 15.5 GB sat in
+ * the repo copies this finds.
+ */
+export async function scratchCopies(trees: readonly string[]): Promise<string[]> {
+  const found: string[] = [];
+  for (const tree of trees) {
+    if (!await isRepoCopy(tree)) { found.push(...await repoCopies(tree)); continue; }
+    for (const entry of await readdir(tree, { withFileTypes: true }).catch(() => [])) if (entry.isDirectory()) found.push(join(tree, entry.name));
+  }
+  return found;
 }
 
 /** Whether git tracks a file under this path of the wiki content (an export a job meant to keep, such as 1458-land37-staging-converge-fix/drafts/u2). A failing git counts as tracked. */
@@ -430,7 +450,7 @@ export const leftoverSource: LeftoverSource = {
   tmpTrees: (transcripts, dirs) => {
     const fresh = transcripts.filter(file => !tmpCleared.has(file));
     for (const file of fresh) tmpCleared.add(file);
-    return fresh.length ? Promise.all([madeTmpTrees(fresh, dirs), madeScratchTrees(fresh, dirs)]).then(found => found.flat()) : Promise.resolve([]);
+    return fresh.length ? Promise.all([madeTmpTrees(fresh, dirs), madeScratchTrees(fresh, dirs).then(scratchCopies)]).then(found => found.flat()) : Promise.resolve([]);
   },
   inside: async dirs => {
     const answer = await helper(["--inside"], dirs.join("\n") + "\n") as { inside?: InsideProcess[] };

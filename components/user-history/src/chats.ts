@@ -143,7 +143,7 @@ interface Gathered {
 /** The log's note of the repo copies a gone job left in its wiki session folders, the /tmp trees it made and the kernel states and repo copies it left in session-artifacts, which the service deleted. */
 function copiesNote(left: Leftovers): string {
   return (left.copies.length ? `, deleted ${left.copies.length} repo copies (${left.copies.join(", ")})` : "") +
-    (left.tmp.length ? `, deleted ${left.tmp.length} /tmp trees (${left.tmp.slice(0, 5).join(", ")}${left.tmp.length > 5 ? ` and ${left.tmp.length - 5} more` : ""})` : "") +
+    (left.tmp.length ? `, deleted ${left.tmp.length} /tmp trees and ~/scratch repo copies (${left.tmp.slice(0, 5).join(", ")}${left.tmp.length > 5 ? ` and ${left.tmp.length - 5} more` : ""})` : "") +
     (left.artifacts.length ? `, deleted ${left.artifacts.length} kernel states and repo copies in session-artifacts (${left.artifacts.slice(0, 5).join(", ")}${left.artifacts.length > 5 ? ` and ${left.artifacts.length - 5} more` : ""})` : "");
 }
 
