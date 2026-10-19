@@ -41,6 +41,10 @@ test("on the owner's turn every call reaches him, also when a job report joins t
   assert.equal(joined.owner, true);
   const retry = owner("[check-in] Your last turn failed at 05:40 (429). The owner's message is still unanswered: \"is it live?\". Answer it first.", "05:45:00");
   assert.equal(tellTurn([...settled, retry]).owner, true);
+  const stopped = { role: "assistant", content: [], stopReason: "aborted", timestamp: at("05:31:00") } as unknown as ThreadMessage;
+  const restart = owner("[check-in] Your last turn failed at 05:31 (aborted). Re-check the board and continue.", "05:33:00");
+  assert.equal(tellTurn([...settled, owner("is it live?", "05:30:00"), stopped, restart]).owner, true, "a restart after an aborted owner turn is still his");
+  assert.equal(tellTurn([...settled, job("taken", "05:20:00"), said("noted", "05:20:30"), restart]).owner, false);
 });
 
 test("the feed shows a held call in the turn's notes and a sent one as a bubble", () => {
@@ -54,7 +58,7 @@ test("the feed shows a held call in the turn's notes and a sent one as a bubble"
 
 test("each wake-up in the model's view carries the note, and the owner's messages do not", () => {
   const notice = owner("[job] deploy gate autovacuum ended at 05:10 with no report", "05:10:00");
-  const retry = owner("[check-in] Your last turn failed. The owner's message is still unanswered: \"hi\". Answer it first.", "05:12:00");
+  const retry = owner("[check-in] Your last turn failed at 05:11 (aborted). Re-check the board and continue.", "05:12:00");
   const view = withWakeNotes([asked, job("taken", "05:05:00"), notice, retry]);
   assert.ok(view);
   const noted = view.map(message => JSON.stringify(message).includes(WAKE_NOTE));

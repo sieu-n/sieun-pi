@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { messageIdNote, OWNER_RETRY_MARK, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
@@ -74,10 +74,15 @@ export function withMessageIds<M extends ContextMessage>(messages: readonly M[])
 }
 
 /**
- * The line after each wake-up in a chat's model view (an agent message, a child's exit, a server note other than an owner retry), so every wake
+ * The line after each wake-up in a chat's model view (an agent message, a child's exit, a server note other than a turn restart), so every wake
  * path says the default at the point the chat reads it (c117). It depends only on its own message, so the cached prefix holds.
  */
 export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question]";
+/**
+ * The server's restart of a failed turn. It belongs to the turn that failed: after an aborted owner turn the note carries no OWNER_RETRY_MARK,
+ * and the answer it brings is still his (10-19 measurement: 2 of 4 labelled restart messages were needed answers).
+ */
+const revival = (text: string): boolean => text.startsWith(`${CHECK_IN_PREFIX}Your last turn failed at `);
 const WAKE_TYPES = new Set(["agent_message", "rlm_child_terminal_notice", "rlm_child_failure", "heartbeat_prompt"]);
 
 /** The model's view of a chat with `WAKE_NOTE` after each wake-up; undefined when it has none. */
@@ -88,7 +93,7 @@ export function withWakeNotes<M extends ContextMessage & { customType?: unknown 
     if (!(typeof content === "string" || Array.isArray(content))) return message;
     const text = messageText({ content: content as string | { type: string; text?: string }[] }).trim();
     const wake = message.role === "custom" ? typeof message.customType === "string" && WAKE_TYPES.has(message.customType)
-      : message.role === "user" && serverNote(text) !== undefined && !text.includes(OWNER_RETRY_MARK);
+      : message.role === "user" && serverNote(text) !== undefined && !revival(text);
     if (!wake) return message;
     changed = true;
     const note = { type: "text", text: WAKE_NOTE };
@@ -135,12 +140,12 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   for (const message of messages) {
     if (message.role === "user" && !serverNote(messageText(message).trim())) ownerIds.add(ownerMessageId(message.timestamp));
   }
-  return { owner: turnStarter(messages) === "owner", ownerIds };
+  return { owner: turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner", ownerIds };
 }
 
 /**
  * What `tell_owner` answers. On a turn the owner started, or with a `reply_to` that names one of his messages, any text reaches him as its own
- * bubble. On any other turn it reaches him only when `why` names a case (done, decision, blocker, answer) and `about` names that goal,
+ * bubble; a server restart of a failed turn keeps that turn's starter. On any other turn it reaches him only when `why` names a case (done, decision, blocker, answer) and `about` names that goal,
  * decision, blocker or question; else it is held, the feed shows it in the turn's notes, and the answer says how to send it if it is one
  * (c117; on 10-19 469 of 597 messages in a day came on turns the owner did not start, and the brief's rule since c104 had not held them).
  * Length and form stay brief rules (c81, c97).
