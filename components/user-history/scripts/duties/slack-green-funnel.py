@@ -4,8 +4,8 @@ Usage: python3 slack-green-funnel.py <dir with slack-green's scripts/seo-agent> 
 
 slack-green-funnel.ts extracts slack-green's scripts/seo-agent and scripts/posthog from a git ref into a temp folder, so the 28-day numbers come
 from conversion_targets.py's own window_report (the funnel dashboard's definitions) without a checkout. It adds one query: real people (the
-dashboard's test, QA and likely-bot filters) who opened the home page of any locale signed out (no ?noredirect=true, the signed-in path) in the
-last 24 h and in the last 7 days, how many of them got an sg-exp-home exposure, and all real home visitors and flag callers in 24 h. It adds a second: the
+dashboard's test, QA and likely-bot filters) who opened the home page of any locale signed out (no ?noredirect=true, the signed-in path, and
+not after $identify in the same session) in the last 24 h and in the last 7 days, how many of them got an sg-exp-home exposure, and all real home visitors and flag callers in 24 h. It adds a second: the
 cohort of real visitors whose first real public page was 56 to 28 days ago, and how many of them signed up and then started Pro or bought
 the CLI within 28 days of that visit (the duty's headline). <weeks> adds one 7-day row per week before today, like conversion_targets.py --weeks.
 Prints one JSON object; a query that fails gives its error text instead of numbers.
@@ -52,32 +52,52 @@ def home_test():
     # slack-green PR #256 (207d4d5, 10-15) runs the home test on the home page of all 11 locales, so a signed-out visit to any of them counts.
     home = f"event = '$pageview' AND match(properties.$pathname, '^{LOCALE}/?$')"
     eligible = f"{home} AND NOT match(coalesce(properties.$current_url, ''), 'noredirect=true')"
+    # A home view after $identify in the same visit (session) is a signed-in view: a blog reader who signs up with One Tap and then clicks
+    # through to /en arrives by client navigation, which the proxy's signed-in redirect never sees. On 10-19 one such person was 1 of the
+    # 3 misses that put home_test_reach_pct at 25 of 28; posthog-js sends experiment_arm_mismatch there, because identify moves the flag.
+    signed_out = "(identified = 0 OR first_home < signed_in_at)"
+    signed_out_24h = "(identified = 0 OR first_home_24h < signed_in_at)"
     rows = hogql(
         f"""
 SELECT countIf(home_24h) AS eligible, countIf(home_24h AND got) AS eligible_exposed, countIf(got_24h) AS exposed,
        countIf(home) AS eligible_7d, countIf(home AND got) AS eligible_exposed_7d, countIf(any_home_24h) AS home_visitors,
-       arrayDistinct(arrayFlatten(groupArray(flags))) AS flags
+       arrayDistinct(arrayFlatten(groupArray(flags))) AS flags, countIf(signed_in_home_24h AND NOT home_24h) AS signed_in_24h
 FROM (
     SELECT person_id,
-           countIf({eligible}) > 0 AS home,
-           countIf({eligible} AND {day}) > 0 AS home_24h,
-           countIf({home} AND {day}) > 0 AS any_home_24h,
-           countIf({flag}) > 0 AS got,
-           countIf({flag} AND {day}) > 0 AS got_24h,
-           groupUniqArrayIf(properties.$feature_flag, {flag} AND {day}) AS flags
-    FROM events
-    WHERE timestamp >= now() - INTERVAL 7 DAY
-      AND event IN ('$feature_flag_called', '$pageview')
-      AND NOT ({LIKELY_BOT})
-      AND {{filters}}
+           max(homes > 0 AND {signed_out}) AS home,
+           max(homes_24h > 0 AND {signed_out_24h}) AS home_24h,
+           max(homes_24h > 0 AND NOT {signed_out_24h}) AS signed_in_home_24h,
+           max(any_homes_24h > 0) AS any_home_24h,
+           max(flags_called > 0) AS got,
+           max(flags_called_24h > 0) AS got_24h,
+           arrayDistinct(arrayFlatten(groupArray(session_flags))) AS flags
+    FROM (
+        SELECT person_id, properties.$session_id AS session,
+               countIf({eligible}) AS homes,
+               countIf({eligible} AND {day}) AS homes_24h,
+               minIf(timestamp, {eligible}) AS first_home,
+               minIf(timestamp, {eligible} AND {day}) AS first_home_24h,
+               countIf(event = '$identify') AS identified,
+               minIf(timestamp, event = '$identify') AS signed_in_at,
+               countIf({home} AND {day}) AS any_homes_24h,
+               countIf({flag}) AS flags_called,
+               countIf({flag} AND {day}) AS flags_called_24h,
+               groupUniqArrayIf(properties.$feature_flag, {flag} AND {day}) AS session_flags
+        FROM events
+        WHERE timestamp >= now() - INTERVAL 7 DAY
+          AND event IN ('$feature_flag_called', '$pageview', '$identify')
+          AND NOT ({LIKELY_BOT})
+          AND {{filters}}
+        GROUP BY person_id, session
+    )
     GROUP BY person_id
 )
 """,
         FILTERS,
     )
-    eligible, eligible_exposed, exposed, eligible_7d, eligible_exposed_7d, home_visitors, flags = rows[0]
+    eligible, eligible_exposed, exposed, eligible_7d, eligible_exposed_7d, home_visitors, flags, signed_in_24h = rows[0]
     return {"eligible": eligible, "eligible_exposed": eligible_exposed, "exposed": exposed, "eligible_7d": eligible_7d,
-            "eligible_exposed_7d": eligible_exposed_7d, "home_visitors": home_visitors, "flags": sorted(flags)}
+            "eligible_exposed_7d": eligible_exposed_7d, "home_visitors": home_visitors, "flags": sorted(flags), "signed_in_24h": signed_in_24h}
 
 
 def cohort():
