@@ -248,13 +248,16 @@ export class SessionsDiff {
 }
 
 /**
- * A chat's agents in the order `chatAgents` (src/chat-agents.ts) gives them: working first, then the latest activity first, a stable sort.
+ * A chat's agents in the order `chatAgents` (src/chat-agents.ts) gives them: working first, by key, then the rest with the latest activity
+ * first, a stable sort. Working agents keep their places while they run: sorted by activity they swapped places every few seconds, and each
+ * swap moved a sidebar row, which restarted its spinner and cost a style recalc of the whole page (10-19, 195 row moves in 20 s on the live sidebar).
  * An agent that sleeps on a wake reads working (`withWaits`, after the sort), so it sorts with the agents whose turn ended.
  */
 export function sortAgents<Agent extends ChatAgent>(agents: Agent[]): Agent[] {
   const working = (agent: Agent) => Number(agent.state === "working" && !agent.wait);
   const at = new Map(agents.map(agent => [agent, Date.parse(agent.lastActivityAt ?? "") || 0]));
-  return agents.sort((left, right) => working(right) - working(left) || at.get(right)! - at.get(left)!);
+  return agents.sort((left, right) => working(right) - working(left)
+    || (working(left) ? (left.key < right.key ? -1 : left.key > right.key ? 1 : 0) : at.get(right)! - at.get(left)!));
 }
 
 /** The agents view a page holds after an agents frame: a whole view replaces it, and a delta patches it and sorts it unless it sent `order`. */
