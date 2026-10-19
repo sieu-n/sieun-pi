@@ -257,8 +257,16 @@ const daemonSaysFailed = (row: SessionSummary): boolean => row.statusLabel === "
  * The session files of children that are not running, for `SessionCuts`: the daemon's rows carry no stop reason, and a job that was archived and
  * aborted settles idle with no failure, so the panel read it as done (10-16 00:19:57Z). A new message changes the key.
  */
-export const cutSources = (children: readonly SessionSummary[]): CutSource[] => children.flatMap(row =>
-  row.sessionFile && nativeStatus(row) !== "running" ? [{ file: row.sessionFile, key: `${row.modified ?? ""}|${row.messageCount}` }] : []);
+export const cutSources = (children: readonly SessionSummary[]): CutSource[] => children.flatMap(row => {
+  let source = cutSourceOf.get(row);
+  if (source === undefined) {
+    source = row.sessionFile && nativeStatus(row) !== "running" ? { file: row.sessionFile, key: `${row.modified ?? ""}|${row.messageCount}` } : null;
+    cutSourceOf.set(row, source);
+  }
+  return source ? [source] : [];
+});
+/** Each daemon row object's `cutSources` entry, built once per row object as `rosterReads` is. */
+const cutSourceOf = new WeakMap<SessionSummary, CutSource | null>();
 
 /** Subagent summaries by parent session id, one per session id (the resident copy wins over a saved one). */
 export function childrenByParent(children: readonly SessionSummary[]): Map<string, SessionSummary[]> {
@@ -340,19 +348,31 @@ export function rosterChildren(children: readonly SessionSummary[], cuts?: Sessi
   for (const [parent, rows] of childrenByParent(children)) {
     const listed = rows.flatMap((row): ChildAgent[] => {
       if (!row.rlmChildId) return [];
-      const name = row.sessionName?.replace(/\s+/g, " ").trim();
-      const running = nativeStatus(row) === "running";
-      const failed = daemonSaysFailed(row);
-      const cut = running || failed ? null : cuts?.of(row.sessionFile) ?? null;
-      const status = running ? "running" : failed || cut ? "error" : "done";
-      // The session file's change counts as activity: a job between turns still gets its workers' reports (`liveJobs`).
-      const at = Math.max(...[row.lastActivityAt, row.modified].map(value => Date.parse(value ?? "")).filter(Number.isFinite));
-      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status, ...(cut ? { error: cutActivity(cut) } : {}),
-        ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
+      let read = rosterReads.get(row);
+      if (!read) { read = { running: nativeStatus(row) === "running", failed: daemonSaysFailed(row) }; rosterReads.set(row, read); }
+      const cut = read.running || read.failed ? null : cuts?.of(row.sessionFile) ?? null;
+      if (read.agent === undefined || read.cut !== cut) { read.cut = cut; read.agent = rosterAgent(row, row.rlmChildId, read.running, read.failed, cut); }
+      return [read.agent];
     });
     if (listed.length) byChat.set(parent, listed);
   }
   return byChat;
+}
+
+/**
+ * What `rosterChildren` read of each daemon row object, and the agent it built with the cut it had then. A roster update replaces only the rows
+ * it changed, so an unchanged row is not read again: on 10-19 a scratch serve at the live rate (13.3 roster updates a second) built every
+ * subagent's agent on each update, 6.9 s of its 68 s of main-thread time in 300 s. Callers must not change the agents.
+ */
+const rosterReads = new WeakMap<SessionSummary, { running: boolean; failed: boolean; cut?: Cut | null; agent?: ChildAgent }>();
+
+function rosterAgent(row: SessionSummary, id: string, running: boolean, failed: boolean, cut: Cut | null): ChildAgent {
+  const name = row.sessionName?.replace(/\s+/g, " ").trim();
+  const status = running ? "running" : failed || cut ? "error" : "done";
+  // The session file's change counts as activity: a job between turns still gets its workers' reports (`liveJobs`).
+  const at = Math.max(...[row.lastActivityAt, row.modified].map(value => Date.parse(value ?? "")).filter(Number.isFinite));
+  return { id, label: name || id, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status, ...(cut ? { error: cutActivity(cut) } : {}),
+    ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) };
 }
 
 /**
