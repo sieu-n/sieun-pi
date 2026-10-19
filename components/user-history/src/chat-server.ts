@@ -170,6 +170,15 @@ function checkInActor(req: IncomingMessage): CheckInActor {
   if (typeof session === "string") return { by: "agent", setter: idPattern.test(session) ? session : UNKNOWN_AGENT };
   return req.headers["x-chat-owner-ui"] === "1" ? OWNER_UI : { by: "agent", setter: UNKNOWN_AGENT };
 }
+/** One service.log line per `POST api/accounts`: the action, its thread, and who asked (checkInActor's headers), from which address and client. */
+export function accountActionLine(action: AccountAction, req: IncomingMessage): string {
+  const actor = checkInActor(req);
+  const who = actor.by === "owner" ? "the owner's page" : actor.setter === UNKNOWN_AGENT ? "an unnamed caller" : `agent ${actor.setter}`;
+  const target = "account" in action && action.account ? ` ${action.account}` : "";
+  const thread = "id" in action && action.id ? ` on ${action.id}` : "";
+  const agent = String(req.headers["user-agent"] ?? "-").slice(0, 80);
+  return `accounts: ${action.action}${target} (${action.provider})${thread} by ${who} from ${req.socket.remoteAddress ?? "-"} (${agent})`;
+}
 /** The kind of thread `POST api/threads` creates: a plain thread, or a chat. */
 function parseCheckInChange(body: Record<string, unknown>): CheckInChange {
   const change: CheckInChange = {};
@@ -969,6 +978,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       if (route === "api/accounts") {
         const action = parseAccountAction(body);
         const notice = await runAccountAction(action);
+        // The pool's own log names no caller: on 10-19 a pin of chat 01a15427 to an Off account (12:33:52Z to 12:36:07Z) could not be traced.
+        process.stderr.write(`${new Date().toISOString()} ${accountActionLine(action, req)}\n`);
         // A thread moved to another account goes again now if its turn failed or waits on a provider retry.
         if ((action.action === "use" || action.action === "follow") && action.id) await backend.chats.retryNow(action.id);
         json(res, 200, { ...await listAccounts("id" in action ? action.id : null), ...(notice ? { notice } : {}) }); return;

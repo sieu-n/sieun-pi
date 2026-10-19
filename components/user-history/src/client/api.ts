@@ -131,7 +131,7 @@ export const api = {
     const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
     return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);
   },
-  accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
+  accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000, OWNER_UI_HEADERS),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     return subscribeFeed({ feed: "login" }, (event, data) => { if (event === "login") onLogin(data as AccountLogin | null); });
   },
