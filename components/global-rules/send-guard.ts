@@ -330,8 +330,10 @@ function curlRead(args: string[], input = ""): string | null {
 }
 
 /**
- * True when a `convex run` targets this machine's own Convex (a loopback URL) and that deployment's VENT_URL answers mode mock on /healthz.
- * Every provider call from Convex goes through Vent, and a mock-mode Vent answers from its fakes, so the email or message never leaves.
+ * True when a `convex run` targets this machine's own Convex (a loopback URL), that deployment's VENT_URL answers mode mock on /healthz, and
+ * it holds no SMTP sender. Every provider call from Convex goes through Vent, and a mock-mode Vent answers from its fakes, so the email or
+ * message never leaves. An SMTP sender is the one path around Vent: convex/search/senders/smtpNode.ts sends through nodemailer straight to
+ * the sender's own server, so any row in an SMTP table, or a missing searchSmtpConnections table, keeps the refusal.
  * The target is the one the Convex CLI picks: --url with --admin-key first, else CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY from
  * the command's prefix, the environment, .env.local and .env. A cloud selector anywhere (--prod, --deployment, CONVEX_DEPLOYMENT,
  * CONVEX_DEPLOY_KEY), a `cd` before the run, two different URLs, a failed read or a real-mode Vent keeps the refusal.
@@ -355,13 +357,32 @@ function convexRunStaysLocal(args: string[], cwd: string, vars: Map<string, stri
 		adminKey ??= values("CONVEX_SELF_HOSTED_ADMIN_KEY")[0];
 	}
 	if (!adminKey || !LOOPBACK_URL.test(url)) return false;
-	const query = JSON.stringify({ path: "_system/cli/queryEnvironmentVariables:get", args: { name: "VENT_URL" }, format: "json" });
-	const env = curlRead(["-H", "@-", "-H", "Content-Type: application/json", "--data", query, `${url.replace(/\/+$/, "")}/api/query`], `Authorization: Convex ${adminKey}\n`);
+	const base = url.replace(/\/+$/, "");
+	const query = (path: string, args: object): unknown => {
+		const body = JSON.stringify({ path, args, format: "json" });
+		const reply = JSON.parse(curlRead(["-H", "@-", "-H", "Content-Type: application/json", "--data", body, `${base}/api/query`], `Authorization: Convex ${adminKey}\n`) ?? "") as { status?: unknown; value?: unknown };
+		if (reply.status !== "success") throw new Error("the Convex query failed");
+		return reply.value;
+	};
+	// numItems: 10000 is the page size `convex data` asks for (node_modules/convex/dist/esm/cli/lib/run.js runSystemPaginatedQuery); 1 asks only whether a row exists.
+	const page = (path: string, args: object, numItems: number): unknown[] => {
+		const rows: unknown[] = [];
+		for (let cursor: string | null = null; ; ) {
+			const value = query(path, { ...args, paginationOpts: { numItems, cursor } }) as { page?: unknown; isDone?: unknown; continueCursor?: unknown };
+			if (!Array.isArray(value.page)) throw new Error("the Convex page has no rows");
+			rows.push(...value.page);
+			if (value.isDone === true || rows.length) return rows;
+			cursor = String(value.continueCursor);
+		}
+	};
 	try {
-		const ventUrl = (JSON.parse(env ?? "") as { value?: { value?: unknown } }).value?.value;
+		const ventUrl = (query("_system/cli/queryEnvironmentVariables:get", { name: "VENT_URL" }) as { value?: unknown } | null)?.value;
 		if (typeof ventUrl !== "string" || !/^https?:\/\//i.test(ventUrl)) return false;
 		const health = JSON.parse(curlRead([`${ventUrl.replace(/\/+$/, "")}/healthz`]) ?? "") as { mode?: unknown };
-		return health.mode === "mock";
+		if (health.mode !== "mock") return false;
+		const smtpTables = page("_system/cli/tables", {}, 10000).map((t) => String((t as { name?: unknown }).name)).filter((name) => /smtp/i.test(name));
+		if (!smtpTables.includes("searchSmtpConnections")) return false;
+		return smtpTables.every((table) => page("_system/cli/tableData", { table, order: "desc" }, 1).length === 0);
 	} catch {
 		return false;
 	}

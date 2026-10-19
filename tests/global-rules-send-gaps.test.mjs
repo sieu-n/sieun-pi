@@ -200,22 +200,34 @@ test("be-1..be-4: our own email send entry points through convex run or the HTTP
   ]);
 });
 
-// A stand-in for this machine's Convex and its Vent, in a child process because the guard reads it with a blocking curl. /api/query answers
-// the VENT_URL of the admin key it gets: key "mock" names a Vent on /vent-mock that answers mode mock, key "real" one that answers mode real.
+// A stand-in for this machine's Convex and its Vent, in a child process because the guard reads it with a blocking curl. The admin key picks
+// the world: "mock" has a mock-mode Vent and an empty searchSmtpConnections table, "real" a real-mode Vent, "smtp" a mock-mode Vent and
+// one SMTP sender row, and "notable" a mock-mode Vent and no searchSmtpConnections table.
 const FAKE_LOCAL = `
 const http = require("node:http");
 const server = http.createServer((req, res) => {
-  const base = "http://127.0.0.1:" + server.address().port;
-  const key = String(req.headers.authorization || "").replace(/^Convex /, "");
-  const body = req.url === "/api/query" ? { status: "success", value: { name: "VENT_URL", value: base + "/vent-" + key } }
-    : req.url === "/vent-mock/healthz" ? { ok: true, mode: "mock" } : req.url === "/vent-real/healthz" ? { ok: true, mode: "real" } : null;
-  res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
-  res.end(JSON.stringify(body ?? {}));
+  let raw = "";
+  req.on("data", (chunk) => { raw += chunk; });
+  req.on("end", () => {
+    const base = "http://127.0.0.1:" + server.address().port;
+    const key = String(req.headers.authorization || "").replace(/^Convex /, "");
+    const path = raw ? JSON.parse(raw).path : "";
+    const done = (page) => ({ status: "success", value: { page, isDone: true, continueCursor: "end" } });
+    const tables = [{ name: "searchContacts" }, ...(key === "notable" ? [] : [{ name: "searchSmtpConnections" }])];
+    const smtp = key === "smtp" ? [{ _id: "s1", host: "smtp.example.com", port: 587 }] : [];
+    const body = req.url === "/vent-mock/healthz" ? { ok: true, mode: "mock" } : req.url === "/vent-real/healthz" ? { ok: true, mode: "real" }
+      : req.url !== "/api/query" ? null
+      : path === "_system/cli/queryEnvironmentVariables:get" ? { status: "success", value: { name: "VENT_URL", value: base + (key === "real" ? "/vent-real" : "/vent-mock") } }
+      : path === "_system/cli/tables" ? done(tables)
+      : path === "_system/cli/tableData" ? done(smtp) : null;
+    res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(body ?? {}));
+  });
 });
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-test("a convex run send against this machine's Convex passes only when its Vent answers mode mock", async (t) => {
+test("a convex run send against this machine's Convex passes only when its Vent answers mode mock and it holds no SMTP sender", async (t) => {
   const { spawn } = await import("node:child_process");
   const child = spawn(process.execPath, ["-e", FAKE_LOCAL], { stdio: ["ignore", "pipe", "inherit"] });
   t.after(() => child.kill());
@@ -225,6 +237,8 @@ test("a convex run send against this machine's Convex passes only when its Vent 
   allowed("bash", [`${send} --url ${local} --admin-key mock`, `${send} --url=${local}/ --admin-key=mock`]);
   blocked("bash", [
     `${send} --url ${local} --admin-key real`,
+    `${send} --url ${local} --admin-key smtp`,
+    `${send} --url ${local} --admin-key notable`,
     `${send} --url https://tremendous-eel-825.convex.cloud --admin-key mock`,
     `${send} --url ${local} --admin-key mock --prod`,
     `${send} --deployment tremendous-eel-825`,
@@ -237,6 +251,7 @@ test("a convex run send against this machine's Convex passes only when its Vent 
   allowed("bash", [send, `CONVEX_SELF_HOSTED_URL=${local} ${send}`], repo);
   blocked("bash", [
     `CONVEX_SELF_HOSTED_ADMIN_KEY=real ${send}`,
+    `CONVEX_SELF_HOSTED_ADMIN_KEY=smtp ${send}`,
     `CONVEX_DEPLOYMENT=prod:tremendous-eel-825 ${send}`,
     `env CONVEX_DEPLOY_KEY=prod:x ${send}`,
     `CONVEX_SELF_HOSTED_URL=https://convex.example.com ${send}`,
