@@ -1,8 +1,7 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import { keptChatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
@@ -30,38 +29,44 @@ function userText(content: unknown): string {
   return content.flatMap((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
 }
 
+/** A session file's first user message as `scanFirst` reads it, from byte `from` on: the message, "" past FIRST_MESSAGE_SCAN_BYTES, or the byte
+ * after the last whole line it read, where the next scan of the same file can start. */
+type FirstScan = { first: string } | { first?: undefined; upTo: number };
+const USER_MARK = Buffer.from('"user"');
+
+function scanFirst(sessionFile: string, from: number): FirstScan | undefined {
+  let fd: number;
+  try { fd = openSync(sessionFile, "r"); } catch { return undefined; }
+  try {
+    const chunk = Buffer.alloc(64 * 1024);
+    let carry = Buffer.alloc(0);
+    // A file shorter than the byte the last read reached was rewritten (a repair), so it is read from its start again.
+    let at = from <= fstatSync(fd).size ? from : 0;
+    while (at - carry.length < FIRST_MESSAGE_SCAN_BYTES) {
+      const read = readSync(fd, chunk, 0, chunk.length, at);
+      if (read === 0) return { upTo: at - carry.length };
+      at += read;
+      const block = carry.length ? Buffer.concat([carry, chunk.subarray(0, read)]) : chunk.subarray(0, read);
+      let start = 0;
+      for (let newline = block.indexOf(0x0a); newline >= 0; start = newline + 1, newline = block.indexOf(0x0a, start)) {
+        const line = block.subarray(start, newline);
+        if (line.indexOf(USER_MARK) < 0) continue;
+        try {
+          const entry: unknown = JSON.parse(line.toString("utf8"));
+          if (isRecord(entry) && entry.type === "message" && isRecord(entry.message) && entry.message.role === "user") return { first: userText(entry.message.content) };
+        } catch { /* a line that is not JSON */ }
+      }
+      carry = Buffer.from(block.subarray(start));
+    }
+    return { first: "" };
+  } finally { closeSync(fd); }
+}
+
 /**
  * The first user message stored in a session file. Undefined when the file is missing or has no user message yet; an empty string when none
  * appears in the first FIRST_MESSAGE_SCAN_BYTES.
  */
-export function fileFirstMessage(sessionFile: string): string | undefined {
-  let fd: number;
-  try { fd = openSync(sessionFile, "r"); } catch { return undefined; }
-  try {
-    const decoder = new StringDecoder("utf8");
-    const chunk = Buffer.alloc(64 * 1024);
-    let pending = "";
-    let scanned = 0;
-    while (scanned < FIRST_MESSAGE_SCAN_BYTES) {
-      const read = readSync(fd, chunk, 0, chunk.length, scanned);
-      if (read === 0) return undefined;
-      scanned += read;
-      pending += decoder.write(chunk.subarray(0, read));
-      let newline = pending.indexOf("\n");
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-        newline = pending.indexOf("\n");
-        if (!line.includes('"user"')) continue;
-        try {
-          const entry: unknown = JSON.parse(line);
-          if (isRecord(entry) && entry.type === "message" && isRecord(entry.message) && entry.message.role === "user") return userText(entry.message.content);
-        } catch { /* a torn last line is still being written */ }
-      }
-    }
-    return "";
-  } finally { closeSync(fd); }
-}
+export function fileFirstMessage(sessionFile: string): string | undefined { return scanFirst(sessionFile, 0)?.first; }
 
 function messageTitle(first: string): string {
   const skill = parseSkillBlock(first);
@@ -74,22 +79,24 @@ type FileRow = Pick<SessionSummary, "sessionFile"> & Partial<Pick<SessionSummary
 const writeKey = (row: FileRow): string => `${row.modified ?? ""}|${row.messageCount ?? ""}|${row.lastActivityAt ?? ""}`;
 
 /**
- * Session files that held no first user message when read, with the row's `writeKey` then, or null for one scanned past FIRST_MESSAGE_SCAN_BYTES
- * (it never gets one). Measured 10-13 on the live list: 498 of 1,372 rows, mostly subagent sessions, were read again on every projection, about
- * 560 MB and half of the service's main-thread time. Measured 10-18: a stat per such row on every projection, and a failed open for each of the
- * other box's rows with no local copy yet, still took 1.3 s of every 20 s of the service's main thread, so a file is read again only once its
- * row changes.
+ * Session files that held no first user message when read, with the row's `writeKey` then and the byte the read reached, or null for one
+ * scanned past FIRST_MESSAGE_SCAN_BYTES (it never gets one). Measured 10-13 on the live list: 498 of 1,372 rows, mostly subagent sessions,
+ * were read again on every projection, about 560 MB and half of the service's main-thread time. Measured 10-18: a stat per such row on every
+ * projection, and a failed open for each of the other box's rows with no local copy yet, still took 1.3 s of every 20 s of the service's main
+ * thread, so a file is read again only once its row changes. A working session's row changes on every roster update, and until 10-19 each
+ * change read its file from the start again (fileFirstMessage was 193 MB of the 3.4 GB a scratch serve allocated in 30 s), so a read goes on
+ * from the byte the last one reached: a session file only grows at its end.
  */
-const noFirst = new Map<string, string | null>();
+const noFirst = new Map<string, { key: string; upTo: number } | null>();
 function storedFirst(row: FileRow & { sessionFile: string }): string | undefined {
   const readAt = noFirst.get(row.sessionFile);
   if (readAt === null) return "";
   const key = writeKey(row);
-  if (readAt === key) return undefined;
-  const first = fileFirstMessage(row.sessionFile);
-  if (first) noFirst.delete(row.sessionFile);
-  else noFirst.set(row.sessionFile, first === "" ? null : key);
-  return first;
+  if (readAt?.key === key) return undefined;
+  const scan = scanFirst(row.sessionFile, readAt?.upTo ?? 0);
+  if (scan?.first) noFirst.delete(row.sessionFile);
+  else noFirst.set(row.sessionFile, scan?.first === "" ? null : { key, upTo: scan && "upTo" in scan ? scan.upTo : 0 });
+  return scan?.first;
 }
 
 /** Title text of each session file's first user message. A session file only grows at its end, so a found entry never changes. */
