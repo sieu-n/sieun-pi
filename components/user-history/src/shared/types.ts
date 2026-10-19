@@ -550,12 +550,12 @@ export interface HostsView extends NewChatPicks { hosts: HostCard[];
   checkedAt: number }
 
 /** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
-export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }
-/** How a working turn got its slot (pi-pool turns.py): its own slot, a parent's lent slot, the owner's message, prod work, or an agent run ahead of the owner's message. */
-export const TURN_KINDS = ["slot", "borrow", "owner", "prod", "ahead"] as const;
+export interface AgentQueueSession { session: string; tree: string; since: number }
+/** How a working turn got its slot (pi-pool turns.py): a free slot in line, the owner's message, or an agent run ahead of the owner's message. */
+export const TURN_KINDS = ["slot", "owner", "ahead"] as const;
 export type TurnKind = (typeof TURN_KINDS)[number];
 export interface AgentQueueWorking extends AgentQueueSession { kind: TurnKind }
-export interface AgentQueuedSession extends AgentQueueSession { basePriority: PoolPriority; position: number; total: number; waitMs: number }
+export interface AgentQueuedSession extends AgentQueueSession { position: number; total: number; waitMs: number }
 /** Who last ran `pi-pool set` on a key and when, in epoch ms. `by` is null for a value written before pi-pool recorded writers; `at` is then config.json's file time. */
 export interface PoolSetRecord { by: string | null; at: number }
 /**
@@ -566,8 +566,8 @@ export interface AgentQueueReading { enabled: boolean; workingMax: number; worki
 export type IdleEvictionMinutes = number | "off";
 
 /**
- * One row of the live queue in Settings > This Mac: a working or waiting turn with the names the chat catalog knows. `chat` is the tree's chat
- * (or a duty key's chat), `job` the session's own title, null when the turn is the chat's own. `since` is when it started working or waiting, in epoch ms.
+ * One row of the live queue in Settings > This Mac: a working or waiting turn with the names the chat catalog knows. `chat` is the tree's chat,
+ * `job` the session's own title, null when the turn is the chat's own. `since` is when it started working or waiting, in epoch ms.
  */
 export interface AgentQueueRow { session: string; state: "working" | "waiting"; chat: string; job: string | null; owner: boolean; since: number }
 /**
@@ -575,18 +575,16 @@ export interface AgentQueueRow { session: string; state: "working" | "waiting"; 
  * longest first, then the waiting ones in admission order. `idleEvictionMinutes` is the daemon's own setting in ~/.prime/agent/settings.json,
  * which it rereads on every sweep. `history` is the last 7 days of pi-pool.log by hour, empty when the log cannot be read.
  */
-export type AgentQueuePool = (AgentQueueReading & AgentQueueTimers & { state: "read"; rows: AgentQueueRow[] }) | { state: "unread"; error: string };
-/** The queue's two timers from `pi-pool config`: a waiting turn moves up one class every `queueAgingS`, and a slot with no model call for `leaseS` lapses. */
-export interface AgentQueueTimers { queueAgingS: number; leaseS: number }
+export type AgentQueuePool = (AgentQueueReading & { state: "read"; rows: AgentQueueRow[] }) | { state: "unread"; error: string };
 /**
  * One local clock hour of pi-pool.log: `finished` counts turn_released lines, and `medianWaitS` is the median `waited_s` of the hour's
- * turn_admitted lines that went through the queue (owner and prod turns never wait and are left out), null with none. `at` is the hour's start in epoch ms.
+ * turn_admitted lines that went through the queue (owner turns, and the prod turns of older lines, never wait and are left out), null with none. `at` is the hour's start in epoch ms.
  */
 export interface TurnHour { at: number; finished: number; medianWaitS: number | null }
 export interface AgentQueueView { pool: AgentQueuePool; idleEvictionMinutes: IdleEvictionMinutes; history: TurnHour[] }
 
-/** One Agent queue write: a single `pi-pool set` for the switch, the two limits and the two timers, or the daemon's idle unload time. */
-export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac" | "tree" | "aging" | "lease"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
+/** One Agent queue write: a single `pi-pool set` for the switch or the two limits, or the daemon's idle unload time. */
+export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac" | "tree"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
 
 /**
  * Settings > Tools and skills: per box in hosts.json, live checks of the tools agents there are meant to have (its `tools`: web search, a headless

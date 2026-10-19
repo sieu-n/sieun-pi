@@ -21,6 +21,7 @@ checkout/components/pi-pool/
 
 PI_POOL_DIR or ~/.config/pi-pool/
   config.json, state.json   configuration, pins and session records
+  turns.json, turns.lock    the turn queue and its lock
   lock, pi-pool.log         lock and event log
   rotations/, fallback.json, backups/   private runtime data
 ```
@@ -601,48 +602,44 @@ was authorized as the old account, until the socket closes (idle timeout or an e
 If that matters, set `"transport": "sse"` in `~/.prime/agent/settings.json`: every
 request then carries the current token, at the cost of the WebSocket's cached context.
 
-## The machine-wide turn queue
+## The turn queue
 
-The queue caps how many session runs work at once on this Mac, whatever their tree or account.
-One run of one session holds one working slot from its first model call to its agent_end, and `pool/turns.py` keeps the slots and the queue in `state.json` under the pool flock, in `state["turns"]`.
+The queue caps how many session runs work at once on this machine, whatever their tree or account.
+Each machine keeps its own queue in `~/.config/pi-pool/turns.json` under its own lock, `turns.lock`, apart from the account `state.json` and its `lock`.
+One run of one session holds one working slot from its first model call to its agent_end.
 
-- `pi-pool admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait | --renew]` prints `{"state","kind","position","total"}`, where the state is admitted, queued or off.
+- `pi-pool admit <session> [--tree <root>] [--pid <n>] [--wait | --renew]` prints `{"state","kind","position","total"}`, where the state is admitted, queued or off.
 - `--tree` defaults to the calling process's session tree and `--pid` to the calling process, whose exit drops the entry.
-- `--class` defaults to normal for a child (`--parent`), or high when the owner labeled the tree High in the sidebar (`pi-pool priority high --label`), and to the tree's pool priority for a root.
+- The CLI reads and ignores `--parent` and `--class`, which the extension before 10-20 still passes from sessions that loaded it.
 - With `--wait` the command prints one line each time its place changes and blocks until it prints the admitted or off line.
 - `--renew` renews a running session's lease, and a session whose slot lapsed works again at once and never queues.
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
-- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue. While the queue is off it does nothing and prints `{"session","state":"off"}`.
-- `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
-- `pi-pool snapshot --json [--thread <session> <model>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints, with "" for no session or model. The chat service reads the pool this way, one process per 2 s at most, where on 10-18 at 11:44Z it ran those commands about 3 times a second (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`: the class `priority --session <session>` keeps on that tree's record as the pool reads it (`normal` when the record has none), its sidebar label, and null priority when the tree has no record yet. The chat service reads it before it sets a class, so a restart sets only the roots whose record holds another class.
-- `pi-pool prod set '{"trees": {...}, "sessions": {...}, "until": <epoch sec>}'` names the trees and sessions on prod work, whose runs start at once as kind `prod`, and `pi-pool prod clear` drops the record.
+- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`. While the queue is off it does nothing and prints `{"session","state":"off"}`.
+- `pi-pool queue --json` prints the working runs with their kind (`slot`, `owner` or `ahead`) and the queued runs with their positions and waits.
+- `pi-pool snapshot --json [--thread <session> <model>]... [--tree <session>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints. The chat service reads the pool this way, one process per 2 s at most (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`, the account class (rule R7) that `priority --session <session>` keeps on that tree's record.
 
+Queued runs start in the order they asked.
+A run starts while the machine has fewer than `working_max` runs working and the run's tree fewer than `tree_working_max`, and every working run counts toward both.
+The owner sets both numbers by hand on each machine with `pi-pool set`, and no code changes them (owner, c88 on 10-16 and again on 10-19).
 An owner run never waits and still counts toward the limit, so background work waits behind it.
-The limit is `working_max`, the number the owner set, and memory never lowers it or holds a turn or a spawn (owner, c88 on 10-16).
-Queued runs take free slots by class, top before high before normal before low, and the longest wait goes first inside a class.
-The caller picks `--class top`, which aging never reaches (the chat service asks for it for each chat's check-in key), and `queue --json` shows it as high.
-The pool does not decide what prod work is: the caller that knows sends `prod set` again while the work lasts, and the record lapses at its `until`, so a caller that stops never leaves a tree marked.
-A queued run moves up one class for every `queue_aging_s` it waits.
-A session that asks again within 30 s of its run's release (`REQUEUE_GRACE_S`) keeps that run's place in line, so a job's chained runs go ahead of turns that never ran.
-A slot is free while the machine has fewer than `working_max` slots in use and the run's tree has fewer than `tree_working_max`, and every working run but a borrow counts toward both.
-A child whose parent's run is in flight and that finds no free slot runs on the parent's lent slot, and a parent lends one slot at a time, so a parent that spawns six children in one cell runs one of them over the limit, not six.
-A borrow rides on its lender's slot and takes none: at 11:02 KST on 10-14, 7 of 30 working runs were borrows that each kept a queued run off a free slot.
-An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`) runs out.
+Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt, on the machine that runs the session, and over ssh for a session on another machine (`ownerTurnMarker` in components/user-history/src/chat-pool.ts).
+The extension marks none, because every prompt the daemon delivers reads as input source `interactive`: on 10-14 that hook marked 21 [job] notices, 6 [brief check] notes and 51 duty and check-in briefs as owner turns.
+An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`, 1,800 s) runs out.
 `pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.
 Every `pi-pool set` records who ran it and when under `set_by` in config.json and as a `set` line in pi-pool.log with the old value.
-The writer is `--by <who>` (the chat service's Settings pane passes "the Settings pane"), else the Prime session that runs it, else the parent pid.
-`queue --json` carries `working_max_set` ({by, at}), which is null while the default 16 holds and has by null and config.json's file time for a value written before `set` recorded writers.
+`queue --json` carries `working_max_set` ({by, at}), which is null while the default 16 holds.
 
-The extension's `context` handler, which Prime awaits before every model call from every turn source, runs `admit --wait` at a run's first model call.
-A queued run gets one `pi-pool-queue` entry in its transcript that reads "Queued for a working slot, 3rd of 7".
-Stop reaches the waiting handler through `ctx.signal`, kills the wait and drops the entry (`tests/native/queue.mjs`).
+The extension's `context` handler, which Prime awaits before every model call from every turn source, asks at a run's first model call.
+A queued run waits inside the worker, reads `turns.json` once a second and asks again every 30 s, and gets one `pi-pool-queue` entry in its transcript that reads "Queued for a working slot, 3rd of 7".
+Stop reaches the waiting handler through `ctx.signal` and drops the entry (`tests/native/queue.mjs`).
 While the run holds its slot, its model calls renew the lease at most once every 5 minutes, and a timer releases the slot when it finds the session idle, because agent_end does not fire on some aborts.
-A run stuck in one tool call makes no model call, so its slot lapses after `lease_s` and its next model call takes it back at once: at 11:02 KST on 10-14 four runs held slots 2,653 to 2,937 s inside one bash or aside_browser call, kept by the old timer renewal.
-Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt, on the box that runs the session, and over ssh for a session on another box (`ownerTurnMarker` in components/user-history/src/chat-pool.ts).
-The extension marks none, because every prompt the daemon delivers reads as input source `interactive`: on 10-14 that hook marked 21 [job] notices, 6 [brief check] notes and 51 duty and check-in briefs as owner turns.
-A failed admit lets the run go, so a broken pool never stops the Mac's agents.
+A run stuck in one tool call makes no model call, so its slot lapses after `lease_s` and its next model call takes it back at once: at 11:02 KST on 10-14 four runs held slots 2,653 to 2,937 s inside one bash or aside_browser call.
+A failed admit lets the run go, so a broken queue never stops the machine's agents.
 
-A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run, gives at most 16 slots at once, and puts at most 11 children on lent slots at once (`tests/test_turns.py`).
+The first write after the 10-20 release moves the queue out of `state.json`. Its `turns` key goes to `turns.json` and leaves `state.json`, and a run that held a lent slot or a prod turn keeps working on a slot of its own.
+Until that write, `queue --json` reads the old key.
+
+A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run and never more than 16 at once (`tests/test_turns.py`).
 
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
 
@@ -653,10 +650,10 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `admit_per_unit`, `depleted_backoff_max_sec`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
-`working_max`, `tree_working_max`, `queue_aging_s`, `lease_s` and `prod_turns_on`. `pi-pool set` takes a JSON object for
+`working_max`, `tree_working_max` and `lease_s`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
-`min_runway_hours`), the R2 projection keys `tree_5h_pct_per_min` and `spending_tree_sec`, `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file` and `alert_bridge_file`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+`min_runway_hours`), the R2 projection keys `tree_5h_pct_per_min` and `spending_tree_sec`, `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file`, `alert_bridge_file` and `prod_turns_on`, the queue key `queue_aging_s`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties

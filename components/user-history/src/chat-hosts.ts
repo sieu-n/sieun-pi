@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { machineView, type HostStats, type MachineView } from "../../prime-relay/host-stats.ts";
 import { agentCounts, type AgentCounts } from "./agent-states.ts";
-import { parseAgentQueue, parseQueueTimers } from "./chat-pool.ts";
+import { parseAgentQueue } from "./chat-pool.ts";
 import { queueRows } from "./chat-agent-queue.ts";
 import { hostHealth, hostToken, loadHosts, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
 import type { AgentQueuePool, HostCard, HostRole, HostsView, NewChatPicks } from "./shared/types.ts";
@@ -20,13 +20,13 @@ export function parseMachine(value: unknown): MachineView {
   return value as unknown as MachineView;
 }
 
-/** A box's own `pi-pool queue --json` and `pi-pool config` as the Agent queue reads them, rows named by the catalog. */
+/** A box's own `pi-pool queue --json` as the Agent queue reads it, rows named by the catalog. */
 export function parsePool(value: unknown, title: (id: string) => string | null): AgentQueuePool {
   if (!isRecord(value)) return { state: "unread", error: "the relay sent no pool reading" };
   if (typeof value.error === "string") return { state: "unread", error: value.error };
   try {
     const reading = parseAgentQueue(value.queue);
-    return { state: "read", ...reading, ...parseQueueTimers(value.config), rows: queueRows(reading, title) };
+    return { state: "read", ...reading, rows: queueRows(reading, title) };
   } catch (error) { return { state: "unread", error: message(error) }; }
 }
 

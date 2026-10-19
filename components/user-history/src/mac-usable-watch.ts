@@ -137,7 +137,7 @@ export interface QueueLine {
   oldestWaitS: number; oldestTree: string | null;
   /**
    * pi-pool's admission inputs, so d7 can tell a turn its tree's cap holds from one a free slot left waiting (`admit_pass` in pool/turns.py):
-   * both limits as pi-pool merges its defaults and config.json, the turns that hold a slot of their own (every one but a borrow), and each
+   * both limits as pi-pool merges its defaults and config.json, the working turns, each of which holds a slot, and each
    * tree with a queued turn. Absent on lines written before 10-18 05:1xZ, when metal-management's turns at its 8 of 8 read as free-slot waits.
    */
   workingMax?: number; treeWorkingMax?: number; slots?: number; waiting?: WaitingTree[];
@@ -362,7 +362,7 @@ export type QueueReading = Pick<AgentQueueReading, "working" | "queued" | "worki
 function queueLine(reading: QueueReading, now: number, treeName: (id: string) => string): QueueLine {
   const waitS = (since: number): number => Math.max(0, Math.round((now - since) / 1000));
   const oldest = reading.queued.reduce<(typeof reading.queued)[number] | undefined>((first, entry) => !first || entry.since < first.since ? entry : first, undefined);
-  const held = reading.working.filter(entry => entry.kind !== "borrow");
+  const held = reading.working;
   const firstAsk = new Map<string, number>();
   for (const entry of reading.queued) firstAsk.set(entry.tree, Math.min(firstAsk.get(entry.tree) ?? Infinity, entry.since));
   const waiting = [...firstAsk].map(([tree, since]) => ({ tree: treeName(tree), oldestWaitS: waitS(since), slots: held.filter(entry => entry.tree === tree).length }))

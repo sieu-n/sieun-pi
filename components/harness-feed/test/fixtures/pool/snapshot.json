@@ -1,7 +1,7 @@
 {
  "queue": {
   "code": 0,
-  "out": "{\"enabled\": true, \"working_max\": 30, \"working_max_set\": null, \"tree_working_max\": 16, \"slots_used\": 3, \"working\": [{\"session\": \"s1\", \"tree\": \"t1\", \"parent\": null, \"class\": \"high\", \"kind\": \"slot\", \"since\": 1792429880}, {\"session\": \"s2\", \"tree\": \"t1\", \"parent\": \"s1\", \"class\": \"high\", \"kind\": \"borrow\", \"since\": 1792429940}, {\"session\": \"s3\", \"tree\": \"t2\", \"parent\": null, \"class\": \"normal\", \"kind\": \"owner\", \"since\": 1792429970}, {\"session\": \"s4\", \"tree\": \"t1\", \"parent\": \"s1\", \"class\": \"low\", \"kind\": \"slot\", \"since\": 1792429990}], \"queued\": [{\"session\": \"q1\", \"tree\": \"t2\", \"parent\": null, \"class\": \"high\", \"base_class\": \"normal\", \"position\": 1, \"total\": 2, \"since\": 1792429921, \"wait_s\": 79}, {\"session\": \"q2\", \"tree\": \"t3\", \"parent\": null, \"class\": \"low\", \"base_class\": \"low\", \"position\": 2, \"total\": 2, \"since\": 1792429995, \"wait_s\": 5}], \"prod\": null}",
+  "out": "{\"enabled\": true, \"working_max\": 30, \"working_max_set\": null, \"tree_working_max\": 16, \"working\": [{\"session\": \"s1\", \"tree\": \"t1\", \"kind\": \"slot\", \"since\": 1792429880}, {\"session\": \"s2\", \"tree\": \"t1\", \"kind\": \"ahead\", \"since\": 1792429940}, {\"session\": \"s3\", \"tree\": \"t2\", \"kind\": \"owner\", \"since\": 1792429970}, {\"session\": \"s4\", \"tree\": \"t1\", \"kind\": \"slot\", \"since\": 1792429990}], \"queued\": [{\"session\": \"q1\", \"tree\": \"t2\", \"position\": 1, \"total\": 2, \"since\": 1792429921, \"wait_s\": 79}, {\"session\": \"q2\", \"tree\": \"t3\", \"position\": 2, \"total\": 2, \"since\": 1792429995, \"wait_s\": 5}]}",
   "err": ""
  },
  "config": {

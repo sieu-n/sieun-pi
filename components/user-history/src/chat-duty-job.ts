@@ -39,10 +39,9 @@ export interface DutyJobHost {
   working(job: DutyJobRef): Promise<boolean>;
   /**
    * Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message.
-   * `admitted` says the turn queue already admitted the run under its duty key, so the job's first turn runs at once (`handoff`). `since` is
-   * when the run started: a session of the job's name made since then is this run's own, from a create that timed out before a restart.
+   * `since` is when the run started: a session of the job's name made since then is this run's own, from a create that timed out before a restart.
    */
-  start(chat: DutyChat, name: string, brief: string, admitted?: boolean, since?: number): Promise<DutyJobRef>;
+  start(chat: DutyChat, name: string, brief: string, since?: number): Promise<DutyJobRef>;
   /**
    * Drops a finished duty job from the registry, so the chat's Agents card lists only the current one, and queues its archive
    * (src/chat-archive-queue.ts): a slow daemon never holds up the next start.
@@ -379,12 +378,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   /** Runs after the job is registered and before its brief, so its first request already carries its pool class (`dutyJobPriority`). */
   started?: (id: string, chat: DutyChat, name: string) => Promise<void>;
   /**
-   * Runs before the brief of a job whose run the turn queue admitted under its duty key, so the job's first turn takes that place and does not
-   * queue again behind every turn that asked meanwhile. On 10-15 a duty key waited 1,604 s and then the d4 job's own first turn 2,083 s more
-   * with its worker loaded (pi-pool.log, 21:28 and 22:03 KST); the low duty jobs that started from 22:49 KST waited 1,212 s at p50 for their first turn.
-   */
-  handoff?: (id: string) => Promise<void>;
-  /**
    * The chat's name and folder from its own session file (`savedChat`), for when the catalog has no row and its refresh fails. On 10-17 at
    * 21:00:50Z the first check-in slot of the new chat "YouTube index gaps" started no job, because the daemon's list timed out at 30 s at load 70.
    */
@@ -456,12 +449,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
     async working(job) { return (await row(job.id))?.working === true; },
-    start: (chat, planned, brief, admitted = false, since) => serial(async () => {
+    start: (chat, planned, brief, since) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned, since);
       try {
         await input.registry.add([id], chat.name, chat.id);
         await input.started?.(id, chat, name);
-        if (admitted) await input.handoff?.(id).catch(error => input.log?.(`duty job ${name}: hand its queue place over: ${reason(error)}`));
         await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
       } catch (error) {
         await input.registry.remove([id]).catch(() => {});

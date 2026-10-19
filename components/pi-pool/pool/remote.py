@@ -15,7 +15,7 @@ REMOTE = os.path.join(base.POOL, "remote.json")
 KEY_ENV = "PI_POOL_SESSION_KEY"
 OFF_ENV = "PI_POOL_REMOTE"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
-LOCAL_COMMANDS = {"admit", "release", "owner-turn", "prod", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
+LOCAL_COMMANDS = {"admit", "release", "owner-turn", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
                   "login", "hookd", "snapshot"}
 # watch holds a terminal open and token hands out a credential; run them on the machine that holds the accounts.
 HOLDER_ONLY = {"watch", "token"}

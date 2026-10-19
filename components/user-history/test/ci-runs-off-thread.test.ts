@@ -1,5 +1,5 @@
 // Guards the 10-19 steady block: each check-in measure parsed the 52 MB CI cache on the chat server's main thread (0.6 to 0.9 s), and the prod
-// turns tick decoded and scanned it (0.25 s), every 30 s.
+// turns tick decoded and scanned it (0.25 s), every 30 s. The prod turns tick went with the 10-20 queue cut.
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readTrain } from "../src/checkin-load.ts";
 import { ciRuns } from "../src/ci-runs.ts";
-import { startProdTurns } from "../src/prod-turns.ts";
 
 const job = { name: "build", steps: Array.from({ length: 40 }, (_, at) => ({ name: `step ${at}`, status: "completed", conclusion: "success", log: "x".repeat(400) })) };
 function cache(runs: number): string {
@@ -37,17 +36,4 @@ test("the CI cache is parsed off the main thread, once per version of the file, 
   await writeFile(file, cache(3));
   await utimes(file, new Date(), new Date(Date.now() + 5000));
   assert.equal(Object.keys((await ciRuns(file))!.runs).length, 3, "a rewritten file is read again");
-});
-
-test("the prod turns tick reads its running deploys from the parsed cache", async t => {
-  const dir = await mkdtemp(join(tmpdir(), "ci-runs-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const file = join(dir, "ci-runs.json");
-  await writeFile(file, cache(5));
-  let record: unknown;
-  const set = new Promise<void>(resolve => {
-    const stop = startProdTurns({ runsFile: file, bridgeFile: join(dir, "none.json"), log: () => {}, set: async value => { record = value; stop(); resolve(); } }, 60_000);
-  });
-  await set;
-  assert.deepEqual((record as { trees: Record<string, string> }).trees, { "01a10810-34b5-710f-88fe-3d369f89a8c9": "promote.yml run 1001", "01a11d24-ac9b-757d-ac51-9b2b7598782f": "promote.yml run 1001" });
 });

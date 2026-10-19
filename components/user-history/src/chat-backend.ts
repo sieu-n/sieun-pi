@@ -15,7 +15,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, ownerTurnMarker, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, sshOwnerTurn } from "./chat-pool.ts";
-import { boardQueueRead, dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
+import { boardQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
 import { HostReach } from "./host-reach.ts";
@@ -47,8 +47,6 @@ import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
-import { trainFile } from "./checkin-load.ts";
-import { startProdTurns } from "./prod-turns.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
@@ -186,8 +184,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
-  // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
-  const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = boardQueueRead;
   const queued = queueReader(queueReading);
   const poolWaiting = async (): Promise<Set<string>> => {
@@ -197,9 +193,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,
-    started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))),
-    handoff: id => markOwnerTurn(id) });
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...quiet ? { tickMs: 0 } : {},
+    started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))) });
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, ...quiet ? { tickMs: 0 } : {},
     ...replay ? { precheckCommand: () => ["/bin/sh", "-c", 'printf \'{"metrics":{}}\' > "$OUTPUT_FILE"'] } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: fixLiveReader({ rows: () => catalog.rows(), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
@@ -260,7 +255,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = queued;
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
-  if (!quiet) void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
@@ -327,7 +321,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
       const at = Date.now();
       const name = dutyJobName("alert triage", chat.name, at);
-      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), false, at);
+      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), at);
     },
     jobWorking: job => dutyJobs.working(job),
     jobTurn: async (job, since) => {
@@ -336,7 +330,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     retryJob: () => chats.interruptedSoon(0),
     log: dutyLog, ...agentMessage });
-  const stopProdTurns = ownChatsOnly ? () => {} : startProdTurns({ runsFile: trainFile(), bridgeFile: join(dataDir, "alert-bridge.json"), log: dutyLog });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job or chat
@@ -425,7 +418,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopWakes();
       stopBriefs();
       stopAlerts();
-      stopProdTurns();
       stopBridgeWatch();
       alertPoll?.stop();
       unwatchBoards();

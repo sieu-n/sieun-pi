@@ -6,15 +6,16 @@
   import QueueHistory from "./QueueHistory.svelte";
   import QueueRows from "./QueueRows.svelte";
   import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
-  import { whyLines } from "./agent-queue.ts";
+  import { setLine } from "./agent-queue.ts";
+  import { POOL_DEFAULTS } from "./pool-config.ts";
 
   const POLL_MS = 5000;
-  type Field = "mac" | "tree" | "aging" | "lease" | "idle";
+  type Field = "mac" | "tree" | "idle";
 
   let view = $state<AgentQueueView | null>(null);
   let error = $state<string | null>(null);
   let saving = $state<AgentQueueInput["action"] | null>(null);
-  let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, aging: null, lease: null, idle: null });
+  let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, idle: null });
   let timer: ReturnType<typeof setInterval> | undefined;
 
   async function load(): Promise<void> {
@@ -36,8 +37,7 @@
 
   const pool = $derived(view?.pool.state === "read" ? view.pool : null);
   const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
-  const saved = $derived<Record<Field, number | null>>({ mac: pool?.workingMax ?? null, tree: pool?.treeWorkingMax ?? null,
-    aging: pool?.queueAgingS ?? null, lease: pool?.leaseS ?? null, idle: idleSaved });
+  const saved = $derived<Record<Field, number | null>>({ mac: pool?.workingMax ?? null, tree: pool?.treeWorkingMax ?? null, idle: idleSaved });
   const shown = (field: Field) => drafts[field] ?? saved[field];
   const changed = (field: Field) => {
     const value = drafts[field];
@@ -85,16 +85,10 @@
     <div class="limits">
       {@render limit("mac", "Agents working on this box", "", 999, pool !== null)}
       {@render limit("tree", "Agents working per chat", "", 999, pool !== null)}
-      {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null)}
-      {@render limit("lease", "Free a silent slot after", "s", 86400, pool !== null)}
       {@render limit("idle", "Unload idle sessions after", "min", 1440, true)}
     </div>
+    {#if pool}<p class="note">{setLine(pool.workingMax, pool.workingMaxSet, POOL_DEFAULTS.working_max)}</p>{/if}
     {#if error}<p class="note problem">The last change failed. {error}</p>{/if}
-
-    <details class="why">
-      <summary>Why these numbers</summary>
-      <ul>{#each whyLines(view) as line (line)}<li>{line}</li>{/each}</ul>
-    </details>
   {/if}
 </section>
 
@@ -113,6 +107,4 @@
   .field-row .field { width: 80px; font-variant-numeric: tabular-nums; }
   .unit { width: 24px; color: var(--text-muted); }
   .field:disabled { opacity: 0.6; }
-  .why summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
-  .why ul { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 </style>

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "pr
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
-import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -379,8 +379,8 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 }
 
 /**
- * The Mac-wide turn queue (pool/turns.py). A run takes a working slot at its first
- * model call: the `context` handler awaits `admit --wait`, which Prime awaits with no
+ * This machine's turn queue (pool/turns.py). A run takes a working slot at its first
+ * model call: the `context` handler awaits its admit, which Prime awaits with no
  * timeout before every model call from every turn source, agent-message wakes and
  * retries included. The run keeps the slot until agent_end and renews its lease from
  * its model calls, at most once per QUEUE_RENEW_MS, so a run stuck in one tool call
@@ -407,48 +407,27 @@ function ordinal(n: number): string {
 	return `${n}${suffix}`;
 }
 
-/** The parent's session id from its file's header line; the file name is not always the id. */
-function parentSessionId(ctx: ExtensionContext): string | undefined {
-	const header = ctx.sessionManager?.getHeader?.();
-	const path = header?.parentSession;
-	if (!path) return undefined;
-	try {
-		const fd = openSync(path, "r");
-		try {
-			const buf = Buffer.alloc(4096);
-			const n = readSync(fd, buf, 0, buf.length, 0);
-			const id = (JSON.parse(buf.subarray(0, n).toString("utf8").split("\n")[0]) as { id?: unknown }).id;
-			if (typeof id === "string" && id) return id;
-		} finally {
-			closeSync(fd);
-		}
-	} catch {
-		// Fall back to the file name below.
-	}
-	return basename(path).replace(/\.jsonl$/, "");
-}
-
 /**
  * Waits for one run's slot inside the worker, with no process of its own. Until 10-16 each waiting run
  * spawned `admit --wait`, a Python process of about 30 MB that sat in the queue with it: at 09:10 KST, 49
  * of them held 1.5 GB while 68 turns waited. Now the first ask queues the run (its entry carries the
- * worker's pid, so the pool sweeps it if the worker dies), an unlocked read of state.json each
+ * worker's pid, so the pool sweeps it if the worker dies), an unlocked read of turns.json each
  * WAIT_READ_MS sees the admit that another run's release or ask made, and a plain ask every WAIT_ASK_MS
  * keeps the place and runs an admit pass for slots that freed by a lapse. Resolves when the run may call
- * the model: admitted, the queue off, an error that leaves no entry in state.json (fail open), or Stop, which drops the queue entry.
+ * the model: admitted, the queue off, an error that leaves no entry in turns.json (fail open), or Stop, which drops the queue entry.
  * `onQueued` gets each queued answer.
  */
 interface AdmitWait { result: Promise<AdmitReply | "stopped" | "failed">; cancel: () => void }
 
 const WAIT_READ_MS = 1000;
 const WAIT_ASK_MS = 30_000;
-const POOL_STATE = join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "state.json");
+const POOL_TURNS = join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "turns.json");
 
-/** Where state.json has `sid` now: working, queued, gone, or null when the file cannot be read. */
+/** Where turns.json has `sid` now: working, queued, gone, or null when the file cannot be read. */
 export function placeIn(text: string, sid: string): { part: "working" | "queued" | "gone"; kind: string | null } | null {
 	try {
-		const turns = (JSON.parse(text) as { turns?: { working?: Record<string, { kind?: unknown }>; queued?: Record<string, unknown> } }).turns;
-		if (!turns) return null;
+		const turns = JSON.parse(text) as { working?: Record<string, { kind?: unknown }>; queued?: Record<string, unknown> } | null;
+		if (!turns || typeof turns !== "object") return null;
 		const working = turns.working?.[sid];
 		if (working) return { part: "working", kind: typeof working.kind === "string" ? working.kind : null };
 		return { part: turns.queued?.[sid] ? "queued" : "gone", kind: null };
@@ -459,7 +438,7 @@ export function placeIn(text: string, sid: string): { part: "working" | "queued"
 
 function readPlace(sid: string): ReturnType<typeof placeIn> {
 	try {
-		return placeIn(readFileSync(POOL_STATE, "utf8"), sid);
+		return placeIn(readFileSync(POOL_TURNS, "utf8"), sid);
 	} catch {
 		return null;
 	}
@@ -475,10 +454,10 @@ export function admitReply(out: string): AdmitReply | null {
 	}
 }
 
-function admitWait(sid: string, parent: string | undefined, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
+function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
 	let cancel = () => {};
 	const result = new Promise<AdmitReply | "stopped" | "failed">((resolve) => {
-		const args = ["admit", sid, ...(parent ? ["--parent", parent] : [])];
+		const args = ["admit", sid];
 		let done = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let askedAt = 0;
@@ -535,7 +514,7 @@ function admitWait(sid: string, parent: string | undefined, signal: AbortSignal 
 			let again = Date.now() - askedAt >= WAIT_ASK_MS;
 			if (!again) {
 				try {
-					const mtime = statSync(POOL_STATE).mtimeMs;
+					const mtime = statSync(POOL_TURNS).mtimeMs;
 					if (mtime !== seen) {
 						seen = mtime;
 						const place = readPlace(sid);
@@ -602,17 +581,16 @@ export default function (pi: ExtensionAPI): void {
 	const holdSlot = async (ctx: ExtensionContext): Promise<void> => {
 		if (slot === "free" || slot === "failed") return;
 		const sid = sessionId(ctx);
-		const parent = parentSessionId(ctx);
 		if (slot === "held") {
 			if (!sid || Date.now() - renewedAt < QUEUE_RENEW_MS) return;
 			renewedAt = Date.now();
-			await pool(["admit", sid, "--renew", ...(parent ? ["--parent", parent] : [])]);
+			await pool(["admit", sid, "--renew"]);
 			return;
 		}
 		if (slot !== "none") return slot;
 		if (!sid) return;
 		let told = false;
-		const wait = admitWait(sid, parent, ctx.signal, (reply) => {
+		const wait = admitWait(sid, ctx.signal, (reply) => {
 			if (told || reply.position === null || reply.total === null) return;
 			told = true;
 			const text = `Queued for a working slot, ${ordinal(reply.position)} of ${reply.total}`;

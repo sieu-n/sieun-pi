@@ -88,7 +88,8 @@ DEFAULTS = {
     # `pi-pool probe` (run by the extension at session start) checks every
     # account for a refusal at most this often
     "probe_interval_sec": 6 * 3600,
-    # The machine-wide turn queue (pool/turns.py); 0 turns it off and keeps the limits below.
+    # This machine's turn queue (pool/turns.py); 0 turns it off and keeps the limits below. The owner sets
+    # working_max and tree_working_max by hand in config.json, per machine.
     "agent_queue_on": 1,
     # At most this many session turns work at once. 10-14 07:38 KST: 6.9 GB was left for agent work
     # and a working session cost 426 MB at p90, and 6,900 / 426 is 16
@@ -97,17 +98,11 @@ DEFAULTS = {
     # At most this many turns of one session tree work at once: half of 16, so two
     # chats at full fan-out fit, above the 7 working sessions VP of CI held at 07:38.
     "tree_working_max": 8,
-    # A queued turn moves up one class for every this many seconds it waits: the median
-    # turn, first user or custom message to the last assistant message, was 18.1 s over
-    # 27,578 turns in the 4 days to 10-14 08 KST (0735-agent-queue-design/data/measure_turns.py).
-    "queue_aging_s": 18,
     # A working slot lapses when its session makes no model call for this long, so an
     # abort with no agent_end cannot hold it. 174,119 gaps between model calls inside
     # one turn over the 3 days to 10-14 08 KST: p99 157 s, p99.9 1,508 s, and 110 over
     # 1,800 s (0735-agent-queue-design/data/measure_gaps.py).
     "lease_s": 1800,
-    # Prod turns (pool/prod.py): 0 queues a session a caller marked as on prod work like any other.
-    "prod_turns_on": 1,
 }
 
 

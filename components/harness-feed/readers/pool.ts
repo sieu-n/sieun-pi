@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
 import { poolCaps, poolSummary } from "../../user-history/src/client/pool-meter.ts";
 import { turnHistory } from "../../user-history/src/turn-history.ts";
-import { POOL_PRIORITIES, TURN_KINDS, type PoolAccount, type PoolConfig, type PoolProvider, type PoolWindow, type TurnHour } from "../../user-history/src/shared/types.ts";
+import { TURN_KINDS, type PoolAccount, type PoolConfig, type PoolProvider, type PoolWindow, type TurnHour } from "../../user-history/src/shared/types.ts";
 
 /**
  * The account pool and the agent turn queue, from one `pi-pool snapshot --json` a round (queue --json, config, and ls --json per provider with
@@ -225,24 +225,21 @@ export function accountSamples(provider: Provider, listing: unknown, config: Poo
   return out;
 }
 
-/** `pi-pool queue --json`: what works and waits, by kind and class, against the two limits (chat-pool.ts parseAgentQueue reads the same fields). */
+/** `pi-pool queue --json`: what works, by kind, and what waits, against the two limits (chat-pool.ts parseAgentQueue reads the same fields). */
 export function queueSamples(value: unknown, now: number): Sample[] {
   if (!isRecord(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.working) || !Array.isArray(value.queued)) throw new Error("pi-pool returned an invalid queue");
   const working = value.working.filter(isRecord), queued = value.queued.filter(isRecord);
   const out: Sample[] = [
     { name: "harness.pool.queue_on", kind: "gauge", help: "1 when the agent turn queue is on (agent_queue_on).", value: value.enabled ? 1 : 0 },
-    { name: "harness.pool.slots_used", kind: "gauge", help: "Working turns that hold a slot of their own (every one but a borrow).", value: typeof value.slots_used === "number" ? value.slots_used : 0 },
+    { name: "harness.pool.slots_used", kind: "gauge", help: "Working turns, each of which holds a slot.", value: working.length },
   ];
   if (typeof value.working_max === "number") out.push({ name: "harness.pool.working_max", kind: "gauge", help: "The box's limit on working turns (working_max).", value: value.working_max });
   if (typeof value.tree_working_max === "number") out.push({ name: "harness.pool.tree_working_max", kind: "gauge", help: "The limit on working turns in one chat tree (tree_working_max).", value: value.tree_working_max });
-  for (const kind of TURN_KINDS) for (const priority of POOL_PRIORITIES) {
-    out.push({ name: "harness.pool.turns_working", kind: "gauge", help: "Admitted turns now, by how they got the slot and their class.",
-      value: working.filter(entry => entry.kind === kind && entry.class === priority).length, labels: { kind, priority } });
+  for (const kind of TURN_KINDS) {
+    out.push({ name: "harness.pool.turns_working", kind: "gauge", help: "Admitted turns now, by how they got the slot.",
+      value: working.filter(entry => entry.kind === kind).length, labels: { kind } });
   }
-  for (const priority of POOL_PRIORITIES) {
-    out.push({ name: "harness.pool.turns_waiting", kind: "gauge", help: "Turns waiting in the queue now, by their class after aging.",
-      value: queued.filter(entry => entry.class === priority).length, labels: { priority } });
-  }
+  out.push({ name: "harness.pool.turns_waiting", kind: "gauge", help: "Turns waiting in the queue now.", value: queued.length });
   const perTree = new Map<string, number>();
   for (const entry of working) if (typeof entry.tree === "string") perTree.set(entry.tree, (perTree.get(entry.tree) ?? 0) + 1);
   out.push({ name: "harness.pool.tree_working_most", kind: "gauge", help: "Working turns in the busiest chat tree, against tree_working_max.", value: Math.max(0, ...perTree.values()) },
@@ -260,7 +257,7 @@ export function hourSamples(hours: TurnHour[]): Sample[] {
   if (!hour) return [];
   const out: Sample[] = [{ name: "harness.pool.turns_finished_hour", kind: "gauge", help: "Turns finished so far in this local clock hour (turn_released lines in pi-pool.log).", value: hour.finished }];
   if (hour.medianWaitS !== null) out.push({ name: "harness.pool.queue_wait_median_hour", kind: "gauge", unit: "s",
-    help: "Median wait of queued turns admitted so far this local hour; owner and prod turns never wait and are left out.", value: hour.medianWaitS });
+    help: "Median wait of queued turns admitted so far this local hour; owner turns never wait and are left out.", value: hour.medianWaitS });
   return out;
 }
 

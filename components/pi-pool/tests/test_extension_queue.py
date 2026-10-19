@@ -133,13 +133,13 @@ class Wiring(unittest.TestCase):
         self.assertEqual(run["queues"]["ended"]["working"], [])
 
     def test_a_run_that_goes_on_after_a_pool_error_releases_its_entry_at_agent_end(self):
-        """The ask fails on the busy flock and state.json cannot be read, so the run goes with no slot; its
-        entry, back in state.json, is released at agent_end and never turns into an empty slot."""
+        """The ask fails on the busy lock and turns.json cannot be read, so the run goes with no slot; its
+        entry, back in turns.json, is released at agent_end and never turns into an empty slot."""
         run = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
                          {"op": "wait", "name": "job", "ms": 2000, "label": "queued"},
-                         {"op": "lock", "ms": 8000}, {"op": "move", "from": "state.json", "to": "state.away"},
+                         {"op": "lock", "ms": 8000}, {"op": "move", "from": "turns.json", "to": "turns.away"},
                          {"op": "wait", "name": "job", "ms": 9500, "label": "open"},
-                         {"op": "move", "from": "state.away", "to": "state.json"}, {"op": "queue", "label": "running"},
+                         {"op": "move", "from": "turns.away", "to": "turns.json"}, {"op": "queue", "label": "running"},
                          {"op": "end", "name": "job"}, {"op": "queue", "label": "ended"})
         self.assertIsNone(run["context"]["queued"])
         self.assertIsNotNone(run["context"]["open"])
@@ -156,16 +156,6 @@ class Wiring(unittest.TestCase):
         self.assertEqual([e["session"] for e in run["queues"]["before"]["queued"]], ["job"])
         self.assertIsNotNone(run["context"]["stopped"])
         self.assertEqual(run["queues"]["after"]["queued"], [])
-
-    def test_a_child_borrows_its_running_parents_slot(self):
-        self.cli("release", "blocker")
-        run = self.drive({"op": "start", "name": "chat"}, {"op": "context", "name": "chat"},
-                         {"op": "wait", "name": "chat", "ms": 5000, "label": "chat"},
-                         {"op": "start", "name": "kid", "depth": 1, "parent": "chat"}, {"op": "input", "name": "kid", "source": "interactive"},
-                         {"op": "context", "name": "kid"}, {"op": "wait", "name": "kid", "ms": 5000, "label": "kid"},
-                         {"op": "queue", "label": "q"})
-        self.assertIsNotNone(run["context"]["kid"])
-        self.assertEqual({w["session"]: w["kind"] for w in run["queues"]["q"]["working"]}, {"chat": "slot", "kid": "borrow"})
 
     def test_a_pool_that_fails_lets_the_run_go(self):
         """The pool CLI exits nonzero on a config it cannot read as numbers. A staged release's

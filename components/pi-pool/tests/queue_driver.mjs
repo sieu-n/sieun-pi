@@ -65,7 +65,7 @@ for (const step of steps) {
     Date.now = () => real() + step.ms;
   } else if (step.op === 'lock') {
     const code = 'import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint("held", flush=True)\ntime.sleep(float(sys.argv[2]))';
-    const holder = spawn('/usr/bin/python3', ['-c', code, join(process.env.PI_POOL_DIR, 'lock'), String(step.ms / 1000)], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const holder = spawn('/usr/bin/python3', ['-c', code, join(process.env.PI_POOL_DIR, 'turns.lock'), String(step.ms / 1000)], { stdio: ['ignore', 'pipe', 'ignore'] });
     await new Promise((r) => holder.stdout.once('data', r));
   } else if (step.op === 'move') {
     renameSync(join(process.env.PI_POOL_DIR, step.from), join(process.env.PI_POOL_DIR, step.to));

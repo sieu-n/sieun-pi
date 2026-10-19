@@ -6,7 +6,7 @@ import { queueReader } from "../src/chat-turn-queue.ts";
 import type { AgentQueueReading } from "../src/shared/types.ts";
 
 const reading = (session: string): AgentQueueReading => ({ enabled: true, workingMax: 16, workingMaxSet: null, treeWorkingMax: 8, working: [],
-  queued: [{ session, tree: "t", parent: null, priority: "normal", basePriority: "normal", since: 1, position: 1, total: 1, waitMs: 0 }] });
+  queued: [{ session, tree: "t", since: 1, position: 1, total: 1, waitMs: 0 }] });
 
 test("the queue reader answers at once with the last places and reads again behind them", async () => {
   const answers: ((value: AgentQueueReading) => void)[] = [];

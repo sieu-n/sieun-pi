@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { Host } from "./hosts.ts";
-import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
+import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
   type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
@@ -76,11 +76,6 @@ export function parsePoolConfig(value: unknown): PoolConfig | null {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
 }
 
-/**
- * The class a turn asks the queue for: a pool priority, or `top`, which queues above every class, aging included
- * (components/pi-pool/pool/turns.py, TOP). The chat service asks for it for each chat's check-in key.
- */
-export type TurnClass = PoolPriority | "top";
 /** A tree's pool class from `pi-pool who --json` or `ls --json`; null when absent or unknown. */
 export const parsePoolPriority = (value: unknown): PoolPriority | null => (POOL_PRIORITIES as readonly unknown[]).includes(value) ? value as PoolPriority : null;
 
@@ -343,7 +338,7 @@ const poolStatus = new PoolStatusReader();
 /**
  * The one read of the pool's status in this service: `pi-pool queue --json`, `config`, and per thread `who --json` and `ls --json` for each
  * provider, from one shared `pi-pool snapshot` per tick (PoolStatusReader). Every reader calls it: the accounts frame and api/accounts
- * (listAccounts), the Agent queue pane and Settings > Hosts (readAgentQueue, readQueueTimers), the board's queue places, the check-ins and
+ * (listAccounts), the Agent queue pane and Settings > Hosts (readAgentQueue), the board's queue places, the check-ins and
  * the duties (chat-turn-queue.ts), and the Claude watch (claudeReader).
  */
 export function readPoolStatus(threads: readonly PoolThread[] = [], options: { maxAgeMs?: number } = {}): Promise<PoolStatus> {
@@ -473,35 +468,23 @@ export const poolCommand = {
   login: (provider: string, account: string | null, seconds: number, off = false) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds), ...(off ? ["--off"] : [])],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
-  admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
-  release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
-  prod: (record: ProdRecord | null) => record ? ["prod", "set", JSON.stringify(record)] : ["prod", "clear"],
 };
-
-/** The trees and sessions on prod work, whose turns the pool runs at once until `until` (epoch seconds), for `pi-pool prod set`. */
-export interface ProdRecord { trees: Record<string, string>; sessions: Record<string, string>; until: number }
-/** Sends the prod record to the pool, or clears it with null (src/prod-turns.ts). */
-export async function setProdTurns(record: ProdRecord | null): Promise<void> {
-  partOut(await poolPart(poolCommand.prod(record)));
-}
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
 const count = (value: unknown): number | null => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 
 function queueSession(value: unknown): AgentQueueSession {
-  const priority = isRecord(value) ? parsePoolPriority(value.class) : null;
   const since = isRecord(value) ? epochMs(value.since) : null;
-  if (!isRecord(value) || !text(value.session) || !text(value.tree) || !priority || since === null) throw new Error("pi-pool returned an invalid queue entry");
-  return { session: value.session as string, tree: value.tree as string, parent: text(value.parent), priority, since };
+  if (!isRecord(value) || !text(value.session) || !text(value.tree) || since === null) throw new Error("pi-pool returned an invalid queue entry");
+  return { session: value.session as string, tree: value.tree as string, since };
 }
 
 const isTurnKind = (value: unknown): value is TurnKind => TURN_KINDS.some(kind => kind === value);
+/** A working turn; a kind pi-pool no longer gives (a borrow or prod turn from before 10-20) reads as a slot. */
 function workingSession(value: unknown): AgentQueueWorking {
-  const session = queueSession(value);
   const kind = isRecord(value) ? value.kind : null;
-  if (!isTurnKind(kind)) throw new Error("pi-pool returned an invalid working turn kind");
-  return { ...session, kind };
+  return { ...queueSession(value), kind: isTurnKind(kind) ? kind : "slot" };
 }
 
 export function parseAgentQueue(value: unknown): AgentQueueReading {
@@ -511,11 +494,10 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
   const queued = value.queued.map((entry: unknown): AgentQueuedSession => {
     const session = queueSession(entry);
     const row = entry as Record<string, unknown>;
-    const basePriority = parsePoolPriority(row.base_class) ?? session.priority;
     const position = count(row.position), total = count(row.total);
     const wait = typeof row.wait_s === "number" && Number.isFinite(row.wait_s) && row.wait_s >= 0 ? row.wait_s : null;
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
-    return { ...session, basePriority, position, total, waitMs: wait * 1000 };
+    return { ...session, position, total, waitMs: wait * 1000 };
   }).sort((a, b) => a.position - b.position);
   return { enabled: value.enabled, workingMax, workingMaxSet: setRecord(value.working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
 }
@@ -532,18 +514,7 @@ export async function readAgentQueue(maxAgeMs?: number): Promise<AgentQueueReadi
   return parseAgentQueue(JSON.parse(partOut((await readPoolStatus([], maxAgeMs === undefined ? {} : { maxAgeMs })).queue)));
 }
 
-/** `queue_aging_s` and `lease_s` from `pi-pool config` in the shared read, which `queue --json` does not carry. Throws when either is missing. */
-export async function readQueueTimers(): Promise<AgentQueueTimers> {
-  return parseQueueTimers(JSON.parse(partOut((await readPoolStatus()).config)));
-}
-export function parseQueueTimers(value: unknown): AgentQueueTimers {
-  const config = parsePoolConfig(value);
-  const queueAgingS = count(config?.queue_aging_s), leaseS = count(config?.lease_s);
-  if (queueAgingS === null || leaseS === null) throw new Error("pi-pool config has no queue_aging_s or lease_s");
-  return { queueAgingS, leaseS };
-}
-
-export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max" | "queue_aging_s" | "lease_s";
+export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max";
 export async function setPoolKey(key: AgentQueueKey, value: number): Promise<void> {
   try { await run(poolCommand.set(key, value)); } finally { forgetAccountReadings(); }
 }
@@ -589,23 +560,6 @@ export const sshOwnerTurn = (host: Host, sessionId: string): Promise<void> => ne
     else resolve();
   });
 });
-
-/**
- * Waits until the pool admits a turn of `sessionId` (`pi-pool admit --wait`, with no deadline: the turn keeps its place however long the queue
- * is) and returns the pool's state: "admitted", or "off" when the queue is off. Rejects when the pool fails, and the caller then runs unqueued.
- */
-export async function admitTurn(sessionId: string, tree: string, priority: TurnClass): Promise<"admitted" | "off"> {
-  // The last line is the answer, in case the wait prints its queued place first.
-  const said: unknown = JSON.parse((await run(poolCommand.admit(sessionId, tree, priority), 0)).trim().split("\n").at(-1) ?? "");
-  const state = isRecord(said) ? said.state : undefined;
-  if (state !== "admitted" && state !== "off") throw new Error(`pi-pool admit answered ${JSON.stringify(said).slice(0, 120)}`);
-  return state;
-}
-
-/** Frees a turn's slot or drops its queue entry (`pi-pool release`, idempotent). */
-export async function releaseTurn(sessionId: string): Promise<void> {
-  await run(poolCommand.release(sessionId));
-}
 
 /** The class a tree's pool record holds as the pool reads it, and its sidebar label; null priority for a tree with no record yet. */
 export interface PoolTreeClass { priority: PoolPriority | null; label: PoolPriority | null }

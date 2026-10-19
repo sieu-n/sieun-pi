@@ -55,9 +55,9 @@ def vends(pool):
 
 
 def timeless(value):
-    """`value` with every float, a clock reading in the pool's records, taken out."""
+    """`value` with every float, a clock reading in the pool's records, and the queue's whole-second waits taken out."""
     if isinstance(value, dict):
-        return {k: timeless(v) for k, v in value.items() if not isinstance(v, float)}
+        return {k: timeless(v) for k, v in value.items() if not isinstance(v, float) and k != "wait_s"}
     if isinstance(value, list):
         return [timeless(v) for v in value if not isinstance(v, float)]
     return value
@@ -209,8 +209,8 @@ class Hookd(unittest.TestCase):
             with open(os.path.join(pool, "fallback.json")) as f:
                 self.assertEqual(json.load(f)["openai-codex"]["access"], "fixture-own-login")
 
-    def state(self):
-        with open(os.path.join(self.pool, "state.json")) as f:
+    def turns(self):
+        with open(os.path.join(self.pool, "turns.json")) as f:
             return json.load(f)
 
     def waiting_admit(self, session, shell):
@@ -228,7 +228,7 @@ class Hookd(unittest.TestCase):
         first = self.client("--cli", "admit", "fixture-turn-1")
         self.assertEqual(json.loads(first.stdout)["state"], "admitted", first.stderr)
         waiting, parent = self.waiting_admit("fixture-turn-2", shell=True)
-        self.assertEqual(self.state()["turns"]["queued"]["fixture-turn-2"]["pid"], parent)
+        self.assertEqual(self.turns()["queued"]["fixture-turn-2"]["pid"], parent)
         time.sleep(1.5)
         self.assertIsNone(waiting.poll(), "admit --wait still waits")
         self.client("--cli", "release", "fixture-turn-1")
@@ -240,7 +240,7 @@ class Hookd(unittest.TestCase):
         self.queue_of_one(self.pool)
         self.client("--cli", "admit", "fixture-turn-1")
         waiting, _ = self.waiting_admit("fixture-turn-2", shell=False)
-        waiter = self.state()["turns"]["queued"]["fixture-turn-2"]["waiter"]
+        waiter = self.turns()["queued"]["fixture-turn-2"]["waiter"]
         os.kill(waiter, 0)
         waiting.send_signal(signal.SIGTERM)
         waiting.communicate(timeout=10)

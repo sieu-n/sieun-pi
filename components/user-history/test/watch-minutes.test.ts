@@ -108,9 +108,8 @@ test("another box's watch line comes from its relay's answer, and a relay that f
 // held 8 of tree_working_max 8, so pi-pool's own rule (admit_pass) had no slot it was allowed to give them. The old test compared only the machine
 // count with a working_max it read as 15 from a config.json the box did not have.
 const TREES: Record<string, string> = { mm: "metal-management", ci: "VP of CI", api: "api portal vp" };
-const turn = (session: string, tree: string, kind: "slot" | "borrow" = "slot") => ({ session, tree, parent: null, priority: "normal" as const, since: BOX_RUN - 600_000, kind });
-const waiter = (session: string, tree: string, waitS: number) => ({ session, tree, parent: null, priority: "normal" as const, since: BOX_RUN - waitS * 1000,
-  basePriority: "normal" as const, position: 1, total: 2, waitMs: waitS * 1000 });
+const turn = (session: string, tree: string) => ({ session, tree, since: BOX_RUN - 600_000, kind: "slot" as const });
+const waiter = (session: string, tree: string, waitS: number) => ({ session, tree, since: BOX_RUN - waitS * 1000, position: 1, total: 2, waitMs: waitS * 1000 });
 const queueAt = (reading: QueueReading, minute: number): WatchLine => {
   const now = BOX_RUN - 10_000 - (30 - minute) * 60_000 + 30_000;
   const footprints: Footprints = { workers: {}, kernels: [], swap_used_bytes: 0, pressure_level: null, cpu_s: 0 };
@@ -120,10 +119,10 @@ const queueAt = (reading: QueueReading, minute: number): WatchLine => {
 const slots = (tree: string, count: number) => Array.from({ length: count }, (_, i) => turn(`${tree}${i}`, tree));
 
 test("the 04:30Z case reads clean: 12 of 16 slots in use and the oldest queued turn's tree at 8 of 8 is pi-pool's tree cap, not a free slot", () => {
-  const reading: QueueReading = { workingMax: 16, treeWorkingMax: 8, working: [...slots("mm", 8), ...slots("api", 4), turn("mm-child", "mm", "borrow")],
+  const reading: QueueReading = { workingMax: 16, treeWorkingMax: 8, working: [...slots("mm", 8), ...slots("api", 4)],
     queued: [waiter("mm-a", "mm", 167), waiter("mm-b", "mm", 40)] };
   const line = queueAt(reading, 0);
-  assert.equal(line.queue?.working, 13);
+  assert.equal(line.queue?.working, 12);
   assert.equal(line.queue?.slots, 12);
   assert.deepEqual(line.queue?.waiting, [{ tree: "metal-management", oldestWaitS: 167, slots: 8 }]);
   const { metrics } = measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(reading, minute)), log: { holds: [] }, chats: [] });

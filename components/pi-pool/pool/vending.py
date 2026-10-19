@@ -163,7 +163,7 @@ class IntentWriter:
     def set_priority(self, key, priority, now, labeled=False):
         """R7: the tree's class. A tree with no record yet (a thread made a moment
         ago) gets one, so its first request already counts as this class. `labeled`:
-        the class is the owner's sidebar label (turns.class_for reads it)."""
+        the class is the owner's sidebar label, which `snapshot --tree` reports."""
         rec = self._rec(key, now)
         rec["priority"] = priority
         if labeled:

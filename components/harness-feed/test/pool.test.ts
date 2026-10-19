@@ -15,20 +15,17 @@ const NOW = 1792430000 * 1000;
 const value = (samples: Sample[], name: string, labels: Record<string, string> = {}): number | undefined =>
   samples.find(s => s.name === name && Object.entries(labels).every(([key, want]) => s.labels?.[key] === want))?.value;
 
-test("queue samples count working turns by kind and class, waiting turns by class, and the busiest tree", () => {
+test("queue samples count working turns by kind, waiting turns, and the busiest tree", () => {
   const samples = queueSamples(parsed(snapshot.queue), NOW);
   assert.equal(value(samples, "harness.pool.queue_on"), 1);
   assert.equal(value(samples, "harness.pool.working_max"), 30);
   assert.equal(value(samples, "harness.pool.tree_working_max"), 16);
-  assert.equal(value(samples, "harness.pool.slots_used"), 3);
-  assert.equal(value(samples, "harness.pool.turns_working", { kind: "slot", priority: "high" }), 1);
-  assert.equal(value(samples, "harness.pool.turns_working", { kind: "borrow", priority: "high" }), 1);
-  assert.equal(value(samples, "harness.pool.turns_working", { kind: "owner", priority: "normal" }), 1);
-  assert.equal(value(samples, "harness.pool.turns_working", { kind: "prod", priority: "low" }), 0);
-  assert.equal(samples.filter(s => s.name === "harness.pool.turns_working").length, 15);
-  assert.equal(value(samples, "harness.pool.turns_waiting", { priority: "high" }), 1);
-  assert.equal(value(samples, "harness.pool.turns_waiting", { priority: "normal" }), 0);
-  assert.equal(value(samples, "harness.pool.turns_waiting", { priority: "low" }), 1);
+  assert.equal(value(samples, "harness.pool.slots_used"), 4);
+  assert.equal(value(samples, "harness.pool.turns_working", { kind: "slot" }), 2);
+  assert.equal(value(samples, "harness.pool.turns_working", { kind: "ahead" }), 1);
+  assert.equal(value(samples, "harness.pool.turns_working", { kind: "owner" }), 1);
+  assert.equal(samples.filter(s => s.name === "harness.pool.turns_working").length, 3);
+  assert.equal(value(samples, "harness.pool.turns_waiting"), 2);
   assert.equal(value(samples, "harness.pool.tree_working_most"), 3);
   assert.equal(value(samples, "harness.pool.trees_working"), 2);
   assert.equal(value(samples, "harness.pool.queue_wait_longest"), 79);
@@ -36,7 +33,7 @@ test("queue samples count working turns by kind and class, waiting turns by clas
 });
 
 test("an empty queue reads zeros, not -Infinity", () => {
-  const samples = queueSamples({ enabled: false, working_max: 16, tree_working_max: 8, slots_used: 0, working: [], queued: [] }, NOW);
+  const samples = queueSamples({ enabled: false, working_max: 16, tree_working_max: 8, working: [], queued: [] }, NOW);
   assert.equal(value(samples, "harness.pool.queue_wait_longest"), 0);
   assert.equal(value(samples, "harness.pool.tree_working_most"), 0);
   assert.equal(value(samples, "harness.pool.turn_working_longest"), 0);

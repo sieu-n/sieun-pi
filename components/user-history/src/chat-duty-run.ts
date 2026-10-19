@@ -3,7 +3,6 @@ import { open as openFile, copyFile, mkdir, readdir, readFile, rename, rm, write
 import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
-import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
@@ -54,8 +53,6 @@ export interface DutyHost {
   node?: string;
   /** The command a precheck runs in place of its own; a replay serve's writes an empty metrics object, since a duty's precheck reads prod. */
   precheckCommand?: (duty: Duty) => readonly string[];
-  /** The Mac-wide turn queue's wait before a duty job's session is created (`dutyAdmitter`); absent: every job starts at once. */
-  admit?: DutyAdmitter["admit"];
   /** The chat's pool class from its sidebar label (`chatPoolPriority`), for the card; absent: high, as for an unlabelled chat. */
   priority?: (chatId: string) => Promise<PoolPriority>;
   /** The chat's board, where each missed metric's fix step lives (`dutyFixes`); absent: runs record no fixes. */
@@ -887,9 +884,7 @@ export class Duties {
    * Starts the duty job of one run: null when the slot already has its job (a re-entrant tick or a restart), skipped while the duty's last job
    * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the daemon's list does not show is
    * skipped too, and a list that fails throws. The chat comes first, so whether the last job works is read from a catalog that lists it. A last
-   * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one. The job's session is created only once the
-   * Mac-wide turn queue admits the run (`admit`), and the run's queue key is released once the session exists or its start failed. The retired
-   * job's run gets this run's measure (`measured`) as its after-job measure when it has none yet: a job that ran past the next slot, or whose end
+   * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one. The retired job's run gets this run's measure (`measured`) as its after-job measure when it has none yet: a job that ran past the next slot, or whose end
    * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
@@ -905,15 +900,7 @@ export class Duties {
         .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-job measure of ${lastRun.job?.name ?? "the last run"}: ${message(error)}`));
     }
     const name = dutyJobName(brief.duty.name, chat.name, at);
-    // The wait runs here, outside the job host's one start lane, so a queued duty never holds up another chat's start.
-    const key = `${chatId}/${dutyId}`;
-    const step = this.steps.get(key);
-    if (step) this.steps.set(key, { at: step.at, step: "waiting for a working slot" });
-    const release = await this.host.admit?.(chatId, dutyId) ?? null;
-    if (step) this.steps.set(key, step);
-    let job: DutyJobRef;
-    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), release !== null, at); }
-    finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: release its turn queue key: ${message(error)}`)); }
+    const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), at);
     return replaced ? { job, replaced } : { job };
   }
 

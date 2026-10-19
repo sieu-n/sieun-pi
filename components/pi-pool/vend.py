@@ -105,17 +105,14 @@ USAGE = """usage: pi-pool [command]
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into
                                   fallback.json (the /account extension runs this per session)
-  admit <session> [--tree <root>] [--parent <session>] [--class top|high|normal|low] [--pid <n>] [--wait | --renew]
+  admit <session> [--tree <root>] [--pid <n>] [--wait | --renew]
                                   ask for a working slot for one session run; prints
                                   {"state","kind","position","total"}. --wait blocks until admitted;
                                   --renew renews a running session's lease and never queues it.
-                                  --tree defaults to this process's session tree, --class to normal
-                                  for a child (high when the tree's label is High) and to the tree's
-                                  priority for a root, --pid to the caller, whose exit ends the run
+                                  --tree defaults to this process's session tree, --pid to the
+                                  caller, whose exit ends the run
   release <session>              free the turn's slot or drop its queue entry
   owner-turn <session>           the session's next admit is the owner's and runs at once
-  prod [set <json> | clear]      the trees and sessions on prod work, whose turns run at once:
-                                  set takes {"trees": {id: why}, "sessions": {id: why}, "until": epoch sec}
   queue [--json]                 working and queued turns
   snapshot --json [--thread <session> <model>]... [--tree <session>]...
                                   queue --json, config, and per thread who --json and ls --json for
@@ -152,7 +149,7 @@ def cli(args):
         "limited": pool.session_cmds.cmd_limited, "refused": pool.session_cmds.cmd_refused,
         "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
-        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue, "prod": pool.turns.cmd_prod,
+        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
         "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
         "snapshot": lambda rest: pool.snapshot.cmd_snapshot(rest, cli),
     }
