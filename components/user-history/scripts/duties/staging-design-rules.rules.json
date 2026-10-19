@@ -73,14 +73,15 @@
       "skill": null,
       "skillSince": null,
       "match": [
-        "padding",
         "too (tall|fat)",
         "\\bfat\\b",
         "vertical spacing",
         "margin too big",
         "containeri[sz]ed",
         "liked it tight",
-        "ㅈㄴ fat"
+        "ㅈㄴ fat",
+        "(too much|so much|less|fat|reduce|extra|excess|no|big)\\W{0,3}padding",
+        "padding\\W{0,15}(too|fat|big|much)"
       ]
     },
     {
@@ -172,8 +173,8 @@
       "key": "section_icons",
       "rule": "Each section title, option and key field carries its icon, the same icon the sidebar uses.",
       "corrections": [],
-      "skill": null,
-      "skillSince": null,
+      "skill": "keep icons for each section where possible",
+      "skillSince": "2026-10-20",
       "match": [
         "icons? for each section",
         "same icon in sidebar",
@@ -202,8 +203,8 @@
       "key": "smooth_motion",
       "rule": "View switches, resizes and panels animate smoothly everywhere.",
       "corrections": [],
-      "skill": null,
-      "skillSince": null,
+      "skill": "smooth animations everywhere",
+      "skillSince": "2026-10-20",
       "match": [
         "smooo*th",
         "transition"
