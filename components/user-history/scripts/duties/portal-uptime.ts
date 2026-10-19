@@ -19,6 +19,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * For main, prod's side is the .env the live prod Vercel blob was pushed from, found by the blob's `dotenvx-blob sha256:` comment
  * (auto-sns-agent scripts/repo/env/vercel-blobs.mjs), because a blob push can run ahead of a promote: on 10-18 the p9 job pushed
  * the blob from sieun/dev's .env at 176874bc12, so prod ran with BATCH_WORKER_SECRET while main's .env still lacked it.
+ * Staging's side is the .env.staging at that same commit, because a key both tiers dropped together is not a gap: on 10-19 the prod
+ * blob was pushed from 2bb4d95732, which drops CLERK_SECRET_KEY, STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET from every tier
+ * (Clerk and Stripe go through Vent), and main's older .env.staging still listed them, so the count read 3 for keys no tier wants.
  * The note's dm_senders_prod metric is left out: the owner chose reader accounts that send (board p12) over buying aiograpi senders (p6 dropped).
  * A source it cannot read gives 999999 for its counts and -1 for its share, a source_errors count and a flagged slice, never a good-looking value.
  */
@@ -85,8 +88,8 @@ export const envKeys = (text: string): Set<string> =>
 
 /** The api-portal env files at one ref, or the error text when GitHub gave none. */
 export type EnvFiles = Record<string, { prod: string; staging: string } | { error: string }>;
-/** The api-portal .env the live prod Vercel blob was pushed from and the commit it was read at, or why none was found. */
-export type LiveProd = { ref: string; text: string } | { error: string };
+/** The api-portal .env the live prod Vercel blob was pushed from, the .env.staging at the same commit, and that commit, or why none was found. */
+export type LiveProd = { ref: string; text: string; staging: string } | { error: string };
 
 /** vercel-blobs.mjs blobFingerprint: sha256 of the file with its trailing whitespace dropped and one final newline, first 16 hex. */
 export const blobFingerprint = (text: string): string =>
@@ -147,9 +150,10 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
     if (ref === "main" && live && "error" in live) flagged.push({ at, kind: "env_live_unread", excerpt: `the live prod blob's source was not found (${live.error}), so apps/api-portal/.env at main stands in for prod`.slice(0, 300) });
     const prod = envKeys(liveText ? liveText.text : files.prod);
     const prodName = liveText ? `the live prod blob (apps/api-portal/.env at ${liveText.ref})` : `apps/api-portal/.env at ${ref}`;
-    const missing = [...envKeys(files.staging)].filter(name => !prod.has(name));
+    const stagingRef = liveText ? liveText.ref : ref;
+    const missing = [...envKeys(liveText ? liveText.staging : files.staging)].filter(name => !prod.has(name));
     for (const name of missing) stagingOnly.add(name);
-    if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${ref} has ${missing.join(", ")}, which ${prodName} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
+    if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${stagingRef} has ${missing.join(", ")}, which ${prodName} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
   }
   metrics.env_keys_staging_only = envRead ? stagingOnly.size : UNMEASURED;
   metrics.source_errors = sourceErrors;
@@ -198,7 +202,7 @@ const githubRaw = (path: string, ref: string) => ghApi(`contents/${path}?ref=${e
 /** How many past versions of sieun/dev's apps/api-portal/.env are tried against the live blob's fingerprint. */
 const LIVE_HISTORY = 20;
 
-/** The .env the live prod api-portal blob was pushed from: the newest of main's, sieun/dev's and sieun/dev's recent versions whose fingerprint is the blob's comment. */
+/** The .env the live prod api-portal blob was pushed from: the newest of main's, sieun/dev's and sieun/dev's recent versions whose fingerprint is the blob's comment, with the .env.staging beside it. */
 async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
   try {
     const blobs = await import(pathToFileURL(join(REPO, "scripts/repo/env/vercel-blobs.mjs")).href) as { blobRow(app: string, tier: string): Promise<{ comment?: string } | null> };
@@ -207,12 +211,12 @@ async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
     if (!want) return { error: `the prod API_PORTAL_DOTENVX_ENV row has no dotenvx-blob comment (${row ? "row found" : "no row"})` };
     for (const ref of ENV_REFS) {
       const files = env[ref];
-      if (files && "prod" in files && blobFingerprint(files.prod) === want) return { ref, text: files.prod };
+      if (files && "prod" in files && blobFingerprint(files.prod) === want) return { ref, text: files.prod, staging: files.staging };
     }
     const commits = JSON.parse(await ghApi(`commits?path=apps/api-portal/.env&sha=sieun/dev&per_page=${LIVE_HISTORY}`, "application/vnd.github+json")) as { sha: string }[];
     for (const { sha } of commits) {
       const text = await githubRaw("apps/api-portal/.env", sha);
-      if (blobFingerprint(text) === want) return { ref: sha.slice(0, 10), text };
+      if (blobFingerprint(text) === want) return { ref: sha.slice(0, 10), text, staging: await githubRaw("apps/api-portal/.env.staging", sha) };
     }
     return { error: `no apps/api-portal/.env at main, sieun/dev or its last ${LIVE_HISTORY} versions has sha256:${want}` };
   } catch (error) { return { error: errorText(error) }; }

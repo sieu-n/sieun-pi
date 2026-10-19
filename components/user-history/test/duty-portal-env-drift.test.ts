@@ -23,15 +23,30 @@ test("an env file GitHub did not give reads as unmeasured, never as 0", () => {
 
 test("main's gap does not count when the live prod blob was pushed from a .env that has the key, as p9's push from 176874bc12 did on 10-18", () => {
   const dev = `${PROD}BATCH_WORKER_SECRET=encrypted:f\n`;
-  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: dev, staging: STAGING } }, { ref: "176874bc12", text: dev });
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: dev, staging: STAGING } }, { ref: "176874bc12", text: dev, staging: STAGING });
   assert.equal(output.metrics.env_keys_staging_only, 0);
   assert.equal(output.flagged!.filter(flag => flag.kind === "env_staging_only").length, 0);
 });
 
 test("a live prod blob that lacks the key still counts and names the blob's commit", () => {
-  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: PROD, staging: PROD } }, { ref: "abc1234567", text: PROD });
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: PROD, staging: PROD } }, { ref: "abc1234567", text: PROD, staging: STAGING });
   assert.equal(output.metrics.env_keys_staging_only, 1);
   assert.match(output.flagged!.find(flag => flag.kind === "env_staging_only")!.excerpt, /the live prod blob \(apps\/api-portal\/\.env at abc1234567\) lacks/);
+});
+
+test("keys the live blob's commit dropped from both tiers do not count against main's older .env.staging, as 2bb4d95732's Vent move did on 10-19", () => {
+  const dropped = "CLERK_SECRET_KEY=encrypted:g\nSTRIPE_SECRET_KEY=encrypted:h\nSTRIPE_WEBHOOK_SECRET=encrypted:i\n";
+  const devProd = `${PROD}BATCH_WORKER_SECRET=encrypted:f\nCLERK_JWT_KEY=encrypted:j\n`;
+  const devStaging = `${STAGING}CLERK_JWT_KEY=encrypted:k\n`;
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: `${PROD}${dropped}`, staging: `${STAGING}${dropped}` }, "sieun/dev": { prod: devProd, staging: devStaging } }, { ref: "2bb4d95732", text: devProd, staging: devStaging });
+  assert.equal(output.metrics.env_keys_staging_only, 0);
+  assert.equal(output.flagged!.filter(flag => flag.kind === "env_staging_only").length, 0);
+});
+
+test("a key the live blob's own .env.staging has and its .env lacks counts and names that commit's .env.staging", () => {
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: PROD }, "sieun/dev": { prod: PROD, staging: PROD } }, { ref: "abc1234567", text: PROD, staging: STAGING });
+  assert.equal(output.metrics.env_keys_staging_only, 1);
+  assert.match(output.flagged!.find(flag => flag.kind === "env_staging_only")!.excerpt, /\.env\.staging at abc1234567 has BATCH_WORKER_SECRET/);
 });
 
 test("an unread live blob falls back to main's .env and says so", () => {
