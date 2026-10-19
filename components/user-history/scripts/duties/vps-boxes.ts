@@ -11,8 +11,10 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
  * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token).
- * root_disk_days is the days until us-metal01's root disk is full at the last 24 h rate, and air_runners_online counts the M1 Air's runners up,
- * both from the box Prometheus through Grafana ds/query. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
+ * disk_days_min is the fewest days until a disk on us-metal01 (/, /ci, /hdd.raid10) or us-metal02 (/, /drive2) is full at its last 24 h rate,
+ * the math of the metal-host-disk-fill-30d and metal02-dev-disk-fill-30d rules, and air_runners_online counts the M1 Air's runners up, both from
+ * the box Prometheus through Grafana ds/query. disk_days_min replaced root_disk_days on 10-19, which read us-metal01's / only (51 days) while
+ * us-metal02's / read 6.9. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
  * by its triage job (prod-alerts.ts). The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
@@ -21,8 +23,9 @@ const CHAT = "01a11af8-962e-773d-a19a-ee4104011987";
 export const RISKS_FILE = join(DATA_DIR, "duties", CHAT, "infra-risks.json");
 const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
-const ROOT = 'node_filesystem_avail_bytes{job="host",instance="10.83.0.1:9100",mountpoint="/"}';
-export const ROOT_DAYS_QUERY = `${ROOT} / clamp_min(-deriv(${ROOT}[24h]) * 86400, 1)`;
+const DISK_BOXES = ["us-metal01", "us-metal02"] as const;
+const DISKS = `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",mountpoint!="/boot"}`;
+export const DISK_DAYS_QUERY = `${DISKS} / clamp_min(-deriv(${DISKS}[24h]) * 86400, 1)`;
 export const AIR_RUNNERS_QUERY = 'sum(devbox_runner_up{job="devbox",box="m1-air"})';
 
 export interface Risk { id: string; line: string; owner: string; alertUids: string[] }
@@ -69,16 +72,44 @@ async function grafana(path: string, init?: RequestInit): Promise<unknown> {
   return response.json();
 }
 
-async function instant(expr: string): Promise<number> {
+export interface DiskDays { box: string; mountpoint: string; days: number }
+
+const diskName = (disk: DiskDays): string => `${disk.box}'s ${disk.mountpoint} (${Math.round(disk.days * 10) / 10} days)`;
+
+/** The fewest days to full over every disk, and one line naming the disks under the 30-day target lowest first, or the lowest disk when none is. */
+export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: number; flagged: FlaggedSlice } {
+  const missing = DISK_BOXES.filter(box => !disks.some(disk => disk.box === box));
+  if (missing.length) throw new Error(`Prometheus has no disk of ${missing.join(" or ")}`);
+  const sorted = [...disks].sort((a, b) => a.days - b.days);
+  const low = sorted.filter(disk => disk.days < 30);
+  const excerpt = low.length ? `fills within 30 days at the last 24 h rate: ${low.map(diskName).join(", ")}` : `every disk has 30 days or more; the lowest is ${diskName(sorted[0]!)}`;
+  return { days: Math.round(sorted[0]!.days * 10) / 10, flagged: { at, kind: "disk", excerpt } };
+}
+
+type Frame = { schema?: { fields?: { labels?: Record<string, string> }[] }; data?: { values?: unknown[][] } };
+
+async function query(expr: string): Promise<Frame[]> {
   const now = Date.now();
   const body = await grafana("/api/ds/query", { method: "POST",
     body: JSON.stringify({ queries: [{ refId: "A", datasource: PROMETHEUS, expr, instant: true, range: false }], from: String(now - 300_000), to: String(now) }) }) as
-    { results?: { A?: { error?: string; frames?: { data?: { values?: unknown[][] } }[] } } };
+    { results?: { A?: { error?: string; frames?: Frame[] } } };
   const result = body.results?.A;
   if (!result || result.error) throw new Error(`${expr}: ${result?.error ?? "no result"}`);
-  const value = result.frames?.[0]?.data?.values?.[1]?.at(-1);
+  return result.frames ?? [];
+}
+
+async function instant(expr: string): Promise<number> {
+  const value = (await query(expr))[0]?.data?.values?.[1]?.at(-1);
   if (typeof value !== "number") throw new Error(`${expr}: no sample`);
   return value;
+}
+
+async function disks(): Promise<DiskDays[]> {
+  return (await query(DISK_DAYS_QUERY)).flatMap((frame): DiskDays[] => {
+    const labels = frame.schema?.fields?.[1]?.labels ?? {};
+    const days = frame.data?.values?.[1]?.at(-1);
+    return typeof days === "number" && labels.box && labels.mountpoint ? [{ box: labels.box, mountpoint: labels.mountpoint, days }] : [];
+  });
 }
 
 async function main(): Promise<void> {
@@ -102,10 +133,13 @@ async function main(): Promise<void> {
     result.metrics.alerts_firing = counted.count;
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `alerts_firing: ${error instanceof Error ? error.message : String(error)}`); }
-  for (const [key, expr] of [["root_disk_days", ROOT_DAYS_QUERY], ["air_runners_online", AIR_RUNNERS_QUERY]] as const) {
-    try { result.metrics[key] = Math.round(await instant(expr) * 10) / 10; }
-    catch (error) { flag("source_error", `${key}: ${error instanceof Error ? error.message : String(error)}`); }
-  }
+  try {
+    const counted = diskDaysMin(await disks(), at);
+    result.metrics.disk_days_min = counted.days;
+    result.flagged!.push(counted.flagged);
+  } catch (error) { flag("source_error", `disk_days_min: ${error instanceof Error ? error.message : String(error)}`); }
+  try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }
+  catch (error) { flag("source_error", `air_runners_online: ${error instanceof Error ? error.message : String(error)}`); }
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
