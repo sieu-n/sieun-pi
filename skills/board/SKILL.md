@@ -66,7 +66,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 
 1. `references/jobs.md` covers starting, briefing, splitting, steering and deleting jobs, and wiki page jobs.
 2. `references/check-ins.md` covers the check-in, duties and heartbeats.
-3. `references/git.md` covers sieun-pi commits, merges, pushes and promotes.
+3. `references/git.md` covers sieun-pi commits, merges, pushes and promotes, and the auto-sns-agent branch model.
 4. `references/owner.md` covers owner todos, review asks, logins, and links, images and diagrams in a reply.
 5. `references/corrections.md` covers what to do when the owner corrects how a chat works.
 6. `references/clean-room.md` covers the clean-room run that closes a harness, skill or tool change.
@@ -126,7 +126,7 @@ Until the proper launch the owner pre-approves every prod promote, merge or push
 
 A step whose only target is staging never needs a go, even when marked. Such a step names staging, sieun/dev or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
 
-The owner picking a design on a demo is not a go. Offer the go choice first, worded with Go, Ship or Yes, and a hold choice such as Not yet. A go said in chat does not count, so ask the owner to answer the todo. `references/git.md` holds the full merge rule, the one switch that turns the standing go off after launch, and the c49 rule with its OWNER_OK token that comes back then.
+The owner picking a design on a demo is not a go. Offer the go choice first, worded with Go, Ship or Yes, and a hold choice such as Not yet. A go said in chat does not count, so ask the owner to answer the todo. `references/git.md` holds the full merge rule and names `releaseGo.preapproval`, the switch that turns the standing go off after launch.
 
 ### Build steps and requirements
 

@@ -1,6 +1,6 @@
 # Git in a VP chat's work
 
-Read this before a sieun-pi commit, a :5182 chat release, a merge, a push or a promote.
+Read this before a sieun-pi commit, a :5182 chat release, a merge, a push or a promote, and for the auto-sns-agent branch model.
 
 ## sieun-pi commits
 
@@ -32,6 +32,15 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 10. Never run `ln -sfn` on `current` or kickstart the service by hand, because a hand step skips the lock and the newer-only check.
 11. Releases that queue up fold into one build and one restart. The release that takes the lock reads the requests waiting for it, picks the queued commit on origin's `main` that holds its own commit, the live release and the most queued requests, builds it, flips `current`, restarts and logs `release-X covers the requests of ...`. Each covered caller then exits 0 with `already live in release-X`. A request that comes in during that build waits for the next batch, and the batch makes its own restart even then, because on 10-18 a queue that passed one restart on 12 times left the chat 51 min behind `current`. When the picked build fails, the release builds the next candidate down to its own commit, so a failing newer request fails only its own caller. A queued commit that neither holds nor is held by the picked one is left to its own release. The batch restarts unless every covered request passed `--no-kickstart`. A release that takes the lock with `restart.owed`, which helpers from before the fold leave for a waiting release, makes that restart before its build. On us-metal02 the journal shows 11 chat restarts from 16:04Z to 17:59Z on 10-18, one for each release that built.
 
+## auto-sns-agent branches
+
+1. Staging is the trunk, and only land.yml writes it, so nobody pushes staging by hand.
+2. Each dev branch, such as sieun/dev on us-metal02, dev/sieun-mac-a on the Mac or any dev/<name>, takes commits on its own line, and a dev branch never rebases onto staging or takes staging back after a land.
+3. Each green verify-dev push run on a dev branch makes land.yml squash that branch's newest green commit onto staging with a Land-From trailer and no owner ask, and that Land-From sha is the base of the branch's next land.
+4. Only promote.yml moves main, by fast-forward to a checked staging sha, and the release owner runs it as soon as staging checks out (c74).
+5. Demo work goes on dev/sieun-mac-a, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
+6. The full rules are in auto-sns-agent's `.agents/skills/repo/git-workflow/SKILL.md`, which you read with `node scripts/skills/read-skill.mjs repo/git-workflow` from that repo.
+
 ## Merges, pushes and promotes
 
 The chat brief, the job reply guideline and the duty job brief all state the merge rule as `MERGE_RULE` in `components/user-history/src/shared/chat-board.ts`, and `test/merge-gate.test.ts` checks that this file holds it word for word:
@@ -40,8 +49,4 @@ The chat brief, the job reply guideline and the duty job brief all state the mer
 
 Do the merge, push or promote yourself, and tell the owner what shipped in a chat message. An open todo that asks for a merge, push or promote go can be checked off with a note that c74 covers it.
 
-The switch is `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts`, which holds the c74 words and date. The briefs read it. When an owner rule after launch takes the standing go back, that one field becomes null and the briefs carry the old rule (c49):
-
-> Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the word push), is answered by him with a go and checked off. There is no standing "merge once checks pass" approval, and a go on another step, PR or push does not carry over.
-
-Under that rule you ask with one For you todo per PR or push, with `step` set to that step and the PR number, or the repo and branch, in its text. `SKILL.md` under "The owner's go" lists which step texts count as a merge and which count as staging only.
+After launch, an owner rule that takes the standing go back sets `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts` to null, and the briefs then carry the rule from that code.
