@@ -530,7 +530,7 @@ function admitWait(sid: string, parent: string | undefined, signal: AbortSignal 
 		};
 		const tick = async () => {
 			timer = undefined;
-			if (done) return;
+			if (done || stopped) return;
 			if (signal?.aborted) return stop();
 			let again = Date.now() - askedAt >= WAIT_ASK_MS;
 			if (!again) {
@@ -616,8 +616,14 @@ export default function (pi: ExtensionAPI): void {
 			if (told || reply.position === null || reply.total === null) return;
 			told = true;
 			const text = `Queued for a working slot, ${ordinal(reply.position)} of ${reply.total}`;
-			pi.appendEntry(QUEUE_ENTRY, { text, position: reply.position, total: reply.total, at: Date.now() });
-			if (showsStatus(ctx)) ctx.ui.notify(`pi-pool: ${text}`, "info");
+			// A reload replaces this instance while its wait runs on; Prime then refuses the old pi and ctx, and the throw
+			// was an unhandled rejection that ended Mac worker 6754cd3496ab at 15:44:57Z on 10-19. A stale instance stops its wait.
+			try {
+				pi.appendEntry(QUEUE_ENTRY, { text, position: reply.position, total: reply.total, at: Date.now() });
+				if (showsStatus(ctx)) ctx.ui.notify(`pi-pool: ${text}`, "info");
+			} catch {
+				wait.cancel();
+			}
 		});
 		cancelWait = wait.cancel;
 		const waiting: Promise<void> = wait.result.then((result) => {

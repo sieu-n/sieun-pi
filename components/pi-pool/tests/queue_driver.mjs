@@ -20,7 +20,11 @@ for (const step of steps) {
   if (step.op === 'start') {
     const handlers = new Map();
     extension({ on: (name, handler) => handlers.set(name, handler), registerCommand: () => {},
-      appendEntry: (type, data) => out.entries.push({ session: step.name, type, text: data.text }) });
+      appendEntry: (type, data) => {
+        // A stale instance throws like Prime's assertActive after a reload replaced the session's extensions.
+        if (step.stale) throw new Error('This extension ctx is stale after session replacement or reload.');
+        out.entries.push({ session: step.name, type, text: data.text });
+      } });
     let parentSession;
     if (step.parent) {
       parentSession = join(files, `${step.parent}-file.jsonl`);

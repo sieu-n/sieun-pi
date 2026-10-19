@@ -92,6 +92,15 @@ class Wiring(unittest.TestCase):
         self.assertEqual([w["session"] for w in run["queues"]["running"]["working"]], ["job"])
         self.assertEqual(run["queues"]["ended"]["working"], [], "agent_end released the slot")
 
+    def test_a_wait_left_by_a_reload_stops_instead_of_ending_the_worker(self):
+        """10-19 15:44:57Z Mac worker 6754cd3496ab died on an unhandled rejection when a wait of a reloaded
+        instance called appendEntry (index.ts:619), and its chat and two jobs stopped until 16:17Z."""
+        run = self.drive({"op": "start", "name": "job", "stale": True}, {"op": "context", "name": "job"},
+                         {"op": "wait", "name": "job", "ms": 4000, "label": "stale"}, {"op": "queue", "label": "q"})
+        self.assertIsNotNone(run["context"]["stale"], "the stale wait ends")
+        self.assertEqual(run["entries"], [])
+        self.assertEqual(run["queues"]["q"]["queued"], [], "the stale wait gave its queue entry back")
+
     def test_a_queued_run_waits_with_no_process_of_its_own(self):
         """Until 10-16 each waiting run spawned `admit --wait`, a Python process of about 30 MB:
         at 09:10 KST 49 of them held 1.5 GB while 68 turns waited."""
