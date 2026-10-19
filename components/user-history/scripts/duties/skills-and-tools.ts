@@ -58,7 +58,7 @@ export interface Deps {
   sleep?: (ms: number) => Promise<void>;
   /** "linux" on a headless box such as us-metal02, whose `aside` reaches a Mac over ssh; absent means macOS. */
   platform?: NodeJS.Platform;
-  /** Writes the kernel venv's sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
+  /** Writes the kernel venv's 00_sieun_pi_skills.pth (scripts/kernel-skill-paths.ts); absent in tests that do not cover it. */
   pinSkillPaths?: () => Promise<PinResult[]>;
   /** Absent means process.env. */
   env?: NodeJS.ProcessEnv;
@@ -326,7 +326,7 @@ export const CHECKS: readonly Check[] = [
     return PASS(`updated ${from} and restarted the daemon`);
   } },
   /**
-   * Before the import, the check writes kernel-venv/.../sieun_pi_skills.pth (scripts/kernel-skill-paths.ts), which keeps every Python skill in
+   * Before the import, the check writes kernel-venv/.../00_sieun_pi_skills.pth (scripts/kernel-skill-paths.ts), which keeps every Python skill in
    * ~/.prime/agent/skills importable while Prime's kernel setup reinstalls it. On 10-18 websearch, board and aside_browser failed to import
    * from before 04:35 to 04:49 after such a reinstall (p254).
    */

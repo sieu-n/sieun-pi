@@ -1,4 +1,4 @@
-import { readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,11 +15,19 @@ import { pathToFileURL } from "node:url";
  * the next kernel with that skill set boots. On 10-18 websearch, board and aside_browser failed to import at 04:35 and came back at 04:49,
  * the first kernel boots after the 04:48:44 daemon restart.
  *
+ * The file name starts with "00_" because Python's site module reads .pth files in sorted order and puts their folders on sys.path in that
+ * order. Under the old name, sieun_pi_skills.pth, the folders came after every `_editable_impl_*.pth`. So when Prime's kernel setup put its
+ * bundled Serper websearch back (prime-agent-skill-websearch, at 15:12:31Z on 10-19 on us-metal02), `import websearch` loaded that copy, and
+ * Box tools parity read websearch_kernel off. The pin goes first now, so our skills win over a bundled copy of the same module name. A pin
+ * left under the old name is removed.
+ *
  * uv deletes only the files listed in a package's RECORD, so it never deletes this file. Prime deletes it only when it rebuilds the whole
  * venv for a new runtime; the Skills and tools duty check websearch_kernel writes it again on its next run.
  */
 
-export const PIN_FILE = "sieun_pi_skills.pth";
+export const PIN_FILE = "00_sieun_pi_skills.pth";
+/** The pin's name before 10-19, which sorted after the editable installs; pinSkillPaths removes it. */
+export const OLD_PIN_FILE = "sieun_pi_skills.pth";
 
 export interface PinResult { file: string; written: boolean; paths: string[] }
 
@@ -60,6 +68,7 @@ export async function pinSkillPaths(options: { home?: string; venv?: string; ski
   const text = `${paths.join("\n")}\n`;
   return Promise.all((await sitePackages(venv)).map(async folder => {
     const file = join(folder, PIN_FILE);
+    if (paths.length) await rm(join(folder, OLD_PIN_FILE), { force: true });
     const before = await readFile(file, "utf8").catch(() => undefined);
     if (!paths.length || before === text) return { file, written: false, paths };
     const temporary = join(folder, `.${PIN_FILE}.${process.pid}.tmp`);

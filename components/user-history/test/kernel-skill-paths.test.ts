@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { PIN_FILE, pinSkillPaths, skillSourcePaths } from "../scripts/kernel-skill-paths.ts";
+import { OLD_PIN_FILE, PIN_FILE, pinSkillPaths, skillSourcePaths } from "../scripts/kernel-skill-paths.ts";
 
 const run = promisify(execFile);
 
@@ -71,5 +71,21 @@ test("kernel skill paths: a second run leaves the file alone, and an empty skill
     assert.equal(await readFile(join(site, PIN_FILE), "utf8"), `${join(repo, "toy/src")}\n`);
     assert.deepEqual(await skillSourcePaths(skills), [join(repo, "toy/src")], "only skills with a pyproject.toml and a src folder, links followed");
     assert.deepEqual(await pinSkillPaths({ home, venv: join(root, "no-venv"), skillsDir: skills }), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("kernel skill paths: the pin wins over a bundled editable install of the same module and replaces the old pin name", async () => {
+  const { root, repo, skills, site, home, venv } = await layout();
+  try {
+    // Prime's kernel setup reinstalled its bundled websearch on 10-19 at 15:12:31Z, and sieun_pi_skills.pth sorted after its .pth.
+    const bundled = join(root, "release/skills/toy/src");
+    await mkdir(join(bundled, "toyskill"), { recursive: true });
+    await writeFile(join(bundled, "toyskill/__init__.py"), "X = 2\n");
+    await writeFile(join(site, "_editable_impl_prime_agent_skill_toyskill.pth"), `${bundled}\n`);
+    await writeFile(join(site, OLD_PIN_FILE), `${join(repo, "toy/src")}\n`);
+    assert.equal((await importToy(site)).out, join(bundled, "toyskill/__init__.py"), "under the old name the bundled copy wins");
+    await pinSkillPaths({ home, venv, skillsDir: skills });
+    assert.equal((await importToy(site)).out, join(repo, "toy/src/toyskill/__init__.py"));
+    await assert.rejects(readFile(join(site, OLD_PIN_FILE), "utf8"), /ENOENT/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
