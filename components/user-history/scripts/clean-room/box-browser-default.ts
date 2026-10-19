@@ -17,14 +17,14 @@ const clip = (text: string, length = 200): string => (text.length > length ? tex
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
 
 const BROWSER = /\baside_browser\b|call_tool\(\s*["']aside["']|\baside\s+(exec|repl|mcp|skills)\b|\bopenTab\(/;
-const BOX = /\bbox-\d+\b|\[aside-browser box\]/;
+const BOX = /\bbox-\d+\b|\[aside-browser box\]|aside-browser\/box\/box\.mjs/;
 const ASIDE = /targetId["']?\s*[:=]\s*["'](?!box-)[0-9A-Fa-f]{8,}["']|browser\s*=\s*["']aside["']|aside_browser\.(agent|memory_search)\(|call_tool\(\s*["']aside["']|\b(gmail|outlook|slack|notion|googleDocs|googleSheets|googleSearch|youtube|linkedin|imessage)\s*\.\s*[A-Za-z_$]/;
 const MAIL = /gmail|mail\.google\.com|\binbox\b|\bunread\b/i;
 const APP = /(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0):(5174|5180)\b/;
 const SHOT = /\bscreenshot\s*\(/;
 const MAC = /\bssh\s+(?:-\w+\s+(?:\S+\s+)?)*mac\b|\b(?:scp|rsync)\b[^\n]*\bmac:|cua[-_]driver/i;
 
-const asideOutput = (call: Call): boolean => /targetId["']?\s*[:=]\s*["'](?!box-)[0-9A-Fa-f]{8,}["']/.test(call.output);
+const asideOutput = (call: Call): boolean => /targetId["']?\s*[:=]\s*["'](?!box-)[0-9A-Fa-f]{8,}["']|Opened a new tab and set it active|["']browser["']:\s*["']aside["']/.test(call.output);
 const usesAside = (call: Call): boolean => ASIDE.test(call.input) || asideOutput(call);
 const where = (call: Call): string => `${call.session.slice(0, 8)} at ${iso(call.at)}: \`${clip(call.input, 160)}\` gave "${clip(call.output, 200)}"`;
 
@@ -32,7 +32,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const sessions = familySessions(run, state);
   const family = new Set(sessions.map(session => session.id));
   const calls = sessions.flatMap(session => session.calls).filter(call => call.at >= state.windowStart && (call.tool === "ipython" || call.tool === "bash"));
-  const browser = calls.filter(call => BROWSER.test(call.input) || APP.test(call.input) && SHOT.test(call.input));
+  const browser = calls.filter(call => (BROWSER.test(call.input) || APP.test(call.input) && SHOT.test(call.input)) && !/rlm\.spawn\(|agent_message\.send\(|create_session\(/.test(call.input));
   const owner = sessions.find(session => session.id === state.chat.id)?.calls.filter(call => call.at >= state.windowStart && call.tool === "tell_owner") ?? [];
   const told = owner.map(call => call.input).join("\n");
   const checks: { id: string; ok: boolean | null; detail: string }[] = [];
@@ -40,18 +40,21 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const onApp = (call: Call): boolean => APP.test(call.input) || APP.test(call.output);
   const appCalls = browser.filter(call => onApp(call) || !MAIL.test(call.input));
-  const opened = appCalls.filter(call => call.ok && onApp(call) && BOX.test(call.output));
+  const boxed = new Set(calls.filter(call => BOX.test(call.output)).map(call => call.session));
+  const opened = appCalls.filter(call => call.ok && APP.test(call.input) && /open_tab\(|openTab\(|page\.goto\(/.test(call.input) && !usesAside(call)
+    && (BOX.test(call.output) || boxed.has(call.session)));
   const shots = appCalls.filter(call => call.ok && SHOT.test(call.input) && (!usesAside(call) || MAIL.test(call.input))
     && opened.some(open => open.session === call.session && open.at <= call.at));
   const strays = appCalls.filter(call => usesAside(call) && !MAIL.test(call.input));
   const mac = calls.filter(call => MAC.test(call.input) && (call.tool === "bash" || /\bbash\(|subprocess|call_tool\(/.test(call.input) || !/agent_message\.send|rlm\.spawn|create_session/.test(call.input)));
-  const header = /\bheader|\bnav(bar|igation)?\b|\blogo\b/i.test(told);
+  const toldAfter = owner.filter(call => shots[0] && call.at > shots[0].at).map(call => call.input).join("\n");
+  const header = /\bheader|\bnav(bar|igation)?\b|\blogo\b/i.test(toldAfter);
   add("a", strays.length || mac.length ? false : opened.length && shots.length && header ? true : null, [
     `${opened.length} app page opens in a box tab${opened[0] ? `, first ${where(opened[0])}` : ""}`,
     `${shots.length} screenshots of it${shots[0] ? `, first ${where(shots[0])}` : ""}`,
     `${appCalls.length} browser calls for the page, ${strays.length} of them in Aside${strays.length ? `: ${strays.map(where).join("; ")}` : ""}`,
     `${mac.length} ssh mac or cua-driver calls${mac.length ? `: ${mac.map(where).join("; ")}` : ""}`,
-    `the owner was ${header ? "" : "not yet "}told about the header${header ? `: "${clip(told.match(/[^.\n]*\b(header|nav|logo)[^.\n]*/i)?.[0] ?? "", 240)}"` : ""}`,
+    `the owner was ${header ? "" : "not yet "}told about the header after a screenshot${header ? `: "${clip(toldAfter.match(/[^.\n]*\b(header|nav|logo)[^.\n]*/i)?.[0] ?? "", 240)}"` : ""}`,
   ].join("; "));
 
   const mail = browser.filter(call => MAIL.test(call.input));
