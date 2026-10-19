@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { tick, untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -375,7 +376,7 @@
       </div>
     </div>
   {:else if !thread}
-    <div class="center muted"><span class="spinner"></span> Opening</div>
+    <div class="center muted"><Spinner size="normal" /> Opening</div>
   {:else}
     {@render feedView()}
   {/if}

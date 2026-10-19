@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -70,12 +71,12 @@
         <button class="button small" onclick={() => void load()}>Retry</button>
       </div>
     {:else if view === undefined}
-      <div class="empty muted"><span class="spinner"></span> Loading versions</div>
+      <div class="empty muted"><Spinner size="normal" /> Loading versions</div>
     {:else if view === null}
       <p class="note">This chat instance does not manage its prime-agent packages.</p>
     {:else}
       <p class="current {status.tone}" aria-live="polite">
-        {#if running}<span class="spinner tiny"></span>{:else}<span class="dot" aria-hidden="true"></span>{/if}
+        {#if running}<Spinner />{:else}<span class="dot" aria-hidden="true"></span>{/if}
         <span>{status.text}</span>
       </p>
 
@@ -135,7 +136,7 @@
             <span class="name" title={row.name}>{row.name}</span>
             <code class="mono version">{row.version}</code>
             <span class="status" class:pending={row.status === "update pending"} class:updating={row.status === "updating"}>
-              {#if row.status === "updating"}<span class="spinner tiny"></span>{/if}{row.status}
+              {#if row.status === "updating"}<Spinner />{/if}{row.status}
             </span>
           </li>
         {/each}

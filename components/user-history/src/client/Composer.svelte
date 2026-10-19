@@ -23,6 +23,7 @@
 </script>
 
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { tick, untrack, type Snippet } from "svelte";
   import { store } from "./store.svelte.ts";
   import { insertSlashCommand, matchCommands, slashTokenAt } from "./command-match.ts";
@@ -197,7 +198,7 @@
     <div class="split" class:ready={canSend} class:busy>
       <button type="button" class="send" aria-label={busy ? (busyMode === "steer" ? "Steer" : "Queue") : "Send"} use:tooltip={busy ? (busyMode === "steer" ? "Steer" : "Queue") : "Send"}
         disabled={!canSend} onclick={() => void submit(busy ? busyMode : "followUp")}>
-        {#if sending}<span class="spinner tiny"></span>{:else}<Icon name={busy && busyMode === "steer" ? "steer" : "send"} size={16} />{/if}
+        {#if sending}<Spinner />{:else}<Icon name={busy && busyMode === "steer" ? "steer" : "send"} size={16} />{/if}
       </button>
       {#if busy}
         <button type="button" class="mode" bind:this={modeButton} aria-label="While the agent works: {busyMode === 'steer' ? 'Steer' : 'Queue'}" aria-haspopup="menu" aria-expanded={modeOpen}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import Modal from "./Modal.svelte";
 
   /** A small yes-or-no modal: the question as the title, one line of consequence, Cancel and the action. Escape and the backdrop cancel. */
@@ -13,7 +14,7 @@
     <div class="actions">
       <button type="button" class="button" onclick={onclose}>Cancel</button>
       <!-- svelte-ignore a11y_autofocus -->
-      <button type="submit" class="button {danger ? 'danger' : 'primary'}" disabled={busy} autofocus>{#if busy}<span class="spinner tiny"></span>{/if}{label}</button>
+      <button type="submit" class="button {danger ? 'danger' : 'primary'}" disabled={busy} autofocus>{#if busy}<Spinner />{/if}{label}</button>
     </div>
   </form>
 </Modal>

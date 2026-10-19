@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -43,7 +44,7 @@
 <section class="pane" aria-label="Slack">
   <SettingsActions>
     <button class="icon-button small" disabled={busy || !view} aria-label="Read the tokens again" use:tooltip={"Read the tokens again"} onclick={() => void apply(api.checkSlack())}>
-      {#if busy}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
+      {#if busy}<Spinner />{:else}<Icon name="refresh" size={14} />{/if}
     </button>
   </SettingsActions>
   {#if error && view === undefined}
@@ -52,12 +53,12 @@
       <button class="button small" onclick={() => void load()}>Retry</button>
     </div>
   {:else if view === undefined}
-    <div class="empty muted"><span class="spinner"></span> Loading Slack</div>
+    <div class="empty muted"><Spinner size="normal" /> Loading Slack</div>
   {:else if view === null}
     <p class="note">Only the main chat instance in ~/.prime/agent/browser-chat links chats to Slack.</p>
   {:else}
     <p class="current {dotState}" aria-live="polite">
-      {#if view.state === "connecting"}<span class="spinner tiny"></span>{:else}<span class="dot" aria-hidden="true"></span>{/if}
+      {#if view.state === "connecting"}<Spinner />{:else}<span class="dot" aria-hidden="true"></span>{/if}
       <span>{view.message}</span>
     </p>
 

@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import type { ModelCatalog, ModelInfo, ThinkingLevel } from "../shared/types.ts";
   import { compactNumber } from "./format.ts";
   import { tooltip } from "./ui/tooltip.ts";
@@ -82,7 +83,7 @@
   {#if error}
     <div class="note">{error}</div>
   {:else if !catalog}
-    <div class="note"><span class="spinner tiny"></span> Loading models</div>
+    <div class="note"><Spinner /> Loading models</div>
   {:else}
     <input class="field filter" placeholder="Search models" aria-label="Search models" data-autofocus bind:value={query} onkeydown={onKey}
       role="combobox" aria-expanded="true" aria-controls="model-options" aria-activedescendant={active >= 0 ? "model-option-" + active : undefined} />

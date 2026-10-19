@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onMount } from "svelte";
   import { api } from "./api.ts";
   import { clock } from "./clock.svelte.ts";
@@ -116,7 +117,7 @@
           <span class="note" title={new Date(tools.checkedAt).toLocaleString()}>Checked {ago(tools.checkedAt, clock.now)}</span>
         {/if}
         <button class="button small" disabled={checking || (!tools && !toolsError)} onclick={() => void checkAgain()}>
-          {#if checking}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={13} />{/if}
+          {#if checking}<Spinner />{:else}<Icon name="refresh" size={13} />{/if}
           Check again
         </button>
       </div>
@@ -128,7 +129,7 @@
         <button class="button small" onclick={() => void loadTools()}>Retry</button>
       </div>
     {:else if !tools}
-      <div class="empty muted"><span class="spinner"></span> Running the tool checks</div>
+      <div class="empty muted"><Spinner size="normal" /> Running the tool checks</div>
     {:else}
       <p class="current" class:on={failing === 0 && unreachable === 0} class:problem={failing > 0 || unreachable > 0}>
         <span class="dot" aria-hidden="true"></span>
@@ -236,7 +237,7 @@
         <button class="button small" onclick={() => void loadSkills()}>Retry</button>
       </div>
     {:else if !skills}
-      <div class="empty muted"><span class="spinner"></span> Reading the skill folders</div>
+      <div class="empty muted"><Spinner size="normal" /> Reading the skill folders</div>
     {:else if !skills.skills.length}
       <p class="note">No skills are installed.</p>
     {:else if !skillGroups.length}

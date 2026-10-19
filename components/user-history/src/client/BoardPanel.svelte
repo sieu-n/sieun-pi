@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, needsGo, nextIds, stepGo } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../shared/types.ts";
@@ -254,7 +255,7 @@
         {@const subs = agentSubagents(agent)}
         <li>
           <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
-            <span class="agent-state">{#if agent.queued || agent.wait}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
+            <span class="agent-state">{#if agent.queued || agent.wait}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<Spinner />{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
             <span class="agent-name">{agent.name}</span>
             {#if agent.queued}<span class="agent-activity" title={queueText(agent.queued, now)}>{QUEUED_TEXT}</span>
             {:else if agent.wait}<span class="agent-activity">{agent.wait}</span>

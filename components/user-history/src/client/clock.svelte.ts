@@ -21,12 +21,3 @@ class Clock {
 
 export const clock = new Clock();
 
-/** Every spinner runs on the document timeline from time zero, so all of them turn in the same phase however late each one mounted. */
-export function syncSpinners(): () => void {
-  const align = (event: AnimationEvent) => {
-    if (event.animationName !== "spin" || !(event.target instanceof Element)) return;
-    for (const animation of event.target.getAnimations()) if (animation instanceof CSSAnimation && animation.animationName === "spin") animation.startTime = 0;
-  };
-  document.addEventListener("animationstart", align, true);
-  return () => document.removeEventListener("animationstart", align, true);
-}

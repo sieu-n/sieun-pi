@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { untrack } from "svelte";
   import { api } from "./api.ts";
   import { clock } from "./clock.svelte.ts";
@@ -134,7 +135,7 @@
   {:else if !summary && feedDown}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage feed unavailable. Reconnecting.</div></div>
   {:else if !summary}
-    <div class="empty muted"><span class="spinner"></span> Loading usage</div>
+    <div class="empty muted"><Spinner size="normal" /> Loading usage</div>
   {:else}
     <div class="headline" aria-live="off">
       {#each stats as stat (stat.label)}
@@ -229,7 +230,7 @@
       {:else if error}
         <div class="empty"><div class="error"><Icon name="alert" size={16} /> {error}</div><button class="button small" onclick={() => void load()}>Retry</button></div>
       {:else}
-        <div class="empty muted"><span class="spinner"></span></div>
+        <div class="empty muted"><Spinner size="normal" /></div>
       {/if}
     </div>
 

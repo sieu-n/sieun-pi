@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
@@ -265,7 +266,7 @@
         {#each jobsOf(row) as job (job.key)}
           <li>
             <button type="button" class="tree-job" class:open={store.jobDrawer?.chat === row.id && store.jobDrawer.job === job.open} data-preview-chat={row.id} data-preview-job={job.open} onclick={() => store.openJob(row.id, job.open)}>
-              <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed} class:waiting={job.waiting}></span>{/if}</span>
+              <span class="tree-state">{#if job.running}<Spinner />{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed} class:waiting={job.waiting}></span>{/if}</span>
               <span class="tree-name">{job.name}</span>
               {#if job.activity}<span class="tree-activity" class:failed={job.failed}>{job.activity}</span>{/if}
               {#if jobAge(job.at)}<span class="tree-age">{jobAge(job.at)}</span>{/if}
@@ -327,7 +328,7 @@
       {/each}
       {#if !groups.length && !beats.length && !chats.length}
         <div class="empty">
-          {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
+          {#if store.daemon === "unknown"}<Spinner />
           {:else if query || filterCount || host !== "any"}<span>No threads match.{#if filterCount || host !== "any"}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
           {:else if ui.sidebarView === "chats"}No chats yet.
           {:else if agentCreatedCount}Only agent-created threads.

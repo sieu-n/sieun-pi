@@ -4,6 +4,7 @@
 </script>
 
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { untrack } from "svelte";
   import Modal from "./Modal.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -82,7 +83,7 @@
         <div class="row">
           <span class="hash">#</span>
           <input id="slack-rename" class="field" bind:value={rename} maxlength={CHANNEL_NAME_MAX} autocomplete="off" spellcheck="false" autocapitalize="off" />
-          <button type="submit" class="button small" disabled={!canRename}>{#if busy}<span class="spinner tiny"></span>{/if}Rename</button>
+          <button type="submit" class="button small" disabled={!canRename}>{#if busy}<Spinner />{/if}Rename</button>
         </div>
         <p class="rule" class:bad={rename !== link.name && renameError !== null}>{rename !== link.name && renameError ? renameError : CHANNEL_NAME_RULE}</p>
       </form>
@@ -115,7 +116,7 @@
         </div>
         <p class="rule">{isPrivate ? "Only you and the bot see a private channel. A name that is taken is reused when the bot is in that channel." : "Anyone in the workspace can read a public channel; only your messages steer the chat."}</p>
       {:else if list === undefined}
-        <p class="rule"><span class="spinner tiny"></span> Reading the channel list</p>
+        <p class="rule"><Spinner /> Reading the channel list</p>
       {:else if list && list.length}
         <label class="label" for="slack-existing">A channel the bot is in</label>
         <select id="slack-existing" class="field" bind:value={existing}>
@@ -131,7 +132,7 @@
         {#if draft && onclear}<button type="button" class="button" disabled={busy} onclick={() => { onclear?.(); onclose(); }}>Don't sync</button>{/if}
         <span class="spacer"></span>
         <button type="button" class="button" onclick={onclose}>Cancel</button>
-        <button type="submit" class="button primary" disabled={!canConnect}>{#if busy}<span class="spinner tiny"></span>{/if}{draft !== null && !link ? "Use this channel" : "Connect"}</button>
+        <button type="submit" class="button primary" disabled={!canConnect}>{#if busy}<Spinner />{/if}{draft !== null && !link ? "Use this channel" : "Connect"}</button>
       </div>
     </form>
   {/if}

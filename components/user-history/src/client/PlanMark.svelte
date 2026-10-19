@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { PLAN_STATUS_LABEL } from "./board.ts";
   import type { PlanStatus } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
@@ -8,7 +9,7 @@
 </script>
 
 <span class="status" title={PLAN_STATUS_LABEL[status]} role="img" aria-label={PLAN_STATUS_LABEL[status]}>
-  {#if status === "doing"}<span class="spinner tiny"></span>
+  {#if status === "doing"}<Spinner />
   {:else if status === "done"}<span class="mark done"><Icon name="check" size={11} /></span>
   {:else}<span class="mark {status}"></span>{/if}
 </span>

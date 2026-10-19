@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { untrack } from "svelte";
   import { api, type LocalFile, type WikiPage } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -205,7 +206,7 @@
   <div class="prose reader-prose" class:plain onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: renderMarkdown(text, base, mentions, plain), live: false }}>{@html renderMarkdown(text, base, mentions, plain)}</div>
 {/snippet}
 
-{#snippet loading()}<p class="snapshot"><span class="spinner tiny"></span> Opening</p>{/snippet}
+{#snippet loading()}<p class="snapshot"><Spinner /> Opening</p>{/snippet}
 {#snippet failure(text: string)}<p class="snapshot error">{text}</p>{/snippet}
 {#snippet page(path: string)}
   {#if !wiki || wiki.path !== path || (!wiki.result && !wiki.error)}{@render loading()}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -124,7 +125,7 @@
         {#if latest}<span class="sep"></span><span>{clockTime(latest.at)}</span><span class="sep"></span><span>{count}</span>{/if}
       </div>
       {#if entry?.error && !snapshot}<p class="note error">{entry.error}</p>
-      {:else if !snapshot}<p class="note"><span class="spinner tiny"></span> Opening</p>
+      {:else if !snapshot}<p class="note"><Spinner /> Opening</p>
       {:else if !latest}<p class="note">No report yet{#if listed}<span class="sep"></span>{jobStatusText(listed)}{/if}</p>
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->

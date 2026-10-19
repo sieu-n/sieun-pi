@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -56,7 +57,7 @@
 <section class="pane" aria-label="Phone access">
   <SettingsActions>
     <button class="icon-button small" disabled={checking || !view} aria-label="Check now" use:tooltip={"Check now"} onclick={() => void check()}>
-      {#if checking}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
+      {#if checking}<Spinner />{:else}<Icon name="refresh" size={14} />{/if}
     </button>
   </SettingsActions>
   {#if error && !view}
@@ -65,16 +66,16 @@
       <button class="button small" onclick={() => void load()}>Retry</button>
     </div>
   {:else if !view}
-    <div class="empty muted"><span class="spinner"></span> Loading phone access</div>
+    <div class="empty muted"><Spinner size="normal" /> Loading phone access</div>
   {:else}
     <p class="current {view.state}" aria-live="polite">
-      {#if view.state === "checking"}<span class="spinner tiny"></span>{:else}<span class="dot" aria-hidden="true"></span>{/if}
+      {#if view.state === "checking"}<Spinner />{:else}<span class="dot" aria-hidden="true"></span>{/if}
       <span>{view.message}</span>
     </p>
 
     <button type="button" class="toggle" role="switch" aria-checked={tailscaleOn} aria-busy={saving === "tailscale"} disabled={!view.editable || saving !== null}
       onclick={() => void set("tailscale", !tailscaleOn)}>
-      {#if saving === "tailscale"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={tailscaleOn} />{/if}
+      {#if saving === "tailscale"}<Spinner />{:else}<Checkbox visual checked={tailscaleOn} />{/if}
       <span class="text">
         <span class="label">Open from my devices on Tailscale</span>
         <span class="note">Adds https://{host ?? "this-mac.your-tailnet.ts.net"}/ to Tailscale Serve on this Mac. Only devices signed in to your tailnet can connect. Nothing is public.</span>
@@ -100,7 +101,7 @@
 
     <button type="button" class="toggle" role="switch" aria-checked={keepRunningOn} aria-busy={saving === "keepRunning"} disabled={!view.editable || !view.keepRunning.available || saving !== null}
       onclick={() => void set("keepRunning", !keepRunningOn)}>
-      {#if saving === "keepRunning"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={keepRunningOn} />{/if}
+      {#if saving === "keepRunning"}<Spinner />{:else}<Checkbox visual checked={keepRunningOn} />{/if}
       <span class="text">
         <span class="label">Keep the chat running</span>
         <span class="note" class:problem={view.keepRunning.state === "problem"}>{view.keepRunning.message}</span>
@@ -109,7 +110,7 @@
 
     <button type="button" class="toggle" role="switch" aria-checked={openAppOn} aria-busy={saving === "openAppAtLogin"} disabled={!view.editable || !view.openAppAtLogin.available || saving !== null}
       onclick={() => void set("openAppAtLogin", !openAppOn)}>
-      {#if saving === "openAppAtLogin"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={openAppOn} />{/if}
+      {#if saving === "openAppAtLogin"}<Spinner />{:else}<Checkbox visual checked={openAppOn} />{/if}
       <span class="text">
         <span class="label">Open the app at login</span>
         <span class="note">{view.openAppAtLogin.message}</span>
@@ -130,7 +131,7 @@
   .toggle { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
   .toggle:hover:not(:disabled) { background: var(--bg-hover); }
   .toggle:disabled { cursor: default; opacity: 0.75; }
-  .toggle :global(.box), .toggle .spinner { margin-top: 2px; }
+  .toggle :global(.box), .toggle :global(.spinner) { margin-top: 2px; }
   .text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .label { font-weight: 500; }
   .note { margin: 0; color: var(--text-muted); line-height: 1.45; }

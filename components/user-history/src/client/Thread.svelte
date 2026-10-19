@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { tick, untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -180,7 +181,7 @@
       {#if thread?.children.length}
         {#if thread.children.length > MODAL_CHILDREN}
           <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} onclick={() => { agentsOpen = true; }}>
-            {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
+            {#if runningChildren}<Spinner />{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
           </button>
           {#if agentsOpen}
             <Modal title="Subagents" width="640px" onclose={() => { agentsOpen = false; }}>
@@ -191,7 +192,7 @@
           <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width={460} maxHeight={560} label="Subagents">
             {#snippet trigger()}
               <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} aria-haspopup="dialog" aria-expanded={agentsOpen} onclick={() => { agentsOpen = !agentsOpen; }}>
-                {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
+                {#if runningChildren}<Spinner />{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
               </button>
             {/snippet}
             <SubagentList threadId={id} children={thread.children} pulses={row?.pulse?.subagents ?? []} />
@@ -220,7 +221,7 @@
       </div>
     </div>
   {:else if !thread}
-    <div class="center muted"><span class="spinner"></span> Opening thread</div>
+    <div class="center muted"><Spinner size="normal" /> Opening thread</div>
   {:else}
     <div class="scroller" bind:this={scroller} onscroll={onScroll}>
       <div class="column" bind:this={column}>

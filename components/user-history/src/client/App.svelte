@@ -3,7 +3,6 @@
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
-  import { syncSpinners } from "./clock.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { pageTitle } from "./organize.ts";
   import Sidebar from "./Sidebar.svelte";
@@ -23,7 +22,6 @@
 
   onMount(() => {
     store.start();
-    const unsync = syncSpinners();
     const observer = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width ?? window.innerWidth;
       const next = width < NARROW_BELOW;
@@ -31,7 +29,7 @@
       narrow = next;
     });
     if (root) observer.observe(root);
-    return () => { observer.disconnect(); unsync(); };
+    return () => observer.disconnect();
   });
 
   /**

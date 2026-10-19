@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -125,7 +126,7 @@
 <div class="work" class:live class:open class:nested class:trigger-row={trigger !== null}>
   <button class="head" aria-expanded={open} title={freshness || undefined} onclick={() => { open = !open; }}>
     <span class="mark">
-      {#if live}<span class="spinner tiny"></span>{:else}<span class="chevron" class:down={open}><Icon name="chevronRight" size={12} /></span>{/if}
+      {#if live}<Spinner />{:else}<span class="chevron" class:down={open}><Icon name="chevronRight" size={12} /></span>{/if}
     </span>
     {#if trigger}
       <Icon name="bolt" size={12} />
@@ -192,7 +193,7 @@
           <div class="item tool" class:expanded={isOpen}>
             <button class="tool-head" aria-expanded={isOpen} onclick={() => toggleTool(item)}>
               <span class="mark">
-                {#if toolState === "running"}<span class="spinner tiny"></span>
+                {#if toolState === "running"}<Spinner />
                 {:else if toolState === "error"}<span class="danger"><Icon name="x" size={11} /></span>
                 {:else}<span class="done-dot"></span>{/if}
               </span>
@@ -208,7 +209,7 @@
                 <pre class="block">{json(item.call.arguments)}</pre>
                 <div class="section-label">
                   {output.isError ? "Error output" : toolState === "running" ? "Output so far" : "Output"}
-                  {#if output.loading}<span class="spinner tiny"></span>{/if}
+                  {#if output.loading}<Spinner />{/if}
                   {#if output.error}<span class="danger">{output.error}</span>{/if}
                 </div>
                 <pre class="block" class:error={output.isError === true}>{output.text || (toolState === "running" ? "Running" : "No output")}</pre>

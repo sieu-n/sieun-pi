@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -185,7 +186,7 @@
             {#if store.pending.message}<div class="text">{store.pending.message}</div>{/if}
           </div>
           {#if store.pending.name}<div class="pending-name">{store.pending.name}</div>{/if}
-          <div class="starting"><span class="spinner"></span> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}{store.pending.host ? ` on ${store.pending.host}` : ""}</div>
+          <div class="starting"><Spinner size="normal" /> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}{store.pending.host ? ` on ${store.pending.host}` : ""}</div>
         </div>
       {:else}
         <div class="greeting-row">

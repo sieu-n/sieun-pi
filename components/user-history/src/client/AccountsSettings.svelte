@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { accountState, isManualAccount, forgetAccounts, loadAccounts, meterTone, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL,
@@ -302,14 +303,14 @@
     {#if current?.provider === "anthropic"}
       <button class="button small" disabled={acting !== null} use:tooltip={"Read every Claude account's banked usage-limit resets. Spends nothing."}
         onclick={() => current && void run({ action: "resets", provider: current.provider }, "resets")}>
-        {#if acting === "resets"}<span class="spinner tiny"></span> Checking resets{:else}Check resets{/if}
+        {#if acting === "resets"}<Spinner /> Checking resets{:else}Check resets{/if}
       </button>
     {/if}
     {#if current}
       <button class="button small" disabled={refreshing} use:tooltip={`Read usage for every ${PROVIDER_LABEL[current.provider]} account now`}
         onclick={() => current && void startRefresh(current.provider, null)}>
         {#if refreshing}
-          <span class="spinner tiny"></span>
+          <Spinner />
           {refresh?.accounts.length ? `Reading ${settled(refresh)} of ${refresh.accounts.length}` : "Reading"}
         {:else}<Icon name="refresh" size={14} /> Refresh all{/if}
       </button>
@@ -326,7 +327,7 @@
       <button class="button small" onclick={() => void load(true)}>Retry</button>
     </div>
   {:else if !view || !current}
-    <div class="empty muted"><span class="spinner"></span> Loading accounts</div>
+    <div class="empty muted"><Spinner size="normal" /> Loading accounts</div>
   {:else}
     <div class="uses">
       <span class:warning={threadId && (current.wait || !resolution?.email)}>{threadId ? resolutionSentence(current, now) : "No thread is open. New chats start on the account marked Next request."}</span>
@@ -402,14 +403,14 @@
             {/each}
             <div class="actions" role="cell">
               {#if read?.state === "queued"}<span class="read-state">Queued</span>
-              {:else if read?.state === "reading"}<span class="read-state"><span class="spinner tiny"></span> Reading</span>
+              {:else if read?.state === "reading"}<span class="read-state"><Spinner /> Reading</span>
               {:else}
                 {#if read?.state === "read"}<span class="read-state ok">Updated</span>
                 {:else if read?.state === "failed"}<span class="read-state bad">Not read</span>{/if}
                 <button type="button" class="icon-button small row-refresh" disabled={refreshing} aria-label="Refresh usage for {row.label}" use:tooltip={"Refresh usage"}
                   onclick={() => void startRefresh(current.provider, row.id)}><Icon name="refresh" size={14} /></button>
               {/if}
-              {#if acting === row.id}<span class="spinner tiny"></span>
+              {#if acting === row.id}<Spinner />
               {:else if canPick}<button type="button" class="hint" aria-label="Use {row.label} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
               {#if !row.disabled && (pendingReset(row.resets) || usableGrant(row.resets))}
                 <button class="button small" disabled={acting !== null} onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry reset" : "Use reset"}</button>

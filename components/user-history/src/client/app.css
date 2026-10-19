@@ -164,16 +164,10 @@ a { color: var(--accent); }
 .prose .inert-image { color: var(--text-muted); font-style: normal; }
 .prose .checkbox { font-family: var(--mono); color: var(--text-muted); }
 
-.spinner { --size: 14px; display: inline-block; flex: none; box-sizing: border-box; width: var(--size); height: var(--size); min-width: var(--size); min-height: var(--size); aspect-ratio: 1; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; vertical-align: -2px; }
-.spinner.tiny { --size: 11px; border-width: 1.5px; }
-/* A spinner turns with a transform, which the compositor runs alone: 212 turning spinners on the chat page cost no style recalc or layout
-   per frame in headless Chromium 1243 (10-19). syncSpinners in clock.svelte.ts starts each one at time zero, so all of them turn in one phase. */
-@keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .fade-in { animation: fade-in 0.18s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  .spinner { animation: none; border-top-color: var(--text-muted); }
 }
 
 .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--radius-small); color: var(--text-muted); flex: none; transition: background-color 0.12s, color 0.12s; }

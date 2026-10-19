@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
@@ -65,7 +66,7 @@
 <section class="pane" aria-label="New chats">
   <SettingsActions>
     <button class="icon-button small" disabled={loading} aria-label="Reload defaults" use:tooltip={"Reload defaults"} onclick={() => void load()}>
-      {#if loading}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
+      {#if loading}<Spinner />{:else}<Icon name="refresh" size={14} />{/if}
     </button>
   </SettingsActions>
   {#if error && !defaults}
@@ -74,10 +75,10 @@
       <button class="button small" onclick={() => void load()}>Retry</button>
     </div>
   {:else if !defaults || (!catalog && !catalogError)}
-    <div class="empty muted"><span class="spinner"></span> Loading defaults</div>
+    <div class="empty muted"><Spinner size="normal" /> Loading defaults</div>
   {:else}
     <p class="current" aria-live="polite">
-      {#if saving}<span class="spinner tiny"></span>{/if}
+      {#if saving}<Spinner />{/if}
       <span class:muted={!model}>{sentence}</span>
     </p>
     <p class="note">The model and effort every new chat starts with, here and in the terminal. Changing the model or effort on a thread changes them too.</p>

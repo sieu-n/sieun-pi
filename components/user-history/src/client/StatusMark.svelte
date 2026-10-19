@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import type { RowStatus } from "./organize.ts";
   import type { PulseLevel } from "../shared/pulse.ts";
 
@@ -10,7 +11,7 @@
   const running = $derived(status === "working" || status === "stalled");
 </script>
 
-{#if running && (level === "live" || level === "quiet")}<span class="spinner tiny" class:quiet={level === "quiet"} aria-hidden="true"></span>
+{#if running && (level === "live" || level === "quiet")}<Spinner quiet={level === "quiet"} />
 {:else if running}<span class="mark {level}" aria-hidden="true"></span>
 {:else}<span class="mark {status}" aria-hidden="true"></span>{/if}
 
@@ -20,5 +21,4 @@
   .mark.saved { border-style: dashed; }
   .mark.stalled { border: 0; width: 8px; height: 8px; background: var(--warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 22%, transparent); }
   .mark.failed { border: 0; width: 8px; height: 8px; background: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 22%, transparent); }
-  .spinner.quiet { opacity: 0.4; animation-duration: 2.4s; }
 </style>

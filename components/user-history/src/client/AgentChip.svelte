@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import type { ChatAgent, PlanItem } from "../shared/types.ts";
   import { queueText, stepAgent, stepAgentTitle } from "./board.ts";
   import { clock } from "./clock.svelte.ts";
@@ -30,7 +31,7 @@
 
 {#if chip}
   <button type="button" class="link-chip agent-chip" title={stepAgentTitle(chip, name, queued || chip.agent?.wait || "")} data-preview-chat={chat} data-preview-job={preview} onclick={open}>
-    {#if queued || chip.agent?.wait}<span class="dot waiting"></span>{:else if chip.state === "working"}<span class="spinner tiny"></span>{:else}<span class="dot {chip.state ?? ""}"></span>{/if}<span class="chip-label">{name}</span></button>
+    {#if queued || chip.agent?.wait}<span class="dot waiting"></span>{:else if chip.state === "working"}<Spinner />{:else}<span class="dot {chip.state ?? ""}"></span>{/if}<span class="chip-label">{name}</span></button>
 {/if}
 
 <style>

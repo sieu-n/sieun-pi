@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { api } from "./api.ts";
   import { compactNumber } from "./format.ts";
   import { clip, labelDetail, LEAD_KEY, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
@@ -119,7 +120,7 @@
       </div>
     {/if}
     {#if error}<p class="note error">{error}</p>
-    {:else if !view || !table}<p class="note"><span class="spinner tiny"></span> Reading the prompt</p>
+    {:else if !view || !table}<p class="note"><Spinner /> Reading the prompt</p>
     {:else}
       <div class="facts">
         <div>About <strong>{tokens(view.totalTokens)}</strong> tokens in {view.parts.length} parts, estimated as characters / 4{#if view.measuredInputTokens !== undefined}. The provider measured <strong>{tokens(view.measuredInputTokens)}</strong> input tokens on the last call{/if}. Every count below is the same estimate.</div>

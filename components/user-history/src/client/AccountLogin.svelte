@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { PROVIDER_LABEL } from "./accounts.ts";
@@ -50,7 +51,7 @@
 
   {#if login.status === "starting"}
     {#if login.message}<p class="warn"><Icon name="alert" size={14} />{login.message}</p>{/if}
-    <p class="state"><span class="spinner tiny"></span>{login.message ? "Waiting for a new sign-in link" : `Starting the ${label} sign-in`}</p>
+    <p class="state"><Spinner />{login.message ? "Waiting for a new sign-in link" : `Starting the ${label} sign-in`}</p>
   {:else if login.status === "waiting" || login.status === "finishing"}
     {#if pasteError || login.message}<p class="warn" role="alert"><Icon name="alert" size={14} />{pasteError ?? login.message}</p>{/if}
     <ol class="steps">
@@ -79,7 +80,7 @@
         </li>
       {/if}
     </ol>
-    <p class="state"><span class="spinner tiny"></span>{login.status === "finishing" ? "Checking the URL or code" : "Waiting for you to finish in the browser"}</p>
+    <p class="state"><Spinner />{login.status === "finishing" ? "Checking the URL or code" : "Waiting for you to finish in the browser"}</p>
   {:else if login.status === "done"}
     <p class="state ok"><Icon name="check" size={14} />Signed in. {login.message ?? ""}</p>
     <div class="actions"><button type="button" class="button small" onclick={onclose}>Done</button></div>

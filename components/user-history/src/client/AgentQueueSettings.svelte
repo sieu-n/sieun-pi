@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
   import Checkbox from "./ui/Checkbox.svelte";
@@ -59,7 +60,7 @@
         value={shown(field)} oninput={event => { drafts[field] = Number.isNaN(event.currentTarget.valueAsNumber) ? null : event.currentTarget.valueAsNumber; }} />
       <span class="unit">{unit}</span>
       <button type="submit" class="button small" disabled={!enabled || saving !== null || !changed(field)}>
-        {#if saving === field}<span class="spinner tiny"></span>{:else}Set{/if}
+        {#if saving === field}<Spinner />{:else}Set{/if}
       </button>
     </div>
   </form>
@@ -76,7 +77,7 @@
 
     <button type="button" class="toggle" role="switch" aria-checked={pool?.enabled ?? false} aria-busy={saving === "queue"} disabled={!pool || saving !== null}
       onclick={() => { if (pool) void apply({ action: "queue", on: !pool.enabled }); }}>
-      {#if saving === "queue"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={pool?.enabled ?? false} />{/if}
+      {#if saving === "queue"}<Spinner />{:else}<Checkbox visual checked={pool?.enabled ?? false} />{/if}
       <span class="label">Queue agent turns</span>
       <span class="note">Jobs and subagents wait for a free slot. Your own messages never wait.</span>
     </button>

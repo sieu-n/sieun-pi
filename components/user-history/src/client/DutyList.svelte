@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from "./Spinner.svelte";
     import { type DutyView, overrunWords, verdictMetrics } from "../shared/chat-duties.ts";
   import { CHANGE_APPROACH_MISSES, effectiveRun } from "../shared/duty-streak.ts";
   import type { PromptTarget } from "../shared/prompt-view.ts";
@@ -75,7 +76,7 @@
     <li class="duty">
       <div class="duty-line">
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
-          <span class="duty-state">{#if state === "running"}<span class="spinner tiny"></span>{:else}<span class="duty-dot {state}"></span>{/if}</span>
+          <span class="duty-state">{#if state === "running"}<Spinner />{:else}<span class="duty-dot {state}"></span>{/if}</span>
           <span class="duty-text"><span class="duty-name">{duty.name}</span> <span class="duty-status {status.kind}">{dutyStatusLine(status, headlineWords(view), card.headlineMiss !== null || card.headline === null)}</span></span>
         </button>
         {@render promptLink(card.job ? card.job.id : { chat, duty: duty.id }, card.job ? `The prompt ${card.job.name} got` : `The brief the next ${duty.name} run sends`)}
