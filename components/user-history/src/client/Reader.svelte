@@ -16,6 +16,7 @@
   import { anchorStamp, permalink } from "./permalink.ts";
   import { diffLines, reportWikiPage, wikiUrl, type ReaderView } from "./reader.ts";
   import { mentionIndex } from "./board.ts";
+  import { dutiesFeed } from "./duties.svelte.ts";
   import type { ChildUsage } from "../shared/types.ts";
   import { childUsage } from "./thread-side.svelte.ts";
   import Modal from "./Modal.svelte";
@@ -38,7 +39,7 @@
   const entry = $derived(thread ? store.thread(thread) : undefined);
   const cwd = $derived(snapshot?.info.cwd ?? "");
   /** Board ids and job names in a chat's messages render as mention chips: the plan view for an id, this reader for a job. */
-  const mentions = $derived(thread ? mentionIndex(thread, snapshot?.board, jobNames(store.session(thread), snapshot, id => store.session(id))) : null);
+  const mentions = $derived(thread ? mentionIndex(thread, snapshot?.board, jobNames(store.session(thread), snapshot, id => store.session(id)), dutiesFeed.mentions(thread)) : null);
   /** A message of another thread needs that thread open; it is let go on close unless it is the one on screen. */
   $effect(() => {
     const id = thread;
@@ -195,7 +196,7 @@
     const click = proseClick(event);
     if (click?.kind === "image") image = { src: click.src, alt: click.alt };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, thread ?? store.selectedId ?? ""); }
-    else if (click?.kind === "mention" && thread) { const chat = thread; onclose(); store.openPlan(chat, click.id); }
+    else if (click?.kind === "mention" && thread) { const chat = thread; onclose(); store.openMention(chat, click.id); }
     else if (click?.kind === "job" && thread) store.openArtifact({ kind: "job", name: click.name }, thread);
   }
   const dirOf = (path: string) => path.replace(/\/[^/]*$/, "");

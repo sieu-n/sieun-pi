@@ -105,4 +105,6 @@ const NO_DUTIES: DutyView[] = [];
 const dutyCache = new ThreadCache<DutyView[]>(chat => dutiesApi.view(chat).then(body => body.duties),
   error => error instanceof ApiError && error.status === 404 ? NO_DUTIES : undefined);
 /** The thread feed pushes a chat's duties after its snapshot (shared/thread-side.ts), so the card asks for none at a switch. */
-export const dutiesFeed = { expect: (chat: string) => dutyCache.expect(chat), drop: (chat: string) => dutyCache.drop(chat), set: (chat: string, duties: DutyView[]) => dutyCache.set(chat, duties) };
+export const dutiesFeed = { expect: (chat: string) => dutyCache.expect(chat), drop: (chat: string) => dutyCache.drop(chat), set: (chat: string, duties: DutyView[]) => dutyCache.set(chat, duties),
+  /** The chat's duties as the mention chips name them; reactive, so a pushed or polled change re-renders the chips. */
+  mentions: (chat: string): { id: string; name: string }[] => (dutyCache.value(chat) ?? NO_DUTIES).map(view => view.duty) };

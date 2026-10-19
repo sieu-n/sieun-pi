@@ -8,6 +8,7 @@
   import { createdSessions } from "../shared/created-sessions.ts";
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
   import { mentionIndex, openAgentTodos } from "./board.ts";
+  import { dutiesFeed } from "./duties.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { chatFeed, chatLines, settledPending, turnStarter, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
@@ -17,8 +18,6 @@
   import ChatComposer from "./ChatComposer.svelte";
   import ChatLines from "./ChatLines.svelte";
   import BoardPanel from "./BoardPanel.svelte";
-  import PlanView from "./PlanView.svelte";
-  import JobDrawer from "./JobDrawer.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
   import AccountChip from "./AccountChip.svelte";
   import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
@@ -27,6 +26,7 @@
   import { archivePrompt } from "./archive-confirm.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
+  import { lazy } from "./lazy.ts";
   import Lightbox from "./ui/Lightbox.svelte";
   import Floating from "./ui/Floating.svelte";
   import { tooltip } from "./ui/tooltip.ts";
@@ -122,11 +122,13 @@
 
   /** The phone switch: the feed or the board. A wide window shows the board in the side panel. */
   let view = $state<"chat" | "board">("chat");
+  /** A todo or duty chip clicked in a message shows the board, where BoardPanel scrolls to its row. */
+  $effect(() => { if (store.boardFocus?.chat === id) untrack(() => { view = "board"; }); });
   const board = $derived(thread?.board ?? null);
   const asks = $derived(openAgentTodos(board));
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
-  /** The board's ids and titles and the jobs' names, for the mention chips in every bubble; a new board rev or job re-renders the feed once. */
-  const mentions = $derived(mentionIndex(id, board, jobNames(row, thread, sessionId => store.session(sessionId))));
+  /** The board's ids and titles, the duties and the jobs' names, for the mention chips in every bubble; a new board rev, duty or job re-renders the feed once. */
+  const mentions = $derived(mentionIndex(id, board, jobNames(row, thread, sessionId => store.session(sessionId)), dutiesFeed.mentions(id)));
   const planView = $derived(store.planView?.chat === id ? store.planView : null);
   const closePlan = () => { if (store.planView?.chat === id) store.planView = null; };
   const applyBoard = (next: ChatBoard, ops: BoardOp[]) => store.boardOps(id, next, ops);
@@ -189,7 +191,7 @@
     const click = proseClick(event);
     if (click?.kind === "image") lightbox = { images: [{ src: click.src, alt: click.alt }], index: 0 };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
-    else if (click?.kind === "mention") store.openPlan(id, click.id);
+    else if (click?.kind === "mention") store.openMention(id, click.id);
     else if (click?.kind === "job") store.openArtifact({ kind: "job", name: click.name }, id);
   }
   /** A folded run of updates opens in the reader as a list: who wrote, when, and the whole text. */
@@ -438,10 +440,10 @@
       </aside>
     {/if}
     {#if drawerName !== null}
-      <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
+      {#await lazy.JobDrawer() then { default: JobDrawer }}<JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />{/await}
     {/if}
     {#if planView}
-      <PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />
+      {#await lazy.PlanView() then { default: PlanView }}<PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />{/await}
     {/if}
   </div>
   {#if lightbox}

@@ -115,7 +115,8 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "is update. One answer is one call, so a question goes in the same message as its context. Any other call there, " +
   "and one with no why, is kept as a note (c117). Write one " +
   "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
-  "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and " +
+  "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Name each plan step, goal, todo and duty " +
+  "you mention by its id, like p684 or d9, written bare, which shows as a chip he can click; keep hashes, session ids and paths out (c145). Count its sentences before you send it, and " +
   "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
   "wiki page, sent as one message with the one-line takeaway and its wiki: link, which shows as a page card. In your first reply to a new " +
   "request, answer his question first with what you know, then name the job you started.";

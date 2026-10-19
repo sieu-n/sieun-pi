@@ -29,7 +29,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 3. Name a job by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel. Name a thread the same way, like [pricing thread](thread:<id>).
 4. Never write "a job" or "the job" without that link. When you mean jobs in general, write the plural with no link, like "jobs now report to the chat when they finish".
 5. Job and thread names are not internal names, so they always appear, as links.
-6. Put at most one board id in a message, at the end, and only when it helps, because the page turns it into a link.
+6. Name each plan step, goal, For you todo and duty you mention by its id, like p684, t12 or d9, written bare and outside code or links, because the chat turns it into a chip the owner can click (c145). Keep hashes, session ids and paths out of sentences.
 7. Use no parenthetical asides in a reply.
 8. You can show images (`![alt](path or URL)`, where local paths work), such as a screenshot of the thing you talk about.
 9. Each tell_owner call is its own chat message, like a VP's Slack DM: one point in 1 or 2 short casual sentences, and a second point is a second call (c104). Several messages in a row are fine when each one is its own point, such as the answer, then a heads-up, then a question, but one answer never spreads over several messages.

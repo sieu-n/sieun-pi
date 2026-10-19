@@ -18,13 +18,14 @@ let renderIndex: MentionIndex | null = null;
 let renderPlain = false;
 
 /**
- * A board id written as a whole word (`p7`, `s3`) that exists on the chat's board becomes a chip: the item's dot color and id, its short title
- * on hover; the view's click handler opens the plan view on it. An id inside a code span, a code block or a link, or one the board does not
+ * A board id written as a whole word (a plan item `p7` or `s3`, a For you todo `t12`, a duty `d9`) that the chat has becomes a chip: the item's
+ * dot color and id, its short title on hover; the view's click handler opens the plan view on a plan item and the board on a todo or a duty.
+ * The chats name steps and duties this way in every message to the owner (c145). An id inside a code span, a code block or a link, or one the board does not
  * have, stays text. The tokenizer runs before marked's own at every position, so a code span or a URL consumes its ids whole; the lexer's
  * `inLink` covers link text; the token before the id must not end in a word character, so `xp7` is never a chip.
  */
-const MENTION = /^[ps]\d+\b/;
-const MENTION_START = /(^|[^\w])[ps]\d+\b/;
+const MENTION = /^[pstd]\d+\b/;
+const MENTION_START = /(^|[^\w])[pstd]\d+\b/;
 const mentions: TokenizerAndRendererExtension = {
   name: "mention",
   level: "inline",

@@ -13,6 +13,7 @@
   import { jobName, jobNames, jobStatusText, reportsFor, treeJobs } from "./jobs.ts";
   import { reportWikiPage, wikiUrl } from "./reader.ts";
   import { mentionIndex } from "./board.ts";
+  import { dutiesFeed } from "./duties.svelte.ts";
   import { place, placementStyle, type Placement } from "./ui/floating.ts";
   import { previewTriggers, type PreviewTrigger } from "./preview.ts";
   import Icon from "./Icon.svelte";
@@ -78,7 +79,7 @@
     return () => { cancelled = true; };
   });
   const linkedName = $derived(linkedPath ? (linkedTitle?.path === linkedPath ? linkedTitle.title : linkedPath.split("/").at(-1) ?? linkedPath) : "");
-  const mentions = $derived(chat ? mentionIndex(chat, snapshot?.board, jobNames(row, snapshot, rowOf)) : null);
+  const mentions = $derived(chat ? mentionIndex(chat, snapshot?.board, jobNames(row, snapshot, rowOf), dutiesFeed.mentions(chat)) : null);
   const html = $derived(excerpt && chat ? renderMarkdown(excerpt.text, snapshot?.info.cwd ?? "", mentions, true) : "");
   const count = $derived(reports.length === 1 ? "1 message" : `${reports.length} messages`);
 
@@ -111,7 +112,7 @@
     if (!id || !click || click.kind === "handled" || click.kind === "image") return;
     open = null;
     if (click.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
-    else if (click.kind === "mention") store.openPlan(id, click.id);
+    else if (click.kind === "mention") store.openMention(id, click.id);
     else store.openArtifact({ kind: "job", name: click.name }, id);
   }
 </script>

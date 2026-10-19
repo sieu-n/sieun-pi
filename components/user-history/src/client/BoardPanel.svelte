@@ -1,6 +1,6 @@
 <script lang="ts">
   import Spinner from "./Spinner.svelte";
-  import { untrack, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, needsGo, nextIds, stepGo } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../shared/types.ts";
   import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, QUEUED_TEXT, queueText, rowParts } from "./board.ts";
@@ -83,6 +83,18 @@
   const planOpen = $derived(ui.boardCards.plan ?? true);
   let forYouOpen = $state(false);
   $effect(() => { if (openCount) untrack(() => { forYouOpen = true; }); });
+  /** A todo or duty chip clicked in a message (`store.openMention`): its card opens and its row scrolls into view. */
+  let boardNode: HTMLElement | undefined = $state();
+  $effect(() => {
+    const focus = store.boardFocus;
+    const node = boardNode;
+    if (focus?.chat !== id || !node) return;
+    untrack(() => { if (focus.id.startsWith("t")) forYouOpen = true; else ui.setBoardCard("duties", true); });
+    void tick().then(() => {
+      node.querySelector(`[data-board-id="${CSS.escape(focus.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (store.boardFocus === focus) store.boardFocus = null;
+    });
+  });
   let doneOpen = $state(false);
 
   let editing = $state<{ id: string; text: string } | null>(null);
@@ -115,7 +127,7 @@
   function onTodoClick(event: MouseEvent): void {
     const click = proseClick(event);
     if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
-    else if (click?.kind === "mention") store.openPlan(id, click.id);
+    else if (click?.kind === "mention") store.openMention(id, click.id);
     else if (click?.kind === "job") store.openArtifact({ kind: "job", name: click.name }, id);
   }
 </script>
@@ -183,7 +195,7 @@
 
 {#snippet todoRow(todo: OwnerTodo)}
   {@const setDone = (done: boolean) => void send([{ op: "todo_update", id: todo.id, done }])}
-  <li class="ask" class:done={todo.done} class:mine={todo.from === "owner"}>
+  <li class="ask" class:done={todo.done} class:mine={todo.from === "owner"} data-board-id={todo.id}>
     {#if editing?.id === todo.id}
       <input class="field inline" bind:value={editing.text} aria-label="Edit {todo.text}" use:focusEnd onkeydown={onKey(saveEdit, () => { editing = null; })} onblur={saveEdit} />
     {:else}
@@ -274,7 +286,7 @@
   {#if duties.views.length}{@render card("duties", "Duties", dutiesCount(duties.views), dutiesOpen, () => ui.setBoardCard("duties", !dutiesOpen), dutiesBody)}{/if}
 {/snippet}
 
-<div class="board">
+<div class="board" bind:this={boardNode}>
   {#if isEmptyBoard(board)}
     <p class="empty">The plan and the chat's questions show up here once it starts work.</p>
     {@render dutiesCard()}

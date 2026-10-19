@@ -73,7 +73,7 @@
     {@const last = lastRun(view)}
     {@const card = dutyCard(view, agents)}
     {@const status = dutyStatus(view, card)}
-    <li class="duty">
+    <li class="duty" data-board-id={duty.id}>
       <div class="duty-line">
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
           <span class="duty-state">{#if state === "running"}<Spinner />{:else}<span class="duty-dot {state}"></span>{/if}</span>
