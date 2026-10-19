@@ -70,15 +70,29 @@ export class ThreadOrigins {
       if (tests.has(row.sessionId)) return "agent";
       if (own.has(row.sessionId) || chats.has(row.sessionId)) return "user";
       if (!row.sessionFile) return "user";
-      const known = this.decided.get(row.sessionFile);
-      if (known) return known;
-      const key = `${row.modified ?? ""}|${row.messageCount ?? ""}|${row.lastActivityAt ?? ""}`;
-      const pending = this.undecided.get(row.sessionFile);
-      if (pending?.key === key) return pending.origin;
-      const { origin, final } = fileOrigin(row.sessionFile);
-      if (final) { this.decided.set(row.sessionFile, origin); this.undecided.delete(row.sessionFile); }
-      else this.undecided.set(row.sessionFile, { key, origin });
+      const read = this.byRow.get(row);
+      if (read) return read;
+      const origin = this.fileDecides(row, row.sessionFile);
+      this.byRow.set(row, origin);
       return origin;
     };
+  }
+
+  /**
+   * What the file said for each daemon row object, so a row listed unchanged is not looked up by path again: a roster update replaces only the
+   * rows it changed, and the path lookups and key strings of every row (the Mac's 3,064 among them) were 3.7 of 54 ms of a projection's own
+   * code on a bench over a copy of the live rows on 10-19.
+   */
+  private readonly byRow = new WeakMap<OriginRow, ThreadOrigin>();
+  private fileDecides(row: OriginRow, file: string): ThreadOrigin {
+    const known = this.decided.get(file);
+    if (known) return known;
+    const key = `${row.modified ?? ""}|${row.messageCount ?? ""}|${row.lastActivityAt ?? ""}`;
+    const pending = this.undecided.get(file);
+    if (pending?.key === key) return pending.origin;
+    const { origin, final } = fileOrigin(file);
+    if (final) { this.decided.set(file, origin); this.undecided.delete(file); }
+    else this.undecided.set(file, { key, origin });
+    return origin;
   }
 }

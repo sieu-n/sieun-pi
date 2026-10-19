@@ -175,6 +175,17 @@ function sortTime(row: SessionRow): number {
   if (at === undefined) { at = Date.parse(row.lastActivityAt ?? row.created ?? ""); sortTimes.set(row, at); }
   return at;
 }
+/**
+ * Whether this box's daemon row is listed, kept per row object: a roster update replaces only the rows it changed, and asking the disk for every
+ * saved row's file on each projection was 3.3 of 54 ms of a projection's own code on a bench over a copy of the live rows on 10-19. A file gone
+ * while its row is unchanged leaves the sidebar with the row's next change or the next full list.
+ */
+const listedRows = new WeakMap<SessionSummary, boolean>();
+function listedHere(row: SessionSummary): boolean {
+  let listed = listedRows.get(row);
+  if (listed === undefined) { listed = isListed(row); listedRows.set(row, listed); }
+  return listed;
+}
 /** Each projected row's entry for `chatAgents`, so a kept row keeps its entry and its first task is not looked up again. */
 const agentRowOf = new WeakMap<SessionRow, AgentRow>();
 
@@ -780,7 +791,7 @@ export class Catalog {
     for (const row of this.summaries.values()) {
       const remote = this.hostOf(row.sessionId);
       // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
-      if (!isListed(row, remote ? () => true : undefined)) continue;
+      if (!(remote ? isListed(row, () => true) : listedHere(row))) continue;
       const host = remote ?? selfName;
       const schedule = this.schedules.get(row.sessionId);
       const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
@@ -808,7 +819,10 @@ export class Catalog {
       rows.push(projected);
     }
     this.keptRows = kept;
-    rows.sort((left, right) => sortTime(right) - sortTime(left));
+    // Each row's time is read once, not once per comparison: the sort compares about 50,000 pairs of the 4,500 rows.
+    const order = rows.map((row, at) => ({ row, at, time: sortTime(row) }));
+    order.sort((left, right) => right.time - left.time || left.at - right.at);
+    for (const [at, entry] of order.entries()) rows[at] = entry.row;
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
     const agentRows: AgentRow[] = rows.map(row => {
       let entry = agentRowOf.get(row);
