@@ -20,9 +20,9 @@ export class OwnerOutbox {
   private readonly chats: Chats;
 
   /** `sleep` is the wait between tries; tests make it short. */
-  constructor(dir: string, parts: { threads: ThreadHub; chats: Chats; catalog: Catalog; ownerTurn?: ((id: string) => Promise<void>) | undefined }, log: (line: string) => void,
+  constructor(dir: string, parts: { threads: ThreadHub; chats: Chats; catalog: Catalog }, log: (line: string) => void,
     options: Pick<OutboxDeps, "sleep"> = {}) {
-    const { threads, chats, catalog, ownerTurn } = parts;
+    const { threads, chats, catalog } = parts;
     this.chats = chats;
     this.outbox = new Outbox({ dir, log, ...options,
       deliver: async (entry: Stored, sending) => {
@@ -33,13 +33,12 @@ export class OwnerOutbox {
         // before the reopen too, because a retry after an archive must not reopen the chat.
         const archived = () => chats.archives(id) !== since || threads.archivedSince(id, entry.at);
         if (archived()) throw new ArchivedFirst("The chat was archived before this message went.");
-        // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
-        const ready = ownerTurn?.(id);
         if (await chats.reopen(id, since)) {
           void catalog.notify().catch(error => log(`chat ${id.slice(0, 8)}: reopen: sidebar update: ${error instanceof Error ? error.message : String(error)}`));
         }
         if (archived()) throw new ArchivedFirst("The chat was archived before this message went.");
-        await threads.prompt(id, { message: entry.text, images: entry.images, mode: entry.mode, ready, sending });
+        // The owner's own message never waits in a box's turn queue: it goes as an owner turn.
+        await threads.prompt(id, { message: entry.text, images: entry.images, mode: entry.mode, owner: true, sending });
       },
       copy: (entry, since) => threads.copyOf(entry.threadId, entry.text, entry.imageCount, since),
       final: error => error instanceof ArchivedFirst || (error instanceof ThreadError && error.status === 400) ? error.message : null,

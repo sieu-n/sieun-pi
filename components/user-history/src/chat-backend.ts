@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, ownerTurnMarker, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, sshOwnerTurn } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority } from "./chat-pool.ts";
 import { boardQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
@@ -88,11 +88,6 @@ export interface ChatBackend {
   agentQueue?: AgentQueue;
   /** This box's hung tool calls from the watch's newest minute (src/hung-calls.ts), which Settings > Hosts counts as hung. Absent in tests that fake a backend. */
   calls?: CallWatch;
-  /**
-   * Marks the owner's prompt to a thread as an owner turn in the turn queue of the box that runs it (`pi-pool owner-turn`), right before it is sent, so it never
-   * waits behind background work. It never rejects: a pool that fails is logged and the prompt goes as before. Absent in tests that fake a backend.
-   */
-  ownerTurn?: (sessionId: string) => Promise<void>;
   /**
    * `GET api/threads/<id>/prompt?via=<parent ids>`: the prompt any session's model gets (src/prompt-view.ts), a thread, a job or a subagent the
    * daemon no longer lists (`sessionFileFor`); null for a session with no session file. Absent in tests that fake a backend.
@@ -393,11 +388,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const prioritySync = quiet ? undefined : setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync?.unref();
   if (!quiet) void poolPriorities.sync();
-  // The mark goes to the box that runs the session, whose own pi-pool keeps its turn queue (ownerTurnMarker).
-  const ownerTurn = ownerTurnMarker({ hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; },
-    local: markOwnerTurn, remote: sshOwnerTurn, log: dutyLog });
+  // An owner send to a session on this box marks its turn in this box's pi-pool; another box's relay marks its own (ThreadHub.prompt `owner`).
+  threads.markOwnerTurn = id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
   // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
-  const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog, ownerTurn }, dutyLog);
+  const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog }, dutyLog);
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
@@ -408,7 +402,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const title = catalog.title(id);
       return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}) }) : null;
     },
-    ownerTurn, outbox, messages: agentOutbox,
+    outbox, messages: agentOutbox,
     async close() {
       if (closed) return;
       closed = true;

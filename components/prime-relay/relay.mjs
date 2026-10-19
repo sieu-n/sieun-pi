@@ -10,9 +10,10 @@ import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostStats, usableRaw } from "./host-stats.ts";
 import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
+import { ownerTurnLines, piPoolOwnerTurn } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
-const VERSION = 1;
+const VERSION = 2;
 const UPGRADE = "prime-daemon";
 
 const expand = path => path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
@@ -130,8 +131,12 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-/** The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`), serves reads under the roots and the box's CPU, memory and turn queue. */
-export function createRelay(config, log = () => {}) {
+/**
+ * The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim
+ * snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`, and with a prompt's `ownerTurn` marked first, `ownerTurnLines`),
+ * serves reads under the roots and the box's CPU, memory and turn queue. `markOwnerTurn` stands in for this box's pi-pool in tests.
+ */
+export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn } = {}) {
   const server = createServer(async (request, response) => {
     try {
       if (!authorized(request, config.token)) return send(response, 401, { error: "unauthorized" });
@@ -159,7 +164,7 @@ export function createRelay(config, log = () => {}) {
       if (head.length) daemon.write(head);
       const slim = request.headers[SLIM_HEADER] === "images";
       const deltas = request.headers[DELTA_HEADER] === "1";
-      socket.pipe(daemon);
+      socket.pipe(ownerTurnLines(markOwnerTurn, log)).pipe(daemon);
       // The daemon's bytes are read as they come and wait here for the box, never in the daemon's socket. When its socket backs up, the
       // supervisor drops a session's events and sends the whole snapshot again, and over the Mac link each resent snapshot backed it up anew.
       const stages = [...(slim ? [slimSnapshots()] : []), ...(deltas ? [encodeLineDeltas()] : [])];

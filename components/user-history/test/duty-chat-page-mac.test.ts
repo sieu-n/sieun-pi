@@ -1,7 +1,11 @@
 // Owner 10-18 (goal p16): the chat page feels fast from the Mac and never breaks; these cases pin how the Chat page from the Mac duty reads its sources.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { browserReadings, median, parsePing, releaseBreaks, replyExtra, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { WebSocketServer } from "ws";
+import { browserReadings, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 
 const at = Date.parse("2026-10-19T15:00:00Z");
 
@@ -58,6 +62,36 @@ test("the extra wait is the box's wait less the Mac's own turn, in round trips, 
   assert.deepEqual(reading.flagged.map(item => item.kind), ["reply", "reply", "reply_error", "reply", "reply_unmatched"]);
   assert.match(reading.flagged[0]!.excerpt, /first reply frame on the box 2380 ms after the send, the Mac's own turn 2000 ms, extra 380 ms = 2.00 round trips of 190 ms/);
   assert.match(reading.flagged[2]!.excerpt, /waits for its slot/);
+});
+
+test("the create send is timed from before its POST, listed as a new thread and left out of the median", async t => {
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      const answer = () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000001" })); };
+      if (req.url!.endsWith("/api/threads")) setTimeout(answer, 400); else answer();
+    });
+  });
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", socket => socket.on("message", data => {
+    const { sub } = JSON.parse(data.toString()) as { sub: number };
+    const frame = (type: string, message?: Record<string, unknown>) => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "event", event: { type, ...(message ? { message } : {}) } } }));
+    frame("message_update", { role: "assistant", content: [{ type: "text", text: "ok" }] });
+    frame("auto_retry_start");
+  }));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { sockets.close(); server.close(); });
+  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" });
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0]!.create, true);
+  assert.ok(sends[0]!.firstTokenAt - sends[0]!.sentAt >= 400, `the create send read ${sends[0]!.firstTokenAt - sends[0]!.sentAt} ms, so it was timed after its POST answered`);
+  const session = [entry("user", "2026-10-19T22:05:00.000Z", sends[0]!.marker), entry("assistant", "2026-10-19T22:05:00.100Z", "ok", { stopReason: "stop" }),
+    entry("user", "2026-10-19T22:05:10.000Z", "chat page probe bbbb."), entry("assistant", "2026-10-19T22:05:12.000Z", "ok", { stopReason: "stop" })].join("\n");
+  const reading = replyExtra([...sends, { marker: "chat page probe bbbb.", sentAt: 0, firstTokenAt: 2_190 }], session, 190, at);
+  assert.equal(reading.value, 1);
+  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_new_thread", "reply"]);
 });
 
 const journal = (lines: string[]) => lines.map(line => `${line.slice(0, 32)} us-metal02 systemd[257985]: ${line.slice(33)}`).join("\n");

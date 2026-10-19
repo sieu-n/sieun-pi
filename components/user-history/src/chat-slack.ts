@@ -288,7 +288,7 @@ export function slackChats(backend: ChatBackend): SlackChats {
     name: async id => (await backend.catalog.summary(id))?.sessionName,
     messages: id => backend.threads.state(id)?.messages,
     subscribe: (id, listener) => backend.threads.subscribe(id, listener, true),
-    prompt: async (id, message) => { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message, images: [], mode: "steer" }); },
+    prompt: async (id, message) => { await backend.threads.prompt(id, { message, images: [], mode: "steer", owner: true }); },
     watch: listener => backend.catalog.subscribe(() => listener()),
   };
 }

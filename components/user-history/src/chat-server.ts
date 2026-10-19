@@ -900,8 +900,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
             if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
             // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
-            await backend.ownerTurn?.(thread.id);
-            await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
+            await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp", owner: true });
             // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
             if (syncSlack) {
               const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.chat(thread.id, { action: "connect", ...syncSlack }).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
@@ -1064,7 +1063,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           backend.threads.setBoard(id, board);
           let sent = true;
           let error: string | undefined;
-          try { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
+          try { await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer", owner: true }); }
           catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
         }

@@ -16,10 +16,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   page's tailnet URL: each cold load is a new browser context, timed until the chat's lines show; each tab switch opens a chat that page has
  *   not opened yet and reads the app's own `thread-paint:<id>` measure, as p50 measured it (median 46 ms on 10-18).
  * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets up to `SENDS` no-op prompts through the
- *   chat service, the path the page uses. The first rides on the create call and is timed from its answer; the rest follow only when the
- *   first turn ended without pi-pool's retry, since a new thread can wait 15 min and more for its slot (10-19 15:17Z). Per send, the extra wait is the time from the send to the first reply frame on the box, less the Mac's
- *   own time from its user entry to its reply entry in the session file, in Mac-to-box round trips (ping from the Mac). The reply is "ok",
- *   so the Mac's reply entry lands a few ms after its first token.
+ *   chat service, the path the page uses. The first rides on the create call and is timed from before that POST; it waits on the Mac's
+ *   worker start too, so it is listed and left out of the value, which is the median of the follow-ups. Those go only when the first turn
+ *   ended without pi-pool's retry, since a new thread can wait 15 min and more for its slot (10-19 15:17Z). Per send, the extra wait is the
+ *   time from the send to the first reply frame on the box, less the Mac's own time from its user entry to its reply entry in the session
+ *   file, in Mac-to-box round trips (ping from the Mac). The reply is "ok", so the Mac's reply entry lands a few ms after its first token.
  * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error within
  *   `RELEASE_WINDOW_MS`, which leaves the owner's page on its red banner.
  * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
@@ -33,7 +34,8 @@ const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5" };
 /** 10 samples each, as the p16 brief asked of job mac feel check on 10-19. */
 const LOADS = 10;
 const SWITCHES = 10;
-const SENDS = 3;
+/** One create send and three follow-ups, so the value is a median of three. */
+const SENDS = 4;
 /** pi-pool can hold a new thread's first turn with no frame at all: over 2 min on the Mac at 15:41Z on 10-19, while at 15:17Z it answered an error in 3 s. */
 const FIRST_REPLY_MS = 10 * 60_000;
 /** On 10-19 the 01:14:15Z release crash-looped from 7 s after it to past 01:18:52Z (p72), so a break up to 10 min after a release is its break. */
@@ -42,7 +44,8 @@ export const RELEASE_WINDOW_MS = 10 * 60_000;
 export interface BrowserLoad { shown?: number | null; banner?: string | null; error?: string }
 export interface BrowserSwitch { id: string; ms: number | null; lines?: number }
 export interface BrowserOutput { loads: BrowserLoad[]; tabs: { switches: BrowserSwitch[]; banner?: string | null } | { error: string }; load?: number; ms?: number; error?: string }
-export interface SendTiming { marker: string; sentAt: number; firstTokenAt: number }
+/** `create` is the send that rides on the create call, which also waits on the Mac's worker start. */
+export interface SendTiming { marker: string; sentAt: number; firstTokenAt: number; create?: boolean }
 export interface Reading { value?: number; flagged: FlaggedSlice[] }
 
 export const median = (values: readonly number[]): number | undefined => {
@@ -88,7 +91,8 @@ interface SessionEntry { type?: string; timestamp?: string; message?: { role?: s
 /**
  * Extra round trips per send: the box's wait from the send to the first reply frame, less the Mac's own wait from its user entry to its reply
  * entry, over the round trip. A reply that is an error, such as pi-pool's slot wait, still crossed the same path, so it is timed and listed;
- * a send whose entries are missing is listed and left out.
+ * a send whose entries are missing is listed and left out. The create send is listed and left out of the median, since its wait holds the
+ * Mac's worker start, which a message to a chat that runs never has.
  */
 export function replyExtra(sends: readonly SendTiming[], macSession: string, rttMs: number, at: number): Reading {
   const reading: Reading = { flagged: [] };
@@ -102,8 +106,8 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
     const own = Date.parse(reply.timestamp ?? "") - Date.parse(entries[user]!.timestamp ?? "");
     const seen = send.firstTokenAt - send.sentAt;
     const extra = seen - own;
-    counts.push(extra / rttMs);
-    reading.flagged.push({ at, kind: "reply", excerpt: `${send.marker}: first reply frame on the box ${seen} ms after the send, the Mac's own turn ${own} ms, extra ${extra} ms = ` +
+    if (!send.create) counts.push(extra / rttMs);
+    reading.flagged.push({ at, kind: send.create ? "reply_new_thread" : "reply", excerpt: `${send.marker}: first reply frame on the box ${seen} ms after the send, the Mac's own turn ${own} ms, extra ${extra} ms = ` +
       `${(extra / rttMs).toFixed(2)} round trips of ${Math.round(rttMs)} ms` });
   }
   const value = median(counts);
@@ -151,7 +155,7 @@ const exec: Exec = (file, args, options = {}) => new Promise((resolve, reject) =
 const onMac = (command: string, seconds: number, input?: string): Promise<string> =>
   exec("timeout", [String(seconds), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, command], { timeoutMs: (seconds + 5) * 1000, ...(input === undefined ? {} : { input }) });
 
-interface ChatConfig { port: number; capability: string; csrfToken: string; publicOrigin?: string }
+export interface ChatConfig { port: number; capability: string; csrfToken: string; publicOrigin?: string }
 
 const SWITCH_TIMEOUT_MS = 10_000;
 
@@ -166,7 +170,7 @@ async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput
   return output;
 }
 
-async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendTiming[] }> {
+export async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendTiming[] }> {
   const origin = `http://127.0.0.1:${config.port}`;
   const base = `${origin}/${config.capability}/`;
   const post = async (route: string, body: unknown): Promise<Record<string, unknown>> => {
@@ -191,9 +195,9 @@ async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendT
   };
   const marker = () => `chat page probe ${randomUUID().slice(0, 8)}.`;
   const firstText = marker();
+  const createdAt = Date.now();
   const created = await post("api/threads", { requestId: randomUUID().replaceAll("-", ""), host: "mac", cwd: "/Users/sieunpark", kind: "thread", ...MODEL, thinkingLevel: "off",
     name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: `${firstText} Reply with exactly: ok` });
-  const createdAt = Date.now();
   const id = String(created.id);
   const sends: SendTiming[] = [];
   try {
@@ -203,7 +207,7 @@ async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendT
     const reply = (frame: Frame) => mine(frame) && ["message_update", "message_end"].includes(kind(frame) ?? "") && frame.data!.event!.message?.role === "assistant";
     const first = await until(0, frame => reply(frame) || (mine(frame) && frame.data?.type === "snapshot" && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant")),
       FIRST_REPLY_MS, "first reply frame");
-    sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at });
+    sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at, create: true });
     const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
     if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
     for (let count = 1; count < SENDS; count++) {

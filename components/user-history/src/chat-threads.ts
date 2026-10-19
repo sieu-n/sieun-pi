@@ -321,6 +321,8 @@ export class ThreadHub {
    * owner reopens the session. Null when the hub was given no file (tests): such an archive only reports that its jobs may still run.
    */
   readonly cancels: SavedArchiveQueue | null;
+  /** The owner-turn mark of a session on this box (`prompt` with `owner`); the service sets pi-pool's, and tests leave it a no-op. */
+  markOwnerTurn: (id: string) => Promise<void> = async () => {};
 
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
     private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
@@ -1214,13 +1216,18 @@ export class ThreadHub {
   }
 
   /**
-   * `ready` (the owner-turn mark) runs while the thread resumes and lands before the prompt goes. The prompt goes by the session's active id on
+   * `owner` marks the send as the owner's turn, so the turn queue of pi-pool on the session's box starts its run at once (pool/turns.py). On this
+   * box `markOwnerTurn` runs while the thread resumes and lands before the prompt goes. On another box the prompt carries `ownerTurn`, and that
+   * box's relay marks it right before the daemon reads the line (components/prime-relay/owner-turn.mjs): the chat service's own ssh mark held
+   * each send to a Mac chat 0.6 to 0.9 s on 10-19, 3 to 5 round trips. The prompt goes by the session's active id on
    * the box's shared daemon client and does not wait for the thread's attach, which goes on behind it: on 10-18 the owner's "did you miss?" to
    * frontend bro on the Mac never left the box, because each attach streams the whole context since the last compaction (9.9 MB, 7.75 MB of it
    * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
    * trip (230 ms to the Mac). Only a session with no live worker, or one whose listed worker is gone, waits for the resume to start it again.
    */
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; ready?: Promise<void> | undefined; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
+    const remote = this.catalog.hostOf(id) !== null;
+    const marked = input.owner && !remote ? this.markOwnerTurn(id) : undefined;
     const resumed = this.resume(id, false, trigger);
     resumed.catch(() => {});
     const held = this.threads.get(id)?.live?.activeSessionId;
@@ -1231,7 +1238,7 @@ export class ThreadHub {
       return response.data as T;
     };
     let activeSessionId = listed ?? (await resumed).live!.activeSessionId;
-    await input.ready;
+    await marked;
     if (input.images.length) {
       const [state, catalog] = await Promise.all([ask<{ model?: { provider: string; id: string } | null }>(activeSessionId, "get_state"),
         ask<{ models: { provider: string; id: string; input: string[] }[] }>(activeSessionId, "get_model_catalog")]);
@@ -1245,7 +1252,8 @@ export class ThreadHub {
       if (!command) throw new ThreadError(400, "Unknown slash command. The draft was kept.");
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
-    const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) };
+    const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}),
+      ...(input.owner && remote ? { ownerTurn: id } : {}) };
     // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
     await input.sending?.();
     try { await ask(activeSessionId, "prompt", fields); } catch (error) {

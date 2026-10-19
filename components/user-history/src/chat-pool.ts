@@ -5,7 +5,6 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import type { Host } from "./hosts.ts";
 import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
   type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
@@ -526,40 +525,6 @@ export async function setPoolKey(key: AgentQueueKey, value: number): Promise<voi
 export async function markOwnerTurn(sessionId: string): Promise<void> {
   await run(poolCommand.ownerTurn(sessionId));
 }
-
-/** How long the owner's send waits for a mark on another box; ssh to the Mac took 0.48 to 0.50 s from the box on 10-19. */
-export const REMOTE_OWNER_TURN_WAIT_MS = 3000;
-
-/**
- * `pi-pool owner-turn` on the box that runs the session, since pi-pool keeps each box's turn queue on that box (pool/remote.py LOCAL_COMMANDS).
- * Another box's mark goes over ssh, as Settings > Tools and skills runs its checks there (chat-tools.ts sshChecks). The send waits for it at
- * most `waitMs`: a mark that lands later still starts a queued run of the session at once as kind `ahead`. A failed mark is logged and the
- * send goes on.
- */
-export function ownerTurnMarker(options: { hostOf: (id: string) => Host | null; local: (id: string) => Promise<void>; remote: (host: Host, id: string) => Promise<void>;
-  log: (line: string) => void; waitMs?: number }): (id: string) => Promise<void> {
-  const { hostOf, local, remote, log, waitMs = REMOTE_OWNER_TURN_WAIT_MS } = options;
-  const failed = (id: string, host: string | null) => (error: unknown) => {
-    log(`turn queue: owner turn for ${id.slice(0, 8)}${host ? ` on ${host}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
-  };
-  return id => {
-    const host = hostOf(id);
-    if (!host) return local(id).catch(failed(id, null));
-    const marked = remote(host, id).catch(failed(id, host.name));
-    return Promise.race([marked, new Promise<void>(resolve => { setTimeout(resolve, waitMs).unref(); })]);
-  };
-}
-
-/** `pi-pool owner-turn <id>` on `host` over ssh. */
-export const sshOwnerTurn = (host: Host, sessionId: string): Promise<void> => new Promise((resolve, reject) => {
-  if (!host.ssh) { reject(new Error(`hosts.json gives ${host.name} no ssh target`)); return; }
-  if (!/^[\w-]+$/.test(sessionId)) { reject(new Error(`not a session id: ${sessionId.slice(0, 40)}`)); return; }
-  const command = `PATH="$HOME/.local/bin:$PATH" exec pi-pool ${poolCommand.ownerTurn(sessionId).join(" ")}`;
-  execFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, command], { timeout: 30_000 }, (error, _stdout, stderr) => {
-    if (error) reject(new Error(`ssh ${host.name}: ${(String(stderr).trim() || error.message).replace(/\s+/g, " ").slice(0, 300)}`));
-    else resolve();
-  });
-});
 
 /** The class a tree's pool record holds as the pool reads it, and its sidebar label; null priority for a tree with no record yet. */
 export interface PoolTreeClass { priority: PoolPriority | null; label: PoolPriority | null }
