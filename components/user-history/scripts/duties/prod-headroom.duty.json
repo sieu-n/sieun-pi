@@ -1,0 +1,40 @@
+{
+  "name": "Prod box headroom",
+  "ownerWords": "(10-18 06:21Z) just make this UX clean, snappy. it doesnt feel like it at all. then push through all the plans. lets go!\n\n(10-14, Crawler VP t38, on buying a second NVMe) NONONONONONONO I SAID NO TO THIS LIKE 10 times\n\n(10-19 15:32Z) 이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼.",
+  "goal": "us-metal01, the prod box, keeps room for the crawl push: profile reads on prod answer within 0.4 s at p95 over 1 h, prod work rarely waits for a CPU, and prod's database drive nvme0 writes at most 4 TB a day so it lasts without a new drive. Prod ran out of CPU three times (10-18 05:04Z, 10-18 evening from staging's crawler, 10-19 14:44Z at 70.5 of 72 cores), so CPU wait is a standing metric. The p95 and drive metrics are the numbers of goals p8 and p83, and they miss until those goals are met: while p8 or p83 is open, a miss steers that goal's live job instead of starting a second one.",
+  "metrics": [
+    {
+      "key": "profiles_p95_s",
+      "label": "Profile reads on prod, p95 over 1 h (/api/profiles GET)",
+      "op": "<=",
+      "target": 0.4,
+      "unit": " s",
+      "headline": true
+    },
+    {
+      "key": "cpu_wait_pct_1h",
+      "label": "Share of the last hour prod work on us-metal01 waited for a CPU (PSI cpu some)",
+      "op": "<=",
+      "target": 10,
+      "unit": "%"
+    },
+    {
+      "key": "nvme0_tb_24h",
+      "label": "Writes to prod's database drive nvme0 in the last 24 h",
+      "op": "<=",
+      "target": 4,
+      "unit": " TB"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/prod-headroom.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 90000
+  },
+  "onMiss": "Read each missed metric on prod Prometheus through obs.virev.ai (estate_prometheus): histogram_quantile(0.95, sum by (le) (rate(crawler_v3_api_request_duration_seconds_bucket{route=\"/api/profiles\",method=\"GET\"}[1h]))), rate(node_pressure_cpu_waiting_seconds_total{box=\"us-metal01\"}[1h]), increase(node_disk_written_bytes_total{box=\"us-metal01\",device=\"nvme0n1\"}[24h]). Find what uses the CPU or writes the drive by container and table, then steer the live fix job on the step tagged with this metric, or start one with rlm.create_session that lands a code or config change, and set the fix step's duty, job and sessionId. While goal p8 or p83 is open, its steps are the fix steps. Never buy or ask for a new drive (t38). Read only on prod unless the fix job ships through a land and promote."
+}
