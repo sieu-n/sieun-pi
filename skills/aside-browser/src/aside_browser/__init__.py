@@ -903,18 +903,22 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
 repl = run
 
 
-async def tabs() -> list[dict[str, Any]]:
+async def tabs(browser: str | None = None) -> list[dict[str, Any]]:
     """List open tabs as dicts with targetId, active, title, url, owned (opened by this session) and browser ('aside' or 'box').
 
-    Aside tabs come first. Box tabs (targetId box-N) belong to this kernel and close with it.
+    browser=None lists the box's own tabs on a Linux box and the Aside tabs on the Mac, so a box session never reads the owner's Aside
+    tabs unless it asks with browser='aside' or browser='all'. Box tabs (targetId box-N) belong to this kernel and close with it.
     """
+    if browser not in (None, "aside", "box", "all"):
+        raise ValueError("browser must be None, 'aside', 'box' or 'all'")
     await _sweep_quietly()
     lister = _scoped(
         "const __tabs = await listBrowserTabs(); console.log(JSON.stringify(__tabs.map(t => ({targetId: t.targetId, active: t.active, title: t.title, url: t.url}))))"
     )
+    wanted = {"aside": ("aside",), "box": ("box",), "all": ("aside", "box")}.get(browser or "", ("box",) if box_available() else ("aside",))
     found: list[dict[str, Any]] = []
     owned = _owned_tabs()
-    for browser in ("aside", "box") if _box.running() else ("aside",):
+    for browser in [b for b in wanted if b == "aside" or _box.running()]:
         text = await _repl(lister, "list tabs", browser=browser)
         line = [l for l in text.splitlines() if l.startswith("[")]
         for tab in json.loads(line[-1]) if line else []:
@@ -926,7 +930,7 @@ async def tabs() -> list[dict[str, Any]]:
 
 async def owned_tabs() -> list[dict[str, Any]]:
     """Open tabs that this agent session opened. Forgets owned tabs that are already closed."""
-    found = await tabs()
+    found = await tabs("all" if _owned_tabs() else None)
     open_ids = {t.get("targetId") for t in found}
     _forget([tid for tid in _owned_tabs() if tid not in open_ids])
     return [t for t in found if t["owned"]]

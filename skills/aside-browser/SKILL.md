@@ -25,7 +25,7 @@ For the owner's Aside, on the Mac or for login pages from a box:
 3. Add an `aside` stdio MCP server to the Prime Agent profile with `command: aside`, `args: [mcp]` and `callTimeoutMs: 130000`.
 4. Put the CLI on the MCP process's `PATH`, or use its absolute path as the MCP command.
 5. Start a new session or run `/reload`, because Prime Agent reads MCP settings only then.
-6. Check access with `await aside_browser.tabs()`.
+6. Check access with `await aside_browser.tabs(browser="aside")`.
 
 Without the MCP server, each call runs the one-shot CLI, and its output starts with `[aside-browser fallback]`.
 The fallback keeps no state between calls, so multi-step tab work needs the MCP server.
@@ -35,7 +35,8 @@ The fallback looks for the CLI at `ASIDE_CLI`, then `aside` on `PATH`, then `~/.
 
 ```python
 await aside_browser("return await page.title()")   # run REPL JS; `return value` prints it (`aside guide repl`)
-await aside_browser.tabs()                       # [{targetId, active, title, url, owned, browser}]
+await aside_browser.tabs()                       # [{targetId, active, title, url, owned, browser}]; on a box only its own tabs
+await aside_browser.tabs(browser="aside")        # the owner's Aside tabs, only when the task is about one of them
 await aside_browser.open_tab(url)                # sets `page`; this session owns the tab; the box's Chrome unless the URL needs a login
 await aside_browser.open_tab(url, browser="aside")  # only for a page that needs the owner's login, such as a box page that hit a sign-in
 await aside_browser.attach(target_id=None)       # reuse a tab the user has open (None = active tab); not owned

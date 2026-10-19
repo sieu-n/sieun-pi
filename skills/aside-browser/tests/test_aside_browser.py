@@ -413,7 +413,7 @@ class BoxBrowserTests(Base):
             self.assertEqual(fh.read(4), b"\x89PNG")
         self.assertEqual([(t["targetId"], t["browser"], t["owned"]) for t in listed if t["browser"] == "box"], [("box-1", "box", True)])
         self.assertEqual(closed, ["box-1"])
-        self.assertEqual([c["title"] for c in mcp.calls], ["list tabs"])
+        self.assertEqual(mcp.calls, [])
 
     def test_the_box_browser_is_headful_on_its_own_display_and_leaves_nothing_when_killed(self):
         if not os.path.exists(os.path.expanduser("~/.local/opt/xvfb/usr/bin/Xvfb-localxkb")) and not shutil.which("Xvfb"):
