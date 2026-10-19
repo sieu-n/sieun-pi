@@ -167,7 +167,16 @@ export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMes
  * each roster update that changed two of them.
  */
 type KeptRow = { key: readonly unknown[]; row: SessionRow };
-const sameKey = (left: readonly unknown[], right: readonly unknown[]): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
+/** Whether a kept row's key holds the entries of `fixed` and then those of `below`. */
+function sameKey(left: readonly unknown[], fixed: readonly unknown[], below: readonly unknown[]): boolean {
+  if (left.length !== fixed.length + below.length) return false;
+  for (let at = 0; at < fixed.length; at++) if (left[at] !== fixed[at]) return false;
+  for (let at = 0; at < below.length; at++) if (left[fixed.length + at] !== below[at]) return false;
+  return true;
+}
+/** The fixed part of the key `project` builds for each row before it knows whether the row is kept: one array, written over for each row. */
+const scratchKey: unknown[] = Array.from({ length: 13 });
+const NO_ROWS: readonly SessionSummary[] = [];
 /** A projected row's sort time, parsed once per row object: a kept row is the same object in each projection. */
 const sortTimes = new WeakMap<SessionRow, number>();
 function sortTime(row: SessionRow): number {
@@ -305,6 +314,8 @@ export function childrenByParent(children: readonly SessionSummary[]): Map<strin
 
 export interface Subtree { cost?: number; running: number; total: number }
 
+/** The subtree of each row object with no subagent, built once: most rows have none, and every projection asks for each. */
+const leafSubtrees = new WeakMap<SessionSummary, Subtree>();
 /**
  * The terminal agents view's numbers for a thread's subagent tree: `recursiveCost` (own cost plus every subagent below it, live or saved, as
  * `computeRecursiveRollups` adds it), `runningSubagentCount` (running subagents at any depth) and `total`, every subagent the daemon still lists
@@ -313,7 +324,11 @@ export interface Subtree { cost?: number; running: number; total: number }
 export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, SessionSummary[]>): Subtree {
   let cost = row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
   // Most of the 3,700 rows have no subagent, and the catalog asks for each of them on every projection.
-  if (!children.has(row.sessionId)) return { ...(cost !== undefined ? { cost } : {}), running: 0, total: 0 };
+  if (!children.has(row.sessionId)) {
+    let leaf = leafSubtrees.get(row);
+    if (!leaf) { leaf = { ...(cost !== undefined ? { cost } : {}), running: 0, total: 0 }; leafSubtrees.set(row, leaf); }
+    return leaf;
+  }
   let running = 0;
   let total = 0;
   const seen = new Set<string>([row.sessionId]);
@@ -801,14 +816,21 @@ export class Catalog {
       const origin = originOf(row);
       const archived = archivedByOwner?.has(row.sessionId) === true;
       // A working row's pulse reads the rows of its running subagents at any depth, so they are part of its key.
-      const key = [row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, labelsFor, schedule, subtree.cost, subtree.running, subtree.total, origin, host,
-        archived, this.heldLifecycle.get(row.sessionId), working, ...(working ? runningBelow(row, running) : [])];
+      // The key is built in one reused array and copied only for a row built again: most rows are kept, and a new 14-entry array for each of the
+      // 4,500 rows on every projection was about 4 of 54 ms of its own code on a bench over a copy of the live rows on 10-19.
+      const readAt = state?.sessions[row.sessionId]?.timestamp;
+      const baseline = state?.baseline ?? 0;
+      const fixed = scratchKey;
+      fixed[0] = row; fixed[1] = readAt; fixed[2] = baseline; fixed[3] = labelsFor; fixed[4] = schedule; fixed[5] = subtree.cost; fixed[6] = subtree.running;
+      fixed[7] = subtree.total; fixed[8] = origin; fixed[9] = host; fixed[10] = archived; fixed[11] = this.heldLifecycle.get(row.sessionId); fixed[12] = working;
+      const below = working ? runningBelow(row, running) : NO_ROWS;
       const before = this.keptRows.get(row.sessionId);
       // A chat row gets its agents and counts written onto it below, so it is built again.
-      if (!chat && before && sameKey(before.key, key)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
+      if (!chat && before && sameKey(before.key, fixed, below)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
+      const key = [...fixed, ...below];
       const checkIn = checkIns?.get(row.sessionId);
       const brief = briefs?.get(row.sessionId);
-      const projected = this.applyHeld(row, projectRow(row, key[1] as number | undefined, key[2] as number, {
+      const projected = this.applyHeld(row, projectRow(row, readAt, baseline, {
         ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
         ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
         ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
@@ -820,9 +842,12 @@ export class Catalog {
     }
     this.keptRows = kept;
     // Each row's time is read once, not once per comparison: the sort compares about 50,000 pairs of the 4,500 rows.
-    const order = rows.map((row, at) => ({ row, at, time: sortTime(row) }));
-    order.sort((left, right) => right.time - left.time || left.at - right.at);
-    for (const [at, entry] of order.entries()) rows[at] = entry.row;
+    const times = new Float64Array(rows.length);
+    const order = new Uint32Array(rows.length);
+    for (let at = 0; at < rows.length; at++) { times[at] = sortTime(rows[at]!); order[at] = at; }
+    order.sort((left, right) => times[right]! - times[left]! || left - right);
+    const unsorted = rows.slice();
+    for (let at = 0; at < order.length; at++) rows[at] = unsorted[order[at]!]!;
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
     const agentRows: AgentRow[] = rows.map(row => {
       let entry = agentRowOf.get(row);
