@@ -71,13 +71,17 @@ test("feeds named in the socket URL start on the upgrade, the thread's snapshot 
   t.after(() => ws.close());
   const frames: string[] = [];
   ws.on("message", raw => { const frame = JSON.parse(String(raw)) as { sub: number; event: string; data: { type?: string } }; frames.push(`${frame.sub}:${frame.event}:${frame.data?.type ?? ""}`); });
+  // Waits on the frames, not a fixed 100 ms: under the release build's load on 10-19 (c8fb6bf, 15:03Z) no frame had arrived after 100 ms.
+  const until = async (done: () => boolean) => { while (!done()) await new Promise(resolve => setTimeout(resolve, 10)); };
+  const shown = () => frames.filter(frame => frame.includes(":thread:") || frame.includes(":sessions:"));
   await new Promise(resolve => ws.once("open", resolve));
+  await until(() => started.length > 0);
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.deepEqual(started, ["thread"]);
   release();
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await until(() => shown().length >= 2);
   assert.deepEqual(started, ["thread", "sessions"]);
-  assert.deepEqual(frames.filter(frame => frame.includes(":thread:") || frame.includes(":sessions:")), ["1:thread:snapshot", "2:sessions:sessions"]);
+  assert.deepEqual(shown(), ["1:thread:snapshot", "2:sessions:sessions"]);
 });
 test("the boot script reads the thread from the hash, else ?t=, the way the page does", () => {
   const urls: Array<[string, string]> = [["", ""], ["", "#01a14d31-6ec0"], ["", "#01a14d31-6ec0@1792305420954"], ["", "#abc%40def"], ["", "#x@notanumber"],

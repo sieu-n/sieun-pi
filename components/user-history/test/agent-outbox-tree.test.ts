@@ -24,6 +24,10 @@ test("the wakes of one CI run go into a session tree one at a time, and another 
   const out = new Map<string, number>();
   let most = 0, alongside = false;
   const sent: string[] = [];
+  // The Crawler VP tree's sends hold until the other tree's send starts, instead of a 20 ms window that the build's load on 10-19 outran
+  // (5e5e697 at 14:48Z): its four sends ended before the fifth deliver was called. An outbox that sends one at a time overall never starts it.
+  let otherStarted!: () => void;
+  const other = new Promise<void>(done => { otherStarted = done; });
   const tree = (session: string) => FILES[session]!.includes(CRAWLER) ? "crawler" : session;
   const outbox = new AgentOutbox(dir, {
     log: () => {},
@@ -32,6 +36,7 @@ test("the wakes of one CI run go into a session tree one at a time, and another 
       out.set(key, (out.get(key) ?? 0) + 1);
       most = Math.max(most, out.get("crawler") ?? 0);
       if (key !== "crawler" && (out.get("crawler") ?? 0) > 0) alongside = true;
+      if (key === "crawler") await other; else otherStarted();
       await new Promise(done => setTimeout(done, 20));
       out.set(key, out.get(key)! - 1);
       sent.push(session.slice(0, 8));
