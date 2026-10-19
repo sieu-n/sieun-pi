@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { errorText, type FiringAlert, readGrafanaAlerts } from "./alert-bridge.ts";
+import { errorText, type FiringAlert, holdUnevaluated, readGrafanaAlerts, readUnevaluatedRules } from "./alert-bridge.ts";
 import { type Alerting, macWokeAt, PollHealth, type PollRecord, readAlerting, statusOf, writeStatus } from "./alert-bridge-health.ts";
 import { TokenHookWatch, withHookAlert } from "./token-hook-watch.ts";
 import { TICK_MS } from "./wakes.ts";
@@ -24,6 +24,12 @@ export function runPoll(input: PollInput, post: (frame: PollFrame) => void, onAl
   let alerting: Alerting | null | undefined;
   onAlerting(value => { alerting = value; });
   let polling = false;
+  // The last list the bridge got, for holdUnevaluated.
+  let previous: FiringAlert[] | null = null;
+  const read = async (): Promise<FiringAlert[] | null> => {
+    const current = await readGrafanaAlerts(input.grafanaConfig);
+    return current && (previous = await holdUnevaluated(previous, current, () => readUnevaluatedRules(input.grafanaConfig)));
+  };
   // One status write at a time: during the 16:07Z to 16:15Z stall on 10-19 seven writes queued on the one temp file name and all but the
   // first failed with ENOENT at 16:15:00Z.
   let writing: Promise<void> | null = null;
@@ -38,7 +44,7 @@ export function runPoll(input: PollInput, post: (frame: PollFrame) => void, onAl
     void write().catch(error => log(`alerts: status: ${error instanceof Error ? error.message : String(error)}`));
     if (polling) return;
     polling = true;
-    void health.poll(() => withHookAlert(readGrafanaAlerts(input.grafanaConfig), hookWatch))
+    void health.poll(() => withHookAlert(read(), hookWatch))
       .then(alerts => post({ type: "poll", record: health.record, alerts }), error => {
         post({ type: "poll", record: health.record, alerts: null });
         log(`alerts: ${errorText(error)}`);

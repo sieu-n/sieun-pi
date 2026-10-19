@@ -30,6 +30,8 @@ export const REOPEN_MS = 24 * 3_600_000;
 export const REFIRE_MS = 300_000 + TICK_MS;
 export const OWNERS_PATH = "ops/alert-relay/owners.json";
 export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?active=true";
+/** Every rule with its last evaluation and no alert instances: 527 KB for 309 rules on 10-19, against 1.3 MB with the instances. */
+export const GRAFANA_RULES_PATH = "/api/prometheus/grafana/api/v1/rules?limit_alerts=0";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
 /** One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). */
@@ -600,16 +602,55 @@ export class GrafanaError extends Error {
   constructor(readonly status: number) { super(`Grafana answered ${status} for the alert list`); }
 }
 
-export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert[] | null> {
+/** Grafana's answer to `path`, with the url and token of the config file; null when the file is gone. */
+async function readGrafana(configFile: string, path: string): Promise<unknown> {
   const text = await readFile(configFile, "utf8").catch((error: unknown) => { if (missing(error)) return null; throw error; });
   if (text === null) return null;
   const config = JSON.parse(text) as unknown;
   if (!isRecord(config) || typeof config.url !== "string" || typeof config.token !== "string") throw new Error(`${configFile} needs a url and a token`);
-  // The alert list answered in 135 to 411 ms over 30 reads at load 367 on 10-19 16:30Z. A read past 20 s is a stall on our side: at 16:10Z
-  // the box was in swap with 11 OOM kills, a 10 s sleep elsewhere on it woke up to 114 s late, and the read aborted with the next poll 30 s on.
-  const response = await fetch(new URL(GRAFANA_ALERTS_PATH, config.url), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
+  // The alert list answered in 135 to 411 ms over 30 reads at load 367 on 10-19 16:30Z, and the rule list in 130 ms to 1.9 s over 6 reads at
+  // 17:40Z. A read past 20 s is a stall on our side: at 16:10Z the box was in swap with 11 OOM kills, a 10 s sleep elsewhere on it woke up to
+  // 114 s late, and the read aborted with the next poll 30 s on.
+  const response = await fetch(new URL(path, config.url), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new GrafanaError(response.status);
-  return parseAlerts(await response.json());
+  return response.json();
+}
+
+export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert[] | null> {
+  const value = await readGrafana(configFile, GRAFANA_ALERTS_PATH);
+  return value === null ? null : parseAlerts(value);
+}
+
+/**
+ * The uids of the rules Grafana has not evaluated since it started. Grafana 12.3 lists such a rule with lastEvaluation 0001-01-01T00:00:00Z
+ * ("default other fields for unscheduled rules" in pkg/services/ngalert/api/prometheus/api_prometheus.go). A paused rule never evaluates, so
+ * it is left out.
+ */
+export function parseUnevaluated(value: unknown): Set<string> {
+  const groups = isRecord(value) && isRecord(value.data) && Array.isArray(value.data.groups) ? value.data.groups : null;
+  if (!groups) throw new Error("Grafana's rule list has no groups");
+  const rules = groups.flatMap(group => isRecord(group) && Array.isArray(group.rules) ? group.rules : []);
+  return new Set(rules.flatMap(rule => isRecord(rule) && typeof rule.uid === "string" && rule.isPaused !== true &&
+    !(Date.parse(typeof rule.lastEvaluation === "string" ? rule.lastEvaluation : "") > 0) ? [rule.uid] : []));
+}
+
+export async function readUnevaluatedRules(configFile: string): Promise<Set<string>> {
+  return parseUnevaluated(await readGrafana(configFile, GRAFANA_RULES_PATH));
+}
+
+/**
+ * The current list plus each alert of the last list that is missing from it and whose rule Grafana has not evaluated since it started, so
+ * the bridge does not resolve it. A restarted Grafana lists a firing alert only after that rule's first evaluation. On 10-19 virev-obs-grafana
+ * stopped at 17:20:47Z, the alert list answered 502 at 17:20:58Z, and the first list of the new Grafana at 17:22:07Z
+ * lacked every CI rule, so the bridge resolved them all, ci-jobs-waiting among them, while each still fired. The rule list is read only when
+ * an alert went missing, and a failed read fails the poll, so nothing resolves on it.
+ */
+export async function holdUnevaluated(previous: readonly FiringAlert[] | null, current: FiringAlert[], unevaluated: () => Promise<ReadonlySet<string>>): Promise<FiringAlert[]> {
+  const listed = new Set(current.map(alertKey));
+  const gone = (previous ?? []).filter(alert => !listed.has(alertKey(alert)));
+  if (!gone.length) return current;
+  const waiting = await unevaluated();
+  return [...current, ...gone.filter(alert => waiting.has(ruleOf(alert)))];
 }
 
 export async function readOwnersFor(configFile: string, home: string): Promise<OwnerMap | null> {
