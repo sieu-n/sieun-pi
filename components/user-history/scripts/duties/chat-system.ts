@@ -1,18 +1,18 @@
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, open, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
-import { OPEN, walk } from "../../src/checkin-steps.ts";
+import { LIVE_GAP_MS, OPEN, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
-import { catalogCopies, planCounts, planInputs } from "./whole-system.ts";
+import { catalogCopies, planCounts, planInputs, stepSessions } from "./whole-system.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -104,12 +104,72 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
   return undefined;
 }
 
+/** A catalog row as the boxes' copies keep it (session-copy.json and src/host-catalogs.ts `copyPath`), with the fields the push reads. */
+export interface CatalogRow { sessionId: string; sessionName?: string; sessionFile?: string; activity?: string; lastActivityAt?: string; created?: string }
+const ROOT_OF = /\/session-artifacts\/([0-9a-f-]{36})\//;
+const ms = (iso: string | undefined): number => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : 0; };
+
+/** Each chat's jobs in the catalog copies of both boxes, by the chat id their file sits under. */
+export function jobsByChat(rows: readonly CatalogRow[]): Map<string, CatalogRow[]> {
+  const out = new Map<string, CatalogRow[]>();
+  for (const row of rows) {
+    const chat = ROOT_OF.exec(row.sessionFile ?? "")?.[1];
+    if (chat) out.set(chat, [...out.get(chat) ?? [], row]);
+  }
+  return out;
+}
+
+/** What tells `goalsWithNoJob` that a step's owner is live: the precheck's own owner reads and both boxes' catalog rows. */
+export interface OwnerReads {
+  now: number; named: ReadonlyMap<string, readonly string[]>; jobs: readonly CatalogRow[];
+  activity: ReadonlyMap<string, number>; waking: ReadonlySet<string>; poolWaiting: ReadonlySet<string>;
+}
+
+/**
+ * The open goals none of whose open items has a live owner: a job working now or within LIVE_GAP_MS, asleep on a board.wake, or waiting for its
+ * pi-pool slot. A Mac chat's jobs write their transcripts on the Mac, so their catalog rows (by session id or by the step's job name) count too.
+ */
+export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): PlanItem[] {
+  const fresh = (at: number | undefined) => at !== undefined && reads.now - at <= LIVE_GAP_MS;
+  const live = (item: PlanItem): boolean => {
+    const sessions = stepSessions(item, reads.named);
+    if (sessions.some(id => reads.waking.has(id) || reads.poolWaiting.has(id) || fresh(reads.activity.get(id)))) return true;
+    return reads.jobs.some(row => (sessions.includes(row.sessionId) || (!!item.job && row.sessionName === item.job)) &&
+      (row.activity === "working" || fresh(ms(row.lastActivityAt))));
+  };
+  return (board?.plan ?? []).filter(goal => {
+    if (!OPEN.has(goal.status)) return false;
+    let owned = false;
+    walk([goal], item => { if (OPEN.has(item.status) && live(item)) owned = true; });
+    return !owned;
+  });
+}
+
+/** One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. */
+export interface Push { at: number; chat: string; tag: string; items: string[] }
+/** How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since. */
+export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean }
+
+/** The tagged push in a chat's transcript lines: delivered when an agent message carries the tag, read when an assistant line comes after it. */
+export function pushReached(lines: readonly string[], tag: string): { delivered: boolean; read: boolean } {
+  let delivered = false;
+  for (const line of lines) {
+    if (!delivered) { if (line.includes('"agent_message"') && line.includes(tag)) delivered = true; continue; }
+    if (line.includes('"role":"assistant"')) return { delivered, read: true };
+  }
+  return { delivered, read: false };
+}
+
 export interface ChatSystemFacts {
   names: ReadonlyMap<string, string>;
   stuck: readonly { chat: string; id?: string; text?: string; count?: number }[];
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly FleetDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
+  /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
+  idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
+  /** The pushes the last run's job sent, as they went. */
+  followUps: readonly PushCheck[];
   detail: string;
 }
 
@@ -136,11 +196,33 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   }
   head("stuck_duty", facts.stuckDuties.length, "red duties with no live fix job", chats(facts.stuckDuties));
   for (const duty of spread(facts.stuckDuties, EXAMPLES)) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: `${duty.line}.` });
+  const pushes = pushList(facts);
+  if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job or a red duty with no fix job; ` +
+    `message each one, as the push list in ${facts.detail} says.` });
+  for (const check of facts.followUps.filter(check => !check.read || !check.jobStarted)) {
+    flagged.push({ kind: "push_followup", chat: check.push.chat, excerpt: `${name(check.push.chat)}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
+      `${!check.delivered ? "never reached its transcript" : !check.read ? "reached it, but the chat has not answered" : "was read, but no job started since"}; steer it again.` });
+  }
   return {
     metrics: { stuck_steps_all: stuckCount, plan_upkeep_all: facts.upkeep.length, duties_green_pct: facts.fleet.pct, stuck_duties: facts.stuckDuties.length },
     flagged,
   };
 }
+
+/** Per chat, what the run's job pushes it on: its open goals with no live job and its red duties with no fix job. */
+export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties">): { chat: string; goals: readonly PlanItem[]; duties: string[] }[] {
+  const chats = new Map<string, { goals: readonly PlanItem[]; duties: string[] }>();
+  for (const entry of facts.idleGoals) if (entry.goals.length) chats.set(entry.chat, { goals: entry.goals, duties: [] });
+  for (const duty of facts.stuckDuties) {
+    const entry = chats.get(duty.chat) ?? { goals: [], duties: [] };
+    entry.duties.push(duty.line);
+    chats.set(duty.chat, entry);
+  }
+  return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
+}
+
+/** Where the duty job records each push it sends, one JSON line per message, for the next run to check. */
+const PUSHES_FILE = join(homedir(), "work/plan-audit/pushes.jsonl");
 
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 const section = (title: string, lines: readonly string[]): string => [`## ${title}`, "", ...lines.length ? lines.map((line, index) => `${index + 1}. ${line}`) : ["None."], ""].join("\n");
@@ -168,7 +250,24 @@ async function main(): Promise<void> {
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
   const red = fleet.duties.filter(duty => !duty.green && !duty.pending);
-  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, detail });
+  const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
+  const jobs = jobsByChat(rows);
+  const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
+    { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting }) }));
+  // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
+  const lastRuns = JSON.parse(await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").catch(() => "[]")) as DutyRunRecord[];
+  const since = lastRuns.find(run => run.verdict !== "skipped")?.at;
+  const sent = since === undefined ? [] : (await readFile(PUSHES_FILE, "utf8").catch(() => "")).split("\n").flatMap(line => {
+    try { const push = JSON.parse(line) as Push; return push.at >= since ? [push] : []; } catch { return []; }
+  });
+  const followUps: PushCheck[] = [];
+  for (const push of sent) {
+    const file = localCopy(listed.get(push.chat)?.file);
+    const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
+    followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at) });
+  }
+  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail });
+  const tag = `[d9 push ${new Date(now).toISOString().slice(0, 16)}Z]`;
 
   // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
   const spot = ids[Math.floor(Math.random() * ids.length)]!;
@@ -194,6 +293,15 @@ async function main(): Promise<void> {
     `7. Append what you found and what you fixed to ${log}, under a heading with the time and the chat's name, and send the owner nothing.`, "",
     "The owner's last messages in it, newest last:", "",
     ...asks.length ? asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in the transcript's last 4 MB."], "",
+    `## Push list (${pushList({ idleGoals, stuckDuties: counts.redDuties }).length} chats)`, "",
+    `Message each chat below with \`await agent_message.send(text, receiver_role="sibling", receiver_name="<its full session id>")\`, a Mac chat too, ` +
+      `and put ${tag} in the text. Ask it to give each goal a live job this turn and each red duty a fix job on a step linked to it. ` +
+      `After each send, append one line to ${PUSHES_FILE}: {"at": <ms>, "chat": "<session id>", "tag": "${tag}", "items": ["p1", "d2"]}.`, "",
+    ...pushList({ idleGoals, stuckDuties: counts.redDuties }).map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat})` +
+      (entry.goals.length ? `: goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "") +
+      (entry.duties.length ? `${entry.goals.length ? ";" : ":"} ${entry.duties.join("; ")}` : "") + "."), "",
+    section(`Pushes the last run sent (${followUps.length})`, followUps.map(check => `${name(check.push.chat)}: ${check.push.tag} about ${check.push.items.join(", ")}, ` +
+      `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
