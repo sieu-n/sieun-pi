@@ -466,10 +466,13 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
+  // The three prod reads log in as owner_ro, whose CONNECTION LIMIT 3 (owner-ro-prod.sql) the owner's TablePlus, the other prechecks and
+  // jobs share, so they run one after another: on 10-19 at 15:20:31Z they ran side by side next to one job's session and two of them got
+  // "too many connections for role owner_ro". step never rejects, so a failed read does not stop the next one.
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await remote()));
   const stagingDue = step("staging due reads", async () => stagingDueOf(await stagingRemote()));
-  const lapsedBindings = step("prod lapsed bindings", async () => lapsedOf(await lapsedRemote()));
-  const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await stuckRemote()));
+  const lapsedBindings = deepWalks.then(() => step("prod lapsed bindings", async () => lapsedOf(await lapsedRemote())));
+  const stuckAccounts = lapsedBindings.then(() => step("prod stuck accounts", async () => stuckOf(await stuckRemote())));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
     for (const source of ["prod read log", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
