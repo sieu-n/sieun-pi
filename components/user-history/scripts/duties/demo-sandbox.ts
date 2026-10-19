@@ -106,9 +106,10 @@ export const WALK_FILE = ".cache/duties/virev-demo-offline.json";
 export const WALK_ERR_FILE = ".cache/duties/virev-demo-offline.err";
 /**
  * A stderr line that means the walk command itself broke and the walk never ran. From 10-18 to 10-19 a plain `ssh mac` PATH lacked node, so
- * playwright's shebang gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale.
+ * playwright's shebang gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale. Since 10-19 the walk's
+ * browser runs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs, whose own failures start with `shot-browser: `.
  */
-const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND/;
+const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND|^shot-browser: /;
 /** The duty runs the offline walk once a day, so a report older than a day is stale. */
 export const WALK_STALE_MS = 24 * 3_600_000;
 /** The window for restarts and SSR timeouts: the duty runs daily (c66), so each run counts the whole day. */

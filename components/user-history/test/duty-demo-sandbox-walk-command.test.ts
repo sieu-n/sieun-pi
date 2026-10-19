@@ -24,6 +24,11 @@ test("a missing node after the last walk report is its own cause", async () => {
   assert.deepEqual(await walkCommandBroke(deps("zsh:1: command not found: playwright\n", ERR_AT)), { at: ERR_AT, line: "zsh:1: command not found: playwright" });
 });
 
+test("a browser server on us-metal02 that never started is the walk command's cause (10-19, the walk's browser moved off the Mac)", async () => {
+  const line = "shot-browser: the browser server on us-metal02 exited with 255 before it listened";
+  assert.deepEqual(await walkCommandBroke(deps(WARNING + line + "\n", ERR_AT, WALK_AT)), { at: ERR_AT, line });
+});
+
 test("an older error file or a walk that only warned is not flagged", async () => {
   assert.equal(await walkCommandBroke(deps(NODE_MISSING, WALK_AT - 60_000, WALK_AT)), null);
   assert.equal(await walkCommandBroke(deps(WARNING, ERR_AT, WALK_AT)), null);
@@ -36,4 +41,5 @@ test("the walk command in onMiss sets the same node PATH as the precheck", () =>
   const walk = duty.onMiss.match(/`(ssh mac '[^`]*offline\.spec\.ts[^`]*)`/)![1]!;
   assert.ok(walk.startsWith(`ssh mac '${path}`), walk);
   assert.ok(walk.includes(`2> ../../${WALK_ERR_FILE}`), walk);
+  assert.ok(walk.includes("node scripts/shot-browser.mjs --run ../../node_modules/.bin/playwright test"), "the walk's browser runs on us-metal02, never on the Mac");
 });
