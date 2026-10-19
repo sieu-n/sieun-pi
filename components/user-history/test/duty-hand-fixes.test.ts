@@ -154,6 +154,9 @@ test("a box process an ssh session left behind counts when its script writes, an
   ].join("\n"));
   assert.equal(hosts.length, 4);
   assert.deepEqual(hostWriters(hosts).map(host => host.pid), [433386, 3577784, 1589822]);
+  // 10-19 17:28Z: the staging deploy that CI runs as virev-deploy-staging is the deploy path, not a hand loop.
+  const deploy = parseBox(line(2789780, `/usr/bin/bash /srv/staging/releases/${"0".repeat(40)}/apps/infra/metal/deploy.sh staging x`, "docker exec -d x; pkill y")).hosts;
+  assert.deepEqual(hostWriters(deploy), []);
 });
 
 // Guards the d3 run of 10-18 17:18Z: F18 had no done_at, so its done step p146 dated the design from the start and audit 14032 (06:04Z, off
