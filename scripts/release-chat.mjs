@@ -21,6 +21,9 @@ or when its commit was rebased off main. --rollback onto a commit not built yet 
 The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
+A waiting release whose commit a release puts live (current holds it and the chat runs current) exits 0 at once, while the lock is still held.
+After a failed build the name of each failing test goes into the log and build.failed, and the next release that waited for the lock also tries
+origin main's tip first, unless the failed build was that same tip's retry.
 Releases that queue up are folded: the release that takes the lock reads the requests waiting for it, picks the queued commit on origin main
 that holds its own commit and the most queued ones, builds that one, flips current, restarts and names each request it covered. The covered
 waiters then exit 0 with nothing built. A request that arrives during the build waits for the next batch. When the picked build fails, the
@@ -70,6 +73,40 @@ function run(command, args, cwd, env = gitEnv) {
   log(`${command} ${args.join(" ")} (in ${cwd})`);
   const result = spawnSync(command, args, { cwd, stdio: ["ignore", process.stderr, process.stderr], env });
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed (${result.signal ?? result.status})`);
+}
+
+/** The build step running now, and the signal this release got while it ran: the step gets the signal, and its failure ends the release. */
+let step = null, stopping = null;
+
+/**
+ * Runs a build step like `run`, its output passed through to stderr, and names each test the node test runner lists under "failing tests"
+ * in the error: on 10-19 the c29cf48 build failed 3 tests at a load of 280, and the queue's logs said only "npm run --silent test failed (1)".
+ */
+function runNamingFailures(command, args, cwd, env) {
+  log(`${command} ${args.join(" ")} (in ${cwd})`);
+  const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env });
+  step = child;
+  const failing = [];
+  let section = false, file = "", rest = "";
+  const read = chunk => {
+    process.stderr.write(chunk);
+    const lines = (rest + chunk).split("\n");
+    rest = lines.pop();
+    for (const line of lines) {
+      if (/^✖ failing tests:/.test(line)) section = true;
+      else if (section && /^test at /.test(line)) file = line.slice(8).replace(/:\d+:\d+$/, "");
+      else if (section && /^✖ /.test(line)) failing.push(`${file ? `${file}: ` : ""}${line.slice(2).replace(/ \([\d.]+ms\)$/, "")}`);
+    }
+  };
+  child.stdout.on("data", read);
+  child.stderr.on("data", read);
+  return new Promise((done, fail) => child.on("close", (status, signal) => {
+    step = null;
+    if (status === 0 && !stopping) { done(); return; }
+    const error = new Error(`${command} ${args.join(" ")} failed (${signal ?? status})${failing.length ? `; failing tests: ${failing.join("; ")}` : ""}`);
+    error.failing = failing;
+    fail(error);
+  }));
 }
 
 /** The commit a release folder was built from: its release.json, else the hex in its name. Null when neither resolves in the repo. */
@@ -145,16 +182,19 @@ function alive(pid) {
 }
 
 /**
- * Takes <home>/release.lock, waiting while a live process holds it; a lock whose pid is gone is taken over. Returns the release function.
+ * Takes <home>/release.lock, waiting while a live process holds it; a lock whose pid is gone is taken over. Returns the release function and
+ * whether this release waited for another one.
  * The lock and the draft `release.lock.<pid>` written while it waits hold the request: pid, sha, startedAt, kickstart and rollback.
  * A release waits even when the holder's commit holds its own: that build can still fail, and then this one is the release that ships the commit.
+ * `covered` runs on each wait and throws Covered once a release put this commit live: on 10-19 from 17:52Z waiters that release-bf42653 held
+ * stayed queued behind the next build for 12 min and more, since they checked only when they took the lock.
  */
-async function takeLock(home, request) {
+async function takeLock(home, request, covered = () => {}) {
   const lock = join(home, "release.lock");
   const body = JSON.stringify(request) + "\n";
   const draft = `${lock}.${process.pid}`;
   writeFileSync(draft, body);
-  let told = false;
+  let told = false, waited = false;
   try {
     for (;;) {
       try { linkSync(draft, lock); break; } catch (error) { if (error.code !== "EEXIST") throw error; }
@@ -168,13 +208,19 @@ async function takeLock(home, request) {
         continue;
       }
       if (!told) { log(`waiting for the release of ${String(holder.sha).slice(0, 7)} by pid ${holder.pid}, started ${holder.startedAt}`); told = true; }
+      covered();
+      waited = true;
       await new Promise(done => setTimeout(done, 500));
     }
   } finally { rmSync(draft, { force: true }); }
   const release = () => { try { if (readFileSync(lock, "utf8") === body) unlinkSync(lock); } catch {} };
   process.on("exit", release);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { release(); process.exit(1); });
-  return release;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {
+    if (!step) { release(); process.exit(1); }
+    stopping = signal;
+    step.kill(signal);
+  });
+  return { release, waited };
 }
 
 async function archive(repo, sha, into) {
@@ -216,7 +262,7 @@ async function build(options, home, sha, dir) {
     const app = join(scratch, "components/user-history");
     const env = checkEnv(checks);
     run("npm", ["run", "--silent", "typecheck"], app, env);
-    run("npm", ["run", "--silent", "test"], app, env);
+    await runNamingFailures("npm", ["run", "--silent", "test"], app, env);
     // The packed client bundle, so the service start reads it instead of compiling it (6.5 s at a load of 50 on 10-18) while every shell waits.
     run("node", ["src/chat-assets-prebuild.mjs"], app, env);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
@@ -265,6 +311,15 @@ function waiting(home) {
 }
 
 const OWED = "restart.owed";
+const FAILED = "build.failed";
+
+/** The last failed build (build.failed): its commit, the failing tests it named and whether it was a retry of origin main's tip; null when none. */
+function readFailed(home) {
+  try {
+    const failed = JSON.parse(readFileSync(join(home, FAILED), "utf8"));
+    return typeof failed.sha === "string" ? { sha: failed.sha, tests: Array.isArray(failed.tests) ? failed.tests.map(String) : [], retry: failed.retry === true } : null;
+  } catch { return null; }
+}
 const shortSha = sha => sha.slice(0, 7);
 const describe = requests => requests.map(request => `${shortSha(request.sha)} (pid ${request.pid}${request.pid === process.pid ? ", this release" : ""})`).join(", ");
 
@@ -275,19 +330,22 @@ const describe = requests => requests.map(request => `${shortSha(request.sha)} (
  * When origin does not answer, only `own` is built, since its own check passed at the start. On us-metal02 the journal shows 11 chat
  * restarts from 16:04Z to 17:59Z on 10-18, one for each release that built.
  */
-function batches(repo, home, own) {
+function batches(repo, home, own, waited) {
   const queued = waiting(home).filter(request => !request.rollback);
-  const published = withOriginMain(repo, ref => (ref ? queued.filter(request => contains(repo, ref, request.sha)) : []));
+  const { published, tip } = withOriginMain(repo, ref => (ref ? { published: queued.filter(request => contains(repo, ref, request.sha)), tip: git(repo, ["rev-parse", ref]) } : { published: [], tip: null }));
   const requests = [own, ...queued];
-  const shas = [...new Set([own.sha, ...published.map(request => request.sha)])].filter(sha => {
+  const failed = readFailed(home);
+  const retry = waited && failed && tip && !(failed.sha === tip && failed.retry) ? tip : null;
+  if (retry) log(`the last build, of ${shortSha(failed.sha)}, failed${failed.tests.length ? ` on ${failed.tests.join("; ")}` : ""}; trying origin main's tip ${shortSha(retry)} first`);
+  const shas = [...new Set([...(retry ? [retry] : []), own.sha, ...published.map(request => request.sha)])].filter(sha => {
     if (!contains(repo, sha, own.sha)) return false;
     try { checkNewer(repo, home, sha, false); return true; } catch (error) { if (error instanceof Refused) return false; throw error; }
   });
   const candidates = shas.map(sha => {
     const covered = requests.filter(request => contains(repo, sha, request.sha));
-    return { sha, covered, kickstart: covered.some(request => request.kickstart) };
+    return { sha, covered, kickstart: covered.some(request => request.kickstart), retry: sha === retry };
   });
-  const order = (a, b) => (a.sha === own.sha) - (b.sha === own.sha) || b.covered.length - a.covered.length;
+  const order = (a, b) => (a.sha === own.sha) - (b.sha === own.sha) || b.retry - a.retry || b.covered.length - a.covered.length;
   return { plans: candidates.sort(order), left: queued.filter(request => !candidates[0].covered.includes(request)) };
 }
 
@@ -440,7 +498,17 @@ async function main() {
   }
   if (!live) checkNewer(options.repo, home, sha, options.rollback);
   const own = { pid: process.pid, sha, startedAt: new Date().toISOString(), kickstart: options.kickstart, rollback: options.rollback };
-  await takeLock(home, own);
+  // Checked again only when current or started.json changes, or while the live release holds this commit but the chat does not run it yet.
+  let seen = null;
+  const wentLive = () => {
+    const now = `${liveRelease(home)}\n${readText(join(home, STARTED))}`;
+    if (now === seen) return;
+    const holder = holding();
+    seen = holder ? null : now;
+    if (holder && !existsSync(join(home, OWED)) && (!options.kickstart || applied(home)))
+      throw new Covered(`${short} already live in ${holder}; nothing to do, since it went live while this release waited`);
+  };
+  const { waited } = await takeLock(home, own, wentLive);
   payOwed(home);
   const kept = holding();
   if (kept) {
@@ -450,7 +518,7 @@ async function main() {
     return;
   }
   checkNewer(options.repo, home, sha, options.rollback);
-  const { plans, left } = options.rollback ? { plans: [{ sha, covered: [own], kickstart: options.kickstart }], left: [] } : batches(options.repo, home, own);
+  const { plans, left } = options.rollback ? { plans: [{ sha, covered: [own], kickstart: options.kickstart }], left: [] } : batches(options.repo, home, own, waited);
   if (plans[0].covered.length > 1) log(`folding the queued requests ${describe(plans[0].covered)} into one build of ${shortSha(plans[0].sha)}`);
   if (left.length) log(`leaving ${describe(left)} to a release of their own, since ${shortSha(plans[0].sha)} does not hold them`);
   for (const plan of plans) {
@@ -460,7 +528,8 @@ async function main() {
       if (existsSync(planDir)) log(`${planId} is built already; reusing it`);
       else await build(options, home, plan.sha, planDir);
     } catch (error) {
-      if (plan.sha === sha) throw error;
+      writeFileSync(join(home, FAILED), JSON.stringify({ sha: plan.sha, tests: error.failing ?? [], retry: plan.retry === true, at: new Date().toISOString() }) + "\n");
+      if (plan.sha === sha || stopping) throw error;
       log(`the build of ${shortSha(plan.sha)} failed (${error.message}); its request stays queued, and this release builds the next candidate`);
       continue;
     }
@@ -469,6 +538,8 @@ async function main() {
     flip(home, planId);
     log(`current: ${before ?? "(none)"} -> ${planId}`);
     restart(home, plan.kickstart);
+    const failed = readFailed(home);
+    if (failed && contains(options.repo, plan.sha, failed.sha)) rmSync(join(home, FAILED), { force: true });
     log(`${planId} covers the requests of ${describe(plan.covered)}`);
     prune(home, [planId, before]);
     console.log(planId);

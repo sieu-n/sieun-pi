@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/release-chat.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-const BUILD_CONTROLS = ["TYPECHECK_FAIL", "TYPECHECK_MS", "TEST_FAIL", "TEST_HANG"];
+const BUILD_CONTROLS = ["TYPECHECK_FAIL", "TYPECHECK_MS", "TEST_FAIL", "TEST_FAIL_NAME", "TEST_HANG"];
 const BUILD_STEP = `import { connect } from "node:net";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -26,6 +26,7 @@ for (const [key, value] of Object.entries(process.env)) {
   if (stat?.isSocket()) await new Promise(done => connect(value).on("connect", function () { this.end(key); done(); }).on("error", done));
   else if (stat?.isDirectory()) writeFileSync(path.join(value, "touched-" + key), step);
 }
+if (step === "test" && control.TEST_FAIL_NAME) process.stdout.write("✔ a passing test (1ms)\\n✖ failing tests:\\n\\ntest at test/flaky.test.ts:1:1\\n✖ " + control.TEST_FAIL_NAME + " (4027.4ms)\\n  AssertionError\\n");
 if (control[step.toUpperCase() + "_FAIL"]) process.exit(1);
 if (step === "typecheck") await new Promise(done => setTimeout(done, Number(control.TYPECHECK_MS || 0)));
 if (step === "test" && control.TEST_HANG) {
@@ -227,9 +228,10 @@ test("a waiter whose commit the in-flight release holds goes live itself when th
   const failed = await newer;
   assert.equal(failed.status, 1, failed.stderr);
   assert.equal(older.status, 0, older.stderr);
-  assert.equal(older.stdout.trim(), id(f.c2));
-  assert.equal(f.current(), id(f.c2));
-  assert.ok(existsSync(path.join(f.home, id(f.c2), "release.json")));
+  // The waiter retries origin main's tip after the failed build, and the tip holds its commit.
+  assert.equal(older.stdout.trim(), id(f.c4));
+  assert.equal(f.current(), id(f.c4));
+  assert.ok(existsSync(path.join(f.home, id(f.c4), "release.json")));
   assert.equal(f.kicked().length, 1);
 });
 
@@ -718,4 +720,57 @@ test("helpers from before the fold finish next to it: their waiters exit 0 on it
   assert.equal(f.current(), id(c7));
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c7));
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
+});
+
+test("a waiter exits 0 as soon as a release puts its commit live, while another release still holds the lock", async (t) => {
+  // 10-19 from 17:52Z: the waiters release-bf42653 held stayed queued behind the next build, since a waiter checked only once it took the lock.
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  assert.equal(f.release([f.c3]).status, 0);
+  assert.equal(f.release([id(f.c1), "--rollback"]).status, 0);
+  assert.equal(f.current(), id(f.c1));
+  const lock = path.join(f.home, "release.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: "held-by-test", startedAt: new Date().toISOString() }));
+  const waiter = f.releaseAsync([f.c2]);
+  await waitWhile(() => drafts(f.home) < 1);
+  // What a release does when it goes live: flip current, restart the chat, write started.json.
+  const next = path.join(f.home, ".current-test");
+  symlinkSync(id(f.c3), next);
+  renameSync(next, path.join(f.home, "current"));
+  writeFileSync(path.join(f.home, "started.json"), JSON.stringify({ id: id(f.c3), at: new Date().toISOString() }) + "\n");
+  const result = await waiter;
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`${f.c2.slice(0, 7)} already live in ${id(f.c3)}; nothing to do, since it went live while this release waited`));
+  assert.equal(result.stdout.trim(), id(f.c3));
+  assert.ok(existsSync(lock), "the waiter left before the lock came free");
+  assert.equal(drafts(f.home), 0);
+  assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
+  rmSync(lock);
+});
+
+test("after a failed build the log names the failing test, and the next waiter retries origin main's tip", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  const failed = f.release([f.c3], { TEST_FAIL: "1", TEST_FAIL_NAME: "the shell came while the service thread was still importing" });
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.match(failed.stderr, /npm run --silent test failed \(1\); failing tests: test\/flaky\.test\.ts: the shell came while the service thread was still importing\n/);
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "build.failed"), "utf8")).sha, f.c3);
+  const [waiter] = await queued(f, [[[f.c2]]]);
+  assert.equal(waiter.status, 0, waiter.stderr);
+  assert.match(waiter.stderr, new RegExp(`the last build, of ${f.c3.slice(0, 7)}, failed on test/flaky\\.test\\.ts: the shell came while the service thread was still importing; trying origin main's tip ${f.c4.slice(0, 7)} first`));
+  assert.equal(waiter.stdout.trim(), id(f.c4));
+  assert.equal(f.current(), id(f.c4));
+  assert.equal(existsSync(path.join(f.home, "build.failed")), false, "a live build that holds the failed commit clears the record");
+  // A release that takes the lock at once builds what it asked for, even after a failure.
+  f.git("checkout", "-q", "-b", "later", f.c4);
+  const c5 = f.commit("five");
+  f.publish("later");
+  assert.equal(f.release([c5], { TEST_FAIL: "1" }).status, 1);
+  const c6 = f.commit("six");
+  f.publish("later");
+  const direct = f.release([c5]);
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.doesNotMatch(direct.stderr, /trying origin main's tip/);
+  assert.equal(f.current(), id(c5));
+  assert.notEqual(c6, c5);
 });
