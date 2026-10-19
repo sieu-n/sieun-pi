@@ -77,5 +77,12 @@ class Sysctls(unittest.TestCase):
         self.assertIn("https://cho.sh/ko/1983DC", text)
 
 
+class OomPolicy(unittest.TestCase):
+    def test_a_kernel_oom_kill_in_the_daemon_or_chat_unit_ends_only_its_pick(self):
+        for unit in ("prime-agent-daemon.service", "sieun-pi-chat.service"):
+            service = (ROOT / "deploy/linux" / unit).read_text().split("[Service]", 1)[1].split("\n[", 1)[0]
+            self.assertEqual(re.findall(r"^OOMPolicy=(\S+)$", service, re.M), ["continue"], unit)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,8 @@ EnvironmentFile=-%h/.config/sieun-pi/agent.env
 EnvironmentFile=-%h/.config/sieun-pi/chat.env
 ExecStart=%h/.local/node/bin/node %h/.local/share/sieun-pi-chat/current/components/user-history/src/chat-service-cli.mjs serve --data-dir %h/.prime/agent/browser-chat --port 5182 --socket /tmp/prime-agent-%U/daemon.sock
 KillMode=mixed
+# A kernel OOM kill of one precheck or helper the chat started ends only that process, as in prime-agent-daemon.service.
+OOMPolicy=continue
 Restart=always
 RestartSec=10
 UMask=0077

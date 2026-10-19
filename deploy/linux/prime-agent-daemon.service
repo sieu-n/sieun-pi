@@ -24,6 +24,10 @@ UMask=0077
 TimeoutStartSec=infinity
 TimeoutStopSec=90
 KillMode=process
+# A kernel OOM kill of one agent command or worker in this unit ends only that process. Under the default OOMPolicy=stop,
+# systemd SIGKILLed the supervisor after the kernel took processes here at 16:13:50Z and 16:28:09Z on 10-19, and every
+# session's turn was cut; Prime's own worker recovery handles a lost worker.
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target
