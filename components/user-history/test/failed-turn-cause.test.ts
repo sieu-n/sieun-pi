@@ -1,14 +1,14 @@
 // Guards the 10-19 reporting gap of chat-057a's jobs: legacy socket ownership (01a15525) and four more woke at 17:52Z to 18:40Z, met a 429 on
 // claude18 at the model start, and ended their turns with stopReason error and an empty reply. The agents panel showed the daemon's summary
 // cut 200 characters into the provider's prose, the [job] notice its first 120 characters, and the no-report notice "ended at ... with no
-// report": none of them said the account, its limit or the retry time pi-pool gave. The job sweep then dropped their "archived by the owner"
-// verdicts with no log line, since the owner archived chat-057a at 05:31:25Z and it is no chat of the service.
+// report": none of them said the account, its limit or the retry time pi-pool gave. The job sweep then dropped its verdict on them with no log
+// line: the owner archived chat-057a at 05:31:25Z, so it is no chat of the service and the sweep does not restart its jobs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
 import { rosterChildren, subagentSessions } from "../src/chat-catalog.ts";
 import { jobEnd, jobEndText, noReportNotice } from "../src/chat-checkin.ts";
-import { InterruptedRuns, resumeChatJobs } from "../src/chat-resume.ts";
+import { CHAT_ARCHIVED, InterruptedRuns, resumeChatJobs } from "../src/chat-resume.ts";
 import { clockTime } from "../src/checkin-settings.ts";
 import { cutActivity, cutEnd, SessionCuts } from "../src/cut-end.ts";
 import type { InterruptedReport } from "../src/shared/interrupted.ts";
@@ -65,9 +65,9 @@ test("the [job] notices of a failed turn say how it failed instead of reading li
     `legacy socket ownership ended at ${clockTime(at("2026-10-19T18:10:43.033Z"))} with no report`, "a quiet end keeps its words");
 });
 
-test("the job sweep logs once each cut job its chat's owner archive holds, and still resumes nothing of it", async () => {
+test("the job sweep logs once each cut job of an owner-archived chat, the turn's cause apart from the archive, and resumes nothing of it", async () => {
   const archived = { id: JOB.slice(-12), name: "legacy socket ownership", session_id: JOB, head: "d9abd5ee761c", head_session_id: CHAT,
-    stopped_at: "2026-10-19T18:10:40.189Z", stopped_by: "archived by the owner" };
+    stopped_at: "2026-10-19T18:10:40.189Z", stopped_by: CHAT_ARCHIVED, cut: "error", cut_error: ERROR, cut_at: "2026-10-19T18:00:15.359Z" };
   const deleted = { ...archived, id: "other", name: "far job", session_id: "01a15000-0000-7000-8000-000000000000", stopped_by: "deleted on purpose" };
   const calls: string[][] = [];
   const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [], heads: [], checked_at: "now", stopped: [archived, deleted] } satisfies InterruptedReport; });
@@ -77,5 +77,7 @@ test("the job sweep logs once each cut job its chat's owner archive holds, and s
   await pass();
   await pass();
   assert.deepEqual(calls, [["--dry-run", "--direct"], ["--dry-run", "--direct"]], "no send pass");
-  assert.deepEqual(lines, [`job legacy socket ownership: not resumed, its chat was archived by the owner; its cut turn waits for his unarchive (stopped at 2026-10-19T18:10:40.189Z, ${JOB})`]);
+  assert.deepEqual(lines, [`job legacy socket ownership: turn stopped: ${CAUSE} at 2026-10-19T18:00:15.359Z. Not resumed: its chat is on the owner's archived list `
+    + `(archived-chats.json), so the sweep does not restart it (${JOB})`]);
+  assert.ok(!lines[0]!.includes("archived by the owner"), "the job is never said to be stopped by the owner");
 });

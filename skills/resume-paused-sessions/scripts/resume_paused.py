@@ -689,8 +689,7 @@ def stop_record(path):
     deleted = deleted_on_purpose(path)
     if deleted:
         return deleted
-    if owner_archived(path):
-        return "archived by the owner"
+    return owner_archived(path)
     return None
 
 
@@ -713,13 +712,21 @@ def deleted_on_purpose(path):
 
 
 def owner_archived(path):
-    """The session at `path`, or the chat whose session-artifacts tree holds it, is one the owner archived (archived-chats.json, written by
-    the chat service's archive). That record wins over the archive line's timing: the owner archived the run-3 test chat python refs per
-    folder at 06:52:53Z on 10-18, and an archive line inside a restart window reads as the restart's."""
+    """Why the owner's archive stops the session at `path`: OWNER_ARCHIVED when he archived the session itself, CHAT_ARCHIVED when he archived
+    the chat whose session-artifacts tree holds it (archived-chats.json, written by the chat service's archive), else None. That record wins
+    over the archive line's timing: the owner archived the run-3 test chat python refs per folder at 06:52:53Z on 10-18, and an archive line
+    inside a restart window reads as the restart's. A job of an archived chat may have started after the archive, so its words never say the
+    owner stopped the job: on 10-19 chat-057a, archived at 05:31:25Z, kept spawning jobs through agent messages."""
     record = read_record(ARCHIVED_CHATS, lambda data: isinstance(data, dict) and isinstance(data.get("ids"), list)
                          and all(isinstance(sid, str) for sid in data["ids"]))
     archived = set(record["ids"]) if record else set()
-    return Path(path).stem in archived or artifacts_root(path) in archived
+    if Path(path).stem in archived:
+        return OWNER_ARCHIVED
+    return CHAT_ARCHIVED if artifacts_root(path) in archived else None
+
+
+OWNER_ARCHIVED = "archived by the owner"
+CHAT_ARCHIVED = "its chat is on the owner's archived list (archived-chats.json), so the sweep does not restart it"
 
 
 def artifacts_root(path):
@@ -1549,10 +1556,14 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         finally:
             pool.shutdown(wait=not STOP, cancel_futures=True)
 
-    def stopped(s, sid, why, at=None):
+    def stopped(s, sid, why, at=None, cut=None, last=None):
+        """`cut` is the verdict on the run's last turn and `last` that message: the report keeps why the turn stopped apart from why the sweep
+        leaves it."""
         head = head_of(sid, by_id)
         STOPPED.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)", "head": head,
-                        "head_session_id": head_session(head, s), "stopped_at": at, "stopped_by": why, **({"host": BOX.name} if BOX.remote else {})})
+                        "head_session_id": head_session(head, s), "stopped_at": at, "stopped_by": why,
+                        **({"cut": cut[0], "cut_error": cut[1][:400], "cut_at": (last or {}).get("timestamp")} if cut else {}),
+                        **({"host": BOX.name} if BOX.remote else {})})
 
     if check_hook and only:
         prefetch_hooks(hook_pairs(sessions, only, by_id, entries_of), hooks)
@@ -1627,7 +1638,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                     INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
                     continue
                 if kind == "stopped":
-                    stopped(s, sid, why, stopper.get("timestamp"))
+                    stopped(s, sid, why, stopper.get("timestamp"), verdict, last)
                     continue
                 if kind == "unresolved":
                     UNRESOLVED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
@@ -1643,7 +1654,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             continue
         if recorded:
-            stopped(s, sid, recorded)
+            stopped(s, sid, recorded, cut=verdict, last=last)
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None

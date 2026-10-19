@@ -95,5 +95,9 @@ export interface RecordedStop {
   head_session_id: string;
   stopped_at?: string | null;
   stopped_by: string;
+  /** How the run's last turn ended (an InterruptedRun reason), its error text and that message's time: why the turn stopped, apart from `stopped_by`. */
+  cut?: string;
+  cut_error?: string;
+  cut_at?: string | null;
   host?: string;
 }

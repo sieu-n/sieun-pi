@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
-import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf, PoolHeldRun } from "./shared/interrupted.ts";
+import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf, PoolHeldRun, RecordedStop } from "./shared/interrupted.ts";
+import { turnErrorCause } from "./turn-error.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
@@ -198,7 +199,7 @@ export class InterruptedRuns {
       const unresolved = (planned.unresolved ?? []).filter(isJob);
       const stopped = (planned.stopped ?? []).filter(isJob);
       const pooled = (planned.held ?? []).filter(isJob);
-      const archived = (planned.stopped ?? []).filter(run => !isJob(run) && run.stopped_by === OWNER_ARCHIVE);
+      const archived = (planned.stopped ?? []).filter(run => !isJob(run) && run.stopped_by === CHAT_ARCHIVED);
       const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}), ...(pooled.length ? { held: pooled } : {}),
         ...(archived.length ? { archived } : {}) };
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
@@ -260,8 +261,8 @@ export async function cutJobs(dataDir: string, chats: readonly string[], artifac
   return new Set((await findCutJobs(artifacts, chats, deleted, Date.now())).map(job => job.session));
 }
 
-/** resume_paused.py owner_archived(): the run or the chat whose tree holds it is in archived-chats.json. */
-export const OWNER_ARCHIVE = "archived by the owner";
+/** resume_paused.py CHAT_ARCHIVED: the chat whose tree holds the run is in archived-chats.json. The job itself may have started after that archive. */
+export const CHAT_ARCHIVED = "its chat is on the owner's archived list (archived-chats.json), so the sweep does not restart it";
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
@@ -325,9 +326,16 @@ export class PoolHeldJobs {
 /**
  * The owner-archived cuts already logged, by session and stop time. A chat the owner archived is no chat of the service, so the sweep's isJob
  * dropped its jobs' verdicts with no line: on 10-19 five jobs of chat-057a (archived 05:31:25Z) got 429s from 18:00Z to 18:40Z and every pass
- * to 20:07Z read them "archived by the owner" in silence. Each such cut is logged once per service start.
+ * to 20:07Z left them for that archive in silence. Each such cut is logged once per service start, with the turn's own cause first.
  */
 const archivedTold = new Set<string>();
+
+/** Why the run's turn stopped, from the script's `cut` fields: a provider error by its cause (`turnErrorCause`) and time. */
+function cutWords(entry: RecordedStop): string {
+  const when = entry.cut_at ? ` at ${entry.cut_at}` : "";
+  if (entry.cut === "error") return `${turnErrorCause(entry.cut_error)}${when}`;
+  return entry.cut ? `${entry.cut}${when}` : "how is not recorded";
+}
 
 /**
  * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`), and so
@@ -357,10 +365,10 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
       log(`job ${entry.name}: not resumed, stopped on purpose: ${entry.stopped_by} (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
     for (const entry of report?.archived ?? []) {
-      const key = `${entry.session_id}|${entry.stopped_at ?? ""}`;
+      const key = `${entry.session_id}|${entry.cut_at ?? entry.stopped_at ?? ""}`;
       if (archivedTold.has(key)) continue;
       archivedTold.add(key);
-      log(`job ${entry.name}: not resumed, its chat was archived by the owner; its cut turn waits for his unarchive (stopped at ${entry.stopped_at ?? "?"}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
+      log(`job ${entry.name}: turn stopped: ${cutWords(entry)}. Not resumed: ${CHAT_ARCHIVED} (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
     for (const entry of report?.held ?? []) {
       log(`job ${entry.name}: held by pi-pool until ${entry.pool_at ?? "a time it does not say"}: ${entry.held_by} (cut at ${entry.errored_at ?? "?"}, tree ${entry.tree.slice(0, 8)}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);

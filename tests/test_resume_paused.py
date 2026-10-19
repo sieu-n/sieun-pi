@@ -924,7 +924,8 @@ class ResumePausedTests(unittest.TestCase):
     def test_a_job_of_a_chat_the_owner_archived_stays_stopped_after_its_429_even_when_pi_pool_admits_its_tree(self):
         # legacy socket ownership (01a15525), a job of chat-057a (01a14210) on 10-19. The owner archived chat-057a at 05:31:25Z; agent messages
         # kept its session working. The job's wake at 18:00:13Z met a 429 on claude18 at the model start, and the idle unload stopped it as a
-        # pool wait at 18:10:40Z. Every sweep from 18:47Z to 20:07Z read it as archived by the owner, and the chat service logged nothing.
+        # pool wait at 18:10:40Z. Every sweep from 18:47Z to 20:07Z left it for the chat's archive, and the chat service logged nothing. The report
+        # keeps the 429 that stopped the turn apart from the archive that keeps the sweep off it, and never says the owner stopped the job.
         chat, job = "01a14210-4e7d-72c3-aa67-e3d476f4e728", "01a15525-4943-735c-bbd4-a7f524a205fd"
         limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
                    "[request_id: req_011CgC2pPcMAK6SSx8jUK5Lb] pi-pool: claude18@slack.green is limited until 2026-10-19T21:10:00.000Z; "
@@ -957,8 +958,8 @@ class ResumePausedTests(unittest.TestCase):
                 patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
             report = resume_paused.resume(rows, args, now)
         self.assertEqual((report["paused"], self.sent, resume_paused.HELD), ([], [], []))
-        self.assertEqual([(entry["session_id"], entry["stopped_by"], entry["stopped_at"]) for entry in resume_paused.STOPPED],
-                         [(job, "archived by the owner", "2026-10-19T18:10:40.189Z")])
+        self.assertEqual([(entry["session_id"], entry["stopped_by"], entry["cut"], entry["cut_error"], entry["cut_at"]) for entry in resume_paused.STOPPED],
+                         [(job, resume_paused.CHAT_ARCHIVED, "error", limited, "2026-10-19T18:00:15.359Z")])
 
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
@@ -1388,7 +1389,7 @@ class ResumePausedTests(unittest.TestCase):
                  "sessionName": Path(job).parent.name, "runtimeKind": "subagent", "lastActivityAt": "2026-10-18T04:21:36.659Z"} for job in (self.MAC_JOB, second_job)]
         unloaded = {row["sessionId"]: resume_paused.parse_ts("2026-10-18T04:21:40Z") for row in rows}
         stops = (("deleted", lambda files: files.__setitem__(record, b'{"status": "deleted"}'), "its parent deleted it (rlm-subagent.json status deleted)"),
-                 ("archived", lambda files: (self.root / "archived-chats.json").write_text(json.dumps({"ids": [chat]})), "archived by the owner"))
+                 ("archived", lambda files: (self.root / "archived-chats.json").write_text(json.dumps({"ids": [chat]})), resume_paused.CHAT_ARCHIVED))
         for name, stop, why in stops:
             with self.subTest(name):
                 (self.root / "state.json").unlink(missing_ok=True)
@@ -1483,7 +1484,7 @@ class ResumePausedTests(unittest.TestCase):
                 self.assertEqual(sent, [first[-12:]])
                 self.assertEqual(list(state), [first])
                 results = {child["id"]: child["result"] for child in report["children"]}
-                self.assertRegex(results[second[-12:]], r"^skipped: (deleted on purpose|archived by the owner) after the pass found it$")
+                self.assertRegex(results[second[-12:]], r"^skipped: (deleted on purpose|archived by the owner|its chat is on the owner's archived list \(archived-chats\.json\), so the sweep does not restart it) after the pass found it$")
                 self.assertEqual(resume_paused.INCOMPLETE, [])
 
     def test_a_run_deleted_after_its_send_failed_is_never_relayed(self):
