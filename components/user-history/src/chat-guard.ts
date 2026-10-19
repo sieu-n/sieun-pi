@@ -77,7 +77,8 @@ export function withMessageIds<M extends ContextMessage>(messages: readonly M[])
  * The line after each wake-up in a chat's model view (an agent message, a child's exit, a server note other than a turn restart), so every wake
  * path says the default at the point the chat reads it (c117). It depends only on its own message, so the cached prefix holds.
  */
-export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question]";
+export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question, " +
+  "and then set why and about. News he already got, a fix of your own earlier message, and progress on work still going are none of those]";
 /**
  * The server's restart of a failed turn. It belongs to the turn that failed: after an aborted owner turn the note carries no OWNER_RETRY_MARK,
  * and the answer it brings is still his (10-19 measurement: 2 of 4 labelled restart messages were needed answers).
@@ -108,8 +109,9 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "restart), the default is no call: update the board and end the turn. Call it there only for a goal he asked for that finished, with " +
   "its result (why done), a decision only he can make (decision), a blocker only he can clear (blocker), or the answer to a question he " +
   "asked (answer), and name that goal, decision, blocker or question in about. A finished goal he asked for, or a plan change he would " +
-  "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. Any other call there, and one with no " +
-  "why, is kept as a note (c117). Write one " +
+  "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. News he already got, a fix of your own " +
+  "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. Any other call there, " +
+  "and one with no why, is kept as a note (c117). Write one " +
   "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
   "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and " +
   "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
@@ -163,9 +165,9 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
   if (turn.owner || answers || declared) return { kind: "sent", text: TELL_OWNER_DONE };
-  const missing = named(input.why) ? "" : " This call named no why, and that is the only reason it was held. If it reports a goal he " +
-    "asked for that finished, call tell_owner again now with why done and about naming that goal, the same for a decision, blocker or answer.";
-  return { kind: "held", text: `${TELL_OWNER_HELD}.${missing} The owner did not start this turn, so a message reaches him only with why set to done, ` +
+if (!named(input.why)) return { kind: "refused", text: "why is required on a turn the owner did not start. Call tell_owner again " +
+    "with why (done, decision, blocker, answer or update) and about, or update the board and end the turn if it is only an update." };
+  return { kind: "held", text: `${TELL_OWNER_HELD}. The owner did not start this turn, so a message reaches him only with why set to done, ` +
     "decision, blocker or answer and about naming that goal, decision, blocker or question. A finished goal he asked for, or a plan change " +
     "he would act on (a land order, a move), is done or decision, never update. If it is one of those, call tell_owner again with both; if " +
     "not, update the board and end the turn." };

@@ -24,14 +24,14 @@ test("on a job report the owner did not start, a relay is held as a note and a n
   assert.equal(relay.kind, "held");
   assert.ok(relay.text.startsWith(TELL_OWNER_HELD));
   const bare = tellOwner({ text: "The job took the gate fix." }, turn);
-  assert.equal(bare.kind, "held");
-  assert.match(bare.text, /named no why/, "on 10-19 ops guy's finished Grafana cleanup went with no why, and the plain held answer did not get a second call");
-  assert.doesNotMatch(relay.text, /named no why/);
+  assert.equal(bare.kind, "refused", "on 10-19 ops guy's finished Grafana cleanup went with no why, and a held answer never got a second call");
+  assert.match(bare.text, /why is required/);
+  assert.equal(tellOwner({ text: "Here is the answer." }, { ...turn, owner: true }).kind, "sent", "an owner turn needs no why");
   assert.equal(tellOwner({ text: "The gate fix is live.", why: "done" }, turn).kind, "held", "a case with no about stays a note");
   assert.deepEqual(tellOwner({ text: "The gate fix is live, the 12:16 stall case passes.", why: "done", about: "autovacuum stall fix" }, turn),
     { kind: "sent", text: TELL_OWNER_DONE });
   assert.equal(tellOwner({ text: "The gate fix is live.", reply_to: ownerMessageId(asked.timestamp) }, turn).kind, "sent", "a reply_to his message is an answer");
-  assert.equal(tellOwner({ text: "The gate fix is live.", reply_to: "zzz" }, turn).kind, "held");
+  assert.equal(tellOwner({ text: "The gate fix is live.", reply_to: "zzz", why: "update", about: "gate fix" }, turn).kind, "held");
   assert.equal(tellOwner({ text: " ", why: "done", about: "x" }, turn).kind, "refused");
 });
 
