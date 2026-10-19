@@ -313,12 +313,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => alertPoll.alerts(),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
-    startJob: async (chatId, line, previous) => {
+    startJob: async (chatId, lines, previous) => {
       const chat = await dutyJobs.chat(chatId);
       if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
       const at = Date.now();
-      const name = dutyJobName(`alert ${line.rule.slice(0, 40)}`, chat.name, at);
-      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, line, previous), false, at);
+      const name = dutyJobName("alert triage", chat.name, at);
+      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), false, at);
     },
     jobWorking: job => dutyJobs.working(job),
     jobTurn: async (job, since) => {

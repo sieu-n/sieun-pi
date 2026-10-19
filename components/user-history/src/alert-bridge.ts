@@ -34,15 +34,20 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?acti
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
 /** One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). */
 export interface Instance { startsAt: string; labels: Record<string, string>; resolvedAt?: number }
-/** A triage job the bridge started for a rule: its session id and name. */
+/** A triage job the bridge started for a chat: its session id and name. */
 export interface AlertJob { id: string; name: string }
+/** The triage job a rule's fire went to, and when the bridge gave it (started the job with it, or sent it by message). */
+export interface RuleJob extends AlertJob { at: number }
 /**
- * The triage job of a rule, and when the bridge last gave the rule to it (started it, or sent it a fire). The job holds the rule's fire only
- * once a model turn of it ended after `at` (`held`): on 10-19 job 01a15416 for metal-prod-crawler-netns-ports started at 12:15:14Z, failed
- * its first call on a pi-pool slot wait and had no turn at 14:46Z, and the bridge counted it as holding the fire, so nothing escalated.
+ * A triage job the bridge started for one owner chat, which carries every fire of that chat while it lives. On 10-19 one job per rule had
+ * made 78 fires into 78 jobs across 4 chats, most of them waiting in pi-pool's queue with no turn. The job holds a fire only once a model turn
+ * of it ended after it took the fire (`held`): job 01a15416 for metal-prod-crawler-netns-ports started at 12:15:14Z, failed its first call on a
+ * pi-pool slot wait and had no turn at 14:46Z, and the bridge counted it as holding the fire, so nothing escalated.
  */
-export interface RuleJob extends AlertJob { at: number;
-  /** When the bridge saw the job's latest model turn end, after `at` when it holds the fire. Absent: the job never had a turn. */
+export interface TriageJob extends AlertJob { chat: string;
+  /** When the bridge started it. */
+  at: number;
+  /** When the bridge saw the job's latest model turn end. Absent: the job never had a turn. */
   ranAt?: number;
   /** The pool slot time of the job's failed first call for which the bridge last asked the resume pass to continue it (`AlertBridgeDeps.retryJob`). */
   retriedAt?: number }
@@ -61,14 +66,15 @@ export interface Tracked { chat: string; rule: string; alertname: string; starts
   /** When the bridge last told the rule's owner, a session with no board, that it fires (`dueTells`). */
   toldAt?: number;
   job?: RuleJob }
-export interface BridgeState { v: 3; rules: Record<string, Tracked> }
+/** The rules, the triage jobs any rule names (by session id), and each owner chat's current triage job. */
+export interface BridgeState { v: 4; rules: Record<string, Tracked>; jobs: Record<string, TriageJob>; chats: Record<string, string> }
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
 /** One firing rule as its triage job reads it. */
 export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; summary: string; url: string; values?: string }
 
-export const emptyState = (): BridgeState => ({ v: 3, rules: {} });
+export const emptyState = (): BridgeState => ({ v: 4, rules: {}, jobs: {}, chats: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
 export const ruleOf = (alert: FiringAlert): string => alert.labels.__alert_rule_uid__ ?? alert.alertname;
 export const ruleKey = (chat: string, rule: string): string => `${chat}/${rule}`;
@@ -141,16 +147,27 @@ export function parseAlerts(value: unknown): FiringAlert[] {
 
 /**
  * The saved state. A version 2 state (10-15 to 10-18) also held each rule's board step, which goes; a rule that a job held through its step
- * carries that job as `job` (scripts/alert-bridge-unstep.ts wrote it before the release).
+ * carries that job as `job` (scripts/alert-bridge-unstep.ts wrote it before the release). A version 3 state (to 10-19) kept one job per rule
+ * with its turn marks on the rule: each job becomes a TriageJob, and each chat's current job is the one that took a firing rule last.
  */
 export function parseState(value: unknown): BridgeState {
-  if (!isRecord(value) || (value.v !== 2 && value.v !== 3) || !isRecord(value.rules)) throw new Error("Alert bridge state file is malformed.");
-  if (value.v === 3) return value as unknown as BridgeState;
-  const rules = value.rules as Record<string, Tracked & { step?: unknown; closedAt?: unknown }>;
-  return { v: 3, rules: Object.fromEntries(Object.entries(rules).map(([key, old]) => {
-    const { step: _step, closedAt: _closed, ...rule } = old;
-    return [key, rule];
-  })) };
+  if (!isRecord(value) || (value.v !== 2 && value.v !== 3 && value.v !== 4) || !isRecord(value.rules)) throw new Error("Alert bridge state file is malformed.");
+  if (value.v === 4) return { ...value as unknown as BridgeState, jobs: isRecord(value.jobs) ? value.jobs as Record<string, TriageJob> : {}, chats: isRecord(value.chats) ? value.chats as Record<string, string> : {} };
+  type Old = Tracked & { step?: unknown; closedAt?: unknown; job?: RuleJob & { ranAt?: number; retriedAt?: number } };
+  const jobs: Record<string, TriageJob> = {};
+  const chats: Record<string, string> = {};
+  const latest: Record<string, number> = {};
+  const rules = Object.fromEntries(Object.entries(value.rules as Record<string, Old>).map(([key, old]) => {
+    const { step: _step, closedAt: _closed, job, ...rule } = old;
+    if (!job) return [key, rule];
+    const was = jobs[job.id];
+    jobs[job.id] = { id: job.id, name: job.name, chat: rule.chat, at: Math.min(was?.at ?? job.at, job.at),
+      ...job.ranAt !== undefined || was?.ranAt !== undefined ? { ranAt: Math.max(job.ranAt ?? 0, was?.ranAt ?? 0) } : {},
+      ...job.retriedAt !== undefined || was?.retriedAt !== undefined ? { retriedAt: Math.max(job.retriedAt ?? 0, was?.retriedAt ?? 0) } : {} };
+    if (rule.resolvedAt === undefined && job.at > (latest[rule.chat] ?? -1)) { latest[rule.chat] = job.at; chats[rule.chat] = job.id; }
+    return [key, { ...rule, job: { id: job.id, name: job.name, at: job.at } }];
+  }));
+  return { v: 4, rules, jobs, chats };
 }
 
 const isResolved = (rule: Tracked): boolean => rule.resolvedAt !== undefined;
@@ -159,14 +176,28 @@ const firingSets = (rule: Tracked): number => Object.values(rule.instances).filt
 /** The rules of `chat` that fire now: the count its duty reads. */
 export const firingRules = (state: BridgeState, chat: string): Tracked[] => Object.values(state.rules).filter(rule => rule.chat === chat && !isResolved(rule));
 
-/** Whether the rule's last fire still waits for a job: it has none, or the bridge gave it to its job before that fire. */
-export const owed = (rule: Tracked): boolean => !isResolved(rule) && (rule.job === undefined || rule.job.at < rule.wokeAt);
+/**
+ * Whether the rule's last fire still waits for a job: it has none, the bridge gave it to its job before that fire, or its job is not its
+ * chat's triage job and never had a turn, so the chat's job takes it over.
+ */
+export const owed = (state: BridgeState, rule: Tracked): boolean => !isResolved(rule) && (rule.job === undefined || rule.job.at < rule.wokeAt ||
+  (state.chats[rule.chat] !== rule.job.id && state.jobs[rule.job.id]?.ranAt === undefined));
 
 /** Whether the rule's job took its last fire and had a model turn end since, so someone works the fire. */
-export const held = (rule: Tracked): boolean => rule.job !== undefined && rule.job.at >= rule.wokeAt && rule.job.ranAt !== undefined && rule.job.ranAt >= rule.job.at;
+export const held = (state: BridgeState, rule: Tracked): boolean => {
+  const ran = rule.job && state.jobs[rule.job.id]?.ranAt;
+  return rule.job !== undefined && rule.job.at >= rule.wokeAt && ran !== undefined && ran >= rule.job.at;
+};
 
-/** Whether the rule's job took its last fire within REOPEN_MS and has had no model turn since: the bridge watches it for its first turn. */
-const waiting = (rule: Tracked, now: number): boolean => rule.job !== undefined && rule.job.at >= rule.wokeAt && !held(rule) && now - rule.wokeAt < REOPEN_MS;
+/** Whether the rule's job took its last fire within REOPEN_MS and has had no model turn since: the bridge watches it for its next turn. */
+const waiting = (state: BridgeState, rule: Tracked, now: number): boolean =>
+  rule.job !== undefined && rule.job.at >= rule.wokeAt && !held(state, rule) && now - rule.wokeAt < REOPEN_MS;
+
+/** The state with only the triage jobs some rule or chat still names. */
+function pruned(state: BridgeState): BridgeState {
+  const named = new Set([...Object.values(state.rules).flatMap(rule => rule.job ? [rule.job.id] : []), ...Object.values(state.chats)]);
+  return { ...state, jobs: Object.fromEntries(Object.entries(state.jobs).filter(([id]) => named.has(id))) };
+}
 
 /**
  * The state after this tick's firing list, and the rules that fired: new, or back after they resolved. Each alert rule firing in an owning
@@ -232,7 +263,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     if (Object.values(rule.instances).every(instance => instance.resolvedAt !== undefined)) rule.resolvedAt = now;
   }
   for (const key of fired) if (rules[key] && !isResolved(rules[key]!)) rules[key]!.wokeAt = now;
-  return { state: { v: 3, rules }, fired: new Set([...fired].filter(key => rules[key] && !isResolved(rules[key]!))) };
+  return { state: { ...state, rules }, fired: new Set([...fired].filter(key => rules[key] && !isResolved(rules[key]!))) };
 }
 
 /**
@@ -257,7 +288,7 @@ export const tellText = (rules: readonly Tracked[]): string =>
  * 10-16 prod backup alerts fired for over 3 days while nobody worked them.
  */
 export const dueReopens = (state: BridgeState, now: number): string[] =>
-  Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && rule.job && !owed(rule) && now - rule.job.at >= REOPEN_MS ? [key] : []);
+  Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && rule.job && !owed(state, rule) && now - rule.job.at >= REOPEN_MS ? [key] : []);
 
 /**
  * The rules of chats with a board whose fire no job holds (`held`) ESCALATE_MS after it, once per fire: no job took it, or the job that took it
@@ -266,7 +297,7 @@ export const dueReopens = (state: BridgeState, now: number): string[] =>
  * escalation goes to ops guy.
  */
 export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>, now: number): string[] {
-  return Object.entries(state.rules).flatMap(([key, rule]) => (owed(rule) || waiting(rule, now)) && boarded.has(rule.chat) && rule.chat !== OPS_ROUTE.session &&
+  return Object.entries(state.rules).flatMap(([key, rule]) => (owed(state, rule) || waiting(state, rule, now)) && boarded.has(rule.chat) && rule.chat !== OPS_ROUTE.session &&
     now - rule.wokeAt >= ESCALATE_MS && !(rule.escalatedAt !== undefined && rule.escalatedAt >= rule.wokeAt) ? [key] : []);
 }
 
@@ -284,24 +315,32 @@ export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert
 export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets">): string =>
   `${line.rule} (${ruleIn(line.rule, line.alertname)}firing since ${minute(line.startsAt)}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
 
-/** The message that gives a working triage job the next fire of its rule. */
-export const firedAgainText = (line: AlertLine): string =>
-  `[alert] Your rule ${ruleText(line)} fired again at ${minute(line.firedAt)}.${line.summary ? ` Summary: ${line.summary}` : ""} It is the same rule you work on, so ` +
-  "take it into the same cause, and say in your report whether the fix you have covers it.";
+/** The message that gives a chat's triage job the fires of its chat that came after its brief. */
+export function firedAgainText(lines: readonly AlertLine[]): string {
+  const one = (line: AlertLine): string => `${ruleText(line)} fired at ${minute(line.firedAt)}${line.summary ? `. Summary: ${line.summary.replace(/\.+$/, "")}` : ""}`;
+  return `[alert] ${lines.length === 1 ? `A rule of your chat, ${one(lines[0]!)}.` : `${lines.length} rules of your chat fired: ${lines.map(one).join("; ")}.`} ` +
+    "You are this chat's triage job, so take each into your work: say whether it shares a cause with a fire you already have, and in your " +
+    "report say for each rule whether your fix covers it.";
+}
 
 /** The words Prime puts before the token hook's own answer, which say nothing the hook's words do not. */
 const TOKEN_HOOK_PREFIX = /^Failed to resolve API key for provider "[^"]+" from shell command: \S+ /;
 
-/** One rule to escalate: `job` names the job that took its fire and has had no model turn, and `error` its last failed call. */
+/** One rule to escalate: `job` names the job that took its fire and has had no model turn, and `error` that job's last failed call. */
 export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string };
 
+/** The escalation to ops guy, with the rules grouped by chat and by the job that has them. */
 export function escalationText(lines: readonly EscalationLine[]): string {
   const failed = (error: string): string => error.replace(TOKEN_HOOK_PREFIX, "").slice(0, 200);
-  const why = (line: EscalationLine): string => line.job ? `, whose job ${line.job} has had no model turn` : ", for which the alert bridge could not start a job";
-  const error = lines.find(line => line.job && line.error)?.error;
+  const groups = new Map<string, EscalationLine[]>();
+  for (const line of lines) groups.set(`${line.chat}\u0000${line.job ?? ""}`, [...groups.get(`${line.chat}\u0000${line.job ?? ""}`) ?? [], line]);
+  const parts = [...groups.values()].map(group => {
+    const { chat, job, error } = group.find(line => line.error) ?? group[0]!;
+    const why = job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}` : "the alert bridge could not start its triage job";
+    return `on ${chat}, ${why}: ${group.map(line => ruleText(line)).join(", ")}`;
+  });
   return `[alert-escalation] ${lines.length === 1 ? "A rule has" : `${lines.length} rules have`} nobody working ${lines.length === 1 ? "its" : "their"} fire ` +
-    `${ESCALATE_MS / 60_000} min after it: ${lines.map(line => `${ruleText(line)} on ${line.chat}${why(line)}`).join("; ")}.` +
-    `${error ? ` ${lines.length === 1 ? "Its" : "The first such job's"} last call failed: ${failed(error)}.` : ""} ` +
+    `${ESCALATE_MS / 60_000} min after it. ${parts.map(part => part[0]!.toUpperCase() + part.slice(1)).join(". ")}. ` +
     "Find why the job does not start or gets no turn, and get each fire worked.";
 }
 
@@ -314,8 +353,8 @@ export interface AlertBridgeDeps {
   deliver: (session: string, text: string, root?: string) => Promise<void>;
   owners?: () => Promise<OwnerMap | null>;
   hasBoard?: (session: string) => Promise<boolean>;
-  /** Starts a triage job of `chat` for one firing rule; `previous` is the rule's last job, which has ended. Absent, fires escalate to ops guy. */
-  startJob?: (chat: string, line: AlertLine, previous?: RuleJob) => Promise<AlertJob>;
+  /** Starts the triage job of `chat` for its owed fires; `previous` is the chat's last triage job, which has ended. Absent, fires escalate to ops guy. */
+  startJob?: (chat: string, lines: readonly AlertLine[], previous?: TriageJob) => Promise<AlertJob>;
   /** Whether a job the bridge started still works its turn. */
   jobWorking?: (job: AlertJob) => Promise<boolean>;
   /** Whether a model turn of the job ended after `since` (`readTurnSince`). Absent, every job that took a fire holds it. */
@@ -369,7 +408,7 @@ export class AlertBridge {
       if (advanced.fired.size) this.deps.log(`alerts: fired ${[...advanced.fired].map(key => state.rules[key]!.rule).join(", ")}`);
       const boarded = new Set<string>();
       const boardless = new Set<string>();
-      for (const chat of new Set(Object.values(state.rules).filter(rule => !isResolved(rule) || waiting(rule, now)).map(rule => rule.chat))) {
+      for (const chat of new Set(Object.values(state.rules).filter(rule => !isResolved(rule) || waiting(state, rule, now)).map(rule => rule.chat))) {
         (await this.deps.hasBoard?.(chat) ?? true ? boarded : boardless).add(chat);
       }
       this.firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
@@ -383,76 +422,83 @@ export class AlertBridge {
   }
 
   /**
-   * Gives each owed fire (`owed`) to its rule's triage job: by message while that job still works, to the same job while it has never had a
-   * turn, or else to a new job. A start or message that fails leaves the fire owed, so it goes again next dispatch and escalates at
-   * ESCALATE_MS. The slow calls run outside `update`, so polls go on meanwhile.
+   * Gives each chat's owed fires (`owed`) to the chat's triage job, all in one go: by one message while that job still works or has never had
+   * a turn, or else to one new job that carries them all. A start or message that fails leaves the fires owed, so they go again next dispatch
+   * and escalate at ESCALATE_MS. The slow calls run outside `update`, so polls go on meanwhile.
    */
   async dispatch(): Promise<void> {
     if (!this.deps.startJob) return;
     const snapshot = await this.update(async state => state);
-    for (const key of Object.keys(snapshot.rules).filter(key => owed(snapshot.rules[key]!) && this.boarded.has(snapshot.rules[key]!.chat))) {
-      const rule = snapshot.rules[key]!;
-      const line = alertLine(rule, this.firing);
+    const byChat = new Map<string, string[]>();
+    for (const [key, rule] of Object.entries(snapshot.rules)) {
+      if (owed(snapshot, rule) && this.boarded.has(rule.chat)) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], key]);
+    }
+    for (const [chat, keys] of byChat) {
+      const lines = keys.map(key => alertLine(snapshot.rules[key]!, this.firing));
+      const current = snapshot.chats[chat] === undefined ? undefined : snapshot.jobs[snapshot.chats[chat]!];
       try {
-        const job = await this.give(rule, line);
+        const job = await this.give(chat, current, lines);
+        const at = this.now();
         await this.update(async state => {
-          const now = state.rules[key];
-          if (!now || now.job?.id !== rule.job?.id || (now.job && rule.job && now.job.at !== rule.job.at)) return state;
-          return { ...state, rules: { ...state.rules, [key]: { ...now, job } } };
+          const rules = { ...state.rules };
+          for (const key of keys) {
+            const now = rules[key];
+            const was = snapshot.rules[key]!;
+            if (!now || now.job?.id !== was.job?.id || now.job?.at !== was.job?.at) continue;
+            rules[key] = { ...now, job: { id: job.id, name: job.name, at } };
+          }
+          return pruned({ ...state, rules, jobs: { ...state.jobs, [job.id]: { ...state.jobs[job.id], ...job } }, chats: { ...state.chats, [chat]: job.id } });
         });
-      } catch (error) { this.deps.log(`alerts: job for ${rule.rule} on ${rule.chat.slice(0, 8)}: ${message(error)}; tried again next tick`); }
+      } catch (error) { this.deps.log(`alerts: triage job of ${chat.slice(0, 8)} for ${lines.map(line => line.rule).join(", ")}: ${message(error)}; tried again next tick`); }
     }
   }
 
   /**
-   * The job that takes the rule's fire now. A job that never had a turn keeps the rule: on 10-19 the bridge read such jobs as ended and
+   * The triage job that takes the chat's fires now. A job that never had a turn keeps them: on 10-19 the bridge read such jobs as ended and
    * started another for each fire, until 25 jobs for hyperdx-error-logs sat in pi-pool's queue with no turn.
    */
-  private async give(rule: Tracked, line: AlertLine): Promise<RuleJob> {
-    const now = this.now();
-    const job = rule.job;
-    if (job && await this.deps.jobWorking?.(job)) {
-      await this.deps.deliver(job.id, firedAgainText(line));
-      this.deps.log(`alerts: ${rule.chat.slice(0, 8)}: sent the fire of ${rule.rule} to job ${job.name} (${job.id.slice(0, 8)})`);
-      return { ...job, at: now };
+  private async give(chat: string, current: TriageJob | undefined, lines: readonly AlertLine[]): Promise<TriageJob> {
+    const rules = lines.map(line => line.rule).join(", ");
+    const keep = async (job: TriageJob): Promise<boolean> => {
+      if (await this.deps.jobWorking?.(job)) return true;
+      if (job.ranAt !== undefined || !this.deps.jobTurn || this.now() - job.at >= REOPEN_MS) return false;
+      return !(await this.deps.jobTurn(job, job.at)).ran;
+    };
+    if (current && await keep(current)) {
+      await this.deps.deliver(current.id, firedAgainText(lines));
+      this.deps.log(`alerts: ${chat.slice(0, 8)}: sent ${rules} to triage job ${current.name} (${current.id.slice(0, 8)})`);
+      return current;
     }
-    if (job && job.ranAt === undefined && this.deps.jobTurn) {
-      const turn = await this.deps.jobTurn(job, job.at);
-      if (!turn.ran) {
-        this.deps.log(`alerts: ${rule.chat.slice(0, 8)}: kept job ${job.name} (${job.id.slice(0, 8)}) for the fire of ${rule.rule}, since it has had no turn yet`);
-        return { ...job, at: now };
-      }
-    }
-    const started = await this.deps.startJob!(rule.chat, line, job);
-    this.deps.log(`alerts: ${rule.chat.slice(0, 8)}: started job ${started.name} (${started.id.slice(0, 8)}) for ${rule.rule}`);
-    return { id: started.id, name: started.name, at: now };
+    const started = await this.deps.startJob!(chat, lines, current);
+    this.deps.log(`alerts: ${chat.slice(0, 8)}: started triage job ${started.name} (${started.id.slice(0, 8)}) for ${rules}`);
+    return { id: started.id, name: started.name, chat, at: this.now() };
   }
 
   /**
-   * Reads each job that took a fire and has had no turn since (`waiting`): a turn that ended marks `ranAt`, so the job holds the fire. A job
-   * whose failed call names a pool slot that has passed, and that does not work, gets one retry per slot through the resume pass, which
-   * continues it once pi-pool admits its tree. The errors go with the escalation.
+   * Reads each triage job that has a fire with no turn since (`waiting`): its latest turn marks `ranAt`, so it holds every fire it took before
+   * that. A job whose failed call names a pool slot that has passed, and that does not work, gets one retry per slot through the resume pass,
+   * which continues it once pi-pool admits its tree. The errors, by job id, go with the escalation.
    */
   private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string> }> {
     const errors = new Map<string, string>();
-    const rules = { ...state.rules };
-    for (const [key, rule] of Object.entries(rules)) {
-      if (!waiting(rule, now)) continue;
-      const job = rule.job!;
-      const turn: TurnSince | null = this.deps.jobTurn ? await this.deps.jobTurn(job, job.at).catch(() => null) : { ran: true, at: now };
+    const since = new Map<string, number>();
+    for (const rule of Object.values(state.rules)) {
+      if (waiting(state, rule, now) && state.jobs[rule.job!.id]) since.set(rule.job!.id, Math.min(since.get(rule.job!.id) ?? Infinity, rule.job!.at));
+    }
+    const jobs = { ...state.jobs };
+    for (const [id, from] of since) {
+      const job = jobs[id]!;
+      const turn: TurnSince | null = this.deps.jobTurn ? await this.deps.jobTurn(job, from).catch(() => null) : { ran: true, at: now };
       if (!turn) continue;
-      if (turn.ran) {
-        rules[key] = { ...rule, job: { ...job, ranAt: turn.at } };
-        continue;
-      }
-      if (turn.error) errors.set(key, turn.error);
+      if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
+      if (turn.error) errors.set(id, turn.error);
       if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
       if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
       this.deps.retryJob(job);
-      rules[key] = { ...rule, job: { ...job, retriedAt: turn.slotAt } };
-      this.deps.log(`alerts: job ${job.name} (${job.id.slice(0, 8)}) for ${rule.rule} has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
+      jobs[id] = { ...job, retriedAt: turn.slotAt };
+      this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
     }
-    return { state: { ...state, rules }, errors };
+    return { state: { ...state, jobs }, errors };
   }
 
   /** Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. */
@@ -494,8 +540,9 @@ export class AlertBridge {
     try {
       await this.deps.deliver(OPS_ROUTE.session, escalationText(due.map(key => {
         const rule = state.rules[key]!;
-        const error = errors.get(key);
-        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...rule.job && !owed(rule) ? { job: rule.job.name } : {}, ...error ? { error } : {} };
+        const job = rule.job && !owed(state, rule) ? rule.job : undefined;
+        const error = job && errors.get(job.id);
+        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {} };
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };
@@ -558,6 +605,8 @@ export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert
   if (text === null) return null;
   const config = JSON.parse(text) as unknown;
   if (!isRecord(config) || typeof config.url !== "string" || typeof config.token !== "string") throw new Error(`${configFile} needs a url and a token`);
+  // The alert list answered in 135 to 411 ms over 30 reads at load 367 on 10-19 16:30Z. A read past 20 s is a stall on our side: at 16:10Z
+  // the box was in swap with 11 OOM kills, a 10 s sleep elsewhere on it woke up to 114 s late, and the read aborted with the next poll 30 s on.
   const response = await fetch(new URL(GRAFANA_ALERTS_PATH, config.url), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new GrafanaError(response.status);
   return parseAlerts(await response.json());

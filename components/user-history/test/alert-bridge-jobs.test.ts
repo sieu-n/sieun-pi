@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob } from "../src/alert-bridge.ts";
+import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 import type { TurnSince } from "../src/held-turns.ts";
 
@@ -22,7 +22,7 @@ const backup = raw("34a8c0c62d402cb1", { alertname: "ClickHouse or Redis backup 
 const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "ops guy": OPS }, fallback: "ops guy",
   routes: [{ name: "box backups", match: { __alert_rule_uid__: "^metal-backup-" }, owner: "metal box owner" }] });
 
-const ref = (job: RuleJob | undefined) => job && { id: job.id, name: job.name, at: job.at };
+const ref = (job: RuleJob | TriageJob | undefined) => job && { id: job.id, name: job.name, at: job.at };
 
 async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-jobs-"));
@@ -30,7 +30,7 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
   if (options.state) await writeFile(file, JSON.stringify(options.state));
   let now = NOW;
   let list: unknown[] = [];
-  const started: { chat: string; line: AlertLine; previous?: RuleJob }[] = [];
+  const started: { chat: string; line: AlertLine; lines: readonly AlertLine[]; previous?: TriageJob }[] = [];
   const sent: { session: string; text: string }[] = [];
   const working = new Set<string>();
   const turns = new Map<string, TurnSince>();
@@ -38,12 +38,12 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
   const bridge = new AlertBridge({ file, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => OWNERS,
     hasBoard: async session => session !== METAL,
     deliver: async (session, text) => { sent.push({ session, text }); },
-    startJob: async (chat, line, previous) => {
+    startJob: async (chat, lines, previous) => {
       if (options.failStarts) throw new Error("Timed out after 10000ms waiting for the Prime Agent daemon handshake.");
-      started.push({ chat, line, ...previous ? { previous } : {} });
+      started.push({ chat, line: lines[0]!, lines, ...previous ? { previous } : {} });
       const id = `job-${started.length}`;
       working.add(id);
-      return { id, name: `alert ${line.rule} ${started.length}` };
+      return { id, name: `alert ${lines[0]!.rule} ${started.length}` };
     },
     jobWorking: async job => working.has(job.id),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
@@ -61,7 +61,7 @@ test("a firing alert starts one triage job of its chat, files no step, and count
   assert.equal(f.started[0]!.line.rule, "ci-history-stale");
   assert.equal(f.started[0]!.line.summary, "CI history ingest has not read GitHub for 15 min is firing.");
   const raw = JSON.parse(await readFile(f.file, "utf8")) as { v: number; rules: Record<string, Record<string, unknown>> };
-  assert.equal(raw.v, 3);
+  assert.equal(raw.v, 4);
   assert.ok(Object.values(raw.rules).every(rule => !("step" in rule)), "the state holds no board step");
   assert.deepEqual(ref((await f.state()).rules[ruleKey(CI, "ci-history-stale")]!.job), { id: "job-1", name: "alert ci-history-stale 1", at: NOW });
   assert.equal((await readFiringRules(f.file, CI)).length, 1);
@@ -81,7 +81,7 @@ test("a second fire of the same rule uid goes to its live job by message and sta
   await f.bridge.tick();
   assert.equal(f.started.length, 1, "the live job gets the fire");
   assert.deepEqual(f.sent.map(({ session }) => session), ["job-1"]);
-  assert.match(f.sent[0]!.text, /^\[alert\] Your rule ci-history-stale \(CI history ingest .*, firing since 2026-10-18T16:05Z\) fired again at 2026-10-18T16:07Z\./);
+  assert.match(f.sent[0]!.text, /^\[alert\] A rule of your chat, ci-history-stale \(CI history ingest .*, firing since 2026-10-18T16:05Z\) fired at 2026-10-18T16:07Z\. Summary: .* is firing\. You are this chat's triage job/);
   assert.deepEqual(Object.keys((await f.state()).rules), [ruleKey(CI, "ci-history-stale")]);
   f.at(NOW + 7.5 * 60_000);
   await f.bridge.tick();
@@ -92,7 +92,7 @@ test("a second fire of the same rule uid goes to its live job by message and sta
   f.set([ciAlert("aaaa000000000002", "2026-10-18T16:20:00.000Z")]); f.at(NOW + 8 * 60_000 + REFIRE_MS + 30_000);
   await f.bridge.tick();
   assert.equal(f.started.length, 2);
-  assert.deepEqual(ref(f.started[1]!.previous), { id: "job-1", name: "alert ci-history-stale 1", at: NOW + 7 * 60_000 });
+  assert.deepEqual(ref(f.started[1]!.previous), { id: "job-1", name: "alert ci-history-stale 1", at: NOW });
   assert.equal(f.sent.length, 1);
 });
 
@@ -162,7 +162,7 @@ test("a fire whose job cannot start escalates to ops guy once after 30 min, and 
   await f.bridge.tick();
   const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
   assert.equal(escalations().length, 1);
-  assert.match(escalations()[0]!.text, /ci-history-stale .* on VP of CI/);
+  assert.match(escalations()[0]!.text, /On VP of CI, the alert bridge could not start its triage job: ci-history-stale/);
   f.at(NOW + ESCALATE_MS + 30_000);
   await f.bridge.tick();
   assert.equal(escalations().length, 1);
@@ -215,7 +215,7 @@ test("a job that never had a turn does not hold the fire: the bridge asks for it
   f.at(fired + ESCALATE_MS);
   await f.bridge.tick();
   assert.equal(escalations().length, 1, "the fire nobody worked escalates though the rule resolved");
-  assert.match(escalations()[0]!.text, /metal-prod-crawler-netns-ports .* on Crawler VP, whose job alert metal-prod-crawler-netns-ports 1 has had no model turn\. Its last call failed: pi-pool: this session waits for its slot at 2026-10-19T12:38/);
+  assert.match(escalations()[0]!.text, /On Crawler VP, its triage job alert metal-prod-crawler-netns-ports 1 has had no model turn \(its last call failed: pi-pool: this session waits for its slot at 2026-10-19T12:38.*\): metal-prod-crawler-netns-ports/);
   assert.ok((await f.state()).rules[key]!.escalatedAt === fired + ESCALATE_MS);
   f.at(fired + ESCALATE_MS + 30_000);
   await f.bridge.tick();
@@ -234,11 +234,13 @@ test("a job whose turn ended after it took the fire holds it, so nothing escalat
   f.working.clear();
   f.at(NOW + 5 * 60_000);
   await f.bridge.tick();
-  assert.equal((await f.state()).rules[ruleKey(CI, "ci-history-stale")]!.job!.ranAt, undefined);
+  const s1 = await f.state();
+  assert.equal(s1.jobs[s1.rules[ruleKey(CI, "ci-history-stale")]!.job!.id]!.ranAt, undefined);
   f.turns.set("job-1", { ran: true, at: NOW + 6 * 60_000 });
   f.at(NOW + 7 * 60_000);
   await f.bridge.tick();
-  assert.equal((await f.state()).rules[ruleKey(CI, "ci-history-stale")]!.job!.ranAt, NOW + 6 * 60_000);
+  const s2 = await f.state();
+  assert.equal(s2.jobs[s2.rules[ruleKey(CI, "ci-history-stale")]!.job!.id]!.ranAt, NOW + 6 * 60_000);
   f.at(NOW + ESCALATE_MS);
   await f.bridge.tick();
   assert.equal(f.sent.length, 0);
@@ -264,4 +266,46 @@ test("a fetch failure names its cause code", async () => {
   const { errorText } = await import("../src/alert-bridge.ts");
   const cause = Object.assign(new Error("getaddrinfo ENOTFOUND obs.virev.ai"), { code: "ENOTFOUND" });
   assert.equal(errorText(new TypeError("fetch failed", { cause })), "fetch failed (ENOTFOUND: getaddrinfo ENOTFOUND obs.virev.ai)");
+});
+
+const crawler = (fingerprint: string, rule: string) => raw(fingerprint, { alertname: `${rule} fires`, __alert_rule_uid__: rule, project: "crawler" }, "2026-10-19T15:00:00.000Z");
+
+// Guards 10-19: one job per rule had made 78 fires into 78 jobs across Crawler VP, vent, VP of CI and ops guy.
+test("one triage job per owner chat carries all of its fires, and a later fire of another rule joins it by one message", async () => {
+  const f = await fixture();
+  f.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b"), crawler("cccc000000000003", "crawler-c"), ciAlert()]);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "one job for Crawler VP and one for VP of CI");
+  const crawlerJob = f.started.find(start => start.chat === CRAWLER)!;
+  assert.deepEqual(crawlerJob.lines.map(line => line.rule).sort(), ["crawler-a", "crawler-b", "crawler-c"]);
+  f.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b"), crawler("cccc000000000003", "crawler-c"), crawler("cccc000000000004", "crawler-d"),
+    crawler("cccc000000000005", "crawler-e"), ciAlert()]);
+  f.at(NOW + 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "no new job while the chat's job works");
+  const id = (await f.state()).chats[CRAWLER]!;
+  assert.deepEqual(f.sent.map(({ session }) => session), [id], "one message for both new fires");
+  assert.match(f.sent[0]!.text, /^\[alert\] 2 rules of your chat fired: crawler-d .*; crawler-e /);
+  const state = await f.state();
+  assert.deepEqual(new Set(Object.values(state.rules).filter(rule => rule.chat === CRAWLER).map(rule => rule.job!.id)), new Set([id]));
+});
+
+test("a version 3 state with one never-ran job per rule moves every such rule to the chat's newest job, which gets them in one message", async () => {
+  const f0 = await fixture();
+  f0.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b"), crawler("cccc000000000003", "crawler-c")]);
+  await f0.bridge.tick();
+  const v4 = await f0.state();
+  const rules = Object.fromEntries(Object.entries(v4.rules).map(([key, rule], index) =>
+    [key, { ...rule, job: { id: `old-${index}`, name: `alert ${rule.rule}`, at: NOW + index } }]));
+  const f = await fixture({ state: { v: 3, rules } });
+  for (const index of [0, 1, 2]) f.turns.set(`old-${index}`, { ran: false, error: SLOT_WAIT });
+  f.set([crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b"), crawler("cccc000000000003", "crawler-c")]);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 0);
+  const state = await f.state();
+  assert.equal(state.chats[CRAWLER], "old-2");
+  assert.deepEqual(Object.values(state.rules).map(rule => rule.job!.id), ["old-2", "old-2", "old-2"]);
+  assert.deepEqual(Object.keys(state.jobs), ["old-2"]);
+  assert.deepEqual(f.sent.map(({ session }) => session), ["old-2"]);
+  assert.match(f.sent[0]!.text, /2 rules of your chat fired: crawler-a .*crawler-b /);
 });

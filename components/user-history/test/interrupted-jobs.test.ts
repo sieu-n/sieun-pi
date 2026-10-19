@@ -346,3 +346,16 @@ test("the sweep continues a top-level root that is no chat and no chat's job, as
   assert.deepEqual(aborted, [releaseOwner, metal]);
   assert.deepEqual(calls.at(-1), ["--direct", "--only", `${releaseOwner},${metal}`, "--this-box", "--unstuck", `${releaseOwner},${metal}`]);
 });
+
+// The VP of CI's 10-19 triage jobs (01a153d7, 01a153d9, 01a153da, 01a15421, 01a1543c): the dry run listed each as paused on its slot-wait error,
+// the send pass's token hook held it, and when the dry run held any other job the pass kept only that list, so PoolHeldJobs never ran a pass at its slot.
+test("a job the send pass holds on its pool wait joins the held list, so its pass runs at its slot", async () => {
+  const cut = job("01a153d7-a9ce-7558-0000-000000000000", "error", "chat1");
+  const hold = { id: cut.id, name: "alert triage VP of CI", session_id: cut.session_id!, head: cut.head, head_session_id: "chat1", tree: "chat1", provider: "anthropic",
+    errored_at: at, held_by: "the token hook gave no anthropic token (exit 1)", pool_at: "2026-10-19T11:30:00+00:00" };
+  const other = { ...hold, id: "other", name: "census canary run", session_id: "01a15033-beca-757a-b361-94ef06732721" };
+  const runs = new InterruptedRuns(async args => args.includes("--dry-run") ? { paused: [cut], heads: [], checked_at: "now", held: [other] }
+    : { paused: [], heads: [], children: [], checked_at: "now", held: [hold] });
+  const report = await runs.resumeJobs(() => true, async () => {});
+  assert.deepEqual(report?.held?.map(run => run.session_id).sort(), [other.session_id, cut.session_id].sort());
+});

@@ -1,5 +1,5 @@
 import { replaceableLine } from "./agent-outbox.ts";
-import { type AlertLine, type RuleJob, ruleText } from "./alert-bridge.ts";
+import { type AlertJob, type AlertLine, ruleText } from "./alert-bridge.ts";
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
@@ -146,28 +146,32 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
 export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and a firing prod alert wakes the thread that owns it";
 
 /**
- * The brief of the triage job the alert bridge starts for one firing rule of a chat. The bridge files no plan step for it (owner 10-18: "stop
- * being paranoid in plan under p45, p221"); the chat's duty counts the rules that fire, and this job holds the rule until it stops.
+ * The brief of the triage job the alert bridge starts for an owner chat, with every fire of that chat no job holds. Later fires of the chat
+ * come to this job by message while it lives. The bridge files no plan step for it (owner 10-18: "stop being paranoid in plan under p45,
+ * p221"); the chat's duty counts the rules that fire, and this job holds them until they stop. On 10-19 one job per rule had made 78 fires
+ * into 78 jobs across 4 chats.
  */
-export function alertJobBrief(chat: DutyChat, job: string, at: number, line: AlertLine, previous?: RuleJob): string {
+export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: readonly AlertLine[], previous?: AlertJob & { at: number }): string {
   const agentDir = dirname(dirname(dirname(chat.board)));
+  const rule = (line: AlertLine): string => [`- ${ruleText(line)}`, line.summary ? `  Summary: ${line.summary}` : "", line.values ? `  Values: ${line.values}.` : "",
+    line.url ? `  Grafana: ${line.url}` : ""].filter(Boolean).join("\n");
   return [
-    `# ${job}: a firing alert of the chat "${chat.name}"`,
+    `# ${job}: the firing alerts of the chat "${chat.name}"`,
     `Owner's words (verbatim):\n\n> ${ALERT_OWNER_WORDS}`,
     `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge, and its conversation is ` +
-      `${join(agentDir, "sessions", `${chat.id}.jsonl`)}. The bridge gave you this Grafana rule: ${ruleText(line)}.`,
-    [line.summary ? `Summary: ${line.summary}` : "", line.values ? `Values: ${line.values}.` : "", line.url ? `Grafana: ${line.url}` : ""].filter(Boolean).join("\n"),
-    previous ? `The bridge gave this rule to the job "${previous.name}" (session ${previous.id}) at ${localTime(previous.at)}, and that job has ended while the ` +
-      "rule still fires. Read its conversation first and start from what it found." : "",
-    "Find the cause from evidence: the Grafana rule and its query, the metrics and logs, and read-only reads on the box. Fix it at the root: a fix " +
-      "in our code or alert rules goes through the repo's normal land path, and a rule that fires on something that is not a fault gets fixed or " +
-      "deleted. Follow the chat's rules for any box or repo you touch, and send nothing outside (no email, ticket or vendor chat). Put no step on " +
-      "the chat's plan: the chat's duty counts the rules that fire, and you hold this one. If it fires again while you work, the bridge sends you " +
-      "the fire by message.",
+      `${join(agentDir, "sessions", `${chat.id}.jsonl`)}. You are this chat's one triage job: the bridge gave you ${lines.length === 1 ? "this Grafana rule" : `these ${lines.length} Grafana rules`}, ` +
+      "and every rule of the chat that fires while you work comes to you by message.",
+    lines.map(rule).join("\n"),
+    previous ? `The chat's last triage job was "${previous.name}" (session ${previous.id}), started ${localTime(previous.at)}, and it has ended while ` +
+      "these rules fire. Read its conversation first and start from what it found." : "",
+    "Group the rules by cause first: several rules often fire on one fault. Find each cause from evidence: the Grafana rule and its query, the " +
+      "metrics and logs, and read-only reads on the box. Fix it at the root: a fix in our code or alert rules goes through the repo's normal land " +
+      "path, and a rule that fires on something that is not a fault gets fixed or deleted. Follow the chat's rules for any box or repo you touch, and " +
+      "send nothing outside (no email, ticket or vendor chat). Put no step on the chat's plan: the chat's duty counts the rules that fire, and you hold them.",
     "## How to act",
     [
       `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,
-      `When the rule stops firing for a cause you fixed, or you are blocked, report in 3 short lines that lead with the cause, with \`${reportCall(chat)}\`.`,
+      `When your rules stop firing for causes you fixed, or you are blocked, report in 3 short lines that lead with the causes, with \`${reportCall(chat)}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(Boolean).join("\n\n") + "\n";
 }

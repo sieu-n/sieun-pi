@@ -24,7 +24,11 @@ export function runPoll(input: PollInput, post: (frame: PollFrame) => void, onAl
   let alerting: Alerting | null | undefined;
   onAlerting(value => { alerting = value; });
   let polling = false;
-  const write = async () => {
+  // One status write at a time: during the 16:07Z to 16:15Z stall on 10-19 seven writes queued on the one temp file name and all but the
+  // first failed with ENOENT at 16:15:00Z.
+  let writing: Promise<void> | null = null;
+  const write = (): Promise<void> => writing ??= writeOnce().finally(() => { writing = null; });
+  const writeOnce = async () => {
     if (health.record.configuredAt === null) return;
     if (alerting === undefined) alerting = await readAlerting(input.statusFile, log);
     const now = Date.now();

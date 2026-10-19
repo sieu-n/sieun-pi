@@ -97,6 +97,18 @@ export function runScript(args: readonly string[], file = script, warnAfterMs = 
   });
 }
 
+/**
+ * The dry run's pool-held jobs and those the send passes held, by session. A send pass runs the token hook, which the dry run skips, so a job
+ * cut on a pi-pool slot wait reads as paused in the dry run and as held only in the send pass. When the dry run held any other job, the pass
+ * kept the dry run's list alone, so PoolHeldJobs never ran a pass at such a job's slot: on 10-19 the alert triage jobs of VP of CI (p272 01a14f0e, 01a153d7, 01a153d9,
+ * 01a153da, 01a153e8, 01a15421, 01a1543c) lost their pool place and got no turn.
+ */
+function heldAlso(pooled: readonly PoolHeldRun[], ...passes: readonly InterruptedReport[]): { held?: PoolHeldRun[] } {
+  const all = new Map<string, PoolHeldRun>();
+  for (const run of [...pooled, ...passes.flatMap(pass => pass.held ?? [])]) all.set(run.session_id, run);
+  return all.size ? { held: [...all.values()] } : {};
+}
+
 const withIncomplete = (report: InterruptedReport, ...earlier: readonly InterruptedReport[]): InterruptedReport => {
   const incomplete = [...earlier.flatMap(run => run.incomplete ?? []), ...report.incomplete ?? []];
   return incomplete.length ? { ...report, incomplete } : report;
@@ -217,11 +229,11 @@ export class InterruptedRuns {
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
       const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
-      if (!lost.length) return { ...withIncomplete(sent, planned), ...held };
+      if (!lost.length) return { ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) };
       await reopenAll(lost);
       const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box, ...stuck]);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
-      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again), ...held };
+      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again), ...held, ...heldAlso(pooled, sent, again) };
     });
     this.forget();
     return report;
