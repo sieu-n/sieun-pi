@@ -13,7 +13,7 @@ const PASSIVE = "stay|stays|stayed|staying|sit|sits|sat|sitting|remain|remains|r
 const UNIT = "slots?|workers?|threads?|tasks?|jobs?|connections?|reads?|pages?|accounts?|profiles?|requests?|calls?|(?:a|an|per)\\s+(?:second|minute|hour|day)|" +
   "rps|qps|MB/s|Mbps|concurrency";
 const WAIT = "until|till|pending|for|before";
-const FIX = "lands?|landing|land \\d+|deploys?|promotes?|promote \\d+|release|fix(?:es)?|write cuts?|cutover|merge";
+const FIX = "lands?|landing|land \\d+|deploys?|promotes?|promote \\d+|release|fix(?:es)?|write cuts?|cutover|merges?|merged|reviews?|reviewed";
 const GAP = (count: number, chars = "\\p{L}'-"): string => `(?:\\s+(?!(?:${WAIT})\\b)[${chars}]+){0,${count}}?`;
 const LEVEL = "\\s+(?:at\\s+|to\\s+|on\\s+)?(?:about\\s+|~)?\\d[\\d,.]*\\s*[kKmM%]?";
 const UNTIL = `\\s+(?:${WAIT})\\b(?:\\s+\\S+){0,4}?\\s+(?:${FIX})\\b`;

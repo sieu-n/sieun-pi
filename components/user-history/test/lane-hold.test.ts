@@ -18,6 +18,7 @@ test("a step that holds a lane at a level until a land is flagged, with the sent
     "Census holds 128 slots until land 37 (dead CONNECTs are 44% of its attempts).",
     "10-15 decisions: census stays at 64 slots until land 37 is on prod (80 lost 22% across lanes on land 33's hold rule).",
     "Keep census at 96 until the write cuts land.",
+    "The import holds at 62k rows/min until faster-writer merges.",
   ]) assert.equal(laneHolds(note(text)).length, 1, text);
   const flag = laneHoldFlag(note("Census holds 128 slots until land 37 is on prod."));
   assert.match(flag ?? "", /^Saved, but a plan step holds work at a level until a land or fix "holds 128 slots until land 37 is on prod\." \(c72, c100\)\. Raise it now/);

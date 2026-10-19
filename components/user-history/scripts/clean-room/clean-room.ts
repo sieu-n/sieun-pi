@@ -53,6 +53,7 @@ import { englishJobs } from "./english-jobs.ts";
 import { everydayTask } from "./everyday-task.ts";
 import { historyLeftovers } from "./history-leftovers.ts";
 import { idleUnload } from "./idle-unload.ts";
+import { importSpeed } from "./import-speed.ts";
 import { kernelRevive } from "./kernel-revive.ts";
 import { killWorker, lostBrief } from "./lost-brief.ts";
 import { oldCommitTests } from "./old-commit-tests.ts";
@@ -72,7 +73,7 @@ import { wakeLive } from "./wake-live.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
+const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "plain-words": plainWords, "saved-login": savedLogin };
 
