@@ -50,12 +50,11 @@ export const ORGS = 3;
 /** Fake staging balance per org: the audit's full staging run cost about $0.27 (findings-brief.md), so $1 covers a third of a run several times. */
 const BALANCE_MICROS = 1_000_000;
 /**
- * The runner's soft precheck target is 120 s (PRECHECK_TARGET_MS in src/shared/chat-duties.ts). Page-1 calls stop at 70 s and page-2 and chained
- * calls at 100 s after start, which leaves time for cleanup. A page 2 starts right after its own page 1. A call cut off this way is unprobed, never broken. On 2026-10-12 the slowest
- * staging answers were upstream timeouts at 32 s, and the audit's slowest crawler call took 12.7 s.
+ * A call runs until the env answers, with no cut of this run's own: on 10-19 the 70 s page-1 cut this run had left 11 to 59 prod routes
+ * unprobed, because the calls past the portal's 100 a minute started at the next clock minute. apps/api-portal sets no maxDuration, so
+ * Vercel's function limit (300 s by default with fluid compute) ends a call the portal never answers, as a 504 the run sorts as a portal
+ * cause. The precheck's timeoutMs in portal-parity.duty.json is a soft target, and the runner lets a run go past it (c98).
  */
-const PHASE1_MS = 70_000;
-const PHASE2_MS = 100_000;
 /**
  * Prod has one org, the VIREV_API_KEY_PROD org, and the portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest
  * and currentWindowStart in apps/virev-demo/convex/apiPortal/rateLimits.ts), so prod calls past 100 in a minute wait for the next one.
@@ -154,6 +153,8 @@ const CRAWLER_CAPACITY = "capacity_exhausted";
  */
 const CRAWLER_CLOSED = "temporarily_unavailable";
 const JOB_FINISHED = "job_finished";
+/** The portal's 429 when the org's calls this clock minute reached its limit; it answers with Retry-After (apps/api-portal/src/lib/server/gateway.ts). */
+const RATE_LIMITED = "rate_limit_exceeded";
 
 /** The error code of a portal error body, if any. */
 export function errorCode(body: unknown): string | undefined {
@@ -163,7 +164,7 @@ export function errorCode(body: unknown): string | undefined {
 
 /**
  * Who a probe answer blames. 2xx works. `upstream_*` is the crawler, because the portal passes crawler failures on with that code
- * (audit findings-brief.md). 429 and 402 come from this run's own test orgs, and status 0 is this run's own cutoff, so those are unprobed.
+ * (audit findings-brief.md). 429 and 402 come from this run's own test orgs, and status 0 is a call that got no answer, so those are unprobed.
  * Every other answer is the portal's: a 503 batch_unavailable, a 400 on the docs example or on the portal's own cursor, a 5xx of its own.
  */
 export function classify(status: number, body: unknown): { verdict: Verdict; code?: string | undefined } {
@@ -324,7 +325,9 @@ async function cleanupOrg(convex: string, secret: string, org: Org): Promise<voi
   await post("/api/test/cleanup", { orgId: org.id });
 }
 
-async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, deadline: number, note: string): Promise<ProbeResult & { body: unknown }> {
+type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
+
+async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> {
   const url = new URL(base + request.path);
   for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
   const start = Date.now();
@@ -333,7 +336,6 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
       method: request.method,
       headers: { authorization: `Bearer ${org.key}`, ...extra, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
       body: request.body === undefined ? null : JSON.stringify(request.body),
-      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       redirect: "manual",
     });
     const text = await response.text();
@@ -341,7 +343,9 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
     try { body = JSON.parse(text); } catch { body = null; }
     const { verdict, code } = classify(response.status, body);
     const message = (body as { error?: { message?: string } } | null)?.error?.message;
-    return { op, verdict, status: response.status, ms: Date.now() - start, code, note: message ? `${note}: ${message}` : body === null && text ? `${note}: not JSON: ${text.slice(0, 80)}` : note, body };
+    const retryAfterS = Number(response.headers.get("retry-after"));
+    return { op, verdict, status: response.status, ms: Date.now() - start, code, note: message ? `${note}: ${message}` : body === null && text ? `${note}: not JSON: ${text.slice(0, 80)}` : note, body,
+      ...(Number.isFinite(retryAfterS) && retryAfterS > 0 ? { retryAfterS } : {}) };
   } catch (error) {
     return { op, verdict: "unprobed", status: 0, ms: Date.now() - start, note: `${note}: ${error instanceof Error ? error.message : String(error)}`, body: null };
   }
@@ -361,15 +365,26 @@ interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; heade
  * gives its held result without a call. With `perMinute`, a call waits for the next clock minute once this minute has that many, the way
  * the portal counts its limit. With `spend`, each call's meta.cost goes on its result and into the run's total.
  */
-async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: number): Promise<ProbeResult[]> {
+async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
   const minutes = new Map<number, number>();
-  const call = async (org: Org, op: string, request: ProbeRequest, deadline: number, note: string): Promise<ProbeResult & { body: unknown }> => {
+  const slot = async () => {
     for (let minute = Math.floor(Date.now() / 60_000); target.perMinute && (minutes.get(minute) ?? 0) >= target.perMinute; minute++)
       await new Promise(resolve => setTimeout(resolve, (minute + 1) * 60_000 - Date.now()));
     const minute = Math.floor(Date.now() / 60_000);
     minutes.set(minute, (minutes.get(minute) ?? 0) + 1);
-    const result = await probe(base, target.headers, org, op, request, deadline, note);
+  };
+  // Another caller on the same key, such as a second run of this duty, also fills the portal's minute: on 10-19 at 15:10Z a push run of d2
+  // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
+  const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
+    await slot();
+    let result = await probe(base, target.headers, org, op, request, note);
+    for (let waits = 1; result.status === 429 && result.code === RATE_LIMITED; waits++) {
+      await new Promise(resolve => setTimeout(resolve, (result.retryAfterS ?? 1) * 1000));
+      await slot();
+      const again = await probe(base, target.headers, org, op, request, note);
+      result = { ...again, note: `${again.note}, after ${waits} rate limit wait${waits === 1 ? "" : "s"}` };
+    }
     if (!target.spend) return result;
     const costUsd = money((result.body as { meta?: { cost?: unknown } } | null)?.meta?.cost);
     target.spend.usd += costUsd;
@@ -384,9 +399,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const ops = [...all].filter(([op]) => !isDm(op));
   const later: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
-  // With perMinute, the calls past the first minute's quota start at the next clock minute, which left them 10 to 24 s before the page-1
-  // cut: on 2026-10-18 from us-metal02, 10 prod searches and crawls were cut at 14 s. The calls slowest at the last run go first, and a call
-  // with no time on record counts as slowest.
+  // With perMinute, the calls past the first minute's quota start at the next clock minute. The calls slowest at the last run go first, so
+  // the run ends sooner, and a call with no time on record counts as slowest.
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
   const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB)))];
@@ -404,7 +418,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
       const request = operation && buildRequest(baseOp(op), operation);
       if (!request || "missing" in request) { results.push({ op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null }); continue; }
       const org = orgs[index % orgs.length]!;
-      const result = await call(org, op, jobRequest(request), start + PHASE1_MS, "docs example in job mode");
+      const result = await call(org, op, jobRequest(request), "docs example in job mode");
       const id = chainIds([result.body]).job_id?.value;
       if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancelJob(base, target.headers, org, id);
       else if (id) opened.push({ org, id });
@@ -414,7 +428,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   })();
   // Page 2 starts as soon as its own page 1 answers. Waiting for the slowest page 1 left page 2 as little as 30 s on 10-17, and a
   // staging page 2 that answers in 1.5 s alone took over 30 s under the run's own load.
-  // The chained calls wait for page 1 only: on 2026-10-18 they waited for page-2 calls that ran to the 100 s cut and got 4 to 10 ms.
+  // The chained calls wait for page 1 only, so a slow page 2 does not hold them.
   const pageTwo = new Map<string, ProbeResult & { body: unknown }>();
   const pageTwoRuns: Promise<void>[] = [];
   const phase1Run = Promise.all(first.map(async ([op, operation], index) => {
@@ -423,9 +437,9 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const org = orgs[index % orgs.length]!;
-    const result = await call(org, op, request, start + PHASE1_MS, "docs example");
+    const result = await call(org, op, request, "docs example");
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
-    if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, start + PHASE2_MS, `page 2 with its own ${next.param}`)
+    if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`)
       .then(second => { pageTwo.set(op, second); }));
     return result;
   }));
@@ -439,7 +453,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
     const request = buildRequest(op, operation, ids);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const name = CHAINED.exec(op)![1]!;
-    return call(orgs[sources[chained[name]!.from]!.org]!, op, request, start + PHASE2_MS, "id from this run, same test org");
+    return call(orgs[sources[chained[name]!.from]!.org]!, op, request, "id from this run, same test org");
   }));
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancelJob(base, target.headers, job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
@@ -532,9 +546,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes, start)
+      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms }, routes, start)
+      prod && prodKey && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [{ id: "prod", key: prodKey }], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
