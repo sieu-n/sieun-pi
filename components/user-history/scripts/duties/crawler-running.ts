@@ -13,7 +13,9 @@ import { type DsQuery, MINUTE, PG, PROM, grafanaClient, num, promInstant, readGr
  *   lanes' GeoNode bytes and new connections;
  * - prod Postgres (estate_pg_prod): meta_ads_wire_days, the Ad Library's GeoNode bytes;
  * - Prometheus (estate_prometheus): the prod Kafka consumer lag, dead letter, search sync outbox and Redis stream lag series of the
- *   Instagram pipeline, for queues that grew over 6 h.
+ *   Instagram pipeline, for queues that grew over 6 h;
+ * - the crawler dashboards themselves ("Check the Observability and Metrics"): every panel's queries run through Grafana the way the
+ *   panel runs them, and a panel that answers an error or No data counts, because the owner sees it blank.
  * GeoNode bytes follow auto-sns-agent scripts/duties/crawler/geonode-proxy-use.mjs geonodeBytes: HTTP bytes of each ledger plus 8,678 bytes of
  * CONNECT and TLS per new proxied connection, the size that file measured.
  */
@@ -43,13 +45,99 @@ export const QUEUES: { family: string; expr: string; by: string[] }[] = [
   { family: "redis stream lag", by: ["stream", "group"], expr: "max by (stream, group) (crawler_v3_stream_group_lag)" },
 ];
 
+const GRAFANA = "https://obs.virev.ai";
+/**
+ * The crawler dashboards the owner opens: the "Crawler and data" folder's dashboards tagged for the crawler owner whose variables all hold a
+ * set value. That leaves out the Engage fleet (owner:crawler-engage, the Engage chat's) and the profile and live trace lookups, whose query
+ * variables wait for a key the owner types. On 10-19 at 15:55Z it picked 6 dashboards with 124 queried panels.
+ */
+export const DASHBOARD_FOLDER = "Crawler and data";
+export const DASHBOARD_TAGS: readonly string[] = ["owner:crawler", "owner:crawler-v3"];
+
+export type GrafanaApi = (path: string, body?: unknown) => Promise<unknown>;
+export interface PanelTarget { refId?: string; hide?: boolean; datasource?: { type?: string; uid?: string } | null; [field: string]: unknown }
+export interface DashPanel { id?: number; type?: string; title?: string; datasource?: PanelTarget["datasource"]; targets?: PanelTarget[]; panels?: DashPanel[] }
+export interface Dashboard { uid: string; title: string; time?: { from?: string; to?: string }; panels?: DashPanel[];
+  templating?: { list?: { name: string; type?: string; current?: { value?: unknown } }[] } }
+export interface PanelRead { dashboard: string; title: string; state: "ok" | "no data" | "error"; detail: string }
+
+/** Every non-row panel, with the panels folded inside a collapsed row. */
+export const leafPanels = (panels: readonly DashPanel[] = []): DashPanel[] =>
+  panels.flatMap(panel => panel.type === "row" ? leafPanels(panel.panels) : [panel]);
+
+/** Fills ${name}, ${name:format} and $name with the variable's set value, quoted for the sqlstring, singlequote and doublequote formats. */
+export function interpolate(text: string, vars: ReadonlyMap<string, string>): string {
+  const format = (value: string, as: string | undefined): string =>
+    as === "sqlstring" || as === "singlequote" ? `'${value.replaceAll("'", "''")}'` : as === "doublequote" ? `"${value}"` : value;
+  return text.replace(/\$\{(\w+)(?::(\w+))?\}|\$(\w+)\b/g, (whole, braced: string | undefined, as: string | undefined, bare: string | undefined) => {
+    const value = vars.get(braced ?? bare ?? "");
+    return value === undefined ? whole : format(value, as);
+  });
+}
+
+/** The ds/query body a panel sends: its shown targets, plus the hidden ones when a server-side expression reads them. */
+export function panelQueries(panel: DashPanel, vars: ReadonlyMap<string, string>): { queries: Record<string, unknown>[]; shown: string[] } {
+  const targets = panel.targets ?? [];
+  const expression = targets.some(target => target.datasource?.type === "__expr__");
+  const fill = (value: unknown): unknown => typeof value === "string" ? interpolate(value, vars) : value;
+  const queries = targets.filter(target => expression || !target.hide).map(target => ({
+    ...Object.fromEntries(Object.entries(target).map(([key, value]) => [key, fill(value)])),
+    // measured: 1 minute is the finest step on these dashboards, and a 6 h range at it is 360 points, inside Prometheus's 11,000-point limit.
+    refId: target.refId ?? "A", datasource: target.datasource ?? panel.datasource, intervalMs: MINUTE,
+  }));
+  return { queries, shown: targets.filter(target => !target.hide).map(target => target.refId ?? "A") };
+}
+
+interface QueryAnswer { results?: Record<string, { error?: string; frames?: { data?: { values?: unknown[][] } }[] }>; message?: string }
+/** A panel is ok when one shown query returns a value, an error when one fails, and No data when all return nothing. */
+export function panelState(answer: QueryAnswer | null, shown: readonly string[]): Pick<PanelRead, "state" | "detail"> {
+  let empty = 0;
+  for (const refId of shown) {
+    const result = answer?.results?.[refId];
+    if (!result || result.error) return { state: "error", detail: String(result?.error ?? answer?.message ?? `no answer for ${refId}`) };
+    if (!(result.frames ?? []).some(frame => (frame.data?.values ?? []).some((column, index, columns) =>
+      (index > 0 || columns.length === 1) && column.some(cell => cell !== null && cell !== undefined)))) empty++;
+  }
+  return empty === shown.length ? { state: "no data", detail: "" } : { state: "ok", detail: "" };
+}
+
+/** Runs every panel of the owner's crawler dashboards the way Grafana draws it, over the dashboard's own time range. */
+export async function readPanels(api: GrafanaApi): Promise<PanelRead[]> {
+  const found = await api("/api/search?type=dash-db") as { uid: string; folderTitle?: string; tags?: string[] }[];
+  const uids = found.filter(hit => hit.folderTitle === DASHBOARD_FOLDER && hit.tags?.some(tag => DASHBOARD_TAGS.includes(tag))).map(hit => hit.uid);
+  const reads: PanelRead[] = [];
+  for (const uid of uids) {
+    const dash = ((await api(`/api/dashboards/uid/${uid}`)) as { dashboard: Dashboard }).dashboard;
+    const variables = dash.templating?.list ?? [];
+    if (variables.some(v => v.type === "query")) continue;
+    const vars = new Map(variables.map(v => [v.name, String(Array.isArray(v.current?.value) ? v.current.value[0] ?? "" : v.current?.value ?? "")]));
+    const range = { from: dash.time?.from ?? "now-6h", to: dash.time?.to ?? "now" };
+    reads.push(...await Promise.all(leafPanels(dash.panels).filter(panel => panel.targets?.length).map(async panel => {
+      const { queries, shown } = panelQueries(panel, vars);
+      const answer = await api("/api/ds/query", { queries, ...range }).catch((error: unknown) => ({ message: error instanceof Error ? error.message : String(error) }));
+      return { dashboard: dash.title, title: panel.title ?? `panel ${panel.id}`, ...panelState(answer as QueryAnswer, shown) };
+    })));
+  }
+  return reads;
+}
+
+export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSignal): GrafanaApi {
+  return async (path, body) => {
+    const response = await fetcher(`${GRAFANA}${path}`, { method: body === undefined ? "GET" : "POST", signal,
+      headers: { authorization: auth, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const parsed: unknown = await response.json().catch(() => null);
+    if (!response.ok && path !== "/api/ds/query") throw new Error(`Grafana ${path} HTTP ${response.status}`);
+    return parsed;
+  };
+}
+
 export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null }
 export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
 export interface ProxyLane { lane: string; wire: number; newSessions: number }
 export interface WireDay { day: number; wire: number; updated: number }
 export interface RunningData {
   now: number; from: number; to: number; errors: { source: string; message: string }[];
-  profiles?: number; census?: CensusWindow; proxy?: ProxyLane[]; adLibrary?: WireDay[]; queues?: Queue[];
+  profiles?: number; census?: CensusWindow; proxy?: ProxyLane[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[];
 }
 
 const ms = (t: number): string => `fromUnixTimestamp64Milli(toInt64(${Math.round(t)}), 'UTC')`;
@@ -86,11 +174,11 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
   const span = `${utc(d.from)} to ${utc(d.to).slice(6)}`;
   if (d.profiles !== undefined) {
     metrics.ig_profiles_per_min = Math.round(d.profiles / minutes);
-    flagged.push({ at: d.now, kind: "profiles", excerpt: `Prod read ${metrics.ig_profiles_per_min.toLocaleString("en-US")} Instagram profiles a minute ${span} (${d.profiles.toLocaleString("en-US")} account rows on every read path). Goal p1 is 10,000 a minute held 6 h.` });
+    flagged.push({ at: d.now, kind: "profiles", excerpt: `Prod read ${metrics.ig_profiles_per_min.toLocaleString("en-US")} good Instagram profiles a minute ${span} (${d.profiles.toLocaleString("en-US")} account rows on every read path). Goal p826 is 10,000 a minute held 6 h.` });
   }
   if (d.census) {
     metrics.ig_job_fail_pct = d.census.jobs ? round1((100 * d.census.bad) / d.census.jobs) : 0;
-    flagged.push({ at: d.now, kind: "errors", excerpt: `Census: ${metrics.ig_job_fail_pct}% of ${d.census.jobs.toLocaleString("en-US")} jobs ended blocked or failed ${span}, and ${d.census.att ? round1(100 - (100 * d.census.okAtt) / d.census.att) : 0}% of tries failed. 40 to 70% of jobs failing is normal (owner 10-19, c65, c73).` });
+    flagged.push({ at: d.now, kind: "errors", excerpt: `Reported, not judged: ${metrics.ig_job_fail_pct}% of ${d.census.jobs.toLocaleString("en-US")} census jobs ended blocked or failed ${span}, and ${d.census.att ? round1(100 - (100 * d.census.okAtt) / d.census.att) : 0}% of tries failed. 40 to 70% of jobs failing is normal (owner 10-19, c65, c73); a rise past it goes to the alert rules.` });
   }
   if (d.census && d.proxy && d.adLibrary) {
     metrics.geonode_mbps = geonodeMbps(d.census, d.proxy, d.adLibrary, d.from, d.to);
@@ -103,6 +191,12 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
     const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}`;
     flagged.push({ at: d.now, kind: "backlog", excerpt: `${growing.length} of ${d.queues.length} Instagram queues grew over 6 h${growing.length ? `: ${growing.map(trend).join("; ")}` : ""}. Largest: ${largest.map(trend).join("; ")}.`.slice(0, 300) });
   }
+  if (d.panels) {
+    const blank = d.panels.filter(panel => panel.state !== "ok");
+    metrics.crawler_panels_blank = blank.length;
+    const dashboards = new Set(d.panels.map(panel => panel.dashboard)).size;
+    flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${blank.length ? `: ${blank.map(panel => `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`).join("; ")}` : ""}.`.slice(0, 300) });
+  }
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const unmeasured = new Set<string>();
   const replaced = settle(dutyMetrics, metrics, unmeasured);
@@ -110,16 +204,17 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
   return { metrics, flagged };
 }
 
-export async function measure(query: DsQuery | null, authError: string | null, now: number): Promise<RunningData> {
+export async function measure(query: DsQuery | null, api: GrafanaApi | null, authError: string | null, now: number): Promise<RunningData> {
   const to = now - SETTLE_MS;
   const from = to - WINDOW_MS;
   const d: RunningData = { now, from, to, errors: [] };
-  if (!query) { d.errors.push({ source: "grafana auth", message: authError ?? "no client" }); return d; }
+  if (!query || !api) { d.errors.push({ source: "grafana auth", message: authError ?? "no client" }); return d; }
   const step = async <T>(source: string, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { d.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
   const window = `observed_at >= ${ms(from)} AND observed_at < ${ms(to)}`;
-  const [profiles, census, proxy, adLibrary, queues] = await Promise.all([
+  const [panels, profiles, census, proxy, adLibrary, queues] = await Promise.all([
+    step("dashboards", () => readPanels(api)),
     step("profiles", async () => num((await sqlRows(query, CH, `SELECT count() AS n FROM crawler.instagram_account_snapshots WHERE ${window}`))[0]?.n) ?? 0),
     step("census reads", async () => {
       const row = (await sqlRows(query, CH, `SELECT count() AS jobs, countIf(outcome IN ('blocked', 'failed')) AS bad, sum(attempts) AS att, sum(ok_attempts) AS okAtt, sum(wire_bytes) AS wire FROM crawler.instagram_census_reads WHERE ${window}`))[0] ?? {};
@@ -148,7 +243,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
       return out;
     }),
   ]);
-  Object.assign(d, profiles !== undefined && { profiles }, census && { census }, proxy && { proxy }, adLibrary && { adLibrary }, queues && { queues });
+  Object.assign(d, panels && { panels }, profiles !== undefined && { profiles }, census && { census }, proxy && { proxy }, adLibrary && { adLibrary }, queues && { queues });
   return d;
 }
 
@@ -158,9 +253,15 @@ async function main(): Promise<void> {
   const dutyMetrics = (JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: DutyMetric[] }).metrics;
   const now = Date.now();
   let query: DsQuery | null = null;
+  let api: GrafanaApi | null = null;
   let authError: string | null = null;
-  try { query = grafanaClient(fetch, await readGrafanaAuth(), now, new AbortController().signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now), dutyMetrics);
+  try {
+    const auth = await readGrafanaAuth();
+    const signal = new AbortController().signal;
+    query = grafanaClient(fetch, auth, now, signal);
+    api = grafanaApi(fetch, auth, signal);
+  } catch (error) { authError = error instanceof Error ? error.message : String(error); }
+  const result = report(await measure(query, api, authError, now), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`crawler-running: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

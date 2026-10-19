@@ -1,16 +1,16 @@
 {
   "name": "Crawler running",
   "ownerWords": "<duties>: there are some things that are obvious even now.\n- Keep crawler running actively\n  - Check the Observability and Metrics\n  - Geonode mbps >=100mbps always\n  - (when p1, p2,p4 is achieved, withinnitial stability 6h+ check, they now should come to duty.)\n  - instagram profiles at 10k+/min,\n  - nothing is backlogging: pg -> os/ch, media worker, (... idk you know better.)\n  - ...\n  - when p6 is achieved, it is your duty to keep LGTM and Grafana dashbaords up to date to any changes, and carefully tune the alerts system. if it's false alert -> try to reduce it change condition. if alert missed it (wasn't in place) but found actually meaningful issue, add that alert so we don't have to worry about it.",
-  "goal": "The prod crawler keeps running and the owner sees it on the crawler dashboards on obs.virev.ai: Instagram profiles keep flowing, GeoNode carries at least 100 Mbps, no Instagram queue starts to grow, and the census job failure share stays inside the owner's normal 40 to 70% band. The profile floor is 1,000 a minute for now, the lowest hourly rate the running crawler held in the 6 h to 10-19 15:16Z (1,018 a minute, 13:16 to 14:16Z). When goal p1 (10,000 profiles a minute) holds 6 h, it closes and this floor becomes 10,000. When p2 (no backlog) and p4 (every profile refreshed within 14 days) each hold 6 h, their numbers join this duty the same way, and a slip puts a fix step back on the plan. After p6 (alerts reach this thread) closes, this duty also keeps the LGTM stack and the Grafana dashboards current with each crawler change and tunes the alert rules: a false alert gets its condition changed, and a real problem that no alert caught gets a new rule.",
+  "goal": "The prod crawler keeps running, and the owner sees it on the crawler dashboards on obs.virev.ai: Instagram good profiles keep flowing, GeoNode carries at least 100 Mbps, no Instagram queue starts to grow, and every panel on the crawler dashboards draws. The profile floor is 1,000 a minute for now, the lowest hourly rate the running crawler held in the 6 h to 10-19 15:16Z (1,018 a minute, 13:16 to 14:16Z). Plan goals join this duty only after they hold: when p826 (10,000 good profiles a minute) has held 6 h, it closes and this floor becomes 10,000; when p827 (nothing in the Instagram pipeline backlogs) and p829 (every profile re-read within 14 days) have each held 6 h, each closes and its number becomes a metric here, and a later slip puts a fix step back on the plan. Until a goal has held 6 h its number stays on the plan, and on 10-19 at 15:55Z none had. GeoNode retries, supply holds and dropped exits stay with the GeoNode proxy use duty (d2), read cost per profile with the Crawler read cost duty, and once p831 closes the Crawler alerts duty (d5) keeps the dashboards and alert rules current. The census job failure share is reported in the run detail against the owner's 40 to 70% band, and a rise past it is an alert rule's job.",
   "metrics": [
     {
       "key": "ig_profiles_per_min",
-      "label": "Prod Instagram profiles read a minute, last 30 min",
+      "label": "Prod Instagram good profiles read a minute, last 30 min",
       "op": ">=",
       "target": 1000,
       "unit": "/min",
       "headline": true,
-      "why": "Floor while p1 is open: the lowest hourly rate of the running crawler in the 6 h to 10-19 15:16Z was 1,018 a minute (m-profiles-rate). It becomes 10,000 when p1 holds 6 h."
+      "why": "Floor while p826 is open: the lowest hourly rate of the running crawler in the 6 h to 10-19 15:16Z was 1,018 a minute (m-profiles-rate). It becomes 10,000 when p826 holds 6 h."
     },
     {
       "key": "geonode_mbps",
@@ -28,18 +28,13 @@
       "why": "The owner's words: nothing is backlogging: pg -> os/ch, media worker. Kafka lag, dead letters, the search sync outbox and Redis stream lag, read like the 10-19 m-backlogs check of 38 prod series."
     },
     {
-      "key": "ig_job_fail_pct",
-      "label": "Census jobs that ended blocked or failed, last 30 min",
+      "key": "crawler_panels_blank",
+      "label": "Panels on the crawler dashboards on obs.virev.ai that show an error or No data",
       "op": "<=",
-      "target": 70,
-      "unit": "%",
-      "why": "The owner, 10-19: error rate increasing beyond what's reasonable (~40-70% is reasonable actuallly), and c65, c73."
+      "target": 0,
+      "why": "The owner's words: Check the Observability and Metrics (10-19). A blank panel is a number he cannot see."
     }
   ],
-  "schedule": {
-    "kind": "every",
-    "minutes": 30
-  },
   "precheck": {
     "command": [
       "node",
@@ -49,6 +44,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "For each missed metric, start or steer one live fix job this run, and keep it until the metric is met again. A live job that already owns the cause gets the numbers by message: p1's census owner for the profile rate, geonode timeouts our side for GeoNode and transport failures, instagram ingest backlog for the media and OpenSearch queues. Otherwise start one with rlm.create_session and put its fix step under the matching goal with duty \"<id>/<metric>\". ig_profiles_per_min: find what stopped or slowed the crawl (a pause, a deploy, a hold, the gateway, a crashed role) from the dashboards and logs, and get it back with a code or config fix through the crawler ops train. geonode_mbps: find which lane lost bandwidth and why, and fix our side; never contact GeoNode (c37). ig_queues_growing_6h: name the queue and its consumer from the backlog line and fix the consumer. ig_job_fail_pct: read the end verdict mix; transport failures go to the gateway work and blocks to the census. A source_error comes first: fix the precheck read. The duty job itself only reads prod. All on target: end the turn with no message.",
+  "onMiss": "For each missed metric, start or steer one live fix job this run, and keep it until the metric is met again. A live job that already owns the cause gets the numbers by message: p826's census owner for the profile rate, geonode timeouts our side for GeoNode and transport failures, instagram ingest backlog for the media and OpenSearch queues, crawler prod alerts for the dashboards. Otherwise start one with rlm.create_session and put its fix step under the matching goal with duty \"<id>/<metric>\". ig_profiles_per_min: find what stopped or slowed the crawl (a pause, a deploy, a hold, the gateway, a crashed role) from the dashboards and logs, and get it back with a code or config fix through the crawler ops train. geonode_mbps: find which lane lost bandwidth and why, and fix our side; never contact GeoNode (c37). ig_queues_growing_6h: name the queue and its consumer from the backlog line and fix the consumer. crawler_panels_blank: the dashboards line names each blank panel; fix its query in auto-sns-agent apps/infra/grafana/dashboards/crawler or the exporter it reads, or delete a panel nobody needs, and land it through the crawler ops train. When p826, p827 or p829 has held 6 h on its plan number, close it and update this duty file as its goal says, then run add.ts. A source_error comes first: fix the precheck read. The duty job itself only reads prod. All on target: end the turn with no message.",
   "boardGoal": "p146"
 }
