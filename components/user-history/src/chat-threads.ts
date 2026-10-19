@@ -249,6 +249,27 @@ const PIN_RETRY_MAX_MS = 5 * 60_000;
  */
 const REMOTE_SNAPSHOT_MS = 5 * 60_000;
 /**
+ * Another box's attach reconnects through the SDK's own loop when its link drops (`recoverDaemon`: the bridge socket stays up, so there is
+ * nothing to restart): the page shows "Reconnecting" and the feed resyncs from its cursor. Without it a dropped link ended the feed. On 10-19
+ * after the 15:19:50Z restart an open Mac thread showed the red "Lost connection to the Prime Agent daemon" bar for 7 minutes and more, until
+ * someone pressed Retry, while the Mac relay answered in 0.19 s.
+ */
+const reconnectRemote = async (): Promise<void> => {};
+/** The client each attach opened, so a dispose can close it (`disposeConnection`). */
+export const attachClients = new WeakMap<DaemonAgentConnection, DaemonClient>();
+
+/**
+ * A connection with `recoverDaemon` keeps a request whose link drops until the link is back, and a disposed connection never reconnects, so
+ * its detach would wait for good. Closing the client while the link is down, or once it drops during the detach, ends that wait.
+ */
+export async function disposeConnection(connection: DaemonAgentConnection): Promise<void> {
+  const client = attachClients.get(connection);
+  const off = client?.onClose(() => client.close());
+  if (client && !client.isConnected) client.close();
+  await connection.dispose().catch(() => {});
+  off?.();
+}
+/**
  * How long an attach to this box's daemon waits for its hello, as long as the attach request after it may take (the SDK's 30 s
  * DEFAULT_DAEMON_REQUEST_TIMEOUT_MS). The supervisor writes the hello as it takes the connection: 20 tries at 17:23Z on 10-18, load 57, got it
  * in 0 to 6 ms. The old 3 s failed two job wakes outright, 01a14f62 near 16:14:33Z and 01a14fef near 17:09:25Z ("Timed out after 3000ms
@@ -362,7 +383,7 @@ export class ThreadHub {
     thread.flush();
     thread.live = null;
     live.unsubscribe();
-    await live.connection.dispose().catch(() => {});
+    await disposeConnection(live.connection);
     return true;
   }
 
@@ -394,7 +415,7 @@ export class ThreadHub {
       thread.flush();
       thread.live = null;
       live.unsubscribe();
-      await live.connection.dispose().catch(() => {});
+      await disposeConnection(live.connection);
     }
     return true;
   }
@@ -565,7 +586,7 @@ export class ThreadHub {
     thread.flush();
     if (thread.live) {
       thread.live.unsubscribe();
-      await thread.live.connection.dispose().catch(() => {});
+      await disposeConnection(thread.live.connection);
       thread.live = null;
     }
   }
@@ -594,8 +615,10 @@ export class ThreadHub {
       await client.waitForHello(host ? 3000 : LOCAL_HELLO_MS);
       // Events wait until `bind`, so `liveSnapshot` reads the attach snapshot as it came. Otherwise one event between the two made
       // getInitialSnapshot fetch get_messages and get_session_context, each the whole context with every image.
-      return await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false, closeClientOnDispose: true,
-        deferSessionEvents: true, ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS } : {}) });
+      const connection = await DaemonAgentConnection.attach(client, activeSessionId, { directTransport: false, supportsExtensionUi: false, sendClientEnv: false, ownedSession: false,
+        closeClientOnDispose: true, deferSessionEvents: true, ...(host ? { snapshotTimeoutMs: REMOTE_SNAPSHOT_MS, recoverDaemon: reconnectRemote } : {}) });
+      attachClients.set(connection, client);
+      return connection;
     } catch (error) { client.close(); throw error; }
   }
 
@@ -912,11 +935,11 @@ export class ThreadHub {
         if (!connection) return null;
         mark("attach");
         try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
-        catch (error) { await connection.dispose().catch(() => {}); throw error; }
+        catch (error) { await disposeConnection(connection); throw error; }
       }, host ?? ""), () => this.stateOf(activeSessionId), doing => mark(`worker ${doing}, waited`));
       await filled;
       if (this.threads.get(id) !== thread) {
-        await live?.connection.dispose().catch(() => {});
+        await (live ? disposeConnection(live.connection) : undefined);
         throw new ThreadError(409, "This thread was closed while it was opening.");
       }
       if (!live) {
@@ -1117,7 +1140,7 @@ export class ThreadHub {
     if (this.readOnly) throw new ThreadError(409, "A scratch serve only reads: it does not reopen a thread.");
     const thread = this.threads.get(id);
     const stale = thread?.live;
-    if (thread && stale) { thread.live = null; stale.unsubscribe(); await stale.connection.dispose().catch(() => {}); }
+    if (thread && stale) { thread.live = null; stale.unsubscribe(); await disposeConnection(stale.connection); }
     await this.resume(id);
   }
 
@@ -1128,7 +1151,7 @@ export class ThreadHub {
     const attachLive = (activeSessionId: string) => afterMove(() => this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
       try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary) }; }
-      catch (error) { await connection.dispose().catch(() => {}); throw error; }
+      catch (error) { await disposeConnection(connection); throw error; }
     }, this.catalog.hostOf(id) ?? ""), () => this.stateOf(activeSessionId));
     // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
     const listed = liveSessionId(summary);
@@ -1136,7 +1159,7 @@ export class ThreadHub {
       ?? await attachLive(await this.reopen(id, summary));
     const { connection, activeSessionId, snapshot } = live;
     if (this.threads.get(id) !== thread) {
-      await connection.dispose().catch(() => {});
+      await disposeConnection(connection);
       throw new ThreadError(409, "This thread was closed while it was resuming.");
     }
     this.evict("live");
@@ -1183,7 +1206,7 @@ export class ThreadHub {
     try {
       thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), (candidate, before) => this.childrenChanged(candidate, before));
       this.bind(thread, connection, data.activeSessionId);
-    } catch (error) { await connection.dispose().catch(() => {}); throw error; }
+    } catch (error) { await disposeConnection(connection); throw error; }
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
     this.attached(thread);
@@ -1554,7 +1577,7 @@ export class ThreadHub {
     const first = (await this.liveSummaries())[0];
     if (!first?.activeSessionId) throw new ThreadError(409, "Open a live thread once so models and commands can load.");
     const connection = await this.attach(first.activeSessionId);
-    try { return await use(connection, null); } finally { await connection.dispose().catch(() => {}); }
+    try { return await use(connection, null); } finally { await disposeConnection(connection); }
   }
 
   private async liveSummaries(): Promise<SessionSummary[]> {
