@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DAEMON_UNIT, harnessSplit, NO_OWNER, ownerOf, parseProcStat, type Proc, shortCommand, snapshot, type Snapshot } from "../../prime-relay/rig-cpu.ts";
+import { DAEMON_UNIT, harnessSplit, NO_OWNER, ownerOf, parseProcStat, type Proc, shortCommand, snapshot, type Snapshot, SSH_OWNER, unitOf } from "../../prime-relay/rig-cpu.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { parseUsableRaw, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
@@ -68,6 +68,21 @@ test("d7 names a CPU minute's job rigs by chat and job, and counts the harness m
   assert.match(dirty, /11:31Z us-metal02 unusable \(cpu: the chat answered api\/threads in 2\.4 s; harness 60 cores, 12 its own and 48 in job rigs: AI harness developer environment VP, job scratch-cpu-b 17 \(node src\/chat-service-cli\.mjs serve\), p8iso-PVXA-d\.service 5 \(tsgo --noEmit\)\)/);
   assert.equal(parseUsableRaw({ platform: "linux", reading: rigs }, RUN) && (parseUsableRaw({ platform: "linux", reading: rigs }, RUN) as LinuxUsable).harnessSplit?.rigs, 48);
   assert.equal((parseUsableRaw({ platform: "linux", reading: { ...rigs, harnessSplit: { own: -1 } } }, RUN) as LinuxUsable).harnessSplit, undefined);
+});
+
+test("an ssh login's scope is a rig, so a Mac job's box browser over ssh no longer reads as the harness's own", () => {
+  // 10-19 15:46:50Z to 15:51:57Z on us-metal02: ssh login scopes held about 11 cores (Mac jobs' box Chromium, svelte-check and tsc), which the
+  // chat had read as the harness's own beside about 5 for the supervisor, workers and kernels.
+  const app = "user.slice/user-1001.slice/user@1001.service/app.slice";
+  assert.equal(unitOf(`0::/${app}/prime-agent-daemon.service`, app), DAEMON_UNIT);
+  assert.equal(unitOf("0::/user.slice/user-1001.slice/session-c22282.scope", app), "session-c22282.scope");
+  assert.equal(unitOf("0::/user.slice/user-1001.slice/user@1001.service/init.scope", app), null, "the user manager is not an ssh login");
+  assert.equal(unitOf("0::/user.slice/user-1002.slice/session-c1.scope", app), null, "another user's login is not this harness's");
+  assert.equal(unitOf("0::/system.slice/ssh.service", app), null);
+  const units = (scopeUsec: number): Snapshot["units"] => new Map([[DAEMON_UNIT, { role: "split" as const, usec: 0 }], ["session-c22282.scope", { role: "rig" as const, usec: scopeUsec }]]);
+  const chrome = (ticks: number): Proc => ({ start: 1, ticks, unit: "session-c22282.scope", own: false, owner: SSH_OWNER, command: "chrome --type=renderer" });
+  const split = harnessSplit({ at: 0, units: units(0), procs: new Map([[30, chrome(0)]]) }, { at: 10_000, units: units(110e6), procs: new Map([[30, chrome(11_000)]]) }, 16);
+  assert.deepEqual(split, { own: 5, rigs: 11, top: [{ owner: SSH_OWNER, cores: 11, command: "chrome --type=renderer" }] });
 });
 
 const cgroup = process.platform === "linux" ? readFileSync("/proc/self/cgroup", "utf8") : "";

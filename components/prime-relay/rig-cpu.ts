@@ -8,8 +8,11 @@ import { basename, join } from "node:path";
  *
  * Own work is the Prime workers and kernels, the live chat service, pi-pool, the relay and every other unit installed under the user's app.slice.
  * A rig is what a job started: every other process in prime-agent-daemon.service (the commands kernels run, such as tests, builds and scratch
- * chat services) and every transient unit (systemd-run, such as the p8iso-* units of the prime-agent fix job). The daemon unit's rigs are its
- * cgroup time less its own processes' time, so a test that starts and ends inside one window still counts as a rig.
+ * chat services), every transient unit (systemd-run, such as the p8iso-* units of the prime-agent fix job) and every ssh login's
+ * session-<n>.scope under the user slice. The daemon unit's rigs are its cgroup time less its own processes' time, so a test that starts and
+ * ends inside one window still counts as a rig. The ssh scopes count since 10-19: from 15:41Z to 15:48Z the chat read 12 to 24 cores as the
+ * harness's own while the supervisor, workers and kernels used about 5, and about 11 of the rest were Mac jobs' box Chromium, svelte-check and
+ * tsc runs that came in over ssh (box-cpu-waste job, /proc sample 15:46:50Z to 15:51:57Z).
  */
 export interface RigLine { owner: string; cores: number; command: string }
 export interface HarnessSplit { own: number; rigs: number; top: RigLine[] }
@@ -20,6 +23,9 @@ export interface Proc { start: number; ticks: number; unit: string; own: boolean
 export interface Snapshot { at: number; units: Map<string, { role: UnitRole; usec: number }>; procs: Map<number, Proc> }
 
 export const DAEMON_UNIT = "prime-agent-daemon.service";
+/** The owner of every process in an ssh login's scope, such as a Mac job's box browser or check, which carries no session in its environ. */
+export const SSH_OWNER = "ssh logins";
+const SSH_SCOPE = /^session-[^/]+\.scope$/;
 /** The owner of a daemon-unit process with no session in its environ or its parents', such as a server whose job's shell ended. */
 export const NO_OWNER = "no live owner";
 const OWN_COMMAND = /(?:^|\/)prime-agent --mode daemon\b|\s-m rlm\.repl\b|(?:^|\/)pi-pool-token\b/;
@@ -98,26 +104,39 @@ const jobName = async (dir: string): Promise<string | undefined> => {
 /** The owner each pid (by its start) read from its environ, kept across snapshots so a long-lived process is read once. */
 const envOwners = new Map<string, string | null>();
 
+/** The unit a /proc/<pid>/cgroup text names: its unit under `app`, or its ssh login scope under the user slice that holds `app`; else null. */
+export function unitOf(cgroup: string, app: string): string | null {
+  const appPrefix = `0::/${app}/`, slicePrefix = `0::/${app.slice(0, app.indexOf("/user@"))}/`;
+  if (cgroup.startsWith(appPrefix)) return cgroup.slice(appPrefix.length).split("/")[0]!;
+  const scope = cgroup.startsWith(slicePrefix) ? cgroup.slice(slicePrefix.length).split("/")[0]! : "";
+  return SSH_SCOPE.test(scope) ? scope : null;
+}
+
 /**
  * Reads the units under `app` (a cgroup path such as user.slice/user-1001.slice/user@1001.service/app.slice) less `excluded` (another side's
- * units), and the processes of the daemon unit and of every rig unit. A unit is a rig when systemd has it under /run/user/<uid>/systemd/transient.
+ * units), the ssh login scopes beside it in the user slice, and the processes of the daemon unit and of every rig unit. A unit is a rig when
+ * systemd has it under /run/user/<uid>/systemd/transient, and an ssh login scope is always one.
  */
 export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: number, at = Date.now()): Promise<Snapshot> {
   const units = new Map<string, { role: UnitRole; usec: number }>();
+  const slice = app.slice(0, app.indexOf("/user@"));
+  const usage = async (path: string): Promise<number> => Number(/^usage_usec (\d+)$/m.exec(await read(join(CGROUP_ROOT, path, "cpu.stat")))?.[1]);
   const names = (await readdir(join(CGROUP_ROOT, app)).catch(() => [] as string[])).filter(name => /\.(service|scope|slice)$/.test(name) && !excluded.has(name));
-  await Promise.all(names.map(async name => {
-    const usec = Number(/^usage_usec (\d+)$/m.exec(await read(join(CGROUP_ROOT, app, name, "cpu.stat")))?.[1]);
+  const scopes = (await readdir(join(CGROUP_ROOT, slice)).catch(() => [] as string[])).filter(name => SSH_SCOPE.test(name));
+  await Promise.all([...names.map(async name => {
+    const usec = await usage(join(app, name));
     if (!Number.isFinite(usec)) return;
     const role: UnitRole = name === DAEMON_UNIT ? "split" : existsSync(`/run/user/${uid}/systemd/transient/${name}`) ? "rig" : "own";
     units.set(name, { role, usec });
-  }));
+  }), ...scopes.map(async name => {
+    const usec = await usage(join(slice, name));
+    if (Number.isFinite(usec)) units.set(name, { role: "rig", usec });
+  })]);
   const stats = new Map<number, { ppid: number; start: number; ticks: number; unit: string }>();
   const pids = (await readdir("/proc").catch(() => [] as string[])).filter(name => /^\d+$/.test(name));
-  const prefix = `0::/${app}/`;
   await Promise.all(pids.map(async name => {
-    const cgroup = (await read(`/proc/${name}/cgroup`)).trim();
-    if (!cgroup.startsWith(prefix)) return;
-    const unit = cgroup.slice(prefix.length).split("/")[0]!;
+    const unit = unitOf((await read(`/proc/${name}/cgroup`)).trim(), app);
+    if (!unit) return;
     const role = units.get(unit)?.role;
     if (role !== "split" && role !== "rig") return;
     const stat = parseProcStat(await read(`/proc/${name}/stat`));
@@ -137,7 +156,7 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
   await Promise.all([...stats].map(async ([pid, stat]) => {
     const command = await read(`/proc/${pid}/cmdline`);
     const own = stat.unit === DAEMON_UNIT && ownCommand(command.replaceAll("\0", " "));
-    const owner = own ? undefined : await ownerFor(pid) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : stat.unit);
+    const owner = own ? undefined : await ownerFor(pid) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
     procs.set(pid, { start: stat.start, ticks: stat.ticks, unit: stat.unit, own, command: shortCommand(command), ...owner ? { owner } : {} });
   }));
   if (envOwners.size > 50_000) envOwners.clear();
