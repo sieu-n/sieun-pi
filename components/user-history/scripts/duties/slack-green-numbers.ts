@@ -19,7 +19,7 @@ import { parseEnv } from "./local-dev-uptime.ts";
  * Supporting numbers: duty_source_errors, signup_count_gap and dashboard_tiles_failing. A number this run could not measure is left out of the
  * output, so the run says "not measured" for it, and its check still counts in the headline: an unread number is a wrong one.
  * Keys come from slack-green's scripts/seo-agent/.env, read as a file; no slack-green code runs. The dashboards need POSTHOG_DASHBOARD_API_KEY
- * (the query key has no dashboard:read). On 10-19 the 24 tiles took 15 to 81 s each in PostHog's async mode, run in parallel.
+ * (the query key has no dashboard:read). On 10-19 the 24 tiles took 15 to 81 s each uncached in PostHog's async mode.
  */
 
 const REPO = process.env.SLACK_GREEN_REPO || join(homedir(), "Documents/Github/slack-green");
@@ -127,12 +127,35 @@ export async function readDuties(dataDir: string, chat: string): Promise<DutyChe
   }));
 }
 
+/**
+ * PostHog answers 429 "Too many queries are running right now" when a project runs more queries at once than it allows: the first live run on
+ * 10-19 sent the signup query beside 24 tile queries and lost it. So PostHog queries run TILE_CONCURRENCY at a time, the signup query before
+ * the tiles, and a 429 waits RETRY_MS and tries again up to RETRIES times before it counts as a source error.
+ */
+export const TILE_CONCURRENCY = 4;
+const RETRIES = 4;
+const RETRY_MS = 5_000;
+
 async function json<T>(deps: NumbersDeps, url: string, key: string, body?: unknown, extra: Record<string, string> = {}): Promise<{ status: number; data: T }> {
-  const response = await deps.fetch(url, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...extra },
-    ...body ? { body: JSON.stringify(body) } : {} });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`${url.replace(/\?.*/, "")} gave HTTP ${response.status}: ${text.slice(0, 200)}`);
-  return { status: response.status, data: JSON.parse(text) as T };
+  const sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt++) {
+    const response = await deps.fetch(url, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...extra },
+      ...body ? { body: JSON.stringify(body) } : {} });
+    const text = await response.text();
+    if (response.status === 429 && attempt < RETRIES) { await sleep(RETRY_MS * (attempt + 1)); continue; }
+    if (!response.ok) throw new Error(`${url.replace(/\?.*/, "")} gave HTTP ${response.status}: ${text.slice(0, 200)}`);
+    return { status: response.status, data: JSON.parse(text) as T };
+  }
+}
+
+/** Runs `work` over `items` with at most `limit` at once, results in order. */
+export async function pool<I, O>(items: readonly I[], limit: number, work: (item: I) => Promise<O>): Promise<O[]> {
+  const results: O[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const index = next++; results[index] = await work(items[index]!); }
+  }));
+  return results;
 }
 
 export async function readAccounts(deps: NumbersDeps): Promise<Account[]> {
@@ -176,30 +199,36 @@ export async function loadTile(deps: NumbersDeps, key: string, query: unknown, d
   } catch (error) { return message(error); }
 }
 
-export async function readDashboard(deps: NumbersDeps, id: number, deadline: number): Promise<DashboardRead> {
+type Insight = { id: number; name?: string; query?: unknown };
+
+/** Every dashboard's tiles, read first, then each tile's query, TILE_CONCURRENCY at a time across both dashboards. */
+export async function readDashboards(deps: NumbersDeps, ids: readonly number[], deadline: number): Promise<DashboardRead[]> {
   const key = deps.env.POSTHOG_DASHBOARD_API_KEY;
-  if (!key) return { id, error: `POSTHOG_DASHBOARD_API_KEY is not set in ${REPO}/scripts/seo-agent/.env` };
-  try {
-    const { data } = await json<{ tiles: { insight?: { id: number; name?: string; query?: unknown } | null }[] }>(deps, projectUrl(deps, `dashboards/${id}/`), key);
-    const tiles = await Promise.all(data.tiles.filter(tile => tile.insight?.query).map(async tile => {
-      const error = await loadTile(deps, key, tile.insight!.query, deadline);
-      return { dashboard: id, insight: tile.insight!.id, name: tile.insight!.name ?? "", ...error ? { error } : {} };
-    }));
-    return { id, tiles };
-  } catch (error) { return { id, error: message(error) }; }
+  if (!key) return ids.map(id => ({ id, error: `POSTHOG_DASHBOARD_API_KEY is not set in ${REPO}/scripts/seo-agent/.env` }));
+  const lists = await Promise.all(ids.map(async id => {
+    try {
+      const { data } = await json<{ tiles: { insight?: Insight | null }[] }>(deps, projectUrl(deps, `dashboards/${id}/`), key);
+      return { id, insights: data.tiles.map(tile => tile.insight).filter((insight): insight is Insight => !!insight?.query) };
+    } catch (error) { return { id, error: message(error) }; }
+  }));
+  const jobs = lists.flatMap(list => (list.insights ?? []).map(insight => ({ dashboard: list.id, insight })));
+  const tiles = await pool(jobs, TILE_CONCURRENCY, async ({ dashboard, insight }): Promise<Tile> => {
+    const error = await loadTile(deps, key, insight.query, deadline);
+    return { dashboard, insight: insight.id, name: insight.name ?? "", ...error ? { error } : {} };
+  });
+  return lists.map(list => list.error ? { id: list.id, error: list.error } : { id: list.id, tiles: tiles.filter(tile => tile.dashboard === list.id) });
 }
 
 export async function measureNumbers(deps: NumbersDeps, chat = CHAT): Promise<PrecheckOutput> {
   const now = deps.now();
   const errors: string[] = [];
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
-  const deadline = now + TILE_DEADLINE_MS;
-  const [duties, accounts, signups, dashboards] = await Promise.all([
+  const [duties, accounts, signups] = await Promise.all([
     readDuties(deps.dataDir, chat).catch(fail("this chat's duties and runs")),
     readAccounts(deps).catch(fail("prod Supabase accounts")),
     readSignups(deps).catch(fail("PostHog user_signed_up")),
-    Promise.all(DASHBOARDS.map(id => readDashboard(deps, id, deadline))),
   ]);
+  const dashboards = await readDashboards(deps, DASHBOARDS, deps.now() + TILE_DEADLINE_MS);
   const output = numbersMetrics({ duties: duties ?? [], ...accounts ? { accounts } : {}, ...signups ? { signups } : {}, dashboards, errors }, now);
   if (!duties) { delete output.metrics.duty_source_errors; output.metrics.numbers_wrong! += 1; }
   return output;
