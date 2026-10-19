@@ -275,3 +275,18 @@ test("an exec gone by the second sample is not a hand-run writer; one that lasts
   assert.deepEqual(handExecs(parseBox([...lines, "R\tvirev-prod-crawler-api\te2 "].join("\n")).execs).map(item => item.command), ["python /tmp/cw_extra_writer.py"]);
   assert.equal(handExecs(parseBox(lines.join("\n")).execs).length, 2);
 });
+
+// Guards the d3 run of 10-19 16:19Z: staging audit 14348 emptied the staging hand rows so the tier defaults applied, and read as an F1 repeat.
+test("a change that only empties hand rows hands the keys back to their defaults, and an emptied pause row still counts", async () => {
+  const reg = await registry();
+  const reason = "p111 (crawler prod read-backs): empty the staging hand rows so the staging tier defaults (settings.py _STAGING_CONTROL_DEFAULTS) apply";
+  const row = (id: number, key: string, cleared: boolean): AuditRow => ({ id, ts: AT, actor: "api-key", source: "ops-api", reason, key, cleared });
+  const emptied = groupAudit("staging", [row(14348, "instagram_census.new_per_minute", true), row(14355, "tiktok_shop.product_per_minute", true)]);
+  assert.equal(emptied.length, 1);
+  assert.equal(classifyConfig(emptied[0]!, reg).kind, "exempt");
+  const mixed = groupAudit("staging", [row(14348, "instagram_census.new_per_minute", true), row(14349, "tiktok_shop.product_per_minute", false)]);
+  assert.equal(classifyConfig(mixed[0]!, reg).kind, "fault");
+  const unpause = groupAudit("prod", [row(14400, "pause.instagram_census", true)]);
+  assert.equal(classifyConfig(unpause[0]!, reg).kind, "fault");
+  assert.match(auditSql(undefined, AT), /case when coalesce\(new_value, ''\) = '' then 1 else 0 end as cleared/);
+});

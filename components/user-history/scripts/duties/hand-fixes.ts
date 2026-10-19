@@ -71,7 +71,8 @@ export interface Registry {
 }
 
 export type World = "prod" | "staging";
-export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string }
+/** `cleared` is a row whose new value is empty: it deletes the hand row, so the key reads its code default again. */
+export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string; cleared?: boolean }
 export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string }
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
@@ -129,13 +130,13 @@ export function parseRegistry(value: unknown): Registry {
 }
 
 /** Config rows grouped into hand fixes: rows of one world, actor, source and reason written in the same minute are one change. */
-export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; writer: string; keys: string[] })[] {
-  const groups = new Map<string, HandFix & { actor: string; writer: string; keys: string[] }>();
+export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean })[] {
+  const groups = new Map<string, HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean }>();
   for (const row of rows) {
     const id = `${row.actor}\u0000${row.source}\u0000${row.reason}\u0000${Math.floor(row.ts / 60_000)}`;
     const group = groups.get(id);
-    if (group) { if (!group.keys.includes(row.key)) group.keys.push(row.key); continue; }
-    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, writer: row.source, keys: [row.key] });
+    if (group) { if (!group.keys.includes(row.key)) group.keys.push(row.key); group.cleared &&= row.cleared === true; continue; }
+    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, writer: row.source, keys: [row.key], cleared: row.cleared === true });
   }
   return [...groups.values()].map(group => ({ ...group, what: `${group.what} ${group.keys.join(",")}`.slice(0, 160) }));
 }
@@ -143,10 +144,18 @@ export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & 
 /** The fault id a writer names at the start of the reason; crawler-v3's ops write routes store their `fault` field as `F<n>: <reason>`. */
 const NAMED_FAULT = /^(F\d+): /;
 
-export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string }, registry: Registry): Verdict {
+/**
+ * A change that only deletes hand rows of keys other than pauses hands each key back to its code default, so nothing is steered by hand: on
+ * 10-19 at 15:33Z staging audit 14348 emptied 12 staging rate rows so the staging tier defaults applied, and read as an F1 repeat. Deleting a
+ * pause row still counts, because that is a hand unpause.
+ */
+const handsBack = (fix: { keys: readonly string[]; cleared?: boolean }): boolean =>
+  fix.cleared === true && fix.keys.length > 0 && !fix.keys.some(key => key.startsWith("pause."));
+
+export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string; cleared?: boolean }, registry: Registry): Verdict {
   const automatic = registry.automatic_writers;
   if (automatic.config_actors.includes(fix.actor) || (fix.writer && automatic.config_sources?.includes(fix.writer))) return { kind: "automatic" };
-  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text)) return { kind: "exempt" };
+  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text) || handsBack(fix)) return { kind: "exempt" };
   const named = NAMED_FAULT.exec(fix.text)?.[1];
   if (named) { const listed = registry.faults.find(item => item.id === named); return listed ? { kind: "fault", fault: listed } : { kind: "undesigned" }; }
   const fault = registry.faults.find(item => item.match.config_reason_tag && new RegExp(`^(?:${item.match.config_reason_tag})`).test(fix.text)) ??
@@ -448,7 +457,8 @@ export function nextState(state: HandState, data: HandData): HandState {
 }
 
 export const auditSql = (lastId: number | undefined, now: number): string =>
-  `select id, ts, actor, key, coalesce(reason, '') as reason, coalesce(source, '') as source from config_audit where ` +
+  `select id, ts, actor, key, coalesce(reason, '') as reason, coalesce(source, '') as source, ` +
+  `case when coalesce(new_value, '') = '' then 1 else 0 end as cleared from config_audit where ` +
   (lastId ? `(id > ${Math.floor(lastId)} or ` : "(") + `ts >= to_timestamp(${Math.floor((now - DAY) / 1000)})) order by id`;
 export const eventsSql = (after: number): string =>
   `select account_id, at, outcome, coalesce(error_code, '') as error_code from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
@@ -597,7 +607,7 @@ export async function measure(deps: HandDeps): Promise<HandData> {
     for (const world of WORLDS) for (const kind of ["config", "engage"] as const) data.errors.push({ source: `${world} ${kind}`, message: "not read: no Grafana login" });
   }
   const audit = (world: World) => step(`${world} config`, async () => (await sqlRows(query!, PG[world], auditSql(deps.state.audit?.[world], deps.now))).map(row => ({
-    id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? "") })));
+    id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? ""), cleared: num(row.cleared) === 1 })));
   const events = (world: World) => step(`${world} engage`, async () => (await sqlRows(query!, PG[world], eventsSql(Math.min(deps.state.events?.[world] ?? deps.now, deps.now - DAY)))).map(row => ({
     accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? "") })));
   const [registry, board, box, mac, prodAudit, stagingAudit, prodEvents, stagingEvents] = await Promise.all([
