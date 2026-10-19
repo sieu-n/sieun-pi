@@ -4,9 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 /**
- * Chromium runs a transform animation on the main thread, every frame, while the page has an IntersectionObserver, and
- * content-visibility: auto on the sidebar rows and turns counts as one. One turning spinner held 60 style recalcs a second and about 30%
- * renderer CPU. Opacity runs on the compositor alone, and visibility in steps changes twice a second, so a looping animation animates only those.
+ * A looping animation animates only what the compositor runs alone (opacity, transform) or visibility in steps, which changes twice a second.
+ * On 10-18 the idle page ran about 58 style recalcs a second with turning spinners, a sliding usage trace and a background-position shimmer.
+ * On 10-19 in headless Chromium 1243, 212 turning spinners ran no style recalc, and the same spinners looping a border color ran 45 a second.
  */
 const client = new URL("../src/client/", import.meta.url);
 const files = readdirSync(client, { recursive: true, encoding: "utf8" }).filter(name => name.endsWith(".svelte") || name.endsWith(".css"));
@@ -26,9 +26,9 @@ function keyframes(css: string): Map<string, string> {
   return found;
 }
 const animated = (body: string): string[] => [...body.matchAll(/([\w-]+)\s*:/g)].map(match => match[1]!);
-const LOOP_SAFE = new Set(["opacity", "visibility"]);
+const LOOP_SAFE = new Set(["opacity", "transform", "visibility"]);
 
-test("every looping animation in the chat client animates only opacity or visibility", () => {
+test("every looping animation in the chat client animates only opacity, transform or visibility", () => {
   const all = new Map<string, string>();
   for (const name of files) for (const [frame, body] of keyframes(cssOf(name))) all.set(frame, body);
   const loops: string[] = [];
@@ -41,7 +41,7 @@ test("every looping animation in the chat client animates only opacity or visibi
       assert.deepEqual(props, [], `${name}: the looping animation ${frame} animates ${props.join(", ")}`);
     }
   }
-  assert.ok(loops.includes("pulse"), "the spinner loop was not found, so this test reads the wrong files");
+  assert.ok(loops.includes("spin"), "the spinner loop was not found, so this test reads the wrong files");
 });
 
 test("the usage trace runs no animation on each update", () => {
