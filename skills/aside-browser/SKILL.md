@@ -79,6 +79,8 @@ The Aside REPL lacks some Playwright methods:
 | `page.waitForNavigation()` | `page.waitForURL(...)` or `page.waitForLoadState()` |
 | `page.context()` | none; use `openTab(url)` |
 
+In the owner's Aside, `screenshot(path, full_page=True)` and `page.screenshot({fullPage: true})` return an image of the full page height that repeats the first viewport. On 2026-10-08 a 2101 px static page came back as its first 900 px three times. To capture a page taller than the window there, scroll with `window.scrollTo` in `innerHeight` steps, take a viewport screenshot at each step, paste each tile into one image at `scrollY * devicePixelRatio`, and crop to the element you want.
+
 ## Tab ownership
 
 The user and other agents share the browser.
