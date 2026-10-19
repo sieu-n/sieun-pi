@@ -189,6 +189,18 @@ def open_on(host, session_file, message):
             fwd.wait()
 
 
+def retire_old_copies(dst, sid):
+    """Renames the copy an earlier move left on the box the thread now comes back to, in `moved-to-<host>/sessions/`. sieun-pi's extension
+    (components/user-history/src/moved-copy.ts `movedTo`) refuses every tool call of a session whose file sits there, so on 10-19 slack green guy,
+    moved back to the Mac at 12:46Z, ran without tools and let two audit messages go unanswered until a job renamed its old copy at 15:58Z."""
+    script = (f"for f in {shlex.quote(dst['agent'])}/moved-to-*/sessions/{sid}.jsonl; do [ -e \"$f\" ] || continue; "
+              f"mv \"$f\" \"$f.returned-to-{dst['name']}\" && echo \"$f\"; done")
+    code, out, err = on(dst, ["sh", "-c", script])
+    if code:
+        raise Refused(f"could not rename the old copy of {sid} on {dst['name']}: {err.strip()[-300:]}")
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def move(src, dst, sid, stop_busy, ask, words):
     if on(dst, ["test", "-e", f"{dst['agent']}/sessions/{sid}.jsonl"])[0] == 0:
         raise Refused(f"{dst['name']} already has sessions/{sid}.jsonl")
@@ -206,6 +218,7 @@ def move(src, dst, sid, stop_busy, ask, words):
     here, there = sha(src, f"{aside}/sessions/{sid}.jsonl"), sha(dst, f"{dst['agent']}/sessions/{sid}.jsonl")
     if a[0] or b[0] or not here or here != there:
         raise Refused(f"copy failed (rsync {a[0]} {b[0]}, sha {here[:12]} vs {there[:12]}); the source copy sits in {aside}")
+    retired = retire_old_copies(dst, sid)
     adopt = on(dst, ["env", f"PRIME_AGENT_DIR={dst['agent']}", "python3", "-B", "-", "--apply", "--root", sid[:8]], input=ADOPT.read_text())
     note = (f"This thread moved from {src['name']} to {dst['name']} because the owner asked for it (message {ask}: \"{words[:300]}\"). "
             "Carry on with your open work from where your session file ends.")
@@ -214,7 +227,7 @@ def move(src, dst, sid, stop_busy, ask, words):
         raise Refused(f"copied, but {dst['name']} did not open it: {(out + err).strip()[-300:]}")
     opened = json.loads(out.strip().splitlines()[-1])
     sent = opened.get("sent") or {}
-    return {"stopped": stopped, "sha": here, "adopt": adopt[0], "opened": opened["created"]["data"].get("activeSessionId"),
+    return {"stopped": stopped, "sha": here, "retired": retired, "adopt": adopt[0], "opened": opened["created"]["data"].get("activeSessionId"),
             "noteSent": sent.get("success", False), "noteError": sent.get("error")}
 
 

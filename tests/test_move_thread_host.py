@@ -85,5 +85,29 @@ class MoveThreadHostRefuses(unittest.TestCase):
         self.assertEqual(last["named"], "frontend bro")
 
 
+class MoveThreadHostRetiresOldCopies(unittest.TestCase):
+    """10-19: slack green guy moved back to the Mac at 12:46Z, its 10-18 copy in moved-to-us-metal02/sessions/ stayed, and the extension's
+    movedTo refused every tool call of the live chat until a job renamed that copy at 15:58Z."""
+
+    def test_the_old_copy_on_the_box_it_comes_back_to_is_renamed(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("move_thread_host", SCRIPT)
+        mover = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mover)
+        with tempfile.TemporaryDirectory() as d:
+            agent = Path(d)
+            old = agent / "moved-to-us-metal02/sessions" / f"{OTHER}.jsonl"
+            old.parent.mkdir(parents=True)
+            old.write_text("{}\n")
+            kept = agent / "moved-to-us-metal02/sessions" / f"{THREAD}.jsonl"
+            kept.write_text("{}\n")
+            host = {"ssh": None, "agent": str(agent), "name": "mac"}
+            self.assertEqual(mover.retire_old_copies(host, OTHER), [str(old)])
+            self.assertFalse(old.exists())
+            self.assertTrue(Path(f"{old}.returned-to-mac").exists())
+            self.assertTrue(kept.exists(), "another thread's old copy stays")
+            self.assertEqual(mover.retire_old_copies(host, OTHER), [])
+
+
 if __name__ == "__main__":
     unittest.main()
