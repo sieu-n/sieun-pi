@@ -1,0 +1,43 @@
+// Guards the Crawler running duty's numbers (scripts/duties/crawler-running.ts), set up for the Crawler VP chat on 10-19 from the owner's duties
+// for crawler-v3 (msg mvfe8foz): GeoNode at least 100 Mbps, nothing backlogging, and errors read against his 40 to 70% band.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { type RunningData, geonodeMbps, grew, report } from "../scripts/duties/crawler-running.ts";
+import type { DutyMetric } from "../src/shared/chat-duties.ts";
+
+const METRICS: DutyMetric[] = [
+  { key: "ig_profiles_per_min", label: "profiles", op: ">=", target: 1000, headline: true },
+  { key: "geonode_mbps", label: "mbps", op: ">=", target: 100 },
+  { key: "ig_queues_growing_6h", label: "queues", op: "<=", target: 0 },
+  { key: "ig_job_fail_pct", label: "fail", op: "<=", target: 70 },
+] as DutyMetric[];
+const NOW = Date.parse("2026-10-19T15:38:00Z");
+const FROM = NOW - 35 * 60_000;
+const TO = NOW - 5 * 60_000;
+
+test("GeoNode Mbps counts HTTP bytes and 8,678 bytes per new connection, with census connections inferred from its jobs", () => {
+  const census = { jobs: 100, bad: 60, att: 400, okAtt: 40, wire: 0 };
+  // 100 jobs + 400 tries - 40 ok tries - 60 bad jobs = 400 connections; 400 * 8,678 bytes over 1,800 s.
+  assert.equal(geonodeMbps(census, [], [], FROM, TO), Math.round((400 * 8678 * 8) / 1800 / 1e6 * 10) / 10);
+  assert.equal(geonodeMbps({ ...census, wire: 22_500_000_000 }, [{ lane: "instagram_census", wire: 0, newSessions: 0 }], [], FROM, TO), 100);
+});
+
+test("a queue grows only past 10% and about a minute of census intake, with its slope up", () => {
+  assert.equal(grew({ family: "kafka lag", name: "crawl.videos/video-writers", now: 280, ago6h: 97, slope6h: 30 }), false);
+  assert.equal(grew({ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }), false);
+  assert.equal(grew({ family: "kafka lag", name: "instagram.observed/instagram-census-os", now: 200_000, ago6h: 100_000, slope6h: 15_000 }), true);
+  assert.equal(grew({ family: "kafka lag", name: "instagram.observed/instagram-census-os", now: 10_400_000, ago6h: null, slope6h: null }), false);
+});
+
+test("the run reads every metric, and a failed source misses instead of reading green", () => {
+  const data: RunningData = { now: NOW, from: FROM, to: TO, errors: [], profiles: 50_211,
+    census: { jobs: 190_193, bad: 144_356, att: 2_000_000, okAtt: 40_000, wire: 0 }, proxy: [], adLibrary: [],
+    queues: [{ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }] };
+  const out = report(data, METRICS);
+  assert.equal(out.metrics.ig_profiles_per_min, 1674);
+  assert.equal(out.metrics.ig_job_fail_pct, 75.9);
+  assert.equal(out.metrics.ig_queues_growing_6h, 0);
+  const broken = report({ now: NOW, from: FROM, to: TO, errors: [{ source: "queues", message: "Grafana HTTP 502" }], profiles: 50_211 }, METRICS);
+  assert.ok(broken.metrics.geonode_mbps! < 0 && broken.metrics.ig_queues_growing_6h! > 1000);
+  assert.equal(broken.flagged![0]!.kind, "unmeasured");
+});
