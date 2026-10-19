@@ -64,11 +64,11 @@ export const PROD_CONVEX = "befitting-sparrow-356";
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
 export const BUS_FILL_LIMIT = 0.8;
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams";
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams" | "screen read";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
   prod_read_error_pct: ["prod rows", "grafana auth", "prod gauges", "prod config"],
-  watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams"],
+  watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams", "screen read"],
 };
 
 /** One watch_targets monitor row: platform, kind (posts, tagged, post, ads), lower-case target, its last run, and whether the crawler holds
@@ -85,6 +85,7 @@ export interface Gauges { rows: Record<string, number>; overdue: Record<string, 
 export interface WatchData {
   now: number;
   keys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
+  screen?: ScreenChunk[];
   errors: { source: Source; message: string }[];
 }
 
@@ -187,17 +188,26 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   const flagged: FlaggedSlice[] = data.errors.map(error => ({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 400) }));
   const failed = new Set(data.errors.map(error => error.source));
   const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
+  const screen = data.screen ?? [];
+  const late = screenFailed(screen);
+  if (data.screen) {
+    const asked = screen.reduce((sum, chunk) => sum + chunk.keys, 0);
+    detail.screen_read_ok_pct = asked ? round1(100 * (asked - late.reduce((sum, chunk) => sum + chunk.keys, 0)) / asked) : 0;
+    detail.screen_read_max_s = round1(Math.max(0, ...screen.map(chunk => chunk.ms)) / 1000);
+    flagged.push({ at, kind: "screen_read", excerpt: `the Watchlist status read of ${asked} owner keys in ${screen.length} chunks of ${SCREEN.chunkKeys}: ${late.length} would read Status unavailable (not 200 or past ${SCREEN.budgetMs / 1000} s); times ${screen.map(chunk => round1(chunk.ms / 1000)).join(", ")} s` });
+  }
   if (data.keys && data.rows) {
     const owner = ownerGreen(data.keys, data.rows, now);
     metrics.owner_green_pct = owner.accounts ? round1(100 * owner.green / owner.accounts) : 0;
     detail.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
     detail.owner_stopped_watches = owner.stopped;
     if (data.streams) {
-      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed);
+      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0);
       flagged.push({ at, kind: "watchlist_risks", excerpt: (`${metrics.watchlist_risks} Watchlist risks firing: ${owner.stopped} owner watches read Stopped`
         + (owner.stops.length ? ` (${listWhy(owner.stops)}${owner.stops.some(([reason]) => reason.includes("hides")) ? "; a wave of hidden stops on posts can mean a dead doc_id, F16" : ""})` : "")
         + `; ${data.streams.length} prod Kafka stream faults${data.streams.length ? ` (${data.streams.map(fault => `${fault.topic}: ${fault.why}`).join("; ")})` : ""}`
-        + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read. Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
+        + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read`
+        + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable). Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
     }
     flagged.push({ at, kind: "owner_watchlist", excerpt: `${owner.green} of ${owner.accounts} owner org accounts green on prod; ${owner.pushed} of ${owner.collabs} collab watches have an unpaused prod tagged monitor row` +
       (owner.why.length ? `; watches not green: ${listWhy(owner.why)}` : "") + (owner.unread ? `; ${owner.unread} keys not in platform:kind:target form` : "") });
@@ -327,6 +337,58 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
   }
 }
 
+/*
+ * The screen read: the Watchlist chips come from POST /api/monitoring/watch-targets, which sends the keys on screen to the crawler's
+ * POST https://crawler.virev.ai/api/watch-targets/summary. On 10-19 every 200-key read took 5.1 to 11.1 s against the route's 4 s budget, so
+ * every prod chip read "Status unavailable" while owner_green_pct read 91.8%. The probe sends SCREEN_SAMPLE owner keys, spread over the whole
+ * org, to the same API in the screen's chunks and budget, from inside virev-prod-crawler-api on 127.0.0.1:8787 (so the key never leaves the
+ * box; the container cannot reach crawler.virev.ai, and Caddy in front of it is a plain reverse_proxy).
+ * A chunk past the budget or not answering 200 is a chunk of chips that reads Status unavailable, and counts once in watchlist_risks.
+ */
+/** apps/search/src/lib/watchlist/crawl.svelte.ts READ_CHUNK_KEYS and READS_IN_FLIGHT, and SUMMARY_BUDGET_MS in
+ *  apps/search/src/lib/server/monitoring/watch-targets.ts, at auto-sns-agent e6623349e. */
+export const SCREEN = { chunkKeys: 25, inFlight: 4, budgetMs: 20_000 } as const;
+/** Owner keys the probe reads: 8 chunks, two waves of 4. measured: 50-key reads took 1.2 to 18.4 s on prod 10-19, so it ends inside 40 s. */
+export const SCREEN_SAMPLE = 200;
+/** One chunk of the screen read: keys asked, HTTP status (0 when the request failed), and milliseconds. */
+export interface ScreenChunk { keys: number; status: number; ms: number }
+
+/** SCREEN_SAMPLE crawler keys (`posts` for an account watch) taken evenly over the org's watch keys. */
+export function screenKeys(keys: readonly string[]): string[] {
+  const crawler = keys.map(rowKeyOf).filter((row): row is NonNullable<typeof row> => !!row && (row.kind === "posts" || row.kind === "tagged")).map(id);
+  const step = Math.max(1, crawler.length / SCREEN_SAMPLE);
+  return Array.from({ length: Math.min(SCREEN_SAMPLE, crawler.length) }, (_, i) => crawler[Math.floor(i * step)]!);
+}
+
+/** The remote script: in the prod crawler container, with its own key, read the keys in the screen's chunks and print one line per chunk. */
+export const screenRead = (keys: readonly string[]): string => `set -u
+docker exec -i -w /app/apps/crawler-v3 -e PYTHONPATH=/app/apps/crawler-v3 virev-prod-crawler-api dotenvx-start.sh .venv/bin/python - <<'PY' 2>/dev/null
+import json, time, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from src.settings import settings
+keys = ${JSON.stringify(keys)}
+def read(chunk):
+    start = time.monotonic()
+    request = urllib.request.Request("http://127.0.0.1:8787/api/watch-targets/summary", data=json.dumps({"keys": chunk}).encode(), method="POST",
+        headers={"content-type": "application/json", "accept-encoding": "gzip", "x-api-key": settings.crawler_api_key})
+    try:
+        with urllib.request.urlopen(request, timeout=${SCREEN.budgetMs / 1000}) as response:
+            response.read(); status = response.status
+    except Exception as error:
+        status = getattr(error, "code", 0) or 0
+    return len(chunk), status, round(1000 * (time.monotonic() - start))
+with ThreadPoolExecutor(${SCREEN.inFlight}) as pool:
+    for size, status, ms in pool.map(read, [keys[i:i + ${SCREEN.chunkKeys}] for i in range(0, len(keys), ${SCREEN.chunkKeys})]):
+        print(f"screen\t{size}\t{status}\t{ms}")
+PY
+`;
+export function parseScreen(text: string): ScreenChunk[] {
+  return text.split("\n").map(line => line.split("\t")).filter(cells => cells.length === 4 && cells[0] === "screen")
+    .map(([, keys, status, ms]) => ({ keys: Number(keys), status: Number(status), ms: Number(ms) }));
+}
+/** Chunks a screen would show as Status unavailable: not a 200, or past the route's budget. */
+export const screenFailed = (chunks: readonly ScreenChunk[]): ScreenChunk[] => chunks.filter(chunk => chunk.status !== 200 || chunk.ms > SCREEN.budgetMs);
+
 const ROWS_SQL = "select w.platform, w.kind, lower(w.target), case when w.paused then 't' else 'f' end, coalesce(w.last_outcome, ''), " +
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, ''), coalesce(w.last_stop_reason, ''), coalesce(w.last_error_code, ''), " +
   "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end, " +
@@ -349,7 +411,10 @@ export const REMOTE = remoteRead("virev-prod-postgres", "prod-pg-owner-ro.txt", 
 /** Staging: the monitor rows. */
 export const STAGING_REMOTE = remoteRead("virev-staging-postgres", "staging-pg-owner-ro.txt", ROWS_SQL);
 
-export interface WatchDeps { query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>; now: number }
+export interface WatchDeps {
+  query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>;
+  screen: (keys: string[]) => Promise<string>; now: number;
+}
 
 export async function measure(deps: WatchDeps): Promise<WatchData> {
   const data: WatchData = { now: deps.now, errors: [] };
@@ -361,8 +426,10 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     data.errors.push({ source: "grafana auth", message: deps.authError ?? "no Grafana login" });
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
-  const [keys, prodText, stagingText, prod, pause, streams] = await Promise.all([
-    step("convex keys", deps.keys),
+  const keysRead = step("convex keys", deps.keys);
+  const [keys, screenText, prodText, stagingText, prod, pause, streams] = await Promise.all([
+    keysRead,
+    keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
     step("prod rows", deps.rows),
     step("staging rows", deps.staging),
     query ? step("prod gauges", () => gauges(query)) : undefined,
@@ -373,7 +440,9 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   const staging = stagingText === undefined ? undefined : parseRows(stagingText);
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the ssh read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "the ssh read returned no staging watch_targets monitor row" });
-  Object.assign(data, keys && { keys }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging },
+  const screen = screenText === undefined ? undefined : parseScreen(screenText);
+  if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read printed no chunk line from virev-prod-crawler-api" });
+  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
@@ -389,7 +458,7 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken, signal),
-    rows: () => ssh(REMOTE, signal), staging: () => ssh(STAGING_REMOTE, signal) });
+    rows: () => ssh(REMOTE, signal), staging: () => ssh(STAGING_REMOTE, signal), screen: keys => ssh(screenRead(keys), signal) });
   const result = report(data, dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`watchlist-green: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
