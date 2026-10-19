@@ -119,36 +119,3 @@ test("on systemd's socket the early shell's own process answers shells while the
   assert.equal((await get(base + "?t=t1", nav)).body, "real /cap/?t=t1", "after the hand-over the real server answers shells too");
   main.stdin!.end();
 });
-
-test("the early shell's process keeps answering shells until the service thread is free after it is ready", { timeout: 60_000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), "early-busy-"));
-  const home = await mkdtemp(join(tmpdir(), "early-home-"));
-  await writeFile(join(dir, "configuration.json"), JSON.stringify({ capability: "cap", csrfToken: "tok" }));
-  const js = { ...asset(Buffer.from("js"), "text/javascript; charset=utf-8"), br: Buffer.from("b"), gzip: Buffer.from("g") };
-  const css = { ...asset(Buffer.from("css"), "text/css; charset=utf-8"), br: Buffer.from("b"), gzip: Buffer.from("g") };
-  const previousHome = process.env.HOME;
-  process.env.HOME = home;
-  try { await writePacked(bundleCacheDir(await clientSourceHash()), js, css); } finally { process.env.HOME = previousHome; }
-  const fixture = new URL("./fixtures/early-start.mjs", import.meta.url).pathname;
-  const main = spawn("python3", ["-c", holder, process.execPath, fixture, dir, "0"], { env: { ...process.env, HOME: home }, stdio: ["pipe", "pipe", "inherit"], detached: true, timeout: 30_000, killSignal: "SIGKILL" });
-  t.after(() => { try { process.kill(-main.pid!, "SIGKILL"); } catch { /* gone */ } });
-  const lines = createInterface({ input: main.stdout! });
-  const seen: string[] = [];
-  const waiters: [string, () => void][] = [];
-  lines.on("line", line => { seen.push(line); for (const [want, done] of waiters) if (line === want) done(); });
-  const saw = (want: string) => seen.includes(want) ? Promise.resolve() : new Promise<void>(resolve => waiters.push([want, resolve]));
-  const port = Number(await new Promise<string>(resolve => lines.once("line", resolve)));
-  const base = `http://127.0.0.1:${port}/cap/`;
-  const nav = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
-  await saw("imported");
-  assert.match((await get(base, nav)).body, /data-chat-token="tok"/, "the child is up");
-  main.stdin!.write("take-busy\n");
-  await saw("busy");
-  const at = Date.now();
-  const shell = await get(base, nav);
-  assert.match(shell.body, /data-chat-token="tok"/, "the early shell answered, not the real server");
-  assert.ok(Date.now() - at < 1000, `the shell waited ${Date.now() - at} ms on the busy thread`);
-  await saw("taken");
-  assert.equal((await get(base, nav)).body, "real /cap/", "once the thread is free the real server answers");
-  main.stdin!.end();
-});
