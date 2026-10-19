@@ -765,6 +765,12 @@ export class Catalog {
     };
     const [state, labels, chats, checkIns, briefs, archivedByOwner] = await wait(Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
       this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]));
+    // The reads the chat loop below needs start now and run while the rows are built: one after another, each waited behind whatever else the
+    // main thread ran, and on 10-19 live projections waited about as long as their own code ran (wall p90 100 to 133 ms, own code p90 58 to 66 ms).
+    const startedAt = Date.now();
+    const linksOf = new Map([...chats ?? []].map(id => [id, this.chats.links(id).catch(() => null)] as const));
+    const queuedRead = this.queueSource();
+    const wakesRead = this.wakesSource(startedAt).catch(() => []);
     const originOf = await wait(this.origins.resolver(chats ?? new Set()));
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
@@ -812,7 +818,7 @@ export class Catalog {
     const now = Date.now();
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
-      const links = await wait(this.chats.links(row.id).catch(() => null));
+      const links = await wait(linksOf.get(row.id) ?? this.chats.links(row.id).catch(() => null));
       row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
@@ -826,8 +832,8 @@ export class Catalog {
       }
     }
     const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
-    const queued = await wait(this.queueSource());
-    const wakes = await wait(this.wakesSource(now).catch(() => []));
+    const queued = await wait(queuedRead);
+    const wakes = await wait(wakesRead);
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {

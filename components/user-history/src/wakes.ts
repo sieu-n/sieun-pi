@@ -242,11 +242,10 @@ export function owedWakes(wakes: readonly Wake[], tickedAt: number | undefined, 
 export async function pendingWakes(dir: string, now: number): Promise<Wake[]> {
   const names = await readdir(dir).catch(() => [] as string[]);
   const tickedAt = Date.parse(await readFile(join(dir, TICKED), "utf8").catch(() => ""));
-  const wakes: Wake[] = [];
-  for (const name of names.filter(name => name.endsWith(".json"))) {
-    const wake = await readFile(join(dir, name), "utf8").then(text => parseWake(JSON.parse(text)), () => null).catch(() => null);
-    if (wake) wakes.push(wake);
-  }
+  // Every file at once: each catalog projection reads them, and 76 reads one after another each waited behind the rest of the main thread's work.
+  const read = await Promise.all(names.filter(name => name.endsWith(".json"))
+    .map(name => readFile(join(dir, name), "utf8").then(text => parseWake(JSON.parse(text)), () => null).catch(() => null)));
+  const wakes = read.filter((wake): wake is Wake => wake !== null);
   return owedWakes(wakes, Number.isFinite(tickedAt) ? tickedAt : undefined, now);
 }
 
