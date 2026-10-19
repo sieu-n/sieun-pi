@@ -1045,6 +1045,17 @@ export class Catalog {
   /** True for a hosts.json box other than this one, whose folders and files are on its own disk. */
   isOtherHost(name: string | null | undefined): boolean { return !!name && !!this.hosts?.client(name); }
 
+  /** The hello this service last read from the named box's daemon (this box's when the name is null or its own), without connecting. */
+  helloOf(name: string | null): DaemonClient["hello"] {
+    return (name && name !== this.hosts?.selfName ? this.hosts?.client(name) : this.client)?.hello;
+  }
+
+  /** Whether the named box's daemon link is up now (this box's when the name is null or its own). */
+  reachable(name: string | null): boolean {
+    if (!name || name === this.hosts?.selfName) return this.daemon === "up";
+    return this.hosts?.status().some(host => host.name === name && host.up) === true;
+  }
+
   /** A connected client for the named box, this box's when the name is absent or its own; it throws for a name hosts.json does not list. */
   async hostClient(name?: string | null): Promise<DaemonClient> {
     if (!name || name === this.hosts?.selfName) { await this.connect(); return this.client; }

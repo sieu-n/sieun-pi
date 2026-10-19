@@ -1017,6 +1017,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         }
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
+          await backend.threads.supersedeArchive(id);
           await unarchiveOnItsBox(backend.catalog, { agentDir: getAgentDir() }, id);
           await backend.threads.unarchive(id);
           if (await backend.chats.restore(id)) await backend.catalog.notify();

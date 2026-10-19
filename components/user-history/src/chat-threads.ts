@@ -8,6 +8,8 @@ import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from 
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
+import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, takesSavedArchive } from "./saved-archive.ts";
+import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
 import { isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
@@ -42,6 +44,8 @@ type NativeEvent = Parameters<Parameters<DaemonAgentConnection["subscribe"]>[0]>
 type NativeSnapshot = Awaited<ReturnType<DaemonAgentConnection["getInitialSnapshot"]>>;
 type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubscribe: () => void };
 
+/** The daemon's archive_saved_session answer for a file it cannot read: nothing is left to cancel. */
+const UNKNOWN_SAVED = "Unknown saved session";
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
 const STOP_PENDING = /^Session worker \S+ did not stop/;
 
@@ -290,10 +294,18 @@ export class ThreadHub {
    * `readOnly` (a scratch serve) opens every thread from its session file and never attaches or resumes one: at 12:17Z on 10-18 a scratch
    * serve's attach of the live chat 01a14d31 ran its build-change reload, which rebuilt that chat's Python kernel.
    */
+  /**
+   * The owner archives whose scheduled-job cancel is not confirmed yet (`<data dir>/saved-archive-queue.json`), retried until it is or the
+   * owner reopens the session. Null when the hub was given no file (tests): such an archive only reports that its jobs may still run.
+   */
+  readonly cancels: SavedArchiveQueue | null;
+
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
     private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
-    private readonly firstPages = new FirstPages(null), private readonly readOnly = false) {
+    private readonly firstPages = new FirstPages(null), private readonly readOnly = false, pendingCancels: string | null = null) {
     this.dormant = new Dormancy(idle);
+    this.cancels = pendingCancels ? new SavedArchiveQueue({ path: pendingCancels, attempt: entry => this.retryCancel(entry), reachable: host => this.catalog.reachable(host),
+      log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`), ...readOnly ? { tickMs: 0 } : {} }) : null;
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
   }
@@ -1278,8 +1290,10 @@ export class ThreadHub {
   }
 
   /**
-   * Archive the way the terminal agents view deactivates an agent (Ctrl+X): tell open tabs, drop this server's own attachment, kill the resident
-   * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
+   * Archive the way the terminal agents view deactivates an agent (Ctrl+X): tell open tabs, drop this server's own attachment, stop the session
+   * and its scheduled jobs, record the native archived state in its session file, and hide the row at once. A resident session gets a kill; one
+   * no worker holds, or one the kill finds already ended ("Unknown active session"), gets `archiveSaved`. When its daemon did not confirm the
+   * stop, the archive still holds here and it throws ScheduledJobsLeft.
    */
   async archive(id: string): Promise<void> {
     this.archiveStarts.set(id, Date.now());
@@ -1293,22 +1307,101 @@ export class ThreadHub {
   }
 
   private async archiveNow(id: string): Promise<void> {
+    const archivedAt = Date.now();
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
     this.unpin(id);
     this.threads.get(id)?.broadcast({ type: "status", connection: "closed", error: "This thread was archived." });
     await this.dispose(id);
-    if (summary.activeSessionId) {
-      const response = await (await this.daemon(summary.activeSessionId)).request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
-      if (!response.success && !response.error.startsWith(UNKNOWN_ACTIVE)) {
-        if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
-        this.finishKill(id, summary.activeSessionId);
-      }
-    }
+    const killed = summary.activeSessionId !== undefined && await this.archiveKill(id, summary.activeSessionId) === "stopped";
+    const host = this.catalog.hostOf(id), sessionPath = this.catalog.daemonPath(summary);
+    const left = killed || !sessionPath ? undefined : await this.archiveSaved(id, host, sessionPath);
     this.setSessionState(summary, "archived");
     this.catalog.holdLifecycle(id, "archived");
     if (summary.lifecycle !== "archived" || summary.activeSessionId) void this.catalog.refresh().catch(() => {});
+    if (left === undefined) { await this.cancels?.done(id); return; }
+    if (!this.cancels || !sessionPath) throw new ScheduledJobsLeft(`The thread is archived, but its scheduled jobs may still run: ${left}.`);
+    const queued = await this.cancels.add({ id, host, sessionPath, archivedAt, error: left }).then(() => true, () => false);
+    throw new ScheduledJobsLeft(queued
+      ? `The thread is archived. Its scheduled jobs are not cancelled yet (${left}). The chat service retries the cancel until ${host ?? "this box"} answers, ` +
+        "unless the thread is reopened first. If a typed prompt or a message from the chat service reaches the thread before then, the retry cannot tell " +
+        "who sent it and waits until you archive or reopen the thread again."
+      : `The thread is archived, but its scheduled jobs may still run (${left}), and the retry could not be recorded.`);
   }
+
+  /** A bare kill, which a kill_origin daemon records as the owner's stop, so it ends the session's scheduled jobs. "gone": the daemon no longer holds it. */
+  private async archiveKill(id: string, activeSessionId: string): Promise<"stopped" | "gone"> {
+    const response = await (await this.daemon(activeSessionId)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false });
+    if (response.success) return "stopped";
+    if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
+    if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
+    this.finishKill(id, activeSessionId);
+    return "stopped";
+  }
+
+  /**
+   * The owner's archive of a session no worker holds, on the daemon of `host` (null: this box), by the path that daemon knows its file by. A
+   * daemon whose last hello lacks saved_session_archive (mem.2, mem.3, mem.4) gets nothing, as before, even while it is down: there an idle
+   * unload's kill already ended the jobs. The command goes out only under the hello of its own connection, and a daemon with it cancels the
+   * saved tree's jobs. When it refuses the session as resident at the owner's archive, the archive kills that session's own active session,
+   * as it kills any resident session, and asks once more if the kill finds it gone again. A session loaded after a confirmed archive is left
+   * alone: an archived thread may answer a later agent message. Returns why the jobs may still be armed, or undefined.
+   */
+  private async archiveSaved(id: string, host: string | null, sessionPath: string): Promise<string | undefined> {
+    const where = host ? `${host}'s daemon` : "this box's daemon";
+    const known = this.catalog.helloOf(host);
+    if (known && !takesSavedArchive(known)) return undefined;
+    if (!known) {
+      try {
+        const client = await this.hostDaemon(host);
+        if (!takesSavedArchive(client.hello ?? await client.waitForHello(host ? 3000 : LOCAL_HELLO_MS))) return undefined;
+      } catch (error) { return `${where} did not answer (${error instanceof Error ? error.message : String(error)})`; }
+    }
+    for (let round = 0; round < 2; round++) {
+      const answer = await archiveSavedSession(this.catalog.socketPathFor(host), sessionPath, 30000);
+      if (answer.kind === "unsupported" || answer.kind === "archived") return undefined;
+      if (answer.kind === "failed") return `${where} answered: ${answer.error}`;
+      await this.catalog.refresh().catch(() => {});
+      const active = (await this.catalog.summary(id))?.activeSessionId;
+      if (!active) return `${where} holds the session in a worker it does not list as this thread's`;
+      if (await this.archiveKill(id, active) === "stopped") return undefined;
+    }
+    return `the session loaded and stopped again on ${where} during the archive`;
+  }
+
+  /**
+   * One retry of an unconfirmed cancel, by the box and path the archive recorded, read against that box's own row, since `summary` shows a
+   * held archive with no active session. It never kills and never opens the session, because an archived thread may still answer an agent
+   * message (Chats.archive): a session loaded now waits for its unload. Before the cancel goes out, the session file says what started turns
+   * since the archive (`resumeSince`). A message another agent session sent is accepted work, which the cancel must not end, so the entry
+   * ends there with a log line. A user prompt may be a plain cron run or a person's message, an agent message with no sending session may be
+   * the chat service's own wake or a held send older than the archive, and a file that does not read says nothing, so the entry stays and
+   * nothing is sent until the owner reopens the thread. Heartbeat prompts alone are the kept jobs firing, so the cancel goes out. Another
+   * box's entries carry that box's clock, which NTP keeps within the archive's own timing.
+   */
+  private async retryCancel(entry: PendingCancel): Promise<CancelTry> {
+    const row = (entry.host ? this.catalog.remoteRows() : this.catalog.daemonRows()).find(candidate => candidate.sessionId === entry.id);
+    if (row?.activeSessionId) return { outcome: "again", error: "the session is loaded, so the cancel waits until it is unloaded" };
+    let since: ResumeSince;
+    try {
+      const file = entry.host ? row && await this.catalog.localFile(row) : entry.sessionPath;
+      if (!file) return { outcome: "again", error: `${entry.host} does not list the session, so its file cannot say what woke it since the archive` };
+      since = existsSync(file) || entry.host ? await resumeSince(file, entry.archivedAt, entry.id) : "none";
+    } catch (error) {
+      return { outcome: "again", error: `the session file did not read, so nothing tells an accepted message from a scheduled wake (${error instanceof Error ? error.message : String(error)})` };
+    }
+    if (since === "accepted") return { outcome: "done", note: "the session answered a message another agent session sent after the archive, so the cancel would end authorized work" };
+    if (since === "unproven") return { outcome: "again", error: "a user prompt or a service-sent message came in after the archive, which may be a cron run or a wake, so the cancel waits for the owner to archive or reopen the thread" };
+    const answer = await archiveSavedSession(this.catalog.socketPathFor(entry.host), entry.sessionPath, 30000);
+    if (answer.kind === "archived") return { outcome: "done" };
+    if (answer.kind === "unsupported") return { outcome: "done", note: "its daemon no longer lists saved_session_archive" };
+    if (answer.kind === "resident") return { outcome: "again", error: "the daemon holds the session in a worker" };
+    if (answer.error.startsWith(UNKNOWN_SAVED)) return { outcome: "done", note: answer.error };
+    return { outcome: "again", error: answer.error };
+  }
+
+  /** The owner unarchived or reopened the thread: an unconfirmed cancel of its archive ends before anything opens it again. */
+  async supersedeArchive(id: string): Promise<void> { await this.cancels?.supersede(id); }
 
   /** The supervisor gave up waiting (its graceful window is 2 s) and keeps stopping the worker; if it is still listed a little later, ask once more. */
   private finishKill(id: string, activeSessionId: string): void {
@@ -1327,6 +1420,7 @@ export class ThreadHub {
 
   /** Undo an archive: the thread comes back as a saved thread that resumes on the next reply. */
   async unarchive(id: string): Promise<void> {
+    await this.supersedeArchive(id);
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
     this.reactivate(id, summary);
@@ -1336,10 +1430,12 @@ export class ThreadHub {
   /**
    * After the idle unload's kill, which writes the archived state: the thread stays on the owner's list as a saved thread, unless an archive
    * through this server ran at any point from `since` (when the unload began that stop), which wins. On 10-18 the unload's kill hid the plain
-   * thread 01a14c31 at 05:39:42Z, 3 min after it was restored, because only chats were unarchived after it. False when it left the thread as is.
+   * thread 01a14c31 at 05:39:42Z, 3 min after it was restored, because only chats were unarchived after it. A thread whose archive still waits for
+   * its cancel stays archived, since that stop is no reopen. False when it left the thread as is.
    */
   async keepListed(id: string, since: number): Promise<boolean> {
     const summary = await this.catalog.summary(id);
+    if (await this.cancels?.has(id)) return false;
     if (!summary || this.archiving.has(id) || (this.archivedAt.get(id) ?? -Infinity) >= since) return false;
     this.reactivate(id, summary);
     void this.catalog.refresh().catch(() => {});
@@ -1519,6 +1615,7 @@ export class ThreadHub {
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.sweeper);
+    this.cancels?.close();
     this.unwatchCatalog?.();
     await Promise.all([...this.threads.keys()].map(id => this.dispose(id)));
     await this.firstPages.flush();

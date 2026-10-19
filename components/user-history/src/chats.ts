@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { IdIndex } from "./id-index.ts";
+import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
@@ -396,16 +397,18 @@ export class Chats {
    * The owner's archive of a chat: the session is archived, the chat leaves the index, and the archived-chats file keeps it out of the chats and
    * the sidebar. An agent message may resume the session later (10-12 20:38 KST: a relayed broadcast resumed "stripe and payments"); it answers
    * as a plain hidden session, with no brief reload, check-in or duty, and nothing archives it again (owner 10-12: "the thread should be able to
-   * respond, but not be in the Chats list").
+   * respond, but not be in the Chats list"). When the daemon did not confirm that the chat's scheduled jobs were cancelled, the chat still leaves
+   * the index and the archive throws ScheduledJobsLeft, so the owner sees it failed and can archive it again.
    */
   async archive(id: string): Promise<void> {
     this.archiveCounts.set(id, this.archives(id) + 1);
     const stop = this.threads.archive(id);
     stop.catch(() => {});
     await this.membership(id, async () => {
-      await stop;
+      const left = await stop.then(() => undefined, (error: unknown) => { if (error instanceof ScheduledJobsLeft) return error; throw error; });
       await this.source.archived?.add(id);
       await this.forget(id);
+      if (left) throw left;
     });
   }
 
