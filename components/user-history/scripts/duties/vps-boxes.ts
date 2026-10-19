@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FiringAlert, readGrafanaAlerts } from "../../src/alert-bridge.ts";
@@ -15,7 +15,9 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * the math of the metal-host-disk-fill-30d and metal02-dev-disk-fill-30d rules, and air_runners_online counts the M1 Air's runners up, both from
  * the box Prometheus through Grafana ds/query. disk_days_min replaced root_disk_days on 10-19, which read us-metal01's / only (51 days) while
  * us-metal02's / read 6.9. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
- * by its triage job (prod-alerts.ts). The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
+ * by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
+ * and reads this box's /proc/vmstat when Prometheus has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
+ * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
 const DATA_DIR = join(homedir(), ".prime/agent/browser-chat");
@@ -26,6 +28,9 @@ const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
 const DISK_BOXES = ["us-metal01", "us-metal02"] as const;
 const DISKS = `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",mountpoint!="/boot"}`;
 export const DISK_DAYS_QUERY = `${DISKS} / clamp_min(-deriv(${DISKS}[24h]) * 86400, 1)`;
+const OOM = `node_vmstat_oom_kill{box=~"${DISK_BOXES.join("|")}"}`;
+export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
+export const OOM_LAST_QUERY = `max_over_time(timestamp(changes(${OOM}[2m]) > 0)[1d:1m])`;
 export const AIR_RUNNERS_QUERY = 'sum(devbox_runner_up{job="devbox",box="m1-air"})';
 
 export interface Risk { id: string; line: string; owner: string; alertUids: string[] }
@@ -86,6 +91,20 @@ export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: num
   return { days: Math.round(sorted[0]!.days * 10) / 10, flagged: { at, kind: "disk", excerpt } };
 }
 
+export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number }
+
+const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)}Z on ${new Date(ms).toISOString().slice(5, 10)}`;
+
+/** The OOM kills of both boxes summed, and one line for each box with a kill, naming its count and its last kill. */
+export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; flagged: FlaggedSlice[] } {
+  const missing = DISK_BOXES.filter(box => !boxes.some(entry => entry.box === box));
+  if (missing.length) throw new Error(`no node_vmstat_oom_kill of ${missing.join(" or ")}`);
+  const flagged = boxes.filter(entry => entry.kills > 0).map((entry): FlaggedSlice => ({ at, kind: "oom", excerpt: entry.sinceBootAt
+    ? `${entry.box}: ${entry.kills} OOM kills in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because Prometheus has no node_vmstat_oom_kill for it`
+    : `${entry.box}: ${entry.kills} OOM kills in the last 24 h${entry.lastAt ? `, the last at about ${stamp(entry.lastAt)}` : ""}` }));
+  return { kills: boxes.reduce((sum, entry) => sum + entry.kills, 0), flagged };
+}
+
 type Frame = { schema?: { fields?: { labels?: Record<string, string> }[] }; data?: { values?: unknown[][] } };
 
 async function query(expr: string): Promise<Frame[]> {
@@ -110,6 +129,29 @@ async function disks(): Promise<DiskDays[]> {
     const days = frame.data?.values?.[1]?.at(-1);
     return typeof days === "number" && labels.box && labels.mountpoint ? [{ box: labels.box, mountpoint: labels.mountpoint, days }] : [];
   });
+}
+
+async function byBox(expr: string): Promise<Map<string, number>> {
+  return new Map((await query(expr)).flatMap((frame): [string, number][] => {
+    const box = frame.schema?.fields?.[1]?.labels?.box;
+    const value = frame.data?.values?.[1]?.at(-1);
+    return box && typeof value === "number" ? [[box, value]] : [];
+  }));
+}
+
+async function procOomKills(box: string): Promise<OomKills> {
+  const kills = Number(/^oom_kill (\d+)$/m.exec(await readFile("/proc/vmstat", "utf8"))?.[1]);
+  const uptime = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]);
+  if (!Number.isFinite(kills)) throw new Error("/proc/vmstat has no oom_kill line");
+  return { box, kills, sinceBootAt: Date.now() - uptime * 1000 };
+}
+
+async function oomBoxes(): Promise<OomKills[]> {
+  const [kills, last] = await Promise.all([byBox(OOM_KILLS_QUERY), byBox(OOM_LAST_QUERY)]);
+  const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! * 1000 } : {} }));
+  const here = hostname().split(".")[0]!;
+  if (!kills.has(here) && (DISK_BOXES as readonly string[]).includes(here)) boxes.push(await procOomKills(here));
+  return boxes;
 }
 
 async function main(): Promise<void> {
@@ -138,6 +180,11 @@ async function main(): Promise<void> {
     result.metrics.disk_days_min = counted.days;
     result.flagged!.push(counted.flagged);
   } catch (error) { flag("source_error", `disk_days_min: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    const counted = oomKills24h(await oomBoxes(), at);
+    result.metrics.oom_kills_24h = counted.kills;
+    result.flagged!.push(...counted.flagged);
+  } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
   try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }
   catch (error) { flag("source_error", `air_runners_online: ${error instanceof Error ? error.message : String(error)}`); }
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
