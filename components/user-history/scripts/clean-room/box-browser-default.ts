@@ -39,13 +39,16 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const add = (id: string, ok: boolean | null, detail: string) => checks.push({ id, ok, detail });
 
   const onApp = (call: Call): boolean => APP.test(call.input) || APP.test(call.output);
-  const appCalls = browser.filter(call => onApp(call) || !MAIL.test(call.input));
+  const appSessions = new Set(browser.filter(call => APP.test(call.input)).map(call => call.session));
+  const mailSessions = new Set(browser.filter(call => MAIL.test(call.input) && !appSessions.has(call.session)).map(call => call.session));
+  const forMail = (call: Call): boolean => MAIL.test(call.input) || mailSessions.has(call.session);
+  const appCalls = browser.filter(call => onApp(call) || !forMail(call));
   const boxed = new Set(calls.filter(call => BOX.test(call.output)).map(call => call.session));
   const opened = appCalls.filter(call => call.ok && APP.test(call.input) && /open_tab\(|openTab\(|page\.goto\(/.test(call.input) && !usesAside(call)
     && (BOX.test(call.output) || boxed.has(call.session)));
-  const shots = appCalls.filter(call => call.ok && SHOT.test(call.input) && (!usesAside(call) || MAIL.test(call.input))
+  const shots = appCalls.filter(call => call.ok && SHOT.test(call.input) && (!usesAside(call) || forMail(call))
     && opened.some(open => open.session === call.session && open.at <= call.at));
-  const strays = appCalls.filter(call => usesAside(call) && !MAIL.test(call.input));
+  const strays = appCalls.filter(call => usesAside(call) && !forMail(call));
   const mac = calls.filter(call => MAC.test(call.input) && (call.tool === "bash" || /\bbash\(|subprocess|call_tool\(/.test(call.input) || !/agent_message\.send|rlm\.spawn|create_session/.test(call.input)));
   const toldAfter = owner.filter(call => shots[0] && call.at > shots[0].at).map(call => call.input).join("\n");
   const header = /\bheader|\bnav(bar|igation)?\b|\blogo\b/i.test(toldAfter);
@@ -57,9 +60,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     `the owner was ${header ? "" : "not yet "}told about the header after a screenshot${header ? `: "${clip(toldAfter.match(/[^.\n]*\b(header|nav|logo)[^.\n]*/i)?.[0] ?? "", 240)}"` : ""}`,
   ].join("; "));
 
-  const mail = browser.filter(call => MAIL.test(call.input));
+  const mail = browser.filter(forMail);
   const read = mail.filter(call => call.ok && usesAside(call) && /\d/.test(call.output) && !/AsideError|Traceback|not signed in/i.test(call.output));
-  const otherAside = browser.filter(call => usesAside(call) && !MAIL.test(call.input));
+  const otherAside = browser.filter(call => usesAside(call) && !forMail(call));
   const count = /\b\d[\d,]*\b[^.\n]{0,40}\bunread\b|\bunread\b[^.\n]{0,40}\b\d[\d,]*\b/i.exec(told)?.[0];
   add("b", otherAside.length ? false : read.length && count ? true : mail.length && !read.length && owner.length && !count ? false : null, [
     `${mail.length} Gmail calls, ${read.length} of them read it through Aside${read[0] ? `, first ${where(read[0])}` : mail[0] ? `, first try ${where(mail[0])}` : ""}`,
