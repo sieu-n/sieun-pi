@@ -7,15 +7,12 @@ import { inScope, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const HTTP_DIRECT = "http.route({\n\tpath: '/stripe-webhook',\n})\nhttp.route({ path: '/clerk-webhook' })\nhttp.route({ path: '/resend-webhook' })\nhttp.route({ path: '/zernio-webhook' })\n";
 const VENT_ROUTE = "export const VENT_WEBHOOK_PREFIX = '/webhooks/vent/';\nnew Map([\n\t['stripe', a],\n\t['clerk', b],\n\t['resend', c],\n\t['zernio', d],\n]);\n";
-const UP = [{ url: "https://vent.virev.ai", status: 200 }, { url: "https://vent-staging.virev.ai", status: 200 }];
 
 function reads(overrides: Partial<VentReads> = {}): VentReads {
   return {
     share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] }, "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
     webhooks: webhookVerdicts({ http: "", ventRoute: VENT_ROUTE }),
-    calls: [{ outcome: "success", status: "200", calls: 99 }, { outcome: "upstream_error", status: "502", calls: 1 }, { outcome: "refused", status: "401", calls: 50 }],
     keys: { locations: { "convex production befitting-sparrow-356": ["VENT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY"] }, unreadable: {} },
-    health: UP,
     ...overrides,
   };
 }
@@ -24,13 +21,12 @@ test("all sites and webhooks on Vent with prod traffic read 100%, and the GeoNod
   const { metrics } = ventMetrics(reads(), 0);
   assert.equal(metrics.through_vent_pct, 100);
   assert.equal(metrics.in_scope_count, 6);
-  assert.equal(metrics.vent_success_24h_pct, 99);
   assert.equal(metrics.provider_keys_outside_vent, 0);
-  assert.equal(metrics.vent_hosts_down, 0);
 });
 
 test("a site whose code is on Vent but has no prod vent.call does not count, unless it runs in no prod deployment", () => {
-  const share = { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(38, "vent")] } }, traffic: { production: { sites_with_vent_traffic: [] } } };
+  const sites = [site(0, "vent"), site(38, "vent")];
+  const share = { refs: { "origin/main": { sha: "a", sites }, "origin/sieun/dev": { sha: "b", sites } }, traffic: { production: { sites_with_vent_traffic: [] } } };
   const output = ventMetrics(reads({ share, webhooks: [] }), 0);
   assert.equal(output.metrics.through_vent_pct, 50);
   assert.equal(output.flagged!.find(flag => flag.kind === "no_prod_traffic")!.item, "row 0");
@@ -40,11 +36,6 @@ test("direct webhook routes on main count as direct even when the Vent route exi
   const output = ventMetrics(reads({ webhooks: webhookVerdicts({ http: HTTP_DIRECT, ventRoute: VENT_ROUTE }) }), 0);
   assert.equal(output.metrics.through_vent_pct, round(100 * 2 / 6));
   assert.equal(output.flagged!.filter(flag => flag.kind === "webhook_direct").length, 4);
-});
-
-test("no prod calls read -1 for the success rate, never 100", () => {
-  assert.equal(ventMetrics(reads({ calls: [] }), 0).metrics.vent_success_24h_pct, UNMEASURED_PCT);
-  assert.equal(ventMetrics(reads({ calls: [{ outcome: "refused", status: "401", calls: 4 }] }), 0).metrics.vent_success_24h_pct, UNMEASURED_PCT);
 });
 
 test("provider keys count per location outside Vent, the alarm fallback Slack token is allowed, and an unread store reads unmeasured", () => {
@@ -64,12 +55,10 @@ test("provider keys count per location outside Vent, the alarm fallback Slack to
   assert.equal(inScope("container virev-prod-crawler-api"), true);
 });
 
-test("a failed share script or ClickHouse read gives -1 shares and a source error, and a down host counts", () => {
-  const output = ventMetrics(reads({ share: { error: "exit 1" }, calls: { error: "HTTP 401" }, health: [UP[0]!, { url: "https://vent-staging.virev.ai", status: 0, error: "TLS" }] }), 0);
+test("a failed share script gives a -1 share and a source error", () => {
+  const output = ventMetrics(reads({ share: { error: "exit 1" } }), 0);
   assert.equal(output.metrics.through_vent_pct, UNMEASURED_PCT);
-  assert.equal(output.metrics.vent_success_24h_pct, UNMEASURED_PCT);
-  assert.equal(output.metrics.source_errors, 2);
-  assert.equal(output.metrics.vent_hosts_down, 1);
+  assert.equal(output.metrics.source_errors, 1);
 });
 
 test("vent-share.py takes each provider's Vent integrations from tables.py, by name or by secret, and never gives gmail to Google OAuth", async () => {
@@ -147,9 +136,49 @@ test("the by-code counts read at main and at the sieun/dev tip, and a direct row
     "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "partial", { direct: ["x.ts:1: fetch('https://api.stripe.com')"] }), site(63, "direct", { exception: "GeoNode" })] },
   }, traffic: { production: { sites_with_vent_traffic: [1] } } };
   const output = ventMetrics(reads({ share }), 0);
-  assert.deepEqual([output.metrics.code_rows, output.metrics.code_vent_sites, output.metrics.tip_code_vent_sites], [3, 1, 1]);
+  assert.deepEqual([output.metrics.code_rows, output.metrics.code_vent_sites, output.metrics.tip_code_vent_sites], [2, 1, 1]);
   assert.deepEqual(output.flagged!.filter(flag => flag.kind === "tip_site_direct").map(flag => flag.item), ["row 1"]);
   const noTip = ventMetrics(reads({ share: { refs: { "origin/main": share.refs["origin/main"] }, traffic: share.traffic } }), 0);
-  assert.equal(noTip.metrics.tip_code_vent_sites, UNMEASURED_PCT);
+  assert.deepEqual([noTip.metrics.tip_code_vent_sites, noTip.metrics.through_vent_pct], [UNMEASURED_PCT, UNMEASURED_PCT]);
   assert.equal(noTip.metrics.source_errors, 1);
+});
+
+// On 2026-10-19 the konti, Meta and ZeroBounce removals deleted 10 call sites from sieun/dev 53b1ed6201 (OmniHuman, ElevenLabs, Pexels, Sora,
+// the Instagram Graph routes, ZeroBounce and more), and the duty still counted each one as a direct site from its frozen 70 rows, so
+// through_vent_pct could never reach 100%. The list of sites now comes from the tip: removed rows leave, and a new direct call counts.
+test("a site whose call is gone at the tip leaves the count, and a new direct call at the tip counts against the share", () => {
+  const share = { refs: {
+    "origin/main": { sha: "a", sites: [site(0, "vent"), site(54, "direct"), site(62, "direct")] },
+    "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(54, "removed"), site(62, "gone")],
+      new_sites: [{ path: "convex/search/newThing.ts", app: "convex", provider: "stripe", direct: ["convex/search/newThing.ts:3: await fetch('https://api.stripe.com/v1/charges')"] }] },
+  }, traffic: { production: { sites_with_vent_traffic: [0] } } };
+  const output = ventMetrics(reads({ share }), 0);
+  assert.deepEqual([output.metrics.in_scope_count, output.metrics.through_vent_count, output.metrics.through_vent_pct], [6, 5, round(100 * 5 / 6)]);
+  assert.deepEqual([output.metrics.tip_removed_sites, output.metrics.new_direct_sites, output.metrics.code_rows], [2, 1, 2]);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "site_removed").map(flag => flag.item), ["row 54", "row 62"]);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "new_direct_site").map(flag => flag.item), ["convex/search/newThing.ts"]);
+  assert.equal(output.flagged!.some(flag => flag.kind === "site_direct"), false);
+});
+
+test("vent-share.py reads a row whose files no longer name the provider as gone, and its call scan finds a new direct call but no covered one", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
+  const files: Record<string, string> = {
+    "apps/crawler-v3/src/contacts/email_verify.py": "def verify(email):\n    return mx_lookup(email)\n",
+    "convex/lib/stripeClient.ts": "import Stripe from 'stripe';\nimport { ventKey } from './vent';\nreturn new Stripe(ventKey(), {});\n",
+    "convex/search/newThing.ts": "const res = await fetch('https://api.stripe.com/v1/charges', { headers });\n",
+    "convex/search/hint.ts": "throw badRequest('That does not look like a Slack incoming-webhook URL (https://hooks.slack.com/services/…)');\n",
+    "apps/search/svelte.config.js": "export default {};\n",
+    "apps/search/src/lib/analytics/config.ts": "export const HOST = 'https://us.i.posthog.com';\n",
+    "apps/crawler-v3/src/settings.py": "    cliproxy_base_url: str = \"\"\n",
+  };
+  const code = "import importlib.util, json, re, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
+    "sys.modules['vs'] = vs; spec.loader.exec_module(vs)\nclass T:\n  def __init__(s, files): s.files, s.ref, s.text = set(files), 'fixture', files\n" +
+    "  def read(s, p): return s.text.get(p)\n  def grep(s, pattern, roots):\n" +
+    "    return [(p, str(n), l) for p, t in s.text.items() for n, l in enumerate(t.split('\\n'), 1) if re.search(pattern, l)]\n" +
+    "tree = T(json.loads(sys.argv[2]))\nsites = [vs.Site(62, 'crawler-v3', '', 'ZeroBounce', '', 'zerobounce', ['apps/crawler-v3/src/contacts/email_verify.py']),\n" +
+    "  vs.Site(5, 'convex', '', 'Stripe', '', 'stripe', ['convex/lib/stripeClient.ts'])]\nverdicts = {s.row: vs.judge(s, tree) for s in sites}\n" +
+    "print(json.dumps({'status': {r: v.status for r, v in verdicts.items()}, 'new': [[x['path'], x['provider']] for x in vs.call_scan(tree, sites, verdicts)]}))";
+  const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify(files)], { encoding: "utf8" }));
+  assert.deepEqual(got, { status: { "62": "gone", "5": "vent" }, new: [["convex/search/newThing.ts", "stripe"]] });
 });

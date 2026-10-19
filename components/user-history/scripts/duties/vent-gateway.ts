@@ -7,22 +7,22 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The Vent chat's "Vent gateway" precheck (`node --import tsx scripts/duties/vent-gateway.ts`). No model call, no browser, names only for keys.
- * - through_vent_pct, the headline: the share of in-scope outside call sites and inbound webhooks that go through Vent in prod. Call sites come
- *   from vent-share.py beside this file, run in the auto-sns-agent checkout at origin/main, which is what prod runs: a site counts when its
- *   code there goes through Vent and, when it runs in prod, prod Vent logged a successful vent.call for it in
- *   the script's last 7 days. Row 63 (GeoNode proxy egress) is the one allowed exception and leaves the count. The 4 Convex inbound webhooks
- *   count when main's convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
- * - vent_success_24h_pct: successful prod vent.call rows over the last 24 h, without the caller's own 4xx (429 stays in) and calls the caller
- *   cancelled, from otel_logs in the obs ClickHouse through Grafana's grafana_clickhouse datasource.
+ * - through_vent_pct, the headline: the share of in-scope outside call sites and inbound webhooks that go through Vent in prod. The list of
+ *   call sites comes from the code at the sieun/dev tip through vent-share.py beside this file: the inventory rows whose call is still there
+ *   (a row whose files are deleted or no longer name the provider leaves, as a site_removed row) plus each direct provider call its call
+ *   scan finds that no row covers (new_direct_site, never through Vent). A row counts as through when its code at origin/main, which prod
+ *   runs, goes through Vent and, when it runs in prod, prod Vent logged a successful vent.call for it in the script's last 7 days. Row 63
+ *   (GeoNode proxy egress) is the one allowed exception and leaves the count. The 4 Convex inbound webhooks count when main's
+ *   convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
  * - provider_keys_outside_vent: (location, key name) pairs where a provider key still sits in a deployment other than Vent, read with the
  *   cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data) plus Convex env lists and the tier files at origin/main.
- * - vent_hosts_down: how many of vent.virev.ai and vent-staging.virev.ai do not answer 200 on /healthz.
- * - code_vent_sites and tip_code_vent_sites: of the code_rows in-scope rows, how many go through Vent by code alone at main and at the
- *   sieun/dev tip, with GeoNode the one allowed direct row, so the cutover's code progress reads before prod runs it.
+ * - code_vent_sites and tip_code_vent_sites: of the code_rows call sites at the tip, how many go through Vent by code alone at main and at
+ *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
+ *   and dropped.
  * A source it cannot read gives 999999 for a count to drive down, -1 for a share or a count to drive up, a source_errors count and a flagged slice, never a good-looking value.
- * Targets in vent-gateway.duty.json and their sources: through_vent_pct 100 and vent_hosts_down 0 are the owner's "all external API/webhook
- * should pass here", provider_keys_outside_vent 0 is his "completely remove all legacy sdk, API keys from old deployments", and
- * vent_success_24h_pct 99 is the Vent chat's duty brief of 2026-10-18.
+ * Targets in vent-gateway.duty.json and their sources: through_vent_pct 100 is the owner's "all external API/webhook should pass here", and
+ * provider_keys_outside_vent 0 is his "completely remove all legacy sdk, API keys from old deployments". Call success and host health moved
+ * to the Vent integrations duty's own precheck (vent-integrations.ts) on 2026-10-19.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -32,8 +32,6 @@ const LISTERS = `${SESSIONS}/1610-vent-cutover-all-callers/data`;
 export const REF = "origin/main";
 /** The release tip, where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
 export const TIP = "origin/sieun/dev";
-const GRAFANA = "https://obs.virev.ai/api/ds/query";
-export const HOSTS = ["https://vent.virev.ai", "https://vent-staging.virev.ai"] as const;
 /** Convex deployments, from the cutover inventory's env-names-before.json (2026-10-18). */
 export const CONVEX = { staging: "tremendous-eel-825", production: "befitting-sparrow-356" } as const;
 const BOX = "us-metal01";
@@ -87,11 +85,14 @@ export function inScope(location: string): boolean {
 }
 
 export interface ShareSite { row: number; app: string; provider: string; runs_in: string; status: string; direct?: string[]; exception?: string | null }
-export interface ShareResult { refs: Record<string, { sha: string; sites: ShareSite[]; new_direct?: Record<string, string[]> }>; traffic?: { production?: { sites_with_vent_traffic: number[] } } }
+/** A direct provider call the share script's call scan found in deployed code that no live inventory row covers. */
+export interface NewSite { path: string; app: string; provider: string; direct: string[] }
+export interface ShareResult { refs: Record<string, { sha: string; sites: ShareSite[]; new_sites?: NewSite[] }>; traffic?: { production?: { sites_with_vent_traffic: number[] } } }
+/** Share script statuses for a row whose call is no longer in the code: every file deleted, or the files no longer name the provider. */
+export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
-export interface CallRow { outcome: string; status: string; calls: number }
 export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
-export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; calls: CallRow[] | { error: string }; keys: KeyListing; health: { url: string; status: number; error?: string }[] }
+export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing }
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
 const failed = <T extends object>(value: T | { error: string }): value is { error: string } => "error" in value && typeof (value as { error: unknown }).error === "string";
@@ -117,8 +118,6 @@ export function webhookVerdicts({ http, ventRoute, registry }: WebhookFiles): We
   });
 }
 
-/** A caller's own 4xx (429 is capacity, so it stays) or a call the caller cancelled, which the success rate leaves out. */
-export const callersOwn = (row: CallRow): boolean => row.outcome === "cancelled" || (/^4\d\d$/.test(row.status) && row.status !== "429");
 
 /** dotenv names of a tier file, without dotenvx's DOTENV_* keys and without `# NAME=` placeholder rows. */
 export const envNames = (text: string): string[] =>
@@ -136,48 +135,45 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
     metrics.through_vent_pct = UNMEASURED_PCT;
   } else {
     const main = reads.share.refs[REF];
+    const tip = reads.share.refs[TIP];
     const live = new Set(reads.share.traffic?.production?.sites_with_vent_traffic ?? []);
+    if (!tip) sourceError(`vent share script result has no ${TIP} section, so the call-site list is unknown`);
     if (!main || !reads.share.traffic?.production) sourceError(`vent share script result has no ${main ? "prod traffic" : REF} section`);
-    const sites = (main?.sites ?? []).filter(site => !site.exception);
+    const atMain = new Map((main?.sites ?? []).map(site => [site.row, site]));
+    const sites = (tip?.sites ?? []).filter(site => !site.exception && !GONE.has(site.status));
+    const newSites = tip?.new_sites ?? [];
     let through = 0;
     for (const site of sites) {
+      const prod = atMain.get(site.row);
       const codeOnly = CODE_ONLY_ROWS.has(site.row);
-      if (site.status === "vent" && (codeOnly || live.has(site.row))) { through++; continue; }
-      const why = site.status !== "vent" ? `code at main is ${site.status}${site.direct?.[0] ? `: ${site.direct[0]}` : ""}` : "code at main goes through Vent, but prod Vent logged no successful vent.call for it in 7 days";
-      flagged.push({ at, kind: site.status === "vent" ? "no_prod_traffic" : "site_direct", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: ${why}`.slice(0, 300) });
+      if (prod?.status === "vent" && (codeOnly || live.has(site.row))) { through++; continue; }
+      const why = prod?.status !== "vent" ? `code at main is ${prod?.status ?? "missing"}${prod?.direct?.[0] ? `: ${prod.direct[0]}` : ""}` : "code at main goes through Vent, but prod Vent logged no successful vent.call for it in 7 days";
+      flagged.push({ at, kind: prod?.status === "vent" ? "no_prod_traffic" : "site_direct", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: ${why}`.slice(0, 300) });
     }
+    for (const site of newSites) flagged.push({ at, kind: "new_direct_site", item: site.path, excerpt: `${site.app} ${site.provider} at ${TIP}, a direct call no inventory row covers: ${site.direct[0]}`.slice(0, 300) });
     for (const hook of reads.webhooks) {
       if (!hook.direct && hook.vent) { through++; continue; }
       flagged.push({ at, kind: "webhook_direct", item: `webhook ${hook.source}`, excerpt: `${hook.source} webhook: ${hook.direct ? `convex/http.ts at main still routes the provider's own path` : "no direct route"}${hook.vent ? "" : ", and convex/webhooks/vent.ts at main does not take it"}` });
     }
-    const total = sites.length + reads.webhooks.length;
-    metrics.through_vent_pct = main && reads.share.traffic?.production && total ? round(100 * through / total) : UNMEASURED_PCT;
+    const total = sites.length + newSites.length + reads.webhooks.length;
+    metrics.through_vent_pct = main && tip && reads.share.traffic?.production && total ? round(100 * through / total) : UNMEASURED_PCT;
     metrics.through_vent_count = through;
     metrics.in_scope_count = total;
-    metrics.unlisted_direct_files = Object.keys(main?.new_direct ?? {}).length;
-    for (const [path, lines] of Object.entries(main?.new_direct ?? {})) flagged.push({ at, kind: "unlisted_direct", item: path, excerpt: `${path} at main, outside the 70 sites, still reads a provider key or host: ${lines[0]}`.slice(0, 300) });
-    const tip = reads.share.refs[TIP];
-    if (!tip) sourceError(`vent share script result has no ${TIP} section`);
-    metrics.code_rows = main?.sites.length ?? tip?.sites.length ?? 0;
-    metrics.code_vent_sites = main ? main.sites.filter(row => row.status === "vent").length : UNMEASURED_PCT;
-    metrics.tip_code_vent_sites = tip ? tip.sites.filter(row => row.status === "vent").length : UNMEASURED_PCT;
-    for (const row of tip?.sites ?? []) {
-      if (row.status === "vent" || row.exception) continue;
-      flagged.push({ at, kind: "tip_site_direct", item: `row ${row.row}`, excerpt: `#${row.row} ${row.app} ${row.provider}: code at ${TIP} is ${row.status}${row.direct?.[0] ? `: ${row.direct[0]}` : ""}`.slice(0, 300) });
+    metrics.code_rows = tip ? sites.length + newSites.length : UNMEASURED_PCT;
+    metrics.code_vent_sites = main && tip ? sites.filter(site => atMain.get(site.row)?.status === "vent").length : UNMEASURED_PCT;
+    metrics.tip_code_vent_sites = tip ? sites.filter(site => site.status === "vent").length : UNMEASURED_PCT;
+    metrics.new_direct_sites = tip ? newSites.length : UNMEASURED_PCT;
+    const removed = (tip?.sites ?? []).filter(site => GONE.has(site.status));
+    metrics.tip_removed_sites = tip ? removed.length : UNMEASURED_PCT;
+    for (const site of removed) {
+      const prod = atMain.get(site.row);
+      const still = prod && !GONE.has(prod.status) ? `, and main, which prod runs, still has it (${prod.status}) until the next promote` : "";
+      flagged.push({ at, kind: "site_removed", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: its call is ${site.status} at ${TIP}, so it leaves the count${still}`.slice(0, 300) });
     }
-  }
-
-  if (failed(reads.calls)) {
-    sourceError(`prod vent.call rows could not be read from ClickHouse: ${reads.calls.error}`);
-    metrics.vent_success_24h_pct = UNMEASURED_PCT;
-  } else {
-    const counted = reads.calls.filter(row => !callersOwn(row));
-    const total = counted.reduce((sum, row) => sum + row.calls, 0);
-    const ok = counted.filter(row => row.outcome === "success").reduce((sum, row) => sum + row.calls, 0);
-    metrics.vent_calls_24h = reads.calls.reduce((sum, row) => sum + row.calls, 0);
-    metrics.vent_success_24h_pct = total ? round(100 * ok / total, 2) : UNMEASURED_PCT;
-    if (!total) flagged.push({ at, kind: "no_calls", excerpt: `prod Vent logged ${metrics.vent_calls_24h} vent.call rows in 24 h and none outside the caller's own 4xx, so there is no success rate to read` });
-    for (const row of counted) if (row.outcome !== "success") flagged.push({ at, kind: "call_failed", excerpt: `${row.calls} prod vent.call rows in 24 h ended ${row.outcome} with HTTP ${row.status}` });
+    for (const site of sites) {
+      if (site.status === "vent") continue;
+      flagged.push({ at, kind: "tip_site_direct", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: code at ${TIP} is ${site.status}${site.direct?.[0] ? `: ${site.direct[0]}` : ""}`.slice(0, 300) });
+    }
   }
 
   for (const [location, error] of Object.entries(reads.keys.unreadable)) sourceError(`${location} could not be listed: ${error}`);
@@ -193,8 +189,6 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   metrics.provider_keys_seen = leaks.length;
   metrics.key_locations_with_leaks = new Set(leaks.map(leak => leak.slice(0, leak.lastIndexOf(" ")))).size;
 
-  metrics.vent_hosts_down = reads.health.filter(host => host.status !== 200).length;
-  for (const host of reads.health) if (host.status !== 200) flagged.push({ at, kind: "host_down", item: host.url, excerpt: `${host.url}/healthz gave ${host.error ?? `HTTP ${host.status}`}`.slice(0, 300) });
   metrics.source_errors = sourceErrors;
   return { metrics, flagged };
 }
@@ -215,25 +209,6 @@ async function grafanaToken(): Promise<string> {
   const token = (await run("npx", ["--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"], { cwd: join(REPO, "apps/infra") })).trim();
   if (!token) throw new Error("GRAFANA_AGENT_TOKEN missing in apps/infra/.env");
   return token;
-}
-
-/** Prod vent.call rows of the last 24 h by outcome and HTTP status. */
-async function callRows(token: string): Promise<CallRow[]> {
-  const sql = "SELECT LogAttributes['vent.outcome'] AS outcome, LogAttributes['http.response.status_code'] AS status, count() AS calls FROM otel_logs " +
-    "WHERE ServiceName = 'vent' AND Body = 'vent.call' AND ResourceAttributes['deployment.environment.name'] = 'production' " +
-    "AND Timestamp > now() - INTERVAL 24 HOUR GROUP BY outcome, status";
-  const response = await fetch(GRAFANA, {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ queries: [{ refId: "A", datasource: { uid: "grafana_clickhouse", type: "grafana-clickhouse-datasource" }, rawSql: sql, format: 1, queryType: "sql" }], from: "now-24h", to: "now" }),
-  });
-  const body = await response.json().catch(() => null) as { results?: { A?: { frames?: { schema: { fields: { name: string }[] }; data: { values: unknown[][] } }[]; error?: string } } } | null;
-  const result = body?.results?.A;
-  if (!response.ok || !result || result.error) throw new Error(`HTTP ${response.status}: ${String(result?.error ?? "no result").slice(0, 160)}`);
-  const frame = result.frames?.[0];
-  if (!frame) return [];
-  const names = frame.schema.fields.map(field => field.name);
-  const column = (name: string) => frame.data.values[names.indexOf(name)] ?? [];
-  return column("calls").map((calls, index) => ({ outcome: String(column("outcome")[index] ?? ""), status: String(column("status")[index] ?? ""), calls: Number(calls) }));
 }
 
 async function share(token: string | undefined, dir: string): Promise<ShareResult> {
@@ -286,14 +261,6 @@ async function keyListing(): Promise<KeyListing> {
   return { locations, unreadable };
 }
 
-async function health(url: string): Promise<{ url: string; status: number; error?: string }> {
-  try {
-    const response = await fetch(`${url}/healthz`);
-    await response.arrayBuffer();
-    return { url, status: response.status };
-  } catch (error) { return { url, status: 0, error: errorText(error) }; }
-}
-
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vent-gateway: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -303,14 +270,12 @@ async function main(): Promise<void> {
     const fetched = await run("git", ["fetch", "--quiet", "origin", "main", "sieun/dev"]).then(() => null, (error: unknown) => errorText(error));
     const token = await grafanaToken().catch((error: unknown) => ({ error: errorText(error) }));
     const tokenText = typeof token === "string" ? token : undefined;
-    const [shareResult, hooks, calls, keys, hosts] = await Promise.all([
+    const [shareResult, hooks, keys] = await Promise.all([
       share(tokenText, dir).catch((error: unknown) => ({ error: errorText(error) })),
       webhooks().catch((error: unknown) => ({ error: errorText(error) })),
-      typeof token === "string" ? callRows(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       keyListing(),
-      Promise.all(HOSTS.map(health)),
     ]);
-    const result = ventMetrics({ share: shareResult, webhooks: hooks, calls, keys, health: hosts }, at);
+    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys }, at);
     if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main sieun/dev failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {

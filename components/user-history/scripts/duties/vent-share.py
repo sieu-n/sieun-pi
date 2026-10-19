@@ -4,7 +4,9 @@
 Moved from the auto-sns-agent session folder sessions/2026/10/18/1949-vent-share-measure/data/vent_share.py so the duty
 (vent-gateway.ts) runs tracked code. Reads the 1610 call-site inventory (83 rows at 8bc0fa3615), keeps the 70 rows the cutover
 coordinator counted as in scope, and decides for each one, at a git ref, whether the code at that site goes through Vent or still
-calls the provider. A fresh scan of deployed code then lists direct provider lines in files no inventory row names. With --traffic
+calls the provider. The call sites at a ref are the rows whose call is still in the code there, since a row whose files are deleted
+(removed) or no longer name the provider (gone) has no caller left, plus every direct provider call the call scan finds in deployed
+code that no live row covers, so a new direct call counts as a site of its own. With --traffic
 it also counts Vent's vent.call log rows per caller and integration in the shared otel ClickHouse, and matches them to sites through
 the integrations in apps/vent/src/vent/tables.py, so a new Vent integration needs no edit here.
 
@@ -41,6 +43,8 @@ EXCEPTION_ROWS = {
 # Alarm paths call Vent first and keep a direct Slack fallback for when Vent is down, so a
 # partial verdict (Vent sign plus a direct line) is the target shape for these rows.
 FALLBACK_ROWS = {69, 70, 71}
+# Rows whose call is no longer in the code at a ref, which leave that ref's call-site list.
+GONE = ("removed", "gone")
 
 # Provider signatures. "strong" is a host or key name, which proves a direct call wherever it
 # sits. "sdk" is a client import, which proves a direct call only in a file with no Vent sign,
@@ -157,6 +161,11 @@ class Tree:
             self._cache[path] = git("show", f"{self.ref}:{path}", check=False) if path in self.files else None
         return self._cache[path]
 
+    def grep(self, pattern: str, roots: list[str]) -> list[tuple[str, str, str]]:
+        """(path, line number, text) of each line under the roots that matches the extended regex."""
+        out = git("grep", "-n", "-I", "-E", pattern, self.ref, "--", *roots, check=False)
+        return [(parts[1], parts[2], parts[3]) for parts in (line.split(":", 3) for line in out.splitlines()) if len(parts) == 4]
+
 
 def split_paths(cell: str) -> list[str]:
     cell = cell.replace("\\", "")
@@ -207,7 +216,7 @@ class Site:
 
 @dataclass
 class Verdict:
-    status: str  # vent | direct | partial | removed | unclear
+    status: str  # vent | direct | partial | removed (no file left) | gone (files left, provider never named) | unclear
     direct: list[str] = field(default_factory=list)
     vent: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
@@ -317,37 +326,96 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
                     v.status, v.vent, v.direct = inner.status, inner.vent, inner.direct
                     v.via = other.row
                     break
+    if v.status == "unclear" and not any(mentions(site.provider, text) for text in texts.values()):
+        v.status = "gone"
     return v
 
 
-# Fresh scan: deployed code roots and provider signs from scripts/ci/check-vent-egress.mjs (draft
-# in the cutover coordinator's artifacts), plus SDK imports.
+# The provider's name as a word, for the "gone" test: a row whose files still exist but never name the provider lost its call.
+NAMES = {"openai-paid": r"openai|sora", "seo": r"indexnow|webmasters|searchconsole", "grafana-slack": r"slack", "slack-webhook": r"slack"}
+
+
+def mentions(provider: str, text: str) -> bool:
+    sig = P[provider]
+    word = NAMES.get(provider, provider.split("-")[0])
+    return bool(re.search(sig["strong"], text) or re.search(sig["sdk"], text) or re.search(rf"\b({word})", text, re.I))
+
+
+# Call scan: the direct provider calls in deployed code at a ref that no live inventory row covers, so a new direct call counts as a
+# site of its own. A call is a provider API host in any file, the CLIProxy base URL or a provider client built in a code file with
+# no Vent sign. A key name alone is no call (provider_keys_outside_vent counts keys), nor is a host in an error message or an input
+# placeholder. In a SvelteKit app only server modules count, since SvelteKit keeps private env out of the rest, which runs in the
+# browser (the coordinator's "browser call" rows are out of scope).
 CODE_ROOTS = re.compile(r"^(convex/|apps/[^/]+/src/|apps/infra/|apps/llm-wiki/specs/lib/|packages/[^/]+/src/)")
 SKIP = re.compile(r"(^apps/vent/|^apps/llm-wiki/content/|^apps/virev-demo/|/_generated/|\.test\.|\.spec\.|/tests?/|/test_[^/]*\.py$|\.md$|\.env)")
-SCAN = re.compile(
-    r"https?://(api\.anthropic\.com|api\.openai\.com|(www\.)?slack\.com/api|api\.resend\.com|api\.stripe\.com|[a-z0-9.-]*zernio\.com/api"
-    r"|gmail\.googleapis\.com|oauth2\.googleapis\.com|generativelanguage\.googleapis\.com|api\.elevenlabs\.io|api\.pexels\.com"
-    r"|api\.aimlapi\.com|graph\.instagram\.com|api\.instagram\.com|graph\.facebook\.com|[a-z]*\.?zerobounce\.net|api\.typesafe\.ai|api\.clerk\.com)"
-    r"|\b(CLIPROXY_API_KEY|CLIPROXY_BASE_URL|ANTHROPIC_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY|AIMLAPI_KEY|ELEVENLABS_API_KEY|PEXELS_API_KEY"
-    r"|HEYGEN_API_KEY|INSTAGRAM_ACCESS_TOKEN|INSTAGRAM_APP_SECRET|TYPESAFE_API_KEY|ZEROBOUNCE_API_KEY|RESEND_API_KEY|SLACK_BOT_TOKEN_SALES"
-    r"|SLACK_BOT_TOKEN_DEV|STRIPE_SECRET_KEY|ZERNIO_API_KEY|GOOGLE_GMAIL_CLIENT_SECRET|GOOGLE_DRIVE_SYNC_CLIENT_SECRET|LITELLM_API_KEY)\b"
+CODE_FILE = re.compile(r"\.(ts|mts|js|mjs|cjs|py)$")
+SVELTE_SERVER = re.compile(r"(/lib/server/|/\+server\.[jt]s$|/\+(page|layout)\.server\.[jt]s$|/hooks\.server\.[jt]s$)")
+CALL_HOST = re.compile(
+    r"https?://(api\.anthropic\.com|api\.openai\.com|(www\.)?slack\.com/api|hooks\.slack\.com|api\.resend\.com|api\.stripe\.com"
+    r"|[a-z0-9.-]*zernio\.com/api|gmail\.googleapis\.com|oauth2\.googleapis\.com|sheets\.googleapis\.com|searchconsole\.googleapis\.com"
+    r"|www\.googleapis\.com/(drive|upload/drive|webmasters|oauth2)|generativelanguage\.googleapis\.com|api\.elevenlabs\.io|api\.pexels\.com"
+    r"|api\.aimlapi\.com|api\.heygen\.com|graph\.instagram\.com|api\.instagram\.com|graph\.facebook\.com|rupload\.facebook\.com"
+    r"|[a-z]*\.?zerobounce\.net|api\.typesafe\.ai|api\.clerk\.com|api\.notion\.com|api\.telegram\.org|[a-z]+\.i\.posthog\.com"
+    r"|api\.indexnow\.org|www\.bing\.com/indexnow)"
 )
+CALL_BASE = re.compile(r"\bCLIPROXY_BASE_URL\b|\bcliproxy_base_url\b")
+CALL_CLIENT = re.compile(r"new (Stripe|PostHog|Resend|WebClient|OpenAI|Anthropic)\(|createClerkClient\(|\b(Async)?(OpenAI|Anthropic)\(|genai\.Client\(")
+NOT_A_CALL = re.compile(r"\b(throw|badRequest\(|Error\(|placeholder)|^\s*\w+\s*:\s*(str|SecretStr|Optional\b)")
+# The provider a client constructor builds; an OpenAI-wire client is CLIProxy's or paid OpenAI's.
+CLIENT_PROVIDERS = [(r"new Stripe\(", ("stripe",)), (r"new PostHog\(", ("posthog",)), (r"new Resend\(", ("resend",)),
+                    (r"new WebClient\(", ("slack",)), (r"createClerkClient\(", ("clerk",)), (r"genai\.Client\(", ("gemini",)),
+                    (r"OpenAI\(", ("cliproxy", "openai-paid")), (r"Anthropic\(", ("cliproxy",))]
 
 
-def fresh_scan(tree: Tree, known: set[str]) -> dict[str, list[str]]:
-    hits: dict[str, list[str]] = {}
-    out = git("grep", "-n", "-I", "-E", SCAN.pattern.replace("(?:", "("), tree.ref, "--", "convex", "apps", "packages", check=False)
-    for line in out.splitlines():
-        parts = line.split(":", 3)
-        if len(parts) != 4:
+def providers_of(text: str) -> tuple[str, ...]:
+    for pattern, providers in CLIENT_PROVIDERS:
+        if re.search(pattern, text):
+            return providers
+    return tuple(key for key, sig in P.items() if re.search(sig["strong"], text) or re.search(sig["sdk"], text))[:1] or ("unknown",)
+
+
+def is_server_code(path: str, svelte_apps: set[str]) -> bool:
+    app = path.split("/src/")[0] if path.startswith("apps/") and "/src/" in path else None
+    if path.endswith(".svelte"):
+        return False
+    return app not in svelte_apps or bool(SVELTE_SERVER.search(path))
+
+
+def call_scan(tree: Tree, sites: list[Site], verdicts: dict[int, Verdict]) -> list[dict]:
+    """Direct calls at the ref as (file, provider) sites, minus those a live row covers: a file the row names or reads through an
+    import, on a line of the row's provider."""
+    svelte_apps = {p[: -len("/svelte.config.js")] for p in tree.files if re.fullmatch(r"apps/[^/]+/svelte\.config\.js", p)}
+    covered: dict[str, list[Site]] = {}
+    for s in sites:
+        if verdicts[s.row].status in GONE:
             continue
-        _, path, n, text = parts
-        if not CODE_ROOTS.match(path) or SKIP.search(path) or path in known or COMMENT_RE.match(text):
+        v = verdicts[s.row]
+        for path in {*s.files, *(entry.split(":")[0] for entry in v.direct + v.vent)}:
+            covered.setdefault(path, []).append(s)
+    found: dict[tuple[str, str], list[str]] = {}
+    for path, n, text in tree.grep("|".join(p.pattern for p in (CALL_HOST, CALL_BASE, CALL_CLIENT)), ["convex", "apps", "packages"]):
+        if not CODE_ROOTS.match(path) or SKIP.search(path) or COMMENT_RE.match(text) or not is_server_code(path, svelte_apps):
             continue
-        if not SCAN.search(text) or VENT_RE.search(text):
+        if VENT_RE.search(text) or ALLOW_RE.search(text) or NOT_A_CALL.search(text):
             continue
-        hits.setdefault(path, []).append(f"{n}: {text.strip()[:140]}")
-    return hits
+        host = CALL_HOST.search(text)
+        if not host and not CODE_FILE.search(path):
+            continue
+        if not host and not CALL_BASE.search(text):
+            whole = tree.read(path) or ""
+            if any(VENT_RE.search(l) for _, l in code_lines(path, whole)) or KEYLESS_RE.search(whole):
+                continue
+        providers = providers_of(text)
+        rows = covered.get(path, [])
+        if any(s.provider in providers or re.search(P[s.provider]["strong"], text) or re.search(P[s.provider]["sdk"], text) for s in rows):
+            continue
+        found.setdefault((path, providers[0]), []).append(f"{path}:{n}: {text.strip()[:140]}")
+    return [{"path": path, "app": app_of(path), "provider": provider, "direct": lines} for (path, provider), lines in sorted(found.items())]
+
+
+def app_of(path: str) -> str:
+    parts = path.split("/")
+    return parts[1] if parts[0] in ("apps", "packages") and len(parts) > 1 else parts[0]
 
 
 def traffic(days: int) -> list[dict]:
@@ -434,21 +502,23 @@ def main() -> None:
     sites = load_sites(base)
     assert len(sites) == 70, f"expected 70 in-scope rows, got {len(sites)}"
     result: dict = {"inventory_ref": INVENTORY_REF, "refs": {}}
-    known = {f for s in sites for f in s.files}
     for ref in refs:
         tree = Tree(ref)
         verdicts = {s.row: judge(s, tree, sites) for s in sites}
-        vent = [s for s in sites if verdicts[s.row].status == "vent"]
+        live = [s for s in sites if verdicts[s.row].status not in GONE and not s.exception]
+        new_sites = call_scan(tree, sites, verdicts)
+        vent = [s for s in live if verdicts[s.row].status == "vent"]
         res = {
             "sha": tree.sha,
-            "share": f"{len(vent)}/{len(sites)}",
-            "counts": {k: sum(1 for v in verdicts.values() if v.status == k) for k in ["vent", "partial", "direct", "removed", "unclear"]},
+            "share": f"{len(vent)}/{len(live) + len(new_sites)}",
+            "counts": {k: sum(1 for v in verdicts.values() if v.status == k) for k in ["vent", "partial", "direct", "removed", "gone", "unclear"]},
             "sites": [{"row": s.row, "app": s.app, "provider": s.provider_name, "files": s.files, "exception": s.exception,
                        "runs_in": s.runs_in, **verdicts[s.row].__dict__} for s in sites],
-            "new_direct": fresh_scan(tree, known),
+            "new_sites": new_sites,
         }
         result["refs"][ref] = res
-        print(f"\n== {ref} ({tree.sha}): Vent share {res['share']} sites (row 63 GeoNode is the one allowed direct site)")
+        print(f"\n== {ref} ({tree.sha}): Vent share {res['share']} call sites (inventory rows whose call is still there, plus new direct"
+              " calls; row 63 GeoNode is the one allowed direct site)")
         print("   " + ", ".join(f"{k} {n}" for k, n in res["counts"].items()))
         by_app: dict[str, list[str]] = {}
         for s in sites:
@@ -457,11 +527,9 @@ def main() -> None:
                 tag = f"#{s.row} {s.provider_name}" + (" (exception)" if s.exception else "") + ("" if v.status == "direct" else f" [{v.status}]")
                 by_app.setdefault(s.app, []).append(tag)
         for app, tags in by_app.items():
-            print(f"   {app} still direct ({len(tags)}): " + "; ".join(tags))
-        if res["new_direct"]:
-            print(f"   fresh scan, direct lines in {len(res['new_direct'])} files no row names:")
-            for path, lines in sorted(res["new_direct"].items()):
-                print(f"     {path}: {len(lines)} lines, first {lines[0]}")
+            print(f"   {app} not on Vent ({len(tags)}): " + "; ".join(tags))
+        for site in new_sites:
+            print(f"   new direct call, {site['app']} {site['provider']}: {site['direct'][0]}")
     if a.traffic:
         rows = traffic(a.days)
         ref = tables_ref()
