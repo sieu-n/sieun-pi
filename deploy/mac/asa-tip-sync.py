@@ -1,20 +1,25 @@
 #!/usr/bin/python3
-"""Fast-forward this follower's auto-sns-agent checkout to the tip host's sieun/dev.
+"""Fast-forward this follower's auto-sns-agent checkout to the tip host's branch of the same name.
+
+The branch is the checkout's `agent.branch` git config key (`git config --get agent.branch`), else DEFAULT_BRANCH, so each
+developer's dev/<name> checkout follows its own branch (c119). Below, "the branch" is that name.
 
 Since 2026-10-18 11:24Z the tip host is us-metal02, and the Mac follows it. Until then the Mac held the tip, and at
 load 435 to 470 from about 10:50Z its sshd refused the box's lands, so about 30 commit.mjs and land-object.mjs runs on
 the box retried against it and nothing landed. A follower checkout has .git/agent-tip-host.json, so commit.mjs and
 land-object.mjs land on the tip host over ssh (tip-host.mjs), and this script brings the follower along.
 
-Run on the Mac by launchd ai.virev.asa-tip-sync every minute and by tip-host.mjs after each land (the config's "sync"
+On 2026-10-19 the owner moved the Mac to its own branch, dev/sieun-mac-a, so no checkout follows a tip host now and
+nothing installs or runs this script: its launchd job, its Mac copy and the box's asa-follower-watch are gone.
+A follower runs it from launchd ai.virev.asa-tip-sync every minute and from tip-host.mjs after each land (the config's "sync"
 command). Installed as a copy in ~/.local/share/asa-tip-sync; its log, blocked.json and carried/ live in
-~/.local/state/asa-tip-sync. Each run fetches the tip host's sieun/dev over ssh into refs/remotes/tip/sieun/dev and
-fast-forwards the local sieun/dev only when:
-  - the checkout is on sieun/dev and its HEAD is an ancestor of the tip,
+~/.local/state/asa-tip-sync. Each run fetches the tip host's branch over ssh into refs/remotes/tip/<branch> and
+fast-forwards the local branch only when:
+  - the checkout is on the branch and its HEAD is an ancestor of the tip,
   - no .git/index.lock exists and the index stages nothing, apart from entries at a state the branch moved past,
   - every path the fast-forward writes is clean on disk, or already holds the tip's bytes.
-A state the branch moved past is the path's entry, or its absence, at a commit between the oldest commit in sieun/dev's
-reflog and HEAD, other than HEAD's. A land that moves sieun/dev without the index or disk leaves such entries behind;
+A state the branch moved past is the path's entry, or its absence, at a commit between the oldest commit in the branch's
+reflog and HEAD, other than HEAD's. A land that moves the branch without the index or disk leaves such entries behind;
 the run sets a staged one back to HEAD's and gives such a file on disk the tip's bytes, saving the old ones in CARRY_DIR.
 Bytes no commit held there are live edits.
 A wiki page (apps/llm-wiki/content/) that the tip changes while this checkout holds other bytes keeps the local bytes,
@@ -37,8 +42,6 @@ import calendar, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, t
 
 REPO = os.environ.get("ASA_SYNC_REPO") or os.path.expanduser("~/Documents/Github/auto-sns-agent")
 URL = os.environ.get("ASA_SYNC_URL") or "sieun@100.83.139.73:/home/sieun/Documents/Github/auto-sns-agent"
-BRANCH = "refs/heads/sieun/dev"
-TRACK = "refs/remotes/tip/sieun/dev"
 STATE = os.environ.get("ASA_SYNC_STATE") or os.path.expanduser("~/.local/state/asa-tip-sync")
 LOG = os.environ.get("ASA_SYNC_LOG") or os.path.join(STATE, "sync.log")
 CARRY_DIR = os.environ.get("ASA_SYNC_CARRY") or os.path.join(STATE, "carried")
@@ -70,6 +73,11 @@ READ_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0",
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=15"}
 for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
     READ_ENV.pop(k, None)
+# A checkout with no agent.branch key works on the shared branch.
+DEFAULT_BRANCH = "sieun/dev"
+NAME = subprocess.run([GIT, "-C", REPO, "config", "--get", "agent.branch"], env=READ_ENV, capture_output=True, text=True).stdout.strip() or DEFAULT_BRANCH
+BRANCH = f"refs/heads/{NAME}"
+TRACK = f"refs/remotes/tip/{NAME}"
 
 
 def log(outcome, **kw):
@@ -102,13 +110,13 @@ def watch_block(outcome, line):
         mins = int((now - state["since"]) // 60)
         if now - state["since"] >= BLOCK_ALERT_S:
             if not state.get("alerted"):
-                state["alerted"] = send(OPS_THREAD, f"[asa-tip-sync] {HOST} auto-sns-agent sieun/dev has not followed the tip host for {mins} min. "
+                state["alerted"] = send(OPS_THREAD, f"[asa-tip-sync] {HOST} auto-sns-agent {NAME} has not followed the tip host for {mins} min. "
                                                     f"Last run: {json.dumps(line)[:900]}. Log: {LOG}")
             owners = state.setdefault("owners", {})
             for rel, session, why in blockers(line):
                 if rel in owners:
                     continue
-                told = bool(session) and send(session, f"[asa-tip-sync] {HOST}'s auto-sns-agent checkout has not followed the tip host's sieun/dev for {mins} min, "
+                told = bool(session) and send(session, f"[asa-tip-sync] {HOST}'s auto-sns-agent checkout has not followed the tip host's {NAME} for {mins} min, "
                                                        f"because {why}. Please commit it or put it back to HEAD. The sync never drops it on its own. Log: {LOG}")
                 owners[rel] = {"session": session, "told": told}
         if now - state["since"] >= FORYOU_S and not state.get("todo"):
@@ -448,9 +456,9 @@ def raw_states(*args, paths):
 
 
 def left_behind(head, wanted, tip=None):
-    """The paths of wanted ({rel: entry or None}) whose entry is a state sieun/dev already moved past, so it is no live edit.
+    """The paths of wanted ({rel: entry or None}) whose entry is a state the branch already moved past, so it is no live edit.
 
-    A state counts only when the path had it at a commit from the oldest commit in sieun/dev's reflog up to head or tip.
+    A state counts only when the path had it at a commit from the oldest commit in the branch's reflog up to head or tip.
     On 2026-10-18 the Mac's land-object.mjs runs moved sieun/dev from 10:44Z to 11:09Z and left the pre-land bytes of 50
     paths staged and the index without 36 paths those lands added, so asa-tip-sync skipped on "the index stages changes".
     Bytes that only a ci/ or other branch holds are a live edit: until 2026-10-18 they counted too, and at 12:28Z the run
@@ -549,7 +557,7 @@ def main():
 
     head_ref = git("symbolic-ref", "-q", "HEAD", check=False).stdout.decode().strip()
     if head_ref != BRANCH:
-        return log("skip", reason=f"checkout is on {head_ref or 'a detached HEAD'}, not sieun/dev")
+        return log("skip", reason=f"checkout is on {head_ref or 'a detached HEAD'}, not {NAME}")
     head, tip = out("rev-parse", "HEAD"), out("rev-parse", TRACK)
     if head == tip:
         return log("noop", head=head[:10])
@@ -558,7 +566,7 @@ def main():
         box_only = out("rev-list", f"{tip}..{head}").split()
         missing = unlanded(box_only, head, tip)
         if missing:
-            return log("skip", reason="local sieun/dev has commits the tip lacks", head=head[:10], tip=tip[:10],
+            return log("skip", reason=f"local {NAME} has commits the tip lacks", head=head[:10], tip=tip[:10],
                        local_only_commits=len(box_only), missing=[c[:10] for c in missing][:20],
                        tip_only_commits=int(out("rev-list", "--count", f"{head}..{tip}")))
     if os.path.exists(os.path.join(REPO, ".git", "index.lock")) and not clear_stale_lock():
@@ -566,7 +574,7 @@ def main():
     staged = out("diff-index", "--cached", "--name-only", head).splitlines()
     # A path staged at the tip's bytes is a move half done (a sync that stopped after
     # setting the index). A path staged at a state the branch moved past is a land that moved
-    # sieun/dev and left the index behind. Either entry goes back to HEAD's, and the move below sets it again.
+    # the branch and left the index behind. Either entry goes back to HEAD's, and the move below sets it again.
     idx = index_map()
     halfway = [rel for rel in staged if idx.get(rel) == tip_entry(tip, rel)]
     held = left_behind(head, {rel: idx.get(rel) for rel in staged if rel not in halfway}, tip)

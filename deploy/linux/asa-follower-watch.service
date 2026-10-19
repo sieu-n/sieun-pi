@@ -1,9 +1,0 @@
-[Unit]
-Description=asa-follower-watch: check that the Mac's auto-sns-agent checkout follows this box's sieun/dev, start a sync over ssh when it stops, and tell the ops chat at 10 min
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/python3 -B %h/.local/share/asa-follower-watch/asa-follower-watch.py

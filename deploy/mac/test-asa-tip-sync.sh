@@ -97,4 +97,11 @@ run >/dev/null; expect '"carried": \["src/ci.py"\]' "16 bytes that only a ci/ br
 expect '"kept_local": \["apps/virev-demo/app.css"\]' "16b a demo file the tip changes keeps its bytes"
 [ "$(cat "$W/box/apps/virev-demo/app.css")" = "blue sparingly" ] && [ "$(cat "$W/box/apps/virev-demo/old.svelte")" = v1 ] && [ "$(cat "$W/box/src/ci.py" | tr '\n' ' ')" = "A b c ci " ] \
   && echo "PASS 16c both demo files keep their bytes, also one at an older tip state, and the ci/ edit merges onto the tip" || { echo "FAIL 16c $(tail -1 "$W/sync.log")"; fail=1; }
+(cd "$W/mac" && git branch -q dev/sieun-mac-a sieun/dev && git checkout -q dev/sieun-mac-a)
+(cd "$W/box" && git config agent.branch dev/sieun-mac-a)
+run >/dev/null; expect 'not dev/sieun-mac-a' "17 a checkout whose agent.branch is dev/sieun-mac-a skips while it sits on sieun/dev"
+(cd "$W/box" && git fetch -q "$W/mac" dev/sieun-mac-a:dev/sieun-mac-a && git checkout -q dev/sieun-mac-a); mac_commit src/code.py 'dev\n' dev1
+run >/dev/null; expect '"fast-forward"' "17b it follows the tip host's dev/sieun-mac-a"
+[ "$(cd "$W/box" && git rev-parse dev/sieun-mac-a)" = "$(cd "$W/mac" && git rev-parse dev/sieun-mac-a)" ] && [ "$(cd "$W/box" && git rev-parse refs/remotes/tip/dev/sieun-mac-a)" = "$(cd "$W/mac" && git rev-parse HEAD)" ] \
+  && echo "PASS 17c dev/sieun-mac-a and refs/remotes/tip/dev/sieun-mac-a sit at the tip host's commit" || { echo "FAIL 17c $(tail -1 "$W/sync.log")"; fail=1; }
 exit $fail
