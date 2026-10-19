@@ -51,6 +51,7 @@ import { correctionRefine } from "./correction-refine.ts";
 import { dmReplies } from "./dm-replies.ts";
 import { englishJobs } from "./english-jobs.ts";
 import { everydayTask } from "./everyday-task.ts";
+import { historyLeftovers } from "./history-leftovers.ts";
 import { idleUnload } from "./idle-unload.ts";
 import { kernelRevive } from "./kernel-revive.ts";
 import { killWorker, lostBrief } from "./lost-brief.ts";
@@ -59,6 +60,7 @@ import { ordinaryHour } from "./ordinary-hour.ts";
 import { readmePreview } from "./readme-preview.ts";
 import { savedLogin } from "./saved-login.ts";
 import { ownerAsks } from "./owner-asks.ts";
+import { plainWords } from "./plain-words.ts";
 import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import type { RunState, Scenario } from "./session-read.ts";
@@ -72,7 +74,7 @@ const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/br
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
-  "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "saved-login": savedLogin };
+  "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "plain-words": plainWords, "saved-login": savedLogin };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
