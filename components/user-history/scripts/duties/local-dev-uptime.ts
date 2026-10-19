@@ -15,6 +15,8 @@ import { treeMb, treePids } from "./demo-sandbox.ts";
  * restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
+ * It also reads the owner's Mac over ssh, read-only: mac_checks_failing counts which of load under 20, at least 30% memory free, and its
+ * search app and design demo answering 200 fail, and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -31,6 +33,55 @@ export const SERVICES: readonly Service[] = [
   { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
   { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
 ];
+/** The owner's Mac (the `mac` alias of ~/.ssh/config.d/mac.conf), its dev servers, and the targets that keep it usable (owner, 10-09: "have it your duty to have usable mac"). */
+export const MAC_HOST = "mac";
+export const MAC_PORTS = [{ port: 5174, name: "search app" }, { port: 5180, name: "design demo" }] as const;
+export const MAC_LOAD_MAX = 20;
+export const MAC_FREE_MIN_PCT = 30;
+/** One read-only shell line on the Mac: load averages, free memory, and each dev server's HTTP code within the owner's 5 s (000 is no answer). */
+export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
+  ...MAC_PORTS.map(({ port }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}/`), "exit 0"].join("; ");
+
+export interface MacReading { load1: number; freePct: number; ports: Record<number, string> }
+
+/** Parses MAC_COMMAND's output: `{ 7.26 6.95 7.77 }`, `System-wide memory free percentage: 37%` and one `port <n> <code>` line per server. */
+export function parseMacReading(text: string): MacReading {
+  const load1 = Number(/\{\s*([\d.]+)/.exec(text)?.[1]);
+  const freePct = Number(/memory free percentage:\s*(\d+)%/.exec(text)?.[1]);
+  if (!Number.isFinite(load1) || !Number.isFinite(freePct)) throw new Error(`unparsed Mac reading: ${text.trim().slice(0, 200)}`);
+  return { load1, freePct, ports: Object.fromEntries([...text.matchAll(/^port (\d+) (\d{3})$/gm)].map(match => [Number(match[1]), match[2]!])) };
+}
+
+/** Each Mac check that fails, in plain words; an empty list means the Mac is usable. */
+export function macFailures(reading: MacReading): string[] {
+  const failing: string[] = [];
+  if (reading.load1 >= MAC_LOAD_MAX) failing.push(`load ${reading.load1} is not under ${MAC_LOAD_MAX}`);
+  if (reading.freePct < MAC_FREE_MIN_PCT) failing.push(`${reading.freePct}% memory free is under ${MAC_FREE_MIN_PCT}%`);
+  const down = MAC_PORTS.filter(({ port }) => reading.ports[port] !== "200");
+  if (down.length) failing.push(`dev servers not answering 200: ${down.map(({ port, name }) => `${name} :${port} gave ${reading.ports[port] === "000" || !reading.ports[port] ? "no answer" : `HTTP ${reading.ports[port]}`}`).join(", ")}`);
+  return failing;
+}
+
+/**
+ * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
+ * offline Mac: that sets mac_unreachable and leaves mac_checks_failing unmeasured, because an asleep Mac is not an overloaded one.
+ */
+export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+  let text: string;
+  try {
+    text = deps.platform === "darwin" ? await deps.exec("sh", ["-c", MAC_COMMAND]) : await deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if ((error as { code?: unknown }).code === 255) return { metrics: { mac_unreachable: 1 }, flagged: [{ at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its checks were not read: ${message}`.slice(0, 300) }] };
+    return { metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
+  }
+  const reading = parseMacReading(text);
+  const failing = macFailures(reading);
+  const summary = `load ${reading.load1}, ${reading.freePct}% memory free, ${MAC_PORTS.map(({ port }) => `:${port} ${reading.ports[port] ?? "unread"}`).join(", ")}`;
+  return { metrics: { mac_checks_failing: failing.length, mac_unreachable: 0 },
+    flagged: [{ at, kind: failing.length ? "mac_failing" : "mac_usable", excerpt: (failing.length ? `Mac failing: ${failing.join("; ")} (${summary})` : `Mac usable: ${summary}`).slice(0, 300) }] };
+}
+
 /** pm2 processes whose restarts the duty counts. The wiki counts here only where pm2 runs it. */
 export const PM2_NAMES = ["llm-wiki", "search"] as const;
 
@@ -121,8 +172,10 @@ export function target(service: Service, env: Record<string, string>): { url: st
 
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
-  const metrics: { servers_not_answering: number; restarts: number; wiki_footprint_mb?: number } = { servers_not_answering: 0, restarts: 0 };
+  const metrics: Record<string, number> & { servers_not_answering: number; restarts: number } = { servers_not_answering: 0, restarts: 0 };
   const at = deps.now();
+  const mac = measureMac(deps, at).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
+    ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
     if ("off" in where) return { at, kind: "by_design", excerpt: `${service.key}: ${where.off}` };
@@ -134,6 +187,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   }));
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
+  const macResult = await mac;
+  Object.assign(metrics, macResult.metrics);
+  flagged.push(...macResult.flagged);
   if (metrics.servers_not_answering) {
     const load = await hostLoad(deps).catch((error: unknown) => `unread: ${String(error)}`);
     flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });
