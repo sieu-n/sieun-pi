@@ -2,7 +2,7 @@ import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./art
 import { CHECK_IN_DUTY_ID } from "./chat-duties.ts";
 import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
-import { upkeepWords } from "./upkeep-title.ts";
+import { hasDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
@@ -532,8 +532,8 @@ const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…"
 /**
  * Applies one op. The board is not mutated; the result has `rev + 1` and `updatedAt: now`. `summary` is one plain sentence in the actor's
  * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result. An agent's summary
- * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo, a c47 wait or an
- * upkeep title.
+ * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo, a c47 wait, an
+ * upkeep title or a new open item with no done line.
  */
 export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
   if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
@@ -548,7 +548,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     if (actor === "agent") {
       flags.push(...softFlags(op));
       if (next.plan) {
-        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan));
+        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan));
         const open = openCount(next.plan);
         if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
         next = { ...next, plan: markMerges(next.plan) };
@@ -1095,6 +1095,21 @@ function upkeepTitles(before: ChatBoard, plan: readonly PlanItem[]): string[] {
     if (words) flags.push(`${item.id} ${quote(item.text)} reads like upkeep (${quote(words)}), and a plan holds only tasks that finish. Make the keeping a ` +
       "duty metric and close this item, or retitle it as the one fix it is with a \"Done when\" note. A request with both parts gets one step for the fix " +
       "and one duty metric for the keeping (board skill, references/plan-and-duties.md).");
+  });
+  return flags;
+}
+/**
+ * The agent's plan change against plans that never clear (owner 10-19: "plan should be tasks all eventually clear"): an open item added
+ * with no done line, so chat system duty d9 would count it in plan_upkeep_all. An upkeep title already has its own flag.
+ */
+function noDoneLines(before: ChatBoard, plan: readonly PlanItem[]): string[] {
+  const was = new Set<string>();
+  walk(before.plan, item => was.add(item.id));
+  const flags: string[] = [];
+  walk(plan, item => {
+    if (was.has(item.id) || !OPEN_STATUSES.has(item.status) || hasDoneLine(item) || upkeepWords(item.text)) return;
+    flags.push(`${item.id} ${quote(item.text)} has no done line, so it never clears. Give it a "Done when" note that names the check that ends ` +
+      "it, a target, or the duty metric it fixes (plan_update). Standing work belongs in a duty metric (board skill, references/plan-and-duties.md).");
   });
   return flags;
 }

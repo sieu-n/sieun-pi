@@ -10,7 +10,7 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { upkeepWords } from "../../src/shared/upkeep-title.ts";
+import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopies, planCounts, planInputs, stepSessions } from "./whole-system.ts";
 
@@ -34,8 +34,6 @@ const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
 /** An open plan item that breaks the plan rule (board skill, references/plan-and-duties.md): its chat, id, title and the reason. */
 export interface PlanFlag { chat: string; id: string; text: string; why: string }
 
-/** A done line is a "Done when" note, a target, or a duty metric the step fixes, whose green run is its check. */
-const hasDoneLine = (item: PlanItem): boolean => !!item.target || !!item.duty || /\bdone when\b/i.test(item.note ?? "");
 
 /** The open items of a chat's plan that are upkeep, a standing risk, or a step with no done line, each once. */
 export function planUpkeep(chat: string, board: ChatBoard | null): PlanFlag[] {

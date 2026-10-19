@@ -17,3 +17,10 @@ const UPKEEP = new RegExp(`^\\s*keep(?![-\\w])|\\bkeeps? (?!up\\b)${STATE}\\b|\\
 const AND_KEEP = new RegExp(`\\band (?:keeps?|stays?) (?:[\\w'-]+ ){0,3}?${STATE}\\b`, "i");
 const PURPOSE = /,? so (?:that )?|,? instead of |,? while |,? after /i;
 const TASK_VERB = /^\s*(?:fix|build|add|make|find|verify|check|rank|ship|plan|decide|restart|run|start|update|push|lift|re-?measure|post|file|move|write|measure|set|turn|get|test|land|remove|drop|cut|split|wire|show|give|send|follow[- ]up|research|design|investigate|audit|migrate|replace|rewrite|port|install|create|open|close|delete|stop|clean up|re-?run)\b/i;
+
+/**
+ * A done line is a "Done when" note, a target, or a duty metric the item fixes, whose green run is its check. The owner on 10-19: "plan should
+ * be tasks all eventually clear". Chat system duty d9 counts an open item without one in plan_upkeep_all, so the board flags it when it is added.
+ */
+export const hasDoneLine = (item: { target?: unknown; duty?: unknown; note?: string | undefined }): boolean =>
+  !!item.target || !!item.duty || /\bdone when\b/i.test(item.note ?? "");
