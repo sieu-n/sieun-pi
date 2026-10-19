@@ -47,3 +47,9 @@ test("a failed LGTM query reaches the feed as an error, never as zeros", async (
   assert.match(reading.state === "error" ? reading.error : "", /HTTP 502/);
   assert.equal("perSecond" in reading, false);
 });
+
+test("an unreachable LGTM names the network cause, not only fetch failed", async () => {
+  const fetcher = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) }); }) as typeof fetch;
+  const reading = await new Usage(grafanaPrometheus(config, fetcher), () => now).reading();
+  assert.equal(reading.state === "error" ? reading.error : "", "LGTM unreachable: fetch failed (ECONNRESET: read ECONNRESET)");
+});

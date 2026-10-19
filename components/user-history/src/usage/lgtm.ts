@@ -48,6 +48,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 /** A sample value as Prometheus writes it; NaN (0/0 in a ratio) and infinities are no value. */
 const number = (value: unknown): number | null => { const n = typeof value === "string" ? Number(value) : NaN; return Number.isFinite(n) ? n : null; };
 
+/** A fetch error with its cause, because undici says only "fetch failed" and keeps ECONNRESET or UND_ERR_CONNECT_TIMEOUT in `cause`. */
+function reason(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause instanceof Error ? error.cause : null;
+  const code = cause && "code" in cause && typeof cause.code === "string" ? cause.code : null;
+  return cause ? `${error.message} (${[code, cause.message].filter(Boolean).join(": ")})` : error.message;
+}
+
 /** The Prometheus API behind Grafana's datasource proxy. `config` names a JSON file with `url` and `token` (a Viewer service account token), read on each query so a new token needs no restart. */
 export function grafanaPrometheus(config: string, fetcher: typeof fetch = fetch): Prometheus {
   async function call(path: "query" | "query_range", params: Record<string, string>): Promise<unknown> {
@@ -56,7 +64,7 @@ export function grafanaPrometheus(config: string, fetcher: typeof fetch = fetch)
     catch (error) { throw new UsageError(503, `No Grafana token: ${config}: ${error instanceof Error ? error.message : String(error)}`); }
     if (typeof url !== "string" || typeof token !== "string") throw new UsageError(503, `No Grafana token: ${config} needs url and token.`);
     const response = await fetcher(`${url.replace(/\/$/, "")}/api/datasources/proxy/uid/${DATASOURCE}/api/v1/${path}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${token}` } })
-      .catch((error: unknown) => { throw new UsageError(502, `LGTM unreachable: ${error instanceof Error ? error.message : String(error)}`); });
+      .catch((error: unknown) => { throw new UsageError(502, `LGTM unreachable: ${reason(error)}`); });
     const text = await response.text();
     let body: unknown;
     try { body = JSON.parse(text); } catch { body = null; }
