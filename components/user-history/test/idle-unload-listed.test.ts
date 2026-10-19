@@ -94,3 +94,17 @@ test("an explicit archive that lands while the unload's kill is out wins", async
     assert.equal((await f.shown())?.archived, true, "off the list, as the archive asked");
   } finally { await f.close(); }
 });
+
+test("the unload's stop writes the thread's state back without a full open of its transcript", async t => {
+  const f = await fixture(t);
+  try {
+    await f.unloader.sweep();
+    await f.killAsked;
+    const opens = t.mock.method(SessionManager, "open");
+    f.release();
+    await f.unloader.settled();
+    assert.equal(opens.mock.callCount(), 1, "only the fake daemon's kill opens the file");
+    opens.mock.restore();
+    assert.equal(f.state(), "active");
+  } finally { await f.close(); }
+});

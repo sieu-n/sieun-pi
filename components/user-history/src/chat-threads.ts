@@ -13,6 +13,7 @@ import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-a
 import { isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
+import { setFileSessionState } from "./session-state-file.ts";
 import { userMessageAt } from "./send-once.ts";
 import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
@@ -1453,9 +1454,7 @@ export class ThreadHub {
   private setSessionState(summary: SessionSummary, status: "archived" | "active"): void {
     // Another box's file is that box's to write; the catalog names it by a local copy, which a write here would only fork.
     if (!summary.sessionFile || this.catalog.hostOf(summary.sessionId) || !existsSync(summary.sessionFile)) return;
-    const manager = SessionManager.open(summary.sessionFile);
-    const current = manager.getSessionState()?.status;
-    if (status === "archived" ? current !== "archived" : current === "archived") manager.appendSessionState({ status });
+    setFileSessionState(summary.sessionFile, status);
   }
 
   async rename(id: string, name: string): Promise<void> {
