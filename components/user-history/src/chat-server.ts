@@ -376,7 +376,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
    * (client/build-reload.ts `warmAssets`) and the reload paints from cache instead of pulling app.js over the 185 ms link from Korea.
    */
   const sendBuild = (send: (build: { version: string; assets: string[] }) => void) => {
-    void Promise.resolve(bundle).then(built => send({ version: built.version, assets: [assetName("app", "js", built.js), assetName("app", "css", built.css)] }), () => {});
+    void Promise.resolve(bundle).then(built => send({ version: built.version, assets: [assetName("app", "js", built.js), assetName("app", "css", built.css), ...built.preload ?? []] }), () => {});
   };
   const tools = toolChecks({ dutyStore: backend.duties?.store });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
@@ -619,13 +619,15 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const frames = id ? inlineFrames(id) : Promise.resolve(null);
             const [wiki, chats] = await Promise.all([wikiCached(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
             const html = startHtml(req, res);
-            html.write(shellHead(csrfToken, built.version, wiki, { js, css }, chats));
+            html.write(shellHead(csrfToken, built.version, wiki, { js, css, ...built.preload ? { preload: built.preload } : {} }, chats));
             const found = await frames;
             html.end(shellTail(id && found ? { id, json: found } : null, id && found && [...chats].includes(id) ? prepaintFor(built, id, found) : ""));
             return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }
           if (route === css) { serveAsset(req, res, built.css, true); return; }
+          const chunk = built.chunks && Object.hasOwn(built.chunks, route) ? built.chunks[route] : undefined;
+          if (chunk) { serveAsset(req, res, chunk, true); return; }
           // A page from before a restart, or a tool that reads the plain names, gets the current build uncached.
           if (route === "app.js" || /^app\.[0-9a-f]+\.js$/.test(route)) { serveAsset(req, res, built.js); return; }
           if (route === "app.css" || /^app\.[0-9a-f]+\.css$/.test(route)) { serveAsset(req, res, built.css); return; }

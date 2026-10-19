@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 
 /** `br` and `gzip` are the body compressed at the best level ahead of time (`packAsset`); an asset without them is gzipped on its first request. */
 export interface Asset { body: Buffer; etag: string; contentType: string; br?: Buffer; gzip?: Buffer }
-/** The page's script and style, and `version`, which names this build: the page carries it and the sessions stream reports it. */
-export interface PackedBundle { js: Asset; css: Asset; version: string }
+/**
+ * The page's script and style, and `version`, which names this build: the page carries it and the sessions stream reports it. `preload` names
+ * the chunks app.js imports at once (`chunk.<hash>.js`), which the shell asks for beside app.js.
+ */
+export interface PackedBundle { js: Asset; css: Asset; version: string; preload?: string[] }
 
 export function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
@@ -23,7 +26,42 @@ export function assetName(stem: string, extension: string, asset: Asset): string
   return `${stem}.${asset.etag.replace(/"/g, "").slice(0, 16)}.${extension}`;
 }
 
-export const packedBundle = (js: Asset, css: Asset): PackedBundle => ({ js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16) });
+export const packedBundle = (js: Asset, css: Asset, preload: string[] = []): PackedBundle => ({ js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16),
+  ...(preload.length ? { preload } : {}) });
+
+/**
+ * The chunks of a split app.js (chat-assets.ts `compileClient`) in a packed bundle folder: `chunks.json` names them and the ones app.js imports
+ * at once, and each sits beside app.js with its `.br` and `.gz`. A folder without `chunks.json` holds an app.js with no chunks.
+ */
+const CHUNKS_FILE = "chunks.json";
+export interface ChunkList { names: string[]; preload: string[] }
+export const chunkPattern = /^chunk\.[A-Z0-9]{4,16}\.js$/;
+
+export async function writeChunks(dir: string, chunks: Record<string, Asset>, preload: readonly string[]): Promise<void> {
+  for (const [name, packed] of Object.entries(chunks)) {
+    const [body, br, gzip] = prebuiltFiles(name);
+    await writeFile(join(dir, body!), packed.body);
+    await writeFile(join(dir, br!), packed.br!);
+    await writeFile(join(dir, gzip!), packed.gzip!);
+  }
+  await writeFile(join(dir, CHUNKS_FILE), JSON.stringify({ names: Object.keys(chunks), preload: [...preload] } satisfies ChunkList) + "\n");
+}
+
+export async function readChunkList(dir: string): Promise<ChunkList> {
+  const text = await readFile(join(dir, CHUNKS_FILE), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+  if (text === null) return { names: [], preload: [] };
+  const value = JSON.parse(text) as Partial<ChunkList>;
+  const names = (value.names ?? []).filter(name => chunkPattern.test(name));
+  return { names, preload: (value.preload ?? []).filter(name => names.includes(name)) };
+}
+
+export async function readChunks(dir: string, names: readonly string[]): Promise<Record<string, Asset>> {
+  const read = async (name: string): Promise<[string, Asset]> => {
+    const [body, br, gzip] = await Promise.all(prebuiltFiles(name).map(file => readFile(join(dir, file))));
+    return [name, { ...asset(body!, "text/javascript; charset=utf-8"), br: br!, gzip: gzip! }];
+  };
+  return Object.fromEntries(await Promise.all(names.map(read)));
+}
 
 /**
  * The packed bundle release-chat.mjs writes into a release before it goes live (`chat-assets-prebuild.mjs`), so a restart reads it from disk.
@@ -56,8 +94,8 @@ export async function readPacked(dir: string): Promise<PackedBundle | null> {
     return { ...asset(body!, contentType), br: br!, gzip: gzip! };
   };
   try {
-    const [js, css] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8")]);
-    return packedBundle(js, css);
+    const [js, css, chunks] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8"), readChunkList(dir)]);
+    return packedBundle(js, css, chunks.preload);
   } catch { return null; }
 }
 

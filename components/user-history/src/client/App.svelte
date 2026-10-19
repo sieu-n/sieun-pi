@@ -9,12 +9,9 @@
   import Thread from "./Thread.svelte";
   import Chat from "./Chat.svelte";
   import NewChat from "./NewChat.svelte";
-  import Settings from "./Settings.svelte";
-  import AgentsDialog from "./AgentsDialog.svelte";
-  import Reader from "./Reader.svelte";
-  import PromptView from "./PromptView.svelte";
   import ReportCard from "./ReportCard.svelte";
   import Icon from "./Icon.svelte";
+  import { lazy } from "./lazy.ts";
 
   const NARROW_BELOW = 900;
   let root: HTMLElement | undefined = $state();
@@ -123,16 +120,16 @@
       {/if}
     </main>
     {#if store.drawer}
-      <Settings section={store.drawer} />
+      {#await lazy.Settings() then { default: Settings }}<Settings section={store.drawer} />{/await}
     {/if}
     {#if ui.agentsOpen}
-      <AgentsDialog onclose={() => { ui.agentsOpen = false; }} />
+      {#await lazy.AgentsDialog() then { default: AgentsDialog }}<AgentsDialog onclose={() => { ui.agentsOpen = false; }} />{/await}
     {/if}
     {#if store.reader}
-      <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />
+      {#await lazy.Reader() then { default: Reader }}<Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />{/await}
     {/if}
     {#if store.prompt}
-      {#key store.prompt}<PromptView target={store.prompt} {narrow} onclose={() => { store.prompt = null; }} />{/key}
+      {#await lazy.PromptView() then { default: PromptView }}{#key store.prompt}<PromptView target={store.prompt} {narrow} onclose={() => { store.prompt = null; }} />{/key}{/await}
     {/if}
     <ReportCard />
   </div>

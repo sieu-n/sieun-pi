@@ -7,7 +7,7 @@ import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import esbuildSvelte from "esbuild-svelte";
 import { iconPng } from "./chat-icon.ts";
-import { bundleCacheDir, clientSourceHash } from "./client-bundle.ts";
+import { bundleCacheDir, clientSourceHash, readChunkList, readChunks, writeChunks } from "./client-bundle.ts";
 import { scopeClass, type PrepaintModule } from "./prepaint.ts";
 
 const sveltePlugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
@@ -18,8 +18,9 @@ export interface Asset { body: Buffer; etag: string; contentType: string; br?: B
  * `version` names this build; the page carries it and the sessions stream reports it, so an open tab sees a restart onto new code.
  * `app` returns the installable-app file for a route under the capability path (manifest and icons), or undefined.
  * `prepaint` is the server half of the build (prepaint.ts), or undefined where it did not load.
+ * `chunks` are the parts of app.js the page loads on its own (`chunk.<hash>.js`), and `preload` names the ones app.js imports at once.
  */
-export interface ClientBundle { js: Asset; css: Asset; version: string; app?: (route: string) => Asset | undefined; prepaint?: PrepaintModule }
+export interface ClientBundle { js: Asset; css: Asset; version: string; app?: (route: string) => Asset | undefined; prepaint?: PrepaintModule; chunks?: Record<string, Asset>; preload?: string[] }
 
 export function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
@@ -42,18 +43,61 @@ export function packAsset(asset: Asset): Asset {
 
 const svelteOptions = (generate: "client" | "server") => ({ runes: true, css: "external" as const, dev: false, generate, cssHash: ({ filename }: { filename?: string }) => scopeClass(filename ?? "") });
 
-/** The esbuild and Svelte compile of the client: app.js and app.css. It holds its thread for seconds, so `buildClientBundle` runs it in a worker. */
-export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array }> {
+/**
+ * The esbuild and Svelte compile of the client: app.js, its chunks and app.css. It holds its thread for seconds, so `buildClientBundle` runs it
+ * in a worker. The views a page opens only on a click load on their own (client/lazy.ts): on 10-19 app.js was 697 KB raw and 197 KB brotli, and
+ * from the Mac (195 ms a round trip) it ended 0.4 to 0.8 s after the shell. `preload` is every chunk app.js imports at once, at any depth.
+ * Each lazy chunk's stylesheet repeats the rules of the components it shares with app.js, so app.css takes only their new rules (`mergeCss`).
+ */
+export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array; chunks: Record<string, Uint8Array>; preload: string[] }> {
   const entry = fileURLToPath(new URL("./client/main.ts", import.meta.url));
   const result = await build({
     entryPoints: [entry], bundle: true, write: false, format: "esm", target: "es2022", minify: true, sourcemap: false, legalComments: "none",
-    outdir: "/virtual", entryNames: "app", logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' },
+    outdir: "/virtual", entryNames: "app", chunkNames: "chunk.[hash]", splitting: true, metafile: true, logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' },
     plugins: [sveltePlugin({ compilerOptions: svelteOptions("client"), cache: false, filterWarnings: (warning: { code: string }) => !warning.code.startsWith("a11y") })],
   });
-  const js = result.outputFiles.find(file => file.path.endsWith(".js"));
-  const css = result.outputFiles.find(file => file.path.endsWith(".css"));
+  const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+  const js = result.outputFiles.find(file => name(file.path) === "app.js");
+  const css = result.outputFiles.find(file => name(file.path) === "app.css");
   if (!js) throw new Error("Client bundle produced no app.js");
-  return { js: js.contents, css: css?.contents ?? new Uint8Array() };
+  const chunks = Object.fromEntries(result.outputFiles.filter(file => name(file.path).startsWith("chunk.") && file.path.endsWith(".js")).map(file => [name(file.path), file.contents]));
+  const lazyCss = result.outputFiles.filter(file => name(file.path).startsWith("chunk.") && file.path.endsWith(".css")).map(file => file.text);
+  const outputs = result.metafile.outputs;
+  const preload = new Set<string>();
+  const walk = (path: string): void => {
+    for (const imported of outputs[path]?.imports ?? []) {
+      if (imported.kind !== "import-statement" || preload.has(name(imported.path))) continue;
+      preload.add(name(imported.path));
+      walk(imported.path);
+    }
+  };
+  walk(Object.keys(outputs).find(path => name(path) === "app.js")!);
+  return { js: js.contents, css: Buffer.from(mergeCss(css?.text ?? "", lazyCss)), chunks, preload: [...preload] };
+}
+
+/** The top-level rules of minified CSS, an at-rule with its whole block as one. */
+export function cssRules(text: string): string[] {
+  const rules: string[] = [];
+  let depth = 0, start = 0, quote: string | null = null;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (quote) { if (char === "\\") index++; else if (char === quote) quote = null; continue; }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) { rules.push(text.slice(start, index + 1).trim()); start = index + 1; }
+    else if (char === ";" && depth === 0) { rules.push(text.slice(start, index + 1).trim()); start = index + 1; }
+  }
+  const rest = text.slice(start).trim();
+  if (rest) rules.push(rest);
+  return rules;
+}
+
+/** `main` followed by each rule of `others` it lacks, once, in their order. */
+export function mergeCss(main: string, others: readonly string[]): string {
+  const seen = new Set(cssRules(main));
+  const added: string[] = [];
+  for (const text of others) for (const rule of cssRules(text)) if (!seen.has(rule)) { seen.add(rule); added.push(rule); }
+  return added.length ? main.trimEnd() + "\n" + added.join("") + "\n" : main;
 }
 
 /**
@@ -84,12 +128,14 @@ export async function loadPrepaint(source: string): Promise<PrepaintModule | und
   catch (error) { process.stderr.write(`prepaint: the server bundle did not load: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; }
 }
 
-type Compiled = { ok: true; js: Asset; css: Asset; prepaint: string } | { ok: false; error: string };
+type Packed = { js: Asset; css: Asset; chunks: Record<string, Asset>; preload: string[]; prepaint: string };
+type Compiled = ({ ok: true } & Packed) | { ok: false; error: string };
 
 /** The worker's half: compile, then compress both assets there too, since brotli at quality 11 takes about a second for app.js. */
-export async function compileAndPack(): Promise<{ js: Asset; css: Asset; prepaint: string }> {
-  const [{ js, css }, prepaint] = await Promise.all([compileClient(), compileServer()]);
-  return { js: packAsset(asset(js, "text/javascript; charset=utf-8")), css: packAsset(asset(css, "text/css; charset=utf-8")), prepaint };
+export async function compileAndPack(): Promise<Packed> {
+  const [{ js, css, chunks, preload }, prepaint] = await Promise.all([compileClient(), compileServer()]);
+  const script = (body: Uint8Array) => packAsset(asset(body, "text/javascript; charset=utf-8"));
+  return { js: script(js), css: packAsset(asset(css, "text/css; charset=utf-8")), chunks: Object.fromEntries(Object.entries(chunks).map(([name, body]) => [name, script(body)])), preload, prepaint };
 }
 
 /** A worker message carries Uint8Arrays where the asset had Buffers. */
@@ -104,12 +150,11 @@ export const PREBUILT_DIR = fileURLToPath(new URL("../.client-bundle/", import.m
 const prebuiltFiles = (stem: string) => [stem, `${stem}.br`, `${stem}.gz`];
 
 export async function writePrebuilt(dir = PREBUILT_DIR): Promise<void> {
-  const { js, css, prepaint } = await compileAndPack();
-  await writeBuilt(dir, js, css, prepaint);
+  await writeBuilt(dir, await compileAndPack());
 }
 
 /** A packed bundle into `dir`, through a draft folder renamed into place, so a folder that exists is whole. */
-async function writeBuilt(dir: string, js: Asset, css: Asset, prepaint: string): Promise<void> {
+async function writeBuilt(dir: string, { js, css, chunks, preload, prepaint }: Packed): Promise<void> {
   const draft = `${dir.replace(/\/+$/, "")}.${process.pid}.tmp`;
   await rm(draft, { recursive: true, force: true });
   await mkdir(draft, { recursive: true });
@@ -119,6 +164,7 @@ async function writeBuilt(dir: string, js: Asset, css: Asset, prepaint: string):
     await writeFile(join(draft, br!), packed.br!);
     await writeFile(join(draft, gzip!), packed.gzip!);
   }
+  await writeChunks(draft, chunks, preload);
   await writeFile(join(draft, PREPAINT_FILE), prepaint);
   await rm(dir, { recursive: true, force: true });
   await rename(draft, dir);
@@ -131,15 +177,15 @@ export async function readPrebuilt(dir = PREBUILT_DIR): Promise<ClientBundle | n
     return { ...asset(body!, contentType), br: br!, gzip: gzip! };
   };
   try {
-    const [js, css, prepaint] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8"), readFile(join(dir, PREPAINT_FILE), "utf8")]);
-    return await bundleOf(js, css, prepaint);
+    const [js, css, prepaint, list] = await Promise.all([read("app.js", "text/javascript; charset=utf-8"), read("app.css", "text/css; charset=utf-8"), readFile(join(dir, PREPAINT_FILE), "utf8"), readChunkList(dir)]);
+    return await bundleOf({ js, css, prepaint, chunks: await readChunks(dir, list.names), preload: list.preload });
   } catch { return null; }
 }
 
 const PREPAINT_FILE = "prepaint.mjs";
-const bundleOf = async (js: Asset, css: Asset, prepaint: string): Promise<ClientBundle> => {
+const bundleOf = async ({ js, css, prepaint, chunks, preload }: Packed): Promise<ClientBundle> => {
   const loaded = await loadPrepaint(prepaint);
-  return { js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset, ...(loaded ? { prepaint: loaded } : {}) };
+  return { js, css, version: createHash("sha256").update(js.etag + css.etag).digest("hex").slice(0, 16), app: appAsset, chunks, preload, ...(loaded ? { prepaint: loaded } : {}) };
 };
 
 /**
@@ -151,19 +197,20 @@ export async function buildClientBundle(dir = PREBUILT_DIR): Promise<ClientBundl
   const cache = bundleCacheDir(await clientSourceHash());
   const found = await readPrebuilt(dir) ?? await readPrebuilt(cache);
   if (found) return found;
-  const { js, css, prepaint, bundle } = await compileInWorker();
-  void writeBuilt(cache, js, css, prepaint).catch(error => { process.stderr.write(`client bundle cache ${cache}: ${error instanceof Error ? error.message : String(error)}\n`); });
+  const { packed, bundle } = await compileInWorker();
+  void writeBuilt(cache, packed).catch(error => { process.stderr.write(`client bundle cache ${cache}: ${error instanceof Error ? error.message : String(error)}\n`); });
   return bundle;
 }
 
-function compileInWorker(): Promise<{ js: Asset; css: Asset; prepaint: string; bundle: Promise<ClientBundle> }> {
+function compileInWorker(): Promise<{ packed: Packed; bundle: Promise<ClientBundle> }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./chat-assets-worker.mjs", import.meta.url));
     worker.once("message", (compiled: Compiled) => {
       void worker.terminate();
       if (!compiled.ok) { reject(new Error(compiled.error)); return; }
-      const js = revive(compiled.js), css = revive(compiled.css);
-      resolve({ js, css, prepaint: compiled.prepaint, bundle: bundleOf(js, css, compiled.prepaint) });
+      const packed: Packed = { js: revive(compiled.js), css: revive(compiled.css), prepaint: compiled.prepaint, preload: compiled.preload,
+        chunks: Object.fromEntries(Object.entries(compiled.chunks).map(([name, chunk]) => [name, revive(chunk)])) };
+      resolve({ packed, bundle: bundleOf(packed) });
     });
     worker.once("error", reject);
     worker.once("exit", code => { reject(new Error(`The client bundle worker exited (${code}) with no bundle.`)); });

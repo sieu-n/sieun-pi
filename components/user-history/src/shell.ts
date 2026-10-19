@@ -12,9 +12,10 @@ export function escapeAttribute(text: string): string { return text.replaceAll("
  * (boot-feed.ts). The stylesheet comes after that script, because an inline script waits for every stylesheet above it to load; a preload above
  * app.js asks for it first, since the chat's still view (prepaint.ts) paints once it arrives. `data-chats`
  * names the chats, so a thread URL paints its chat view from the snapshot instead of waiting for the sessions list to say it is a chat
- * (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea).
+ * (10-18: 1.4 MB, 4 to 5 s after the snapshot from Korea). `preload` names the chunks app.js imports at once, so they come beside it
+ * instead of a round trip after it.
  */
-export function shellHead(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
+export function shellHead(csrfToken: string, version: string, wiki: string | null, assets: { js: string; css: string; preload?: readonly string[] } = { js: "app.js", css: "app.css" }, chats: Iterable<string> = []): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -25,7 +26,7 @@ export function shellHead(csrfToken: string, version: string, wiki: string | nul
 <script>${bootTargetScript}</script>
 <link rel="preload" href="${escapeAttribute(assets.css)}" as="style">
 <script type="module" src="${escapeAttribute(assets.js)}"></script>
-<link rel="manifest" href="manifest.webmanifest">
+${(assets.preload ?? []).map(name => `<link rel="modulepreload" href="${escapeAttribute(name)}">\n`).join("")}<link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">

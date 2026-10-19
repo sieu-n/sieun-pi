@@ -3,6 +3,7 @@ import App from "./App.svelte";
 import { APPEARANCE_KEY, applyAppearance, browserStorage, loadAppearance, parseAppearance } from "./appearance.ts";
 import { releaseBootFeeds } from "./feeds.ts";
 import { takeOver } from "./prepaint-swap.ts";
+import { warmLazy } from "./lazy.ts";
 import "./app.css";
 import "./prepaint.css";
 
@@ -16,3 +17,4 @@ flushSync();
 releaseBootFeeds();
 const prepaint = document.getElementById("prepaint");
 if (prepaint) takeOver(prepaint, app);
+warmLazy();

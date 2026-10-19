@@ -47,7 +47,7 @@ export async function startEarlyShell(options: { listenFd: number | null; port: 
     const id = named && idPattern.test(named) ? named : null;
     // A page from before the restart paints at once; the feed brings what came since a moment later.
     const json = id ? await pages.get(id, true) : undefined;
-    const html = shellHead(options.csrfToken, bundle.version, null, { js: assetName("app", "js", bundle.js), css: assetName("app", "css", bundle.css) }, await chats)
+    const html = shellHead(options.csrfToken, bundle.version, null, { js: assetName("app", "js", bundle.js), css: assetName("app", "css", bundle.css), ...bundle.preload ? { preload: bundle.preload } : {} }, await chats)
       + shellTail(id && json ? { id, json } : null);
     const packed = /\bbr\b/.test(String(req.headers["accept-encoding"] ?? ""));
     const body = packed ? brotliCompressSync(html, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }) : Buffer.from(html);
