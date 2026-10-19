@@ -371,6 +371,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   };
   const tools = toolChecks({ dutyStore: backend.duties?.store });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
+    rows: name => name === null ? backend.catalog.daemonRows() : backend.catalog.remoteHosts().find(({ host }) => host.name === name)?.rows ?? [],
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   let host = "";

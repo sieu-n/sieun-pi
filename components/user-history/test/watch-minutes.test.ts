@@ -41,16 +41,14 @@ test("the watch samples at each wall-clock minute's middle, so a lagging tick st
 });
 
 // From 04:22:55Z on 10-18 the chat ran on us-metal02, whose lines carried usable: null (the Mac's feed has no Linux side) and measured only the
-// box's workers, so clean_min_30 counted every box minute dirty and the Mac's workers left sleeping_gb.
+// box's workers, so clean_min_30 counted every box minute dirty.
 const BOX_RUN = Date.parse("2026-10-18T05:00:10Z");
 const linux = (memFullAvg10: number, runnablePerCore: number): LinuxUsable => ({ kind: "linux", memSomeAvg10: 0, memFullAvg10, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore, allowedCpus: 32 });
 const mac: UsableReading = { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 20 };
-const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading | null, sleeping = 0): WatchLine => ({
+const boxLine = (minute: number, box: LinuxUsable | null, other: UsableReading | null): WatchLine => ({
   at: new Date(BOX_RUN - 10_000 - (30 - minute) * 60_000 + 30_000).toISOString(), host: "us-metal02", usable: box,
   workers: 4, workerGb: 2.6, top: [], live: 20, working: 15, queue: null, mac: { swapGb: 0, pressureLevel: null }, cpuMs: 0,
-  sleeping: { gb: 0, workers: 0, kernels: 0, trees: [] },
   hosts: [{ name: "mac", usable: other, workers: 19, workerGb: 9.68, top: [], live: 46, working: 27, swapGb: 7.8,
-    sleeping: { gb: sleeping, workers: sleeping ? 1 : 0, kernels: 0, trees: sleeping ? [{ root: "lmb", tree: "launch main bro", gb: sleeping }] : [] },
     ...other ? {} : { error: "relay mac answered 502 to /v1/watch" } }] });
 
 test("each box is judged on its own reading, a Linux box by memory stall and runnable tasks a core, and a box with no reading is unknown", () => {
@@ -87,24 +85,18 @@ test("a kept Linux reading with loadPerCore and no runnablePerCore reads its box
   assert.match(flagged?.find(slice => slice.kind === "unknown_minutes")?.excerpt ?? "", /us-metal02 unread \(an old-format or invalid Linux reading\)/);
 });
 
-test("sleeping_gb sums every box's sleeping sessions, and the flag names each box", () => {
-  const lines = Array.from({ length: 30 }, (_, minute) => boxLine(minute, linux(0, 0.5), mac, 0.31));
-  const { metrics, flagged } = measure({ now: BOX_RUN, watch: lines, log: { holds: [] }, chats: [] });
-  assert.equal(metrics.sleeping_gb, 0.31);
-  assert.match(flagged?.find(slice => slice.kind === "sleeping")?.excerpt ?? "", /mac 0.31 GB in 1 whole workers and 0 kernels \(launch main bro 0.31 GB\)/);
-});
-
 test("another box's watch line comes from its relay's answer, and a relay that fails leaves its numbers unknown", async () => {
   const GB = 1024 ** 3;
   const rows = [{ sessionId: "lmb", activeSessionId: "lmb", lifecycle: "live", activity: "idle", workerPid: 31, sessionName: "launch main bro", lastActivityAt: new Date(BOX_RUN - 40 * 60_000).toISOString() }];
   const footprints: Footprints = { workers: { 31: { pids: 2, bytes: 0.31 * GB } }, kernels: [], swap_used_bytes: 7.8 * GB, pressure_level: 2, cpu_s: 0 };
-  const feed = { v: 1, ts: new Date(BOX_RUN - 5_000).toISOString(), pressure_level: 2, swapouts_per_s: 0, kernel_task_cpu_pct: 20 };
+  const feed = { v: 1, ts: new Date(BOX_RUN - 5_000).toISOString(), pressure_level: 2, swapouts_per_s: 0, kernel_task_cpu_pct: 20,
+    owners: [{ owner: "chat:lmb", label: "launch main bro", mem_gb: 0.4 }, { owner: "pm2:web", label: "web", mem_gb: 2 }] };
   const read = await hostWatchLine({ name: "mac", rows, read: async pids => { assert.deepEqual(pids, [31]); return { usable: { platform: "darwin", feed }, footprints }; } },
-    { now: BOX_RUN, chats: new Set(["lmb"]), title: () => null, idleMs: 10 * 60_000 });
+    { now: BOX_RUN, chats: new Set(["lmb"]), title: () => null });
   assert.equal(read.workers, 1);
   assert.equal(read.workerGb, 0.31);
-  assert.equal(read.sleeping?.gb, 0.31);
-  assert.deepEqual(read.usable, { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 20 });
+  assert.deepEqual(read.agents, { gb: 0.4, working: 0, children: 0, retry: 0, idle: 1 }, "the Mac's Agent sessions are its feed's agents group, as its Hosts card shows");
+  assert.equal((read.usable as UsableReading).pressureLevel, 2);
   const failed = await hostWatchLine({ name: "mac", rows, read: async () => { throw new Error("relay mac answered 404 to /v1/watch"); } }, { now: BOX_RUN, chats: new Set(), title: () => null });
   assert.equal(failed.usable, null);
   assert.match(failed.error ?? "", /404/);

@@ -1,15 +1,22 @@
 {
   "name": "Whole system",
   "ownerWords": "F*UCKING WATCH THIS!QQQQ!!!!!!!!!!!!!!!!!!!!!!!! \n\nreorganize duties have a 30 minute trigger that checks all this",
-  "goal": "Every minute of the last 30 runs clean: the Mac stays usable, no start or wake waits over 10 minutes, and no turn waits while slots are free. No open step sits with nobody moving it. On 10-15 and 10-16 all of these broke at once while no duty watched them together.",
+  "goal": "When nobody works, agent RAM drops: once no session has streamed or run a tool for the quiet window (15 min by default), Settings > Hosts shows Agent sessions under 5 GB. Every minute of the last 30 runs clean too: the boxes stay usable, no start or wake waits over 10 minutes, and no turn waits while slots are free. No open step sits with nobody moving it.",
   "metrics": [
+    {
+      "key": "quiet_agent_gb",
+      "label": "Agent sessions GB on Settings > Hosts once nobody worked for the quiet window",
+      "op": "<=",
+      "target": 5,
+      "unit": " GB",
+      "headline": true
+    },
     {
       "key": "clean_min_30",
       "label": "Minutes in the last 30 the system ran clean",
       "op": ">=",
       "target": 30,
-      "unit": " min",
-      "headline": true
+      "unit": " min"
     },
     {
       "key": "queue_holds_30",
@@ -22,13 +29,6 @@
       "label": "Open steps in all chats that nobody moves",
       "op": "<=",
       "target": 0
-    },
-    {
-      "key": "sleeping_gb",
-      "label": "GB held by sessions idle past the idle window",
-      "op": "<=",
-      "target": 0.25,
-      "unit": " GB"
     }
   ],
   "schedule": {
@@ -45,5 +45,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: tell this chat one line with the minutes and the owner, for ops guy. Stuck steps: message the chat that owns them with the step ids. Sleeping GB: the job fixes why those sessions escaped the idle unload (src/idle-unload.ts) with a test and releases (c92). Oversized processes: one line to this chat with the numbers. Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
+  "onMiss": "Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: tell this chat one line with the minutes and the owner, for ops guy. Stuck steps: message the chat that owns them with the step ids. Quiet agent GB: the job reads the quiet_agents and agents_now detail, finds what the agent sessions still hold with nobody working (workers and kernels of sessions in a provider or pool wait, a hung worker, orphan processes), fixes why it was not freed with a test, and releases; a fix inside Prime goes to the chat as a native change (c92, c93). Oversized processes: one line to this chat with the numbers. Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
 }

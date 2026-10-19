@@ -10,7 +10,8 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type SleepingLine, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { pendingWakes, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
@@ -22,7 +23,7 @@ import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shar
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
-export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; sleeping?: SleepingLine; error?: string;
+export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine; error?: string;
   /** Tailscale read the box offline that minute (HostWatchLine.offline). */
   offline?: true }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
@@ -38,12 +39,12 @@ export function hostViews(line: WatchLine): HostView[] {
   const own = checked(line.usable);
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
-      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.sleeping ? { sleeping: line.sleeping } : {}, ...own.error ? { error: own.error } : {} },
+      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-        ...host.sleeping ? { sleeping: host.sleeping } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {} };
+        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {} };
     }),
   ];
 }
@@ -131,12 +132,13 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
- * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
+ * runs. One supporting metric is how many of the last 30 minutes ran clean (clean_min_30): a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
  * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
  * failed or ran over 30 s on any box (src/daemon-faults.ts), leaving out a timed-out send or status read whose session waited for a pi-pool
- * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts). Supporting: queue holds and open steps nobody
- * moves in all chats, and the memory sessions idle past the idle window still hold (`sleeping_gb`, owner c92). The rest is detail, with each
+ * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts). The other two are queue holds and open steps nobody
+ * moves in all chats. The headline is what Settings > Hosts reads for Agent sessions once no session has worked for the quiet window
+ * (`quietAgents`, owner c92 and his words of 10-19: "when everybody's asleep it should drop ram"). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
  * fleet budget logged a continue for local agents checks, local agents recovery and daily code health report at 00:21:17Z, none reached its
@@ -371,8 +373,45 @@ export function oversized(latest: WatchLine | undefined, day: readonly WatchLine
   return found;
 }
 
+/**
+ * A box's Agent sessions in one watch minute that sat past the quiet window: no session of the box had worked (src/agent-states.ts, a retry or
+ * pool wait is no work) in any line for `quietMs`, so the box should have dropped its agents' memory by then. `since` is the first line of
+ * that quiet stretch, at or after the last turn's end.
+ */
+export interface QuietMinute { host: string; at: number; since: number; agents: AgentLine & { gb: number } }
+
+/** A gap between a box's lines past this breaks its quiet stretch, since a turn may have run unseen in it. */
+const QUIET_GAP_MS = 2 * MINUTE;
+
+/**
+ * Every minute in [`from`, `to`) where a box had sat quiet for `quietMs`, read from each box's `agents` (absent on lines before 10-19). A
+ * stretch starts at the first line after one with a session at work, after a line with no `agents` or no `gb`, or after a gap over
+ * QUIET_GAP_MS; lines from before `from` count toward it, so the caller reads back at least `quietMs` further.
+ */
+export function quietAgents(lines: readonly WatchLine[], from: number, to: number, quietMs: number): QuietMinute[] {
+  const since = new Map<string, number | null>();
+  const last = new Map<string, number>();
+  const found: QuietMinute[] = [];
+  for (const line of lines) {
+    const at = Date.parse(line.at);
+    if (!(at < to)) continue;
+    for (const view of hostViews(line)) {
+      const agents = view.agents;
+      const before = last.get(view.name);
+      last.set(view.name, at);
+      if (!agents || agents.gb === null || agents.working > 0) { since.set(view.name, null); continue; }
+      const start = before !== undefined && at - before <= QUIET_GAP_MS ? since.get(view.name) ?? at : at;
+      since.set(view.name, start);
+      if (at >= from && at - start >= quietMs) found.push({ host: view.name, at, since: start, agents: { ...agents, gb: agents.gb } });
+    }
+  }
+  return found;
+}
+
 export interface Inputs {
   now: number;
+  /** The quiet window (src/quiet-minutes.ts) in ms; absent, QUIET_MINUTES. */
+  quietMs?: number;
   watch: readonly WatchLine[];
   /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
   day?: readonly WatchLine[];
@@ -461,6 +500,10 @@ export function stepSessions(item: { sessionId?: string; job?: string }, named: 
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
+/** A box's AgentLine in the flag's words: its GB as Settings > Hosts shows them, then its sessions by state. */
+const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an unread number of" : agents.gb} GB` +
+  (agents.swapGb ? ` (${agents.swapGb} GB of it in swap)` : "") + (agents.cacheGb !== undefined ? ` with ${agents.cacheGb} GB of file cache beside it` : "") +
+  `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents and ${agents.idle} idle`;
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 /** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */
 const spans = (starts: readonly number[]): string => {
@@ -586,18 +629,16 @@ export function measure(input: Inputs): PrecheckOutput {
     return [`${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now`];
   }));
-  // Every box's sleeping sessions count: each line's total over its boxes, averaged over the lines that measured any.
-  const sleepingTotals = input.watch.filter(line => Date.parse(line.at) > start).flatMap(line => {
-    const measured = hostViews(line).filter(view => view.sleeping);
-    return measured.length ? [measured.reduce((sum, view) => sum + view.sleeping!.gb, 0)] : [];
-  });
+  const quietMs = input.quietMs ?? QUIET_MINUTES * MINUTE;
+  const quiet = quietAgents(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
+  const worst = quiet.reduce<QuietMinute | undefined>((top, minute) => !top || minute.agents.gb >= top.agents.gb ? minute : top, undefined);
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length + poolHeld.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
-    sleeping_gb: Math.round(100 * (sleepingTotals.reduce((sum, gb) => sum + gb, 0) / (sleepingTotals.length || 1))) / 100,
+    ...worst ? { quiet_agent_gb: worst.agents.gb } : {},
     oversized_procs: oversize.length,
     usable_min_30: usable,
     fed_min_30: fed,
@@ -641,11 +682,13 @@ export function measure(input: Inputs): PrecheckOutput {
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
-  const asleep = latest ? hostViews(latest).filter(view => view.sleeping && view.sleeping.gb > 0) : [];
-  if (latest && asleep.length) {
-    flagged.push({ kind: "sleeping", excerpt: `Sessions idle past the idle window held ${metrics.sleeping_gb} GB on average over the last 30 minutes. At ${clock(Date.parse(latest.at))}: ` +
-      asleep.map(view => `${view.name} ${view.sleeping!.gb} GB in ${view.sleeping!.workers} whole workers and ${view.sleeping!.kernels} kernels (${view.sleeping!.trees.map(entry => `${entry.tree} ${entry.gb} GB`).join(", ")})`).join("; ") + "." });
-  }
+  const quietWords = Math.round(quietMs / MINUTE);
+  if (worst) flagged.push({ kind: "quiet_agents", excerpt: `${worst.host}'s Agent sessions held ${agentWords(worst.agents)} at ${clock(worst.at)}, ` +
+    `${Math.round((worst.at - worst.since) / MINUTE)} min into a stretch with no session working that began by ${clock(worst.since)}; ` +
+    `the target is under ${QUIET_TARGET_GB} GB once ${quietWords} min pass with nobody working. ${quiet.length} box minutes in the window sat past that mark.` });
+  else flagged.push({ kind: "gap", excerpt: `No box went ${quietWords} min with no session working in the last 30 minutes, so quiet_agent_gb has no minute to judge` });
+  const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
+  if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
   const overruns = (input.queueOverruns ?? []).filter(entry => entry.at >= start && entry.at < start + WINDOW_MS);
   if (overruns.length) {
@@ -919,7 +962,8 @@ async function main(): Promise<void> {
   const now = Date.now();
   const dataDir = chatDataDir();
   const day = await readWatch(dataDir, now - DAY_MS, now);
-  const watch = day.filter(line => Date.parse(line.at) >= now - 2 * WINDOW_MS);
+  const quietMs = quietMinutes(dataDir) * MINUTE;
+  const watch = day.filter(line => Date.parse(line.at) >= now - Math.max(2 * WINDOW_MS, WINDOW_MS + quietMs + 2 * MINUTE));
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
   // Only the owner's chats (`ownerChats`): an archived or clean-room test chat stays out of his counts and the job's messages.
@@ -953,7 +997,7 @@ async function main(): Promise<void> {
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const result = measure({
-    now, watch, day,
+    now, watch, day, quietMs,
     log: readServiceLog(serviceLines),
     pool: readPoolLog(await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES), now),
     daemonFaults,

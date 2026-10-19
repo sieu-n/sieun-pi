@@ -4,7 +4,7 @@
   import AgentQueueSettings from "./AgentQueueSettings.svelte";
   import MachineMeters from "./MachineMeters.svelte";
   import QueueRows from "./QueueRows.svelte";
-  import { hostGlance, hostRoles } from "./hosts.ts";
+  import { hostGlance, hostRoles, hostSessions } from "./hosts.ts";
   import type { HostsView } from "../shared/types.ts";
 
   const POLL_MS = 2000;
@@ -42,7 +42,7 @@
           <span class="dot {host.state === 'up' ? host.daemon : 'away'}" aria-hidden="true"></span>
           <span class="host-name">{host.name}</span>
           {#if host.self}<span class="badge">This box</span>{/if}
-          <span class="glance">{hostGlance(host)}</span>
+          <span class="glance" title={hostSessions(host)}>{hostGlance(host)}</span>
         </summary>
         <div class="body">
           <p class="note">{hostRoles(host)}</p>

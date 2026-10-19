@@ -5,14 +5,15 @@ import { join } from "node:path";
 import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
-import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
-import type { AgentQueueReading, IdleEvictionMinutes, MemoryGroupId } from "./shared/types.ts";
+import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
+import { type AgentCounts, agentCounts } from "./agent-states.ts";
+import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
 
 /**
  * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
  * from ops guy's pressure feed (memory pressure level, swapouts a second, kernel_task CPU) and the harness numbers behind it: the Prime workers'
- * memory footprint and the top workers by it with their chat tree, the chat trees by footprint, the live and working sessions, what idle
- * sessions still hold, and the Mac-wide turn queue. The owner (10-14 09:15Z): "look it's you and ops guys responsibility that this machine is
+ * memory footprint and the top workers by it with their chat tree, the chat trees by footprint, the live and working sessions, the Agent
+ * sessions memory Settings > Hosts shows with the sessions by state (`agents`), and the Mac-wide turn queue. The owner (10-14 09:15Z): "look it's you and ops guys responsibility that this machine is
  * usable", so a minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of
  * 10-14 20:2xZ). The Whole system duty (scripts/duties/whole-system.ts) reads these lines.
  */
@@ -148,7 +149,8 @@ export interface WaitingTree { tree: string; oldestWaitS: number; slots: number 
  * then unknown, not zero.
  */
 export interface HostWatchLine { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: WorkerLine[]; live: number; working: number;
-  sleeping?: SleepingLine; swapGb: number | null; error?: string;
+  /** The box's Agent sessions as Settings > Hosts reads them (`agentLine`); absent on lines written before 10-19 and when its relay did not answer. */
+  agents?: AgentLine; swapGb: number | null; error?: string;
   /** Tailscale read the box offline, so its relay was not asked (src/host-reach.ts); absent on lines written before 10-18 16:xxZ. */
   offline?: true }
 
@@ -167,8 +169,8 @@ export interface WatchLine {
   queue: QueueLine | null;
   /** The chat trees with the largest footprint, kernel subtrees plus orphans, at most 5; absent on older lines. */
   trees?: TreeLine[];
-  /** What resident sessions idle past the idle window still hold (`sleepingLine`); absent on older lines and with idle eviction off. */
-  sleeping?: SleepingLine;
+  /** This box's Agent sessions as Settings > Hosts reads them (`agentLine`); absent on lines written before 10-19. */
+  agents?: AgentLine;
   /** The chat service's own resident memory; absent on older lines. */
   serviceGb?: number;
   /** Context only, from sysctl: swap in use and kern.memorystatus_vm_pressure_level (1 normal, 2 warn, 4 critical). */
@@ -180,14 +182,19 @@ export interface WatchLine {
 }
 
 /**
- * The memory of resident sessions with no turn that sat quiet past the daemon's idleEvictionMinutes plus SLEEP_SLACK_MS: each worker tree whose
- * every resident session is such a session, and the kernel of such a session in a worker that still works, with the chat trees holding the most.
- * The idle unload stops these sessions, so the owner's c92 target for it is near 0; at 23:45Z on 10-17, 18 of 23 workers held only sleeping
- * sessions, 6.5 GB with their kernels.
+ * A box's "Agent sessions" this minute as Settings > Hosts shows it, from the same reading (host-stats.ts `memoryByGroup`): `gb` is what the
+ * agents group holds that the box cannot take back, in RAM or swap, `swapGb` the part in swap and `cacheGb` the box's file cache beside it,
+ * with its loaded sessions by state (src/agent-states.ts). `gb` is null when the box's groups could not be read. The Whole system duty's
+ * quiet_agent_gb reads `gb` in the minutes no session `working`.
  */
-export interface SleepingLine { gb: number; workers: number; kernels: number; trees: { root: string; tree: string; gb: number }[] }
-/** One minute for the unload's sweep and one for the catalog's list refresh, as the idle-unload clean room allows. */
-export const SLEEP_SLACK_MS = 2 * MINUTE;
+export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number }
+
+/** The agents group of a memory reading and the session counts of `rows`, as one AgentLine. */
+export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[]): AgentLine {
+  const group = memory?.groups ? memory.groups.find(entry => entry.id === "agents") ?? { bytes: 0, swapBytes: 0 } : null;
+  return { gb: group ? round(group.bytes / GB) : null, ...group?.swapBytes !== undefined ? { swapGb: round(group.swapBytes / GB) } : {},
+    ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...agentCounts(rows) };
+}
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
 interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; active: boolean; lastAt: number; worker: number | undefined }
@@ -247,7 +254,9 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number; usable?: HostUsable | null; idleMs?: number | null }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: HostUsable | null;
+  /** The box's memory by group (host-stats.ts `memoryByGroup`), for `agents`; absent, the line has none. */
+  memory?: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -278,62 +287,10 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
-    ...typeof input.idleMs === "number" ? { sleeping: sleepingLine(rows, live, byId, input.footprints, tree, input.now, input.idleMs) } : {},
+    ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
-}
-
-/**
- * Each session's tree clock: the latest activity of the session and of every session below it, stopped ones included, and Infinity for one
- * with a session at work below it. The idle unload keeps a session with work below it (src/idle-unload.ts `busyAncestors`), and a chat rests
- * its idle time from its jobs' last stir (chat-dormancy `childrenStirred`), so a session counts as sleeping only once its whole tree is quiet.
- * On 10-18 'us-metal02 setup', quiet 13 to 17 min from 03:49Z while its job metal02-ci-slice worked, read as 0.04 GB that the unload could
- * not stop, and the chat 'Douyin index gaps', quiet since 03:52Z, read as a whole 0.47 to 0.53 GB worker from 04:16Z while its job had
- * worked until 04:12:45Z, so its idle window ran to about 04:23Z.
- */
-function treeClocks(rows: readonly Row[], byId: ReadonlyMap<string, Row>): Map<string, number> {
-  const clock = new Map<string, number>();
-  for (const row of rows) {
-    const at = row.working || row.active ? Infinity : row.lastAt;
-    if (Number.isNaN(at)) continue;
-    const seen = new Set<string>();
-    for (let id: string | undefined = row.id; id !== undefined && !seen.has(id); id = byId.get(id)?.parent) {
-      seen.add(id);
-      if ((clock.get(id) ?? -Infinity) < at) clock.set(id, at);
-    }
-  }
-  return clock;
-}
-
-function sleepingLine(rows: readonly Row[], live: readonly Row[], byId: ReadonlyMap<string, Row>, footprints: Footprints, tree: (row: Row) => { root: string; tree: string }, now: number, idleMs: number): SleepingLine {
-  const clocks = treeClocks(rows, byId);
-  const asleep = new Map(live.filter(row => !row.working && now - (clocks.get(row.id) ?? row.lastAt) > idleMs + SLEEP_SLACK_MS).map(row => [row.id, row] as const));
-  const trees = new Map<string, { root: string; tree: string; bytes: number }>();
-  const add = (row: Row, bytes: number) => {
-    const found = tree(row);
-    const entry = trees.get(found.root) ?? { ...found, bytes: 0 };
-    entry.bytes += bytes;
-    trees.set(found.root, entry);
-  };
-  let workers = 0, kernels = 0;
-  const whole = new Set<number>();
-  for (const [pid, worker] of Object.entries(footprints.workers)) {
-    const on = live.filter(row => row.worker === Number(pid));
-    if (!on.length || !on.every(row => asleep.has(row.id))) continue;
-    whole.add(Number(pid));
-    workers++;
-    add(on[0]!, worker.bytes);
-  }
-  for (const kernel of footprints.kernels ?? []) {
-    const row = asleep.get(kernel.session);
-    if (!row || (row.worker !== undefined && whole.has(row.worker))) continue;
-    kernels++;
-    add(row, kernel.bytes);
-  }
-  const sorted = [...trees.values()].sort((a, b) => b.bytes - a.bytes);
-  return { gb: round(sorted.reduce((sum, entry) => sum + entry.bytes, 0) / GB), workers, kernels,
-    trees: sorted.slice(0, 3).map(({ root, tree: name, bytes }) => ({ root, tree: name, gb: round(bytes / GB) })) };
 }
 
 /**
@@ -440,8 +397,8 @@ export interface WatchSource {
   now?: () => number;
   /** This box's reading at `now`; absent, `readUsable`. */
   feed?: (now: number) => Promise<HostUsable | null>;
-  /** The daemon's idleEvictionMinutes, for `sleeping`; absent, the line has none. */
-  idleMinutes?: () => IdleEvictionMinutes;
+  /** This box's memory by group; absent, `memoryByGroup`, the reading Settings > Hosts draws. */
+  memory?: typeof memoryByGroup;
   /** This box's name in hosts.json, written on each line. */
   host?: string;
   /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
@@ -457,21 +414,21 @@ export interface RemoteWatch { name: string; rows: readonly unknown[];
 const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
 
 /**
- * One other box's numbers from its relay, judged with this box's chat ids, titles and idle window. A failed read keeps the box with its error;
- * a read with a reading and no footprints keeps the reading, and its worker numbers are unknown.
+ * One other box's numbers from its relay, judged with this box's chat ids and titles. A failed read keeps the box with its error; a read with a
+ * reading and no footprints keeps the reading, and its worker numbers are unknown. Its `agents` come from the Mac pressure feed's groups, the
+ * reading its Hosts card draws (host-stats.ts `memoryGroups`); a Linux box's relay sends no groups, so its `gb` is null.
  */
-export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleMs?: number | null }): Promise<HostWatchLine> {
+export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null }): Promise<HostWatchLine> {
   try {
     const reach = await remote.reach?.().catch(() => null);
     if (reach && !reach.online)
       return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, offline: true, error: `offline, Tailscale last seen ${seenAgo(input.now, reach.lastSeen)}` };
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
-    if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: answer.error.slice(0, 200) };
-    const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
-      ...input.idleMs === undefined ? {} : { idleMs: input.idleMs } });
-    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working,
-      ...line.sleeping ? { sleeping: line.sleeping } : {}, swapGb: line.mac.swapGb };
+    const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] }] } : null, remote.rows);
+    if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
+    const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
+    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working, agents, swapGb: line.mac.swapGb };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
@@ -494,19 +451,17 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const pids = workerPids(rows);
   let own = process.cpuUsage(started);
   const at = now();
-  const idle = source.idleMinutes?.();
-  const idleMs = idle === undefined ? undefined : idle === "off" ? null : idle * MINUTE;
   const chatIds = source.chats();
-  const [footprints, queue, chats, usable, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
-    (source.feed ?? readUsable)(at),
+  const [footprints, queue, chats, usable, memory, hosts] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
+    (source.feed ?? readUsable)(at), (source.memory ?? memoryByGroup)().catch(() => null),
     chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
-      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...idleMs === undefined ? {} : { idleMs } });
+      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title });
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
     })))]);
   const resumed = process.cpuUsage();
   const latency = takeLatency();
-  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable,
-    ...idleMs === undefined ? {} : { idleMs } }), ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {} };
+  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory }),
+    ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

@@ -259,7 +259,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
   const stopWatch = ownChatsOnly ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog, idleMinutes: () => defaults.idleEviction(), ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
+    queue: queueReading, log: dutyLog, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.

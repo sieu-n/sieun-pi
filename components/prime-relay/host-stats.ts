@@ -16,19 +16,25 @@ const run = promisify(execFile);
 export type MemoryPressure = "normal" | "warn" | "critical";
 export const MEMORY_GROUPS = ["agents", "dev", "ci", "docker", "browsers", "coding", "system", "other"] as const;
 export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
-/** One memory group: its bytes and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers, a systemd unit). */
-export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; top: { label: string; bytes: number }[] }
+/**
+ * One memory group: its bytes and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers, a systemd unit). On Linux `bytes` is
+ * the memory the box cannot take back (`heldBytes`) and `swapBytes` the part of it in swap; a macOS group has no `swapBytes`.
+ */
+export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number; top: { label: string; bytes: number }[] }
 export interface MachineView {
   platform: "darwin" | "linux";
   /** Busy share of all cores since the previous reading, 0 to 100. */
   cpu: { percent: number; cores: number; load: [number, number, number] };
   /**
    * On macOS usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does, and the groups are the pressure
-   * feed's owners by footprint. On Linux usedBytes is MemTotal minus MemAvailable, and the groups are the leaf cgroups' memory.current.
+   * feed's owners by footprint. On Linux usedBytes is MemTotal minus MemAvailable, and the groups are what the leaf cgroups hold that the
+   * box cannot take back (`heldBytes`).
    */
   memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null;
     /** Largest first; null when the macOS feed is stale or the cgroup tree is unreadable. */
-    groups: MemoryGroup[] | null };
+    groups: MemoryGroup[] | null;
+    /** The leaf cgroups' file cache, which the box takes back when it needs the room; absent on macOS and from a relay older than 10-19. */
+    cacheBytes?: number | null };
 }
 /** The box's own `pi-pool queue --json` and `pi-pool config`, passed on unparsed: sieun-pi parses them at its edge. */
 export type PoolReading = { queue: unknown; config: unknown } | { error: string };
@@ -59,12 +65,14 @@ const GB = 1024 ** 3;
 const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", dev: "Dev servers and app code", ci: "CI runners", docker: "Docker",
   browsers: "Browsers", coding: "Coding tools", system: "System", other: "Other" };
 
-function grouped(items: { id: MemoryGroupId; label: string; bytes: number }[], always: MemoryGroupId[]): MemoryGroup[] {
-  const groups = new Map<MemoryGroupId, { label: string; bytes: number }[]>(MEMORY_GROUPS.map(id => [id, []]));
-  for (const item of items) groups.get(item.id)!.push({ label: item.label, bytes: item.bytes });
-  return [...groups].map(([id, members]) => {
+function grouped(items: { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number }[], always: MemoryGroupId[]): MemoryGroup[] {
+  const groups = new Map<MemoryGroupId, { label: string; bytes: number; swapBytes?: number }[]>(MEMORY_GROUPS.map(id => [id, []]));
+  for (const item of items) groups.get(item.id)!.push(item);
+  return [...groups].map(([id, members]): MemoryGroup => {
     const top = members.sort((a, b) => b.bytes - a.bytes);
-    return { id, label: GROUP_LABELS[id], bytes: top.reduce((sum, item) => sum + item.bytes, 0), top: top.slice(0, 3) };
+    const swapped = top.some(item => item.swapBytes !== undefined);
+    return { id, label: GROUP_LABELS[id], bytes: top.reduce((sum, item) => sum + item.bytes, 0),
+      ...swapped ? { swapBytes: top.reduce((sum, item) => sum + (item.swapBytes ?? 0), 0) } : {}, top: top.slice(0, 3).map(({ label, bytes }) => ({ label, bytes })) };
   }).filter(group => group.bytes > 0 || always.includes(group.id)).sort((a, b) => b.bytes - a.bytes);
 }
 
@@ -126,12 +134,12 @@ export function parseSysctl(text: string): { pressure: MemoryPressure | null; sw
 
 async function macMemory(): Promise<MachineView["memory"]> {
   const totalBytes = totalmem();
-  const [vm, sysctl, feed] = await Promise.all([
+  const [vm, sysctl, byGroup] = await Promise.all([
     run("vm_stat").then(out => parseVmStat(out.stdout), () => null),
     run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level", "vm.swapusage"]).then(out => parseSysctl(out.stdout), () => ({ pressure: null, swapUsedBytes: null, swapTotalBytes: null })),
-    readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null),
+    memoryByGroup(),
   ]);
-  return { usedBytes: vm ?? totalBytes - freemem(), totalBytes, ...sysctl, groups: memoryGroups(feed, Date.now()) };
+  return { usedBytes: vm ?? totalBytes - freemem(), totalBytes, ...sysctl, ...byGroup };
 }
 
 /** /proc/meminfo in bytes: used is MemTotal minus MemAvailable, the number `free` shows as used plus reclaimable cache left out. */
@@ -164,15 +172,35 @@ export const CGROUP_RULES: [MemoryGroupId, RegExp][] = [
 ];
 export const cgroupGroupOf = (path: string): MemoryGroupId => CGROUP_RULES.find(([, rule]) => rule.test(path))?.[0] ?? "other";
 
-/** The leaf cgroups under `root` with their memory.current, so each byte counts once. A cgroup that cannot be read is skipped. */
-export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<{ path: string; bytes: number }[]> {
-  const leaves: { path: string; bytes: number }[] = [];
+/** One leaf cgroup's memory: what it holds that the box cannot take back (`heldBytes`), the part of that in swap, and its file cache. */
+export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number }
+
+/**
+ * A leaf cgroup's held memory from its memory.stat and memory.swap.current: anonymous pages plus shmem (tmpfs files such as /tmp, which the
+ * kernel can only move to swap, never drop) plus the swap the cgroup uses, which holds both kinds once paged out. File cache (`file` less
+ * shmem) is apart, since the box takes it back when it needs the room. Settings > Hosts summed memory.current before 10-19, which counts that
+ * cache and reclaimable slab: at 01:11Z on 10-19 the Prime daemon's cgroup read 109.4 GB there with 43.7 GB of anon, 56.5 GB of file cache
+ * and 8.4 GB of slab, more than the 88.0 GB the whole box used. Null when memory.stat has no anon line.
+ */
+export function heldBytes(stat: string, swap: string): { bytes: number; swapBytes: number; cacheBytes: number } | null {
+  const field = (name: string): number | null => { const value = new RegExp(`^${name} (\\d+)$`, "m").exec(stat)?.[1]; return value === undefined ? null : Number(value); };
+  const anon = field("anon"), shmem = field("shmem") ?? 0, file = field("file") ?? 0;
+  if (anon === null) return null;
+  const swapped = Number(swap.trim());
+  const swapBytes = swap.trim() && Number.isFinite(swapped) ? swapped : 0;
+  return { bytes: anon + shmem + swapBytes, swapBytes, cacheBytes: Math.max(0, file - shmem) };
+}
+
+/** The leaf cgroups under `root` with their held memory (`heldBytes`), so each byte counts once. A cgroup that cannot be read is skipped. */
+export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<LeafMemory[]> {
+  const leaves: LeafMemory[] = [];
   async function walk(relative: string): Promise<void> {
     const dir = relative ? join(root, relative) : root;
     const children = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => relative ? `${relative}/${entry.name}` : entry.name);
     if (relative && !children.length) {
-      const bytes = Number((await readFile(join(dir, "memory.current"), "utf8").catch(() => "")).trim());
-      if (Number.isFinite(bytes) && bytes > 0) leaves.push({ path: relative, bytes });
+      const [stat, swap] = await Promise.all(["memory.stat", "memory.swap.current"].map(name => readFile(join(dir, name), "utf8").catch(() => "")));
+      const held = heldBytes(stat!, swap!);
+      if (held && (held.bytes > 0 || held.cacheBytes > 0)) leaves.push({ path: relative, ...held });
       return;
     }
     await Promise.all(children.map(walk));
@@ -190,19 +218,30 @@ export function cgroupLabel(path: string): string {
   return leaf.replace(/\.(service|scope|slice)$/, "");
 }
 
-export function cgroupGroups(leaves: { path: string; bytes: number }[]): MemoryGroup[] | null {
+export function cgroupGroups(leaves: readonly LeafMemory[]): MemoryGroup[] | null {
   if (!leaves.length) return null;
-  return grouped(leaves.map(leaf => ({ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes })), []);
+  return grouped(leaves.map(leaf => ({ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes, swapBytes: leaf.swapBytes })), []);
+}
+
+/**
+ * The box's memory by group, the one reading Settings > Hosts draws and the Whole system duty's quiet_agent_gb reads (src/mac-usable-watch.ts
+ * `agentLine`), so the two cannot disagree: on Linux the leaf cgroups' held memory with their file cache beside it, on macOS the pressure
+ * feed's owners by footprint.
+ */
+export async function memoryByGroup(): Promise<{ groups: MemoryGroup[] | null; cacheBytes?: number | null }> {
+  if (process.platform === "darwin") return { groups: memoryGroups(await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), Date.now()) };
+  const leaves = await leafCgroups();
+  return { groups: cgroupGroups(leaves), cacheBytes: leaves.length ? leaves.reduce((sum, leaf) => sum + leaf.cacheBytes, 0) : null };
 }
 
 async function linuxMemory(): Promise<MachineView["memory"]> {
-  const [meminfo, psi, leaves] = await Promise.all([
+  const [meminfo, psi, byGroup] = await Promise.all([
     readFile("/proc/meminfo", "utf8").then(parseMeminfo, () => null),
     readFile("/proc/pressure/memory", "utf8").then(parsePsi, () => null),
-    leafCgroups(),
+    memoryByGroup(),
   ]);
   const totalBytes = totalmem();
-  return { ...(meminfo ?? { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null }), pressure: psi, groups: cgroupGroups(leaves) };
+  return { ...(meminfo ?? { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null }), pressure: psi, ...byGroup };
 }
 
 export async function machineView(): Promise<MachineView> {

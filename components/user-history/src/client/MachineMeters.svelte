@@ -63,13 +63,21 @@
         <ul>
           {#each group.top as item (item.label)}<li><span class="item-name" title={item.label}>{item.label}</span><span class="group-size">{gb(item.bytes)} GB</span></li>
           {:else}<li class="none">Nothing running</li>{/each}
+          {#if group.swapBytes}<li class="none">{gb(group.swapBytes)} GB of it sits in swap.</li>{/if}
         </ul>
       </details>
     {/each}
+    {#if machine.memory.cacheBytes}
+      <div class="cache">
+        <span>File cache, which the box takes back when it needs the room</span>
+        <span class="group-size">{gb(machine.memory.cacheBytes)} GB</span>
+        <span class="share thin" aria-hidden="true"><span style:width="{groupTotal ? Math.min(100, (100 * machine.memory.cacheBytes) / groupTotal) : 0}%"></span></span>
+      </div>
+    {/if}
     {#if machine.platform === "darwin"}
       <p class="note">The groups add up to {gb(groupTotal)} GB of memory footprint, the number Activity Monitor shows. It can pass the {gb(machine.memory.usedBytes)} GB in RAM, because footprint also counts{machine.memory.swapUsedBytes ? ` the ${gb(machine.memory.swapUsedBytes)} GB in swap and` : ""} compressed pages at full size.</p>
     {:else}
-      <p class="note">The groups add up to {gb(groupTotal)} GB, each service's memory as Linux counts it. That includes file cache the box can take back, so it can pass the {gb(machine.memory.usedBytes)} GB in use.</p>
+      <p class="note">The groups add up to {gb(groupTotal)} GB that the box cannot take back: process memory and tmpfs files, in RAM or in swap{machine.memory.swapUsedBytes ? `, where ${gb(machine.memory.swapUsedBytes)} GB sits` : ""}. File cache is left out of them.</p>
     {/if}
   </div>
 {/if}
@@ -104,5 +112,7 @@
   .group li { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); gap: 16px; padding: 2px 0 2px 12px; color: var(--text-muted); }
   .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .group li.none { display: block; color: var(--text-faint); }
+  .cache { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); align-items: center; gap: 16px; padding: 2px 0; font-size: 12px; color: var(--text-muted); }
+  .share.thin { height: 2px; }
   .groups .note { margin-top: 6px; font-size: 12px; }
 </style>

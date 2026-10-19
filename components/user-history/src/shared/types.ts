@@ -521,14 +521,20 @@ export type SlackChatInput =
 /** Settings > Hosts: one box's CPU and memory (components/prime-relay/host-stats.ts, which the relay serves and the chat service reads for its own box). */
 export type { MachineView, MemoryGroup, MemoryGroupId, MemoryPressure } from "../../../prime-relay/host-stats.ts";
 import type { MachineView } from "../../../prime-relay/host-stats.ts";
+export type { AgentCounts } from "../agent-states.ts";
+import type { AgentCounts } from "../agent-states.ts";
 /** The services a box holds in hosts.json (src/hosts.ts): one box each holds the pool, the wiki and the chat app. */
 export type HostRole = "pool" | "wiki" | "chat";
 interface HostCardBase { name: string; address: string; roles: HostRole[];
   /** The box this chat service runs on, read in-process instead of through its relay. */
   self: boolean }
-/** One box on Settings > Hosts: its relay answered with its machine and its own turn queue, or it did not answer (a Mac asleep, a box down). */
+/**
+ * One box on Settings > Hosts: its relay answered with its machine and its own turn queue, or it did not answer (a Mac asleep, a box down).
+ * `sessions` counts its loaded Prime sessions by state from the daemon rows this service lists for it (src/agent-states.ts); null before the
+ * first list.
+ */
 export type HostCard = HostCardBase & (
-  | { state: "up"; daemon: "answering" | "down"; pingMs: number | null; machine: MachineView; queue: AgentQueuePool }
+  | { state: "up"; daemon: "answering" | "down"; pingMs: number | null; machine: MachineView; queue: AgentQueuePool; sessions: AgentCounts | null }
   | { state: "unreachable"; pingMs: number; error: string });
 /** The owner's last New chat picks: the box his last new chat or thread went to, and per box the folder his last one there started in. */
 export interface NewChatPicks { lastHost: string | null; lastWorkspace: Record<string, string> }
