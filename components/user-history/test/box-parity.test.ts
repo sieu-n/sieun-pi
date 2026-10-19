@@ -1,7 +1,7 @@
 // Owner 10-18 (goal p1): us-metal02 matches the owner's MacBook Pro for every tool; these cases pin how the Box tools parity duty judges a row, a limit and port 22.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -190,4 +190,18 @@ test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () =>
   assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [own, shared]);
   assert.deepEqual((JSON.parse(run("box").slice(8)) as { ids: string[] }).ids, [shared]);
   assert.match(shortfall(run("mac"), run("box"))!, new RegExp(`box lacks 1 of the Mac's 2: ${own}`));
+});
+
+test("the audit rows keep the box's dropped cua-driver and the Mac's own dev branch out of tool_rows_off", () => {
+  const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
+  const byId = new Map(rows.map(row => [row.id, row]));
+  for (const id of ["mcp-cua-driver", "cli-cua-driver", "tools-panel-check-cua-permissions", "tools-panel-check-cua-mcp", "tools-panel-check-cua-version"])
+    assert.match(byId.get(id)?.byDesign ?? "", /60e99f7d/, id);
+  const tip = byId.get("auto-sns-agent-checkout-tip")!;
+  assert.match(tip.byDesign ?? "", /dev\/sieun-mac-a/);
+  const macCommits = `commits:${JSON.stringify([["aaaaaaaaaa", "p-mac", ["k-mac"]]])}`;
+  const boxCommits = `commits:${JSON.stringify({ ids: [], patches: [], bytes: [] })}`;
+  const result = judgeRows([tip], output("mac", { [tip.id]: [macCommits] }), output("box", { [tip.id]: [boxCommits] }), new Map());
+  assert.equal(result.off.length, 0);
+  assert.equal(result.byDesign.length, 1);
 });
