@@ -477,6 +477,60 @@ class R6MoveBudget(unittest.TestCase):
         soon = acct("x", five=100, five_reset_in=CFG["budget_wait_max_sec"] - 60)
         self.assertEqual(type(decide(state, KEY, [soon, acct("y", five=5)])), sched.Wait)
 
+    def test_the_wait_cap_counts_from_the_start_of_the_wait_1018(self):
+        # 01a11a24 on 10-18: a low tree out of moves waited for claude9 from 15:09Z to 17:21Z,
+        # since each request found claude9 less than an hour away and measured the hour from itself.
+        state = empty_state()
+        put(state, KEY, on="x", priority="low", moves=[NOW - 3 * 3600])
+        y = acct("y", five=5)
+        d = request(state, KEY, [acct("x", five=100, five_reset_in=3000), y], NOW)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 3000))
+        later = NOW + 3000
+        d = request(state, KEY, [fresh("x", 100, 1800, later), fresh("y", 5, 4 * 3600, later)], later)
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
+
+    def test_a_tree_held_for_its_own_account_asks_again_at_the_end_of_its_hour(self):
+        state = empty_state()
+        put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
+        vending.HookWriter(state).set_wait(KEY, P, "x", NOW, NOW - 3000)
+        for i in range(10):
+            ahead = put(state, tree_key(f"h{i}"), on="y", priority="high")
+            vending.HookWriter(state).set_wait(ahead, P, "x", NOW + 300 + 120 * i, NOW - 4000)
+        accounts = [acct("x", five=100, five_reset_in=300, tier="max 5x"), acct("y", five=5)]
+        d = decide(state, KEY, accounts)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 600))
+        d = decide(state, KEY, accounts, now=NOW + 600)
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
+
+    def test_trees_whose_hours_end_together_enter_at_slot_pace(self):
+        keys = [put(empty_state(), tree_key(f"t{i:02d}")) for i in range(12)]
+        state = empty_state()
+        for k in keys:
+            put(state, k, on="x", priority="low", moves=[NOW - 5 * 3600])
+            vending.HookWriter(state).set_wait(k, P, "x", NOW + 3500, NOW)
+
+        def accounts_at(t):
+            reset = NOW + 3500 if t < NOW + 3400 else NOW + 9000
+            return [fresh("x", 100, reset - t, t, "max 5x"), fresh("y", 5, 4 * 3600, t, "max 5x"),
+                    fresh("z", 5, 4 * 3600, t, "max 5x")]
+        admitted = run_until_admitted(state, keys, accounts_at, NOW + 3000, cfg=NO_PROJECTION)
+        self.assertEqual({a for _, _, a in admitted}, {"y", "z"})
+        self.assertEqual(max(max(per_bucket(admitted, a).values()) for a in ("y", "z")), 1)
+        self.assertGreaterEqual(min(at for at, _, _ in admitted), NOW + 3500)
+
+    def test_an_escape_keeps_a_manual_pin_and_skips_an_off_account(self):
+        state = empty_state()
+        put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
+        state["sessions"][KEY.key]["pins"] = {P: {"account_id": "x", "at": NOW - 7200, "by": "cli"}}
+        vending.HookWriter(state).set_wait(KEY, P, "x", NOW, NOW - 7200)
+        accounts = [acct("x", five=100, five_reset_in=3 * 3600), acct("y", five=5)]
+        d = decide(state, KEY, accounts)
+        self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "x"))
+        del state["sessions"][KEY.key]["pins"][P]
+        off = dataclasses.replace(acct("y", five=1), disabled=True)
+        d = decide(state, KEY, [accounts[0], off, acct("z", five=40)])
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "z", ("x", "budget_overrun")))
+
     def test_moves_older_than_a_day_do_not_count(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 25 * 3600] * 3)

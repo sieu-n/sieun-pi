@@ -25,7 +25,8 @@ from . import base, registry
 #      instead: a fresh uniform draw over depleted_backoff_max_sec, held until it
 #      passes, so trees that wait for one reset come back spread out.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
-#      waits for its own account; a high tree is refused only optional moves.
+#      waits for its own account, at most budget_wait_max_sec from the start of its
+#      wait; a high tree is refused only optional moves.
 #   R7 priority share: low trees enter only under low_admit_5h_max_pct; when one
 #      account is left, the last cell of each slot window is for high trees.
 PRIORITIES = ("high", "normal", "low")
@@ -425,10 +426,14 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     moved = sum(1 for t in tree.moves if now - t < MOVE_WINDOW_SEC)
     budget = cfg["max_moves_per_day"].get(p, cfg["max_moves_per_day"].get("normal", 3))
     stuck = own_ok and moved >= budget and (p != "high" or optional)
-    # R6 holds only while the tree's own account frees within budget_wait_max_sec.
-    # Past that the tree moves anyway: a stalled tree costs the owner the work, a
-    # move costs one cache rewrite (about 0.5M tokens).
-    if stuck and admissible_at(cur, cooldowns, cfg, now, p) - now > cfg["budget_wait_max_sec"]:
+    # R6 holds only while the tree's own account takes it within budget_wait_max_sec
+    # of the start of its wait, a backoff included. Past that the tree moves anyway:
+    # a stalled tree costs the owner the work, a move costs one cache rewrite (about
+    # 0.5M tokens). On 10-18 01a11a24, a low tree out of moves, waited from 15:09Z to
+    # 17:21Z for claude9, since each request measured the hour from itself. Trees
+    # that escape together still enter at R4's slot pace, in R5's wait order.
+    deadline = (tree.wait[2] if tree.wait else now) + cfg["budget_wait_max_sec"]
+    if stuck and (now >= deadline or admissible_at(cur, cooldowns, cfg, now, p) > deadline):
         stuck = False
         left = (tree.current, "budget_overrun")
 
@@ -461,6 +466,8 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if not options:
         return Blocked(manual, why_not(by_id[manual]) or "busy") if manual else None
     slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
+    if stuck:
+        slot_at = min(slot_at, deadline)
     if slot_at == float("inf"):
         return Blocked(manual, "busy") if manual else None
     # The backoff is for a pool waiting on rotation: no account takes this class of
