@@ -6,8 +6,16 @@ import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, ThreadMessag
 /** An owner send the thread has not echoed: sending (dim), `sent` (delivered, drawn as a normal bubble), or `failed` with the reason. */
 export interface PendingSend { id: string; text: string; images: ImagePart[]; at: number; sent?: true; failed?: string }
 
-/** The tool a chat calls to reach the owner on a turn the owner did not start. Its `text` shows as an agent bubble unless the tool refused it. */
+/** The tool a chat calls to reach the owner on a turn the owner did not start. Its `text` shows as an agent bubble unless the tool refused or held it. */
 export const TELL_OWNER_TOOL = "tell_owner";
+/**
+ * The cases a `tell_owner` call names in `why` to reach the owner on a turn he did not start (c117): an answer to his message or question, a goal
+ * he asked for that finished, a decision only he can make, a blocker only he can clear. "update" is anything else, kept as a note on such a turn.
+ */
+export const TELL_WHY = ["answer", "done", "decision", "blocker", "update"] as const;
+export type TellWhy = typeof TELL_WHY[number];
+/** How the result of a `tell_owner` call the check kept opens; the feed shows its text in the turn's folded notes, not as a bubble. */
+export const TELL_OWNER_HELD = "Kept as a note, not sent";
 /**
  * A user message the chat server sends on its own: the restart of a failed turn and the job notices (and, in transcripts from before W44, the
  * check-in digest). The feed folds them into updates and the turn they start is not the owner's.
@@ -144,7 +152,7 @@ function toldText(part: AssistantMessage["content"][number], refused: Refused): 
 }
 
 /** `shown` is how the message's text shows: a reply bubble, or notes (a wake-up, or an owner turn the chat answered with tell_owner). */
-function assistantLines(message: AssistantMessage, id: string, shown: "reply" | "notes", streaming: boolean, refused: Refused, answer: Answer, checkInChanged: CheckInChanged = () => undefined): ChatLine[] {
+function assistantLines(message: AssistantMessage, id: string, shown: "reply" | "notes", streaming: boolean, refused: Refused, answer: Answer, checkInChanged: CheckInChanged = () => undefined, held: Refused = () => false): ChatLine[] {
   const lines: ChatLine[] = [];
   const raw = messageText(message).trim();
   const { replyTo, text } = streaming && REPLY_TO_MARKER.startsWith(raw) ? { replyTo: null, text: "" } : splitReplyTo(raw);
@@ -156,6 +164,8 @@ function assistantLines(message: AssistantMessage, id: string, shown: "reply" | 
   message.content.forEach((part, index) => {
     const changed = part.type === "toolCall" ? checkInChanged(part.id) : undefined;
     if (changed) lines.push({ kind: "notice", id: `${id}-c${index}`, text: changed, at: message.timestamp });
+    const kept = part.type === "toolCall" && held(part.id) ? toldText(part, () => false) : "";
+    if (kept) { lines.push({ kind: "notes", id: `${id}-t${index}`, text: kept, at: message.timestamp }); return; }
     const told = toldText(part, refused);
     if (!told || part.type !== "toolCall") return;
     const quote = answer(part.arguments.reply_to, `${id}-t${index}`);
@@ -199,7 +209,7 @@ function customLines(message: CustomMessage, id: string, index: number, nameOf: 
  * wake-up custom (agent message, heartbeat, job notice, background completion) starts an agent turn when the last run had settled, and
  * joins the running turn otherwise. The chat's text is an agent line on an owner turn and a notes line on an agent turn, or on an owner turn
  * with a `tell_owner` call the tool accepted (the told text is the reply); a `tell_owner` call is an agent line on either, unless the tool
- * refused the text. Check-ins, job notices and background completions themselves produce nothing: what the chat told the owner
+ * refused the text, and a notes line when the tool held it (`TELL_OWNER_HELD`). Check-ins, job notices and background completions themselves produce nothing: what the chat told the owner
  * about them is the line. toolResult, bashExecution, branchSummary and non-prompt customs produce nothing.
  */
 export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = () => undefined): ChatLine[] {
@@ -215,7 +225,11 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
   const links = replyLinks();
   const track = turnTracker();
   const results = toolResults(messages);
-  const refused: Refused = toolCallId => results.get(toolCallId)?.isError === true;
+  const held: Refused = toolCallId => {
+    const result = results.get(toolCallId);
+    return result !== undefined && !result.isError && messageText(result).startsWith(TELL_OWNER_HELD);
+  };
+  const refused: Refused = toolCallId => results.get(toolCallId)?.isError === true || held(toolCallId);
   const checkInChanged: CheckInChanged = toolCallId => {
     const result = results.get(toolCallId);
     if (!result || result.isError) return undefined;
@@ -238,7 +252,7 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
         lines.push(line);
         return;
       }
-      case "assistant": lines.push(...assistantLines(message, id, current, false, refused, links.answer, checkInChanged)); return;
+      case "assistant": lines.push(...assistantLines(message, id, current, false, refused, links.answer, checkInChanged, held)); return;
       case "custom": lines.push(...customLines(message, id, index, nameOf)); return;
       case "compactionSummary": lines.push({ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
       case "toolResult":

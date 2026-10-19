@@ -265,9 +265,9 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "or chases that thread; a wait nobody watches stays stuck, so give it that owner, or check the run now and do the next step.",
       ...chatJobRules(),
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
-      `${report ? `Otherwise ${report[0]!.toLowerCase()}${report.slice(1)}` : `Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops ` +
-        `you applied, at most ${BRIEF_ITEMS} items in plain words the owner should hear (like "p412 waits on land 37 with no job moving it", never a ` +
-        `kind label or a list of step ids) or "nothing for the owner", and the detail file path the findings name. Never paste the full flagged list.`} ` +
+      `${report ? `Otherwise ${report[0]!.toLowerCase()}${report.slice(1)}` : `Otherwise send the chat one short report when your work is done, with only what the chat must act on: the headline number, the board ops ` +
+        `you applied, at most ${BRIEF_ITEMS} items in plain words (like "p412 waits on land 37 with no job moving it", never a ` +
+        `kind label or a list of step ids) or "nothing to act on", and the detail file path the findings name. Never paste the full flagged list.`} ` +
         `Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";

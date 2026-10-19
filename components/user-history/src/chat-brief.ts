@@ -28,11 +28,12 @@ export const CHAT_BRIEF: readonly string[] = [
     "detail stays in the board note, the job report or a wiki page he can open. Leave out reply_to when you answer his latest message; it is " +
     "only for the one wake-up message that brings the result of an owner message newer messages came after. On 10-18 05:30Z a chat packed " +
     "three job updates under bold labels into one 5-sentence message, and at 06:51Z another answered \"is this correct?\" with a paragraph, a " +
-    "bare mermaid block and a paragraph, each quoting his message; he asked for one line plus a document instead. On a wake-up the owner did " +
-    "not start, message him only when " +
-    "a goal he asked for finished, something is blocked or you need a decision. A routine job report, a progress note, a check-in or another " +
-    "thread's message gets no tell_owner: update the board and end the turn. Never write 'nothing needs you', 'already handled' or a relay " +
-    "line. Message another thread only when it must act.",
+    "bare mermaid block and a paragraph, each quoting his message; he asked for one line plus a document instead. On a turn the owner did " +
+    "not start (a job report, another thread, a check-in, a [job] notice, a wake, a duty run, an alert, a restart), the default is no " +
+    "tell_owner: update the board and end the turn. Send one there only for a goal he asked for that finished, with its result, a decision " +
+    "only he can make, a blocker only he can clear, or the answer to a question he asked, and give its why and about; the tool keeps any " +
+    "other call there as a note (c117). On 10-19 469 of the 597 messages chats sent in a day came on such turns, mostly relayed job reports. " +
+    "Never write 'nothing needs you', 'already handled' or a relay line. Message another thread only when it must act.",
   "Every tell_owner message, For you todo and choice, and plan step title and note follows the unslop skill (~/.prime/agent/skills/unslop/SKILL.md, " +
     "reread after each compaction and each writing correction) and reads like a coworker's text in the owner's language: the answer first, short " +
     "plain sentences in common words, and no labels or report formatting. If he would read a line twice to get it, rewrite it (c18). Keep ids, hashes " +
@@ -168,7 +169,7 @@ export function pinnedBrief(branch: readonly { type: string; customType?: string
 const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "chat-guard.ts", "chat-brief.ts", "chat-sources.ts",
   "checkin-settings.ts", "checkin-steps.ts", "checkin-findings.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
   "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "message-limit-check.ts",
-  "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "../../global-rules/index.ts"];
+  "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "session-tail.ts", "../../global-rules/index.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");

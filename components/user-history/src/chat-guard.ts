@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { messageIdNote, serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { messageIdNote, OWNER_RETRY_MARK, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
+import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
 
@@ -73,13 +74,87 @@ export function withMessageIds<M extends ContextMessage>(messages: readonly M[])
 }
 
 /**
- * What `tell_owner` answers: any text reaches the owner as its own bubble, markdown, mermaid diagrams and length included, and the chat may
- * call it several times in one turn to send several bubbles. The reply rules live in the chat brief, not in a code check (c81, c97; owner
- * 10-18: "also is this a hard cap (code-level) or something? if so strip all these").
+ * The line after each wake-up in a chat's model view (an agent message, a child's exit, a server note other than an owner retry), so every wake
+ * path says the default at the point the chat reads it (c117). It depends only on its own message, so the cached prefix holds.
  */
-export function tellOwner(text: unknown): { ok: true; text: string } | { ok: false; text: string } {
-  const told = typeof text === "string" ? text.trim() : "";
-  return told ? { ok: true, text: TELL_OWNER_DONE } : { ok: false, text: "nothing to tell: give text" };
+export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question]";
+const WAKE_TYPES = new Set(["agent_message", "rlm_child_terminal_notice", "rlm_child_failure", "heartbeat_prompt"]);
+
+/** The model's view of a chat with `WAKE_NOTE` after each wake-up; undefined when it has none. */
+export function withWakeNotes<M extends ContextMessage & { customType?: unknown }>(messages: readonly M[]): M[] | undefined {
+  let changed = false;
+  const view = messages.map(message => {
+    const content = message.content;
+    if (!(typeof content === "string" || Array.isArray(content))) return message;
+    const text = messageText({ content: content as string | { type: string; text?: string }[] }).trim();
+    const wake = message.role === "custom" ? typeof message.customType === "string" && WAKE_TYPES.has(message.customType)
+      : message.role === "user" && serverNote(text) !== undefined && !text.includes(OWNER_RETRY_MARK);
+    if (!wake) return message;
+    changed = true;
+    const note = { type: "text", text: WAKE_NOTE };
+    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, note] : [...content, note] };
+  });
+  return changed ? view : undefined;
+}
+
+/** The tell_owner tool's description and parameters, which the extension registers in a chat. */
+export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own bubble, like a VP's Slack DM to his CTO. On a turn he started, " +
+  "answer him. On a turn he did not start (a job report, another thread, a check-in, a [job] notice, a wake, a duty run, an alert, a " +
+  "restart), the default is no call: update the board and end the turn. Call it there only for a goal he asked for that finished, with " +
+  "its result (why done), a decision only he can make (decision), a blocker only he can clear (blocker), or the answer to a question he " +
+  "asked (answer), and name that goal, decision, blocker or question in about; any other call there is kept as a note (c117). Write one " +
+  "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
+  "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and " +
+  "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
+  "wiki page, sent as one message with the one-line takeaway and its wiki: link, which shows as a page card. Your first reply to a new " +
+  "request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started " +
+  "the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 " +
+  "record types (10-18). The job linkedin field map traces each one to its column.\"";
+export const TELL_OWNER_PARAMETERS = {
+  type: "object",
+  properties: {
+    text: { type: "string" },
+    why: { type: "string", enum: [...TELL_WHY], description: "answer, done, decision or blocker as above; update for anything else, which " +
+      "reaches him only on a turn he started." },
+    about: { type: "string", description: "The goal, decision, blocker or question the message is about, in a few words; needed with why " +
+      "on a turn he did not start." },
+    reply_to: { type: "string", description: "Leave it out when you answer the owner's latest message. Set it only on a wake-up (a job " +
+      "report or a check-in), on the one message that brings the result an owner message asked for when newer messages came after it: its [message id]." },
+  },
+  required: ["text", "why"],
+};
+
+/** The cases that reach the owner on a turn he did not start: every `TELL_WHY` but "update". */
+const TELL_CASES: readonly TellWhy[] = TELL_WHY.filter(why => why !== "update");
+export interface TellInput { text?: unknown; why?: unknown; about?: unknown; reply_to?: unknown }
+/** What the check reads of the chat: whether the owner started the running turn, and the ids of his messages a `reply_to` may name. */
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string> }
+
+export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
+  const ownerIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === "user" && !serverNote(messageText(message).trim())) ownerIds.add(ownerMessageId(message.timestamp));
+  }
+  return { owner: turnStarter(messages) === "owner", ownerIds };
+}
+
+/**
+ * What `tell_owner` answers. On a turn the owner started, or with a `reply_to` that names one of his messages, any text reaches him as its own
+ * bubble. On any other turn it reaches him only when `why` names a case (done, decision, blocker, answer) and `about` names that goal,
+ * decision, blocker or question; else it is held, the feed shows it in the turn's notes, and the answer says how to send it if it is one
+ * (c117; on 10-19 469 of 597 messages in a day came on turns the owner did not start, and the brief's rule since c104 had not held them).
+ * Length and form stay brief rules (c81, c97).
+ */
+export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "refused" | "held"; text: string } {
+  const told = typeof input.text === "string" ? input.text.trim() : "";
+  if (!told) return { kind: "refused", text: "nothing to tell: give text" };
+  const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
+  const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
+  const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
+  if (turn.owner || answers || declared) return { kind: "sent", text: TELL_OWNER_DONE };
+  return { kind: "held", text: `${TELL_OWNER_HELD}. The owner did not start this turn, so a message reaches him only with why set to done, ` +
+    "decision, blocker or answer and about naming that goal, decision, blocker or question. If it is one of those, call tell_owner again " +
+    "with both; if not, update the board and end the turn." };
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;

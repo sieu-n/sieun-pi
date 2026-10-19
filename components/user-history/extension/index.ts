@@ -4,7 +4,9 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, tellOwner, topSession, withChatTool, withMessageIds } from "../src/chat-guard.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS,
+  type TellInput, tellOwner, type TellTurn, tellTurn, topSession, withChatTool, withMessageIds, withWakeNotes } from "../src/chat-guard.ts";
+import { historyMessages } from "../src/session-tail.ts";
 import { registerPrintedRoots } from "../src/chat-sources.ts";
 import { chatService, hostJobRegistry, remoteChatService, serviceCall } from "../src/chat-host.ts";
 import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
@@ -19,7 +21,7 @@ import { withMessageCheck } from "../src/message-limit-check.ts";
 import { movedReason, movedTo } from "../src/moved-copy.ts";
 import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
-import { REQUIREMENT_STATUSES, type ChatAgent } from "../src/shared/types.ts";
+import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
@@ -91,27 +93,17 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // reload in between keeps the pinned one, and the chat server's [brief] notice tells it what changed.
   const pinBrief = () => pi.appendEntry(CHAT_BRIEF_ENTRY, { lines: [...CHAT_BRIEF] });
   // The feed shows each call's text as its own bubble on any turn. On a wake-up it is the only text the owner sees; on an owner turn that calls
-  // it, the chat's own text folds into notes. It refuses only empty text (c97).
+  // it, the chat's own text folds into notes. It refuses empty text and holds a call on a turn the owner did not start that names no case (c117).
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: "Send the owner one chat message, its own bubble, like a VP's Slack DM: one point in 1 or 2 short casual sentences, " +
-      "with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" or \"Here's the diagram:\" " +
-      "before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and cut or split one over " +
-      "2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a wiki page, sent as " +
-      "one message with the one-line takeaway and its wiki: link, which shows as a page card. Your first reply to a new request opens with the number you read and its date, then one line naming the job, then a question if one is open. Bad: \"I started the job linkedin field map. It reads the code and writes the page today.\" Good: \"The LinkedIn models file has 81 fields across 6 record types (10-18). The job linkedin field map traces each one to its column.\"",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string" },
-        reply_to: { type: "string", description: "Leave it out when you answer the owner's latest message. Set it only on a wake-up (a job " +
-          "report or a check-in), on the one message that brings the result an owner message asked for when newer messages came after it: its [message id]." },
-      },
-      required: ["text"],
-    },
-    async execute(_toolCallId, params) {
-      const result = tellOwner((params as { text?: unknown }).text);
-      if (!result.ok) throw new Error(result.text);
+    description: TELL_OWNER_DESCRIPTION,
+    parameters: TELL_OWNER_PARAMETERS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      let turn: TellTurn = { owner: true, ownerIds: new Set() };
+      try { turn = tellTurn(historyMessages(ctx.sessionManager.getBranch()) as ThreadMessage[]); } catch { /* read as an owner turn, so nothing is held */ }
+      const result = tellOwner(params as TellInput, turn);
+      if (result.kind === "refused") throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },
   });
@@ -155,6 +147,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     if (!marked && !job && !underChat) return undefined;
     let messages = event.messages;
     if (marked) try { messages = withMessageIds(messages) ?? messages; } catch { /* no ids */ }
+    if (marked) try { messages = withWakeNotes(messages) ?? messages; } catch { /* no wake notes */ }
     let ledger: Ledger | null = null;
     try { ledger = await readLedger(); } catch { /* no ledger */ }
     messages = deliverCorrections({ messages, branch: ctx.sessionManager.getBranch(), ledger, job: !marked, brief: BRIEF_CORRECTIONS,
