@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -29,7 +30,9 @@ test("a deleted job's end keeps every path it only named and a shared helper's r
     const artifacts = join(home, ".prime", "agent", "session-artifacts");
     const chat = join(artifacts, "01a14210-4e7d-72c3-aa67-e3d476f4e728");
     const job = join(chat, "sub-7e8789ef");
-    const session = "01a150f1-c33c-753f-9526-0cdb90358874";
+    // The stray helper scans every process on the box, so each run's session gets an id of its own: at 21:2xZ on 10-19 under a load of 400
+    // a parallel run's job end stopped this run's stray by the shared id, and this run's end found none.
+    const session = `01a150f1-c33c-753f-9526-${randomBytes(6).toString("hex")}`;
     mkdirSync(job, { recursive: true });
     const start = Date.now();
     await pause(30);
