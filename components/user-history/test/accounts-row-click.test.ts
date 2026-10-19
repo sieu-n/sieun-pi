@@ -70,7 +70,8 @@ test("a click on an account row sends no account action, and Use in this thread 
   // One hook closes Chrome and then removes its profile: as two hooks the rm ran first, since after hooks run in the order they were added,
   // and Chrome still writing the profile failed the test with ENOTEMPTY.
   let browser: ReturnType<typeof devtools> | undefined;
-  t.after(async () => { await browser?.close(); await rm(dir, { recursive: true, force: true }); });
+  // Chrome's helper processes outlive the main one and still write the profile, so the rm retries on ENOTEMPTY (release-chat of dc9a5a60, 10-19).
+  t.after(async () => { await browser?.close(); await rm(dir, { recursive: true, force: true, maxRetries: 10 }); });
   await symlink(join(import.meta.dirname, "../node_modules"), join(dir, "node_modules"), "dir");
   const plugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
   const bundled = await build({ stdin: { contents: `import { mount } from "svelte"; import Accounts from "./AccountsSettings.svelte"; mount(Accounts, { target: document.body });`,
