@@ -41,10 +41,12 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  * - deep_walk_ok_pct >= 99: the owner, 10-09, "reliable logged-in apis including pagination api for up to years". Measured 10-14 02:30Z on
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
  *   3,664 of 3,681 (99.5%). The target is the 72 h value rounded down to a whole percent. The metric is the walks that reached their end
- *   over those plus the error stops. An error stop is a walk that ended on an error, or an open walk whose last claim errored before it got a
- *   walk_cursor. An open walk with a cursor still reads, so it is left out even when its last claim errored, and the deep_walks flag shows
- *   those walks as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min and source_errors are run detail: report() writes them to the output, the server does not judge
+ *   over those plus the error stops plus the stuck walks. An error stop is a walk that ended on an error in the last 24 h. A stuck walk is
+ *   an open walk whose last chunk ended on an error and that started more than one cadence ago, at any age, so it lowers the metric every
+ *   run until it moves on: on 10-19 the metric read 100% while 32 open walks sat on cursor_provenance_missing. The run detail
+ *   deep_walks_open_stuck counts them. An open walk that errored and started inside one cadence is retrying, so it is left out, and the
+ *   deep_walks flag shows those as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck and source_errors are run detail: report() writes them to the output, the server does not judge
  *   them, and the canary_short and staging_stall flags carry them to the fix jobs.
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
  * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
@@ -115,11 +117,11 @@ export interface StagingPause { key: string; auditId: number | null; at: number 
  */
 export interface Lapsed { waiting: number; blocked: number; oldestAt: number | null }
 /**
- * The 365-day collab walks of the last 24 h: walks that reached their end (since or exhausted), error stops by code, and by code the open
- * walks whose last claim errored but which hold a walk_cursor and keep reading. A reading walk has not stopped, so it is left out of
- * deep_walk_ok_pct; if it keeps failing, the crawler ends it with walk_end 'unavailable' and walk_done_at set, and it counts as an error stop.
+ * The 365-day collab walks: the walks of the last 24 h that reached their end (since or exhausted), the error stops of the last 24 h by code,
+ * and by code the open walks whose last chunk errored: `stuck` when the walk started more than one cadence ago, `retrying` when it started
+ * inside one cadence and its last chunk ran in the last 24 h. A retrying walk has not stopped, so it is left out of deep_walk_ok_pct.
  */
-export interface DeepWalks { reached: number; errors: Record<string, number>; reading: Record<string, number> }
+export interface DeepWalks { reached: number; errors: Record<string, number>; stuck: Record<string, number>; retrying: Record<string, number> }
 /** Why a prod account is stuck (STUCK_REMOTE): its state, its id, and since when (the freeze or park, or its first 302 in the window). */
 export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar";
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
@@ -295,17 +297,21 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       + (data.lapsed.blocked ? `${data.lapsed.blocked} have a blocked renewal row that nothing retries and are left out of capacity: clear them through the shipped rotation path.` : "")).slice(0, 600) });
   }
   if (data.deepWalks) {
-    const stops = Object.entries(data.deepWalks.errors).filter(([code]) => !NOT_PAGINATION.has(code));
-    const left = Object.entries(data.deepWalks.errors).filter(([code]) => NOT_PAGINATION.has(code));
-    const errorStops = stops.reduce((sum, [, count]) => sum + count, 0);
-    const total = data.deepWalks.reached + errorStops;
-    metrics.deep_walk_ok_pct = total ? round1(100 * data.deepWalks.reached / total) : 100;
+    const pagination = (codes: Record<string, number>): [string, number][] => Object.entries(codes).filter(([code]) => !NOT_PAGINATION.has(code));
+    const sum = (entries: [string, number][]): number => entries.reduce((total, [, count]) => total + count, 0);
     const list = (entries: [string, number][]): string => entries.map(([code, count]) => `${code} ${count}`).join(", ");
-    const reading = Object.entries(data.deepWalks.reading);
-    const stillReading = reading.reduce((sum, [, count]) => sum + count, 0);
-    flagged.push({ at, kind: "deep_walks", excerpt: `365-day logged-in collab walks in the last 24 h: ${fmt(data.deepWalks.reached)} reached their end, ${errorStops} stopped on an error${errorStops ? ` (${list(stops)})` : ""}; `
+    const stops = pagination(data.deepWalks.errors);
+    const stuck = pagination(data.deepWalks.stuck);
+    const left = [...Object.entries(data.deepWalks.errors), ...Object.entries(data.deepWalks.stuck)].filter(([code]) => NOT_PAGINATION.has(code));
+    const retrying = Object.entries(data.deepWalks.retrying);
+    const errorStops = sum(stops);
+    const total = data.deepWalks.reached + errorStops + sum(stuck);
+    metrics.deep_walk_ok_pct = total ? round1(100 * data.deepWalks.reached / total) : 100;
+    metrics.deep_walks_open_stuck = sum(stuck);
+    flagged.push({ at, kind: "deep_walks", excerpt: (`365-day logged-in collab walks in the last 24 h: ${fmt(data.deepWalks.reached)} reached their end, ${errorStops} stopped on an error${errorStops ? ` (${list(stops)})` : ""}; `
+      + `${sum(stuck)} open walks are stuck, their last chunk ended on an error and they started more than one cadence ago${stuck.length ? ` (${list(stuck)})` : ""}; `
       + `profile_not_found and fleet_exhausted are not pagination errors and are left out${left.length ? ` (${list(left)})` : ""}`
-      + (stillReading ? `; ${stillReading} open walks still reading whose last claim errored: ${list(reading)}` : "") });
+      + (retrying.length ? `; ${sum(retrying)} open walks inside their first cadence are retrying after an error: ${list(retrying)}` : "")).slice(0, 900) });
   }
   if (data.stuck) {
     metrics.engage_accounts_stuck = data.stuck.length;
@@ -364,22 +370,29 @@ export function lapsedOf(tsv: string): Lapsed {
 
 const CONFIG_SQL = "select key, value from config where key like 'engage.canary%' or key = 'engage.rate_test_stop_deaths' or key like 'pause.engage%'";
 /**
- * The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365, the 24 h window of the duty. A walk
- * done in the window is reached when it ended since or exhausted, and an error stop under its walk_end otherwise. An open walk whose last
- * claim in the window errored is an error stop only when it has no walk_cursor, as it never got past the handle resolve; with a cursor it is
- * reading. An open walk's walk_end is no end ('since' there marks the 30-day first pass), so it goes under last_error_code. On 10-17, 18 open
+ * The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365. A walk done in the duty's 24 h window
+ * is reached when it ended since or exhausted, and an error stop under its walk_end otherwise. An open walk whose last chunk errored is
+ * stuck when it started (walk_since plus depth_days, as walk_since is the first deep claim minus depth_days) more than one cadence ago, at
+ * any last run time, and retrying when it started inside one cadence and its last chunk ran in the window. The cadence is _interval in
+ * apps/crawler-v3/src/watch_targets/cadence.py: cadence_days, else daily for a monitor row or a row active within 30 days, else weekly.
+ * An open walk's walk_end is no end ('since' there marks the 30-day first pass), so it goes under last_error_code. On 10-17, 18 open
  * walks that kept reading counted as stops named "since", which hid their code permanent_error.
  */
 export const DEEP_WALKS_REMOTE = `set -u
 PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
 docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
 set default_transaction_read_only = on;
-select case when walk_done_at is not null and walk_end in ('since', 'exhausted') then 'reached' when walk_done_at is null and walk_cursor is not null then 'reading' else 'error' end,
-  case when walk_done_at is not null and walk_end in ('since', 'exhausted') then ''
-    when walk_done_at is not null and nullif(walk_end, '') is not null then walk_end else coalesce(last_error_code, 'error') end, count(*)
-from watch_targets where platform = 'instagram' and kind = 'tagged' and depth_days >= 365
-  and ((walk_done_at > now() - interval '24 hours')
-    or (walk_done_at is null and walk_since is not null and last_run_at > now() - interval '24 hours' and last_outcome = 'error'))
+with walks as (
+  select *, walk_done_at is null and walk_since + make_interval(days => depth_days) < now() - make_interval(days => coalesce(cadence_days,
+    case when tier = 'monitor' or coalesce(last_activity_at, created_at) > now() - interval '30 days' then 1 else 7 end)) as past_cadence
+  from watch_targets where platform = 'instagram' and kind = 'tagged' and depth_days >= 365
+)
+select case when walk_done_at is null then case when past_cadence then 'stuck' else 'retrying' end
+    when walk_end in ('since', 'exhausted') then 'reached' else 'error' end,
+  case when walk_done_at is null then coalesce(last_error_code, 'error') when walk_end in ('since', 'exhausted') then '' else coalesce(nullif(walk_end, ''), 'error') end, count(*)
+from walks
+where walk_done_at > now() - interval '24 hours'
+  or (walk_done_at is null and walk_since is not null and last_outcome = 'error' and (past_cadence or last_run_at > now() - interval '24 hours'))
 group by 1, 2;
 SQL
 `;
@@ -449,12 +462,11 @@ export const deathsOf = (rows: Record<string, unknown>[]): Death[] => rows.map(r
   readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0),
 }));
 export function deepWalksOf(tsv: string): DeepWalks {
-  const walks: DeepWalks = { reached: 0, errors: {}, reading: {} };
+  const walks: DeepWalks = { reached: 0, errors: {}, stuck: {}, retrying: {} };
   for (const line of tsv.split("\n").filter(Boolean)) {
     const [kind, code, count] = line.split("\t");
     if (kind === "reached") walks.reached += Number(count);
-    else if (kind === "error") walks.errors[code || "error"] = Number(count);
-    else if (kind === "reading") walks.reading[code || "error"] = Number(count);
+    else if (kind === "error" || kind === "stuck" || kind === "retrying") walks[kind === "error" ? "errors" : kind][code || "error"] = Number(count);
     else throw new Error(`deep walks: unexpected line ${line.slice(0, 80)}`);
   }
   return walks;
