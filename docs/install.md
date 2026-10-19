@@ -184,6 +184,24 @@ These notes come from the code. They were not run on a Linux machine.
 
 ## Update
 
+### Committed extension runtime on managed hosts
+
+On a host whose checkout is under macOS `Documents`, install the extension runtime outside that protected folder. A background Prime worker can be denied access to checkout symlinks even when a terminal can read them.
+
+```sh
+node scripts/install-runtime.mjs --ref <committed-sha> --prepare-only
+node scripts/install-runtime.mjs --ref <committed-sha> --home /path/to/isolated-home
+node scripts/install-runtime.mjs --ref <committed-sha>
+```
+
+The first command prepares `~/.local/share/sieun-pi-runtime/releases/<sha>` without changing the active profile. It exports only the commit, runs `npm ci --omit=dev --ignore-scripts` against the root and user-history lockfiles, and checks that dependencies and links stay within the release. Build scratch trees live under `~/scratch` and are removed afterwards. The second command applies to an existing isolated HOME for verification; only the coordinator runs the final activation against the real HOME.
+
+Activation uses the release's existing `manage.py` plan, apply and verify commands, retains their rollback receipt, then atomically switches `current`. Existing settings, credentials and session history remain untouched. The command never restarts Prime. A completed release is reused without rebuilding; passing an older explicit `--ref` rolls back by the same process.
+
+This runtime stays pinned to its installed commit. Prime-sync uses `current` for manifest links and must not relink them into the source checkout after pulling newer source. Run the runtime installer again to release an update. Its `.installing/owner.json` records the exclusive install lock; after an interrupted install, confirm that PID has exited before removing the stale `.installing` directory.
+
+### Packed npm installation
+
 Install each release into its own folder, so running sessions keep their source.
 
 ```sh

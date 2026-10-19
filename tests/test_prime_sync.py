@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -133,6 +134,53 @@ class PrimeSyncTests(unittest.TestCase):
         self.commit(self.seed, "edit")
         self.assertIn("pulled", self.sync(box)["code"])
         self.assertEqual((skill / "SKILL.md").read_text(), "v2\n")
+
+    def test_installed_runtime_links_survive_source_updates_and_follow_activation(self):
+        # 10-20: frontend bro's compiled worker could not read Documents, so its image context hook never loaded.
+        box = self.box("mac", [], [])
+        checkout = box / "src/sieun-pi"
+        runtime = box / ".local/share/sieun-pi-runtime"
+        release = runtime / "releases/first"
+        shutil.copytree(checkout, release, ignore=shutil.ignore_patterns(".git"))
+        (release / "release.json").write_text(json.dumps({"source": str(checkout.resolve())}))
+        (runtime / "current").symlink_to(release, target_is_directory=True)
+        self.sync(box)
+        skill = box / ".prime/agent/skills/unslop"
+        self.assertEqual(skill.resolve(), release / "skills/unslop")
+        (self.seed / "skills/unslop/SKILL.md").write_text("v2\n")
+        self.commit(self.seed, "new source")
+        self.sync(box)
+        self.assertEqual((skill / "SKILL.md").read_text(), "v1\n")
+        next_release = runtime / "releases/second"
+        shutil.copytree(checkout, next_release, ignore=shutil.ignore_patterns(".git"))
+        (next_release / "release.json").write_text(json.dumps({"source": str(checkout.resolve())}))
+        (runtime / "current").unlink()
+        (runtime / "current").symlink_to(next_release, target_is_directory=True)
+        self.sync(box)
+        self.assertEqual((skill / "SKILL.md").read_text(), "v2\n")
+        self.assertEqual(skill.resolve(), next_release / "skills/unslop")
+
+    def test_runtime_install_lock_preserves_links(self):
+        box = self.box("mac", [], [])
+        self.sync(box)
+        skill = box / ".prime/agent/skills/unslop"
+        before = os.readlink(skill)
+        (box / ".local/share/sieun-pi-runtime/.installing").mkdir(parents=True)
+        report = self.sync(box)
+        self.assertIn("installation is in progress", report["links"])
+        self.assertEqual(os.readlink(skill), before)
+
+    def test_broken_runtime_does_not_relink_to_protected_source(self):
+        box = self.box("mac", [], [])
+        self.sync(box)
+        skill = box / ".prime/agent/skills/unslop"
+        before = os.readlink(skill)
+        runtime = box / ".local/share/sieun-pi-runtime"
+        runtime.mkdir(parents=True)
+        (runtime / "current").symlink_to(runtime / "releases/missing")
+        report = self.sync(box, code=1)
+        self.assertIn("installed runtime is invalid", report["links"])
+        self.assertEqual(os.readlink(skill), before)
 
     def test_an_emptied_file_never_deletes_the_shared_entries(self):
         mac = self.box("mac", [entry("a", "a"), entry("b", "b")], [])

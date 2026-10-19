@@ -3,8 +3,8 @@
 
 1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its live edits carried onto the new bytes.
    First each shared index entry that holds an older committed version of its path goes back to HEAD's, with its file when the file holds it too.
-2. Every home link in install-manifest.json points at the checkout, so skills, the global AGENTS.md,
-   pstack-models.json and the extensions match the commit. A copy in a link's place is deleted.
+2. Every home link in install-manifest.json points at the installed runtime when present, otherwise the checkout.
+   This keeps Prime's extensions and dependencies outside macOS-protected source folders.
 3. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
 4. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
    merge three ways with the private state repo, one file per entry, and the newer side wins a clash.
@@ -385,13 +385,28 @@ def remove_path(path: Path) -> None:
 
 
 def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
-    manifest = json.loads((checkout / "install-manifest.json").read_text())
+    runtime = home / ".local/share/sieun-pi-runtime"
+    if (runtime / ".installing").exists():
+        raise Skip("runtime installation is in progress; resource links stay as they are")
+    source_root = checkout
+    current = runtime / "current"
+    if os.path.lexists(current):
+        try:
+            source_root = current.resolve(strict=True)
+            release = json.loads((source_root / "release.json").read_text())
+            if Path(release["source"]).resolve() != checkout.resolve():
+                raise ValueError("the runtime belongs to another source checkout")
+            if not source_root.is_relative_to(runtime / "releases"):
+                raise ValueError("the runtime is outside its releases directory")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise Alert(f"installed runtime is invalid; resource links stay as they are: {error}") from error
+    manifest = json.loads((source_root / "install-manifest.json").read_text())
     changes = []
     wanted_skills = set()
     for entry in manifest["entries"]:
         if entry["kind"] != "link" or entry.get("scope") != "home":
             continue
-        source, target = checkout / entry["source"], home / entry["target"]
+        source, target = source_root / entry["source"], home / entry["target"]
         if target.parent == agent_dir / "skills":
             wanted_skills.add(target.name)
         if not source.exists():
@@ -408,7 +423,7 @@ def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
         for path in skills.iterdir():
             if path.name in wanted_skills or not path.is_symlink():
                 continue
-            if os.readlink(path).startswith(str(checkout / "skills") + os.sep):
+            if os.readlink(path).startswith((str(checkout / "skills") + os.sep, str(runtime / "releases") + os.sep)):
                 path.unlink()
                 changes.append(f"unlinked skills/{path.name}")
     return changes
