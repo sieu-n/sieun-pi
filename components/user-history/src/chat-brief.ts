@@ -113,8 +113,8 @@ export function jobReplyGuideline(job: ChatJobOf): string {
     "Record each tree, rig or `systemd-run` unit you made to throw away with `board.own(path, unit=...)`, since a job's end deletes and stops " +
     "only what that record names, and keep reports, evidence and helpers other jobs run under ~/work/<job>/ or the repo. " +
     `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
-    "Work, reason and write in English, including reports, logs, files and commits; quote the owner's words as-is; only replies and pages made " +
-    "for the owner use his language (c2).";
+    "Work, reason and write in English, including reports, logs, files, commits, docs and wiki pages, even pages made for the owner; quote the " +
+    "owner's words as-is; only chat replies to the owner use his language (c2, c102).";
 }
 
 /**
