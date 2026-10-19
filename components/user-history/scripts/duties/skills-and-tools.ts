@@ -67,7 +67,13 @@ export interface Deps {
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
 const METAL_HOST = process.env.METAL_SSH_HOST || "us-metal01";
 export const CHECK_TIMEOUT_MS = 90_000;
-const MCP_TIMEOUT_MS = 20_000;
+/**
+ * How long one CLI or MCP call may take before its check fails. The slowest call that finished on us-metal02 took 26.4 s (`prime-agent --offline
+ * model list` with extensions, 10-19 at 20:59Z, load 420 on 80 cores, CPU pressure some=73%), and at 20:06Z that evening a model list and
+ * sync-claude-skills.sh ran past the 20 s limit this replaced. Each call waited in the CPU run queue 2 to 4 times as long as it ran
+ * (/home/sieun/work/box-parity-flakes/findings.md). 60 s gives that worst case more than twice its time, and a call that hangs still fails.
+ */
+export const CALL_TIMEOUT_MS = 60_000;
 /** A fixed 4x4 red PNG for the attach-image check. */
 const PNG_4X4 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR42mP4z8AARwzEcQCukw/xOF6MEQAAAABJRU5ErkJggg==";
 const PASS = (detail: string): Outcome => ({ status: "pass", detail });
@@ -101,9 +107,9 @@ async function mcpServer(deps: Deps, name: string): Promise<McpServer | string> 
  * fails until something starts it again.
  */
 async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
-  const running = async () => /daemon is running/.test((await deps.exec(paths(deps).cua, ["status"], { timeoutMs: 10_000 })).stdout);
+  const running = async () => /daemon is running/.test((await deps.exec(paths(deps).cua, ["status"], { timeoutMs: CALL_TIMEOUT_MS })).stdout);
   if (await running()) return true;
-  await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
+  await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: CALL_TIMEOUT_MS });
   for (let tries = 0; tries < 15; tries++) {
     if (await running()) return true;
     await (deps.sleep ?? (ms => new Promise<void>(done => setTimeout(done, ms))))(1000);
@@ -127,9 +133,9 @@ function macReach(deps: Deps): Promise<MacReach> {
 }
 async function probeMac(deps: Deps): Promise<MacReach> {
   // Both read local state (the ssh config, the tailscaled socket) and took 0.09 s and 0.03 s on us-metal02 on 10-18.
-  const host = /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: 10_000 })).stdout)?.[1];
+  const host = /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: CALL_TIMEOUT_MS })).stdout)?.[1];
   if (!host) return { online: true };
-  const reach = peerReach((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: 10_000 })).stdout, host);
+  const reach = peerReach((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: CALL_TIMEOUT_MS })).stdout, host);
   if (reach.online) return reach;
   return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside answers again when it wakes` };
 }
@@ -184,7 +190,7 @@ async function scriptWithImports(deps: Deps, entry: string): Promise<string[]> {
   for (let file = queue.shift(); file; file = queue.shift()) {
     if (seen.has(file)) continue;
     seen.add(file);
-    const shown = await deps.exec("git", ["show", `HEAD:${file}`], { cwd: deps.repo, timeoutMs: 10_000 });
+    const shown = await deps.exec("git", ["show", `HEAD:${file}`], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
     if (shown.code !== 0) continue;
     for (const [, spec] of shown.stdout.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) queue.push(posix.join(posix.dirname(file), spec!));
   }
@@ -194,25 +200,25 @@ async function scriptWithImports(deps: Deps, entry: string): Promise<string[]> {
 async function skillPathsAtHead(deps: Deps): Promise<ExecResult> {
   const dir = join(deps.scratchDir, `skill-paths-head-${process.pid}`);
   const tar = `${dir}.tar`;
-  const gitDir = await deps.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: deps.repo, timeoutMs: 10_000 });
+  const gitDir = await deps.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
   if (gitDir.code !== 0) return gitDir;
   const scripts = await scriptWithImports(deps, SKILL_PATHS_SCRIPT);
   try {
     for (const [file, args] of [["rm", ["-rf", dir, tar]], ["mkdir", ["-p", dir]],
       ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ".agents/skills", ".claude/skills-native", ".claude/rules", ...scripts, ":(glob)**/.gitignore"]],
       ["tar", ["-x", "-f", tar, "-C", dir]]] as const) {
-      const step = await deps.exec(file, args, { cwd: deps.repo, timeoutMs: 20_000 });
+      const step = await deps.exec(file, args, { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
       if (step.code !== 0) return step;
     }
-    return await deps.exec("node", [SKILL_PATHS_SCRIPT, "--json"], { cwd: dir, env: { GIT_DIR: gitDir.stdout.trim(), GIT_WORK_TREE: dir }, timeoutMs: 20_000 });
+    return await deps.exec("node", [SKILL_PATHS_SCRIPT, "--json"], { cwd: dir, env: { GIT_DIR: gitDir.stdout.trim(), GIT_WORK_TREE: dir }, timeoutMs: CALL_TIMEOUT_MS });
   } finally {
-    await deps.exec("rm", ["-rf", dir, tar], { timeoutMs: 10_000 });
+    await deps.exec("rm", ["-rf", dir, tar], { timeoutMs: CALL_TIMEOUT_MS });
   }
 }
 const setDiff = (a: Iterable<string>, b: Iterable<string>) => { const other = new Set(b); return [...new Set(a)].filter(item => !other.has(item)).sort(); };
 
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
-  const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: 15_000 });
+  const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with components/pi-pool/install.py in sieun-pi");
   type Row = { email?: string; usable?: boolean; reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
@@ -230,7 +236,7 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
 }
 
 async function liveSessions(deps: Deps): Promise<number> {
-  const result = await deps.exec(paths(deps).prime, ["list", "--json"], { timeoutMs: 15_000 });
+  const result = await deps.exec(paths(deps).prime, ["list", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return 0;
   try {
     const sessions = (parseJson(result.stdout) as { sessions?: { activeSessionId?: string; isSessionActive?: boolean }[] }).sessions ?? [];
@@ -239,7 +245,7 @@ async function liveSessions(deps: Deps): Promise<number> {
 }
 
 async function cliLogin(deps: Deps, file: string, args: string[], ok: (result: ExecResult) => boolean, fix: string, cwd?: string): Promise<Outcome> {
-  const result = await deps.exec(file, args, { ...(cwd ? { cwd } : {}), timeoutMs: 20_000 });
+  const result = await deps.exec(file, args, { ...(cwd ? { cwd } : {}), timeoutMs: CALL_TIMEOUT_MS });
   return result.code === 0 && ok(result) ? PASS(brief(both(result), 120)) : FAIL("agent", `${file} ${args.join(" ")}: ${failText(result)}`, fix);
 }
 
@@ -249,7 +255,7 @@ async function railwayAuth(deps: Deps): Promise<Outcome> {
   const token = (deps.env ?? process.env).RAILWAY_API_TOKEN;
   if (!token) return cliLogin(deps, "railway", ["whoami"], loggedIn, "run `railway login --browserless` in the owner's Aside browser");
   const env = { RAILWAY_API_TOKEN: token, RAILWAY_NO_AUTO_UPDATE: "1", HOME: join(deps.scratchDir, `railway-token-home-${process.pid}`) };
-  const result = await deps.exec("railway", ["whoami"], { env, timeoutMs: 20_000 });
+  const result = await deps.exec("railway", ["whoami"], { env, timeoutMs: CALL_TIMEOUT_MS });
   if (result.code === 0 && loggedIn(result)) return PASS(`RAILWAY_API_TOKEN: ${brief(both(result), 120)}`);
   const fix = /[\s#"']/.test(token)
     ? `RAILWAY_API_TOKEN holds ${token.length} chars with a space, # or quote; move the inline comment in ~/.config/sieun-pi/agent.env and ~/.zshenv to its own line, since systemd EnvironmentFile keeps it in the value`
@@ -274,7 +280,7 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
 export const CHECKS: readonly Check[] = [
   { id: "cua_permissions", group: "computer use", tool: "cua-driver", hostTool: "cua-driver", run: async deps => {
     const ask = async () => {
-      const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: 10_000 });
+      const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
       let status: { accessibility?: unknown; screen_recording?: unknown; daemon_running?: unknown; x11?: unknown; wayland?: unknown; atspi?: unknown } = {};
       try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
       return { result, status };
@@ -292,7 +298,7 @@ export const CHECKS: readonly Check[] = [
   { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", hostTool: "cua-driver", run: async deps => {
     const server = await mcpServer(deps, "cua-driver");
     if (typeof server === "string") return missingServer("cua-driver", server);
-    const answer = await deps.mcp(server.command, server.args ?? [], { name: "health_report", arguments: {} }, MCP_TIMEOUT_MS);
+    const answer = await deps.mcp(server.command, server.args ?? [], { name: "health_report", arguments: {} }, CALL_TIMEOUT_MS);
     if (answer.error) return FAIL("agent", `MCP ${answer.error}`, "start the daemon with `open -a CuaDriver` and re-check");
     const report = (answer.result as { structuredContent?: { overall?: string; checks?: { name?: string; status?: string; message?: string }[] } })?.structuredContent;
     const failing = (report?.checks ?? []).filter(check => check.status !== "pass" && check.status !== "skip");
@@ -310,7 +316,7 @@ export const CHECKS: readonly Check[] = [
    * 0.35.4, 8 s): the macOS grants stayed, and the only break was the daemon left stopped. Releases came every 1 to 2 days (0.31.0 on 10-10, 0.35.4 on 10-15).
    */
   { id: "cua_version", group: "computer use", tool: "cua-driver", hostTool: "cua-driver", first: true, run: async deps => {
-    const result = await deps.exec(paths(deps).cua, ["check-update", "--json"], { timeoutMs: 15_000 });
+    const result = await deps.exec(paths(deps).cua, ["check-update", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
     let info: { update_available?: boolean; error?: unknown; current_version?: string; latest_version?: string } = {};
     try { info = parseJson(result.stdout) as typeof info; } catch { return FAIL("agent", `check-update gave no JSON (${failText(result)})`, "run `cua-driver check-update --json` and read the error"); }
     if (info.error) return FAIL("agent", `check-update error: ${brief(String(info.error), 200)}`, "run `cua-driver check-update --json` and read the error");
@@ -318,8 +324,8 @@ export const CHECKS: readonly Check[] = [
     const from = `${info.current_version} to ${info.latest_version}`;
     const apply = await deps.exec(paths(deps).cua, ["update", "--apply"], { timeoutMs: 60_000 });
     if (apply.code !== 0) return FAIL("agent", `cua-driver update --apply from ${from}: ${failText(apply)}`, "run `cua-driver update --apply` and read the installer error");
-    await deps.exec(paths(deps).cua, ["stop"], { timeoutMs: 10_000 });
-    const version = (await deps.exec(paths(deps).cua, ["--version"], { timeoutMs: 10_000 })).stdout.trim();
+    await deps.exec(paths(deps).cua, ["stop"], { timeoutMs: CALL_TIMEOUT_MS });
+    const version = (await deps.exec(paths(deps).cua, ["--version"], { timeoutMs: CALL_TIMEOUT_MS })).stdout.trim();
     if (!await ensureCuaDaemon(deps)) return FAIL("agent", `updated ${from} but the daemon did not start within 15 s`, "run `open -n -g -a CuaDriver --args serve` and read `cua-driver doctor`");
     if (info.latest_version && !version.includes(info.latest_version)) return FAIL("agent", `update --apply exited 0 but the binary says "${brief(version, 60)}", not ${info.latest_version}`,
       "run `cua-driver update --apply` and read the installer output");
@@ -337,7 +343,7 @@ export const CHECKS: readonly Check[] = [
       "run `node --import tsx scripts/kernel-skill-paths.ts` in sieun-pi/components/user-history and read the error");
     const pin = !pinned ? "" : !pinned.length ? `; the kernel venv has no lib/python3.*/site-packages for ${PIN_FILE}`
       : `; ${PIN_FILE} pins ${pinned[0]!.paths.length} skill source folders${pinned.some(result => result.written) ? " (written now)" : ""}`;
-    const result = await deps.exec(python, ["-c", "import websearch,os;print(os.path.realpath(websearch.__file__))"], { timeoutMs: 15_000 });
+    const result = await deps.exec(python, ["-c", "import websearch,os;print(os.path.realpath(websearch.__file__))"], { timeoutMs: CALL_TIMEOUT_MS });
     const own = `${await deps.realpath(paths(deps).websearch)}/`;
     const where = result.stdout.trim();
     if (result.code === 0 && where.startsWith(own)) return PASS(`kernel loads ${where}${pin}`);
@@ -369,7 +375,7 @@ export const CHECKS: readonly Check[] = [
     const server = await mcpServer(deps, "aside");
     if (typeof server === "string") return missingServer("aside", server);
     const answer = await deps.mcp(server.command, server.args ?? [], { name: "repl", arguments: { title: "Skills duty probe",
-      code: "const sdTabs = await listBrowserTabs(); console.log(JSON.stringify({count: sdTabs.length}))" } }, MCP_TIMEOUT_MS);
+      code: "const sdTabs = await listBrowserTabs(); console.log(JSON.stringify({count: sdTabs.length}))" } }, CALL_TIMEOUT_MS);
     if (answer.error && /ENOENT/.test(answer.error)) return FAIL("owner", `the Aside CLI is missing: ${answer.error}`, "reinstall Aside");
     const result = answer.result as { isError?: boolean; content?: { text?: string }[] } | undefined;
     const count = Number(/"count"\s*:\s*(\d+)/.exec(result?.content?.[0]?.text ?? "")?.[1] ?? NaN);
@@ -381,7 +387,7 @@ export const CHECKS: readonly Check[] = [
   { id: "aside_account", group: "browser", tool: "Aside account", hostTool: "aside", run: async deps => {
     const mac = await macReach(deps);
     if (!mac.online) return { status: "off", detail: mac.detail };
-    const result = await deps.exec("aside", ["account", "status"], { timeoutMs: 10_000 });
+    const result = await deps.exec("aside", ["account", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     const line = /^\*\s+\S+\s+\S+@\S+\s+signed in.*$/m.exec(result.stdout);
     if (line) return PASS(brief(line[0], 100));
     if (result.code !== 0) return FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
@@ -396,15 +402,15 @@ export const CHECKS: readonly Check[] = [
     const install = "run `npm ci` in ~/.prime/agent/skills/aside-browser/box, which needs Playwright's Chromium in ~/.cache/ms-playwright";
     if (!await deps.exists(runner)) return FAIL("agent", `${runner} is missing`, install);
     const code = "await openTab('data:text/html,<title>box-browser-ok</title>'); console.log(await page.title())";
-    // measured: a cold run took 1.4 s on us-metal02 on 10-19; 20 s matches the other one-shot CLI checks here.
-    const result = await deps.exec("node", [runner], { input: `${JSON.stringify({ id: 1, code })}\n`, timeoutMs: 20_000 });
+    // measured: a cold run took 1.4 s on us-metal02 on 10-19.
+    const result = await deps.exec("node", [runner], { input: `${JSON.stringify({ id: 1, code })}\n`, timeoutMs: CALL_TIMEOUT_MS });
     let answer: { out?: unknown; error?: unknown } = {};
     try { answer = JSON.parse(result.stdout.split("\n").find(line => line.startsWith("{")) ?? "{}") as typeof answer; } catch { /* reported below */ }
     if (answer.out === "box-browser-ok") return PASS(`opened a page in ${result.ms} ms`);
     return FAIL("agent", answer.error ? `the runner: ${brief(String(answer.error), 200)}` : `no answer (${failText(result)})`, install);
   } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {
-    const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: 15_000 });
+    const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
     let daemons: { isDefault?: boolean; status?: string; version?: string; pid?: number }[] = [];
     try { daemons = parseJson(result.stdout) as typeof daemons; } catch { /* reported below */ }
     const daemon = Array.isArray(daemons) ? daemons.find(entry => entry.isDefault) ?? (daemons.length === 1 ? daemons[0] : undefined) : undefined;
@@ -422,7 +428,7 @@ export const CHECKS: readonly Check[] = [
     const file = join(deps.scratchDir, `skills-duty-edit-${process.pid}.txt`);
     await deps.writeFile(file, "skills-duty probe ALPHA\n");
     try {
-      const result = await deps.exec(paths(deps).kernelEdit, ["--path", file, "--old-str", "ALPHA", "--new-str", "BETA"], { timeoutMs: 15_000 });
+      const result = await deps.exec(paths(deps).kernelEdit, ["--path", file, "--old-str", "ALPHA", "--new-str", "BETA"], { timeoutMs: CALL_TIMEOUT_MS });
       const after = (await deps.readFile(file)).trim();
       return result.code === 0 && after === "skills-duty probe BETA" ? PASS("edited a scratch file")
         : FAIL("agent", `edit ${failText(result)}; the file reads "${brief(after, 60)}"`, "start a fresh Prime session so the runtime reinstalls the kernel skills, then re-check");
@@ -432,7 +438,7 @@ export const CHECKS: readonly Check[] = [
     const file = join(deps.scratchDir, `skills-duty-${process.pid}.png`);
     await deps.writeFile(file, Buffer.from(PNG_4X4, "base64"));
     try {
-      const result = await deps.exec(paths(deps).kernelPython, ["-c", `from attach_image.attach_image import _validate_image as v; p,m,s,d=v(${JSON.stringify(file)}); print(m,s,d)`], { timeoutMs: 15_000 });
+      const result = await deps.exec(paths(deps).kernelPython, ["-c", `from attach_image.attach_image import _validate_image as v; p,m,s,d=v(${JSON.stringify(file)}); print(m,s,d)`], { timeoutMs: CALL_TIMEOUT_MS });
       return /^image\/png \d+ \(4, 4\)/.test(result.stdout) ? PASS(result.stdout.trim())
         : FAIL("agent", `image check: ${failText(result)}`, "start a fresh Prime session so the runtime reinstalls the kernel skills, then re-check");
     } finally { await deps.rm(file); }
@@ -479,7 +485,8 @@ export const CHECKS: readonly Check[] = [
     };
     Object.values(policy.roles ?? {}).forEach(add);
     (policy.policy?.allowed ?? []).filter(name => name !== "inherit-parent").forEach(add);
-    const result = await deps.exec(paths(deps).prime, ["--offline", "model", "list"], { timeoutMs: 20_000 });
+    // No extension registers a provider, so --no-extensions lists the same 33 models; loading them took 2.8 of the call's 4.3 s of CPU on us-metal02 on 10-19.
+    const result = await deps.exec(paths(deps).prime, ["--offline", "--no-extensions", "model", "list"], { timeoutMs: CALL_TIMEOUT_MS });
     if (result.code !== 0) return FAIL("agent", `model list ${failText(result)}`, "run `prime-agent --offline model list` and read the error");
     const listed = new Set(result.stdout.split("\n").slice(1).map(line => line.trim().split(/\s+/)).filter(cols => cols.length >= 2).map(([provider, model]) => `${provider}/${model}`));
     const missing = [...selectors].filter(selector => !listed.has(selector));
@@ -489,7 +496,7 @@ export const CHECKS: readonly Check[] = [
   { id: "pool_claude", group: "accounts", tool: "pi-pool Claude accounts", run: deps => pool(deps, "anthropic") },
   { id: "pool_codex", group: "accounts", tool: "pi-pool Codex accounts", run: deps => pool(deps, "openai-codex") },
   { id: "claude_cli", group: "peers", tool: "claude CLI", run: async deps => {
-    const result = await deps.exec("claude", ["auth", "status"], { timeoutMs: 15_000 });
+    const result = await deps.exec("claude", ["auth", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     let status: { loggedIn?: boolean; email?: string; subscriptionType?: string } = {};
     try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
     return status.loggedIn === true ? PASS(`${status.email} ${status.subscriptionType}`)
@@ -508,7 +515,7 @@ export const CHECKS: readonly Check[] = [
   { id: "convex_auth", group: "service clis", tool: "convex", run: deps => cliLogin(deps, join(deps.repo, "node_modules/.bin/convex"), ["login", "status"],
     result => both(result).includes("Status: Logged in"), "run `npx convex login` in auto-sns-agent through the owner's Aside browser", deps.repo) },
   { id: "ssh_metal", group: "service clis", tool: "ssh us-metal01", run: async deps => {
-    const result = await deps.exec("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", METAL_HOST, "true"], { timeoutMs: 15_000 });
+    const result = await deps.exec("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", METAL_HOST, "true"], { timeoutMs: CALL_TIMEOUT_MS });
     if (result.code === 0) return PASS(`${METAL_HOST} answers`);
     if (/Permission denied/.test(result.stderr)) return FAIL("owner", `ssh ${METAL_HOST}: ${brief(result.stderr, 200)}`, "put this Mac's ssh key on us-metal01");
     return FAIL("agent", `ssh ${METAL_HOST}: ${failText(result)}`, "check the network path to us-metal01");
@@ -516,7 +523,7 @@ export const CHECKS: readonly Check[] = [
   { id: "dotenvx_keys", group: "service clis", tool: "dotenvx keys", run: async deps => {
     const files = await dotenvFiles(deps);
     const counts = await mapLimit(files, 6, async file => {
-      const result = await deps.exec("dotenvx", ["get", "-f", file], { cwd: deps.repo, timeoutMs: 20_000 });
+      const result = await deps.exec("dotenvx", ["get", "-f", file], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
       try {
         const values = parseJson(result.stdout);
         if (!isRecord(values)) throw new Error("not an object");
@@ -530,7 +537,7 @@ export const CHECKS: readonly Check[] = [
     return PASS(`${files.length} files decrypt`);
   } },
   { id: "skill_reader", group: "repo skills", tool: "read-skill.mjs", run: async deps => {
-    const result = await deps.exec("node", ["scripts/skills/read-skill.mjs", "apps/llm-wiki"], { cwd: deps.repo, timeoutMs: 20_000 });
+    const result = await deps.exec("node", ["scripts/skills/read-skill.mjs", "apps/llm-wiki"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
     const read = result.code === 0 && result.stdout.startsWith("---\nname: llm-wiki");
     if (read && !result.stderr.trim()) return PASS("read apps/llm-wiki and recorded the view");
     // The reader keeps the view in wiki.db when the llm-wiki server does not answer, so the skill read works and no view is lost (10-12 and 10-15 runs).
@@ -548,14 +555,14 @@ export const CHECKS: readonly Check[] = [
       : PASS(`${ids.length} ids resolve`);
   } },
   { id: "claude_skill_links", group: "repo skills", tool: "sync-claude-skills.sh", run: async deps => {
-    const result = await deps.exec("bash", ["scripts/skills/sync-claude-skills.sh", "--check"], { cwd: deps.repo, timeoutMs: 20_000 });
+    const result = await deps.exec("bash", ["scripts/skills/sync-claude-skills.sh", "--check"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
     if (result.code === 0) return PASS("links in sync");
     const lines = both(result).split("\n").filter(line => line.startsWith("FAIL"));
     return FAIL("agent", lines.length ? lines.join("; ") : failText(result), "run scripts/skills/sync-claude-skills.sh without --check and commit the links");
   } },
   { id: "claude_links_committed", group: "repo skills", tool: "git HEAD skill links", run: async deps => {
-    const skills = await deps.exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/skills-native"], { cwd: deps.repo, timeoutMs: 10_000 });
-    const links = await deps.exec("git", ["ls-tree", "--name-only", "HEAD", "--", ".claude/skills/"], { cwd: deps.repo, timeoutMs: 10_000 });
+    const skills = await deps.exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/skills-native"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
+    const links = await deps.exec("git", ["ls-tree", "--name-only", "HEAD", "--", ".claude/skills/"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
     if (skills.code !== 0 || links.code !== 0) return FAIL("agent", `git ls-tree: ${failText(skills.code ? skills : links)}`, "run git ls-tree in auto-sns-agent and read the error");
     const expected = skills.stdout.split("\n").flatMap(line => {
       const repoSkill = /^\.agents\/skills\/(.+\/.+)\/SKILL\.md$/.exec(line)?.[1];
@@ -569,8 +576,8 @@ export const CHECKS: readonly Check[] = [
       "commit the link changes with `node scripts/repo/agent/commit.mjs` (check `node scripts/repo/agent/whose.mjs` first)") : PASS(`${actual.length} committed links match`);
   } },
   { id: "skill_map", group: "repo skills", tool: "skill-map.md at HEAD", run: async deps => {
-    const tree = await deps.exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/skills-native"], { cwd: deps.repo, timeoutMs: 10_000 });
-    const shown = await deps.exec("git", ["show", `HEAD:${SKILL_MAP}`], { cwd: deps.repo, timeoutMs: 10_000 });
+    const tree = await deps.exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/skills-native"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
+    const shown = await deps.exec("git", ["show", `HEAD:${SKILL_MAP}`], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
     if (tree.code !== 0 || shown.code !== 0) return FAIL("agent", `git: ${failText(tree.code ? tree : shown)}`, "run git ls-tree and git show HEAD in auto-sns-agent and read the error");
     const folders = headSkillIds(tree.stdout);
     const map = mapIds(shown.stdout);

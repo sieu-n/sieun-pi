@@ -13,7 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 HOME = os.path.expanduser("~")
 REPO = HOME + "/Documents/Github/auto-sns-agent"
-TIMEOUT_S = 25
+# One call's limit, the same as CALL_TIMEOUT_MS in skills-and-tools.ts: the slowest call that finished on us-metal02 took 26.4 s at load 420 on
+# 80 cores (10-19 at 20:59Z), and at 20:06Z a `cli vercel` call ran past the 25 s limit this replaced. A call that hangs still fails.
+TIMEOUT_S = 60
 VERSION = re.compile(r"\d+(?:\.\d+)+[a-z]?")
 READS = {"const", "path", "which", "glob", "ls", "keys", "sha", "port", "launchd", "version", "distinfo", "gitconfig", "ini", "tip"}
 
@@ -290,6 +292,42 @@ def branch(host):
     return done.stdout.strip() or SHARED
 
 
+# A commit's patch-id never changes, so the box keeps each one by hash here. On us-metal02 on 10-19 at 21:25Z, `git log -p` of its last 2000
+# commits took 4.8 s of CPU and 10 s of wall time, and in 3 of the 7 box parity runs that evening, at load 420 on 80 cores, it ran past TIMEOUT_S.
+PATCH_CACHE = HOME + "/.cache/box-parity/patch-ids.json"
+
+
+def patch_ids(shas, host):
+    """Each commit's `git patch-id --stable` of its diff without context lines (a merge diffs against its first parent), or "" for an empty diff.
+
+    The box reads PATCH_CACHE, runs `git log -p` only for the commits it lacks and writes the cache back with just these commits. The Mac side
+    only reads, so it computes all of its 100.
+    """
+    cached = {}
+    if host == "box":
+        try:
+            cached = json.load(open(PATCH_CACHE))
+        except (OSError, ValueError):
+            cached = {}
+    todo = [sha for sha in shas if sha not in cached]
+    if todo:
+        diffs = git_bytes(["log", "--stdin", "--no-walk=unsorted", "-p", "-U0", "--format=commit %H", "--no-renames", "--diff-merges=first-parent"],
+                          ("\n".join(todo) + "\n").encode())
+        found = dict((sha, pid) for pid, sha in (line.split() for line in git_bytes(["patch-id", "--stable"], diffs).decode().splitlines() if line.strip()))
+        cached.update((sha, found.get(sha, "")) for sha in todo)
+    kept = dict((sha, cached[sha]) for sha in shas)
+    if host == "box" and todo:
+        part = "%s.%d" % (PATCH_CACHE, os.getpid())
+        try:
+            os.makedirs(os.path.dirname(PATCH_CACHE), exist_ok=True)
+            with open(part, "w") as out:
+                json.dump(kept, out)
+            os.replace(part, PATCH_CACHE)
+        except OSError:
+            pass
+    return kept
+
+
 def commits(host):
     """The host's last commits on branch(host) as "commits:<json>", so the precheck counts a Mac commit as on the box under another hash.
 
@@ -302,9 +340,8 @@ def commits(host):
     count = "100" if host == "mac" else "2000"
     name = branch(host)
     try:
-        diff = ["-n", count, "--no-renames", "--diff-merges=first-parent", name]
-        raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H"] + diff).decode("utf-8", "replace")
-        patches = git_bytes(["patch-id", "--stable"], git_bytes(["log", "-p", "-U0", "--format=commit %H"] + diff)).decode()
+        raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H", "-n", count, "--no-renames", "--diff-merges=first-parent", name]).decode("utf-8", "replace")
+        patch_of = patch_ids([line[1:] for line in raw.splitlines() if line.startswith("@")], host)
         if host == "box":
             fetched = git_bytes(["rev-list", "--remotes=origin", "--not", name]).decode().split()
         else:
@@ -321,9 +358,8 @@ def commits(host):
         elif line.startswith(":") and order:
             meta, path = line.split("\t", 1)
             wrote[order[-1]].append((path, meta.split()[3]))
-    patch_of = {sha: pid for pid, sha in (line.split() for line in patches.splitlines() if line.strip())}
     if host == "box":
-        return "commits:" + json.dumps({"ids": [sha[:10] for sha in order], "patches": sorted(set(pid[:16] for pid in patch_of.values())),
+        return "commits:" + json.dumps({"ids": [sha[:10] for sha in order], "patches": sorted(set(pid[:16] for pid in patch_of.values() if pid)),
                                         "bytes": sorted(set(path_key(path, blob) for files in wrote.values() for path, blob in files)),
                                         "fetched": sorted(sha[:10] for sha in fetched)})
     return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]], sha not in unpushed] for sha in order])

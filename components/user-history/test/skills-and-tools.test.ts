@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CHECKS, type Deps, type ExecResult, runChecks, toOutput } from "../scripts/duties/skills-and-tools.ts";
+import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, toOutput } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
@@ -35,6 +35,34 @@ test("aside_tabs on the linux box points the fix at the Mac over ssh", async () 
 test("aside_tabs on macOS keeps the local open -a Aside fix", async () => {
   const outcome = await asideTabs.run(deps());
   assert.ok(outcome.status === "fail" && outcome.fix.startsWith("open Aside with `open -a Aside`"), JSON.stringify(outcome));
+});
+
+const modelPolicy = CHECKS.find(check => check.id === "model_policy")!;
+const MODEL_LIST = "provider      model                       context  max-out  thinking  images\nanthropic     claude-fable-5              500K     128K     yes       yes\n";
+const policyDeps = (answer: ExecResult, calls: { args: readonly string[]; timeoutMs: number }[]): Deps => ({
+  ...deps("linux"),
+  readFile: async () => JSON.stringify({ roles: { builder: { model: "anthropic/claude-fable-5" } }, policy: { allowed: ["inherit-parent"] } }),
+  exec: async (_file, args, options) => { calls.push({ args, timeoutMs: options.timeoutMs }); return answer; },
+});
+
+test("model_policy lists models without loading extensions, which no provider comes from, and waits CALL_TIMEOUT_MS", async () => {
+  const calls: { args: readonly string[]; timeoutMs: number }[] = [];
+  const outcome = await modelPolicy.run(policyDeps({ code: 0, stdout: MODEL_LIST, stderr: "", ms: 0 }, calls));
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+  assert.deepEqual(calls, [{ args: ["--offline", "--no-extensions", "model", "list"], timeoutMs: CALL_TIMEOUT_MS }]);
+});
+
+test("a model list that hangs past CALL_TIMEOUT_MS still fails model_policy", async () => {
+  const outcome = await modelPolicy.run(policyDeps({ code: 124, stdout: "", stderr: "", ms: CALL_TIMEOUT_MS }, []));
+  assert.ok(outcome.status === "fail" && outcome.detail === `model list timed out after ${CALL_TIMEOUT_MS} ms`, JSON.stringify(outcome));
+});
+
+test("claude_skill_links waits CALL_TIMEOUT_MS for sync-claude-skills.sh and fails a run that hangs past it", async () => {
+  const check = CHECKS.find(item => item.id === "claude_skill_links")!;
+  const calls: { args: readonly string[]; timeoutMs: number }[] = [];
+  const outcome = await check.run(policyDeps({ code: 124, stdout: "", stderr: "", ms: CALL_TIMEOUT_MS }, calls));
+  assert.deepEqual(calls, [{ args: ["scripts/skills/sync-claude-skills.sh", "--check"], timeoutMs: CALL_TIMEOUT_MS }]);
+  assert.ok(outcome.status === "fail" && outcome.detail.includes(`timed out after ${CALL_TIMEOUT_MS} ms`), JSON.stringify(outcome));
 });
 
 const railwayAuth = CHECKS.find(check => check.id === "railway_auth")!;
