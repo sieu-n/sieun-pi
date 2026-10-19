@@ -177,7 +177,7 @@ In the TUI:
 It lists accounts with usage and flags, plus an Auto row. Codex rows also show their plan.
 Picking an account selects Manual mode for the session tree, including its subagents.
 Off accounts remain selectable. The footer shows Auto or Manual and the chosen account.
-The next request uses only the Manual account, subject to its existing admission rules.
+The next request uses only the Manual account, subject to provider limits and admission slots.
 If that account fails, the session reports the error or waits on that account without switching.
 Normal requests recheck a Manual account blocked by a provider refusal, including an Off account.
 Only a successful provider response clears that refusal. A timeout or transient error leaves it in place.
@@ -368,13 +368,13 @@ flowchart TD
 | # | rule | effect |
 |---|---|---|
 | R1 stay | the tree's own eligible account still serves: no 429 on file, every counting window under 100%, credential ok | Auto stays, warm or cold, unless a higher Codex plan is available. Manual considers only its selected account. |
-| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old, with that sample projected to the next read | holds for new trees, moves after a 429, pins and `pi-pool switch`. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s. The projection is the read plus the account's own rate for each tree that sent a request there in the last 15 minutes over the 20 minutes from the read to the next one, plus the new tree from now to the next read The own rate is the 5h change between the last read and the newest read at least 20 minutes older in the same window, plus one point for rounding, divided by the spending tree-minutes between them. Until a window has two such reads, `tree_5h_pct_per_min` of the tier stands in (team 0.68, max 5x 0.92, max 20x 0.28, measured on 10-12 and 10-13; see `base.DEFAULTS`). A projection at the cap counts as no room, so with no other account the tree backs off (R5) |
+| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old, with that sample projected to the next read | holds for Auto new trees, moves after a 429 and `pi-pool switch`; explicit Manual pins use remaining provider quota. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s. The projection is the read plus the account's own rate for each tree that sent a request there in the last 15 minutes over the 20 minutes from the read to the next one, plus the new tree from now to the next read The own rate is the 5h change between the last read and the newest read at least 20 minutes older in the same window, plus one point for rounding, divided by the spending tree-minutes between them. Until a window has two such reads, `tree_5h_pct_per_min` of the tier stands in (team 0.68, max 5x 0.92, max 20x 0.28, measured on 10-12 and 10-13; see `base.DEFAULTS`). A projection at the cap counts as no room, so with no other account the tree backs off (R5) |
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
 | R5 wait | an account passes R2 for this tree but R4 has no cell for it now | the tree gets its own `slot_at` on that account's next free cell, ordered by priority, then by wait start |
 | R5 backoff | no account passes R2 for this tree (the pool waits for rotation) | the tree waits a uniform random 0 to `depleted_backoff_max_sec` (7200 s), a fresh draw each time, and nothing admits it before the draw passes while no account passes R2 for it, owner turns included. Once an account passes R2 or is unsampled again, its next request is decided by R1 to R5 at once. The draw takes no cell. The `wait` record carries `backoff: true` and names the account that frees first |
 | R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account while that account takes it within `budget_wait_max_sec` (3600) of the start of its wait, a backoff included, and asks again by then; past that it moves anyway, at R4 slot pace, and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
-| R7 priority | low trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
+| R7 priority | low Auto trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
 A tree that waits gets its own account from the hook while the provider refuses that
 account, so the request comes back as a 429 that writes no cache. `pi-pool limited` then
@@ -412,7 +412,9 @@ A Manual selection pins the session tree to one account until `pi-pool use --fol
 returns it to Auto. The pin survives restarts, quiet sessions, model changes and retry paths.
 The scheduler never falls back to another account when a Manual account fails, runs out,
 or is removed. A failure reports that account's error; an admission wait stays on that account.
-Existing admission caps, model rules and slot rules still apply.
+Manual selection bypasses Auto's admission cutoffs and projected-usage headroom, as approved
+by the owner on 2026-10-19. Actual provider quota exhaustion, reported rate limits,
+authentication failures, model rules and admission slots still apply.
 
 An Off account stays listed with `disabled: true` but is excluded from every Auto choice,
 including a previous sticky account and credential fallback. A deliberate Manual choice may

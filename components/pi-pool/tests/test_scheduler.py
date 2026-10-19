@@ -168,14 +168,14 @@ class R2AdmitCap(unittest.TestCase):
         d = decide(state, new, [acct("hot", five=75)])
         self.assertIsInstance(d, sched.Wait)
 
-    def test_a_pin_into_an_account_at_70_percent_waits(self):
+    def test_explicit_pin_can_enter_above_auto_admission_cutoff(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "hot", "at": NOW, "by": "cli"}}
         d = decide(state, KEY, [acct("a", five=20), acct("hot", five=72)])
-        self.assertIsInstance(d, sched.Wait)
-        self.assertEqual(d.slot_account.id, "hot")
-        self.assertIsNone(d.vend)
+        self.assertIsInstance(d, sched.Admit)
+        self.assertEqual(d.account.id, "hot")
+        self.assertEqual(d.fallbacks, ())
 
 
 class R3Score(unittest.TestCase):
@@ -605,7 +605,7 @@ class Pins(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "b", "at": NOW - 30, "by": "cli"}}
-        d = request(state, KEY, [acct("a", five=20), acct("b", five=80)], NOW)
+        d = request(state, KEY, [acct("a", five=20), acct("b", five=100)], NOW)
         self.assertIsInstance(d, sched.Wait)
         self.assertEqual(d.slot_account.id, "b")
         self.assertIsNone(d.vend)

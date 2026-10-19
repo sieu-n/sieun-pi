@@ -42,7 +42,7 @@ def codex_account(id, email, plan, session_pct=0, weekly_pct=0):
 A = account("a", "a@x", session_pct=10)
 B = account("b", "b@x", session_pct=20)
 C = account("c", "c@x", session_pct=30)
-DEPLETED = account("d", "d@x", session_pct=99)
+DEPLETED = account("d", "d@x", session_pct=100)
 BROKEN = account("e", "e@x", needs_reauth=True)
 ALL = [A, B, C, DEPLETED, BROKEN]
 KEY = registry.SessionKey("01a0-uuid", "01a0-uuid", "35abe469e594")
@@ -764,7 +764,8 @@ class LsRowBuilding(unittest.TestCase):
 
     def test_rows_carry_usage_reason_and_flags(self):
         tree = sched.Tree(key=KEY.key, pin="c", current="b")
-        rows = status_view.build_rows(ALL, tree, sched.Book(load={"a": 2}), {}, CFG, NOW)
+        rows = status_view.build_rows([*ALL, account("remaining", "remaining@x", session_pct=99)],
+                                      tree, sched.Book(load={"a": 2}), {}, CFG, NOW)
         by_id = {r["id"]: r for r in rows}
         self.assertEqual(by_id["a"]["usage"], "10%/0%")
         self.assertEqual((by_id["a"]["usable"], by_id["a"]["serves"]), (True, True))
@@ -774,7 +775,8 @@ class LsRowBuilding(unittest.TestCase):
         self.assertNotIn("seat", by_id["b"])
         self.assertEqual(by_id["b"]["current"], True)
         self.assertEqual(by_id["c"]["pinned"], True)
-        self.assertEqual((by_id["d"]["usable"], by_id["d"]["serves"]), (False, True))
+        self.assertEqual((by_id["d"]["usable"], by_id["d"]["serves"]), (False, False))
+        self.assertEqual((by_id["remaining"]["usable"], by_id["remaining"]["serves"]), (False, True))
         self.assertEqual(by_id["d"]["reason"], "depleted")
         self.assertIsNone(by_id["d"]["score"])
         self.assertEqual(by_id["e"]["reason"], "needs-reauth")

@@ -11,7 +11,7 @@ from . import base, registry
 #   R1 stay: the tree's own account still serves (no 429, every window under 100%,
 #      credential ok), warm or cold. No move because of a cutoff, a better account,
 #      or another tree's move.
-#   R2 admit cap: an account takes a tree that is not on it only under
+#   R2 admit cap: Auto enters an account only under
 #      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
 #      seven_day_max_pct of its week and its Fable cap. The 5h figure is projected
 #      to the account's next read: the trees spending on it and the new one each
@@ -160,11 +160,13 @@ def serve_reason(a, cooldowns, now):
     return None
 
 
-def admit_reason(a, cooldowns, cfg, now, priority="normal"):
-    """R2: None when the account may take a tree that is not on it."""
+def admit_reason(a, cooldowns, cfg, now, priority="normal", manual=False):
+    """R2: Auto admission headroom; Manual needs only actual serving eligibility."""
     why = serve_reason(a, cooldowns, now)
     if why:
         return why
+    if manual:
+        return None
     if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]:
         return "depleted"
     if registry.usage_unsampled(a, now):
@@ -191,7 +193,7 @@ def window_reset_at(window):
     return float("inf")
 
 
-def admissible_at(a, cooldowns, cfg, now, priority="normal"):
+def admissible_at(a, cooldowns, cfg, now, priority="normal", manual=False):
     """When the account passes R2 for this class again, epoch seconds; inf when
     no reset is known or its credential cannot serve."""
     if a.disabled or a.needs_reauth:
@@ -199,7 +201,8 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal"):
     at = max(now, a.limited_until, cooldowns.get(a.id, 0))
     families = [f.lower() for f in cfg["switch_models"]]
     if not a.windows:
-        if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]:
+        if (used_pct(a) >= 100 if manual else
+                a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]):
             return float("inf")
         return at
     for w in a.windows:
@@ -207,12 +210,13 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal"):
         if name is not None and (a.gate_off or not any(f in registry.family_tokens(name) for f in families)):
             continue
         short = name is None and registry.is_session_window(w)
-        limit = admit_cap(cfg, priority) if short else cfg["seven_day_max_pct"]
+        # measured: serve_reason treats the provider's 100% usage as exhaustion; Manual keeps that vendor limit.
+        limit = 100 if manual else admit_cap(cfg, priority) if short else cfg["seven_day_max_pct"]
         if registry.live_pct(w, now) >= limit:
             at = max(at, window_reset_at(w))
     # The hook starts a read of an unsampled account; by REFRESH_TIMEOUT_SEC it has
     # landed or failed, and a tree that waits for the account asks again then.
-    return max(at, now + registry.REFRESH_TIMEOUT_SEC) if registry.usage_unsampled(a, now) else at
+    return max(at, now + registry.REFRESH_TIMEOUT_SEC) if not manual and registry.usage_unsampled(a, now) else at
 
 
 def by_tier(a, table, default):
@@ -330,10 +334,10 @@ def first_open(a, t0, tree, rank, book, cfg, sole):
     return float("inf")
 
 
-def waits_for_rotation(accounts, cooldowns, cfg, now, priority):
+def waits_for_rotation(accounts, cooldowns, cfg, now, priority, manual=False):
     """R5 backoff: no account takes this class of tree on its last read, so the pool
     waits for rotation. A projection hold or an unsampled account clears at the next read."""
-    return not any(admit_reason(a, cooldowns, cfg, now, priority) in (None, "unsampled") for a in accounts)
+    return not any(admit_reason(a, cooldowns, cfg, now, priority, manual) in (None, "unsampled") for a in accounts)
 
 
 PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
@@ -372,8 +376,8 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     def why_not(a):
         if a is None:
             return "missing"
-        why = admit_reason(a, cooldowns, cfg, now, p)
-        if why is None and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):
+        why = admit_reason(a, cooldowns, cfg, now, p, manual=bool(manual))
+        if why is None and not manual and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):
             return "projected"
         return why
 
@@ -409,7 +413,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     # while claude12, its own account, served again from 15:50Z and krenerd77 and
     # claude3 took new trees, and every check-in restart met the same refusal.
     held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None
-    if held is not None and waits_for_rotation(accounts, cooldowns, cfg, now, p):
+    if held is not None and waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):
         return Wait(tree.wait[1], held, vend, None, left, backoff=True)
 
     if cur_why is None and cur is not None and not tree.wait and (manual or tree.leave != cur.id):
@@ -452,7 +456,8 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     if tree.leave and cur is not None and tree.leave == cur.id and cur_why is None and not tree.wait:
         return Stay(cur, "stay", shadowed)
 
-    frees = [(a, max(admissible_at(a, cooldowns, cfg, now, p), projection_clears_at(a, book, cfg, now, p)))
+    frees = [(a, max(admissible_at(a, cooldowns, cfg, now, p, manual=bool(manual)),
+                     now if manual else projection_clears_at(a, book, cfg, now, p)))
              for a in accounts if allowed(a) and not credential_reason(a, cooldowns, now)]
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
@@ -475,7 +480,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     # next read, and a tree out of moves (R6) waits for its own account, so those
     # keep their short wait. On 10-18 at 11:10Z two low trees backed off 40 and 100
     # min on projections while claude4 and claude12 read 3% and 4%.
-    if waits_for_rotation(accounts, cooldowns, cfg, now, p):
+    if waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):
         u = random.random() if draw is None else draw
         return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
     return Wait(slot_at, slot_account, vend, shadowed, left, room=tuple(candidates))

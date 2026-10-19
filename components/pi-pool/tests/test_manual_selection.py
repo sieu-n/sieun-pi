@@ -63,13 +63,29 @@ class ManualSelection(unittest.TestCase):
         d = sched.decide(sched.Tree(pin="a", current="b"), [A, B], sched.Book(), {"a": NOW + 60}, CFG, NOW)
         self.assertEqual(d, sched.Blocked("a", "cooldown"))
 
-    def test_new_manual_target_obeys_admission_for_every_priority(self):
+    def test_new_manual_target_uses_remaining_quota_for_every_priority(self):
         for priority in sched.PRIORITIES:
             with self.subTest(priority=priority):
-                d = self.choose([acct("a", five=80), B], pin="a", current="b", priority=priority)
-                self.assertIsInstance(d, sched.Wait)
-                self.assertEqual(d.slot_account.id, "a")
-                self.assertIsNone(d.vend)
+                d = self.choose([acct("a", five=99, week=99), B], pin="a", current="b", priority=priority)
+                self.assertEqual((type(d), d.account.id, d.fallbacks), (sched.Admit, "a", ()))
+
+    def test_manual_ignores_projection_and_clears_old_admission_backoff(self):
+        a = acct("a", five=77)
+        book = sched.Book(spending={"a": 10}, rates={"a": 10})
+        tree = sched.Tree(key="mine", pin="a", wait=("a", NOW + 600, NOW - 60), backoff=True)
+        d = sched.decide(tree, [a, B], book, {}, CFG, NOW)
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "a"))
+
+    def test_manual_above_auto_cutoff_waits_only_for_admission_slot(self):
+        a = acct("a", five=77)
+        book = sched.Book(admitted={"a": ((NOW, "another"),)})
+        tree = sched.Tree(key="mine", pin="a", priority="high")
+        d = sched.decide(tree, [a, B], book, {}, CFG, NOW)
+        self.assertIsInstance(d, sched.Wait)
+        self.assertFalse(d.backoff)
+        self.assertLessEqual(d.slot_at, NOW + sched.slot_spacing(a, CFG))
+        resumed = sched.decide(dataclasses.replace(tree, wait=("a", d.slot_at, NOW)), [a, B], book, {}, CFG, d.slot_at)
+        self.assertEqual((type(resumed), resumed.account.id), (sched.Admit, "a"))
 
     def test_current_manual_keeps_existing_stay_admission_exception(self):
         d = self.choose([acct("a", five=95), B], pin="a", current="a")
