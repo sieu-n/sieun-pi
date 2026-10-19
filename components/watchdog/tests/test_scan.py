@@ -53,9 +53,14 @@ class Scan(unittest.TestCase):
         self.real = subprocess.run
         self.fake = FakeRun()
         subprocess.run = self.fake
+        self.records = tempfile.TemporaryDirectory()
+        self.real_records = wd.ORPHAN_SERVICES
+        wd.ORPHAN_SERVICES = Path(self.records.name)
 
     def tearDown(self):
         subprocess.run = self.real
+        wd.ORPHAN_SERVICES = self.real_records
+        self.records.cleanup()
 
     def assert_no_shell_or_full_lsof(self):
         for c in self.fake.calls:
@@ -95,6 +100,16 @@ class Scan(unittest.TestCase):
         self.assertTrue(wd.shell_belongs_to('400', '100'))
         self.assertFalse(wd.shell_belongs_to('400', '999'))
         self.assert_no_shell_or_full_lsof()
+
+    def test_handed_off_services_are_never_killed_or_listed(self):
+        record = {'version': 1, 'sessionId': '01a15036-8379-72fc-87d6-1009c1a88ebc', 'handoffs': [{'state': 'unloaded', 'handoffId': 'h1',
+                  'activeSessionId': 'c336f37372aa', 'services': [{'pid': 401, 'pgid': 400, 'members': [400, 401], 'unit': 'orphan-x-400.scope'}]}]}
+        (Path(self.records.name) / '01a15036-8379-72fc-87d6-1009c1a88ebc.json').write_text(json.dumps(record))
+        (Path(self.records.name) / 'broken.json').write_text('{')
+        self.assertEqual(wd.handed_off_pids(), {'400', '401'})
+        got = wd.pipe_blockers('100', min_age_min=15)
+        self.assertEqual([(c['pid'], c['safe_to_kill']) for c in got], [('300', False), ('400', False)])
+        self.assertEqual(sorted(c['pid'] for c in wd.parked_shells(min_age_min=10)), ['300'])
 
 
 class TailEvents(unittest.TestCase):

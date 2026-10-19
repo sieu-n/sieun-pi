@@ -32,22 +32,22 @@ const loaded = (row: SessionSummary): boolean => (row.lifecycle === "live" || ro
  */
 export type UnloadRow = SessionSummary & { holdsDetachedProcesses?: boolean };
 
-/** Nothing streams, runs a tool, bash or child, compacts, is queued or scheduled in the session, no detached process of its own lives, and no client but the service's own attach (judged by the caller) holds it. */
-function calm(row: UnloadRow, pool: ReadonlySet<string>): boolean {
-  return loaded(row) && row.workerState === "ready" && !row.holdsDetachedProcesses &&
+/** Nothing streams, runs a tool, bash or child, compacts, is queued or scheduled in the session, no detached process of its own lives (unless the unload can hand it off), and no client but the service's own attach (judged by the caller) holds it. */
+function calm(row: UnloadRow, pool: ReadonlySet<string>, handoff = false): boolean {
+  return loaded(row) && row.workerState === "ready" && (handoff || !row.holdsDetachedProcesses) &&
     !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren && !row.isRunningTools && !row.directAttachedClients &&
     (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !pool.has(row.sessionId);
 }
 
 /** Nothing runs, waits or is scheduled in the session (`calm`, and no turn or action open). */
-function still(row: UnloadRow, pool: ReadonlySet<string>): boolean {
-  return calm(row, pool) && row.activity === "idle" && !row.isSessionActive && !row.unfinishedActionCount;
+function still(row: UnloadRow, pool: ReadonlySet<string>, handoff = false): boolean {
+  return calm(row, pool, handoff) && row.activity === "idle" && !row.isSessionActive && !row.unfinishedActionCount;
 }
 
 const unheld = (row: SessionSummary, attached: ReadonlySet<string>): boolean => !attached.has(row.sessionId) && row.attachedClients === 0;
 
-function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string> }): boolean {
-  return still(row, input.pool) && unheld(row, input.attached);
+function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; handoff?: boolean }): boolean {
+  return still(row, input.pool, input.handoff) && unheld(row, input.attached);
 }
 
 /**
@@ -60,9 +60,9 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
  * once pi-pool admits its tree. Until 10-19 every chat stayed: at 06:03Z six chats sat asleep this way, each alone on its own worker with
  * 0.20 to 0.40 GB PSS and a kernel, SEO guy 562 min after its last activity (~/scratch/idle-ram/sessions-0603.json).
  */
-function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string> }): boolean {
+function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string>; handoff?: boolean }): boolean {
   const own = input.chats?.has(row.sessionId) ? row.attachedClients <= (input.attached.has(row.sessionId) ? 1 : 0) : unheld(row, input.attached);
-  return calm(row, input.pool) && row.activity === "working" && own;
+  return calm(row, input.pool, input.handoff) && row.activity === "working" && own;
 }
 
 /**
@@ -89,6 +89,8 @@ function busyAncestors(rows: readonly UnloadRow[]): Set<string> {
 /** What `unloadPlan` and `retryCandidates` read besides the rows. */
 export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; idleMs: number | null; chats?: ReadonlySet<string>;
   waking?: ReadonlySet<string>;
+  /** The unload can hand a session's detached services off (`UnloadSource.handOff`), so a detached process does not keep a session. */
+  handoff?: boolean;
   /**
    * Sessions asleep in Prime's provider retry whose tree pi-pool holds past the unload's minutes, with when the hold ends (`poolHoldsPast`);
    * null for a chat whose tree the pool names no time for.
@@ -280,6 +282,11 @@ export interface UnloadSource {
    * `since` is when this stop began, so an explicit archive from then on wins.
    */
   stopped(row: SessionSummary, isChat: boolean, since: number): Promise<void>;
+  /**
+   * Hands the session's detached services to scopes of their own and then sends the idle kill (`detached-handoff.ts`), for a session the
+   * guard kept. Absent, a kept session waits until its service exits.
+   */
+  handOff?(row: SessionSummary): Promise<{ done: true } | { done: false; error: string }>;
   log(line: string): void;
   now(): number;
 }
@@ -332,12 +339,13 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
 /**
  * The daemon's `get_state` shows the session doing something: a turn, a tool, a retry, a compaction, queued input, a background bash or a
  * detached process it started. For a session stopped while asleep in its provider retry (`retry`) the open turn is expected, and only a
- * stream, a compaction, a bash or a detached process keeps it: a retry that fired since the row was listed streams.
+ * stream, a compaction, a bash or a detached process keeps it: a retry that fired since the row was listed streams. With `handoff` a detached
+ * process does not keep it, since the kill's guard answer hands the process off.
  */
-function stateBusy(data: unknown, retry: boolean): boolean {
+function stateBusy(data: unknown, retry: boolean, handoff = false): boolean {
   const state = (typeof data === "object" && data !== null ? data : {}) as Partial<Pick<UnloadRow, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning" | "isRunningTools" | "holdsDetachedProcesses">>;
   return (!retry && state.isSessionActive !== false) || state.isStreaming === true || state.isCompacting === true || state.isBashRunning === true ||
-    state.isRunningTools === true || state.holdsDetachedProcesses === true;
+    state.isRunningTools === true || (!handoff && state.holdsDetachedProcesses === true);
 }
 
 /**
@@ -386,7 +394,7 @@ export class IdleUnloader {
     const pool = await source.pool();
     const now = source.now();
     const waking = await source.waking(now);
-    const input: PlanInput = { attached, pool, now, idleMs, chats, waking };
+    const input: PlanInput = { attached, pool, now, idleMs, chats, waking, handoff: source.handOff !== undefined };
     const fresh = (row: SessionSummary): boolean => !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
     const candidates = retryCandidates(source.rows(), input).filter(fresh);
     const held = candidates.length && idleMs !== null
@@ -467,13 +475,18 @@ export class IdleUnloader {
     const since = source.now();
     const state = await source.request(row, "get_state");
     if (!state.success) return failed(state);
-    if (stateBusy(state.data, retry)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
+    if (stateBusy(state.data, retry, source.handOff !== undefined)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the daemon shows it at work since the row was listed; kept`); return false; }
     // The service lets go of a chat first: the kill closes the session under its attach, and the hub would open it again at once.
     if (retry && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: the service holds the chat for a duty or an open; kept`); return false; }
     const killed = await source.request(row, "kill");
-    // The daemon's guard kept a detached service. Only this sweep skips the session: once the service exits, the next sweep stops it.
-    if (!killed.success && killed.detachedHold) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, it holds detached processes`); return false; }
-    if (!killed.success) return failed(killed);
+    // The daemon's guard kept a detached service. With a handoff source the services move to scopes of their own and the kill goes out again;
+    // without one only this sweep skips the session, and once the service exits the next sweep stops it.
+    if (!killed.success && killed.detachedHold) {
+      const handed = source.handOff && row.activeSessionId ? await source.handOff(row) : null;
+      if (!handed?.done) { source.log(`idle unload: ${row.sessionId.slice(0, 8)}: kept, it holds detached processes${handed ? `; handoff: ${handed.error}` : ""}`); return false; }
+      source.log(`idle unload: ${row.sessionId.slice(0, 8)}: handed its detached services to their own scopes`);
+    }
+    else if (!killed.success) return failed(killed);
     this.gone.add(goneKey(row));
     await source.stopped(row, chats.has(row.sessionId), since);
     return true;
