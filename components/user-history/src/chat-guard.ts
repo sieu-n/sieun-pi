@@ -110,7 +110,9 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "its result (why done), a decision only he can make (decision), a blocker only he can clear (blocker), or the answer to a question he " +
   "asked (answer), and name that goal, decision, blocker or question in about. A finished goal he asked for, or a plan change he would " +
   "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. News he already got, a fix of your own " +
-  "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. Any other call there, " +
+  "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. A blocker is one only " +
+  "he can clear, and the message says what he must do; an incident or delay a job or another chat already fixes, and its later status, " +
+  "is update. One answer is one call, so a question goes in the same message as its context. Any other call there, " +
   "and one with no why, is kept as a note (c117). Write one " +
   "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
   "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Count its sentences before you send it, and " +
@@ -121,7 +123,7 @@ export const TELL_OWNER_PARAMETERS = {
   type: "object",
   properties: {
     text: { type: "string" },
-    why: { type: "string", enum: [...TELL_WHY], description: "answer, done, decision or blocker as above; update for anything else, which " +
+    why: { type: "string", enum: [...TELL_WHY], description: "answer, done, decision or blocker as above (blocker only when he must act, and the text says how); update for anything else, which " +
       "reaches him only on a turn he started. Give it on every turn he did not start." },
     about: { type: "string", description: "The goal, decision, blocker or question the message is about, in a few words; needed with why " +
       "on a turn he did not start." },
