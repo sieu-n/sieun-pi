@@ -1,4 +1,4 @@
-import { open, type FileHandle } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 
 /**
  * Appended-bytes reader for JSONL transcripts, for the duty prechecks that read transcripts (harness-health.ts, cache-ratio.ts). Most lines carry no usage, so lines are picked by a byte pattern before
@@ -21,10 +21,14 @@ export async function readAppended(path: string, start: number, needles: Needle[
   const patterns = needles.map(needle => ({ bytes: Buffer.from(needle.text), within: needle.within }));
   const lineMode = patterns.every(pattern => pattern.within !== undefined);
   const head = Math.max(0, ...patterns.map(pattern => (pattern.within ?? 0) + pattern.bytes.length));
+  // A file with nothing past `start` is never opened: on 10-19 the daily skill-read scan opened 13,964 transcripts, 214 of them with 6 MB
+  // appended in all, and a 4 MB buffer per file made the scan take 53 to 76 s on us-metal02 (the precheck ran 548 s at load 500+).
+  const size = await stat(path).then(info => info.size, () => -1);
+  if (size < 0 || size <= start) return { offset: start, bytes: 0 };
   let handle: FileHandle;
   try { handle = await open(path, "r"); }
   catch { return { offset: start, bytes: 0 }; }
-  let buffer = Buffer.allocUnsafe(initialChunk);
+  let buffer = Buffer.allocUnsafe(Math.min(initialChunk, size - start));
   let filled = 0;
   /** File position of buffer[0]. */
   let base = start;
