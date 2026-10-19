@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +7,7 @@ import type { JobFact, StepView } from "./checkin-steps.ts";
 import { treeWakes, type Wake, wakeLabel } from "./wakes.ts";
 import { firstClause } from "./shared/chat-board.ts";
 import type { PlanItem } from "./shared/types.ts";
+import { ciRuns } from "./ci-runs.ts";
 
 /*
  * Work spread and stale timers (owner 10-12, c51): "you seem to be using waaay too much on that ONE old session when it will be so much more
@@ -109,11 +109,7 @@ export function parseTrain(cache: unknown): Train | undefined {
 }
 /** The release train in `file` (`trainFile`); undefined when the file is missing or unreadable. */
 export async function readTrain(file: string): Promise<Train | undefined> {
-  try {
-    return parseTrain(JSON.parse(await readFile(file, "utf8")));
-  } catch {
-    return undefined;
-  }
+  return parseTrain(await ciRuns(file) ?? undefined);
 }
 /**
  * Whether a thread with these heartbeats is live between its turns: one of its active heartbeats is due ahead, ran or was skipped within its

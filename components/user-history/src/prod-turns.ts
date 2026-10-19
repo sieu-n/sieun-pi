@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { setProdTurns, type ProdRecord } from "./chat-pool.ts";
 import { parseState } from "./alert-bridge.ts";
+import { ciRuns, type CiRuns } from "./ci-runs.ts";
 
 /**
  * Prod turns: this service tells pi-pool which trees and chat sessions are on prod work, and the pool runs their turns at once, ahead of its
@@ -28,37 +29,15 @@ const ALERT_PROD = /\b(prod|production)\b/i;
 const ALERT_NOT_PROD = /\b(staging|stg|dev)\b/i;
 export const prodAlert = (name: string): boolean => ALERT_PROD.test(name) && !ALERT_NOT_PROD.test(name);
 
-/**
- * {workflow file: run ids} for the runs of `workflows` that GitHub has not completed, from the raw ci-runs.json. The file was 72 MB on 10-15, so
- * this parses only the run objects whose workflow path matches, the way pi-pool did (80 ms a read).
- */
-export function runningDeploys(blob: string, workflows: readonly string[]): Map<string, string[]> {
+/** {workflow file: run ids} for the runs of `workflows` that GitHub has not completed, from the CI cache (src/ci-runs.ts). */
+export function runningDeploys(cache: CiRuns | null, workflows: readonly string[]): Map<string, string[]> {
   const found = new Map<string, string[]>();
-  if (!workflows.length) return found;
-  const names = workflows.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  for (const match of blob.matchAll(new RegExp(`"path":\\s*"\\.github/workflows/(${names})"`, "g"))) {
-    const id = blob.lastIndexOf('"id":', match.index);
-    const start = blob.lastIndexOf("{", Math.max(0, id));
-    if (id < 0 || start < 0) continue;
-    const run = objectAt(blob, start);
-    if (run?.path === `.github/workflows/${match[1]}` && run.status !== "completed") found.set(match[1]!, [...found.get(match[1]!) ?? [], String(run.id)]);
+  for (const { run } of Object.values(cache?.runs ?? {})) {
+    const workflow = typeof run.path === "string" && run.path.startsWith(".github/workflows/") ? run.path.slice(".github/workflows/".length) : undefined;
+    if (workflow === undefined || !workflows.includes(workflow) || run.status === "completed") continue;
+    found.set(workflow, [...found.get(workflow) ?? [], String(run.id)]);
   }
   return found;
-}
-
-/** The JSON object that opens at `start`, by brace depth outside strings; null when it does not parse. */
-function objectAt(blob: string, start: number): Record<string, unknown> | null {
-  let depth = 0, inString = false;
-  for (let i = start; i < blob.length; i++) {
-    const ch = blob[i];
-    if (inString) { if (ch === "\\") i++; else if (ch === '"') inString = false; continue; }
-    if (ch === '"') inString = true;
-    else if (ch === "{") depth++;
-    else if (ch === "}" && --depth === 0) {
-      try { const value: unknown = JSON.parse(blob.slice(start, i + 1)); return typeof value === "object" && value !== null ? value as Record<string, unknown> : null; } catch { return null; }
-    }
-  }
-  return null;
 }
 
 /** {chat session: "alert <name>"} for the bridge's open rules of prod alerts; none when the state does not read. */
@@ -71,9 +50,9 @@ export function firingProdAlerts(bridge: unknown): Record<string, string> {
 }
 
 /** The prod record for the pool, or null when nothing is on prod work. */
-export function prodRecord(runsBlob: string | null, bridge: unknown, now: number): ProdRecord | null {
+export function prodRecord(runs: CiRuns | null, bridge: unknown, now: number): ProdRecord | null {
   const trees: Record<string, string> = {};
-  for (const [workflow, ids] of runningDeploys(runsBlob ?? "", Object.keys(PROD_DEPLOY_OWNERS))) {
+  for (const [workflow, ids] of runningDeploys(runs, Object.keys(PROD_DEPLOY_OWNERS))) {
     for (const tree of PROD_DEPLOY_OWNERS[workflow] ?? []) trees[tree] ??= `${workflow} run ${ids[0]}`;
   }
   const sessions = firingProdAlerts(bridge);
@@ -90,9 +69,9 @@ export function startProdTurns(deps: ProdTurnsDeps, everyMs = PROD_EVERY_MS): ()
     if (running) return;
     running = true;
     try {
-      const [blob, bridge] = await Promise.all([readFile(deps.runsFile, "utf8").catch(() => null),
+      const [runs, bridge] = await Promise.all([ciRuns(deps.runsFile),
         readFile(deps.bridgeFile, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null)]);
-      const record = prodRecord(blob, bridge, Date.now());
+      const record = prodRecord(runs, bridge, Date.now());
       if (record || sent) await set(record);
       sent = record !== null;
     } catch (error) {
