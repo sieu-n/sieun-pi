@@ -9,8 +9,8 @@ the kernel process's own bytes (`own`) and its largest non-Prime descendant (`ke
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
-prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), which the
-service stops before it deletes a /tmp tree a gone job made.
+prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
+cleanup keeps a dir any of them uses and signals none of them.
 """
 import ctypes
 import json

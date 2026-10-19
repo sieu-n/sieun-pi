@@ -1,6 +1,7 @@
 // 10-19 us-metal02 at 01:2xZ: /tmp, a tmpfs, held 9.2 GB with swap at 13.2 of 16 GB though no turn had run for most of the evening, 5.1 GB of it in
 // 13,912 entries nobody held or named. The sweep deletes an entry once it sat unchanged for the idle window, no loaded or waking session names
-// it and no process but its own rig holds it, and keeps one with a live socket.
+// it and no process holds it, and keeps one with a live socket. It signals no process (10-19 02:06Z: a job's end SIGTERMed four release processes
+// of other jobs that only named a shared helper's folder).
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -12,13 +13,12 @@ import { keepersOf, namedIn, pruneCaches, sweepTmp, textSince, tmpEntries, type 
 
 const HOUR = 3_600_000;
 
-test("a sweep deletes the stale entries no keeper names and only a rig holds, stops that rig, and keeps the rest", async () => {
+test("a sweep deletes the stale entries no keeper names and no process holds, signals nothing, and keeps the rest", async () => {
   const now = Date.parse("2026-10-19T02:00:00Z");
   const entry = (name: string, changedAgoMs: number, extra: Partial<TmpEntry> = {}): TmpEntry =>
     ({ path: `/tmp/${name}`, name, bornMs: now - 20 * HOUR, changedMs: now - changedAgoMs, liveSocket: false, ...extra });
   const proc = (pid: number, dir: string, extra: Partial<InsideProcess> = {}): InsideProcess =>
     ({ pid, bytes: 1, started: pid, command: "x", dir, session: null, prime: false, shared: false, ...extra });
-  const killed: [number, string][] = [];
   let removed: readonly string[] = [];
   let read: [string, number][] = [];
   const source: TmpSweepSource = {
@@ -32,23 +32,18 @@ test("a sweep deletes the stale entries no keeper names and only a rig holds, st
       return [proc(11, "/tmp/p8iso-old"), proc(12, "/tmp/p8iso-old"), proc(13, "/tmp/served", { session: "01a14fbe-0000-7000-8000-000000000001" }),
         proc(14, "/tmp/kernel-cwd", { prime: true }), proc(15, "/tmp/pm2-cwd", { shared: true })];
     },
-    started: async pid => pid,
-    kill: (pid, signal) => { killed.push([pid, signal]); },
-    later: (_ms, run) => run(),
     remove: async paths => { removed = paths; return paths; },
     pruneCaches: async () => 4096,
   };
   const swept = await sweepTmp(source);
-  assert.deepEqual([...removed].sort(), ["/tmp/cs", "/tmp/p8iso-old"]);
-  assert.deepEqual(swept.stopped.map(entry => entry.pid), [11, 12]);
-  assert.deepEqual(killed, [[11, "SIGTERM"], [12, "SIGTERM"], [11, "SIGKILL"], [12, "SIGKILL"]]);
+  assert.deepEqual([...removed].sort(), ["/tmp/cs"]);
   assert.equal(swept.cacheBytes, 4096);
   assert.deepEqual(read, [["a.jsonl", now - 20 * HOUR]]);
 
   read = [];
   removed = [];
   const off = await sweepTmp({ ...source, idleMs: () => null });
-  assert.deepEqual(off, { removed: [], stopped: [], cacheBytes: 0 });
+  assert.deepEqual(off, { removed: [], cacheBytes: 0 });
   assert.deepEqual(read, []);
 });
 

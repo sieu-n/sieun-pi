@@ -1,6 +1,7 @@
 // 10-18 us-metal02: ~/.prime/agent/session-artifacts grew 10.6 GB between 02:30Z and 16:12Z. A grafana job left five `git archive` trees of
 // 0.9 GB each in session-artifacts/grafana-c, and the 4,000 subagents the daemon had deleted still held 3.9 GB of kernel-state.dill. A job's end
-// now deletes its sessions' kernel states and the repo copies they left there, and keeps notes, older copies and a copy a live session names.
+// now deletes its sessions' kernel states and the repo copies in their own session folders, and keeps notes and every copy elsewhere in
+// session-artifacts, since a path a transcript names proves no owner (10-19 02:06Z: a job's end deleted the shared ~/scratch/release-applied it named).
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +24,7 @@ function transcript(folder: string, id: string, at: number, text: string, result
   return put(folder, `${id}.jsonl`, lines.join(""));
 }
 
-test("a gone job's kernel states and the repo copies it left in session-artifacts are found, and notes, older copies and copies a live session names stay", { skip: process.platform === "win32" }, async t => {
+test("a gone job's kernel states and the repo copies in its own session folder are found, and notes and the copies it only names stay", { skip: process.platform === "win32" }, async t => {
   const artifacts = mkdtempSync(join(tmpdir(), "job-artifacts-"));
   t.after(() => rmSync(artifacts, { recursive: true, force: true }));
   const chat = join(artifacts, "01a11af8-962e-773d-a19a-ee4104011987");
@@ -46,7 +47,7 @@ test("a gone job's kernel states and the repo copies it left in session-artifact
   const ended = transcript(job, id, start, `A=Path("~/.prime/agent/session-artifacts/grafana-c").expanduser(); X8=A/'c8tree'; ls ~/.prime/agent/session-artifacts/${id}`,
     `${artifacts}/other\n/home/x/.prime/agent/session-artifacts/other`);
   assert.deepEqual((await kernelStates([ended])).sort(), [join(chat, "session-artifacts", id, "kernel-state.dill"), join(chat, "session-artifacts", id, "kernel-state.dill.ab12cd34.tmp")]);
-  assert.deepEqual((await artifactCopies([ended], [job], artifacts)).sort(), [join(job, "tree"), join(artifacts, "grafana-c/c8tree")].sort());
+  assert.deepEqual(await artifactCopies([ended]), [join(job, "tree")]);
 });
 
 test("a job's end deletes its kernel states and the copies no process holds, and keeps a copy a process runs in", async () => {
@@ -55,7 +56,7 @@ test("a job's end deletes its kernel states and the copies no process holds, and
   const runner: InsideProcess = { pid: 7, bytes: 1, started: 7, command: "node --test", dir: held, session: null, prime: false, shared: false };
   const source: LeftoverSource = {
     strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {}, removeCopies: async () => [],
-    tmpTrees: async () => [], inside: async dirs => dirs.includes(held) ? [runner] : [], removeTmp: async paths => { removed = paths; return paths; },
+    inside: async dirs => dirs.includes(held) ? [runner] : [], removeTmp: async paths => { removed = paths; return paths; },
     artifactCopies: async () => [free, held], kernelStates: async () => [state],
   };
   const base = mkdtempSync(join(tmpdir(), "job-artifacts-end-"));

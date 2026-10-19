@@ -61,7 +61,7 @@ test("a job's end deletes the untracked copies in the session folders it opened 
   const source: LeftoverSource = {
     strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {},
     removeCopies: transcripts => removeRepoCopies(transcripts, content, async (_root, path) => path.endsWith("/kept")),
-    tmpTrees: async () => [], inside: async () => [], removeTmp: async () => [], artifactCopies: async () => [], kernelStates: async () => [],
+    inside: async () => [], removeTmp: async () => [], artifactCopies: async () => [], kernelStates: async () => [],
   };
   const left = await endLeftovers(source, dir);
   assert.equal(left.copies.length, 7);
