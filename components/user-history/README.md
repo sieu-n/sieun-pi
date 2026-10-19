@@ -122,7 +122,10 @@ With `"delta":true` the sessions feed sends the whole list once and then `{"type
 node src/chat-service-cli.mjs start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live] [--scratch [--live-reads-only]]
 npm run typecheck      # tsc and svelte-check
 npm test               # the incident and owner-rule tests, which every release-chat build runs
+npm run test:one -- test/x.test.ts  # one or a few files, with the same --test-force-exit
 ```
+
+Both test scripts pass `--test-force-exit`, because `--test-timeout` does not end a file whose tests passed but left a socket, timer or child open, and the runner then waits for it with no output. On 10-19 a raw `node --import tsx --test --test-timeout=60000 test/relink-lost-link.test.ts` sat 85 min that way after its 2 tests passed in 4 s, until d7 flagged it as a hung call.
 
 The service keeps its configuration, instance record, read markers and labels (`labels.json`) under `~/.prime/agent/browser-chat` by default. Use `--data-dir` for a second instance.
 
