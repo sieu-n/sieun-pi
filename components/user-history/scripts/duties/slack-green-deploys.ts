@@ -15,6 +15,10 @@ import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../.
  * When the worker misses a commit past DEPLOY_MINUTES, this precheck deploys main's head to it once per head commit, through the same
  * serviceInstanceDeployV2 call the approved merges job used by hand for #233 (4222b4b, 2026-10-14), and flags it. Vercel is never redeployed
  * here: a missing Vercel deployment means GitHub sent no push event, which the duty job fixes with an empty commit through a PR.
+ * Its one supporting metric, main_checks_failed_24h, counts the slack-green main commits whose push CI run (ci.yml) started in the last 24 h
+ * and ended failed, cancelled or timed out, because main's checks broke four times from Oct 9 to Oct 18 (board step p180). Each one is
+ * flagged with its failed job, step and link, and the step says whose fix it is: the runner's setup or its job-started hook (the M1 Air's disk
+ * floor) is VP of CI's, any other step is the repo's.
  */
 
 export const REPO = "sieu-n/slack-green";
@@ -43,7 +47,16 @@ export interface Commit { sha: string; at: number; watched?: boolean | undefined
 export interface Deploy { status: string; at: number; sha?: string | undefined; reason?: string | undefined }
 /** One side of production: the commit it runs, its recent deployments, and the main commits that commit lacks, oldest first. */
 export interface Side { live: string; deploys: Deploy[]; behind: Commit[] }
-export interface Sources { railway?: Side; vercel?: Side; errors: string[] }
+/** One slack-green main push CI run (ci.yml) as `gh run list` gives it. `conclusion` is empty while the run is not done. */
+export interface CiRun { id: number; sha: string; at: number; conclusion: string; url: string }
+/** One job of a run as `gh run view --json jobs` gives it, with each step's conclusion. */
+export interface CiJob { name: string; conclusion: string; url?: string | undefined; steps: { name: string; conclusion: string }[] }
+/**
+ * A failed main run with whose fix it is. `runner`: the runner failed before or after the repo's own steps (setup, the job-started hook that
+ * holds the disk floor, or a job that never got steps), which VP of CI fixes. `repo`: a repo step failed. `unknown`: its jobs did not read.
+ */
+export interface CheckFailure { run: CiRun; side: "runner" | "repo" | "unknown"; job?: string | undefined; step?: string | undefined; url: string; error?: string | undefined }
+export interface Sources { railway?: Side; vercel?: Side; checks?: CheckFailure[]; checkRuns?: number; errors: string[] }
 
 const short = (sha: string | undefined) => sha ? sha.slice(0, 7) : "none";
 const age = (commit: Commit, now: number) => Math.floor((now - commit.at) / MINUTE);
@@ -108,9 +121,40 @@ export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy
   if (redeploy) flagged.push({ at: now, kind: redeploy.error ? "redeploy_error" : "redeploy", excerpt: redeploy.error
     ? `deploying main's head ${short(redeploy.head)} to the Railway worker failed: ${redeploy.error}`
     : `this check deployed main's head ${short(redeploy.head)} to the Railway worker once; the next run shows whether it went live` });
+  for (const failure of sources.checks ?? []) flagged.push({ at: now, kind: `main_checks_${failure.side}`, excerpt: describeFailure(failure) });
+  if (sources.checks && !sources.checks.length) flagged.push({ at: now, kind: "main_checks_ok",
+    excerpt: `all ${sources.checkRuns ?? 0} finished main push CI runs of the last 24 h passed` });
   const errors = sources.errors.length;
-  return { metrics: { commits_not_live: errors ? Math.max(notLive.size, 1) : notLive.size, railway_not_live: counts.railway, vercel_not_live: counts.vercel,
-    source_errors: errors }, flagged };
+  const failedCommits = sources.checks ? new Set(sources.checks.map(failure => failure.run.sha)).size : 1;
+  return { metrics: { commits_not_live: errors ? Math.max(notLive.size, 1) : notLive.size, main_checks_failed_24h: failedCommits,
+    railway_not_live: counts.railway, vercel_not_live: counts.vercel, source_errors: errors }, flagged };
+}
+
+/** Run conclusions that count as broken checks. ci.yml cancels only PR runs for a newer push, so a cancelled main run is a timeout or a stop. */
+export const CHECKS_FAILED = ["failure", "cancelled", "timed_out", "startup_failure"];
+export const CHECKS_WINDOW_MS = 24 * 60 * MINUTE;
+/** Steps GitHub and the runner own. "Set up runner" runs the job-started hook, which fails the job when the M1 Air is under its disk floor. */
+export const RUNNER_STEPS = ["Set up job", "Set up runner", "Complete runner", "Complete job"];
+
+/** The failed main runs that started in the last 24 h, newest first. A run still going is not counted yet. */
+export function failedMainRuns(runs: readonly CiRun[], now: number): CiRun[] {
+  return runs.filter(run => run.at > now - CHECKS_WINDOW_MS && CHECKS_FAILED.includes(run.conclusion)).sort((a, b) => b.at - a.at);
+}
+
+/** Whose fix a failed run is: its first failed job's first failed step names the side. A failed job with no failed step is the runner's. */
+export function classifyFailure(run: CiRun, jobs: readonly CiJob[]): CheckFailure {
+  const job = jobs.find(item => CHECKS_FAILED.includes(item.conclusion));
+  if (!job) return { run, side: "unknown", url: run.url, error: "no job of the run failed" };
+  const step = job.steps.find(item => CHECKS_FAILED.includes(item.conclusion));
+  const side = !step || RUNNER_STEPS.includes(step.name) ? "runner" : "repo";
+  return { run, side, job: job.name, step: step?.name, url: job.url ?? run.url };
+}
+
+export function describeFailure(failure: CheckFailure): string {
+  const { run } = failure;
+  const where = failure.job ? `job ${failure.job} failed at ${failure.step ? `step "${failure.step}"` : "no step (the runner never ran it)"}` : `its jobs did not read (${failure.error ?? "?"})`;
+  const whose = failure.side === "runner" ? "runner side, so VP of CI fixes it" : failure.side === "repo" ? "repo side, so one fix job takes it" : "side unknown, read the run";
+  return `main ${short(run.sha)}'s CI run ${run.id} ended ${run.conclusion}: ${where}; ${whose}. ${failure.url}`;
 }
 
 /** Runs a program with no shell and gives its stdout. */
@@ -134,6 +178,27 @@ export async function readWatchPatterns(deps: DeployDeps): Promise<RegExp[]> {
   const list = /watchPatterns\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1];
   if (!list) throw new Error("packages/backend/railway.toml on main has no watchPatterns");
   return [...list.matchAll(/"([^"]+)"/g)].map(([, pattern]) => globRegex(pattern!.replace(/^\//, "")));
+}
+
+/** slack-green's main push runs of ci.yml, newest 100, which covers far more than a day of pushes. */
+export async function readMainRuns(deps: DeployDeps): Promise<CiRun[]> {
+  const out = await deps.exec("gh", ["run", "list", "--repo", REPO, "--branch", "main", "--workflow", "ci.yml", "--event", "push", "--limit", "100",
+    "--json", "databaseId,headSha,conclusion,createdAt,url"]);
+  return (JSON.parse(out) as { databaseId: number; headSha: string; conclusion: string; createdAt: string; url: string }[])
+    .map(row => ({ id: row.databaseId, sha: row.headSha, at: Date.parse(row.createdAt), conclusion: row.conclusion ?? "", url: row.url }));
+}
+
+export async function readJobs(deps: DeployDeps, run: number): Promise<CiJob[]> {
+  return (JSON.parse(await deps.exec("gh", ["run", "view", String(run), "--repo", REPO, "--json", "jobs"])) as { jobs: CiJob[] }).jobs;
+}
+
+/** The failed main runs of the last 24 h with whose fix each is; a run whose jobs do not read still counts, with side unknown. */
+export async function readCheckFailures(deps: DeployDeps, now: number): Promise<{ failures: CheckFailure[]; finished: number }> {
+  const runs = await readMainRuns(deps);
+  const finished = runs.filter(run => run.at > now - CHECKS_WINDOW_MS && run.conclusion).length;
+  const failures = await Promise.all(failedMainRuns(runs, now).map(run => readJobs(deps, run.id).then(jobs => classifyFailure(run, jobs),
+    (error: unknown): CheckFailure => ({ run, side: "unknown", url: run.url, error: message(error) }))));
+  return { failures, finished };
 }
 
 export async function readFiles(deps: DeployDeps, sha: string): Promise<string[]> {
@@ -214,12 +279,14 @@ export async function measureDeploys(deps: DeployDeps, previous: DeployState): P
     const behind = platform && await readBehind(deps, platform.live).catch(fail(`GitHub main commits missing from ${name}'s ${short(platform.live)}`));
     return platform && behind ? { ...platform, behind } : undefined;
   };
-  const [railway, vercel] = await Promise.all([
+  const [railway, vercel, checks] = await Promise.all([
     side("Railway deployments", async () => { const deploys = await readRailway(deps); return { live: railwayLive(deploys), deploys }; }),
     side("Vercel production", () => readVercel(deps)),
+    readCheckFailures(deps, now).catch(fail("GitHub main CI runs")),
   ]);
   if (railway) { await markWatched(deps, railway.behind, now, fail); sources.railway = railway; }
   if (vercel) sources.vercel = vercel;
+  if (checks) { sources.checks = checks.failures; sources.checkRuns = checks.finished; }
   const state: DeployState = { redeployed: Object.fromEntries(Object.entries(previous.redeployed).filter(([, at]) => at > now - REMEMBER_MS)) };
   let redeploy: Redeploy | undefined;
   const head = redeployFor(railway, now, state);

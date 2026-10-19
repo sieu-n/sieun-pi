@@ -1,7 +1,7 @@
 {
   "name": "Slack green deploys",
   "ownerWords": "look, YOUR JOB IS TO MAKE SURE THE SOFTWARE IS DURABLE. 자체적으로 고쳐질 수 있게 설계를 바꾸는게 니 역할이야",
-  "goal": "Every slack-green main commit is live on the Railway worker (when it changes a railway.toml watch path) and on Vercel production within 20 minutes of its push. A miss heals without a hand fix, because the precheck deploys main's head to the worker once and the duty job fixes the cause in code so the miss does not repeat.",
+  "goal": "Every slack-green main commit is live on the Railway worker (when it changes a railway.toml watch path) and on Vercel production within 20 minutes of its push. A miss heals without a hand fix, because the precheck deploys main's head to the worker once and the duty job fixes the cause in code so the miss does not repeat. Main's GitHub checks pass on every push too, because they broke four times from Oct 9 to Oct 18 (free minutes ran out, the M1 Air runner failed its tests, the frontend check timed out in 4 of 5 runs on Oct 14, a runner port error on Oct 18), and each time fixes waited or a backend commit never reached the worker. The precheck counts them as main_checks_failed_24h and names the failed job and step of each, so the duty job knows whose fix it is.",
   "metrics": [
     {
       "key": "commits_not_live",
@@ -9,6 +9,12 @@
       "op": "<=",
       "target": 0,
       "headline": true
+    },
+    {
+      "key": "main_checks_failed_24h",
+      "label": "Main pushes whose GitHub checks failed or timed out, last 24 h",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {
@@ -22,7 +28,9 @@
       "tsx",
       "scripts/duties/slack-green-deploys.ts"
     ],
-    "cwd": "../.."
+    "cwd": "../..",
+    "timeoutMs": 120000
   },
-  "onMiss": "If a source_error is flagged, fix the precheck or its login first, because the headline is unmeasured until then. For a commit in railway_not_live, redeploy main's head to the worker unless the redeploy flag shows the precheck did it this run. For a commit in vercel_not_live with no deployment, GitHub sent no push event, so push an empty commit through a PR, never `vercel redeploy`. Then start or steer one fix job on the cause, built as a PR, so it does not happen again. For a CI skip the cause is the failing check suite on that commit, and for a failed or stuck build it is the build log. If a live job already targets that cause (agent_observe.list_agents), message it the new commit and status instead of starting a second one. Tell the chat in one line with the commit, the side and the cause. Never merge, and never deploy anything but main's head."
+  "onMiss": "If a source_error is flagged, fix the precheck or its login first, because the headline is unmeasured until then. For a commit in railway_not_live, redeploy main's head to the worker unless the redeploy flag shows the precheck did it this run. For a commit in vercel_not_live with no deployment, GitHub sent no push event, so push an empty commit through a PR, never `vercel redeploy`. Then start or steer one fix job on the cause, built as a PR, so it does not happen again. For a CI skip the cause is the failing check suite on that commit, and for a failed or stuck build it is the build log. If a live job already targets that cause (agent_observe.list_agents), message it the new commit and status instead of starting a second one. Tell the chat in one line with the commit, the side and the cause. Never merge, and never deploy anything but main's head. For main_checks_failed_24h, read each main_checks flag. A main_checks_runner flag (the failed step is the runner's setup or its job-started hook, such as the M1 Air under its 25 GB disk floor) is VP of CI's: message VP of CI once per run with the run link and the step, and never touch the M1 Air from this chat. A main_checks_repo flag (a test, a build or a timeout in a repo step) gets one fix job built as a PR, or a message to the live job already on that cause. A main_checks_unknown flag means read the run first.",
+  "boardGoal": "p145"
 }
