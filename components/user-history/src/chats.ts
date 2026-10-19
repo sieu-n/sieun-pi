@@ -983,16 +983,20 @@ export class Chats {
 
   /**
    * Each JOB_CLEANUP_EVERY_MS: stops what the subagents the daemon marked deleted under each chat left (`deletedFolders`), the jobs a chat
-   * deleted itself included, and logs it. A job the chat deletes stays in the daemon's list, so the roster cannot tell it is gone.
+   * deleted itself included, and logs it. A job the chat deletes stays in the daemon's list, so the roster cannot tell it is gone. The chats the
+   * owner archived are swept too, read from their session folders only and never opened: on 10-19 chat-057a (01a14210), archived at 05:31:26Z,
+   * went on running jobs, and the tree, rig unit and detached process of its deleted job stayed because the sweep read only the live chats.
    */
   private async sweepDeleted(): Promise<void> {
     if (!this.source.deletedLeftovers) return;
-    for (const id of this.chatIds) {
+    const archived = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
+    for (const id of new Set([...this.chatIds, ...archived])) {
+      const name = `chat ${id.slice(0, 8)}${this.chatIds.has(id) ? "" : " (archived)"}`;
       const left = await this.source.deletedLeftovers(id).catch(error => {
-        this.log(`chat ${id.slice(0, 8)}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
+        this.log(`${name}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
         return { stopped: [], tabs: 0, copies: [], artifacts: [], owned: [], units: [] };
       });
-      if (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length) this.log(`chat ${id.slice(0, 8)}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+      if (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length) this.log(`${name}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
     }
   }
 
