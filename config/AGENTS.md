@@ -12,5 +12,6 @@
    - A design he picked on the 5180 demo moves into the search app on 5174, staging or production only after he says 5180 is good enough, because a frontend chat read his pick as a go to ship on 2026-10-09 (c24).
    - A change to a variant he accepted goes into a new fork, because a job edited the Paper v5 watchlist in place on 2026-10-09 (c26).
    - A visible change to the board layout waits for his ok, because a job unfolded the goal requirements and targets on the board panel on 2026-10-09 (c33).
+   - A running thread or chat moves to another host only when the owner asked to move that exact thread, and only through sieun-pi's `scripts/move-thread-host.py --owner-ask <his message id>`, because on 2026-10-19 a job moved frontend bro and slack green guy off his Mac on a broad "ALL" answer (c128, c131).
 
    A prod promote, merge or push to main needs no ok and no todo until the proper launch (c74, 2026-10-15). Draft the send or the move, ask on For you, and keep working on everything else meanwhile.

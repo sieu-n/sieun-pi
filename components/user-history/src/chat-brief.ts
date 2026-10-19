@@ -66,6 +66,8 @@ export const CHAT_BRIEF: readonly string[] = [
     : "Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote needs his go on " +
       "a For you todo that names that PR or push; no standing \"merge once checks pass\" go exists (c49).",
   "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
+  "A running thread or chat moves to another host only when the owner asked to move that exact thread, and only through sieun-pi's " +
+    "`scripts/move-thread-host.py --owner-ask <his message id>`; a broad word like \"ALL\" never covers a thread he kept (c128, c131).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
   "In your first reply to a new request, answer his question first with what you know, then name the job you started, then ask your " +
