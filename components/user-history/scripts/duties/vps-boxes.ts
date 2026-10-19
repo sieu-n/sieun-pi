@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,7 +18,10 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * us-metal02's / read 6.9. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
  * by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
  * and reads this box's /proc/vmstat when Prometheus has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
- * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
+ * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. It leaves out heavy_scope_kills, the kills on this box inside a scope of the `heavy`
+ * wrapper (deploy/linux/memory/heavy), which hit the MemoryMax that job chose, not box pressure: two 8G scopes died at 17:26Z and 17:27Z on 10-19
+ * with memory pressure full at 0.00. The user journal names the unit of each kill but not its count, so each heavy scope's line counts as one kill
+ * and any other kill counts as outside. The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
 const DATA_DIR = join(homedir(), ".prime/agent/browser-chat");
@@ -91,18 +95,43 @@ export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: num
   return { days: Math.round(sorted[0]!.days * 10) / 10, flagged: { at, kind: "disk", excerpt } };
 }
 
-export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number }
+export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number; heavy?: number; units?: string[] }
+export interface OomLine { at: number; unit: string }
+
+const OOM_LINE = /^(\d+)(?:\.\d+)? \S+ systemd\[\d+\]: (\S+): The kernel OOM killer killed some processes in this unit\.$/;
+const HEAVY_START = /^Started (run-\S+\.scope) - \[systemd-run\] \S*choom -n 500 -- /;
+
+/** The kills of the journal's OOM lines inside heavy scopes, and the other leaf units it names; a slice line only echoes a kill below it. */
+export function splitOomLines(journal: string, starts: string): { heavy: number; units: string[] } {
+  const heavyScopes = new Set(starts.split("\n").flatMap(line => HEAVY_START.exec(line)?.[1] ?? []));
+  const lines = journal.split("\n").flatMap((line): OomLine[] => {
+    const match = OOM_LINE.exec(line);
+    return match ? [{ at: Number(match[1]) * 1000, unit: match[2]! }] : [];
+  });
+  const units = new Set(lines.map(line => line.unit).filter(unit => !unit.endsWith(".slice") && !heavyScopes.has(unit)));
+  return { heavy: lines.filter(line => heavyScopes.has(line.unit)).length, units: [...units] };
+}
 
 const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)}Z on ${new Date(ms).toISOString().slice(5, 10)}`;
 
-/** The OOM kills of both boxes summed, and one line for each box with a kill, naming its count and its last kill. */
-export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; flagged: FlaggedSlice[] } {
+/**
+ * The OOM kills of both boxes outside heavy scopes summed, the heavy scope kills apart, and one line for each box with a kill outside, naming its
+ * count, its last kill and the units the journal names.
+ */
+export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; flagged: FlaggedSlice[] } {
   const missing = DISK_BOXES.filter(box => !boxes.some(entry => entry.box === box));
   if (missing.length) throw new Error(`no node_vmstat_oom_kill of ${missing.join(" or ")}`);
-  const flagged = boxes.filter(entry => entry.kills > 0).map((entry): FlaggedSlice => ({ at, kind: "oom", excerpt: entry.sinceBootAt
-    ? `${entry.box}: ${entry.kills} OOM kills in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because Prometheus has no node_vmstat_oom_kill for it`
-    : `${entry.box}: ${entry.kills} OOM kills in the last 24 h${entry.lastAt ? `, the last at about ${stamp(entry.lastAt)}` : ""}` }));
-  return { kills: boxes.reduce((sum, entry) => sum + entry.kills, 0), flagged };
+  const counted = boxes.map(entry => ({ ...entry, outside: Math.max(0, entry.kills - (entry.heavy ?? 0)) }));
+  const flagged = counted.filter(entry => entry.outside > 0).map((entry): FlaggedSlice => {
+    const heavy = entry.heavy ? ` and ${entry.heavy} more inside heavy scopes` : "";
+    const units = entry.units?.length ? `; the journal names ${entry.units.join(", ")}` : "";
+    return { at, kind: "oom", excerpt: entry.sinceBootAt
+      ? `${entry.box}: ${entry.outside} OOM kills outside heavy scopes${heavy} in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because Prometheus has no node_vmstat_oom_kill for it${units}`
+      : `${entry.box}: ${entry.outside} OOM kills outside heavy scopes${heavy} in the last 24 h${entry.lastAt ? `, the last kill of any kind at about ${stamp(entry.lastAt)}` : ""}${units}` };
+  });
+  const heavyOnly = counted.filter(entry => !entry.outside && entry.heavy)
+    .map((entry): FlaggedSlice => ({ at, kind: "oom_heavy", excerpt: `${entry.box}: ${entry.heavy} OOM kills in the last 24 h, all inside heavy scopes that hit their own MemoryMax` }));
+  return { kills: counted.reduce((sum, entry) => sum + entry.outside, 0), heavy: counted.reduce((sum, entry) => sum + (entry.heavy ?? 0), 0), flagged: [...flagged, ...heavyOnly] };
 }
 
 type Frame = { schema?: { fields?: { labels?: Record<string, string> }[] }; data?: { values?: unknown[][] } };
@@ -139,6 +168,11 @@ async function byBox(expr: string): Promise<Map<string, number>> {
   }));
 }
 
+function run(command: string, args: string[]): Promise<string> {
+  return new Promise((done, fail) => execFile(command, args, { maxBuffer: 16 << 20 }, (error, stdout) =>
+    error && (error as { code?: unknown }).code !== 1 ? fail(error) : done(stdout)));
+}
+
 async function procOomKills(box: string): Promise<OomKills> {
   const kills = Number(/^oom_kill (\d+)$/m.exec(await readFile("/proc/vmstat", "utf8"))?.[1]);
   const uptime = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]);
@@ -150,7 +184,13 @@ async function oomBoxes(): Promise<OomKills[]> {
   const [kills, last] = await Promise.all([byBox(OOM_KILLS_QUERY), byBox(OOM_LAST_QUERY)]);
   const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! * 1000 } : {} }));
   const here = hostname().split(".")[0]!;
-  if (!kills.has(here) && (DISK_BOXES as readonly string[]).includes(here)) boxes.push(await procOomKills(here));
+  if (!(DISK_BOXES as readonly string[]).includes(here)) return boxes;
+  if (!kills.has(here)) boxes.push(await procOomKills(here));
+  const entry = boxes.find(box => box.box === here)!;
+  const journal = (args: string[]): Promise<string> => run("journalctl", ["--user", "--no-pager", ...args]);
+  const [lines, starts] = await Promise.all([journal(["--since", entry.sinceBootAt ? new Date(entry.sinceBootAt).toISOString() : "-24h", "-o", "short-unix",
+    "-g", "OOM killer killed some processes in this unit"]), journal(["--since", "-7d", "-o", "cat", "-g", "^Started run-.*choom -n 500"])]);
+  Object.assign(entry, splitOomLines(lines, starts));
   return boxes;
 }
 
@@ -183,6 +223,7 @@ async function main(): Promise<void> {
   try {
     const counted = oomKills24h(await oomBoxes(), at);
     result.metrics.oom_kills_24h = counted.kills;
+    result.metrics.heavy_scope_kills = counted.heavy;
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
   try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }
