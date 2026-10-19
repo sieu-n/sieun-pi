@@ -1093,6 +1093,15 @@ export class Catalog {
   private ownActive = new Set<string>();
   /** Sessions already logged as running on two boxes. */
   private readonly duplicates = new Set<string>();
+  /** The box of each session id and active session id this server started on another box, until that box's list names it (`place`). */
+  private readonly placed = new Map<string, string>();
+
+  /**
+   * Sends the commands for a session this server just started on another box to that box before its list names the session. On 10-19 three
+   * new Mac threads in a row answered 502 "Unknown active session" and lost their first message: the prompt right after the create went to
+   * this box's daemon, because the Mac's roster had not listed the session yet.
+   */
+  place(host: string, ...ids: string[]): void { for (const id of ids) this.placed.set(id, host); }
 
   /**
    * The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. A session
@@ -1100,7 +1109,8 @@ export class Catalog {
    */
   hostOf(id: string): string | null {
     const host = this.hosts?.hostOf(id);
-    if (!host) return null;
+    if (!host) return this.placed.get(id) ?? null;
+    this.placed.delete(id);
     if (!this.own.has(id)) return host.name;
     return !this.ownActive.has(id) && this.hosts!.isActive(id) ? host.name : null;
   }

@@ -1176,6 +1176,7 @@ export class ThreadHub {
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {
       throw new ThreadError(502, "Prime Agent returned no session for the new thread.");
     }
+    if (input.host && this.catalog.isOtherHost(input.host)) this.catalog.place(input.host, data.sessionId, data.activeSessionId);
     this.evict("live");
     const connection = await this.attach(data.activeSessionId, input.host ?? null);
     let thread: Thread;

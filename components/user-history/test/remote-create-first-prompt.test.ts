@@ -1,0 +1,44 @@
+// Guards the 10-19 lost first message: three new Mac threads in a row answered 502 "Unknown active session", because the prompt right after the
+// create went to this box's daemon while the Mac's roster did not list the new session yet.
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
+import { Catalog } from "../src/chat-catalog.ts";
+import { ChatLabels } from "../src/chat-labels.ts";
+import { ChatReadState } from "../src/chat-read-state.ts";
+import { ThreadHub } from "../src/chat-threads.ts";
+import type { HostCatalogs } from "../src/host-catalogs.ts";
+import { ThreadOrigins } from "../src/thread-origin.ts";
+
+const ID = "01a154b4-51ea-7166-ae5a-57c4936c2b80";
+
+test("a session placed on the Mac is the Mac's until the Mac's list names it, and then the list decides", (t: TestContext) => {
+  let listed: string | null = null;
+  const hosts = { selfName: "us-metal02", hostOf: (id: string) => id === ID && listed ? { name: listed } : null, isActive: () => false, client: () => null,
+    start: () => {}, close: async () => {} } as unknown as HostCatalogs;
+  const catalog = new Catalog("unused", new ChatReadState("unused"), new ChatLabels("unused"), { ids: async () => new Set(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) },
+    new ThreadOrigins({ ids: async () => [] }), hosts);
+  t.after(() => catalog.close());
+  assert.equal(catalog.hostOf(ID), null);
+  catalog.place("mac", ID, "fe473a344ace");
+  assert.equal(catalog.hostOf(ID), "mac");
+  assert.equal(catalog.hostOf("fe473a344ace"), "mac");
+  listed = "mini";
+  assert.equal(catalog.hostOf(ID), "mini", "the list's answer wins once it names the session");
+  listed = null;
+  assert.equal(catalog.hostOf(ID), null, "a placement ends once the list named the session");
+});
+
+test("a thread created on another box is placed there before its attach, so its first prompt goes to that box", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const placed: string[][] = [];
+  const mac = { request: async (command: { type: string }) => command.type === "create" ? { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" } } : { success: true, data: undefined } };
+  const catalog = { hostClient: async (name: string) => { assert.equal(name, "mac"); return mac; }, isOtherHost: (name: string) => name === "mac",
+    place: (...args: string[]) => { placed.push(args); }, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac" }));
+  assert.deepEqual(placed, [["mac", ID, "fe473a344ace"]]);
+});
