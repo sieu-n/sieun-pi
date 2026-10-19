@@ -738,8 +738,8 @@ def vend(provider):
             else:
                 sys.stdout.write(token)
                 return
-        raise SystemExit(f"pi-pool: this session waits for a slot on {d.slot_account.label} "
-                         f"at {iso(d.slot_at)}")
+        raise base.SlotWait(f"pi-pool: this session waits for a slot on {d.slot_account.label} "
+                            f"at {iso(d.slot_at)}", d.slot_at)
 
     order = [d.account] + list(d.fallbacks)
     errors = []

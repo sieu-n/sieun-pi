@@ -5,6 +5,7 @@ import base64, fcntl, importlib.util, json, os, shutil, signal, socket, subproce
 from pathlib import Path
 
 from fixture_isolation import isolate_test_module
+from fixture_slot_wait import make_waiting_pool
 
 
 def setUpModule():
@@ -116,6 +117,7 @@ class Hookd(unittest.TestCase):
                         PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-hookd")
         self.env.pop("PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", None)
         self.env.pop("PI_POOL_SESSION_KEY", None)
+        self.env.pop("PRIME_CREDENTIAL_COMMAND_PROTOCOL", None)
         self.server = subprocess.Popen(["/usr/bin/python3", "-B", os.path.join(self.link, "bin", "pi-pool"), "hookd",
                                         "--release", self.link], env=self.env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -393,6 +395,30 @@ class Hookd(unittest.TestCase):
             os.kill(int(pid), signal.SIGKILL)
         out, _ = hook.communicate(timeout=10)
         self.assertEqual((hook.returncode, out, self.fallback_runs()), (1, "", 0))
+
+    def test_a_slot_wait_through_hookd_answers_as_the_python_hook_does(self):
+        until = time.time() + 600.25
+        make_waiting_pool(self.pool, "fixture-hookd", until)
+        waits = json.dumps({"retryAt": int(until) + 1, "message": "waiting for an account slot"})
+        new = self.client("--provider", "openai-codex", env=dict(self.env, PRIME_CREDENTIAL_COMMAND_PROTOCOL="1"))
+        self.assertEqual((new.returncode, new.stdout, new.stderr), (75, waits, "pi-pool-token: no token (slot_wait)\n"))
+        old = self.client("--provider", "openai-codex")
+        self.assertEqual((old.returncode, old.stdout, old.stderr), (1, "", "pi-pool-token: no token (slot_wait)\n"))
+        self.assertEqual(self.fallback_runs(), 0)
+        self.assertEqual([(e["reason"], e["exit_code"]) for e in events(self.pool) if e["event"] == "hook_no_token"],
+                         [("slot_wait", 75), ("slot_wait", 1)])
+        code = ("import importlib.util, json, os, sys\n"
+                "spec = importlib.util.spec_from_file_location('vend', sys.argv[1]); vend = importlib.util.module_from_spec(spec)\n"
+                "sys.modules['vend'] = vend; spec.loader.exec_module(vend); remote = vend.pool.remote\n"
+                "key = {'key': 'fixture-hookd', 'uuid': None, 'active': 'fixture-hookd'}\n"
+                "print(json.dumps([remote.via_hookd(*remote.holder_script(sys.argv[2], ['--provider', 'openai-codex']),\n"
+                "                                   remote.holder_env(key, protocol)) for protocol in ('1', None)]))\n")
+        run = subprocess.run(["/usr/bin/python3", "-B", "-c", code, os.path.join(self.link, "vend.py"), self.link], env=self.env,
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout), [[75, waits, "pi-pool-token: no token (slot_wait)\n"],
+                                                  [1, "", "pi-pool-token: no token (slot_wait)\n"]])
+        self.assertEqual(self.fallback_runs(), 0)
 
     def test_no_hookd_runs_the_python_hook(self):
         self.stop_server()

@@ -11,10 +11,14 @@ or a transcript, so the token path refuses a TTY and refuses unknown arguments
     pi-pool-token --status           pool status
     pi-pool-token --cli <command>    same as `pi-pool <command>`
 
+When the session tree waits for a slot and Prime set PRIME_CREDENTIAL_COMMAND_PROTOCOL=1, the token path
+exits 75 with {"retryAt": <slot time, epoch seconds>, "message": "waiting for an account slot"} on stdout.
+
 A failed invocation writes fixed reason codes and elapsed times to the pool log.
 Credential values and exception messages never enter that record.
 """
 import json
+import math
 import os
 import re
 import runpy
@@ -23,6 +27,10 @@ import sys
 import time
 
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
+# Prime sets it to "1" when it reads exit 75 (EX_TEMPFAIL) with {"retryAt": <epoch sec>, "message": ...} on stdout
+# as "no credential until retryAt". Without it a slot wait stays exit 1 with nothing on stdout.
+PROTOCOL_ENV = "PRIME_CREDENTIAL_COMMAND_PROTOCOL"
+TEMPORARY_EXIT = 75
 
 
 def refuse(reason):
@@ -202,6 +210,11 @@ def run_token(source, argv, vend=None):
             signum = interrupted_signal(error)
             if signum is not None:
                 no_token("interrupted", signal=signum, phase="vend")
+            elif getattr(error, "slot_at", None) is not None and os.environ.get(PROTOCOL_ENV) == "1":
+                no_token("slot_wait", exit_code=TEMPORARY_EXIT)
+                original.write(json.dumps({"retryAt": math.ceil(error.slot_at), "message": "waiting for an account slot"}))
+                original.flush()
+                raise SystemExit(TEMPORARY_EXIT) from None
             else:
                 no_token(failure_reason(error), exit_code=error.code if isinstance(error.code, int) else 1)
         raise SystemExit(error.code if isinstance(error.code, int) else (0 if error.code is None else 1)) from None
