@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, withFileLock, type JsonFile } from "./locked-json.ts";
 import { parseDutyFile, type Duty, type DutyFile, type DutyRunRecord } from "./shared/chat-duties.ts";
@@ -105,14 +105,39 @@ export class DutyStore {
     });
   }
 
-  /** The chat's run records, newest first; a line that does not parse is skipped. */
+  /**
+   * The chat's run records, newest first; a line that does not parse is skipped. A file whose inode, size and mtime match its last parse gives
+   * the records of that parse (`parsedRuns`), so callers must not change them.
+   */
   async runs(chatId: string): Promise<DutyRunRecord[]> {
-    const records: DutyRunRecord[] = [];
-    for (const line of await readLines(this.runsFile(chatId))) {
-      try { records.push(JSON.parse(line) as DutyRunRecord); } catch { continue; }
+    const path = this.runsFile(chatId);
+    const info = await stat(path, { bigint: true }).catch(error => { if (missing(error)) return null; throw error; });
+    if (!info) { parsedRuns.delete(path); return []; }
+    const key = `${info.ino}:${info.size}:${info.mtimeNs}`;
+    let parsed = parsedRuns.get(path);
+    if (parsed?.key !== key) {
+      const entry = { key, records: parseRuns(path) };
+      parsedRuns.set(path, entry);
+      entry.records.catch(() => { if (parsedRuns.get(path) === entry) parsedRuns.delete(path); });
+      parsed = entry;
     }
-    return records.reverse();
+    return [...await parsed.records];
   }
+}
+
+/**
+ * Each runs file's records as last parsed, by path, with the inode, size and mtime its stat gave before the read. On a scratch serve with a
+ * copy of the live data on 10-19, each 30 s tick of the duties and the check-ins read the runs files about 30 times (3,830 records, 10 MB, 3.4 MB
+ * for Crawler VP alone), and those parses held the main thread for 0.9 to 1.2 s in one stretch every tick.
+ */
+const parsedRuns = new Map<string, { key: string; records: Promise<readonly DutyRunRecord[]> }>();
+
+async function parseRuns(path: string): Promise<readonly DutyRunRecord[]> {
+  const records: DutyRunRecord[] = [];
+  for (const line of await readLines(path)) {
+    try { records.push(JSON.parse(line) as DutyRunRecord); } catch { continue; }
+  }
+  return records.reverse();
 }
 
 /** The non-empty lines of a JSONL file; none when it is missing. */
