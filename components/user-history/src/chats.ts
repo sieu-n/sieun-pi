@@ -849,7 +849,9 @@ export class Chats {
         const fresh = !first && !seen.has(id);
         seen.add(id);
         if (agent.state === "done" || reportedRoot(agent, said) || (agent.state === "working" && !fresh)) continue;
-        this.queue("#reload", () => this.refreshJob(id, fresh, row.id));
+        // On the job's key too: at 11:14:12Z on 10-19 the reload of 01a152c0 closed it while its wake check was opening it ("Active session
+        // 01a152c0-... is closing"). "#reload" still runs one reload at a time.
+        this.queue("#reload", () => new Promise<void>(resolve => this.queue(id, () => this.refreshJob(id, fresh, row.id).finally(resolve))));
       }
     }
   }
