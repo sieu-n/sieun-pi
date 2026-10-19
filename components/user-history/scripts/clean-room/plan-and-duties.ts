@@ -9,7 +9,7 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  * chat told "fix plan and duties based on THIS skill and persue completion of plans" should sort its plan out on its own. A fresh chat on a small
  * read-only area gets a messy board written here from scratch and the owner's one sentence as its first message. The criteria live in
  * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run. Each run takes an area no earlier run
- * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch for run 5, Snapchat since run 6), and the seeded risks sit inside that area only: run-3's
+ * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch for run 5, Snapchat for run 6, Vimeo since run 7), and the seeded risks sit inside that area only: run-3's
  * "wiki box disk fills" risk made its chat hand the risk to ops guy, a real chat.
  */
 export const SENTENCE = "fix plan and duties based on the board skill and pursue completion of plans";
@@ -26,17 +26,16 @@ const item = (id: string, text: string, status: PlanItem["status"], extra: Parti
 /** A plan the way a chat leaves it after a few days of drift: no done line, unowned steps, an upkeep step, a goal of standing risks, a done step left open. */
 export function messyBoard(now: string): ChatBoard {
   return { v: 2, rev: 37, updatedAt: now, todos: [], lastIds: { p: 8, t: 0 }, plan: [
-    item(SEED.work, "Snapchat index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
-      item(SEED.done, "Find where Snapchat data lands in the crawler", "doing", { note: "Found: convex/search/contactPoints.ts maps snapchat to a contact platform, " +
-        "apps/crawler-v3/src/contacts/fast_rank.py lists snapchat.com and apps/crawler-v3/src/platforms/instagram/census/cross_seed.py names snapchat, but " +
-        "apps/crawler-v3/src/platforms/ has no snapchat folder." }),
-      item(SEED.research, "Research the Snapchat index gaps and measure each one's size from real data", "todo"),
+    item(SEED.work, "Vimeo index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
+      item(SEED.done, "Find where Vimeo data lands in the crawler", "doing", { note: "Found: rg -i vimeo finds nothing in apps/crawler-v3/src or convex/search, " +
+        "apps/crawler-v3/src/platforms/ has no vimeo folder, and _LINK_HOSTS in apps/crawler-v3/src/index/sync/projectors/_shared.py has no vimeo.com entry." }),
+      item(SEED.research, "Research the Vimeo index gaps and measure each one's size from real data", "todo"),
       item(SEED.page, "Write the top 10 page on the wiki, ranked by who each gap hurts", "todo"),
       item(SEED.upkeep, "Keep the page fresh every day", "todo"),
     ]),
     item(SEED.alerts, "Firing prod alerts", "doing", {}, [
-      item(SEED.risks[0], "Snapchat rate limit hit on the gap scripts' reads", "todo"),
-      item(SEED.risks[1], "Snapchat profile page markup changes and the gap scripts read 0", "todo"),
+      item(SEED.risks[0], "Vimeo rate limit hit on the gap scripts' reads", "todo"),
+      item(SEED.risks[1], "Vimeo video page markup changes and the gap scripts read 0", "todo"),
     ]),
   ] };
 }
@@ -165,9 +164,12 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     ? `the first user message at ${iso(sentence.at)} reads "${clip(sentence.text, 200)}"; setup sent ${state.seeds.length} seed${state.seeds.length === 1 ? "" : "s"}` : "the chat has no user message" });
 
   const read = procedureRead(sessionFiles(state.chat.id), sentAt);
-  const inTime = read !== undefined && read.at - sentAt <= state.everyMs;
-  checks.push({ id: "2", ok: inTime ? true : now - sentAt < state.everyMs ? null : false, detail: read
-    ? `${iso(read.at)}, ${Math.round((read.at - sentAt) / 60_000)} min after the sentence (interval ${state.everyMs / 60_000} min): ${read.how}`
+  // The interval counts from the chat's first model turn: run-6 on 10-19 waited 33 min on pi-pool for its first turn, then read the
+  // procedure 4 s into it.
+  const firstTurn = head.find(event => event.at >= sentAt && (event.kind === "assistant" || event.kind === "call"))?.at ?? sentAt;
+  const inTime = read !== undefined && read.at - firstTurn <= state.everyMs;
+  checks.push({ id: "2", ok: inTime ? true : now - firstTurn < state.everyMs ? null : false, detail: read
+    ? `${iso(read.at)}, ${Math.round((read.at - firstTurn) / 60_000)} min into the chat's first model turn at ${iso(firstTurn)}, ${Math.round((read.at - sentAt) / 60_000)} min after the sentence (interval ${state.everyMs / 60_000} min): ${read.how}`
     : "no session file of the chat reads references/plan-and-duties.md or the Plan and duties section after the sentence" });
 
   const dutyNamed = (note: string): boolean => /\bd\d+\b|\bduty\b/i.test(note) || duties.some(duty => note.toLowerCase().includes(duty.name.toLowerCase()));
@@ -195,9 +197,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
   const lined = goals.map(goal => ({ goal, ok: /^\s*done when/i.test(goal.note ?? "") || goal.target !== undefined }));
-  checks.push({ id: "4", ok: goals.length > 0 && lined.every(entry => entry.ok), detail: goals.length ? lined.map(({ goal, ok }) =>
+  // A plan with every goal closed is the end state the procedure aims at: run-6 on 10-19 closed p1 at its "Done when" line by 09:41Z.
+  const finished = (board?.plan ?? []).filter(goal => goal.status === "done");
+  checks.push({ id: "4", ok: goals.length > 0 ? lined.every(entry => entry.ok) : finished.length > 0, detail: goals.length ? lined.map(({ goal, ok }) =>
     `${ok ? "ok" : "missing"}: ${goal.id} "${clip(goal.text, 80)}" ${goal.target ? `target ${goal.target.current ?? "?"} of ${goal.target.target} ${goal.target.unit}` : "no target"}, note "${clip(goal.note ?? "", 140)}"`).join("\n    ")
-    : "the plan has no open goal" });
+    : finished.length ? `no goal is open; every goal is closed: ${finished.map(goal => `${goal.id} done, note "${clip(goal.note ?? "", 120)}"`).join("; ")}` : "the plan has no goal" });
 
   const agents = lastAgents(run);
   const wakes = existsSync(join(DATA, "wakes")) ? readdirSync(join(DATA, "wakes")) : [];
