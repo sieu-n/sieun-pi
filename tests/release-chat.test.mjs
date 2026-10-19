@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { get } from "node:http";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -33,6 +34,41 @@ if (step === "test" && control.TEST_HANG) {
   writeFileSync(path.join(dir, "seen", id + "-test.pid"), String(process.pid));
   setInterval(() => {}, 1000);
 }
+`;
+
+const FREE_PORTS = `const net = require("node:net");
+const a = net.createServer().listen(0, "127.0.0.1", () => { const b = net.createServer().listen(0, "127.0.0.1", () => {
+  console.log(a.address().port + " " + b.address().port); a.close(); b.close(); }); });`;
+// The chat service: it starts from the release current names, and that release's chat-behavior.json makes it exit before it listens (exitMs, the
+// 10-19 crash at listen), answer and then exit (answerThenExitMs) or never listen (hang). Every other start answers each request 404 with its release.
+const FAKE_CHAT = `import { createServer } from "node:http";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import path from "node:path";
+const [home, port] = process.argv.slice(2);
+const release = realpathSync(path.join(home, "current"));
+const file = path.join(release, "chat-behavior.json");
+const behavior = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+if (behavior.exitMs !== undefined) setTimeout(() => process.exit(1), behavior.exitMs);
+else if (behavior.hang) setInterval(() => {}, 1000);
+else {
+  createServer((req, res) => { res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) })); }).listen(Number(port), "127.0.0.1");
+  if (behavior.answerThenExitMs !== undefined) setTimeout(() => process.exit(1), behavior.answerThenExitMs);
+}
+`;
+// The systemd socket: it holds the page port across chat restarts and hands each connection to the chat once one listens behind it.
+const FAKE_SOCKET = `import { connect, createServer } from "node:net";
+const [port, backend] = process.argv.slice(2).map(Number);
+createServer((client) => {
+  client.pause();
+  client.on("error", () => {});
+  const link = () => {
+    let linked = false;
+    const up = connect(backend, "127.0.0.1");
+    up.on("connect", () => { linked = true; client.pipe(up).pipe(client); client.resume(); });
+    up.on("error", () => { if (linked) client.destroy(); else if (!client.destroyed) setTimeout(link, 50); });
+  };
+  link();
+}).listen(port, "127.0.0.1");
 `;
 
 function fixture(t) {
@@ -76,23 +112,43 @@ function fixture(t) {
   mkdirSync(path.join(repo, "components/user-history/node_modules"));
   const kicks = path.join(dir, "kicks.log");
   const launchctl = path.join(dir, "launchctl");
-  // A fake launchctl and systemctl in one: is-active and print answer from service.state, every other call is logged and moves that state.
+  // The chat service and the systemd socket as real processes: the fake chat serves the page port from what current holds (FAKE_CHAT), and the
+  // fake socket holds the port and queues each connection until a chat listens behind it (FAKE_SOCKET), as sieun-pi-chat.socket does.
+  const [port, backend] = spawnSync(process.execPath, ["-e", FREE_PORTS], { encoding: "utf8" }).stdout.trim().split(" ");
+  writeFileSync(path.join(dir, "chat.mjs"), FAKE_CHAT);
+  writeFileSync(path.join(dir, "socket.mjs"), FAKE_SOCKET);
   const state = path.join(dir, "service.state");
+  const chatPid = path.join(dir, "chat.pid");
+  const socketPid = path.join(dir, "socket.pid");
+  const node = JSON.stringify(process.execPath);
+  // A fake launchctl and systemctl in one: is-active, show and print answer from service.state and the chat's pid, and every other call is
+  // logged and moves that state, starting and stopping the chat and the socket.
   writeFileSync(launchctl, [
     "#!/bin/sh",
     `state=$(cat "${state}" 2>/dev/null)`,
+    `pid=$(cat "${chatPid}" 2>/dev/null)`,
+    `sock=$(cat "${socketPid}" 2>/dev/null)`,
+    'up() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }',
+    'running() { [ "$state" = running ] && up "$pid"; }',
     'case "$*" in',
-    '  *is-active*) [ "$state" = running ]; exit $? ;;',
-    '  print\\ *) echo "	state = ${state:-not running}"; exit 0 ;;',
+    '  *is-active*) running; exit $? ;;',
+    "  *show*) if running; then printf 'ActiveState=active\\nInvocationID=inv%s\\nMainPID=%s\\n' \"$pid\" \"$pid\"; else printf 'ActiveState=inactive\\nInvocationID=\\nMainPID=0\\n'; fi; exit 0 ;;",
+    "  print\\ *) if running; then printf '\\tstate = running\\n\\tpid = %s\\n' \"$pid\"; else echo \"\tstate = ${state:-not running}\"; fi; exit 0 ;;",
     "esac",
     `echo "$@" >> "${kicks}"`,
     `env > "${path.join(dir, "kick.env")}"`,
+    'halt() { if up "$1"; then kill "$1"; while kill -0 "$1" 2>/dev/null; do sleep 0.01; done; fi; }',
     'case "$*" in',
-    `  *stop*) echo stopped > "${state}" ;;`,
-    `  *start*) echo running > "${state}" ;;`,
+    `  *disable*sieun-pi-chat.socket*) halt "$sock"; rm -f "${socketPid}" ;;`,
+    `  *enable*sieun-pi-chat.socket*) up "$sock" || { ${node} "${path.join(dir, "socket.mjs")}" ${port} ${backend} >/dev/null 2>&1 & echo $! > "${socketPid}"; } ;;`,
+    `  *stop*) halt "$pid"; echo stopped > "${state}" ;;`,
+    `  *start*) halt "$pid"; if up "$sock"; then p=${backend}; else p=${port}; fi; ${node} "${path.join(dir, "chat.mjs")}" "${home}" "$p" >/dev/null 2>&1 & echo $! > "${chatPid}"; echo running > "${state}" ;;`,
     "esac",
     "",
   ].join("\n"), { mode: 0o755 });
+  t.after(() => {
+    for (const file of [chatPid, socketPid]) try { process.kill(Number(readFileSync(file, "utf8")), "SIGKILL"); } catch {}
+  });
   const c1 = commit("one");
   const c2 = commit("two");
   const c3 = commit("three");
@@ -109,7 +165,8 @@ function fixture(t) {
     const control = Object.fromEntries(Object.entries(extra).filter(([key]) => BUILD_CONTROLS.includes(key)));
     writeFileSync(path.join(dir, "controls", `${id(args[0])}.json`), JSON.stringify(control));
     const rest = Object.fromEntries(Object.entries(extra).filter(([key]) => !BUILD_CONTROLS.includes(key)));
-    return { ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd", ...rest };
+    return { ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd",
+      SIEUN_PI_CHAT_URL: `http://127.0.0.1:${port}/`, SIEUN_PI_CHAT_HOLD_MS: "300", ...rest };
   };
   const release = (args, extra) => spawnSync(process.execPath, [script, ...args, "--repo", repo], { encoding: "utf8", env: env(args, extra) });
   const spawnRelease = (args, extra, helper = script) => {
@@ -129,7 +186,12 @@ function fixture(t) {
   const seen = (sha, step) => JSON.parse(readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.json`), "utf8"));
   const kicksAt = (sha, step) => readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.kicks`), "utf8").trim().split("\n").filter(Boolean);
   const stopService = () => writeFileSync(state, "stopped\n");
-  return { dir, repo, home, kicksAt, stopService, spawnRelease, c1, c2, c3, c4, side, git, write, commit, publish, env, release, releaseAsync, current, kicked, seen };
+  const page = () => new Promise((done) => get(`http://127.0.0.1:${port}/`, { agent: false }, (response) => {
+    let body = "";
+    response.on("data", (chunk) => { body += chunk; });
+    response.on("end", () => done(JSON.parse(body).release));
+  }).on("error", (error) => done(error.code)));
+  return { dir, repo, home, port, page, kicksAt, stopService, spawnRelease, c1, c2, c3, c4, side, git, write, commit, publish, env, release, releaseAsync, current, kicked, seen };
 }
 
 const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 7)}`);
@@ -169,6 +231,76 @@ async function waitWhile(pending) {
     await new Promise((done) => setTimeout(done, 20));
   }
 }
+
+const UNITS = { "deploy/linux/sieun-pi-chat.service": "[Service]\nExecStart=serve\n", "deploy/linux/sieun-pi-chat.socket": "[Socket]\nListenStream=127.0.0.1:5182\n" };
+
+test("a socket-activated start that dies before it answers goes back to the release before it, as on 10-19 at 01:14Z", { timeout: 120000 }, async (t) => {
+  // 10-19 01:14Z: release 9c2a7fd8 exited 7 s after its start at listen on the systemd socket, the socket kept the port, and the chat
+  // crash-looped for 5 min until a job reverted it by hand.
+  const f = fixture(t);
+  for (const [file, text] of Object.entries(UNITS)) f.write(file, text);
+  const good = f.commit("good");
+  f.write("chat-behavior.json", JSON.stringify({ exitMs: 150 }));
+  const bad = f.commit("dies at listen");
+  f.git("rm", "-q", "chat-behavior.json");
+  const fixed = f.commit("fixed");
+  f.publish();
+  const extra = { SIEUN_PI_CHAT_SERVICE_MANAGER: "systemd", SIEUN_PI_CHAT_UNIT_DIR: path.join(f.dir, "units") };
+  const first = await f.releaseAsync([good], extra);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stderr, /the chat answered http:\/\/127\.0\.0\.1:\d+\/ [\d.]+ s after its start and still runs as invocation inv\d+ pid \d+/);
+  assert.deepEqual(f.kicked(), ["--user daemon-reload", "--user stop sieun-pi-chat.service", "--user enable --now sieun-pi-chat.socket", "--user start sieun-pi-chat.service"]);
+  assert.equal(await f.page(), id(good));
+  const broken = await f.releaseAsync([bad], extra);
+  assert.equal(broken.status, 5, broken.stderr);
+  assert.match(broken.stderr, new RegExp(`the chat on ${id(bad)} exited [\\d.]+ s after its start \\(invocation inv\\d+ pid \\d+\\), before it answered http://127\\.0\\.0\\.1:\\d+/; going back to ${id(good)}`));
+  assert.match(broken.stderr, new RegExp(`so current went back to ${id(good)}, which runs again\\n$`));
+  assert.equal(f.current(), id(good));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(good));
+  assert.deepEqual(f.kicked().slice(4), ["--user restart sieun-pi-chat.service", "--user restart sieun-pi-chat.service"]);
+  assert.equal(await f.page(), id(good));
+  const next = await f.releaseAsync([fixed], extra);
+  assert.equal(next.status, 0, next.stderr);
+  assert.equal(f.current(), id(fixed));
+  assert.equal(await f.page(), id(fixed));
+});
+
+test("a chat that answers but exits inside the hold, or never answers, sends current back and exits 5", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  const cases = [
+    [{ answerThenExitMs: 300 }, { SIEUN_PI_CHAT_HOLD_MS: "5000" }, /exited [\d.]+ s after its start \(pid \d+\); going back/],
+    [{ hang: true }, { SIEUN_PI_CHAT_ANSWER_MS: "1500" }, /did not answer http:\/\/127\.0\.0\.1:\d+\/ within 1\.5 s of its start \(ECONNREFUSED\); going back/],
+  ];
+  for (const [behavior, extra, failure] of cases) {
+    f.write("chat-behavior.json", JSON.stringify(behavior));
+    const sha = f.commit(JSON.stringify(behavior));
+    f.publish();
+    const result = await f.releaseAsync([sha], extra);
+    assert.equal(result.status, 5, result.stderr);
+    assert.match(result.stderr, failure);
+    assert.match(result.stderr, new RegExp(`the chat on ${id(sha)} .*; going back to ${id(f.c1)}\\n`));
+    assert.equal(f.current(), id(f.c1));
+    assert.equal(await f.page(), id(f.c1));
+    assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c1));
+  }
+});
+
+test("a queued commit whose start dies fails only its own request, and the older request goes live", { timeout: 120000 }, async (t) => {
+  const f = fixture(t);
+  assert.equal(f.release([f.c1]).status, 0);
+  f.write("chat-behavior.json", JSON.stringify({ exitMs: 150 }));
+  const bad = f.commit("dies at listen");
+  f.publish();
+  const [older, newer] = await queued(f, [[[f.c3]], [[bad]]]);
+  assert.equal(older.status, 0, older.stderr);
+  assert.equal(older.stdout.trim(), id(f.c3));
+  assert.equal(newer.status, 5, newer.stderr);
+  assert.match(newer.stderr, new RegExp(`the chat on ${id(bad)} exited`));
+  assert.equal(f.current(), id(f.c3));
+  assert.equal(await f.page(), id(f.c3));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c3));
+});
 
 test("a release builds the folder, flips current and kickstarts the chat", (t) => {
   const f = fixture(t);

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import { get } from "node:http";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -31,9 +32,11 @@ release builds the next candidate down to its own commit, so a newer request tha
 never folded. The batch restarts unless every covered request passed --no-kickstart, and it never leaves its restart to a later release.
 A release that takes the lock with restart.owed, which helpers before the fold left to a waiting release, makes that restart before its build.
 A restart counts as applied only while the service manager reports the service running (systemctl is-active, launchctl print).
+After each restart it checks that the chat answers http://127.0.0.1:5182/ and is still the same process 8 s after its start. When it is not,
+current goes back to the release the chat ran before, that release restarts, and the command exits 5 naming the failure.
 After the flip it deletes each release folder except current, the one current named before, the one the chat was last started on, a waiting
 release's and any folder a running process names, so a rollback further back than the release before current builds that commit again.
-Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main.`;
+Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main, 5 on a start that did not stay up.`;
 
 const LABEL = "com.sieun.agent-chat";
 const UNIT = "sieun-pi-chat.service";
@@ -352,25 +355,24 @@ function batches(repo, home, own, waited) {
 /**
  * Restarts the service unless the chat already runs current. A batch whose covered requests all passed --no-kickstart only flips, unless a
  * helper before the fold left restart.owed. A batch always makes its own restart, even when more releases wait: a waiting release could fail
- * or hang, and on 10-18 a steady queue that passed one restart on 12 times left the chat 51 min behind current.
+ * or hang, and on 10-18 a steady queue that passed one restart on 12 times left the chat 51 min behind current. `before` is the release current
+ * named before this release flipped it, the release to go back to when the new one does not stay up and the chat ran no other.
  */
-function restart(home, wanted) {
+async function restart(home, wanted, before = null) {
   const owed = join(home, OWED);
   if (applied(home)) { rmSync(owed, { force: true }); return; }
   if (!wanted && !existsSync(owed)) return;
-  kickstart(home);
-  rmSync(owed, { force: true });
+  try { await kickstart(home, before); } finally { rmSync(owed, { force: true }); }
 }
 
 /** Makes the restart restart.owed holds, onto the release current already points at, right after this release takes the lock. */
-function payOwed(home) {
+async function payOwed(home) {
   const owed = join(home, OWED);
   if (!existsSync(owed)) return;
   if (!applied(home)) {
     log(`restarting onto ${liveRelease(home)} for the restart this release was left (restart.owed), before its own build`);
-    kickstart(home);
-  }
-  rmSync(owed, { force: true });
+    try { await kickstart(home); } finally { rmSync(owed, { force: true }); }
+  } else rmSync(owed, { force: true });
 }
 
 const SOCKET = "sieun-pi-chat.socket";
@@ -431,13 +433,108 @@ function switchUnits(home) {
   return true;
 }
 
-/** Restarts the chat service on current and records which release it started on. */
-function kickstart(home) {
-  const id = liveRelease(home);
+class StartFailed extends Error {}
+
+const chatUrl = () => process.env.SIEUN_PI_CHAT_URL || "http://127.0.0.1:5182/";
+/**
+ * How long a start may take to answer: from the journal's "Started" line to the early shell's "handed over" line in service.log, 58 starts on
+ * us-metal02 from 10-16 to 10-19 took 1.9 to 37.7 s (median 3.9 s), so 60 s fails only a start that hangs. A start that exits fails at once.
+ */
+const ANSWER_MS = Number(process.env.SIEUN_PI_CHAT_ANSWER_MS || 60_000);
+/**
+ * How long after its start the service must still be the same process: the release of 10-19 01:14Z crash-looped with 19 exits that each came
+ * 4.7 to 6.8 s after their start (journalctl --user -u sieun-pi-chat), so 8 s covers the latest of them.
+ */
+const HOLD_MS = Number(process.env.SIEUN_PI_CHAT_HOLD_MS || 8_000);
+/** systemctl show answered in 20 ms on us-metal02 on 10-19, so polling it every 250 ms finds an exit within a quarter second for little CPU. */
+const POLL_MS = 250;
+const sleep = ms => new Promise(done => setTimeout(done, ms));
+const seconds = ms => `${(ms / 1000).toFixed(1)} s`;
+
+/** The running service process: systemd's invocation id and main pid, or launchd's pid. Null while none runs. */
+function serviceProcess() {
+  if (systemd()) {
+    const shown = spawnSync(systemctl(), ["--user", "show", "-p", "ActiveState", "-p", "MainPID", "-p", "InvocationID", UNIT], { encoding: "utf8" });
+    const props = Object.fromEntries((shown.stdout ?? "").split("\n").map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+    return shown.status === 0 && props.ActiveState === "active" && Number(props.MainPID) > 0 ? `invocation ${props.InvocationID} pid ${props.MainPID}` : null;
+  }
+  const printed = spawnSync(launchctl(), ["print", launchdTarget()], { encoding: "utf8" });
+  const pid = /^\s*pid = (\d+)\s*$/m.exec(printed.stdout ?? "")?.[1];
+  return printed.status === 0 && /^\s*state = running\s*$/m.test(printed.stdout) && pid ? `pid ${pid}` : null;
+}
+
+/** The HTTP status `url` answers with, or the error code of a request that got none. */
+const ask = (url, signal) => new Promise(done => {
+  const request = get(url, { agent: false, signal }, response => { response.resume(); done(response.statusCode); });
+  request.on("error", error => done(error.code ?? error.message));
+});
+
+/**
+ * Null when the service started at `startedAt` answers the chat URL with a status below 500 and is still the same process HOLD_MS after its
+ * start; else what went wrong. A request to the systemd socket waits while no service accepts it, so the process is polled next to it: on
+ * 10-19 at 01:14Z the release died at listen on that socket, the socket kept the port, and the page sat on its red banner for 5 min.
+ */
+async function checkStart(startedAt) {
+  const url = chatUrl();
+  const first = serviceProcess();
+  if (!first) return "was not running right after its restart";
+  const controller = new AbortController();
+  let answered = null, last = "no answer yet";
+  const asking = (async () => {
+    while (!controller.signal.aborted) {
+      const status = await ask(url, controller.signal);
+      if (typeof status === "number" && status < 500) { answered = Date.now(); return; }
+      last = typeof status === "number" ? `HTTP ${status}` : status;
+      await sleep(POLL_MS);
+    }
+  })();
+  try {
+    for (;;) {
+      const now = serviceProcess(), after = seconds(Date.now() - startedAt);
+      if (now !== first) return `${now ? `restarted as ${now}` : "exited"} ${after} after its start (${first})${answered ? "" : `, before it answered ${url}`}`;
+      if (answered && Date.now() - startedAt >= HOLD_MS) {
+        log(`the chat answered ${url} ${seconds(answered - startedAt)} after its start and still runs as ${first} after ${after}`);
+        return null;
+      }
+      if (!answered && Date.now() - startedAt >= ANSWER_MS) return `did not answer ${url} within ${seconds(ANSWER_MS)} of its start (${last})`;
+      await sleep(POLL_MS);
+    }
+  } finally {
+    controller.abort();
+    await asking;
+  }
+}
+
+/** Restarts the chat service on current: on systemd it installs current's units first when they differ. */
+function restartService(home) {
   if (systemd()) {
     if (!switchUnits(home)) run(systemctl(), ["--user", "restart", UNIT], process.cwd());
   } else run(launchctl(), ["kickstart", "-k", launchdTarget()], process.cwd());
-  writeFileSync(join(home, STARTED), JSON.stringify({ id, at: new Date().toISOString() }) + "\n");
+}
+
+/**
+ * Restarts the chat service on current, checks that it stays up (checkStart) and records the release it started on. When it does not, current
+ * goes back to the release the chat ran before (started.json), else to `before`, that release restarts, and StartFailed names the failure.
+ */
+async function kickstart(home, before = null) {
+  const id = liveRelease(home);
+  const ran = (() => { try { return JSON.parse(readText(join(home, STARTED))).id; } catch { return null; } })();
+  const startedAt = Date.now();
+  restartService(home);
+  const failure = await checkStart(startedAt);
+  if (!failure) {
+    writeFileSync(join(home, STARTED), JSON.stringify({ id, at: new Date().toISOString() }) + "\n");
+    return;
+  }
+  const back = [ran, before].find(release => release && release !== id && existsSync(join(home, release)));
+  if (!back) throw new StartFailed(`the chat on ${id} ${failure}; no release before it to go back to`);
+  log(`the chat on ${id} ${failure}; going back to ${back}`);
+  flip(home, back);
+  const backAt = Date.now();
+  restartService(home);
+  const again = await checkStart(backAt);
+  if (!again) writeFileSync(join(home, STARTED), JSON.stringify({ id: back, at: new Date().toISOString() }) + "\n");
+  throw new StartFailed(`the chat on ${id} ${failure}, so current went back to ${back}${again ? `, and the chat on ${back} ${again} too` : ", which runs again"}`);
 }
 
 /** The text of every running process that can name a folder: its cwd, exe, command line, open files and mapped files (/proc), else its command line and cwd (ps, lsof). */
@@ -509,11 +606,11 @@ async function main() {
       throw new Covered(`${short} already live in ${holder}; nothing to do, since it went live while this release waited`);
   };
   const { waited } = await takeLock(home, own, wentLive);
-  payOwed(home);
+  await payOwed(home);
   const kept = holding();
   if (kept) {
     log(applied(home) ? `${short} already live in ${kept}; nothing to do` : `${short} is already in ${kept}, which the chat does not run yet with its units`);
-    restart(home, options.kickstart);
+    await restart(home, options.kickstart);
     console.log(kept);
     return;
   }
@@ -537,7 +634,11 @@ async function main() {
     const before = liveRelease(home);
     flip(home, planId);
     log(`current: ${before ?? "(none)"} -> ${planId}`);
-    restart(home, plan.kickstart);
+    try { await restart(home, plan.kickstart, before); } catch (error) {
+      if (!(error instanceof StartFailed) || plan.sha === sha) throw error;
+      log(`${error.message}; its request stays queued, and this release builds the next candidate`);
+      continue;
+    }
     const failed = readFailed(home);
     if (failed && contains(options.repo, plan.sha, failed.sha)) rmSync(join(home, FAILED), { force: true });
     log(`${planId} covers the requests of ${describe(plan.covered)}`);
@@ -551,5 +652,5 @@ main().catch(error => {
   log(error.message);
   if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
-  process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : 1);
+  process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : error instanceof StartFailed ? 5 : 1);
 });
