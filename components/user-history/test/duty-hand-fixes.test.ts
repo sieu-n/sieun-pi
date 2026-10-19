@@ -250,3 +250,16 @@ test("F1 is dated by p170's close, so only the hand writes after 15:15Z on 10-19
     hand(14867, CLOSED + 900_000, "instagram_census.crawl_concurrency", "Load-shed test, step 3 of 3"), controller(14870, CLOSED + 1_000_000)];
   assert.equal(report({ ...(await data(now, prod)), refs: closed }, await metrics(now)).metrics.repeats_after_design, 1);
 });
+
+// 10-19 15:59Z: tblspc-bench, p438-sig-new and p438-sig-head ran on the default bridge, where no prod or staging store resolves, and
+// counted as 3 hand-run containers plus 1 psql exec. A container on virev-prod still counts.
+test("a container or exec on no prod or staging network is not a hand-run writer", () => {
+  const { containers, execs } = parseBox([
+    "C\ttblspc-bench\trunning|||||no|bridge,",
+    "C\tvirev-prod-tiktok-signer-hand-1\trunning|||||unless-stopped|virev-prod,",
+    "C\told-read\trunning|||||no",
+    `E\ttblspc-bench\t${JSON.stringify({ Running: true, ProcessConfig: { entrypoint: "psql", arguments: ["-c", "alter table t"] } })}`,
+  ].join("\n"));
+  assert.deepEqual(oneOffs(containers, Date.parse("2026-10-19T16:00:00Z")).map(container => container.name), ["virev-prod-tiktok-signer-hand-1", "old-read"]);
+  assert.deepEqual(handExecs(execs), []);
+});
