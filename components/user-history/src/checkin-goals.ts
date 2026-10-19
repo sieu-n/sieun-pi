@@ -24,7 +24,9 @@ export const PACE_MS = 7 * 24 * 60 * 60_000;
 export const GOAL_READINGS = 6;
 
 /** One measurement of a goal's number: its value and when it was measured (ms). */
-export interface GoalReading { value: number; at: number }
+export interface GoalReading { value: number; at: number;
+  /** The metric, unit and direction the value was read in (`readingBasis`); absent on readings kept before 10-19. */
+  basis?: string }
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number }
 
@@ -109,11 +111,29 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
   return found;
 }
 
+/** What a reading's value is in: its metric, unit and direction. A new target in the same unit keeps readings comparable. */
+export const readingBasis = (number: Pick<GoalNumber, "metric" | "unit" | "op">): string => `${number.metric}|${number.unit}|${number.op}`;
+/**
+ * The memo's readings that compare with a new one: those read in the same basis, and an older reading with no basis only when its value is
+ * within 10 times the scale of the target and the new value. VP of CI p289 "codebase shrinks by 70%" kept raw line counts (1,429,605 at 10-19
+ * 11:25Z) from before its target moved to percent, and goal_gaps read 3.2 of 70% as "-1,429,601.8 points since 10-19 11:25Z".
+ */
+export function comparable(readings: readonly GoalReading[], number: GoalNumber, value: number): GoalReading[] {
+  const basis = readingBasis(number);
+  const scale = 10 * Math.max(Math.abs(number.target), Math.abs(value), 1);
+  const kept = readings.filter(reading => reading.basis !== undefined ? reading.basis === basis : Math.abs(reading.value - value) <= scale);
+  // A basis change drops what came before it, so a kept reading is never older than one the change dropped.
+  const dropped = readings.findLastIndex(reading => !kept.includes(reading));
+  return kept.filter(reading => readings.indexOf(reading) > dropped);
+}
+
 /** The trend of a number against the goal's memo, and the memo to keep. */
 export function goalTrend(number: GoalNumber, memo: GoalMemo | undefined): { trend: GoalTrend; memo: GoalMemo | undefined } {
   if (number.value === undefined || number.measuredAt === undefined) return { trend: { kind: "unmeasured" }, memo };
   const sign = number.op === "<=" ? -1 : 1;
-  const reading = { value: number.value, at: number.measuredAt };
+  const reading = { value: number.value, at: number.measuredAt, basis: readingBasis(number) };
+  const kept = comparable(memo?.readings ?? [], number, number.value);
+  if (memo && kept.length !== memo.readings.length) memo = kept.length ? { readings: kept, still: 0 } : undefined;
   const last = memo?.readings.at(-1);
   const moved = last !== undefined && (reading.value - last.value) * sign > 0;
   // The same reading as last run is no new measure, so it keeps the trend it had: vent p1 (cadence daily) read 6% at 16:15Z, up from 3%, and
