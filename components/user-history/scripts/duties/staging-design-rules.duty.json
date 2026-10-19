@@ -1,0 +1,31 @@
+{
+  "name": "Staging design rules",
+  "ownerWords": "make sure i'll not give the same feedback\n\n이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼.",
+  "goal": "A design note the owner gave once never has to come twice: every Staging app on 5180 follows the rules he already gave, so no message of his in a day repeats one. On 2026-10-19 he had asked for consistent components in 27 messages, cut filler text in 13, less padding in 11, no pills in 4 and less grey in 3, and 13 of his messages in the 24 h to 15:40Z repeated a rule he had already given. Each rule he repeats goes into the frontend-implementation skill, gets a virev-demo unit test where a script can catch it, and the Staging pages that break it get fixed.",
+  "metrics": [
+    {
+      "key": "repeated_design_notes_24h",
+      "label": "Owner's design notes in this chat in 24 h that repeat a rule he already gave",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "design_rule_test_failures",
+      "label": "Failed virev-demo design rule tests (shared-ui, form-panel, no-load-more)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "sh",
+      "-c",
+      "ssh -o BatchMode=yes -o ConnectTimeout=10 mac 'export PATH=/Users/sieunpark/.hermes/node/bin:$PATH; cd ~/Documents/Github/sieun-pi/components/user-history || exit 2; f=$(mktemp); OUTPUT_FILE=$f node --import tsx scripts/duties/staging-design-rules.ts; s=$?; cat $f; rm -f $f; exit $s' > \"$OUTPUT_FILE\""
+    ],
+    "cwd": "/home/sieun/.local/share/sieun-pi-chat/current/components/user-history",
+    "timeoutMs": 120000
+  },
+  "onMiss": "The demo, this chat's log and the precheck live on the owner's Mac, so every step runs there over `ssh mac` (export PATH=/Users/sieunpark/.hermes/node/bin:$PATH first), in ~/Documents/Github/auto-sns-agent on branch dev/sieun-mac-a, and a failed ssh means the Mac is asleep. The rules and the patterns of the owner's words are in sieun-pi components/user-history/scripts/duties/staging-design-rules.rules.json. repeated_design_notes_24h: read each design_rule_repeat slice. When a pattern matched a note that is not that design rule (a note about chat replies, or a request for the thing the rule forbids), fix the pattern in the rules file, commit it in sieun-pi and say so. For each real repeat: 1) write the rule into the frontend-implementation skill (.agents/skills/workflows/frontend-implementation/SKILL.md, read it with `node scripts/skills/read-skill.mjs workflows/frontend-implementation`) as a few lines in the section it belongs to, with the owner's words and date, never a new skill (c99), and put a phrase of it in the rule's `skill` so the precheck sees it written; a rule_not_written slice comes first. 2) When a script can catch it, such as a hand-made control, a panel that sizes itself, a Load more button, a pill track or a grey or padded container class, add a unit test in apps/virev-demo/tests/unit modeled on shared-ui.test.ts, with a ledger of files not moved yet that only shrinks, and add it to the rule's `tests`. 3) Start one fix job named 'staging design fix' with rlm.create_session for the Staging pages that break the rule (apps/virev-demo/lines/staging.json names them), or steer it with scripts/job-steer.ts when it is live; it gives each page its own long-lived builder that compares with the accepted Staging apps (c140, c141). design_rule_test_failures: steer or start the same 'staging design fix' job to move each flagged file onto the shared component, FormPanel or InfiniteSentinel, never onto a test's allow-list or ledger. Commits go on dev/sieun-mac-a in the Mac checkout and are pushed to origin dev/sieun-mac-a. Nothing moves to 5174, Staging deploys or prod (c24), browser checks run headless (c103), and nothing is sent outside.",
+  "boardGoal": "p1"
+}

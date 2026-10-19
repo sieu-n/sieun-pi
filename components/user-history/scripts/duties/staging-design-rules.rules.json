@@ -1,0 +1,228 @@
+{
+  "_about": "The design rules the Staging design rules duty (scripts/duties/staging-design-rules.ts) matches the owner's notes against. Each rule names the ledger corrections and the frontend-implementation skill phrase that hold it, the date that skill text was written, the patterns of the owner's own words for it, and the virev-demo unit tests that catch it by script. A rule with neither a correction in force nor its skill phrase is not written down yet.",
+  "rules": [
+    {
+      "key": "shared_components",
+      "rule": "Every screen uses the one shared component set, in the same style and order as the other apps, and never draws its own version.",
+      "corrections": [
+        "c78"
+      ],
+      "skill": "USE CONSISTENT COMPONENTS",
+      "skillSince": "2026-10-15",
+      "match": [
+        "consisten",
+        "same component",
+        "common component",
+        "exactly same",
+        "one implementation",
+        "same (ui )?principles",
+        "same style"
+      ],
+      "tests": [
+        "tests/unit/shared-ui.test.ts"
+      ]
+    },
+    {
+      "key": "filler_text",
+      "rule": "A screen carries no filler copy, helper text or explanation, only fields, text and counts that mean something.",
+      "corrections": [
+        "c125",
+        "c140"
+      ],
+      "skill": "no filler",
+      "skillSince": null,
+      "match": [
+        "unslop",
+        "bloat",
+        "junk",
+        "filler",
+        "unnecessary description",
+        "too much (unnecessary )?(text|description|copy)",
+        "no bs",
+        "generic shit",
+        "helper text",
+        "mock slop",
+        "remove (the )?`[^`]+` text",
+        "(remove )?(this|is also) bullshit",
+        "mean nothing",
+        "쓸모없는 텍스트"
+      ],
+      "unless": "slack|채팅|말하|메시지|reply style"
+    },
+    {
+      "key": "less_grey",
+      "rule": "Surfaces, text and tables stay crisp, with no washed-out grey.",
+      "corrections": [
+        "c48"
+      ],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "(too|so|fat|needlessly|stop|less|in general)\\W{0,3}gr[ae]y",
+        "gr[ae]y (fat|pill|track)",
+        "회색",
+        "희미"
+      ]
+    },
+    {
+      "key": "less_padding",
+      "rule": "Screens stay compact, with no fat, tall or padded containers and no extra spacing.",
+      "corrections": [
+        "c48"
+      ],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "padding",
+        "too (tall|fat)",
+        "\\bfat\\b",
+        "vertical spacing",
+        "margin too big",
+        "containeri[sz]ed",
+        "liked it tight",
+        "ㅈㄴ fat"
+      ]
+    },
+    {
+      "key": "no_pills",
+      "rule": "A choice uses OptionGroup or ViewSwitch and never a pill or a grey pill track.",
+      "corrections": [],
+      "skill": "grey pill track",
+      "skillSince": "2026-10-16",
+      "match": [
+        "(don'?t|not|never|hate|no)\\b[^.\\n]{0,30}\\bpill",
+        "\\bpill[^.\\n]{0,25}(confusing|sucks|ugly)",
+        "selector fucking sucks"
+      ]
+    },
+    {
+      "key": "blue_sparingly",
+      "rule": "Blue marks only a commonly used clickable action; lower-impact controls are black and count badges are grey.",
+      "corrections": [
+        "c95"
+      ],
+      "skill": "ONLY should indicate a commonly used clickable",
+      "skillSince": "2026-10-18",
+      "match": [
+        "black instead of blue",
+        "more black",
+        "\\bblue\\b[^.\\n]{0,40}(only|sparingly|too much)",
+        "make it black"
+      ]
+    },
+    {
+      "key": "no_load_more",
+      "rule": "A full list loads on scroll and never shows a Load more button.",
+      "corrections": [],
+      "skill": "ALWAYS DO ON SCROLL",
+      "skillSince": "2026-10-16",
+      "match": [
+        "load more",
+        "on scroll"
+      ],
+      "tests": [
+        "tests/unit/no-load-more.test.ts"
+      ]
+    },
+    {
+      "key": "show_up_to_10",
+      "rule": "A long list inside a dashboard shows up to 10 rows, then Show all N.",
+      "corrections": [
+        "c123"
+      ],
+      "skill": "show-up-to-10",
+      "skillSince": null,
+      "match": [
+        "show.up.to.10",
+        "long list"
+      ]
+    },
+    {
+      "key": "no_add_cancel",
+      "rule": "Adding to a list uses the + Add row and an inline field that saves on Enter, with no Add and Cancel pair and no keyboard hint text.",
+      "corrections": [
+        "c94",
+        "c125"
+      ],
+      "skill": "Add cancel like this is super ugly",
+      "skillSince": "2026-10-18",
+      "match": [
+        "add cancel",
+        "enter to save",
+        "enter.{0,6}save가"
+      ]
+    },
+    {
+      "key": "popup_panel",
+      "rule": "Every popup renders through FormPanel, with one fixed width, rounded corners, one scroll area and a form that grows downward.",
+      "corrections": [],
+      "skill": "ALL popup panal component MUST have same width",
+      "skillSince": "2026-10-15",
+      "match": [
+        "popup[^.\\n]{0,40}(resiz|width|rounded)",
+        "same width",
+        "rounded border",
+        "resizing flex"
+      ],
+      "tests": [
+        "tests/unit/form-panel.test.ts"
+      ]
+    },
+    {
+      "key": "section_icons",
+      "rule": "Each section title, option and key field carries its icon, the same icon the sidebar uses.",
+      "corrections": [],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "icons? for each section",
+        "same icon in sidebar",
+        "should have icons?",
+        "needs? to be icons",
+        "icon supporting",
+        "put icons on each",
+        "keep icons"
+      ]
+    },
+    {
+      "key": "no_truncation",
+      "rule": "Important text is never truncated, rows stay on one line, and links and buttons never wrap.",
+      "corrections": [
+        "c123"
+      ],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "truncat",
+        "trucation",
+        "never wrap"
+      ]
+    },
+    {
+      "key": "smooth_motion",
+      "rule": "View switches, resizes and panels animate smoothly everywhere.",
+      "corrections": [],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "smooo*th",
+        "transition"
+      ]
+    },
+    {
+      "key": "nothing_unintentional",
+      "rule": "Nothing on a screen is unintentional, arbitrary or unclear about what to do next.",
+      "corrections": [
+        "c140",
+        "c141"
+      ],
+      "skill": null,
+      "skillSince": null,
+      "match": [
+        "unintentional",
+        "nothing arbitrary",
+        "unobvious"
+      ]
+    }
+  ]
+}
