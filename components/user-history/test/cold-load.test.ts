@@ -96,6 +96,17 @@ test("the boot script reads the thread from the hash, else ?t=, the way the page
   }
 });
 
+test("the boot script names the board this browser kept for the thread, and goes without it when storage throws", () => {
+  const subsFor = (localStorage: unknown) => {
+    const sockets: string[] = [];
+    runInNewContext(bootFeedScript, { window: {}, URL, URLSearchParams, JSON, decodeURIComponent, localStorage, location: { hash: "#chat-a", search: "" },
+      document: { baseURI: "https://box.example/cap/", body: { dataset: { chatToken: "t" } } }, WebSocket: class { constructor(url: URL) { sockets.push(String(url)); } } });
+    return JSON.parse(new URL(sockets[0]!).searchParams.get("subs")!) as Array<{ feed: string; have?: { board: string } }>;
+  };
+  assert.deepEqual(subsFor({ getItem: () => JSON.stringify({ "chat-a": "7|2026-10-19T10:00:00Z" }) })[0]?.have, { board: "7|2026-10-19T10:00:00Z" });
+  assert.equal(subsFor({ getItem: () => { throw new Error("private"); } })[0]?.have, undefined);
+});
+
 // Guards the 10-19 Mac cold loads of a hash-only thread URL: the server never sees the hash, so the shell had no first page and no still view, and the chat showed after app.js at 1.52 to 1.66 s instead of 0.88 to 1.38 s with ?t=.
 test("a URL that names a thread only in its hash loads again with ?t=, before the shell asks for any asset", async t => {
   const cases: Array<[string, string, string | null]> = [["", "", null], ["", "#01a14d31-6ec0", "/cap/?t=01a14d31-6ec0#01a14d31-6ec0"],

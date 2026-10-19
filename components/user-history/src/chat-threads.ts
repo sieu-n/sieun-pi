@@ -981,7 +981,7 @@ export class ThreadHub {
     if (delta) thread.deltas.add(listener);
     if (!background) thread.activeAt = this.dormant.now();
     thread.idleSince = null;
-    thread.send(listener, true, undefined, have === undefined, have);
+    thread.send(listener, true, undefined, have?.last === undefined, have);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
     if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {

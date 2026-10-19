@@ -93,13 +93,33 @@ export class BoardFollower {
 
   get key(): string | undefined { return this.board ? boardKey(this.board) : undefined; }
 
+  /**
+   * The board this browser kept from an earlier load (client/board-cache.ts), which the feed was told the page holds. Deltas wait until it is
+   * read; a read that finds none asks for the whole board, since the feed sends none for a board it takes the page to hold.
+   */
+  seed(cached: Promise<ChatBoard | null>): void {
+    if (this.board || this.waiting) return;
+    this.waiting = [];
+    void cached.catch(() => null).then(board => {
+      const queued = this.waiting ?? [];
+      this.waiting = null;
+      if (board) this.hold(board);
+      if (this.board) for (const delta of queued) this.take(delta);
+      else this.refetch(queued);
+    });
+  }
+
   take(event: { type: "board"; board: ChatBoard } | BoardDelta): void {
     if (event.type === "board") { this.hold(event.board); return; }
     if (this.waiting) { this.waiting.push(event); return; }
     if (this.board && event.top.rev <= this.board.rev && event.base !== this.key) return;
     const next = this.board && applyBoardDelta(this.board, event);
     if (next) { this.board = next; this.onBoard(next); return; }
-    this.waiting = [event];
+    this.refetch([event]);
+  }
+
+  private refetch(queued: BoardDelta[]): void {
+    this.waiting = queued;
     void this.fetchBoard().catch(() => null).then(board => {
       const queued = this.waiting ?? [];
       this.waiting = null;

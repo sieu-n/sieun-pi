@@ -122,3 +122,56 @@ test("a reconnect that names the board it holds gets no board bytes, also while 
   assert.deepEqual(boards(current), []);
   await cold.close();
 });
+
+// Guards the 10-19 Mac tab switches: a first switch to a chat pulled its whole board, 136 KB for 01a11bd7 and 411 KB for 01a1164b, every page
+// load, though the board had not changed since this browser last held it. The page now keeps each board (client/board-cache.ts) and names it.
+test("a first subscribe that names a kept board gets the first frame and no board bytes, and the page shows the kept board", async () => {
+  const start = bigBoard();
+  const threads = await hub(async () => start);
+  const events: ThreadEvent[] = [];
+  await threads.subscribe(ID, event => events.push(event), false, { board: boardKey(start) }, true);
+  await settle();
+  assert.deepEqual(boards(events), []);
+  assert.equal(events[0]?.type, "snapshot", "the preview frame still comes first");
+  let fetched = 0;
+  const shown: ChatBoard[] = [];
+  const follower = new BoardFollower(async () => { fetched++; return start; }, board => shown.push(board));
+  follower.seed(Promise.resolve(structuredClone(start)));
+  for (const event of boards(events)) follower.take(event);
+  await settle();
+  assert.equal(follower.key, boardKey(start));
+  assert.equal(fetched, 0);
+  assert.equal(shown.length, 1);
+  await threads.close();
+});
+
+test("a kept board that is behind takes the feed's delta once it is read, and a kept key with no board asks for the whole board once", async () => {
+  const start = bigBoard();
+  const next = changed(start, "p11", { note: "moved on" });
+  const threads = await hub(async () => start);
+  await threads.subscribe(ID, () => {}, false, undefined, true);
+  threads.setBoard(ID, next);
+  await settle();
+  const events: ThreadEvent[] = [];
+  await threads.subscribe(ID, event => events.push(event), false, { board: boardKey(start) }, true);
+  const [delta] = boards(events);
+  assert.ok(delta?.type === "board-delta");
+  assert.ok(bytes(delta) < bytes(next) / 20, `delta ${bytes(delta)} B against board ${bytes(next)} B`);
+  let fetched = 0;
+  let read!: (board: ChatBoard | null) => void;
+  const follower = new BoardFollower(async () => { fetched++; return next; }, () => {});
+  follower.seed(new Promise(resolve => { read = resolve; }));
+  follower.take(delta);
+  assert.equal(follower.board, null, "the delta waits for the kept board");
+  read(structuredClone(start));
+  await settle();
+  assert.equal(follower.key, boardKey(next));
+  assert.equal(fetched, 0);
+
+  const lost = new BoardFollower(async () => { fetched++; return next; }, () => {});
+  lost.seed(Promise.resolve(null));
+  await settle();
+  assert.equal(lost.key, boardKey(next));
+  assert.equal(fetched, 1);
+  await threads.close();
+});
