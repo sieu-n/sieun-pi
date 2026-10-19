@@ -1548,29 +1548,35 @@
   "mac": [
    {
     "glob": "~/Documents/Github/auto-sns-agent/apps/*/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    },
    {
     "glob": "~/Documents/Github/auto-sns-agent/packages/*/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    },
    {
     "glob": "~/Documents/Github/auto-sns-agent/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    }
   ],
   "box": [
    {
     "glob": "~/Documents/Github/auto-sns-agent/apps/*/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    },
    {
     "glob": "~/Documents/Github/auto-sns-agent/packages/*/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    },
    {
     "glob": "~/Documents/Github/auto-sns-agent/.env*",
-    "names": true
+    "names": true,
+    "atTip": true
    }
   ]
  },

@@ -319,8 +319,15 @@ def commits(host):
     return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]]] for sha in order])
 
 
+def at_tip(paths, host):
+    """The repo paths whose folder is a tree on branch(host), so a file left in a folder the tip deleted (apps/research-app, c5fc7d1de2) is no tool."""
+    folders = sorted(set(os.path.dirname(path) for path in paths) - {""})
+    listed = git_bytes(["ls-tree", "-d", "--name-only", branch(host), "--"] + folders).decode().splitlines() if folders else []
+    return [path for path in paths if os.path.dirname(path) in set(listed) | {""}]
+
+
 def probe(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "intended", "shared"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
@@ -336,7 +343,8 @@ def probe(spec, host):
     if kind == "glob":
         found = sorted(glob.glob(expand(spec["glob"])))
         if spec.get("names"):
-            return names(os.path.relpath(f, REPO) for f in found)
+            paths = [os.path.relpath(f, REPO) for f in found]
+            return names(at_tip(paths, host) if spec.get("atTip") else paths)
         return "ok" if found else "absent"
     if kind == "ls":
         return entries(spec["ls"], spec.get("pattern"))

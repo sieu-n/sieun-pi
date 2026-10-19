@@ -148,6 +148,24 @@ test("the probe reads files on the Mac side and refuses calls there", () => {
   assert.match(out.values.call![0]!, /^fail: run is not a read/);
 });
 
+test("a glob with atTip names only files in folders the host's tip holds, so a deleted app's leftover env file is no gap", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-attip-"));
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  for (const app of ["web", "gone"]) mkdirSync(join(repo, "apps", app), { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
+    env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  git("init", "-q", "-b", "sieun/dev");
+  writeFileSync(join(repo, "apps/web/package.json"), "{}");
+  git("add", "apps/web/package.json");
+  git("commit", "-q", "-m", "web");
+  for (const file of ["apps/web/.env.local", "apps/gone/.env.local", ".env"]) writeFileSync(join(repo, file), "x");
+  const probes = [{ glob: "~/Documents/Github/auto-sns-agent/apps/*/.env*", names: true, atTip: true }, { glob: "~/Documents/Github/auto-sns-agent/.env*", names: true, atTip: true },
+    { glob: "~/Documents/Github/auto-sns-agent/apps/*/.env*", names: true }];
+  const arg = Buffer.from(JSON.stringify({ host: "box", rows: [{ id: "env", tool: "env files", probes }], known: {} })).toString("base64");
+  const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+  assert.deepEqual(out.values.env, ['set:["apps/web/.env.local"]', 'set:[".env"]', 'set:["apps/gone/.env.local", "apps/web/.env.local"]']);
+});
+
 test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () => {
   const home = mkdtempSync(join(tmpdir(), "box-parity-tip-"));
   const repo = join(home, "Documents/Github/auto-sns-agent");
