@@ -28,6 +28,8 @@
   let confirm = $state<Confirm | null>(null);
   let typed = $state("");
   let menu = $state<{ row: PoolAccount; anchor: HTMLElement } | null>(null);
+  /** The row a click selected. Selecting only shows the row; Use in this thread is the one control that moves the thread. */
+  let chosen = $state<string | null>(null);
   let priorityAnchor = $state<HTMLElement | null>(null);
   const threadRow = $derived(threadId ? store.session(threadId) : undefined);
 
@@ -266,10 +268,6 @@
     if (!threadId || !pickable(row)) return;
     void run({ action: "use", provider, account: row.id, id: threadId }, row.id);
   }
-  function rowClick(event: MouseEvent, provider: Provider, row: PoolAccount): void {
-    if (event.target instanceof Element && event.target.closest(".actions, a")) return;
-    useForThread(provider, row);
-  }
   function ask(next: Confirm): void { menu = null; typed = ""; confirm = next; }
   const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.label} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session without its own choice stays on this account until you unpin it. If it cannot serve, the session reports its error without switching accounts.`, label: "Pin",
     action: { action: "pin", provider, account: row.id } });
@@ -374,14 +372,10 @@
           {@const read = refreshEntry(row)}
           {@const threads = threadsText(row, view?.poolConfig)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
-          <div class="row" role="row" class:this={inUse} class:off={row.disabled} class:dead={state === "needs-login"} class:pick={canPick} class:busy={acting === row.id}
-            onclick={event => rowClick(event, current.provider, row)}>
+          <div class="row" role="row" class:this={inUse} class:chosen={chosen === row.id} class:off={row.disabled} class:dead={state === "needs-login"} class:busy={acting === row.id}
+            onclick={() => { chosen = row.id; }}>
             <div class="who" role="cell">
-              {#if canPick}
-                <button type="button" class="email" aria-label="Use {row.label} for this thread">{row.label}</button>
-              {:else}
-                <div class="email">{row.label}</div>
-              {/if}
+              <div class="email">{row.label}</div>
               <div class="sub">
                 {#if planText(row)}<span>{planText(row)}</span>{/if}
                 {#if threads}<span use:tooltip={threads.hint}>{threads.label}</span>{/if}
@@ -411,7 +405,7 @@
                   onclick={() => void startRefresh(current.provider, row.id)}><Icon name="refresh" size={14} /></button>
               {/if}
               {#if acting === row.id}<Spinner />
-              {:else if canPick}<button type="button" class="hint" aria-label="Use {row.label} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
+              {:else if canPick}<button type="button" class="hint" aria-label="Use {row.label} in this thread" onclick={() => useForThread(current.provider, row)}>Use in this thread</button>{/if}
               {#if !row.disabled && (pendingReset(row.resets) || usableGrant(row.resets))}
                 <button class="button small" disabled={acting !== null} onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry reset" : "Use reset"}</button>
               {/if}
@@ -526,16 +520,12 @@
   .table.busy { opacity: 0.7; }
   .row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; column-gap: 14px; padding: 8px 6px; border-top: 1px solid var(--border); border-radius: var(--radius-small); transition: background-color 0.12s; }
   .row.head { border-top: none; padding-top: 0; padding-bottom: 6px; font-size: 11px; color: var(--text-faint); }
-  .row.pick { cursor: pointer; }
-  .row.pick:hover { background: var(--row-hover); border-top-color: transparent; }
-  .row.pick:hover + .row { border-top-color: transparent; }
   .row.this { background: var(--accent-soft); border-top-color: transparent; }
   .row.this + .row { border-top-color: transparent; }
   .row.off .who, .row.off .cell, .row.dead .who, .row.dead .cell { opacity: 0.5; }
   .row.busy { opacity: 0.7; }
   .who { min-width: 0; }
   .email { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; text-align: left; }
-  button.email:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   .sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 12px; color: var(--text-muted); }
   .badge { padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 17px; font-weight: 500; background: var(--bg-active); color: var(--text-muted); }
   .badge.accent { background: var(--accent-soft); color: var(--accent); }
@@ -554,7 +544,9 @@
   .hint { padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--accent-bold); opacity: 0; transition: opacity 0.12s; }
   .hint { height: 24px; border-radius: var(--radius-small); }
   .hint:hover { background: var(--accent-soft); }
-  .row.pick:hover .hint, .hint:focus-visible { opacity: 1; }
+  .row:hover .hint, .row.chosen .hint, .hint:focus-visible { opacity: 1; }
+  .row:not(.head, .this):hover, .row.chosen:not(.this) { background: var(--row-hover); border-top-color: transparent; }
+  .row:not(.head):hover + .row, .row.chosen + .row { border-top-color: transparent; }
   .notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .confirm { display: flex; flex-direction: column; gap: 14px; padding: 14px 18px 16px; }
