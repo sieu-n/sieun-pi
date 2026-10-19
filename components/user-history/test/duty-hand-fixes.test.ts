@@ -215,3 +215,36 @@ test("the box read lists each ok prod deploy from deploy.log, and a release hold
   assert.equal(await holds("land38", "object"), true);
   assert.equal(await holds("land38", "other"), false);
 });
+
+// Guards the d3 read of 10-19 15:35Z: the Crawler VP closed F1's p170 at 15:15Z, and repeats_after_design read 588, every F1 row of the day
+// before it, 544 of them the prod lane rate controller's own writes.
+const P170 = "01a115e2-9544-7204-b8db-8ce4d5319048/p170";
+const CLOSED = Date.parse("2026-10-19T15:15:00Z");
+const controller = (id: number, ts: number): AuditRow => ({ id, ts, actor: "rate-controller", source: "rate-controller", key: "tiktok_shop.crawl_concurrency",
+  reason: "tiktok_shop climb: tiktok_shop.crawl_concurrency 320 -> 384" });
+
+test("the lane rate controller's writes are F1's design at work, not hand fixes", async () => {
+  assert.equal(classifyConfig(groupAudit("prod", [controller(14850, CLOSED + 60_000)])[0]!, await registry()).kind, "automatic");
+});
+
+test("a closed step-only fault with no done_at counts no hand fix from before the run that first read its steps done", async () => {
+  const reg = await registry();
+  const undated = { ...reg, faults: reg.faults.map(({ done_at: _, ...fault }) => fault) };
+  const closed = new Map([...refs(), [P170, { kind: "step", status: "done" } as RefState]]);
+  const before = hand(14858, CLOSED - 3_600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 1 of 3");
+  const first = { ...(await data(CLOSED + 600_000, [before])), registry: undated, refs: closed };
+  assert.equal(report(first, await metrics(first.now)).metrics.repeats_after_design, 0);
+  const seen = nextState({}, first).doneSeen!;
+  assert.equal(seen.F1, first.now);
+  const later = hand(14867, first.now + 600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 3 of 3");
+  const second = { ...first, now: first.now + 1_200_000, audit: { prod: [before, later], staging: [] }, doneSeen: seen };
+  assert.equal(report(second, await metrics(second.now)).metrics.repeats_after_design, 1);
+});
+
+test("F1 is dated by p170's close, so only the hand writes after 15:15Z on 10-19 are repeats", async () => {
+  const closed = new Map([...refs(), [P170, { kind: "step", status: "done" } as RefState]]);
+  const now = CLOSED + 1_800_000;
+  const prod = [hand(14858, CLOSED - 600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 1 of 3"),
+    hand(14867, CLOSED + 900_000, "instagram_census.crawl_concurrency", "Load-shed test, step 3 of 3"), controller(14870, CLOSED + 1_000_000)];
+  assert.equal(report({ ...(await data(now, prod)), refs: closed }, await metrics(now)).metrics.repeats_after_design, 1);
+});

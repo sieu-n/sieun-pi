@@ -34,7 +34,8 @@ const BOX = "root@64.34.205.243";
  * - undesigned_hand_fixes: a hand fix with no listed fault and no filed one has no design. A writer names its fault at the start of the reason
  *   (`F<n>: `, the ops write routes' `fault` field), which wins over the tag, the keys and the prose.
  * - repeats_after_design: a hand fix in the last 24 h for a fault whose design shipped means the design did not fix it. Shipped is every board
- *   step done, every `commit:` design in the release prod ran at the fix (afterDesign), and the fix not before done_at. Both 24 h metrics
+ *   step done, every `commit:` design in the release prod ran at the fix (afterDesign), and the fix not before done_at, or with no done_at
+ *   not before the run that first read the steps done (doneSeenAfter). Both 24 h metrics
  *   count the fixes since 24 h ago, as the duty labels say, while the read also reaches back to the last run's mark after a skipped day.
  * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
  *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
@@ -197,12 +198,21 @@ export function designOnProd(fault: Fault, at: number, deploys: readonly Deploy[
 
 /** Whether a hand fix at `at` came after the fault's design shipped: its steps done, its commits on prod, and not before its done_at. */
 export function afterDesign(fault: Fault, at: number, refs: ReadonlyMap<string, RefState>, deploys: readonly Deploy[] | undefined,
-  held: ReadonlyMap<string, ReadonlySet<string>>): boolean | "unknown" {
+  held: ReadonlyMap<string, ReadonlySet<string>>, seenDone: number): boolean | "unknown" {
   if (stepState(fault, refs) !== "done") return false;
   const floor = fault.done_at ? Date.parse(fault.done_at) : null;
   const prod = designOnProd(fault, at, deploys, held);
   if (prod === "unknown" && floor === null) return "unknown";
-  return prod !== "not_live" && (floor === null || at >= floor);
+  return prod !== "not_live" && at >= (floor ?? (prod === "none" ? seenDone : at));
+}
+
+/**
+ * When a run first read each fault's steps done, kept until a step reopens. A board step has no done time, so with no done_at this is the
+ * floor of the repeats of a fault with no commit design, whose prod release dates it otherwise: on 10-19 the Crawler VP closed F1's p170 at 15:15Z, and the next run counted all 588 F1 writes of the
+ * day before it as repeats.
+ */
+export function doneSeenAfter(registry: Registry, refs: ReadonlyMap<string, RefState>, previous: Readonly<Record<string, number>>, now: number): Record<string, number> {
+  return Object.fromEntries(registry.faults.filter(fault => stepState(fault, refs) === "done").map(fault => [fault.id, previous[fault.id] ?? now]));
 }
 
 /**
@@ -287,6 +297,8 @@ export interface HandData {
   errors: { source: Source; message: string }[];
   /** The faults earlier runs filed (HandState.filed). */
   filed?: Filed[];
+  /** When a run first read each fault's design steps done (HandState.doneSeen). */
+  doneSeen?: Record<string, number>;
   /** The ok prod deploys from the box read, and for each release checked, the `commit:` design refs it holds (releaseHolds). */
   deploys?: Deploy[]; held?: Map<string, Set<string>>;
 }
@@ -339,7 +351,8 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     const counted = recent.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned" && !filedFor(data.filed ?? [], item.fix));
     const held = data.held ?? new Map<string, Set<string>>();
-    const after = (item: Fix) => item.verdict.kind === "fault" ? afterDesign(item.verdict.fault, item.fix.at, refs, data.deploys, held) : false;
+    const seen = doneSeenAfter(registry, refs, data.doneSeen ?? {}, at);
+    const after = (item: Fix) => item.verdict.kind === "fault" ? afterDesign(item.verdict.fault, item.fix.at, refs, data.deploys, held, seen[item.verdict.fault.id] ?? at) : false;
     const repeats = counted.filter(item => after(item) === true);
     const unknown = [...new Set(counted.filter(item => after(item) === "unknown").map(item => item.verdict.kind === "fault" ? item.verdict.fault.id : ""))];
     if (unknown.length) {
@@ -393,11 +406,12 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
  * Where the last run stopped, per source; a source that failed keeps its old mark. Each run reads from that mark or from 24 h ago, whichever
  * is earlier, so a second run in a day still counts the day's fixes and a run after a skipped day still lists the older ones.
  */
-export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>>; filed?: Filed[] }
+export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>>; filed?: Filed[]; doneSeen?: Record<string, number> }
 
 export function nextState(state: HandState, data: HandData): HandState {
   const next: HandState = { audit: { ...state.audit }, events: { ...state.events },
-    filed: data.registry ? filedAfter(state.filed ?? [], handFixes(data, data.registry), data.registry) : state.filed ?? [] };
+    filed: data.registry ? filedAfter(state.filed ?? [], handFixes(data, data.registry), data.registry) : state.filed ?? [],
+    doneSeen: data.registry && data.refs ? doneSeenAfter(data.registry, data.refs, data.doneSeen ?? {}, data.now) : state.doneSeen ?? {} };
   for (const world of WORLDS) {
     const rows = data.audit[world];
     if (rows) next.audit![world] = Math.max(state.audit?.[world] ?? 0, ...rows.map(row => row.id));
@@ -537,7 +551,7 @@ export interface HandDeps {
 }
 
 export async function measure(deps: HandDeps): Promise<HandData> {
-  const data: HandData = { now: deps.now, audit: {}, events: {}, errors: [], filed: deps.state.filed ?? [] };
+  const data: HandData = { now: deps.now, audit: {}, events: {}, errors: [], filed: deps.state.filed ?? [], doneSeen: deps.state.doneSeen ?? {} };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
