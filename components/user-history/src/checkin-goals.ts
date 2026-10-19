@@ -1,4 +1,5 @@
 import type { MetricFact } from "./checkin-done.ts";
+import { keyNamesGoal } from "./goal-readings.ts";
 import { heldByTodo, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { targetOp, targetStaleMs } from "./shared/chat-board.ts";
@@ -79,13 +80,14 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
     // Only one such metric can be that number: VP of CI p1 "m1-air job start wait p90" (at most 10 min) has p258 on d1/push_to_verdict_p90_min
     // and p275 on d1/run_time_p90_min under it, both at most 10 min, and the 17:11Z check-in on 10-18 read p1 at push to verdict's 221.5.
     // A goal whose own duty field names a metric reads only that one, as in `goalReadingOps`: VP of CI p1 names d1/air_work_start_wait_p90_min.
+    // Any other metric must share a word with the goal's metric or unit (`keyNamesGoal`): Crawler VP p146 (API routes, 100%) is not geonode_mbps.
     const own = goal.duty === GOAL_PUSH_LINK ? undefined : goal.duty;
     const same = new Set<string>();
     let newer: { key: string; fact: MetricFact & { value: number } } | undefined;
     walk([goal], item => {
       if (!item.duty || item.duty === GOAL_PUSH_LINK || (own && item.duty !== own)) return;
       const fact = metrics.get(item.duty);
-      if (fact?.value === undefined || fact.target !== target.target || (fact.op ?? ">=") !== op) return;
+      if (fact?.value === undefined || fact.target !== target.target || (fact.op ?? ">=") !== op || (!own && !keyNamesGoal(item.duty, target))) return;
       same.add(item.duty);
       if ((Number.isFinite(at) && fact.at <= at) || (newer && newer.fact.at >= fact.at)) return;
       newer = { key: item.duty, fact: fact as MetricFact & { value: number } };

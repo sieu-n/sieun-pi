@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { goalNumber } from "../src/checkin-goals.ts";
 import { goalReadingOps } from "../src/goal-readings.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -89,4 +90,22 @@ test("a goal's own duty field picks the one metric that writes its number, whate
   assert.match(op.target?.source ?? "", /^duty d1 metric air_work_start_wait_p90_min/);
   assert.deepEqual(goalReadingOps(board, "d1", Date.parse("2026-10-18T17:53:00.000Z"), { push_to_verdict_p90_min: ten(221), run_time_p90_min: ten(258.4) }), []);
   assert.deepEqual(goalReadingOps(board, "d3", Date.parse("2026-10-18T17:53:00.000Z"), { air_work_start_wait_p90_min: ten(7) }), []);
+});
+
+// Crawler VP's p146 on 10-19: its target is documented API routes that work on prod (100%, up), and its open fix step p844 fixes d9/geonode_mbps
+// (at least 100 Mbps). At 16:52Z d9 wrote 58.9 Mbps into the routes goal because the two targets matched by chance.
+test("an open step's duty metric that shares no word with the goal's metric or unit is not the goal's number", () => {
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-19T16:00:00.000Z", plan: [{
+    id: "p146", text: "Every documented crawler API route works on prod", status: "doing",
+    target: { metric: "Documented API routes that work on prod", target: 100, unit: "%", current: 91.8, measuredAt: "2026-10-19T15:09:00.000Z", source: "portal run", direction: "up" },
+    children: [step("p844", "d9/geonode_mbps", "doing")],
+  }] };
+  const run = Date.parse("2026-10-19T16:52:00.608Z");
+  const mbps = { value: 58.9, target: 100, op: ">=" as const, met: false };
+  assert.deepEqual(goalReadingOps(board, "d9", run, { geonode_mbps: mbps }), []);
+  const number = goalNumber(board.plan[0]!, 30 * 60_000, new Map([["d9/geonode_mbps", { ...mbps, at: run }]]));
+  assert.equal(number?.value, 91.8);
+  assert.equal(number?.source, "portal run");
+  const routes = { ...board, plan: [{ ...board.plan[0]!, children: [step("p845", "d6/api_routes_working_pct", "doing")] }] };
+  assert.equal(goalReadingOps(routes, "d6", run, { api_routes_working_pct: { value: 93, target: 100, op: ">=", met: false } }).length, 1);
 });
