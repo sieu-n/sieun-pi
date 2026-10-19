@@ -45,6 +45,11 @@ test("on the owner's turn every call reaches him, also when a job report joins t
   const restart = owner("[check-in] Your last turn failed at 05:31 (aborted). Re-check the board and continue.", "05:33:00");
   assert.equal(tellTurn([...settled, owner("is it live?", "05:30:00"), stopped, restart]).owner, true, "a restart after an aborted owner turn is still his");
   assert.equal(tellTurn([...settled, job("taken", "05:20:00"), said("noted", "05:20:30"), restart]).owner, false);
+  const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: "429", timestamp: at("05:31:00") } as unknown as ThreadMessage;
+  const checkIn = owner("[check-in] Check-in: could not reach job idle ram drop, so start a job in its place.", "05:32:00");
+  assert.equal(tellTurn([...settled, owner("is it live?", "05:30:00"), said("Yes, since 05:10.", "05:30:30"), checkIn]).owner, false);
+  assert.equal(tellTurn([...settled, owner("is it live?", "05:30:00"), failed, checkIn, tell("t9", { text: "Not yet." }, "05:34:00")]).owner, true,
+    "his message has no answer yet, so the call that answers it goes out");
 });
 
 test("the feed shows a held call in the turn's notes and a sent one as a bubble", () => {

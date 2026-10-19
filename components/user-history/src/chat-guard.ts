@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
+import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
@@ -132,7 +132,10 @@ export const TELL_OWNER_PARAMETERS = {
 /** The cases that reach the owner on a turn he did not start: every `TELL_WHY` but "update". */
 const TELL_CASES: readonly TellWhy[] = TELL_WHY.filter(why => why !== "update");
 export interface TellInput { text?: unknown; why?: unknown; about?: unknown; reply_to?: unknown }
-/** What the check reads of the chat: whether the owner started the running turn, and the ids of his messages a `reply_to` may name. */
+/**
+ * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
+ * sent is left out), and the ids of his messages a `reply_to` may name.
+ */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string> }
 
 export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
@@ -140,7 +143,10 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   for (const message of messages) {
     if (message.role === "user" && !serverNote(messageText(message).trim())) ownerIds.add(ownerMessageId(message.timestamp));
   }
-  return { owner: turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner", ownerIds };
+  const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
+  const lines = chatLines(before);
+  const unanswered = lines.findLastIndex(line => line.kind === "user") > lines.findLastIndex(line => line.kind === "agent");
+  return { owner: unanswered || turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner", ownerIds };
 }
 
 /**
