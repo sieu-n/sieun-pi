@@ -343,7 +343,10 @@ const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "supersede
  */
 const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "unlanded"] as const;
 
-/** Measures everything and builds the precheck output. Each input that fails adds a source_error item and 999999 for the metrics it feeds. */
+/**
+ * Measures everything and builds the precheck output. Each input that fails to run or to parse adds a source_error item and 999999 for
+ * the metrics it feeds, so every input's parse step sits inside its `.catch`.
+ */
 export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRecord[]): Promise<PrecheckOutput & { info: Record<string, number> }> {
   const { now } = deps;
   const since = sinceFrom(lastRuns, now);
@@ -352,16 +355,16 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const readJson = async (path: string): Promise<unknown> => JSON.parse(await deps.readText(path)) as unknown;
 
   const health = await deps.exec(deps.node, ["apps/llm-wiki/scripts/wiki-health.mjs", "--since", new Date(since).toISOString()], { cwd: deps.repos.wiki, timeoutMs: HEALTH_TIMEOUT_MS })
-    .then(parseHealth, error => fail("wiki-health.mjs", error));
-  const ledger = await readJson(deps.files.ledger).then(value => { if (!isRecord(value)) throw new Error("not an object"); return value as Ledger; }, error => fail("ledger", error));
-  const corrections = await readJson(deps.files.corrections).then(value => freshCorrections(value, since), error => fail("corrections.json", error));
-  const harness = await readJson(deps.files.harness).then(value => harnessSignal(value, ledger ?? {}, since), error => fail("harness_state.json", error));
+    .then(parseHealth).catch(error => fail("wiki-health.mjs", error));
+  const ledger = await readJson(deps.files.ledger).then(value => { if (!isRecord(value)) throw new Error("not an object"); return value as Ledger; }).catch(error => fail("ledger", error));
+  const corrections = await readJson(deps.files.corrections).then(value => freshCorrections(value, since)).catch(error => fail("corrections.json", error));
+  const harness = await readJson(deps.files.harness).then(value => harnessSignal(value, ledger ?? {}, since)).catch(error => fail("harness_state.json", error));
   const gitSince = new Date(now - CHURN_MS).toISOString();
   const commits: DreamCommit[] = [];
   let gitOk = true;
   for (const [name, repo] of [["auto-sns-agent", deps.repos.wiki], ["sieun-pi", deps.repos.pi]] as const) {
     await deps.exec("git", ["-C", repo, "log", "HEAD", `--since=${gitSince}`, "--fixed-strings", "--grep=(wiki-dream)", "--format=%x1e%H%x1f%s", "--name-only", "--no-renames"],
-      { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }, error => { gitOk = false; fail(`git log ${name}`, error); });
+      { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }).catch(error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
   const box = await deps.exec("journalctl", ["--user", "-u", BOX_UNIT, "--since", `@${Math.floor((now - DAY) / 1000)}`, "-o", "short-unix", "--no-pager"],
