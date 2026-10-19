@@ -141,7 +141,7 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string> }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number }
 
 export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const ownerIds = new Set<string>();
@@ -151,7 +151,10 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
   const lines = chatLines(before);
   const unanswered = lines.findLastIndex(line => line.kind === "user") > lines.findLastIndex(line => line.kind === "agent");
-  return { owner: unanswered || turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner", ownerIds };
+  const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
+  const last = messages.at(-1);
+  const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells };
 }
 
 /**
@@ -164,6 +167,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
 export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
   if (!told) return { kind: "refused", text: "nothing to tell: give text" };
+  if (turn.byOwner === false && (turn.tells ?? 0) > 1) return { kind: "refused", text: `${turn.tells} tell_owner calls in one step on a turn ` +
+    "the owner did not start, so none was sent. Send them as one message in one call now, the answer or each finished item in a sentence or two." };
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);

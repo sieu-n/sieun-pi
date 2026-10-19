@@ -72,3 +72,17 @@ test("each wake-up in the model's view carries the note, and the owner's message
   const noted = view.map(message => JSON.stringify(message).includes(WAKE_NOTE));
   assert.deepEqual(noted, [false, true, true, false]);
 });
+
+test("on a turn the owner did not start, two tell_owner calls in one step are refused so the chat sends one message", () => {
+  // 10-19 17:21Z to 20:55Z: frontend bro, AI harness and Crawler VP each sent one answer or two finished items as 2 calls in one step.
+  const two = [tell("a", { text: "Dashboards are live.", why: "done", about: "crawler dashboards" }, "06:00:00"), tell("b", { text: "The old board is gone." }, "06:00:00")];
+  const step = { role: "assistant", content: [...(two[0] as any).content, ...(two[1] as any).content], stopReason: "toolUse", timestamp: at("06:00:00") } as unknown as ThreadMessage;
+  const ended = { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "stop", timestamp: at("05:50:30") } as unknown as ThreadMessage;
+  const jobTurn = tellTurn([...settled, owner("set up dashboards", "05:50:00"), ended, job("boards deployed", "05:59:00"), step]);
+  assert.equal(jobTurn.owner, true, "his newest message has no answer yet");
+  assert.equal(tellOwner({ text: "Dashboards are live.", why: "done", about: "crawler dashboards" }, jobTurn).kind, "refused");
+  const ownStep = tellTurn([...settled, owner("is it live?", "06:10:00"), { ...step, timestamp: at("06:10:05") } as ThreadMessage]);
+  assert.equal(tellOwner({ text: "Yes, live." }, ownStep).kind, "sent", "two points on his own turn stay two calls (c97)");
+  const one = tellTurn([...settled, job("boards deployed", "05:59:00"), { ...step, content: (two[0] as any).content } as ThreadMessage]);
+  assert.equal(tellOwner({ text: "Dashboards are live.", why: "done", about: "crawler dashboards" }, one).kind, "sent");
+});
