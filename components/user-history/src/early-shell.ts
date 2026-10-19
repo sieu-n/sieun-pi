@@ -1,5 +1,5 @@
 import { createServer, request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { connect, type AddressInfo } from "node:net";
+import { connect, Server as NetServer, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +12,8 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 type Upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 /** The listening server a starting service answers page shells on before the rest of it loads; `take` hands every request to the real server. */
 export interface EarlyShell {
-  server: Server; take(handler: Handler, upgrade: Upgrade): void;
+  /** Hands every request to the real server; a Promise when the hand-over waits (early-shell-start.mjs), which the caller awaits before it reads the address. */
+  server: Server; take(handler: Handler, upgrade: Upgrade): void | Promise<void>;
   /**
    * Resolves once the requests already waiting on the port are answered or queued, and 25 ms passed with none arriving. The service's own import
    * holds the thread for about 2 s, so the shells systemd queued during the restart go out before it starts.
@@ -85,6 +86,7 @@ export async function startEarlyShell(options: { listenFd: number | null; port: 
   };
 }
 
+const netClose = NetServer.prototype.close;
 const hopHeaders = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"]);
 
 /** A request the early shell held, sent on to the real server on the same port; the answer closes the connection, so the next one goes there itself. */
@@ -130,9 +132,13 @@ export async function serveEarlyChild(options: { dataDir: string }): Promise<voi
   const handOver = () => {
     if (handedOver) return;
     handedOver = true;
-    early.server.close();
+    // net's close stops the listening only: http's close (Node 19 and on) also drops idle connections, and one accepted just before the
+    // hand-over with its request not read yet was reset (ECONNRESET in 2 of 6 scratch hand-overs on 10-19).
+    netClose.call(early.server);
     early.take(forwardRequest(port), forwardUpgrade(port));
-    early.server.closeIdleConnections();
+    // Kept-alive connections get 1 s to send one more request, which goes on to the real server; the process exits when the last ends.
+    early.server.keepAliveTimeout = 1_000;
+    setTimeout(() => early.server.closeIdleConnections(), 1_000).unref();
     if (process.connected) process.disconnect?.();
   };
   process.on("message", message => { if (message === "ready") handOver(); });

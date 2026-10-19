@@ -37,3 +37,19 @@ test("a service started on systemd's socket through the early shell's process co
   assert.equal(identity.status, 200, identity.body);
   assert.equal(JSON.parse(identity.body).service, "sieun-pi-chat");
 });
+
+test("with the thread busy after the real server is ready, the start waits for the deferred listen and comes up on its own loopback host", { timeout: 60_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "early-serve-busy-"));
+  await writeFile(join(dir, "configuration.json"), JSON.stringify({ capability: "cap", csrfToken: "tok" }));
+  const fixture = new URL("./fixtures/early-serve.mjs", import.meta.url).pathname;
+  const main = spawn("python3", ["-c", holder, process.execPath, fixture, dir, "busy"], { stdio: ["ignore", "pipe", "inherit"], detached: true, timeout: 30_000, killSignal: "SIGKILL" });
+  t.after(() => { try { process.kill(-main.pid!, "SIGKILL"); } catch { /* gone */ } });
+  const line = await new Promise<string>(resolve => {
+    createInterface({ input: main.stdout! }).once("line", resolve);
+    main.once("exit", code => resolve(`exited ${code}`));
+  });
+  assert.match(line, /^up http:\/\/127\.0\.0\.1:\d+\/cap\/$/);
+  const identity = await get(line.slice(3) + "api/identity");
+  assert.equal(identity.status, 200, identity.body);
+  assert.equal(JSON.parse(identity.body).service, "sieun-pi-chat");
+});

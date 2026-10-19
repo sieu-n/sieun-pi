@@ -1130,7 +1130,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
   }
   try {
-    if (early) early.take((req, res) => { void handle(req, res); }, upgrade);
+    // The early shell may listen later (early-shell-start.mjs waits for this thread to be free); the address is read only after it does.
+    if (early) await early.take((req, res) => { void handle(req, res); }, upgrade);
     else await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       const listening = () => { server.removeListener("error", reject); resolve(); };

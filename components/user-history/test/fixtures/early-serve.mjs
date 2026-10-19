@@ -6,6 +6,8 @@ const early = startEarlyChild(["serve", "--data-dir", process.argv[2]]);
 const { register } = await import("tsx/esm/api");
 register();
 const { startChatServer } = await import("../../src/chat-server.ts");
+// "busy": the thread stands still 1 s while the hand-over waits, as the rest of a real start does.
+if (process.argv[3] === "busy") setTimeout(() => { const until = Date.now() + 1000; while (Date.now() < until) { /* catalog */ } }, 0);
 const asset = { body: Buffer.from(""), etag: "e", contentType: "text/plain" };
 try {
   const server = await startChatServer({ backend: { close: async () => {} }, bundle: { js: asset, css: asset, version: "test" }, port: 0, listenFd: 3, early,
