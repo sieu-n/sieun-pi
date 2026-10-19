@@ -10,7 +10,7 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -34,6 +34,20 @@ export const UNNAMED_HOST = "mac";
 export const OLD_LINUX_READING = "an old-format or invalid Linux reading";
 const checked = (usable: HostUsable | null | undefined): { usable: HostUsable | null; error?: string } =>
   !usable || !isLinuxReading(usable) || parseLinuxReading(usable) ? { usable: usable ?? null } : { usable: null, error: OLD_LINUX_READING };
+
+/**
+ * Whether `box` read usable in the watch line just before [from, to) and in the one just after, each within a minute of it. A chat service that
+ * stops while a relay read is out writes that box as unread (UNREAD_AT_STOP), which says the harness restarted, not that the box was in doubt:
+ * at 14:12:29Z on 10-19 a release's stop wrote the Mac unread, the Mac read usable at 14:11:30Z and 14:13:30Z, and d7 counted 14:12Z unknown.
+ */
+export function usableAround(watch: readonly WatchLine[], box: string, from: number, to: number): boolean {
+  const reads = (line: WatchLine | undefined): boolean => {
+    const view = line && hostViews(line).find(candidate => candidate.name === box);
+    return !!view?.usable && !unusable(view.usable).length;
+  };
+  return reads(watch.findLast(line => { const at = Date.parse(line.at); return at < from && at >= from - MINUTE; }))
+    && reads(watch.find(line => { const at = Date.parse(line.at); return at >= to && at < to + MINUTE; }));
+}
 
 /** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
 export function hostViews(line: WatchLine): HostView[] {
@@ -534,8 +548,10 @@ export function measure(input: Inputs): PrecheckOutput {
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   const poolHeld = (input.pool ?? []).filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   // A hold that only waited for a cell is pi-pool's R4 pace at work with no slot free, like a turn its tree's cap holds (`freeSlotWait`): it
-  // counts in queue_holds_30 and cell_wait_min_30, and leaves the minute clean. At 17:37Z on 10-18, after pi-pool 42884712, 26 minutes read
-  // dirty from low trees whose every refusal waited for a krenerd77 or claude11 cell while higher trees took them.
+  // counts in cell_holds_30 and cell_wait_min_30, and leaves the minute clean. At 17:37Z on 10-18, after pi-pool 42884712, 26 minutes read
+  // dirty from low trees whose every refusal waited for a krenerd77 or claude11 cell while higher trees took them. It stays out of
+  // queue_holds_30: the owner answered t73 on 10-19 "wait for the limits to reset" for these waits on a short fleet, and at 14:52Z 10 holds
+  // there were all cell waits (8 of them his duty fix subagents started at once on claude-virev4 and claude-virev5), with no slot free.
   const poolAt = (from: number, to: number, cell: boolean): PoolHold | undefined => poolHeld.find(hold => hold.cell === cell && hold.from + HOLD_MS < to && hold.to >= from);
   const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
@@ -568,6 +584,7 @@ export function measure(input: Inputs): PrecheckOutput {
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
       if (view.offline) { count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]); continue; }
+      if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { count.usable++; continue; }
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
       const found = unusable(view.usable);
       const own = view.name === (line.host ?? UNNAMED_HOST);
@@ -648,7 +665,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const hung = hungNow(input.watch, start);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
-    queue_holds_30: queueHolds.length + poolHeld.length,
+    queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length,
+    cell_holds_30: poolHeld.filter(hold => hold.cell).length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     ...worst ? { quiet_agent_gb: worst.agents.gb } : {},
     oversized_procs: oversize.length,

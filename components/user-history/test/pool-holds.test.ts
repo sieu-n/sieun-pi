@@ -55,14 +55,15 @@ test("a tree refused again and again on short cells while accounts have room sta
   assert.equal(measure({ now: RUN, watch, log: { holds: [] }, chats: [], pool: [hold!] }).metrics.queue_holds_30, 1);
 });
 
-test("a low tree whose every refusal waited for a cell is R4's pace with no slot free: a hold, but its minutes stay clean, as 01a15005 was from 17:18Z on 10-18", () => {
+test("a low tree whose every refusal waited for a cell is R4's pace with no slot free: a cell hold, out of queue_holds_30 and with its minutes clean, as 01a15005 was from 17:18Z on 10-18 and 8 duty fix subagents were at 14:52Z on 10-19", () => {
   const cellWait = (clock: string, slot: string): string => JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session: "f", at: at(clock), account: "krenerd77@naver.com",
     slot_at: at(slot), backoff: false, priority: "low", room: ["krenerd77@naver.com", "claude11@slack.green"] });
   const lines = ["16:10:00", "16:11:00", "16:13:00", "16:15:00", "16:18:00", "16:21:00", "16:25:00"].map((clock, i, all) => cellWait(clock, all[i + 1] ?? "16:30:00"));
   const pool = readPoolLog([...lines, unparked("f", "16:30:00")], RUN);
   assert.deepEqual(pool.map(hold => hold.cell), [true]);
   const { metrics, flagged } = measure({ now: RUN, watch, log: { holds: [] }, chats: [], pool });
-  assert.equal(metrics.queue_holds_30, 1);
+  assert.equal(metrics.queue_holds_30, 0);
+  assert.equal(metrics.cell_holds_30, 1);
   assert.equal(metrics.queued_free_slot_min_30, 0);
   assert.equal(metrics.cell_wait_min_30, 11);
   assert.equal(metrics.clean_min_30, 30);
