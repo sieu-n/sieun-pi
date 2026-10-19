@@ -294,6 +294,19 @@ class StaleTabSweepTests(Base):
         self.assertEqual(list(ab._owned_tabs()), ["T1"])
 
 
+class SignInHintTests(Base):
+    def test_an_aside_sign_in_page_says_to_click_the_saved_login(self):
+        """Owner 10-19 (c129): a job read empty boxes on Cloudflare's sign-in page in Aside and asked him to sign in, while Aside held his saved login."""
+        self.fake('{"title":"Cloudflare Dashboard | Manage Your Account","url":"https://dash.cloudflare.com/login","targetId":"T1"}')
+        out = self.call(ab.open_tab("https://dash.cloudflare.com/", browser="aside"))
+        self.assertIn(ab._ASIDE_SIGN_IN_HINT, out)
+
+    def test_a_signed_in_aside_page_gets_no_hint(self):
+        self.fake('{"title":"Cloudflare","url":"https://dash.cloudflare.com/9d0e/home","targetId":"T1"}')
+        out = self.call(ab.open_tab("https://dash.cloudflare.com/", browser="aside"))
+        self.assertNotIn("[aside-browser hint]", out)
+
+
 class BrowserRoutingTests(Base):
     def test_pages_that_need_no_login_go_to_the_box(self):
         with patch.object(ab, "box_available", return_value=True):

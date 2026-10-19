@@ -153,6 +153,7 @@ On a Linux box the default is the box's own headful Chrome:
 4. Only a page that needs one of the owner's logins opens in his Aside: a host in `LOGIN_HOSTS` (Google, GitHub, vendor dashboards, social sites), a mail, ticket or social page, or a non-http URL (c82, c103).
 5. `agent()`, `memory_search()` and the site skill globals (`gmail`, `slack`, `googleDocs` and the rest) run in Aside, because they exist only there.
 6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
+7. When an Aside page lands on a sign-in page, click its Sign in, Continue or Google button yourself before you decide no login is saved, because Chrome hides the owner's saved email and password from scripts and snapshots until a real click. On 10-19 a job read empty boxes on Cloudflare's sign-in page in Aside and asked the owner to sign in while Aside held his saved login (c129), so `open_tab` now says this on every Aside sign-in page.
 
 On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside, and nothing else may open a window there.
 An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing browser there either, headless included, because Mac browsers pushed its load to 110 to 170 and froze 5180 on 10-19.

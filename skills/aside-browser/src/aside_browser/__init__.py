@@ -936,6 +936,15 @@ async def owned_tabs() -> list[dict[str, Any]]:
     return [t for t in found if t["owned"]]
 
 
+# On 10-19 a job opened dash.cloudflare.com in Aside, read empty Email and Password boxes in the snapshot and asked the owner
+# to sign in, while Aside held his saved Cloudflare login; he answered "로그인 되어있잖아" (c129).
+_ASIDE_SIGN_IN_HINT = (
+    "[aside-browser hint] Aside is on a sign-in page. Chrome hides the owner's saved email and password from scripts and "
+    "snapshots until a real click, so empty boxes do not mean no login is saved. Click the Sign in or Continue button, or "
+    "a 'Continue with Google' button, yourself and read the page again. Ask the owner only for a 2FA code or a password "
+    "that is still missing after that click (c129)."
+)
+
 _BOX_NOTE = (
     "[aside-browser box] Opened in the box's own Chrome, which has none of the owner's logins. "
     "Pass browser='aside' for a page that needs one."
@@ -968,6 +977,8 @@ async def open_tab(url: str, browser: str | None = None) -> str:
             _remember([info.get("targetId", "")], info.get("url") or url)
             if where == "box" and _LOGIN_PAGE.search(str(info.get("url") or "")) and not _LOGIN_PAGE.search(url):
                 text += f"\n[aside-browser hint] The box landed on a sign-in page. Open it in the owner's Aside instead: open_tab({url!r}, browser='aside')."
+            elif where == "aside" and _LOGIN_PAGE.search(str(info.get("url") or "")):
+                text += "\n" + _ASIDE_SIGN_IN_HINT
             break
     return _BOX_NOTE + "\n" + text if where == "box" else text
 

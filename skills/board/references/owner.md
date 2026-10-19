@@ -19,7 +19,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 3. A CLI or service login (vercel login, `gh auth login --web`, a GitHub web sign-in, a device code or browser flow) is yours or the job's to start and finish (c4).
 4. Open the login in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there.
 5. A GitHub web sign-in or `gh auth login --web` mints a `gho_` token with repo scope on this machine, and that is expected.
-6. Ask the owner only for the one step no OAuth path covers, such as a password, a 2FA push or code on his phone, or a hardware key.
+6. Before any login or credential ask, open the site in his Aside yourself: a saved login there (a sign-in form already filled with his email and password) only needs your click, so use it. On 10-19 a job asked him to widen a Cloudflare token or sign in, while Aside held his saved Cloudflare login, and he answered "로그인 되어있잖아" (c129, c143). Ask the owner only for the one step no saved login or OAuth path covers, such as a 2FA push or code on his phone, a hardware key, or a password Aside does not hold.
 7. Admin GitHub work such as creating tokens, revoking tokens or billing is not a login, and this rule does not cover it.
 
 ## Links, images and names in a reply
