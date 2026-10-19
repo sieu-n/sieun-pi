@@ -9,7 +9,7 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  * chat told "fix plan and duties based on THIS skill and persue completion of plans" should sort its plan out on its own. A fresh chat on a small
  * read-only area gets a messy board written here from scratch and the owner's one sentence as its first message. The criteria live in
  * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run. Each run takes an area no earlier run
- * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch for run 5), and the seeded risks sit inside that area only: run-3's
+ * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch for run 5, Snapchat since run 6), and the seeded risks sit inside that area only: run-3's
  * "wiki box disk fills" risk made its chat hand the risk to ops guy, a real chat.
  */
 export const SENTENCE = "fix plan and duties based on the board skill and pursue completion of plans";
@@ -26,17 +26,17 @@ const item = (id: string, text: string, status: PlanItem["status"], extra: Parti
 /** A plan the way a chat leaves it after a few days of drift: no done line, unowned steps, an upkeep step, a goal of standing risks, a done step left open. */
 export function messyBoard(now: string): ChatBoard {
   return { v: 2, rev: 37, updatedAt: now, todos: [], lastIds: { p: 8, t: 0 }, plan: [
-    item(SEED.work, "Twitch index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
-      item(SEED.done, "Find where Twitch data lands in the crawler", "doing", { note: "Found: convex/search/contactPoints.ts maps twitch to a contact platform and " +
-        "apps/crawler-v3/src/contacts/fast_rank.py lists twitch.tv, but apps/crawler-v3/src/platforms/ has no twitch folder and _SOCIAL_HOSTS in " +
-        "apps/crawler-v3/src/index/sync/projectors/_shared.py has no twitch entry." }),
-      item(SEED.research, "Research the Twitch index gaps and measure each one's size from real data", "todo"),
+    item(SEED.work, "Snapchat index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
+      item(SEED.done, "Find where Snapchat data lands in the crawler", "doing", { note: "Found: convex/search/contactPoints.ts maps snapchat to a contact platform, " +
+        "apps/crawler-v3/src/contacts/fast_rank.py lists snapchat.com and apps/crawler-v3/src/platforms/instagram/census/cross_seed.py names snapchat, but " +
+        "apps/crawler-v3/src/platforms/ has no snapchat folder." }),
+      item(SEED.research, "Research the Snapchat index gaps and measure each one's size from real data", "todo"),
       item(SEED.page, "Write the top 10 page on the wiki, ranked by who each gap hurts", "todo"),
       item(SEED.upkeep, "Keep the page fresh every day", "todo"),
     ]),
     item(SEED.alerts, "Firing prod alerts", "doing", {}, [
-      item(SEED.risks[0], "Twitch rate limit hit on the gap scripts' reads", "todo"),
-      item(SEED.risks[1], "Twitch channel page markup changes and the gap scripts read 0", "todo"),
+      item(SEED.risks[0], "Snapchat rate limit hit on the gap scripts' reads", "todo"),
+      item(SEED.risks[1], "Snapchat profile page markup changes and the gap scripts read 0", "todo"),
     ]),
   ] };
 }
