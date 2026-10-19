@@ -260,14 +260,16 @@ const adoptFlag = (options: Options): string[] => options.adopt === "own" ? ["--
  */
 async function startHosts(primary: boolean): Promise<{ bridge: { close(): Promise<void> } | null; catalogs: import("./host-catalogs.ts").HostCatalogs } | null> {
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
-  const [{ HOSTS_FILE, HostBridge, loadHosts }, { HostCatalogs }] = await Promise.all([import("./hosts.ts"), import("./host-catalogs.ts")]);
+  const [{ HOSTS_FILE, HostBridge, loadHosts }, { HostCatalogs }, { BridgeThread }] = await Promise.all([import("./hosts.ts"), import("./host-catalogs.ts"), import("./host-bridge-thread.ts")]);
   if (!(await access(HOSTS_FILE).then(() => true, () => false))) return null;
   try {
     const registry = await loadHosts();
     const bridge = new HostBridge(registry, { log, replaceLive: true });
-    if (primary) await bridge.start();
+    // The sockets run on their own thread (src/host-bridge-thread.ts), so a busy main thread does not hold up the Mac's reads and prompts.
+    const thread = primary ? new BridgeThread(registry, { log, replaceLive: true }) : null;
+    await thread?.start();
     log(`hosts: ${registry.hosts.map(host => host.name).join(", ")} from ${HOSTS_FILE}${primary ? ", bridges open" : ""}`);
-    return { bridge: primary ? bridge : null, catalogs: new HostCatalogs(registry, bridge, undefined, log, primary) };
+    return { bridge: thread, catalogs: new HostCatalogs(registry, bridge, undefined, log, primary) };
   } catch (error) { log(`hosts: ${error instanceof Error ? error.message : String(error)}`); return null; }
 }
 
