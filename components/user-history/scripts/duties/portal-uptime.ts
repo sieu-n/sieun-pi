@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and sieun/dev (what the next
  * promote ships) and counts the key names staging has and prod lacks. Each deploy decrypts its tier's blob (scripts/repo/env/vercel-blobs.mjs),
  * so a staging-only key is a value prod code runs without, as BATCH_WORKER_SECRET is on main on 10-18 (board p9). Key names only, never values.
+ * For main, prod's side is the .env the live prod Vercel blob was pushed from, found by the blob's `dotenvx-blob sha256:` comment
+ * (auto-sns-agent scripts/repo/env/vercel-blobs.mjs), because a blob push can run ahead of a promote: on 10-18 the p9 job pushed
+ * the blob from sieun/dev's .env at 176874bc12, so prod ran with BATCH_WORKER_SECRET while main's .env still lacked it.
  * The note's dm_senders_prod metric is left out: the owner chose reader accounts that send (board p12) over buying aiograpi senders (p6 dropped).
  * A source it cannot read gives 999999 for its counts and -1 for its share, a source_errors count and a flagged slice, never a good-looking value.
  */
@@ -81,9 +85,15 @@ export const envKeys = (text: string): Set<string> =>
 
 /** The api-portal env files at one ref, or the error text when GitHub gave none. */
 export type EnvFiles = Record<string, { prod: string; staging: string } | { error: string }>;
+/** The api-portal .env the live prod Vercel blob was pushed from and the commit it was read at, or why none was found. */
+export type LiveProd = { ref: string; text: string } | { error: string };
+
+/** vercel-blobs.mjs blobFingerprint: sha256 of the file with its trailing whitespace dropped and one final newline, first 16 hex. */
+export const blobFingerprint = (text: string): string =>
+  createHash("sha256").update(`${text.replace(/\s+$/, "")}\n`).digest("hex").slice(0, 16);
 
 /** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}): PrecheckOutput {
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one query, or undefined after flagging why there are none. */
@@ -133,10 +143,13 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
       flagged.push({ at, kind: "source_error", excerpt: `GitHub gave no apps/api-portal/.env or .env.staging at ${ref}: ${files && "error" in files ? files.error : "not read"}`.slice(0, 300) });
       continue;
     }
-    const prod = envKeys(files.prod);
+    const liveText = ref === "main" && live && "text" in live ? live : undefined;
+    if (ref === "main" && live && "error" in live) flagged.push({ at, kind: "env_live_unread", excerpt: `the live prod blob's source was not found (${live.error}), so apps/api-portal/.env at main stands in for prod`.slice(0, 300) });
+    const prod = envKeys(liveText ? liveText.text : files.prod);
+    const prodName = liveText ? `the live prod blob (apps/api-portal/.env at ${liveText.ref})` : `apps/api-portal/.env at ${ref}`;
     const missing = [...envKeys(files.staging)].filter(name => !prod.has(name));
     for (const name of missing) stagingOnly.add(name);
-    if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${ref} has ${missing.join(", ")}, which apps/api-portal/.env at ${ref} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
+    if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${ref} has ${missing.join(", ")}, which ${prodName} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
   }
   metrics.env_keys_staging_only = envRead ? stagingOnly.size : UNMEASURED;
   metrics.source_errors = sourceErrors;
@@ -174,11 +187,36 @@ async function instant(auth: string, expr: string, now: number): Promise<Series[
   return framesToSeries(result.frames);
 }
 
-/** One file of sieu-n/auto-sns-agent at a ref, through the gh login. */
-const githubRaw = (path: string, ref: string) => new Promise<string>((resolve, reject) => {
-  execFile("gh", ["api", "-H", "Accept: application/vnd.github.raw", `repos/sieu-n/auto-sns-agent/contents/${path}?ref=${encodeURIComponent(ref)}`],
-    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: PROBE_TIMEOUT_MS }, (error, stdout, stderr) => error ? reject(new Error(`${path}@${ref}: ${String(stderr).trim().slice(-160) || error.message}`)) : resolve(stdout));
+/** One gh api GET on sieu-n/auto-sns-agent, through the gh login. */
+const ghApi = (path: string, accept: string) => new Promise<string>((resolve, reject) => {
+  execFile("gh", ["api", "-H", `Accept: ${accept}`, `repos/sieu-n/auto-sns-agent/${path}`],
+    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: PROBE_TIMEOUT_MS }, (error, stdout, stderr) => error ? reject(new Error(`${path}: ${String(stderr).trim().slice(-160) || error.message}`)) : resolve(stdout));
 });
+/** One file of sieu-n/auto-sns-agent at a ref. */
+const githubRaw = (path: string, ref: string) => ghApi(`contents/${path}?ref=${encodeURIComponent(ref)}`, "application/vnd.github.raw");
+
+/** How many past versions of sieun/dev's apps/api-portal/.env are tried against the live blob's fingerprint. */
+const LIVE_HISTORY = 20;
+
+/** The .env the live prod api-portal blob was pushed from: the newest of main's, sieun/dev's and sieun/dev's recent versions whose fingerprint is the blob's comment. */
+async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
+  try {
+    const blobs = await import(pathToFileURL(join(REPO, "scripts/repo/env/vercel-blobs.mjs")).href) as { blobRow(app: string, tier: string): Promise<{ comment?: string } | null> };
+    const row = await blobs.blobRow("api-portal", "production");
+    const want = /dotenvx-blob sha256:([0-9a-f]{16})/.exec(row?.comment ?? "")?.[1];
+    if (!want) return { error: `the prod API_PORTAL_DOTENVX_ENV row has no dotenvx-blob comment (${row ? "row found" : "no row"})` };
+    for (const ref of ENV_REFS) {
+      const files = env[ref];
+      if (files && "prod" in files && blobFingerprint(files.prod) === want) return { ref, text: files.prod };
+    }
+    const commits = JSON.parse(await ghApi(`commits?path=apps/api-portal/.env&sha=sieun/dev&per_page=${LIVE_HISTORY}`, "application/vnd.github+json")) as { sha: string }[];
+    for (const { sha } of commits) {
+      const text = await githubRaw("apps/api-portal/.env", sha);
+      if (blobFingerprint(text) === want) return { ref: sha.slice(0, 10), text };
+    }
+    return { error: `no apps/api-portal/.env at main, sieun/dev or its last ${LIVE_HISTORY} versions has sha256:${want}` };
+  } catch (error) { return { error: errorText(error) }; }
+}
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
@@ -204,7 +242,7 @@ async function main(): Promise<void> {
       return [ref, { prod: prod!, staging: staging! }] as const;
     } catch (error) { return [ref, { error: errorText(error) }] as const; }
   })));
-  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env), null, 2) + "\n");
+  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env)), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

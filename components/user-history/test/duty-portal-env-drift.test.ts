@@ -2,7 +2,7 @@
 // not, so prod's batch routes ran without the secret staging used (board p9), and no duty metric counted it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { blobFingerprint, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }] };
@@ -19,4 +19,28 @@ test("a key staging has and prod lacks on main counts once and names the key, an
 test("an env file GitHub did not give reads as unmeasured, never as 0", () => {
   const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { error: "HTTP 404" } });
   assert.equal(output.metrics.env_keys_staging_only, 999999);
+});
+
+test("main's gap does not count when the live prod blob was pushed from a .env that has the key, as p9's push from 176874bc12 did on 10-18", () => {
+  const dev = `${PROD}BATCH_WORKER_SECRET=encrypted:f\n`;
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: dev, staging: STAGING } }, { ref: "176874bc12", text: dev });
+  assert.equal(output.metrics.env_keys_staging_only, 0);
+  assert.equal(output.flagged!.filter(flag => flag.kind === "env_staging_only").length, 0);
+});
+
+test("a live prod blob that lacks the key still counts and names the blob's commit", () => {
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: PROD, staging: PROD } }, { ref: "abc1234567", text: PROD });
+  assert.equal(output.metrics.env_keys_staging_only, 1);
+  assert.match(output.flagged!.find(flag => flag.kind === "env_staging_only")!.excerpt, /the live prod blob \(apps\/api-portal\/\.env at abc1234567\) lacks/);
+});
+
+test("an unread live blob falls back to main's .env and says so", () => {
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: PROD, staging: STAGING }, "sieun/dev": { prod: PROD, staging: PROD } }, { error: "Vercel GET answered 403" });
+  assert.equal(output.metrics.env_keys_staging_only, 1);
+  assert.ok(output.flagged!.some(flag => flag.kind === "env_live_unread"));
+});
+
+test("the fingerprint is vercel-blobs.mjs's: trailing whitespace dropped, one final newline", () => {
+  assert.equal(blobFingerprint("A=1\n\n  "), blobFingerprint("A=1"));
+  assert.match(blobFingerprint("A=1"), /^[0-9a-f]{16}$/);
 });
