@@ -5,8 +5,8 @@ import type { BoardOp, ThreadMessage } from "./types.ts";
 /**
  * The board text checks: internal terms in a For you todo (c32, owner 10-09: "unslop easy word") and a limit with a rate or size and no
  * evidence in its own sentence, in a todo or a plan step (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????", "r u fucking
- * kidding?"). Replies to the owner have no code check: tell_owner sends any text, and the reply rules live in the chat brief (c81, c97; owner
- * 10-18: "also is this a hard cap (code-level) or something? if so strip all these").
+ * kidding?"). Length and form of a reply to the owner stay brief rules (c81, c97; owner 10-18: "also is this a hard cap (code-level) or
+ * something? if so strip all these"); only the shop talk below gets a check, a soft one (`shopTalk`).
  */
 
 /**
@@ -249,6 +249,41 @@ export function jargonTerms(text: string): string[] {
     }
   }
   return [...new Set(found)];
+}
+
+/**
+ * Shop talk in a message to the owner, each with what to say instead (c18, c135, c138). The text rule held in the brief since 75ef234f, and
+ * the owner still gave c18 again: on 10-18 he quoted `lands`, `then come`, `rolls out` back to ops guy, and on 10-19 frontend bro's "Killed
+ * the zero-result filter check" and "The wiring is mostly fine" drew c138 and c135. Of 169 tell_owner texts from 10-19 14:00Z to 22:30Z, after
+ * c135 asked for KST, 21 still gave a UTC time and 12 said land or landing.
+ */
+const SHOP_TALK: readonly { rule: RegExp; plain: string }[] = [
+  { rule: /\b\d{1,2}:\d{2}(?::\d{2})?\s?Z\b|\bUTC\b/gu, plain: "give the time in KST, like 23:50 KST or 밤 11시 50분, never UTC or a Z (c135)" },
+  { rule: /\b(?:lands|landed)\b|\bland(?:ing)? (?:it|them|this|that|the|a|an|its|his|their|our|my|your)\b/giu,
+    plain: "say what he gets, like it is live on staging or the fix is in" },
+  { rule: /\broll(?:s|ed|ing)? (?:it |them |this |that )?out\b|\brollouts?\b/giu, plain: "say when it goes live" },
+  { rule: /\bkilled the\b/giu, plain: "say what you removed or turned off, with a subject, like I turned off the check that ..." },
+  { rule: /\bwiring\b|\bwired (?:up|in)\b/giu, plain: "say what is connected to what" },
+  { rule: /(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/.-])/gu, plain: "leave the commit id out and say what changed (c12)" },
+];
+export const SHOP_TALK_MARK = "Not sent, it has shop talk";
+
+/**
+ * The shop talk in a tell_owner text, as "word (what to say instead)", outside links, code, URLs and quotes. A word the owner used in
+ * `ownerText`, his message it answers, stays his word.
+ */
+export function shopTalk(text: string, ownerText = ""): string[] {
+  const his = ownerText.toLowerCase();
+  const found = new Map<string, string>();
+  for (const line of proseLines(text)) {
+    for (const { rule, plain } of SHOP_TALK) {
+      for (const match of line.words.matchAll(rule)) {
+        const word = match[0].trim();
+        if (!his.includes(word.toLowerCase()) && !found.has(word.toLowerCase())) found.set(word.toLowerCase(), `"${word}" (${plain})`);
+      }
+    }
+  }
+  return [...found.values()];
 }
 
 /** The part of an owner message the owner wrote: no injected skill text. Undefined for a server note or a message with no text. */

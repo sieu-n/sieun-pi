@@ -4,6 +4,7 @@ import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
+import { SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
 
@@ -115,7 +116,11 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "is update. One answer is one call, so a question goes in the same message as its context. Any other call there, " +
   "and one with no why, is kept as a note (c117). Write one " +
   "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
-  "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. Name each plan step, goal, todo and duty " +
+  "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. " +
+  "Use the plain words he would use himself, saying what he would see or can do now, never a job report's terms, a UI label or state, a " +
+  "clipped verb or git talk like land or roll out, and give a time in KST, like 23:50 KST or 밤 11시 50분, never UTC or a Z (c18, c135, c138). " +
+  "Write \"onboarding works now, but the campaign it makes comes out empty because the AI guessed too small a follower range\", not \"Home " +
+  "shows 0 matched after landing because the drafted 2K to 20K follower filter misses most creators\". Name each plan step, goal, todo and duty " +
   "you mention by its id, like p684 or d9, written bare, which shows as a chip he can click; keep hashes, session ids and paths out (c145). Count its sentences before you send it, and " +
   "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
   "wiki page, sent as one message with the one-line takeaway and its wiki: link, which shows as a page card. In your first reply to a new " +
@@ -141,12 +146,22 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string> }
 
 export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const ownerIds = new Set<string>();
+  let ownerText = "";
+  const told = new Map<string, string>();
+  const resent = new Set<string>();
   for (const message of messages) {
-    if (message.role === "user" && !serverNote(messageText(message).trim())) ownerIds.add(ownerMessageId(message.timestamp));
+    if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); }
+    if (message.role === "assistant") for (const part of message.content) {
+      if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
+    }
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message).startsWith(SHOP_TALK_MARK)) {
+      const text = told.get(message.toolCallId);
+      if (text) resent.add(text);
+    }
   }
   const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
   const lines = chatLines(before);
@@ -154,7 +169,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells };
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent };
 }
 
 /**
@@ -162,7 +177,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * bubble; a server restart of a failed turn keeps that turn's starter. On any other turn it reaches him only when `why` names a case (done, decision, blocker, answer) and `about` names that goal,
  * decision, blocker or question; else it is held, the feed shows it in the turn's notes, and the answer says how to send it if it is one
  * (c117; on 10-19 469 of 597 messages in a day came on turns the owner did not start, and the brief's rule since c104 had not held them).
- * Length and form stay brief rules (c81, c97).
+ * Length and form stay brief rules (c81, c97). A text it would send with shop talk (`shopTalk`: a UTC time, git's land or roll out, a commit
+ * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98).
  */
 export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
@@ -172,7 +188,12 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
-  if (turn.owner || answers || declared) return { kind: "sent", text: TELL_OWNER_DONE };
+  if (turn.owner || answers || declared) {
+    const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
+    return talk.length ? { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
+      "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." }
+      : { kind: "sent", text: TELL_OWNER_DONE };
+  }
 if (!named(input.why)) return { kind: "refused", text: "why is required on a turn the owner did not start. Call tell_owner again " +
     "with why (done, decision, blocker, answer or update) and about, or update the board and end the turn if it is only an update." };
   return { kind: "held", text: `${TELL_OWNER_HELD}. The owner did not start this turn, so a message reaches him only with why set to done, ` +
