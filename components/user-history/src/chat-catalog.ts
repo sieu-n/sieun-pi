@@ -357,9 +357,12 @@ export function subagentSessions(children: readonly SessionSummary[], tree: Read
   return children.map((row): SubagentSession => {
     const running = nativeStatus(row) === "running";
     const daemonFailed = daemonSaysFailed(row);
-    const cut = running || daemonFailed ? null : cuts?.of(row.sessionFile) ?? null;
+    const cut = running ? null : cuts?.of(row.sessionFile) ?? null;
     const failed = daemonFailed || cut !== null;
-    const activity = running ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : daemonFailed ? row.summary?.trim().slice(0, 200) : cut ? cutActivity(cut) : undefined;
+    // A provider error reads as its cause from the transcript (`turnErrorCause`): the daemon's summary ends 200 characters into the provider's
+    // prose, before pi-pool's account and retry time.
+    const activity = running ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : cut?.error ? cutActivity(cut)
+      : daemonFailed ? row.summary?.trim().slice(0, 200) : cut ? cutActivity(cut) : undefined;
     const at = row.lastActivityAt ?? row.modified;
     const name = row.sessionName?.replace(/\s+/g, " ").trim();
     const first = firstTask(row);
@@ -383,7 +386,8 @@ export function rosterChildren(children: readonly SessionSummary[], cuts?: Sessi
       if (!row.rlmChildId) return [];
       let read = rosterReads.get(row);
       if (!read) { read = { running: nativeStatus(row) === "running", failed: daemonSaysFailed(row) }; rosterReads.set(row, read); }
-      const cut = read.running || read.failed ? null : cuts?.of(row.sessionFile) ?? null;
+      const found = read.running ? null : cuts?.of(row.sessionFile) ?? null;
+      const cut = read.failed && !found?.error ? null : found;
       if (read.agent === undefined || read.cut !== cut) { read.cut = cut; read.agent = rosterAgent(row, row.rlmChildId, read.running, read.failed, cut); }
       return [read.agent];
     });

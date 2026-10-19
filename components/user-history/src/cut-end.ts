@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import { clockTime } from "./checkin-settings.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
+import { turnErrorCause } from "./turn-error.ts";
 
 /**
  * How a job's last turn ended when it was cut and nothing came after it, read from its transcript. On 10-16 at 00:19:57Z queued jobs (local agents
@@ -20,7 +21,9 @@ export interface Cut { at: number; cause: CutCause; archivedAt?: number;
    * On 10-18 from 09:05Z to 10:43Z 13 jobs on such errors read 11 to 15 min cut holds each, every check-in restart before the slot got the same
    * refusal ("waits for its slot at 10:43:30"), and each job started within a minute of its slot.
    */
-  slotAt?: number }
+  slotAt?: number;
+  /** A provider error's cause in plain words (`turnErrorCause`), so the agents panel names it instead of "a provider error". */
+  error?: string }
 
 /** An archive writes `archived` and then the aborted reply within milliseconds; a Stop that does not archive writes the abort alone. */
 export const ARCHIVE_ABORT_MS = 5_000;
@@ -39,7 +42,8 @@ const CUT_WORDS: Record<CutCause, string> = {
 export const cutWords = (cause: CutCause): string => CUT_WORDS[cause];
 
 /** The line the agents panel shows for a cut job, with the owner's local clock. */
-export const cutActivity = (cut: Cut): string => `${cutWords(cut.cause)} at ${clockTime(cut.at)}, no report since`;
+export const cutActivity = (cut: Cut): string =>
+  `${cutWords(cut.cause)} at ${clockTime(cut.at)}${cut.error ? ` (${cut.error})` : ""}, no report since`;
 
 /**
  * How a session's last turn ended when it was cut and nothing came after it, from its transcript lines: an abort written right after the session
@@ -113,7 +117,7 @@ function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: 
     if (stopReason === "length") return { at, cause: stopReason, index, ...archived };
     if (stopReason === "error") {
       const slotAt = poolSlot(entry.message.errorMessage ?? "");
-      return { at, cause: stopReason, index, ...archived, ...slotAt === null ? {} : { slotAt } };
+      return { at, cause: stopReason, index, ...archived, ...slotAt === null ? {} : { slotAt }, error: turnErrorCause(entry.message.errorMessage) };
     }
     if (stopReason !== "aborted") return null;
     for (let back = index - 1; back >= 0; back--) {

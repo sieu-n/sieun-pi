@@ -18,6 +18,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
   noDoneLineLine, riskStepsLine } from "./checkin-findings.ts";
 import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
+import { turnErrorCause } from "./turn-error.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
@@ -704,12 +705,13 @@ export function jobReport(messages: readonly { role: string; customType?: string
 }
 /**
  * The `[job]` notice for a job that went quiet while the daemon says it did not reply to its task: one that messaged the chat at or after its
- * last wake asked something and waits for an answer, since that message; any other ended at its last activity with no report.
+ * last wake asked something and waits for an answer, since that message; one whose last turn failed says how (`failure`, the agents panel's
+ * cut line, "stopped on a provider error at 18:00 (rate limit 429, retries at 18:16), no report since"); any other ended at its last activity
+ * with no report. A failed turn read "ended at ... with no report" before, the same words as a job that finished quietly.
  */
-export function noReportNotice(name: string, message: JobMessage | undefined, wokeAt: number, end: number): string {
-  return message !== undefined && message.at >= wokeAt
-    ? `${name} is waiting for you since ${clockTime(message.at)} (last message: "${clip(message.text, 140)}")`
-    : `${name} ended at ${clockTime(end)} with no report`;
+export function noReportNotice(name: string, message: JobMessage | undefined, wokeAt: number, end: number, failure?: string): string {
+  if (message !== undefined && message.at >= wokeAt) return `${name} is waiting for you since ${clockTime(message.at)} (last message: "${clip(message.text, 140)}")`;
+  return failure ? `${name} ${clip(failure, 240)}` : `${name} ended at ${clockTime(end)} with no report`;
 }
 
 /**
@@ -741,10 +743,10 @@ export function jobEnd(messages: readonly ThreadMessage[]): JobEnd | null {
   }
   return end ? { ...end, startedAt: 0 } : null;
 }
-/** The cause in plain words: a provider error with the first 120 characters of its message, aborted, stopped mid-tool, the length limit. */
+/** The cause in plain words: a provider error with its cause (`turnErrorCause`), aborted, stopped mid-tool, the length limit. */
 export function jobEndWords(end: Pick<JobEnd, "cause" | "error">): string {
   switch (end.cause) {
-    case "error": return `stopped on a provider error${end.error ? ` ("${clip(end.error, 120)}")` : ""}`;
+    case "error": return `stopped on a provider error (${turnErrorCause(end.error)})`;
     case "aborted": return "was aborted";
     case "mid-tool": return "stopped in the middle of a tool call";
     case "length": return "hit the output length limit";

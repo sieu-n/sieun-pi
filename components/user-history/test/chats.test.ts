@@ -531,7 +531,7 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
   threads.views.set("old1", { messages: [task(endAt - 3 * 60 * 60_000), said("toolUse", endAt - 3 * 60 * 60_000)] });
   agents = agents.map(entry => entry.sessionId === "old1" ? agent("old1", "old one", "subagent", "sub-old", endAt - 3 * 60 * 60_000) : entry);
   const step = async (seconds = 30) => { now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => !call.startsWith("pin") && !call.startsWith("steering")); };
-  const apiText = `api audit stopped on a provider error ("${quota}") at ${clockTime(endAt)} and sent no report`;
+  const apiText = `api audit stopped on a provider error (rate limit 429) at ${clockTime(endAt)} and sent no report`;
   const rootText = `root work hit the output length limit at ${clockTime(endAt)} and sent no report`;
 
   const first = await step();

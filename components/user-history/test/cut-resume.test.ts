@@ -13,6 +13,7 @@ import { type Cut, cutSpans, resumesNow, SessionCuts } from "../src/cut-end.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import type { SessionRow } from "../src/shared/types.ts";
+import { turnErrorCause } from "../src/turn-error.ts";
 import { fakeThreads, row, source } from "./chats-helpers.ts";
 
 const at = (clock: string) => Date.parse(`2026-10-18T${clock}Z`);
@@ -64,7 +65,7 @@ test("each cut a read finds new goes to the listener once, and only a cut nobody
     const cuts = new SessionCuts(cut => seen.push(cut));
     await cuts.update([{ file, key: "a" }]);
     await cuts.update([{ file, key: "a" }]);
-    assert.deepEqual(seen, [{ at: at("10:26:47.724"), cause: "error" }]);
+    assert.deepEqual(seen, [{ at: at("10:26:47.724"), cause: "error", error: turnErrorCause(LIMIT) }]);
     assert.equal(resumesNow(seen[0]!, at("10:27:00")), true);
     assert.equal(resumesNow({ at: at("10:26:47"), cause: "error", slotAt: at("10:43:00") }, at("10:27:00")), false, "Prime's retry starts it at its slot");
     assert.equal(resumesNow({ at: at("10:26:47"), cause: "error", slotAt: at("10:43:00") }, at("10:44:00")), true);

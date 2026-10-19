@@ -1463,7 +1463,7 @@ export class Chats {
     if (told !== undefined && Math.abs(end - told.end) < NO_REPORT_SAME_END_MS && told.waited === waited) return;
     this.noticedEnd.set(child.id, { end, ...(waited !== undefined ? { waited } : {}) });
     if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the next check-in job sees it`); return; }
-    const line = `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end)}`;
+    const line = `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end, child.status === "error" ? child.error : undefined)}`;
     if (noticeStands(this.messages(id) ?? [], childName(child), line)) return;
     try {
       await this.threads.prompt(id, { message: line, images: [], mode: "steer" });

@@ -921,6 +921,45 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(resume_paused.error_free_at(error, now), now + 262)
         self.assertIsNone(resume_paused.error_free_at(error, now + 3600))
 
+    def test_a_job_of_a_chat_the_owner_archived_stays_stopped_after_its_429_even_when_pi_pool_admits_its_tree(self):
+        # legacy socket ownership (01a15525), a job of chat-057a (01a14210) on 10-19. The owner archived chat-057a at 05:31:25Z; agent messages
+        # kept its session working. The job's wake at 18:00:13Z met a 429 on claude18 at the model start, and the idle unload stopped it as a
+        # pool wait at 18:10:40Z. Every sweep from 18:47Z to 20:07Z read it as archived by the owner, and the chat service logged nothing.
+        chat, job = "01a14210-4e7d-72c3-aa67-e3d476f4e728", "01a15525-4943-735c-bbd4-a7f524a205fd"
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
+                   "[request_id: req_011CgC2pPcMAK6SSx8jUK5Lb] pi-pool: claude18@slack.green is limited until 2026-10-19T21:10:00.000Z; "
+                   "this session waits for its slot at 2026-10-19T18:16:00.000Z. Try again in 16 minutes.")
+        path = self.root / "artifacts" / chat / "sub-646f888a" / f"{job}.jsonl"
+        path.parent.mkdir(parents=True)
+        entries = [{"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-19T18:00:13.496Z", "content": "[wake] It is 2026-10-19T17:52:24.793Z"},
+                   {"type": "message", "timestamp": "2026-10-19T18:00:15.359Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                           "content": [], "errorMessage": limited}},
+                   {"type": "session_state", "timestamp": "2026-10-19T18:10:40.189Z", "state": {"status": "archived"}},
+                   {"type": "session_state", "timestamp": "2026-10-19T18:10:43.033Z", "state": {"status": "active"}}]
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        (self.root / "archived-chats.json").write_text(json.dumps({"ids": [chat]}))
+        rows = [{"id": "d9abd5ee761c", "sessionId": chat, "lifecycle": "live", "activity": "idle", "sessionName": "chat-057a", "runtimeKind": "top-level",
+                 "sessionFile": str(self.root / "sessions" / f"{chat}.jsonl"), "lastActivityAt": "2026-10-19T19:05:00.000Z"},
+                {"id": job, "sessionId": job, "lifecycle": "live", "activity": "idle", "isSessionActive": False, "sessionName": "legacy socket ownership",
+                 "runtimeKind": "subagent", "sessionFile": str(path), "lastActivityAt": "2026-10-19T18:10:43.033Z", "parentActiveSessionId": "d9abd5ee761c", "parentSessionId": chat}]
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+
+        def pool(cmd, **kwargs):
+            if cmd[1] == "ls":
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": [{"id": "claude-virev3", "usable": True}]}), "")
+            return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"providers": {"anthropic": {"account": "claude-virev3", "wait": None}}}), "")
+        now = dt.datetime(2026, 10, 19, 19, 7, tzinfo=dt.timezone.utc)
+        with patch.dict(resume_paused.UNLOADED, {job: resume_paused.parse_ts("2026-10-19T18:10:41.112Z")}, clear=True), \
+                patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
+                patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            report = resume_paused.resume(rows, args, now)
+        self.assertEqual((report["paused"], self.sent, resume_paused.HELD), ([], [], []))
+        self.assertEqual([(entry["session_id"], entry["stopped_by"], entry["stopped_at"]) for entry in resume_paused.STOPPED],
+                         [(job, "archived by the owner", "2026-10-19T18:10:40.189Z")])
+
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
         seen = self.root / "hook-session"
