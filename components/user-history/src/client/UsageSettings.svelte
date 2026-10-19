@@ -4,24 +4,25 @@
   import { clock } from "./clock.svelte.ts";
   import Icon from "./Icon.svelte";
   import Select from "./ui/Select.svelte";
-  import { tooltip } from "./ui/tooltip.ts";
-  import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
+    import type { UsageBucket, UsageFeed, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageWindow } from "../shared/usage.ts";
   import { usageMetric } from "./usage-metric.svelte.ts";
   import SettingsActions from "./SettingsActions.svelte";
-  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, ingestLine, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sourceCounts, sparkPath, tokens, tps, WINDOWS, type Bar } from "./usage.ts";
+  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sparkPath, tokens, tps, WINDOWS, type Bar } from "./usage.ts";
 
   /**
-   * Settings > Usage: every agent on this Mac together. One token kind (the metric, output by default) drives the headline cards, the chart and
-   * the table; "By kind" stacks all four kinds. The headline is live from the `usage` feed; the chart and table come from api/usage/series and
-   * api/usage/models.
+   * Settings > Usage: every agent on every box together, from LGTM. One token kind (the metric, output by default) drives the headline cards, the
+   * chart and the table; "By kind" stacks all four kinds. The headline is live from the `usage` feed; the chart and table come from
+   * api/usage/series and api/usage/models. A failed LGTM query shows its error, never zeros.
    */
   const PLOT = { left: 44, right: 8, top: 10, bottom: 22, height: 190 };
-  const GROUPS: { id: UsageGroup; label: string }[] = [{ id: "none", label: "All" }, { id: "source", label: "By source" }, { id: "model", label: "By model" }, { id: "kind", label: "By kind" }];
-  const WINDOW_LABEL: Record<UsageWindow, string> = { "1h": "1h", "24h": "24h", "7d": "7d", "30d": "30d", "90d": "90d", all: "All" };
+  const GROUPS: { id: UsageGroup; label: string }[] = [{ id: "none", label: "All" }, { id: "box", label: "By host" }, { id: "model", label: "By model" }, { id: "kind", label: "By kind" }];
+  const WINDOW_LABEL: Record<UsageWindow, string> = { "1h": "1h", "24h": "24h", "7d": "7d", "30d": "30d" };
   const isWindow = (value: string | null): value is UsageWindow => WINDOWS.includes(value as UsageWindow);
   const isGroup = (value: string | null): value is UsageGroup => GROUPS.some(entry => entry.id === value);
 
-  let summary = $state<UsageSummary | null>(null);
+  let feed = $state<UsageFeed | null>(null);
+  const summary = $derived(feed?.state === "live" ? feed : null);
+  const down = $derived(feed?.state === "error" ? feed.error : null);
   let feedDown = $state(false);
   const savedWindow = localStorage.getItem("usage.window");
   const savedGroup = localStorage.getItem("usage.group");
@@ -37,14 +38,13 @@
   let loading = $state(false);
   let chartWidth = $state(0);
   let hover = $state<{ bar: Bar; px: number } | null>(null);
-  /** The sync the chart was last loaded for, and when; a newer sync reloads it at most every 20 s. */
-  let loadedSync = $state<number | null>(null);
+  /** When the chart was last loaded; a feed update reloads it at most every 20 s. */
   let loadedAt = 0;
   let request = 0;
 
   /** The server sent a summary this page cannot read: it runs another build, and only a reload helps. */
   let unreadable = $state(false);
-  $effect(() => api.usageStream(next => { summary = next; feedDown = false; unreadable = false; }, () => { feedDown = true; }, () => { unreadable = true; }));
+  $effect(() => api.usageStream(next => { feed = next; feedDown = false; unreadable = false; }, () => { feedDown = true; }, () => { unreadable = true; }));
 
   async function load(): Promise<void> {
     const id = ++request;
@@ -57,7 +57,6 @@
       models = nextModels;
       error = null;
       loadedAt = Date.now();
-      loadedSync = summary?.ingest.lastSyncAt ?? null;
     } catch (reason) {
       if (id !== request) return;
       error = reason instanceof Error ? reason.message : String(reason);
@@ -67,8 +66,8 @@
   }
   $effect(() => { void window_; void bucket; void group; void metric; hover = null; void load(); });
   $effect(() => {
-    const sync = summary?.ingest.lastSyncAt ?? null;
-    untrack(() => { if (sync !== null && sync !== loadedSync && Date.now() - loadedAt > 20_000 && !loading) void load(); });
+    const at = summary?.at ?? null;
+    untrack(() => { if (at !== null && Date.now() - loadedAt > 20_000 && !loading) void load(); });
   });
 
   function pickWindow(next: UsageWindow): void {
@@ -89,14 +88,13 @@
   const bucketOptions = $derived(bucketsFor(window_).map(value => ({ value, label: BUCKET_LABEL[value] })));
   const plotWidth = $derived(Math.max(0, chartWidth - PLOT.left - PLOT.right));
   const chart = $derived(series && plotWidth > 0 ? layout(series, plotWidth, PLOT.height, clock.now, group === "kind" && shares) : null);
-  const ingest = $derived(summary ? ingestLine(summary.ingest, clock.now) : null);
   const rows = $derived([...(models ?? [])].sort((a, b) => metricOf(b.tokens, metric) - metricOf(a.tokens, metric)));
   /** The small line under each card: the total beside one kind, or output beside the total. */
   const other = $derived<UsageMetric>(metric === "total" ? "output" : "total");
   const otherLabel = $derived(metric === "total" ? "out" : "total");
   const cardLabel = $derived(metric === "total" ? "Tokens" : METRIC_LABEL[metric]);
   const stats = $derived(summary ? [
-    { label: `${cardLabel} / s`, note: "last 60 s", rate: summary.perSecond, spark: summary.sparkSeconds[metric] },
+    { label: `${cardLabel} / s`, note: "last 60 s", rate: summary.perSecond, spark: summary.spark[metric] },
     { label: `${cardLabel} / min`, note: "last 60 min", rate: summary.perMinute, spark: summary.sparkMinutes[metric] },
     { label: `${cardLabel} / day`, note: "last 24 h", rate: summary.perDay, spark: null },
   ] : []);
@@ -119,7 +117,7 @@
   }
   const keyLabel = (key: string): string => series?.group === "model" ? modelLabel(key) : series?.group === "kind" ? kindLabel(key) : key;
   const splitTitle = (row: UsageModelRow): string =>
-    `output ${fullTokens(row.tokens.output + row.tokens.reasoning)} · in ${fullTokens(row.tokens.input)} · cache read ${fullTokens(row.tokens.cacheRead)} · cache write ${fullTokens(row.tokens.cacheWrite)} · total ${fullTokens(row.tokens.total)}`;
+    `output ${fullTokens(row.tokens.output)} · in ${fullTokens(row.tokens.input)} · cache read ${fullTokens(row.tokens.cacheRead)} · cache write ${fullTokens(row.tokens.cacheWrite)} · total ${fullTokens(row.tokens.total)}`;
 </script>
 
 <section class="usage" aria-label="Usage">
@@ -131,6 +129,8 @@
 
   {#if unreadable}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> The chat service runs another build than this page. <button type="button" class="reload" onclick={() => location.reload()}>Reload</button></div></div>
+  {:else if down}
+    <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage from LGTM failed: {down}</div></div>
   {:else if !summary && feedDown}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage feed unavailable. Reconnecting.</div></div>
   {:else if !summary}
@@ -148,7 +148,7 @@
         </div>
       {/each}
       {#if cache}
-        <div class="stat" title="Cache read / (input + cache read + cache write), all agents on this Mac">
+        <div class="stat" title="Cache read / (input + cache read + cache write), all agents on every box">
           <div class="stat-label">Cache hit</div>
           <div class="stat-value tabular">{cache.hour}</div>
           <div class="stat-sub tabular">24 h {cache.day}<br />last 60 min</div>
@@ -235,30 +235,24 @@
 
     {#if rows.length}
       <table class="models">
-        <thead><tr><th>Source</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num" title="Cache read / (input + cache read + cache write)">Cache hit</th><th class="num">Cost</th><th class="num" title="Median output tokens per second per call">Out tok/s</th></tr></thead>
+        <thead><tr><th>Host</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num" title="Cache read / (input + cache read + cache write)">Cache hit</th><th class="num">Cost</th><th class="num" title="Output tokens per second of generation time">Out tok/s</th></tr></thead>
         <tbody>
-          {#each rows as row (row.source + " " + row.model)}
+          {#each rows as row (row.box + " " + row.model)}
             <tr>
-              <td class="muted">{row.source}</td>
+              <td class="muted">{row.box}</td>
               <td class="model" title={row.model}>{modelLabel(row.model)}</td>
               <td class="num tabular">{fullTokens(row.calls)}</td>
               <td class="num tabular" title={splitTitle(row)}>{tokens(metricOf(row.tokens, metric))}</td>
               <td class="num tabular">{hitRate(row.tokens)}</td>
               <td class="num tabular">{cost(row.costUsd)}</td>
-              <td class="num tabular">{tps(row.medianOutputTps)}</td>
+              <td class="num tabular">{tps(row.outputTps)}</td>
             </tr>
           {/each}
         </tbody>
       </table>
     {/if}
 
-    {#if ingest}
-      <p class="ingest {ingest.tone}">
-        {#if ingest.tone === "busy"}<span class="spinner tiny"></span>{:else if ingest.tone === "error"}<Icon name="alert" size={13} />{/if}
-        <span use:tooltip={sourceCounts(summary.ingest)}>{ingest.text}</span>
-        {#if feedDown}<span class="faint">· feed reconnecting</span>{/if}
-      </p>
-    {/if}
+    {#if feedDown}<p class="ingest faint">Feed reconnecting</p>{/if}
   {/if}
 </section>
 
@@ -310,8 +304,6 @@
   .models .num { text-align: right; }
   .models .model { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
   .ingest { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: var(--text-faint); }
-  .ingest.error { color: var(--danger); }
-  .ingest > span:nth-child(1 of span) { cursor: default; }
   .empty { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 32px 0; }
   .error { display: flex; align-items: center; gap: 8px; color: var(--danger); }
   .reload { color: var(--accent); font-weight: 600; text-decoration: underline; }

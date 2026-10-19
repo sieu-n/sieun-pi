@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { fileOwnerTexts } from "../../src/owner-history.ts";
-import { readAppended } from "../../src/usage/reader.ts";
+import { readAppended } from "./read-appended.ts";
 import { measureCache, primeTranscripts, readSessions, WINDOWS, type CacheMetric, type SessionCalls } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";

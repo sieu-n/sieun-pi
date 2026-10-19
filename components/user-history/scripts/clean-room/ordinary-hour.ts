@@ -1,14 +1,14 @@
-import { copyFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { DuckDBInstance } from "@duckdb/node-api";
+import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for the slop cuts of 10-16 (owner: "scrap all that slop", and before it tokens per second fell from 500k-600k to
  * about 100k). A fresh chat in auto-sns-agent gets one ordinary read-only question with a number and runs an hour alone. The judge reads the
  * family's session files for the server notices the cuts removed, the chat's first [corrections] block, the chat's turn waits, and system
- * tokens per second from a copy of usage.duckdb. The criteria live in the run folder's criteria.md.
+ * tokens per second from LGTM. The criteria live in the run folder's criteria.md.
  */
 /** One ordinary task per chat name, so each run gets a new chat and a new task; `counts` and `section` find the answer in its first reply. */
 export const TASKS: Record<string, { message: string; counts: RegExp; section: RegExp; drop: RegExp }> = {
@@ -182,28 +182,43 @@ function firstReply(events: readonly SessionEvent[], since: number, task: string
   return text && text.kind === "assistant" ? { at: text.at, text: text.text } : null;
 }
 
-interface Usage { system: number; family: number; chat: number; calls: number; last: number; chatCalls: { start: number; end: number }[]; error?: string }
-/** Tokens in the window from a copy of usage.duckdb (input+output+cache_read+cache_write, source prime-agent, by ended_at), as in measure.md. */
-async function usage(run: string, start: number, end: number, ids: readonly string[], chat: string): Promise<Usage> {
-  const empty: Usage = { system: 0, family: 0, chat: 0, calls: 0, last: 0, chatCalls: [] };
+interface Usage { system: number; family: number; chat: number; calls: number; chatCalls: { start: number; end: number }[]; error?: string }
+/**
+ * Tokens in the window from LGTM (src/usage/lgtm.ts): every kind of every box, and output tokens of the family and of the chat from the
+ * per-session series. The chat's call times come from its own session file: each assistant message's request start and its entry time.
+ */
+async function usage(start: number, end: number, ids: readonly string[], chat: string, chatFile: string): Promise<Usage> {
+  const chatCalls = callTimes(chatFile, start - HOUR);
   try {
-    const copy = join(run, "usage.duckdb");
-    copyFileSync(join(DATA, "usage.duckdb"), copy);
-    if (existsSync(join(DATA, "usage.duckdb.wal"))) copyFileSync(join(DATA, "usage.duckdb.wal"), copy + ".wal");
-    const instance = await DuckDBInstance.create(copy, { threads: "2", memory_limit: "512MB" });
-    const db = await instance.connect();
-    const where = `source = 'prime-agent' AND ended_at >= ${Math.floor(start)} AND ended_at < ${Math.floor(end)}`;
-    const list = ids.filter(id => /^[0-9a-f-]{36}$/.test(id)).map(id => `'${id}'`).join(", ") || "''";
-    const sum = "coalesce(sum(input + output + cache_read + cache_write), 0)";
-    const [row] = (await db.runAndReadAll(`SELECT ${sum}, count(*), max(ended_at), (SELECT ${sum} FROM calls WHERE ${where} AND session_id IN (${list})),
-      (SELECT ${sum} FROM calls WHERE ${where} AND session_id = '${chat}') FROM calls WHERE ${where}`)).getRowsJS() as unknown[][];
-    const calls = (await db.runAndReadAll(`SELECT started_at, ended_at FROM calls WHERE source = 'prime-agent' AND session_id = '${chat}' AND ended_at >= ${Math.floor(start) - HOUR}
-      ORDER BY started_at`)).getRowsJS() as unknown[][];
-    db.closeSync(); instance.closeSync();
-    const num = (value: unknown): number => Number(value ?? 0);
-    return { system: num(row![0]), calls: num(row![1]), last: num(row![2]), family: num(row![3]), chat: num(row![4]),
-      chatCalls: calls.map(([started, ended]) => ({ start: num(started ?? ended), end: num(ended) })) };
-  } catch (error) { return { ...empty, error: error instanceof Error ? error.message : String(error) }; }
+    const prometheus = grafanaPrometheus(join(DATA, "grafana-alerts.json"));
+    const span = `${Math.max(1, Math.round((end - start) / 1000))}s`;
+    const job = 'job="prime-agent"';
+    const list = ids.filter(id => /^[0-9a-f-]{36}$/.test(id)).join("|") || "none";
+    const total = async (promql: string) => (await prometheus.query(promql, end)).reduce((sum, sample) => sum + sample.value, 0);
+    const [system, calls, family, chatOutput] = await Promise.all([
+      total(`sum(increase(prime_agent_tokens_total{${job}}[${span}]))`),
+      total(`sum(increase(prime_agent_calls_total{${job}}[${span}]))`),
+      total(`sum(increase(prime_agent_session_output_tokens_total{${job},session=~"${list}"}[${span}]))`),
+      total(`sum(increase(prime_agent_session_output_tokens_total{${job},session="${chat}"}[${span}]))`),
+    ]);
+    return { system, calls: Math.round(calls), family, chat: chatOutput, chatCalls };
+  } catch (error) { return { system: 0, family: 0, chat: 0, calls: 0, chatCalls, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+/** Each model call of a session file since `since`: request start (`message.timestamp`) to the entry's time, oldest first. */
+function callTimes(file: string, since: number): { start: number; end: number }[] {
+  if (!file || !existsSync(file)) return [];
+  const calls: { start: number; end: number }[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.includes('"role":"assistant"')) continue;
+    let entry: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; timestamp?: unknown } };
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    const end = Date.parse(String(entry.timestamp));
+    if (!Number.isFinite(end) || end < since) continue;
+    calls.push({ start: typeof entry.message.timestamp === "number" ? entry.message.timestamp : end, end });
+  }
+  return calls.sort((a, b) => a.start - b.start);
 }
 
 async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
@@ -261,12 +276,12 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
       (bad.length ? `; ${bad.length} lines are not "- cN <first sentence>":\n${bad.slice(0, 8).map(line => `    - (${line.length}) "${clip(line, 200)}"`).join("\n")}` : "")
     : "no [corrections] block found in the chat's checkpoints or Prompt view captures" });
 
-  const used = await usage(run, start, end, [...ids], state.chat.id);
+  const used = await usage(start, end, [...ids], state.chat.id, chatFile);
   const seconds = Math.max(1, (end - start) / 1000);
   const rate = (tokens: number): string => `${(tokens / seconds / 1000).toFixed(1)}k/s`;
-  checks.push({ id: "d", ok: used.error ? false : true, detail: used.error ? `usage.duckdb copy could not be read: ${used.error}`
-    : `system ${rate(used.system)} over ${Math.round(seconds / 60)} min (${used.calls} calls), against ${BEFORE.day1013}k/s on 10-13 and ${BEFORE.last12h}k/s in the 12 h before the cuts; ` +
-      `the chat's family ${rate(used.family)}, the chat ${rate(used.chat)}; the copy's newest call ended ${used.last ? iso(used.last) : "never"}` });
+  checks.push({ id: "d", ok: used.error ? false : true, detail: used.error ? `LGTM could not be read: ${used.error}`
+    : `system ${rate(used.system)} on every box over ${Math.round(seconds / 60)} min (${used.calls} calls), against ${BEFORE.day1013}k/s on 10-13 and ${BEFORE.last12h}k/s in the 12 h before the cuts; ` +
+      `output of the chat's family ${rate(used.family)}, of the chat ${rate(used.chat)}` });
 
   const queued = customs(chatFile).filter(entry => entry.customType === "pi-pool-queue" && entry.at >= start - 5 * 60_000 && entry.at < end);
   const chatEvents = sessions.find(session => session.id === state.chat.id)?.events ?? [];
@@ -304,7 +319,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const text = [
     `# Clean-room run ${basename(run)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${state.chat.id}) ran on ${state.release} from ${iso(start)} to ${iso(now)}, check-in every ${state.everyMs / 60_000} min, with one owner-style message and nothing seeded. Judged by \`clean-room.ts evaluate\`.`,
-    `Criteria: ${join(run, "criteria.md")}. Evidence: ${run}/agents, boards, prompts, runs.jsonl, usage.duckdb and the ${sessions.length} session files of the family.`, "",
+    `Criteria: ${join(run, "criteria.md")}. Evidence: ${run}/agents, boards, prompts, runs.jsonl and the ${sessions.length} session files of the family.`, "",
     "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${yes(check.ok)}: ${check.detail}`), "",
     "## Seen, not judged", "",
     `- Texts that reached the family in the window, by opening tag: ${[...tags].sort((a, b) => b[1] - a[1]).map(([tag, count]) => `${tag} ${count}`).join(", ") || "none"}.`,

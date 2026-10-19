@@ -551,7 +551,7 @@ export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], 
   });
 }
 
-/** The agents with their output rates attached, for the session ids the usage store answered for. */
+/** The agents with their output rates attached, for the session ids LGTM answered for. */
 export function withRates(agents: readonly ChatAgent[], rates: Readonly<Record<string, TokenRate>>): ChatAgent[] {
   return agents.map(agent => { const rate = agent.sessionId ? rates[agent.sessionId] : undefined; return rate ? { ...agent, rate } : agent; });
 }

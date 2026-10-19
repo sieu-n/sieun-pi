@@ -1,47 +1,23 @@
 /**
- * Usage analytics contract between the chat service (src/usage/*) and the browser (Settings > Usage).
- * The coordinator owns this file. Change it only by asking the coordinator.
- *
- * Source of truth is the raw agent transcripts on this Mac. usage.duckdb is a derived cache:
- * delete it and the service rebuilds it from the transcripts.
+ * Usage analytics contract between the chat service (src/usage/lgtm.ts) and the browser (Settings > Usage, the sidebar Throughput line).
+ * The numbers come from LGTM: every Prime process on every box exports its model calls as OTLP counters (~/work/otel-tok-meter/CONTRACT.md).
+ * A token count here is every box together unless a row names its box.
  */
 
-/** One client whose local transcripts are read. Matches tokscale client ids where one exists. */
-export type UsageSource = "prime-agent" | "claude-code" | "codex" | "hermes" | "pi" | "opencode" | (string & {});
-
-/** One model call, one row in the `calls` table. */
-export type UsageCall = {
-  source: UsageSource;
-  /** Stable id inside the source: provider response id, message id, or file+line when nothing else exists. */
-  callId: string;
-  sessionId: string | null;
-  /** Wall-clock end of the call (when the transcript wrote it), epoch ms. */
-  endedAt: number;
-  /** Request start, epoch ms, when the source records it (Prime Agent `message.timestamp`). */
-  startedAt: number | null;
-  provider: string | null;
-  model: string | null;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  reasoning: number;
-  /** USD. From the source when it records cost, else from the price table, else null. */
-  costUsd: number | null;
-  cwd: string | null;
-};
-
-export type UsageTokens = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number };
-
-/** The token kinds a metric can show. `total` sums the other four (reasoning is counted inside output where the source reports it). */
-export type UsageMetric = "output" | "input" | "cacheRead" | "cacheWrite" | "total";
+/** The token kinds of a model call. Output counts reasoning where the provider reports it inside output. */
+export type UsageKind = "output" | "input" | "cacheRead" | "cacheWrite";
+export const USAGE_KINDS: readonly UsageKind[] = ["output", "input", "cacheRead", "cacheWrite"];
+/** The token kinds a metric can show. `total` sums the four kinds. */
+export type UsageMetric = UsageKind | "total";
 export const USAGE_METRICS: readonly UsageMetric[] = ["output", "input", "cacheRead", "cacheWrite", "total"];
 
-/** Rolling throughput for all agents together, one number per metric. */
-export type UsageRate = Record<UsageMetric, number>;
+export type UsageTokens = Record<UsageMetric, number>;
+/** Throughput of every box together, one number per metric. */
+export type UsageRate = UsageTokens;
 
-/** GET api/usage/summary, and the `usage` WebSocket feed payload (pushed about every 2 s while subscribed). */
+/** The `usage` WebSocket feed payload while LGTM answers, sent at subscribe and then every 5 s. */
 export type UsageSummary = {
+  state: "live";
   at: number;
   /** Tokens per second over the last 60 s. */
   perSecond: UsageRate;
@@ -49,27 +25,24 @@ export type UsageSummary = {
   perMinute: UsageRate;
   /** Tokens over the last 24 h. */
   perDay: UsageRate;
-  /** Last 60 one-second buckets, then last 60 one-minute buckets, oldest first; per metric, tokens per bucket. */
-  sparkSeconds: Record<UsageMetric, number[]>;
+  /** Tokens per second every 10 s over the last 10 min (61 points), oldest first. */
+  spark: Record<UsageMetric, number[]>;
+  /** Tokens per minute over the last 60 min (61 points), oldest first. */
   sparkMinutes: Record<UsageMetric, number[]>;
-  costToday: number | null;
-  ingest: UsageIngest;
+  /** USD since local midnight, as the providers report it. */
+  costToday: number;
 };
+/** The `usage` feed payload when a query failed: the page shows the error, never zeros. */
+export type UsageDown = { state: "error"; at: number; error: string };
+export type UsageFeed = UsageSummary | UsageDown;
 
-export type UsageIngest = {
-  state: "building" | "syncing" | "idle" | "error";
-  /** Initial build progress; equal when the build is done. */
-  filesDone: number;
-  filesTotal: number;
-  lastSyncAt: number | null;
-  error: string | null;
-  sources: { source: UsageSource; calls: number; firstCallAt: number | null; lastCallAt: number | null }[];
-};
-
-export type UsageWindow = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
-export type UsageBucket = "second" | "minute" | "hour" | "day";
-/** `kind` stacks the token kinds (output, input, cache write, cache read) in one bar. */
-export type UsageGroup = "none" | "source" | "model" | "kind";
+export type UsageWindow = "1h" | "24h" | "7d" | "30d";
+export const USAGE_WINDOWS: readonly UsageWindow[] = ["1h", "24h", "7d", "30d"];
+export type UsageBucket = "minute" | "hour" | "day";
+export const USAGE_BUCKETS: readonly UsageBucket[] = ["minute", "hour", "day"];
+/** `box` stacks per machine, `model` per model, and `kind` stacks the token kinds (output, input, cache write, cache read) in one bar. */
+export type UsageGroup = "none" | "box" | "model" | "kind";
+export const USAGE_GROUPS: readonly UsageGroup[] = ["none", "box", "model", "kind"];
 
 /** GET api/usage/series?window=&bucket=&group=&metric= (metric defaults to output; `byKey` sums that metric; group "kind" ignores it and keys are output, input, cacheWrite, cacheRead). */
 export type UsageSeries = {
@@ -79,16 +52,17 @@ export type UsageSeries = {
   metric: UsageMetric;
   /** Group keys in display order (largest first, at most 8, the rest folded into "other"). Empty for group "none". */
   keys: string[];
+  /** One point per bucket that saw tokens or calls; `t` is the bucket start. */
   points: { t: number; tokens: UsageTokens; costUsd: number | null; calls: number; byKey?: Record<string, number> }[];
 };
 
-/** GET api/usage/models?window= : one row per model, for the table under the chart. */
+/** GET api/usage/models?window= : one row per box and model, for the table under the chart. */
 export type UsageModelRow = {
-  source: UsageSource;
+  box: string;
   model: string;
   calls: number;
   tokens: UsageTokens;
-  costUsd: number | null;
-  /** Median output tokens per second per call (output / (endedAt - startedAt)), only where startedAt exists and output > 200. */
-  medianOutputTps: number | null;
+  costUsd: number;
+  /** Output tokens per second of generation time over the window, from the per-session series; null when no call was timed. */
+  outputTps: number | null;
 };

@@ -32,7 +32,7 @@ import { ThreadError } from "./chat-threads.ts";
 import { OutboxConflict } from "./outbox.ts";
 import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
-import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
+import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/lgtm.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
@@ -426,7 +426,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));
     if (feed.feed === "usage") {
       if (!backend.usage) throw new Error("Usage analytics is off in this chat.");
-      return backend.usage.subscribe(summary => send("usage", summary));
+      return backend.usage.subscribe(reading => send("usage", reading));
     }
     try {
       const id = threadId(feed.id);

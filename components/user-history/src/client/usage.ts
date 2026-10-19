@@ -1,7 +1,7 @@
 import { cacheHitShare } from "../shared/cache-health.ts";
-import { USAGE_METRICS, type UsageBucket, type UsageIngest, type UsageMetric, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow } from "../shared/usage.ts";
+import { USAGE_METRICS, USAGE_WINDOWS, type UsageBucket, type UsageFeed, type UsageMetric, type UsageSeries, type UsageTokens, type UsageWindow } from "../shared/usage.ts";
 
-/** Pure helpers for Settings > Usage: number formats, the token kind (metric) choices, the window and bucket choices, the chart layout and the ingest line. */
+/** Pure helpers for Settings > Usage: number formats, the token kind (metric) choices, the window and bucket choices and the chart layout. */
 
 /** The token kinds a person can pick, in switch order. `short` fits the sidebar footer label. */
 export const METRICS: readonly { id: UsageMetric; label: string; short: string }[] = [
@@ -10,30 +10,31 @@ export const METRICS: readonly { id: UsageMetric; label: string; short: string }
 ];
 export const METRIC_LABEL: Record<UsageMetric, string> = { output: "Output", input: "Input", cacheRead: "Cache read", cacheWrite: "Cache write", total: "Total" };
 export const isMetric = (value: string | null): value is UsageMetric => USAGE_METRICS.includes(value as UsageMetric);
-/** One kind of a token count; output includes reasoning, as the service counts it. */
-export const metricOf = (tokens: UsageTokens, metric: UsageMetric): number => metric === "output" ? tokens.output + tokens.reasoning : tokens[metric];
+/** One kind of a token count. */
+export const metricOf = (tokens: UsageTokens, metric: UsageMetric): number => tokens[metric];
 /** Group "kind" keys as the service stacks them, output at the bottom. */
 export const KIND_KEYS: readonly string[] = ["output", "input", "cacheWrite", "cacheRead"];
 export const kindLabel = (key: string): string => isMetric(key) ? METRIC_LABEL[key] : key;
 
 /**
- * A `usage` feed payload this page can draw: a rate and both sparks for every metric, and the ingest state. The page and the server
- * can come from different builds (a tab left open across a restart, or a restart while the shared tree was half edited). A summary in a
- * shape the page did not know used to throw inside the render, and Settings > Usage then stayed on "Loading usage" with "– tok/s" in the
- * sidebar while api/usage/summary answered. Such a payload is now null, and the page says to reload.
+ * A `usage` feed payload this page can draw: the error LGTM gave, or a rate and both sparks for every metric. The page and the server can come
+ * from different builds (a tab left open across a restart). A summary in a shape the page did not know used to throw inside the render, and
+ * Settings > Usage then stayed on "Loading usage" with "– tok/s" in the sidebar. Such a payload is now null, and the page says to reload.
  */
-export function readSummary(value: unknown): UsageSummary | null {
+export function readFeed(value: unknown): UsageFeed | null {
   const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  if (!record(value) || typeof value.at !== "number" || !record(value.ingest) || typeof value.ingest.state !== "string") return null;
+  if (!record(value) || typeof value.at !== "number") return null;
+  if (value.state === "error") return typeof value.error === "string" ? value as UsageFeed : null;
+  if (value.state !== "live" || typeof value.costToday !== "number") return null;
   const rate = (v: unknown) => record(v) && USAGE_METRICS.every(metric => typeof v[metric] === "number");
   const spark = (v: unknown) => record(v) && USAGE_METRICS.every(metric => Array.isArray(v[metric]) && (v[metric] as unknown[]).every(n => typeof n === "number"));
-  if (!rate(value.perSecond) || !rate(value.perMinute) || !rate(value.perDay) || !spark(value.sparkSeconds) || !spark(value.sparkMinutes)) return null;
-  return value as UsageSummary;
+  if (!rate(value.perSecond) || !rate(value.perMinute) || !rate(value.perDay) || !spark(value.spark) || !spark(value.sparkMinutes)) return null;
+  return value as UsageFeed;
 }
 
-export const BUCKET_MS: Record<UsageBucket, number> = { second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 };
-export const WINDOW_MS: Record<Exclude<UsageWindow, "all">, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, "90d": 90 * 86_400_000 };
-export const WINDOWS: readonly UsageWindow[] = ["1h", "24h", "7d", "30d", "90d", "all"];
+export const BUCKET_MS: Record<UsageBucket, number> = { minute: 60_000, hour: 3_600_000, day: 86_400_000 };
+export const WINDOW_MS: Record<UsageWindow, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 };
+export const WINDOWS: readonly UsageWindow[] = USAGE_WINDOWS;
 
 /** The buckets a window offers, the default first. A choice never draws more than about 1,500 bars. */
 export function bucketsFor(window: UsageWindow): readonly UsageBucket[] {
@@ -42,11 +43,10 @@ export function bucketsFor(window: UsageWindow): readonly UsageBucket[] {
     case "24h": return ["hour", "minute"];
     case "7d": return ["hour", "day"];
     case "30d": return ["day", "hour"];
-    default: return ["day"];
   }
 }
 export const defaultBucket = (window: UsageWindow): UsageBucket => bucketsFor(window)[0]!;
-export const BUCKET_LABEL: Record<UsageBucket, string> = { second: "Second", minute: "Minute", hour: "Hour", day: "Day" };
+export const BUCKET_LABEL: Record<UsageBucket, string> = { minute: "Minute", hour: "Hour", day: "Day" };
 
 /** A token count for a headline or axis: 842, 1.2k, 84k, 1.23M, 12.4M, 1.08B. */
 export function tokens(value: number): string {
@@ -70,7 +70,7 @@ export function cost(usd: number | null): string {
   return "$" + usd.toFixed(2);
 }
 
-/** Median output tokens per second: 42.3, 128, or a dash when no call qualified. */
+/** Output tokens per second: 42.3, 128, or a dash when no call was timed. */
 export function tps(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "–";
   return value < 100 ? value.toFixed(1) : String(Math.round(value));
@@ -124,7 +124,7 @@ export function tickLabel(t: number, bucket: UsageBucket, spanMs: number): strin
 
 /**
  * Places every bucket by time inside the plot (`width` by `height` px, origin top left), so a quiet hour shows as a gap, never as a
- * collapsed step. A fixed window spans [now - window, now]; "all" spans the first bucket to the last. A bar is the series metric
+ * collapsed step. The window spans [now - window, now]. A bar is the series metric
  * (every kind for group "kind"). Stacks follow `series.keys`; tokens not covered by the listed keys fold into "other".
  * `share` draws every stacked bar at full height with its parts as fractions, so the mix of a quiet bucket reads like a busy one.
  * A stacked part that was used at all is at least 1 px tall.
@@ -134,8 +134,8 @@ export function layout(series: UsageSeries, width: number, height: number, now: 
   const points = [...series.points].sort((a, b) => a.t - b.t);
   const first = points[0]?.t ?? now - step;
   const last = (points.at(-1)?.t ?? now - step) + step;
-  const from = series.window === "all" ? first : Math.min(now - WINDOW_MS[series.window], first);
-  const to = series.window === "all" ? last : Math.max(now, last);
+  const from = Math.min(now - WINDOW_MS[series.window], first);
+  const to = Math.max(now, last);
   const span = Math.max(step, to - from);
   const value = (point: UsageSeries["points"][number]) => barValue(series, point.tokens);
   const stacked = series.group !== "none";
@@ -191,24 +191,8 @@ export function barAt(bars: readonly Bar[], x: number): Bar | null {
 export function bucketTitle(t: number, bucket: UsageBucket): string {
   const date = new Date(t);
   if (bucket === "day") return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", ...(bucket === "second" ? { second: "2-digit" } : {}) });
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time;
-}
-
-/** The one ingest line under the chart. */
-export function ingestLine(ingest: UsageIngest, now: number): { text: string; tone: "quiet" | "busy" | "error" } {
-  if (ingest.state === "error") return { text: ingest.error ? "Usage sync failed: " + ingest.error : "Usage sync failed", tone: "error" };
-  if (ingest.state === "building") return { text: `Building: ${fullTokens(ingest.filesDone)} of ${fullTokens(ingest.filesTotal)} files`, tone: "busy" };
-  if (ingest.lastSyncAt === null) return { text: ingest.state === "syncing" ? "Syncing" : "Not synced yet", tone: ingest.state === "syncing" ? "busy" : "quiet" };
-  const ago = Math.max(0, now - ingest.lastSyncAt);
-  const when = ago < 60_000 ? `${Math.round(ago / 1000)} s ago` : ago < 3_600_000 ? `${Math.floor(ago / 60_000)} min ago` : `${Math.floor(ago / 3_600_000)} h ago`;
-  return { text: `Synced ${when}`, tone: ingest.state === "syncing" ? "busy" : "quiet" };
-}
-
-/** Hover text for the ingest line: calls per source. */
-export function sourceCounts(ingest: UsageIngest): string {
-  if (!ingest.sources.length) return "No calls read yet";
-  return ingest.sources.map(entry => `${entry.source} ${fullTokens(entry.calls)} calls`).join(" · ");
 }
 
 /** A short model name for the table: the id after the provider prefix, without a date suffix. */

@@ -1,7 +1,7 @@
 import { open, type FileHandle } from "node:fs/promises";
 
 /**
- * Appended-bytes reader for JSONL transcripts. Most lines carry no usage, so lines are picked by a byte pattern before
+ * Appended-bytes reader for JSONL transcripts, for the duty prechecks that read transcripts (harness-health.ts, cache-ratio.ts). Most lines carry no usage, so lines are picked by a byte pattern before
  * any JSON.parse: a `within` needle must start in the first `within` bytes of the line (one memchr pass for the line
  * ends, then a short look at each line head); a needle without `within` is searched anywhere in the chunk.
  * Only whole lines are read. A last line without its newline is left for the next read, and the returned offset is
@@ -92,16 +92,4 @@ function scanAnywhere(buffer: Buffer, from: number, last: number, patterns: { by
     const end = buffer.indexOf(newline, start);
     sink(buffer.toString("utf8", start, end < 0 || end > last ? last : end), base + start);
   }
-}
-
-/** Hex of up to 32 bytes just before `offset`: a cheap check that the bytes already read are still the same file content. */
-export async function tailSample(path: string, offset: number): Promise<string> {
-  if (offset <= 0) return "";
-  const length = Math.min(32, offset);
-  const handle = await open(path, "r");
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset - length);
-    return buffer.toString("hex", 0, bytesRead);
-  } finally { await handle.close(); }
 }

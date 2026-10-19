@@ -1,14 +1,13 @@
 import { readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { cacheHitShare } from "../../src/shared/cache-health.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
-import { readAppended, type Needle } from "../../src/usage/reader.ts";
-import { fileRoots } from "../../src/usage/sources.ts";
+import { readAppended, type Needle } from "./read-appended.ts";
 
 /**
  * The prompt cache read share for the Skills and harness duty (owner c41: "measures the hourly and daily cache read ratio and flags a drop").
- * Share = cache read / (input + cache read + cache write) over the Prime Agent calls the Usage page counts: the same transcript files
- * (src/usage/sources.ts) and the same call rules as its parser (an assistant message with usage and a model, one row per response id).
+ * Share = cache read / (input + cache read + cache write) over this box's Prime Agent calls in the transcripts (`primeRoots`), one call per
+ * assistant message with usage and a model, one row per response id.
  * When a share is under its target, the duty job gets the sessions that lost the most cache in warm breaks, with what came right before.
  */
 
@@ -168,7 +167,7 @@ export async function readTranscript(path: string, since: number): Promise<Sessi
 
 /**
  * The files under `dir` that `accepts` takes. In session-artifacts it enters only `sub-*` folders below the first level: transcripts sit in
- * session folders and their RLM child chains (src/usage/sources.ts), and agents keep millions of artifact files beside them.
+ * session folders and their RLM child chains (`primeRoots`), and agents keep millions of artifact files beside them.
  */
 async function transcripts(dir: string, accepts: (path: string) => boolean, subOnly: boolean, depth = 0): Promise<string[]> {
   const found: string[] = [];
@@ -180,10 +179,29 @@ async function transcripts(dir: string, accepts: (path: string) => boolean, subO
   return found;
 }
 
-/** Every Prime Agent transcript the Usage page reads that changed since `since`. */
+const jsonl = (path: string) => path.endsWith(".jsonl");
+/**
+ * Where Prime Agent transcripts sit: root sessions flat in sessions/, root sessions moved to sessions-archive/, and RLM children under
+ * session-artifacts/<root id>/sub-<id>/[sub-<id>/...]<session>.jsonl (never rlm-subagents.jsonl).
+ */
+export function primeRoots(home: string): { root: string; accepts(path: string): boolean }[] {
+  const prime = join(home, ".prime", "agent");
+  const sessions = join(prime, "sessions"), artifacts = join(prime, "session-artifacts");
+  return [
+    { root: sessions, accepts: path => jsonl(path) && !relative(sessions, path).includes(sep) },
+    { root: join(prime, "sessions-archive"), accepts: jsonl },
+    { root: artifacts, accepts: path => {
+      if (!jsonl(path)) return false;
+      const parts = relative(artifacts, path).split(sep);
+      return parts.length >= 3 && parts.slice(1, -1).every(part => part.startsWith("sub-")) && parts.at(-1) !== "rlm-subagents.jsonl";
+    } },
+  ];
+}
+
+/** Every Prime Agent transcript that changed since `since`. */
 export async function primeTranscripts(home: string, since: number): Promise<string[]> {
   const found: string[] = [];
-  for (const root of fileRoots(home).filter(root => root.source === "prime-agent")) {
+  for (const root of primeRoots(home)) {
     for (const path of await transcripts(root.root, root.accepts, basename(root.root) === "session-artifacts")) {
       const info = await stat(path).catch(() => null);
       if (info && info.mtimeMs >= since) found.push(path);
@@ -192,7 +210,7 @@ export async function primeTranscripts(home: string, since: number): Promise<str
   return found;
 }
 
-/** Every Prime Agent transcript the Usage page reads that changed since `since`, read for calls since then. */
+/** Every Prime Agent transcript that changed since `since`, read for calls since then. */
 export async function readSessions(home: string, since: number): Promise<SessionCalls[]> {
   const sessions: SessionCalls[] = [];
   for (const path of await primeTranscripts(home, since)) {

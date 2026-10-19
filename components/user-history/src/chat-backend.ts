@@ -43,8 +43,7 @@ import { IdIndex } from "./id-index.ts";
 import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
-import { UsageService } from "./usage/service.ts";
-import { startUsagePublisher } from "./usage/publish.ts";
+import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
@@ -80,8 +79,8 @@ export interface ChatBackend {
   boards: BoardStore;
   /** `<dataDir>/threads.json`: every thread `POST api/threads` created, both kinds. A listed id is `origin: "user"`. */
   created: IdIndex;
-  /** Settings > Usage: token analytics of every agent on this Mac, from `<dataDir>/usage.duckdb`. Absent in tests that fake a backend. */
-  usage?: UsageService;
+  /** Settings > Usage, the Throughput line and the Agents card tok/s: token usage of every box, read from LGTM. Absent in tests that fake a backend. */
+  usage?: Usage;
   /** `<dataDir>/duties/`: each chat's standing duties and their runs; the runner ticks every 30 s. Absent in tests that fake a backend. */
   duties?: Duties;
   /** Each live root's pool class (`pi-pool priority`), synced every 30 s and after a priority label change. Absent in tests that fake a backend. */
@@ -152,8 +151,8 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
 export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
   const scratch = options.scratch === true;
   // A replay serve runs the loops a live start runs whose only effects are daemon commands, which all reach the recorded fake daemon, and
-  // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures, compaction,
-  // usage pushes) stays off or dry. `quiet` is a scratch serve without it.
+  // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures,
+  // compaction) stays off or dry. `quiet` is a scratch serve without it.
   const replay = scratch && options.replay === true;
   const quiet = scratch && !replay;
   const ownChatsOnly = options.ownChatsOnly === true || scratch;
@@ -258,17 +257,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (catalog.hostOf(id) !== null) return;
       void chats.ids().then(ids => ids.has(id) ? autoCompact.compacted(id, file) : null).catch(error => dutyLog(`session compact ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
     } });
-  // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
-  const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
-  usage.start();
+  // Token usage of every box comes from LGTM only (src/usage/lgtm.ts); nothing is queried until a page subscribes or the Agents card asks for rates.
+  const usage = new Usage(grafanaPrometheus(join(dataDir, "grafana-alerts.json")));
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = queued;
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
   if (!quiet) void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
-  // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
-  const stopPublish = scratch ? () => {} : await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
   const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
   // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
@@ -421,14 +417,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopBridgeWatch();
       unwatchBoards();
       unobserveCompaction();
-      stopPublish();
       duties.close();
       archives.close();
       chats.close();
       awake.close();
       await threads.close();
       await catalog.close();
-      await usage.close();
+      usage.close();
     },
   };
 }

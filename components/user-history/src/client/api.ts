@@ -7,8 +7,8 @@ import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
 import { agentsHave, applyAgentsFrame, applySessionsDelta, sessionsHave, type AgentsDelta, type AgentsView } from "../shared/sessions-delta.ts";
-import { readSummary } from "./usage.ts";
-import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
+import { readFeed } from "./usage.ts";
+import type { UsageBucket, UsageFeed, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageWindow } from "../shared/usage.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -140,14 +140,15 @@ export const api = {
   },
   startRefresh: (provider: string, account: string | null) => post<UsageRefresh>("api/accounts/refresh", { provider, account }),
   /**
-   * Settings > Usage: the rolling throughput summary, pushed about every 2 s while subscribed (`src/shared/usage.ts`). `onUnreadable` gets a
-   * summary from a server build whose shape this page does not know (see `readSummary`); a reload fixes it.
+   * Settings > Usage and the sidebar Throughput line: the throughput of every box from LGTM, or the error that kept it, pushed every 5 s while
+   * subscribed (`src/shared/usage.ts`). `onUnreadable` gets a payload from a server build whose shape this page does not know (see `readFeed`); a
+   * reload fixes it.
    */
-  usageStream(onSummary: (summary: UsageSummary) => void, onError: () => void = () => {}, onUnreadable: () => void = () => {}): () => void {
+  usageStream(onFeed: (feed: UsageFeed) => void, onError: () => void = () => {}, onUnreadable: () => void = () => {}): () => void {
     return subscribeFeed({ feed: "usage" }, (event, data) => {
       if (event !== "usage") return;
-      const summary = readSummary(data);
-      if (summary) onSummary(summary); else onUnreadable();
+      const feed = readFeed(data);
+      if (feed) onFeed(feed); else onUnreadable();
     }, onError);
   },
   usageSeries: (window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric) => get<UsageSeries>(`api/usage/series?window=${window}&bucket=${bucket}&group=${group}&metric=${metric}`, 30000),

@@ -330,7 +330,7 @@ export type AgentLink = "subagent" | "root" | "step" | "message";
  * last exchange with the chat is a message it sent that asks something, so the chat owes it an answer.
  */
 export type AgentState = "working" | "waiting" | "idle" | "done" | "failed";
-/** Output tokens per second of a thread, from the usage store's calls: `live` from the calls that ended in the last minute, else the average over its calls. */
+/** Output tokens per second of generation time of a thread, from LGTM's per-session series: `live` over the last minute, else over the last 24 h. */
 export interface TokenRate { tps: number; live: boolean }
 /**
  * One thread linked to a chat, in the sessions stream on the chat's row (`SessionRow.agents`, computed by `chatAgents` on the server): the Agents card,
@@ -355,7 +355,7 @@ export interface ChatAgent {
   lastActivityAt?: string;
   /** Plan item ids whose owner it is. */
   steps: string[];
-  /** Its output tokens per second, when the usage store has a timed call for its session. */
+  /** Its output tokens per second, when LGTM has a timed call for its session. */
   rate?: TokenRate;
   /** Running subagents below it at any depth, the sidebar's `SessionRow.subagentsRunning`; absent at 0. */
   subagentsRunning?: number;
