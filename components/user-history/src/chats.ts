@@ -1147,6 +1147,9 @@ export class Chats {
   }
 
   /** A chat's check-in as the owner's control shows it; null for a thread that is not a chat. */
+  /** The sessions of the cut jobs pi-pool holds, from the last interrupted pass (`PoolHeldJobs.sessions`). */
+  poolHeldSessions(): ReadonlySet<string> { return this.heldJobs.sessions(); }
+
   async checkInView(id: string): Promise<CheckInView | null> {
     await this.load();
     if (!this.chatIds.has(id)) return null;

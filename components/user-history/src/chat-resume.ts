@@ -256,10 +256,21 @@ const isGone = (result: InterruptedHead["result"]): boolean => typeof result ===
  */
 export class PoolHeldJobs {
   private runs: readonly PoolHeldRun[] = [];
+  private held: ReadonlySet<string> = new Set();
 
   constructor(private readonly admits: (tree: string, provider: string) => Promise<boolean>) {}
 
-  set(runs: readonly PoolHeldRun[]): void { this.runs = runs.filter(run => run.provider !== null && run.host === undefined); }
+  set(runs: readonly PoolHeldRun[]): void {
+    this.runs = runs.filter(run => run.provider !== null && run.host === undefined);
+    this.held = new Set(runs.map(run => run.session_id));
+  }
+
+  /**
+   * The session of every run the last pass left held, on any box and with any provider: each is a live owner waiting for its pool time. On
+   * 10-19 api portal vp's d2 runs at 14:09Z, 14:24Z and 14:40Z read parity prod promote 12, parity missing routes and parity crawler errors as
+   * not live while pi-pool held all three trees after their 13:30Z to 14:08Z cuts.
+   */
+  sessions(): ReadonlySet<string> { return this.held; }
 
   /** The held runs at or past their pool time whose tree pi-pool admits at `now`. They leave the list, and the next pass lists them again if the pool still holds them. */
   async admitted(now: number): Promise<PoolHeldRun[]> {

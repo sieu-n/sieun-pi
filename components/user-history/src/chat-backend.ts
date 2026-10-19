@@ -35,7 +35,7 @@ import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
-import { fixJobLive } from "./shared/duty-fixes.ts";
+import { fixLiveReader } from "./shared/duty-fixes.ts";
 import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DutyStore } from "./chat-duty-store.ts";
@@ -202,13 +202,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...quiet ? { tickMs: 0 } : {},
     ...replay ? { precheckCommand: () => ["/bin/sh", "-c", 'printf \'{"metrics":{}}\' > "$OUTPUT_FILE"'] } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
-    fixLive: async (id, item) => {
-      const now = Date.now();
-      const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
-      const pool = await queueReading().catch(() => null);
-      const waiting = new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
-      return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
-    },
+    fixLive: fixLiveReader({ rows: () => catalog.rows(), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
+      pool: poolWaiting, held: () => chats.poolHeldSessions() }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobs, poolAdmits,
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),

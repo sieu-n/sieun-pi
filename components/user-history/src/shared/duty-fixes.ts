@@ -83,6 +83,26 @@ export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step:
   return closed;
 }
 
+/** Where `fixLiveReader` reads a fix job's state: the catalog rows, the sessions asleep on a board.wake, in pi-pool's queue, and held by pi-pool after a cut. */
+export interface FixLiveSources {
+  rows: () => Promise<readonly SessionRow[]>;
+  asleep: (now: number) => Promise<Iterable<string>>;
+  pool: () => Promise<Iterable<string>>;
+  held: () => Iterable<string>;
+}
+
+/**
+ * The duty runner's `fixLive`: `fixJobLive` with every wait a live job can be in. A job pi-pool holds after a cut waits for its pool time and is
+ * in no queue place: on 10-19 api portal vp's d2 runs from 14:09Z to 14:40Z recorded its three parity jobs as not live while pi-pool held them.
+ */
+export function fixLiveReader(sources: FixLiveSources, clock: () => number = Date.now): (chatId: string, item: Pick<PlanItem, "id" | "job" | "sessionId">) => Promise<boolean> {
+  return async (chatId, item) => {
+    const now = clock();
+    const [rows, asleep, pool] = await Promise.all([sources.rows(), sources.asleep(now).catch(() => []), sources.pool().catch(() => [])]);
+    return fixJobLive(item, chatId, rows, new Set(asleep), new Set([...pool, ...sources.held()]), now);
+  };
+}
+
 /**
  * How long a fix job's session counts as live while the catalog does not list it yet. The catalog's full daemon list answered in 77 s at p99
  * and 1,249 s at most over 2,995 lists on 10-15 (service.log), so a job the server just created can be missing from the rows for minutes.
