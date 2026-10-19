@@ -1016,7 +1016,8 @@ export class Chats {
       } catch (error) { this.log(`chat ${id.slice(0, 8)}: hung turn restart: ${error instanceof Error ? error.message : String(error)}`); }
       return;
     }
-    if (view.running && !view.retrying) return;
+    // A turn that runs with no retry ends any wait the feed shows; a pool wait inside the turn reads as retrying and goes on below.
+    if (view.running && !view.retrying) { this.threads.setWait(id, null); return; }
     const stall = turnStall(view, now);
     if (!stall) {
       this.revivals.delete(id);
