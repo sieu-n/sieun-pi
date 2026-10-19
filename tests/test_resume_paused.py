@@ -95,6 +95,23 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(sorted(p["id"] for p in report["paused"]), ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
         self.assertEqual(self.sent, [])
 
+    def test_a_worker_the_idle_reaper_killed_is_judged_by_its_last_turn(self):
+        # 10-19: the Mac's idle-reaper SIGTERMed idle workers every 5 minutes, and each of their finished jobs read worker_failed.
+        self.session("reapedclean1", [assistant(30, "stop")], workerState="failed", lastActivityAt=at(30))
+        self.session("reapederror1", [assistant(30, "error", "Connection error.")], workerState="failed", lastActivityAt=at(30))
+        self.session("workedafter1", [assistant(30, "stop")], workerState="failed", lastActivityAt=at(30))
+        reaped = {"0" * 24 + "reapedclean1": NOW - dt.timedelta(minutes=20), "0" * 24 + "reapederror1": NOW - dt.timedelta(minutes=20),
+                  "0" * 24 + "workedafter1": NOW - dt.timedelta(minutes=40)}
+        with patch.dict(resume_paused.REAPED, reaped, clear=True):
+            report = self.run_resume(dry_run=True)
+        self.assertEqual(sorted((p["id"], p["reason"]) for p in report["paused"]), [("reapederror1", "error"), ("workedafter1", "worker_failed")])
+
+    def test_load_reaped_reads_the_reaper_record(self):
+        path = self.root / "reaped.json"
+        path.write_text(json.dumps({"01a1-x": "2026-10-19T16:35:44Z", "bad": 3}))
+        self.assertEqual(resume_paused.load_reaped(path), {"01a1-x": dt.datetime(2026, 10, 19, 16, 35, 44, tzinfo=dt.timezone.utc)})
+        self.assertEqual(resume_paused.load_reaped(self.root / "missing.json"), {})
+
     def test_cut_off_turn_counts_after_the_grace_period(self):
         self.session("aaaaaaaaaaaa", [assistant(40, "toolUse"), role(40, "toolResult")])
         self.session("bbbbbbbbbbbb", [assistant(1, "toolUse"), role(0.5, "toolResult")])

@@ -29,6 +29,7 @@ class PlanTest(unittest.TestCase):
             proc(10, 1, f"{BIN} /$bunfs/root/prime-agent --mode daemon --daemon-socket /tmp/p/daemon.sock"),
             worker(20), worker(21), worker(22), worker(23), worker(24, age=30), worker(25),
             proc(30, 10, f"{BIN} --version", age=200), proc(31, 10, f"{BIN} --version", age=60),
+            proc(32, 10, f"{BIN} --version", age=900),
             proc(40, 99, "prime-agent", tty="ttys004"),
             proc(50, 25, "/Users/x/.prime/agent/kernel-venv/bin/python"),
             proc(51, 50, "/bin/bash -c exec 9>&0 read -r _prime_agent_gate sleep 540"),
@@ -45,7 +46,7 @@ class PlanTest(unittest.TestCase):
     def test_plan(self):
         result = reaper.plan(self.table, self.sessions, 10, 2)
         self.assertEqual(result["daemon"], 10)
-        self.assertEqual(sorted(item["pid"] for item in result["kill"]), [20, 30])
+        self.assertEqual(sorted(item["pid"] for item in result["kill"]), [20, 30, 32])
         reasons = {item["pid"]: item["reason"] for item in result["keep"]}
         self.assertIn("last activity", reasons[21])
         self.assertIn("isRunningTools", reasons[22])
@@ -54,6 +55,15 @@ class PlanTest(unittest.TestCase):
         self.assertIn("bash pid 51", reasons[25])
         self.assertNotIn(10, [item["pid"] for item in result["kill"] + result["keep"]])
         self.assertNotIn(40, [item["pid"] for item in result["kill"] + result["keep"]])
+
+    def test_catalog_is_kept(self):
+        # pid 32 is the daemon catalog: a `--version` child with PRIME_AGENT_INTERNAL_DAEMON_CATALOG=1 that lives as long as the daemon.
+        result = reaper.plan(self.table, self.sessions, 10, 2, {32})
+        self.assertEqual(sorted(item["pid"] for item in result["kill"]), [20, 30])
+        self.assertEqual({item["pid"]: item["kind"] for item in result["keep"]}[32], "catalog")
+        self.assertEqual([item["ids"] for item in result["kill"] if item["pid"] == 20], [[None, None]])
+        unknown = reaper.plan(self.table, self.sessions, 10, 2, None)
+        self.assertEqual(sorted(item["pid"] for item in unknown["kill"]), [20])
 
     def test_etime(self):
         self.assertEqual(reaper.etime_seconds("01:05"), 65)

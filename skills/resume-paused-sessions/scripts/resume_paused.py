@@ -172,6 +172,11 @@ UNLOADED_FILE = Path.home() / ".prime" / "agent" / "browser-chat" / "unloaded.js
 UNLOADED = {}
 # The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
 UNLOAD_MATCH_S = 60.0
+# {full session id: when the Mac's idle-reaper SIGTERMed its idle worker}, written by components/idle-reaper/reaper.py and read in main().
+# Such a worker reads "failed" in the daemon list, so a row named here is judged by its last turn, as if its worker still ran; on 10-19
+# the reaper's kills listed 10 to 19 finished Mac jobs as worker_failed every 5 minutes.
+REAPED_FILE = Path.home() / ".local" / "share" / "idle-reaper" / "reaped.json"
+REAPED = {}
 TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook gave no token", re.IGNORECASE)
 # The providers pi-pool vends tokens for; any other provider is not pooled and has no pool answer to read.
 POOLED_PROVIDERS = ("anthropic", "openai-codex")
@@ -989,6 +994,16 @@ def run_provider(entries):
     return None
 
 
+def load_reaped(path):
+    """{full session id: datetime} from this box's idle-reaper record, or {} when there is none."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    stamps = {sid: parse_ts(value) for sid, value in data.items() if isinstance(value, str)} if isinstance(data, dict) else {}
+    return {sid: stamp for sid, stamp in stamps.items() if stamp}
+
+
 def load_unloaded(path):
     """{full session id: datetime} from the idle unload's record, or {} when there is none."""
     try:
@@ -1527,7 +1542,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
                 and not archived_by_restart(entries_of(sid), restarts) and not update_before(entries_of(sid), last_message(entries_of(sid)) or {}):
             continue
-        if s.get("workerState") == "failed":
+        reaped_at = REAPED.get(full) if not BOX.remote else None
+        if s.get("workerState") == "failed" and not (reaped_at and (not seen_at or seen_at <= reaped_at)):
             if BOX.remote:
                 # Reopening another box's head would restart a tree that may have moved: after the chats moved to us-metal02 at 05:30Z on
                 # 10-18 the Mac listed 17 of their old root jobs with failed workers, already replaced on the box.
@@ -1899,6 +1915,7 @@ def main():
     OWNERS.update(filter(None, args.owners.split(",")))
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.since_minutes or 1e7)
     UNLOADED.update({sid: stamp for sid, stamp in load_unloaded(UNLOADED_FILE).items() if stamp >= since})
+    REAPED.update(load_reaped(REAPED_FILE))
 
     signal.signal(signal.SIGTERM, on_term)
     report = None

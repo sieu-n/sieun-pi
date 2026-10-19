@@ -7,8 +7,12 @@ One run reads `prime-agent sessions --json` and the process table, then:
   1. sends SIGTERM to a daemon worker when every session on it is idle with no busy flag set
      and the newest lastActivityAt on it is older than --idle-minutes;
   2. kills a `prime-agent --version` process older than --version-minutes.
-It never signals the daemon, a worker with a busy session, or a process on a tty.
+It never signals the daemon, the daemon catalog, a worker with a busy session, or a process on a tty.
+The daemon catalog is the daemon's own `--version` child with PRIME_AGENT_INTERNAL_DAEMON_CATALOG=1 set; it lives as long as
+the daemon, and killing it aborts session lists and attaches.
 Each kill adds one line to ~/.local/share/idle-reaper/reaper.log, and each run rewrites status.json there.
+Each worker kill also writes its session ids to reaped.json there, so resume_paused.py reads those sessions as idle unloads
+instead of failed workers.
 """
 from __future__ import annotations
 
@@ -26,6 +30,9 @@ HOME = Path.home()
 STATE = Path(os.environ.get("IDLE_REAPER_STATE", HOME / ".local/share/idle-reaper"))
 LOG = STATE / "reaper.log"
 STATUS = STATE / "status.json"
+REAPED = STATE / "reaped.json"
+REAPED_KEEP_S = 7 * 86400
+CATALOG_ENV = "PRIME_AGENT_INTERNAL_DAEMON_CATALOG=1"
 PRIME_BIN = HOME / ".local/share/prime-agent/bin/prime-agent"
 BUSY_FLAGS = ("isBashRunning", "isRunningTools", "hasRunningRlmChildren", "hasActiveHeartbeat",
               "hasRegisteredHeartbeat", "isCompacting", "isStreaming", "isSessionActive")
@@ -66,6 +73,15 @@ def process_table() -> dict[int, dict]:
         table[int(pid)] = {"pid": int(pid), "ppid": int(ppid), "age": etime_seconds(etime),
                            "rss_kb": int(rss), "tty": tty, "args": args}
     return table
+
+
+def catalog_pids() -> set[int] | None:
+    """Pids whose environment carries the daemon catalog flag, or None when ps cannot show environments."""
+    try:
+        out = subprocess.run(["/bin/ps", "-axwwE", "-o", "pid=,command="], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {int(line.split(None, 1)[0]) for line in out.splitlines() if CATALOG_ENV in line and line.strip()}
 
 
 def descendants(table: dict[int, dict], pid: int) -> list[dict]:
@@ -120,7 +136,8 @@ def session_busy(session: dict) -> str | None:
     return None
 
 
-def plan(table: dict[int, dict], sessions: list[dict], idle_minutes: float, version_minutes: float) -> dict:
+def plan(table: dict[int, dict], sessions: list[dict], idle_minutes: float, version_minutes: float,
+         catalogs: set[int] | None = frozenset()) -> dict:
     daemon = find_daemon(table)
     if daemon is None:
         return {"daemon": None, "kill": [], "keep": [], "note": "no prime-agent daemon on daemon.sock"}
@@ -136,7 +153,10 @@ def plan(table: dict[int, dict], sessions: list[dict], idle_minutes: float, vers
         args = proc["args"]
         base = {"pid": proc["pid"], "mb": tree_mb(table, proc["pid"]), "age_s": proc["age"]}
         if args.rstrip().endswith(" --version"):
-            if proc["age"] > version_minutes * 60:
+            if catalogs is None or proc["pid"] in catalogs:
+                keep.append({**base, "kind": "catalog", "sessions": [],
+                             "reason": "daemon catalog" if catalogs is not None else "ps cannot show its environment"})
+            elif proc["age"] > version_minutes * 60:
                 kill.append({**base, "kind": "version", "sessions": [], "signal": "TERM then KILL"})
             continue
         if "--mode daemon" not in args or "/worker-" not in args:
@@ -165,7 +185,7 @@ def plan(table: dict[int, dict], sessions: list[dict], idle_minutes: float, vers
                 reason = "no lastActivityAt"
             elif newest.timestamp() > cutoff:
                 reason = f"last activity {round((now().timestamp() - newest.timestamp()) / 60, 1)} min ago"
-        entry = {**base, "kind": "worker", "sessions": names}
+        entry = {**base, "kind": "worker", "sessions": names, "ids": [s.get("sessionId") or s.get("id") for s in mine]}
         if reason is None:
             kill.append({**entry, "signal": "TERM"})
         else:
@@ -187,16 +207,32 @@ def log(line: str) -> None:
         handle.write(line + "\n")
 
 
+def record_reaped(ids: list[str]) -> None:
+    """Add the killed worker's session ids to reaped.json, the record resume_paused.py reads as an idle unload."""
+    try:
+        data = json.loads(REAPED.read_text())
+    except (OSError, ValueError):
+        data = {}
+    cutoff = now().timestamp() - REAPED_KEEP_S
+    data = {sid: at for sid, at in data.items() if (parse_time(at) or now()).timestamp() > cutoff}
+    data.update({sid: stamp() for sid in ids if sid})
+    tmp = REAPED.with_name("reaped.json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, REAPED)
+
+
 def execute(binary: str, first: dict, idle_minutes: float, version_minutes: float) -> list[dict]:
     """Recheck each kill against a fresh read, then signal it."""
     table = process_table()
-    fresh = plan(table, read_sessions(binary), idle_minutes, version_minutes)
+    fresh = plan(table, read_sessions(binary), idle_minutes, version_minutes, catalog_pids())
     still = {item["pid"] for item in fresh["kill"]}
     done = []
     for item in first["kill"]:
         if item["pid"] not in still:
             continue
         pid = item["pid"]
+        if item["kind"] == "worker":
+            record_reaped(item.get("ids", []))  # before the signal, so a list read right after the kill already sees it
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -225,7 +261,7 @@ def main() -> int:
         return 0
     binary = prime_binary()
     try:
-        result = plan(process_table(), read_sessions(binary), args.idle_minutes, args.version_minutes)
+        result = plan(process_table(), read_sessions(binary), args.idle_minutes, args.version_minutes, catalog_pids())
         killed = [] if args.dry_run or result["daemon"] is None else execute(binary, result, args.idle_minutes, args.version_minutes)
     except Exception as error:  # one bad read must not stop the next run
         log(f"{stamp()} error {type(error).__name__}: {error}")
@@ -242,7 +278,7 @@ def main() -> int:
         if args.dry_run or item["pid"] in report["killed"]:
             print(f"{label} {item['kind']} pid={item['pid']} mb={item['mb']} age_s={item['age_s']} sessions={','.join(item['sessions']) or '-'}")
     for item in result["keep"]:
-        print(f"keep worker pid={item['pid']} mb={item['mb']} because {item['reason']}")
+        print(f"keep {item['kind']} pid={item['pid']} mb={item['mb']} because {item['reason']}")
     total = sum(item["mb"] for item in result["kill"]) if args.dry_run else report["freedMb"]
     print(f"{label} {len(result['kill']) if args.dry_run else len(killed)} processes, {total} MB")
     return 0
