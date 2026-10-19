@@ -9,7 +9,7 @@ import { type DutyMetric, type FlaggedSlice, PRECHECK_TARGET_MS } from "../../sr
  * Grafana ds/query on obs.virev.ai serves the prod and staging Postgres datasources (estate_pg_prod, estate_pg_stg, user grafana_ro) and the
  * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). The login is the admin pair in auto-sns-agent's
  * apps/infra/aws/secrets.env, the same one auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs uses.
- * The prod box us-metal01 answers the reads grafana_ro cannot make (watch_targets) through `ssh`, as owner_ro in a read-only transaction.
+ * Prod reads that grafana_ro cannot make go to prod Postgres as owner_ro through prodReader below, in a read-only transaction.
  * A metric whose source failed gets `missValue`, a number that misses any target, so a broken source never reads as green.
  */
 
@@ -102,18 +102,27 @@ export const num = (value: unknown): number | null => value === null || value ==
 export const round1 = (value: number): number => Math.round(value * 10) / 10;
 export const utc = (ms: number): string => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
-const BOX = "root@64.34.205.243";
+/**
+ * owner_ro on prod crawler_v3 with no root ssh (owner rule c146, 2026-10-19): us-metal01's remote-gw (auto-sns-agent
+ * apps/infra/metal/config/remote-gw/haproxy.cfg) forwards 10.250.12.1:5432 over wg-prod to virev-prod-postgres, and libpq takes the password
+ * from the 10.250.12.1 line of ~/.pgpass on us-metal02, a copy of /root/prod-pg-owner-ro.txt. Each read is one psql session, so it holds one
+ * of owner_ro's CONNECTION LIMIT 8 (owner-ro-prod.sql) while it runs.
+ */
+export const PROD_OWNER_RO = "host=10.250.12.1 port=5432 dbname=crawler_v3 user=owner_ro";
+export const PSQL_ARGS = ["-X", "-q", "-t", "-A", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-d", PROD_OWNER_RO] as const;
 
-/** Runs a bash script on the prod box us-metal01 and returns its stdout; throws on a nonzero exit. */
-export function ssh(script: string, signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], { stdio: ["pipe", "pipe", "pipe"], signal });
+/** Runs `sql` on prod as owner_ro in a read-only transaction and returns psql's tab-separated rows; throws on a nonzero exit. */
+export type ProdRead = (sql: string) => Promise<string>;
+
+export function prodReader(app: string, signal: AbortSignal, run: typeof spawn = spawn): ProdRead {
+  return sql => new Promise((resolve, reject) => {
+    const child = run("psql", [...PSQL_ARGS], { stdio: ["pipe", "pipe", "pipe"], signal, env: { ...process.env, PGAPPNAME: app } });
     let out = "";
     let err = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.stderr.on("data", chunk => { err += chunk; });
+    child.stdout!.on("data", chunk => { out += chunk; });
+    child.stderr!.on("data", chunk => { err += chunk; });
     child.on("error", reject);
-    child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`ssh exit ${code}: ${(err || out).trim().slice(-300)}`)));
-    child.stdin.end(script);
+    child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`psql exit ${code}: ${(err || out).trim().slice(-300)}`)));
+    child.stdin!.end(`set default_transaction_read_only = on;\n${sql}\n`);
   });
 }

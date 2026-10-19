@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, readGrafanaAuth, round1, sqlRows, ssh, utc,
+  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, readGrafanaAuth, round1, sqlRows, utc, type ProdRead, prodReader,
 } from "./estate-reads.ts";
 
 /**
@@ -15,10 +15,10 @@ import {
  *   with its last config_audit writer;
  * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the accounts that can read now: active, bound and passing egress admission,
  *   GET /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
- * - prod ig_engage_session_bindings and ig_engage_session_renewals through the same ssh as owner_ro (grafana_ro cannot read the renewals), for
- *   the active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_REMOTE below);
- * - prod watch_targets through one ssh to us-metal01 as owner_ro (grafana_ro cannot read watch_targets), for the deep collab walks, and
- *   staging watch_targets the same way, for the oldest due staging collab read.
+ * - prod ig_engage_session_bindings and ig_engage_session_renewals as owner_ro (estate-reads.ts prodReader; grafana_ro cannot read the
+ *   renewals), for the active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_SQL below);
+ * - prod watch_targets as owner_ro the same way (grafana_ro cannot read watch_targets on prod), for the deep collab walks, and staging
+ *   watch_targets through estate_pg_stg, for the oldest due staging collab read.
  * grafana_ro cannot read the actor, transition and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
  * its cause is that event's error_code through CODE_CAUSES below.
  */
@@ -129,7 +129,7 @@ export interface Lapsed { waiting: number; blocked: number; oldestAt: number | n
  * inside one cadence and its last chunk ran in the last 24 h. A retrying walk has not stopped, so it is left out of deep_walk_ok_pct.
  */
 export interface DeepWalks { reached: number; errors: Record<string, number>; stuck: Record<string, number>; retrying: Record<string, number> }
-/** Why a prod account is stuck (STUCK_REMOTE): its state, its id, and since when (the freeze or park, or its first 302 in the window). */
+/** Why a prod account is stuck (STUCK_SQL): its state, its id, and since when (the freeze or park, or its first 302 in the window). */
 export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar";
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
@@ -356,17 +356,11 @@ const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, 
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.outcome in ${DEAD_SQL} order by e.at`;
 /** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
-export const LAPSED_REMOTE = `set -u
-PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
-docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-select count(*) filter (where r.status is distinct from 'blocked'), count(*) filter (where r.status = 'blocked'),
+export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked'), count(*) filter (where r.status = 'blocked'),
   coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0)
 from ig_engage_accounts a join ig_engage_session_bindings b on b.account_id = a.id and b.credential_generation = a.credential_generation
 left join ig_engage_session_renewals r on r.account_id = a.id
-where a.world = 'prod' and a.status = 'active' and b.expires_at <= now() + interval '60 seconds';
-SQL
-`;
+where a.world = 'prod' and a.status = 'active' and b.expires_at <= now() + interval '60 seconds';`;
 
 export function lapsedOf(tsv: string): Lapsed {
   const [waiting, blocked, oldest, ...rest] = tsv.trim().split("\t").map(Number);
@@ -385,11 +379,7 @@ const CONFIG_SQL = "select key, value from config where key like 'engage.canary%
  * An open walk's walk_end is no end ('since' there marks the 30-day first pass), so it goes under last_error_code. On 10-17, 18 open
  * walks that kept reading counted as stops named "since", which hid their code permanent_error.
  */
-export const DEEP_WALKS_REMOTE = `set -u
-PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
-docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-with walks as (
+export const DEEP_WALKS_SQL = `with walks as (
   select *, walk_done_at is null and walk_since + make_interval(days => depth_days) < now() - make_interval(days => coalesce(cadence_days,
     case when tier = 'monitor' or coalesce(last_activity_at, created_at) > now() - interval '30 days' then 1 else 7 end)) as past_cadence
   from watch_targets where platform = 'instagram' and kind = 'tagged' and depth_days >= 365
@@ -400,19 +390,13 @@ select case when walk_done_at is null then case when past_cadence then 'stuck' e
 from walks
 where walk_done_at > now() - interval '24 hours'
   or (walk_done_at is null and walk_since is not null and last_outcome = 'error' and (past_cadence or last_run_at > now() - interval '24 hours'))
-group by 1, 2;
-SQL
-`;
+group by 1, 2;`;
 
 /**
  * The stuck prod accounts, as stuckOf parses them. A freeze for a shared exit is SHARED_EXIT_FREEZE in
  * apps/crawler-v3/src/platforms/instagram/engage/shared_exit_freeze.py, read on the account's last status change.
  */
-export const STUCK_REMOTE = `set -u
-PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
-docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-with last_change as (
+export const STUCK_SQL = `with last_change as (
   select distinct on (e.account_id) e.account_id, e.at, e.outcome, e.error_code from ig_engage_account_events e
   join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.transition order by e.account_id, e.id desc
 )
@@ -429,9 +413,7 @@ group by a.id having count(*) filter (where l.http_status = 302) >= ${STUCK_302S
 union all
 select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000) from ig_engage_accounts a join last_change e on e.account_id = a.id
 join ig_engage_browser_jars j on j.account_id = a.id
-where a.world = 'prod' and a.status = 'parked' and a.login_mode = 'jar' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';
-SQL
-`;
+where a.world = 'prod' and a.status = 'parked' and a.login_mode = 'jar' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';`;
 
 const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "active_302s", "parked_dead_jar"]);
 export function stuckOf(tsv: string): StuckAccount[] {
@@ -443,19 +425,13 @@ export function stuckOf(tsv: string): StuckAccount[] {
 }
 
 /** The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. */
-export const STAGING_DUE_REMOTE = `set -u
-PW=$(tr -d '\\n' < /root/staging-pg-owner-ro.txt)
-docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-staging-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-select count(*), coalesce(round((extract(epoch from now() - min(w.next_due_at)) / 60)::numeric, 1), 0)
+export const STAGING_DUE_SQL = `select count(*) as due, coalesce(round((extract(epoch from now() - min(w.next_due_at)) / 60)::numeric, 1), 0) as wait_min
 from watch_targets w where w.platform = 'instagram' and w.kind = 'tagged' and not w.paused and w.next_due_at < now()
-  and not exists (select 1 from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.settled_at is null);
-SQL
-`;
+  and not exists (select 1 from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.settled_at is null)`;
 
-export function stagingDueOf(tsv: string): StagingDue {
-  const [due, waitMin, ...rest] = tsv.trim().split("\t").map(Number);
-  if (due === undefined || waitMin === undefined || rest.length || !Number.isFinite(due) || !Number.isFinite(waitMin)) throw new Error(`staging due reads: unexpected answer ${tsv.slice(0, 80)}`);
+export function stagingDueOf(rows: Record<string, unknown>[]): StagingDue {
+  const due = num(rows[0]?.due), waitMin = num(rows[0]?.wait_min);
+  if (rows.length !== 1 || due === null || waitMin === null || !Number.isFinite(due) || !Number.isFinite(waitMin)) throw new Error(`staging due reads: unexpected answer ${JSON.stringify(rows).slice(0, 80)}`);
   return { due, waitMin };
 }
 
@@ -479,8 +455,7 @@ export function deepWalksOf(tsv: string): DeepWalks {
   return walks;
 }
 
-export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>, stagingRemote: () => Promise<string>,
-  lapsedRemote: () => Promise<string>, stuckRemote: () => Promise<string>): Promise<EngageData> {
+export async function measure(query: DsQuery | null, authError: string | null, now: number, prodRead: ProdRead): Promise<EngageData> {
   const data: EngageData = { now, errors: [] };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
@@ -488,17 +463,15 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   // The three prod reads log in as owner_ro, whose CONNECTION LIMIT 8 (owner-ro-prod.sql, 3 until 10-19) the owner's TablePlus, the other prechecks and
   // jobs share, so they run one after another: on 10-19 at 15:20:31Z they ran side by side next to one job's session and two of them got
   // "too many connections for role owner_ro". step never rejects, so a failed read does not stop the next one.
-  const deepWalks = step("prod deep walks", async () => deepWalksOf(await remote()));
-  const stagingDue = step("staging due reads", async () => stagingDueOf(await stagingRemote()));
-  const lapsedBindings = deepWalks.then(() => step("prod lapsed bindings", async () => lapsedOf(await lapsedRemote())));
-  const stuckAccounts = lapsedBindings.then(() => step("prod stuck accounts", async () => stuckOf(await stuckRemote())));
+  const deepWalks = step("prod deep walks", async () => deepWalksOf(await prodRead(DEEP_WALKS_SQL)));
+  const lapsedBindings = deepWalks.then(() => step("prod lapsed bindings", async () => lapsedOf(await prodRead(LAPSED_SQL))));
+  const stuckAccounts = lapsedBindings.then(() => step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL))));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
-    for (const source of ["prod read log", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
-    const [walks, due, lapsed, stuck] = await Promise.all([deepWalks, stagingDue, lapsedBindings, stuckAccounts]);
+    for (const source of ["prod read log", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
+    const [walks, lapsed, stuck] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts]);
     if (walks) data.deepWalks = walks;
     if (stuck) data.stuck = stuck;
-    if (due) data.stagingDue = due;
     if (lapsed) data.lapsed = lapsed;
     return data;
   }
@@ -516,7 +489,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     }),
     step("prod death gauge", async () => Object.fromEntries((await promInstant(query, PROM.prod, 'max by (cause)(crawler_v3_engage_deaths_24h{world="prod"})')).map(series => [series.labels.cause ?? "?", series.value]))),
     deepWalks,
-    stagingDue,
+    step("staging due reads", async () => stagingDueOf(await sqlRows(query, PG.staging, STAGING_DUE_SQL))),
     lapsedBindings,
     stuckAccounts,
   ]);
@@ -534,7 +507,7 @@ async function main(): Promise<void> {
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal), () => ssh(LAPSED_REMOTE, signal), () => ssh(STUCK_REMOTE, signal)), dutyMetrics);
+  const result = report(await measure(query, authError, now, prodReader("engage-reads-duty", signal)), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`engage-reads: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

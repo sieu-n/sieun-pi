@@ -1,10 +1,12 @@
+import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, promInstant, readGrafanaAuth, round1, settle, sqlRows, ssh, unmeasuredFlag,
+  type DsQuery, DAY, PG, PROM, REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag,
 } from "./estate-reads.ts";
 
 /**
@@ -12,8 +14,8 @@ import {
  * call, reads only. It measures goal p35 (the Watchlist screen, /app/analytics/monitor, all green on staging and prod, collabs included) from:
  * - the owner org's watch keys: prod Convex befitting-sparrow-356, internalQuery search/watchTargets:pageKeys with orgId, paged in this one node
  *   process with an admin key the owner's Convex CLI login (~/.convex/config.json) authorizes, the call `convex run --deployment-name` makes;
- * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): one ssh to us-metal01, psql as owner_ro in a
- *   read-only transaction (grafana_ro cannot read watch_targets), and staging watch_targets monitor rows the same way from virev-staging-postgres;
+ * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): one psql session as owner_ro in a read-only
+ *   transaction (estate-reads.ts prodReader; grafana_ro cannot read watch_targets on prod), and staging watch_targets monitor rows from estate_pg_stg;
  * - the prod watch gauges of estate_prometheus through Grafana (detail and the loop age), and pause.watch from estate_pg_prod.
  * Green follows sessions/2026/10/10/1026-prod-watchlist-readback/findings.md in auto-sns-agent: an unpaused monitor row whose last_outcome is
  * ok and whose last_run_at is inside 24 h. An unpaused row on an account the platform removed or holds private is green at any age, as the
@@ -42,7 +44,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * The rest is run detail, written to output.metrics after the judged keys and never judged: collab_pushed_pct, owner_stopped_watches, prod_posts_fresh_pct, prod_loop_age_s,
  * staging_posts_green_pct, staging_tagged_not_green and source_errors. A failed source still misses the metrics it feeds (NEEDS), and a prod
  * watch scheduler loop that is stalled past LOOP_STALL_S, or never ticked, misses prod_read_error_pct, since no read can finish while it stands.
- * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the two ssh reads once a day.
+ * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the owner_ro and staging reads once a day.
  * The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
  */
 
@@ -249,7 +251,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   return { metrics: { ...metrics, ...detail }, flagged };
 }
 
-/** The tab-separated monitor rows the remote psql prints: platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
+/** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
  *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), and the no-account since time. */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
@@ -341,8 +343,8 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
  * The screen read: the Watchlist chips come from POST /api/monitoring/watch-targets, which sends the keys on screen to the crawler's
  * POST https://crawler.virev.ai/api/watch-targets/summary. On 10-19 every 200-key read took 5.1 to 11.1 s against the route's 4 s budget, so
  * every prod chip read "Status unavailable" while owner_green_pct read 91.8%. The probe sends SCREEN_SAMPLE owner keys, spread over the whole
- * org, to the same API in the screen's chunks and budget, from inside virev-prod-crawler-api on 127.0.0.1:8787 (so the key never leaves the
- * box; the container cannot reach crawler.virev.ai, and Caddy in front of it is a plain reverse_proxy).
+ * org, to the same API in the screen's chunks and budget, through crawler.virev.ai with the search app's prod key, the path the search server
+ * takes (owner rule c146, 2026-10-19, took it off root ssh into virev-prod-crawler-api).
  * A chunk past the budget or not answering 200 is a chunk of chips that reads Status unavailable, and counts once in watchlist_risks.
  */
 /** apps/search/src/lib/watchlist/crawl.svelte.ts READ_CHUNK_KEYS and READS_IN_FLIGHT, and SUMMARY_BUDGET_MS in
@@ -360,60 +362,54 @@ export function screenKeys(keys: readonly string[]): string[] {
   return Array.from({ length: Math.min(SCREEN_SAMPLE, crawler.length) }, (_, i) => crawler[Math.floor(i * step)]!);
 }
 
-/** The remote script: in the prod crawler container, with its own key, read the keys in the screen's chunks and print one line per chunk. */
-export const screenRead = (keys: readonly string[]): string => `set -u
-docker exec -i -w /app/apps/crawler-v3 -e PYTHONPATH=/app/apps/crawler-v3 virev-prod-crawler-api dotenvx-start.sh .venv/bin/python - <<'PY' 2>/dev/null
-import json, time, urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from src.settings import settings
-keys = ${JSON.stringify(keys)}
-def read(chunk):
-    start = time.monotonic()
-    request = urllib.request.Request("http://127.0.0.1:8787/api/watch-targets/summary", data=json.dumps({"keys": chunk}).encode(), method="POST",
-        headers={"content-type": "application/json", "accept-encoding": "gzip", "x-api-key": settings.crawler_api_key})
-    try:
-        with urllib.request.urlopen(request, timeout=${SCREEN.budgetMs / 1000}) as response:
-            response.read(); status = response.status
-    except Exception as error:
-        status = getattr(error, "code", 0) or 0
-    return len(chunk), status, round(1000 * (time.monotonic() - start))
-with ThreadPoolExecutor(${SCREEN.inFlight}) as pool:
-    for size, status, ms in pool.map(read, [keys[i:i + ${SCREEN.chunkKeys}] for i in range(0, len(keys), ${SCREEN.chunkKeys})]):
-        print(f"screen\t{size}\t{status}\t{ms}")
-PY
-`;
-export function parseScreen(text: string): ScreenChunk[] {
-  return text.split("\n").map(line => line.split("\t")).filter(cells => cells.length === 4 && cells[0] === "screen")
-    .map(([, keys, status, ms]) => ({ keys: Number(keys), status: Number(status), ms: Number(ms) }));
+/** The crawler route the search server reads for the chips, and the key it sends: CRAWLER_API_URL and CRAWLER_API_KEY of apps/search/.env, prod. */
+export const SUMMARY_URL = "https://crawler.virev.ai/api/watch-targets/summary";
+export async function readCrawlerKey(): Promise<string> {
+  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "CRAWLER_API_KEY", "-f", join(REPO, "apps/search/.env")]);
+  const key = stdout.trim();
+  if (!key || key.startsWith("encrypted:")) throw new Error("CRAWLER_API_KEY did not decrypt from apps/search/.env");
+  return key;
+}
+
+/** Reads the keys in the screen's chunks, SCREEN.inFlight at a time, each with the screen's budget, as one ScreenChunk per chunk in order. */
+export async function screenRead(fetcher: typeof fetch, apiKey: string, keys: readonly string[], signal: AbortSignal): Promise<ScreenChunk[]> {
+  const chunks = Array.from({ length: Math.ceil(keys.length / SCREEN.chunkKeys) }, (_, i) => keys.slice(i * SCREEN.chunkKeys, (i + 1) * SCREEN.chunkKeys));
+  const read = async (chunk: readonly string[]): Promise<ScreenChunk> => {
+    const start = performance.now();
+    let status = 0;
+    try {
+      const response = await fetcher(SUMMARY_URL, { method: "POST", body: JSON.stringify({ keys: chunk }),
+        headers: { "content-type": "application/json", "x-api-key": apiKey }, signal: AbortSignal.any([signal, AbortSignal.timeout(SCREEN.budgetMs)]) });
+      await response.arrayBuffer();
+      status = response.status;
+    } catch { status = 0; }
+    return { keys: chunk.length, status, ms: Math.round(performance.now() - start) };
+  };
+  const out: ScreenChunk[] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(SCREEN.inFlight, chunks.length) }, async () => {
+    while (next < chunks.length) { const i = next++; out[i] = await read(chunks[i]!); }
+  }));
+  return out;
 }
 /** Chunks a screen would show as Status unavailable: not a 200, or past the route's budget. */
 export const screenFailed = (chunks: readonly ScreenChunk[]): ScreenChunk[] => chunks.filter(chunk => chunk.status !== 200 || chunk.ms > SCREEN.budgetMs);
 
-const ROWS_SQL = "select w.platform, w.kind, lower(w.target), case when w.paused then 't' else 'f' end, coalesce(w.last_outcome, ''), " +
-  "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, ''), coalesce(w.last_stop_reason, ''), coalesce(w.last_error_code, ''), " +
-  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end, " +
-  "w.err_streak, case when w.next_due_at is null then 'f' else 't' end, " +
+const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case when w.paused then 't' else 'f' end as paused, coalesce(w.last_outcome, '') as last_outcome, " +
+  "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, '') as last_run_at, coalesce(w.last_stop_reason, '') as last_stop_reason, coalesce(w.last_error_code, '') as last_error_code, " +
+  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end as is_private, " +
+  "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
   "case when w.last_outcome = 'starved' or w.last_error_code in ('fleet_exhausted', 'no_serveable_persona', 'leased_persona_unavailable', 'fleet_starved') then " +
-  "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end " +
-  "from watch_targets w where w.tier = 'monitor';";
+  "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end as no_account_since " +
+  "from watch_targets w where w.tier = 'monitor'";
+/** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
+const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "no_account_since"];
+export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
 const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
-
-/** A read of one world's crawler_v3 on us-metal01 as owner_ro in a read-only transaction, the path crawler-pipeline.mjs uses. */
-export const remoteRead = (container: string, passwordFile: string, sql: string): string => `set -u
-PW=$(tr -d '\\n' < /root/${passwordFile})
-docker exec -i -e PGAPPNAME=watchlist-green-duty -e PGPASSWORD="$PW" ${container} psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-${sql}
-SQL
-`;
-/** Prod: the monitor rows, then the watch runs settled in 24 h per outcome. */
-export const REMOTE = remoteRead("virev-prod-postgres", "prod-pg-owner-ro.txt", `${ROWS_SQL}\n${RECEIPTS_SQL}`);
-/** Staging: the monitor rows. */
-export const STAGING_REMOTE = remoteRead("virev-staging-postgres", "staging-pg-owner-ro.txt", ROWS_SQL);
 
 export interface WatchDeps {
   query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>;
-  screen: (keys: string[]) => Promise<string>; now: number;
+  screen: (keys: string[]) => Promise<ScreenChunk[]>; now: number;
 }
 
 export async function measure(deps: WatchDeps): Promise<WatchData> {
@@ -427,7 +423,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
   const keysRead = step("convex keys", deps.keys);
-  const [keys, screenText, prodText, stagingText, prod, pause, streams] = await Promise.all([
+  const [keys, screen, prodText, stagingText, prod, pause, streams] = await Promise.all([
     keysRead,
     keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
     step("prod rows", deps.rows),
@@ -438,10 +434,9 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   ]);
   const rows = prodText === undefined ? undefined : parseRows(prodText);
   const staging = stagingText === undefined ? undefined : parseRows(stagingText);
-  if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the ssh read returned no prod watch_targets monitor row" });
-  if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "the ssh read returned no staging watch_targets monitor row" });
-  const screen = screenText === undefined ? undefined : parseScreen(screenText);
-  if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read printed no chunk line from virev-prod-crawler-api" });
+  if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the owner_ro read returned no prod watch_targets monitor row" });
+  if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
+  if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
   Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
@@ -458,7 +453,9 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken, signal),
-    rows: () => ssh(REMOTE, signal), staging: () => ssh(STAGING_REMOTE, signal), screen: keys => ssh(screenRead(keys), signal) });
+    rows: () => prodReader("watchlist-green-duty", signal)(`${ROWS_SQL};\n${RECEIPTS_SQL}`),
+    staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, ROWS_SQL)); },
+    screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });
   const result = report(data, dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`watchlist-green: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);

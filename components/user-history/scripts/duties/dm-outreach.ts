@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { REPO, SOURCE_DEADLINE_MS, settle, ssh, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { REPO, SOURCE_DEADLINE_MS, prodReader, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "DM outreach works" precheck (`node --import tsx scripts/duties/dm-outreach.ts`). No model call, reads only, sends nothing.
@@ -14,7 +14,7 @@ import { REPO, SOURCE_DEADLINE_MS, settle, ssh, unmeasuredFlag, utc } from "./es
  *    crawler's GET /ops/engage/health answer, so the headline is the state the prod page shows. On 10-15 prod's sendingState counted only aiograpi
  *    accounts and the page showed "Paused while we add capacity" with 127 active jar accounts (auto-sns-agent 60aa3284dc fixed it on sieun/dev).
  * 2. It sums census.new and census.active over every login mode from the same answer, the accounts the crawler's outreach claim can take.
- * 3. It reads prod ig_engage_messages through one ssh to us-metal01 as owner_ro in a read-only transaction: outbound rows of the last 24 h whose
+ * 3. It reads prod ig_engage_messages as owner_ro in a read-only transaction (estate-reads.ts prodReader): outbound rows of the last 24 h whose
  *    status is failed or delivery_unknown. A daily_send_limit_reached refusal writes no row (fleet/budget charges before the row), and the query
  *    leaves one out if it ever does.
  *
@@ -97,17 +97,11 @@ export const sendableOf = (census: Census): number =>
   [census.new, census.active].reduce((sum, band) => sum + Object.values(band ?? {}).reduce((total, count) => total + (Number(count) || 0), 0), 0);
 
 /** The outbound sends of the last 24 h that did not go out, as one TSV row each: id, status, code, created_at in ms. */
-export const FAILED_REMOTE = `set -u
-PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
-docker exec -i -e PGAPPNAME=dm-outreach-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
-set default_transaction_read_only = on;
-select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none'), round(extract(epoch from m.created_at) * 1000)
+export const FAILED_SQL = `select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none'), round(extract(epoch from m.created_at) * 1000)
 from ig_engage_messages m join ig_engage_accounts a on a.id = m.account_id
 where a.world = 'prod' and m.direction = 'out' and m.status in ('failed', 'delivery_unknown') and m.created_at > now() - interval '24 hours'
   and coalesce(m.last_error_code, m.error, '') not like '${DAILY_LIMIT_CODE}%'
-order by m.id;
-SQL
-`;
+order by m.id`;
 
 /** The short code of a stored error: "WebSendError: ui_no_compose: no New message control" becomes "WebSendError: ui_no_compose". */
 export const codeOf = (error: string): string => error.split(": ").slice(0, 2).join(": ").slice(0, 80);
@@ -181,7 +175,7 @@ async function measure(now: number, signal: AbortSignal): Promise<DmData> {
       if (response.status !== 200) throw new Error(`GET ${prod.urls.crawler}/ops/engage/health gave HTTP ${response.status}`);
       return { status: response.status, body };
     }),
-    step("prod sends", async () => failedOf(await ssh(FAILED_REMOTE, signal))),
+    step("prod sends", async () => failedOf(await prodReader("dm-outreach-duty", signal)(FAILED_SQL))),
   ]);
   if (sha) data.sha = sha;
   if (failed) data.failed = failed;
