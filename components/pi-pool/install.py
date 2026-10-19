@@ -288,11 +288,13 @@ def check_hooks(home):
         try:
             done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
                                   env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
-            exit_code, chars, waits = done.returncode, len(done.stdout.strip()), "no token (slot_wait)" in done.stderr
+            exit_code, waits = done.returncode, "no token (slot_wait)" in done.stderr
+            chars = 0 if waits else len(done.stdout.strip())
         except (OSError, subprocess.TimeoutExpired) as e:
             exit_code, chars, waits = type(e).__name__, 0, False
         # A slot wait is the pool's own answer while every account is taken, so the hook, its modules and the holder all ran.
-        results[args[1]] = {"ok": exit_code == 0 and chars > 20 or exit_code == 1 and waits, "exit": exit_code, "token_chars": chars,
+        # It exits 75 instead of 1 when the caller's environment carries Prime's PRIME_CREDENTIAL_COMMAND_PROTOCOL=1.
+        results[args[1]] = {"ok": exit_code == 0 and chars > 20 or exit_code in (1, 75) and waits, "exit": exit_code, "token_chars": chars,
                             **({"answer": "slot_wait"} if waits else {}), "sec": round(time.monotonic() - started, 2)}
     return results
 

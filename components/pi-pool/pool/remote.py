@@ -49,7 +49,8 @@ def ask(cfg, argv, stdin=None):
     """(exit code, stdout, stderr) of argv run by the holder's pool, with `stdin` as its input."""
     import socket, urllib.error, urllib.request
     token = not (argv and argv[0] == "--cli")
-    body = json.dumps({"argv": argv, "session": session_fields(), "stdin": stdin}).encode()
+    protocol = os.environ.get(base.CREDENTIAL_PROTOCOL_ENV) if token else None
+    body = json.dumps({"argv": argv, "session": session_fields(), "stdin": stdin, "protocol": protocol}).encode()
     request = urllib.request.Request(cfg["url"].rstrip("/") + "/run", data=body, method="POST", headers={
         "Authorization": "Bearer " + cfg["secret"], "Content-Type": "application/json"})
     try:
@@ -71,6 +72,13 @@ def run_remote(cfg, argv):
         code, out, err = ask(cfg, argv)
     except Unreachable as e:
         raise SystemExit(f"pi-pool: {e}") from None
+    if code == 75 and os.environ.get(base.CREDENTIAL_PROTOCOL_ENV) == "1":
+        try:
+            retry_at = json.loads(out)["retryAt"]
+        except (ValueError, KeyError, TypeError):
+            retry_at = None
+        if isinstance(retry_at, (int, float)):
+            raise base.SlotWait(err.strip() or "pi-pool: the holder's session waits for a slot", retry_at)
     sys.stdout.write(out)
     sys.stdout.flush()
     if code:
@@ -125,9 +133,13 @@ def via_hookd(script, args, env):
         return 1, "", "pi-pool serve: hookd dropped the request\n"
 
 
-def holder_env(session):
-    env = {k: v for k, v in os.environ.items() if k not in (base.SESSION_ENV, base.JOURNAL_ENV, KEY_ENV)}
+def holder_env(session, protocol=None):
+    """The holder's environment for one forwarded run, with the asking Prime's credential protocol."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in (base.SESSION_ENV, base.JOURNAL_ENV, KEY_ENV, base.CREDENTIAL_PROTOCOL_ENV)}
     env[OFF_ENV] = "off"
+    if protocol == "1":
+        env[base.CREDENTIAL_PROTOCOL_ENV] = "1"
     if session and session.get("key"):
         env[KEY_ENV] = json.dumps(session)
     return env
@@ -154,13 +166,13 @@ def make_handler(cfg, root):
                 return self.send_error(403)
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                argv, session, given_in = req["argv"], req.get("session"), req.get("stdin")
+                argv, session, given_in, protocol = req["argv"], req.get("session"), req.get("stdin"), req.get("protocol")
             except (ValueError, KeyError, TypeError):
                 return self.send_error(400)
             if not valid_argv(argv) or not (session is None or isinstance(session, dict)) \
                     or not (given_in is None or isinstance(given_in, str)):
                 return self.send_error(400)
-            env = holder_env(session)
+            env = holder_env(session, protocol)
             done = None if given_in else via_hookd(*holder_script(root, argv), env)
             if done is None:
                 run = subprocess.run(holder_command(root, argv), env=env, input=given_in or "", capture_output=True, text=True)

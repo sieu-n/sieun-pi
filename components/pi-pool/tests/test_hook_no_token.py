@@ -1,6 +1,7 @@
 import json, os, shutil, signal, subprocess, sys, tempfile, time, unittest
 
 from fixture_isolation import isolate_test_module
+from fixture_slot_wait import make_waiting_pool
 
 
 def setUpModule():
@@ -195,6 +196,56 @@ class HookNoToken(unittest.TestCase):
         self.assertEqual(failures[0]["reason"], "lock_wait_timeout")
         self.assertGreaterEqual(failures[0]["awake_sec"], 2.5)
         self.assertFalse(os.path.exists(os.path.join(pool, "state.json")))
+
+
+class HookSlotWait(unittest.TestCase):
+    """A tree that waits for its slot: exit 75 with the slot time for a Prime that sets
+    PRIME_CREDENTIAL_COMMAND_PROTOCOL=1, and the old exit 1 with nothing on stdout for any other caller."""
+
+    def setUp(self):
+        self.pool = tempfile.mkdtemp(prefix="pi-pool-slot-wait-")
+        self.addCleanup(shutil.rmtree, self.pool, True)
+        self.until = time.time() + 600.25
+        self.token = make_waiting_pool(self.pool, "fixture-waiting", self.until)
+
+    def run_hook(self, session, protocol=None):
+        env = {k: v for k, v in os.environ.items() if k not in (
+            "PRIME_CREDENTIAL_COMMAND_PROTOCOL", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", "PI_POOL_SESSION_KEY")}
+        env.update(HOME=self.pool, PI_POOL_DIR=self.pool, PI_POOL_SECRETS="file",
+                   PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID=session)
+        if protocol is not None:
+            env["PRIME_CREDENTIAL_COMMAND_PROTOCOL"] = protocol
+        return subprocess.run(["/usr/bin/python3", "-B", HOOK, "--provider", "openai-codex"], env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+
+    def no_token(self):
+        return [(e["reason"], e["session"], e.get("exit_code")) for e in events(self.pool) if e["event"] == "hook_no_token"]
+
+    def test_the_slot_wait_answers_exit_75_with_the_slot_time_when_prime_asks_for_it(self):
+        run = self.run_hook("fixture-waiting", "1")
+        self.assertEqual(run.returncode, 75, run.stderr)
+        self.assertEqual(run.stdout, json.dumps({"retryAt": int(self.until) + 1, "message": "waiting for an account slot"}))
+        self.assertEqual(self.no_token(), [("slot_wait", "fixture-waiting", 75)])
+
+    def test_the_slot_wait_stays_exit_1_with_no_stdout_for_an_older_prime(self):
+        for protocol in (None, "0", "2"):
+            with self.subTest(protocol=protocol):
+                run = self.run_hook("fixture-waiting", protocol)
+                self.assertEqual((run.returncode, run.stdout, run.stderr), (1, "", "pi-pool-token: no token (slot_wait)\n"))
+        self.assertEqual(self.no_token(), [("slot_wait", "fixture-waiting", 1)] * 3)
+
+    def test_another_tree_gets_the_token_either_way(self):
+        for protocol in (None, "1"):
+            with self.subTest(protocol=protocol):
+                run = self.run_hook("fixture-served", protocol)
+                self.assertEqual((run.returncode, run.stdout), (0, self.token), run.stderr)
+        self.assertEqual(self.no_token(), [])
+
+    def test_other_failures_keep_exit_1_when_prime_asks_for_the_protocol(self):
+        os.remove(os.path.join(self.pool, "accounts", "openai-codex.json"))
+        run = self.run_hook("fixture-served", "1")
+        self.assertEqual((run.returncode, run.stdout), (1, ""))
+        self.assertEqual(self.no_token(), [("no_account", "fixture-served", None)])
 
 
 if __name__ == "__main__":

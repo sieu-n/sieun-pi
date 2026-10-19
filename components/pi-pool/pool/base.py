@@ -38,6 +38,18 @@ PROVIDERS = ("anthropic", "openai-codex")
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 SESSION_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 JOURNAL_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"
+# Prime sets it to "1" on a credential command when it reads exit 75 with {"retryAt", "message"} on stdout as
+# "no credential until retryAt", so the hook answers a slot wait that way only for a Prime that understands it.
+CREDENTIAL_PROTOCOL_ENV = "PRIME_CREDENTIAL_COMMAND_PROTOCOL"
+
+
+class SlotWait(SystemExit):
+    """The session tree gets no token until `slot_at` (epoch seconds), its slot on an account. The text is the
+    exit message the hook has always printed; `slot_at` rides as data for the hook's exit-75 answer."""
+
+    def __init__(self, text, slot_at):
+        super().__init__(text)
+        self.slot_at = slot_at
 
 DEFAULTS = {
     # refresh a parked credential when it expires within this many seconds

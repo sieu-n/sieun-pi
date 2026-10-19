@@ -19,6 +19,12 @@ HOLDER_HOOK = """import json, os, sys, time
 key = json.loads(os.environ.get("PI_POOL_SESSION_KEY") or "null")
 if key and key["key"] == "fixture-slow":
     time.sleep(12)
+if key and key["key"] == "fixture-slot":
+    sys.stderr.write("pi-pool-token: no token (slot_wait)\\n")
+    if os.environ.get("PRIME_CREDENTIAL_COMMAND_PROTOCOL") == "1":
+        sys.stdout.write(json.dumps({"retryAt": 1792410455, "message": "waiting for an account slot"}))
+        sys.exit(75)
+    sys.exit(1)
 if key and key["key"] == "fixture-waits":
     sys.stderr.write("pi-pool-token: no token (no_account)\\n")
     sys.exit(1)
@@ -83,10 +89,13 @@ class Remote(unittest.TestCase):
             json.dump({"url": f"http://127.0.0.1:{port or self.port}", "secret": secret}, f)
         return pool
 
-    def run_on(self, pool, argv, session="fixture-box", cwd=None):
+    def run_on(self, pool, argv, session="fixture-box", cwd=None, protocol=None):
         env = dict(os.environ, PI_POOL_DIR=pool,
                    PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID=session)
         env.pop("PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", None)
+        env.pop("PRIME_CREDENTIAL_COMMAND_PROTOCOL", None)
+        if protocol:
+            env["PRIME_CREDENTIAL_COMMAND_PROTOCOL"] = protocol
         return subprocess.run([sys.executable, "-B", *argv], env=env, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=60, cwd=cwd)
 
@@ -121,6 +130,19 @@ class Remote(unittest.TestCase):
         self.assertNotEqual(run.returncode, 0)
         self.assertEqual(run.stdout, "")
         self.assertEqual(self.no_token_reason(pool), "no_account")
+
+    def test_the_holders_slot_wait_reaches_a_prime_that_reads_exit_75(self):
+        pool = self.client()
+        run = self.run_on(pool, [HOOK, "--provider", "openai-codex"], session="fixture-slot", protocol="1")
+        self.assertEqual((run.returncode, json.loads(run.stdout)),
+                         (75, {"retryAt": 1792410455, "message": "waiting for an account slot"}))
+        self.assertEqual(self.no_token_reason(pool), "slot_wait")
+
+    def test_the_holders_slot_wait_stays_exit_1_for_an_older_prime(self):
+        pool = self.client()
+        run = self.run_on(pool, [HOOK, "--provider", "openai-codex"], session="fixture-slot")
+        self.assertEqual((run.returncode, run.stdout, run.stderr), (1, "", "pi-pool-token: no token (slot_wait)\n"))
+        self.assertEqual(self.no_token_reason(pool), "slot_wait")
 
     def test_a_wrong_secret_gets_no_token_and_logs_why(self):
         pool = self.client(secret="wrong")
