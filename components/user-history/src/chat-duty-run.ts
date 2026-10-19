@@ -471,8 +471,10 @@ export class Duties {
   /**
    * Reruns each cut run once. A duty's run to look at is its newest run that started a job, after that job ended (the run has an after-job
    * measure or a cut). It reruns when its job ended cut (`cutOf`), the run is no rerun itself, no rerun names it (`rerunOf`), no run of the
-   * duty goes now, the duty is active, and pi-pool admits the cut job's tree (`poolAdmits`; a duty job is the root of its tree), asked
-   * WAIT_READ_TREES trees at a time. A newer run that started a job becomes the run to look at, so a cut run whose duty ran again first, like
+   * duty goes now, the duty is active, the slot pi-pool gave the cut job has come (`DutyCut.slotAt`), and pi-pool admits the cut job's tree
+   * (`poolAdmits`; a duty job is the root of its tree), asked WAIT_READ_TREES trees at a time. `who` reserves nothing, so without the slot
+   * every cut tree read as admitted the moment one account freed: at 14:40:07Z on 10-19 claude-virev4 came back, 40 cut runs reran in that
+   * tick, and each rerun's job met a new slot wait by 14:48Z. The slots pi-pool hands out spread the reruns the way it spreads the jobs. A newer run that started a job becomes the run to look at, so a cut run whose duty ran again first, like
    * a wiki dream push run 15 min later, gets no rerun. The rerun is a run with the trigger "rerun" and `rerunOf`, and the check-in's goes
    * through the chat server's check-in lane. On 10-19 every check-in of "Twitch gaps" (01a151ca) from 02:33Z to 05:34Z got "this session waits
    * for its slot" as its job's first reply and read as missed after its job, and its next check-in with a working job ran at 06:04Z.
@@ -489,7 +491,7 @@ export class Duties {
           runs.some(other => other.duty === run.duty && other.rerunOf === run.at)) continue;
         const ended = run as DutyRunRecord & { job: DutyJobRef };
         const cut = await this.cutOf(chatId, ended);
-        if (cut && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
+        if (cut && !(cut.slotAt !== undefined && cut.slotAt > this.now()) && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
       }
     }
     const admits = this.host.poolAdmits;
