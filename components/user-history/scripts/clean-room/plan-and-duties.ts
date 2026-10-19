@@ -9,7 +9,7 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  * chat told "fix plan and duties based on THIS skill and persue completion of plans" should sort its plan out on its own. A fresh chat on a small
  * read-only area gets a messy board written here from scratch and the owner's one sentence as its first message. The criteria live in
  * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run. Each run takes an area no earlier run
- * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch since run 5), and the seeded risks sit inside that area only: run-3's
+ * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch for run 5), and the seeded risks sit inside that area only: run-3's
  * "wiki box disk fills" risk made its chat hand the risk to ops guy, a real chat.
  */
 export const SENTENCE = "fix plan and duties based on the board skill and pursue completion of plans";
@@ -129,8 +129,10 @@ const RISK_PAGE = /wiki:|\.html\b|\bapps\/[\w-]+\/|risks? page/i;
  */
 export function throttledMs(file: string | undefined, from: number, to: number): number {
   if (!file || !existsSync(file)) return 0;
-  let since: number | undefined, total = 0;
+  let since: number | undefined, total = 0, last = from;
   for (const line of readFileSync(file, "utf8").split("\n")) {
+    const stamp = Date.parse(/"timestamp":"([^"]+)"/.exec(line)?.[1] ?? "");
+    if (stamp >= from && stamp <= to) last = Math.max(last, stamp);
     if (!line.includes("\"assistant\"")) continue;
     let entry: { timestamp?: string; message?: { role?: string; stopReason?: string; errorMessage?: string } };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
@@ -141,7 +143,9 @@ export function throttledMs(file: string | undefined, from: number, to: number):
     if (blocked && since === undefined) since = at;
     if (!blocked && since !== undefined) { total += at - since; since = undefined; }
   }
-  return since === undefined ? total : total + (to - since);
+  // A stretch still open at the end runs to the session's last entry: a waiting session logs a retry every 15 to 20 min, and run-5's check-in
+  // "10:32" stopped logging at 02:27Z after the server replaced it, so counting it to the window end read 300 of 300 min.
+  return since === undefined ? total : total + (Math.max(since, last) - since);
 }
 
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
@@ -233,10 +237,19 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const runsFile = join(run, "runs.jsonl");
   const dutyJobs = existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").flatMap(line => { try { const id = (JSON.parse(line) as { job?: { id?: string } }).job?.id; return id ? [id] : []; } catch { return []; } }) : [];
   const family = new Set([...agents.flatMap(agent => agent.sessionId ? [agent.sessionId] : []), ...dutyJobs]);
+  const familyLines = sessionFiles(state.chat.id).flatMap(file => readFileSync(file, "utf8").split("\n"));
+  const contactedBefore = (id: string, at: number): boolean => familyLines.some(line => line.includes(id) && /agent_message\.send|deliveryStatus/.test(line)
+    && (Date.parse(/"timestamp":"([^"]+)"/.exec(line)?.[1] ?? "") || Infinity) < at);
   const outside = typed.map(event => `a typed message at ${iso(event.at)}: "${clip(event.text, 120)}"`);
   for (const event of head) {
     if (event.kind !== "text" || event.customType !== "agent_message" || event.at < sentAt) continue;
     if (event.relation === "child" || event.relation === "parent") continue;
+    // The chat service's own notices, such as "[relay] Your subagent ... is stopped", are not a person stepping in.
+    if (/^\[agent-message from [^\]]*\]\s*\[relay\]/.test(event.text)) continue;
+    // A reply from a thread the chat or its jobs wrote to first is the chat's own work: run-5's chat sent its search bug to frontend bro at
+    // 02:22Z, and frontend bro's two answers came back as cross-host messages.
+    const sender = event.fromId && family.has(event.fromId) ? event.fromId : /cross-host message from [^(]*\(([0-9a-f-]{36})\)/.exec(event.text)?.[1] ?? event.fromId ?? "";
+    if (sender && contactedBefore(sender, event.at)) continue;
     if (!family.has(event.fromId ?? "")) outside.push(`${event.from ?? event.fromId ?? "an agent"} messaged the chat at ${iso(event.at)}: "${clip(event.text, 120)}"`);
   }
   checks.push({ id: "8", ok: outside.length === 0, detail: outside.length ? outside.join("; ") : "no typed message after the sentence and no message from outside the chat's own sessions" });
