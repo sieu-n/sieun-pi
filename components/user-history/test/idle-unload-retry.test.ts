@@ -50,7 +50,10 @@ test("the 01:11Z rows: each session asleep in its provider retry on a pool hold 
   assert.ok(candidates.every(row => row.attachedClients <= (chats.has(row.sessionId) ? 1 : 0) && !row.isStreaming && !row.isRunningTools),
     "no client but the service's own attach on a chat, and no turn at work");
   const held = await providerWaits(candidates, at, TEN_MIN, reads());
-  for (const [id, until] of held) assert.ok(until !== null && until > at + TEN_MIN && until <= at + HOLD_REACH_MS, id);
+  for (const [id, until] of held) {
+    const waited = at - Date.parse(byId.get(id)!.lastActivityAt!);
+    assert.ok(until === null ? waited >= TEN_MIN : until > at && until <= at + HOLD_REACH_MS && (until > at + TEN_MIN || waited >= TEN_MIN), id);
+  }
   assert.ok(held.size >= 140, `${held.size} held`);
   const before = unloadPlan(day.rows, input);
   const after = unloadPlan(day.rows, { ...input, held });
@@ -69,7 +72,10 @@ test("a tree the pool serves within the unload's minutes, or now, or past HOLD_R
   const tree = rootOf(row);
   const heldWith = async (slot: number | null) => (await providerWaits([row], at, TEN_MIN, reads(new Map([[tree, slot]])))).has(row.sessionId);
   assert.equal(await heldWith(at + TEN_MIN + MIN), true);
-  assert.equal(await heldWith(at + TEN_MIN - MIN), false, "the slot comes before the unload's minutes are out");
+  assert.equal(await heldWith(at + TEN_MIN - MIN), true, "it already waited 186 min, so a slot the pool names inside the unload's minutes no longer keeps it");
+  const fresh = { ...row, lastActivityAt: new Date(at - 5 * MIN).toISOString() };
+  assert.equal((await providerWaits([fresh], at, TEN_MIN, reads(new Map([[tree, at + TEN_MIN - MIN]])))).has(row.sessionId), false,
+    "a session 5 min into its wait whose slot comes before the unload's minutes are out stays in Prime's retry");
   assert.equal(await heldWith(null), false, "the pool serves the tree now: the job sweep's abort continues it in place");
   assert.equal(await heldWith(at + HOLD_REACH_MS + MIN), false, "the resume pass would not look back that far");
   const failing = { ...reads(), read: async () => { throw new Error("pi-pool failed"); } };

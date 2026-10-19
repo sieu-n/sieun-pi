@@ -141,8 +141,14 @@ export const HOLD_REACH_MS = 20 * 60 * 60_000;
  * names no time), from a pool reading that came back. A job stops only when that comes after the unload's minutes and within HOLD_REACH_MS. A
  * tree the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. A chat
  * (`chat`) stops for any hold past the unload's minutes, one with no time included, since its revive reopens it whenever the pool admits it.
+ * A session that already waited the unload's minutes (`waitedMs`, since its last activity) stops on any hold the pool does not lift now, near
+ * or not: at 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while `pi-pool who` named a slot
+ * that kept moving to about now (accounts were short, 12 to 81 trees waiting on each of 6), so no reading ever came past the window, and the
+ * box OOM-killed 11 processes.
  */
-export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, chat = false): boolean {
+export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, chat = false, waitedMs = 0): boolean {
+  if (freeAt === now) return false;
+  if (waitedMs >= idleMs) return chat || freeAt === null || freeAt <= now + HOLD_REACH_MS;
   if (chat) return freeAt === null || freeAt > now + idleMs;
   return freeAt !== null && freeAt > now + idleMs && freeAt <= now + HOLD_REACH_MS;
 }
@@ -339,7 +345,8 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     const parts = found.get(threadKey({ session: rootOf(row), model: null }));
     if (!parts) return [];
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
-    return poolHoldsPast(freeAt, now, idleMs, chats.has(row.sessionId)) ? [[row.sessionId, freeAt] as const] : [];
+    const waited = now - Date.parse(row.lastActivityAt ?? "");
+    return poolHoldsPast(freeAt, now, idleMs, chats.has(row.sessionId), Number.isFinite(waited) ? waited : 0) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
 
