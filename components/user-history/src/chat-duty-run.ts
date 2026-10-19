@@ -5,10 +5,12 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
+import { pooledProviders } from "./chat-pool.ts";
+import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, overrunWords, parseSchedule, type Duty, type DutyJobRef,
-  type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
+  type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
@@ -18,8 +20,8 @@ import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, 
 export interface CheckInDutyHost {
   view(chatId: string): Promise<CheckInView | null>;
   set(chatId: string, change: { everyMs?: number; pause?: CheckInPause | null }, actor: CheckInActor): Promise<CheckInView | null>;
-  /** A check-in run now; `trigger` "verify" when a fix step linked to a check-in metric closed. */
-  run(chatId: string, trigger?: DutyTrigger): Promise<void>;
+  /** A check-in run now; `trigger` "verify" when a fix step linked to a check-in metric closed, "rerun" with `rerunOf` for a cut run's rerun. */
+  run(chatId: string, trigger?: DutyTrigger, rerunOf?: number): Promise<void>;
   /**
    * The check-in measure as a run would take it now, with no side effects, for a run's after-job measure; null when it cannot be read yet.
    * Absent (test fakes): a check-in run gets its after-job measure only from the next run.
@@ -34,6 +36,8 @@ export interface CheckInRun {
   at: number; trigger: DutyTrigger; everyMs: number; output: PrecheckOutput & { flagged: FlaggedSlice[] }; classes: Record<string, number>; findings: string;
   /** The check-in prompt's body (`checkInPrompt`): the goals and the actions due. Set, the job's brief is `checkInJobBrief` and the findings go to the detail file only. */
   prompt?: string;
+  /** On a rerun, the `at` of the cut run it reruns (`DutyRunRecord.rerunOf`). */
+  rerunOf?: number;
 }
 
 /** What the runner needs from the server: which threads are chats, and the duty jobs. Tests pass fakes. */
@@ -60,6 +64,8 @@ export interface DutyHost {
   fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
+  /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
+  poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -168,6 +174,9 @@ type PushContext = { runs: DutyRunRecord[]; everyMs: number };
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+/** Whether a run moves its duty's lastRunAt and lastSlotAt: a push run or a rerun leaves them, since they set when the duty is due next. */
+const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && trigger !== "rerun";
+
 /** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
 const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
 
@@ -243,6 +252,10 @@ export class Duties {
    * beside that run's after-job measure and started a job that ran the reopen check a second time (20261018-1556).
    */
   private readonly afters = new Map<string, Promise<void>>();
+  /** Each job's cut as read from its transcript (`cutOf`), once per job. */
+  private readonly cuts = new Map<string, Promise<DutyCut | null>>();
+  /** The cut runs this process started a rerun of, by `<chatId>/<dutyId>@<at>`, for a rerun that ends with no record (`rerunCut`). */
+  private readonly reran = new Set<string>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -309,6 +322,7 @@ export class Duties {
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
     await this.stopEnded(runs);
+    await this.rerunCut(runs);
     await this.retireGone(gone);
   }
 
@@ -406,7 +420,8 @@ export class Duties {
   /**
    * Measures an ended last job's run again and then queues the job's archive, once per duty at a time: the scan (`stopEnded`) and a push of
    * the same duty share one measure. A run of the duty going now is this job's measure (`launch` writes it as the after-job measure), so the
-   * measure waits for it and runs only when the run left none.
+   * measure waits for it and runs only when the run left none. A job that ended cut did no work, so its run records the cut (`cutOf`) in place
+   * of the measure and reruns (`rerunCut`).
    */
   private endJob(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): Promise<void> {
     const key = `${chatId}/${run.duty}`;
@@ -418,7 +433,7 @@ export class Duties {
       const runGoing = this.running.get(key);
       if (runGoing) await runGoing;
       const measured = runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
-      if (!measured) await this.measureAfter(chatId, run);
+      if (!measured && !(await this.cutOf(chatId, run))) await this.measureAfter(chatId, run);
       if (!jobs.stop) return;
       await jobs.stop(run.job);
       this.log(`duty job ${run.job.name}: its turn ended; queued its archive`);
@@ -428,6 +443,78 @@ export class Duties {
     this.afters.set(key, task);
     this.ending.add(task);
     return task;
+  }
+
+  /**
+   * The cut of a run's job: the record's, else its transcript's (`DutyJobHost.cut`), read once per job, written into the record and logged as
+   * cut, the line a measure of the run would have logged as "after its job". A run the old code measured after its cut job counts too.
+   */
+  private async cutOf(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): Promise<DutyCut | null> {
+    if (run.cut) return run.cut;
+    let read = this.cuts.get(run.job.id);
+    if (!read) {
+      const jobs = this.host.jobs;
+      read = (async () => {
+        const cut = await jobs.cut?.(run.job).catch(error => { this.log(`duty job ${run.job.name}: read its transcript: ${message(error)}`); return null; }) ?? null;
+        if (!cut) return null;
+        await this.store.updateRun(chatId, run.duty, run.at, record => { record.cut ??= cut; });
+        const slot = cut.slotAt === undefined ? "" : `, pi-pool slot ${new Date(cut.slotAt).toISOString()}`;
+        this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: cut, its job ${run.job.name} ended on a failed model call at ${new Date(cut.at).toISOString()}${slot}` +
+          ` (${cut.error}); ${run.trigger === "rerun" ? "a rerun is not run again" : "it reruns once pi-pool admits its tree"}`);
+        return cut;
+      })();
+      this.cuts.set(run.job.id, read);
+    }
+    return read;
+  }
+
+  /**
+   * Reruns each cut run once. A duty's run to look at is its newest run that started a job, after that job ended (the run has an after-job
+   * measure or a cut). It reruns when its job ended cut (`cutOf`), the run is no rerun itself, no rerun names it (`rerunOf`), no run of the
+   * duty goes now, the duty is active, and pi-pool admits the cut job's tree (`poolAdmits`; a duty job is the root of its tree), asked
+   * WAIT_READ_TREES trees at a time. A newer run that started a job becomes the run to look at, so a cut run whose duty ran again first, like
+   * a wiki dream push run 15 min later, gets no rerun. The rerun is a run with the trigger "rerun" and `rerunOf`, and the check-in's goes
+   * through the chat server's check-in lane. On 10-19 every check-in of "Twitch gaps" (01a151ca) from 02:33Z to 05:34Z got "this session waits
+   * for its slot" as its job's first reply and read as missed after its job, and its next check-in with a working job ran at 06:04Z.
+   */
+  private async rerunCut(runsByChat: ReadonlyMap<string, readonly DutyRunRecord[]>): Promise<void> {
+    const found: { chatId: string; run: DutyRunRecord & { job: DutyJobRef }; cut: DutyCut }[] = [];
+    for (const [chatId, runs] of runsByChat) {
+      const seen = new Set<string>();
+      for (const run of runs) {
+        if (!run.job || seen.has(run.duty)) continue;
+        seen.add(run.duty);
+        const key = `${chatId}/${run.duty}`;
+        if (run.trigger === "rerun" || (!run.cut && !run.after) || this.running.has(key) || this.reran.has(`${key}@${run.at}`) ||
+          runs.some(other => other.duty === run.duty && other.rerunOf === run.at)) continue;
+        const ended = run as DutyRunRecord & { job: DutyJobRef };
+        const cut = await this.cutOf(chatId, ended);
+        if (cut && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
+      }
+    }
+    const admits = this.host.poolAdmits;
+    const admitted = ({ run, cut: { provider } }: (typeof found)[number]): Promise<boolean> =>
+      provider !== undefined && admits && (pooledProviders as readonly string[]).includes(provider) ? admits(run.job.id, provider).catch(() => false) : Promise.resolve(true);
+    for (let from = 0; from < found.length; from += WAIT_READ_TREES) {
+      const part = found.slice(from, from + WAIT_READ_TREES);
+      const open = await Promise.all(part.map(admitted));
+      part.forEach(({ chatId, run }, index) => {
+        if (!open[index]) return;
+        this.reran.add(`${chatId}/${run.duty}@${run.at}`);
+        this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so its cut run of ${new Date(run.at).toISOString()} reruns`);
+        if (run.duty !== CHECK_IN_DUTY_ID) this.start(chatId, run.duty, "rerun", null, run.at);
+        else void this.host.checkIn?.run(chatId, "rerun", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: rerun: ${message(error)}`));
+      });
+    }
+  }
+
+  /** Whether the duty runs on its own now: a standing duty that is active, or the check-in of a chat whose check-in is not paused. */
+  private async dutyActive(chatId: string, dutyId: string): Promise<boolean> {
+    if (dutyId === CHECK_IN_DUTY_ID) {
+      const view = await this.host.checkIn?.view(chatId).catch(() => null) ?? null;
+      return view !== null && !view.paused;
+    }
+    return (await this.store.list(chatId)).some(duty => duty.id === dutyId && duty.status === "active");
   }
 
   private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = []): Promise<Record<string, FixLink>> {
@@ -543,11 +630,11 @@ export class Duties {
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${summary}`);
   }
 
-  /** Starts a run unless one is going; false when it was already running. */
-  private start(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null): boolean {
+  /** Starts a run unless one is going; false when it was already running. A rerun names its cut run (`rerunOf`). */
+  private start(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null, rerunOf?: number): boolean {
     const key = `${chatId}/${dutyId}`;
     if (this.running.has(key)) return false;
-    const run = this.run(chatId, dutyId, trigger, slot).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`))
+    const run = this.run(chatId, dutyId, trigger, slot, rerunOf).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`))
       .finally(async () => { await rm(this.measuringFile(chatId, dutyId), { force: true }); this.running.delete(key); this.steps.delete(key); });
     this.running.set(key, run);
     return true;
@@ -653,7 +740,7 @@ export class Duties {
   private async checkInRun(chatId: string, run: CheckInRun): Promise<CheckInStart> {
     const judged = judge(CHECK_IN_DUTY.metrics, run.output);
     const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, slot: run.at, trigger: run.trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
-      summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}) };
+      summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}), ...(run.rerunOf === undefined ? {} : { rerunOf: run.rerunOf }) };
     const previous = (await this.store.runs(chatId)).filter(entry => entry.duty === CHECK_IN_DUTY_ID);
     if (previous.some(entry => entry.slot === run.at && entry.job !== undefined)) return "done";
     const misses = await this.missesOf(chatId, record, previous, CHECK_IN_DUTY.metrics);
@@ -750,11 +837,11 @@ export class Duties {
       const dutyId = name.slice(0, -".measuring.json".length);
       if (this.running.has(`${chatId}/${dutyId}`)) continue;
       const file = this.measuringFile(chatId, dutyId);
-      const measuring = await readFile(file, "utf8").then(text => JSON.parse(text) as { at: number; trigger: DutyTrigger; slot: number | null }).catch(() => null);
+      const measuring = await readFile(file, "utf8").then(text => JSON.parse(text) as { at: number; trigger: DutyTrigger; slot: number | null; rerunOf?: number }).catch(() => null);
       await rm(file, { force: true });
       if (!measuring || !(await this.store.list(chatId)).some(duty => duty.id === dutyId)) continue;
       this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the server restarted while the run of ${new Date(measuring.at).toISOString()} measured; it runs again`);
-      this.start(chatId, dutyId, measuring.trigger, measuring.slot);
+      this.start(chatId, dutyId, measuring.trigger, measuring.slot, measuring.rerunOf);
     }
     for (const name of names.filter(entry => entry.endsWith(".pending.json"))) {
       const dutyId = name.slice(0, -".pending.json".length);
@@ -826,7 +913,7 @@ export class Duties {
   /** Resolves once every run going now has ended, for tests. */
   async settled(): Promise<void> { while (this.running.size) await Promise.all([...this.running.values()]); }
 
-  private async run(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null): Promise<void> {
+  private async run(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null, rerunOf?: number): Promise<void> {
     const duty = (await this.store.list(chatId)).find(entry => entry.id === dutyId);
     if (!duty) return;
     const key = `${chatId}/${dutyId}`;
@@ -839,9 +926,8 @@ export class Duties {
     const at = slot ?? started;
     this.steps.set(key, { at: started, step: "measuring" });
     await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
-    await writeFile(this.measuringFile(chatId, dutyId), JSON.stringify({ at: started, trigger, slot }), { mode: 0o600 });
-    // A push run leaves lastRunAt and lastSlotAt alone, since they set when the duty is due next.
-    if (trigger !== "push") await this.store.update(chatId, duties => {
+    await writeFile(this.measuringFile(chatId, dutyId), JSON.stringify({ at: started, trigger, slot, rerunOf }), { mode: 0o600 });
+    if (movesSchedule(trigger)) await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
       if (!found) return;
       found.lastRunAt = started;
@@ -857,6 +943,7 @@ export class Duties {
     const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);
     let record: DutyRunRecord;
     let flagged: FlaggedSlice[] = [];
+    const link = rerunOf === undefined ? {} : { rerunOf };
     // Wall time, so an overrun is measured even where tests fix `now`.
     const precheckFrom = Date.now();
     const overrunOf = (): { overrun: PrecheckOverrun } | Record<string, never> => {
@@ -868,11 +955,11 @@ export class Duties {
       const judged = judge(duty.metrics, output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
-        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf() };
+        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link };
     } catch (error) {
       await rm(detail, { force: true });
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500),
-        ...overrunOf() };
+        ...overrunOf(), ...link };
     }
     if (record.overrun) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${overrunWords(record.overrun)}`);
     const overrunLine = record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "";

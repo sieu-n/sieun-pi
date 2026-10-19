@@ -6,7 +6,10 @@ import type { JobRegistry } from "./chat-sources.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
-import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
+import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
+import { poolSlot } from "./shared/chat-feed.ts";
+import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
+import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
@@ -53,7 +56,35 @@ export interface DutyJobHost {
   ended?(last: readonly DutyJobRef[], older?: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
   /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
   stop?(job: DutyJobRef): Promise<void>;
+  /**
+   * How the job was cut (`readJobCut`) when it does not work and its transcript ends on a failed model call; null otherwise. A host without
+   * it (test fakes) reads no job as cut.
+   */
+  cut?(job: DutyJobRef): Promise<DutyCut | null>;
 }
+
+/**
+ * The cut a duty job's transcript lines end on: the last turn failed on the model call (`lastTurnError`), a pi-pool wait or a provider error,
+ * with its time, its provider and pi-pool's slot when the error names one (`poolSlot`). Null when the last turn ended any other way. The run
+ * record's own `failure` flag cannot say it: on 10-19 the daemon reloaded check-in 01a1521d after the idle unload stopped it at 03:06:30Z,
+ * its row lost the failure, and the runner read the job as finished.
+ */
+export function jobCut(lines: readonly string[]): DutyCut | null {
+  const error = lastTurnError(lines.join("\n"));
+  if (error === undefined) return null;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    let entry: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; provider?: unknown } };
+    try { entry = JSON.parse(lines[index]!); } catch { continue; }
+    if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    const slotAt = poolSlot(error);
+    return { error, at: Date.parse(String(entry.timestamp)), ...typeof entry.message.provider === "string" ? { provider: entry.message.provider } : {},
+      ...slotAt === null ? {} : { slotAt } };
+  }
+  return null;
+}
+
+/** `jobCut` of a session file's tail (`CUT_TAIL_BYTES`); null when the file is gone. */
+export const readJobCut = async (file: string): Promise<DutyCut | null> => jobCut(await tailLines(file, CUT_TAIL_BYTES));
 
 /**
  * A duty job's name: the duty's name in lowercase, the chat's name and the start time, like `check-in frontend bro 14:00`. Root sessions share
@@ -345,6 +376,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * 21:00:50Z the first check-in slot of the new chat "YouTube index gaps" started no job, because the daemon's list timed out at 30 s at load 70.
    */
   saved?: (chatId: string) => Promise<{ name: string; cwd: string } | null>;
+  /** A session's transcript file (`sessionFileOf`), which `cut` reads; absent, no job reads as cut. */
+  sessionFile?: (id: string) => Promise<string | null>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -436,5 +469,10 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
+    async cut(job) {
+      if ((await row(job.id))?.working) return null;
+      const file = await input.sessionFile?.(job.id);
+      return file ? readJobCut(file) : null;
+    },
   };
 }

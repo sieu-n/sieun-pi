@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
-import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf } from "./shared/interrupted.ts";
+import { WAIT_READ_TREES } from "./idle-unload.ts";
+import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf, PoolHeldRun } from "./shared/interrupted.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
@@ -55,7 +56,10 @@ function parseReport(stdout: string): { report: InterruptedReport } | { malforme
     ?? badField("unresolved", value.unresolved, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText,
       archived_at: isOptionalText, error: isText, host: isOptionalText }, true)
     ?? badField("stopped", value.stopped, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText,
-      stopped_at: (at: unknown) => at === null || isOptionalText(at), stopped_by: isText, host: isOptionalText }, true);
+      stopped_at: (at: unknown) => at === null || isOptionalText(at), stopped_by: isText, host: isOptionalText }, true)
+    ?? badField("held", value.held, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText, tree: isText,
+      provider: (provider: unknown) => provider === null || isText(provider), errored_at: (at: unknown) => at === null || isText(at), held_by: isText,
+      pool_at: (at: unknown) => at === null || isText(at), host: isOptionalText }, true);
   return bad ? { malformed: `printed a report whose ${bad} is missing or has the wrong type` } : { report: value as unknown as InterruptedReport };
 }
 
@@ -180,7 +184,8 @@ export class InterruptedRuns {
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       const unresolved = (planned.unresolved ?? []).filter(isJob);
       const stopped = (planned.stopped ?? []).filter(isJob);
-      const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}) };
+      const pooled = (planned.held ?? []).filter(isJob);
+      const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}), ...(pooled.length ? { held: pooled } : {}) };
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
       if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
       const reopenAll = async (ids: Iterable<string>): Promise<void> => {
@@ -243,6 +248,37 @@ export async function cutJobs(dataDir: string, chats: readonly string[], artifac
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
 /**
+ * The jobs the last pass left because pi-pool held their tree (`InterruptedReport.held`). At the first chat tick (CHECK_IN_TICK_MS) at or after
+ * a run's pool time, or at each tick for a run with none, `admits` (`poolAdmits`, the same rule as resume_paused.py account_blocker) asks the
+ * pool for its tree, and the chat runs the next pass at once for a tree it admits, instead of up to JOB_CLEANUP_EVERY_MS later. That pass checks
+ * the pool again before it sends. A run on another box is left to that box's pool. On 10-19 twitch index gaps sat on its 429 until the
+ * 06:06:14Z pass, 6 min after claude7 served again at 06:00Z.
+ */
+export class PoolHeldJobs {
+  private runs: readonly PoolHeldRun[] = [];
+
+  constructor(private readonly admits: (tree: string, provider: string) => Promise<boolean>) {}
+
+  set(runs: readonly PoolHeldRun[]): void { this.runs = runs.filter(run => run.provider !== null && run.host === undefined); }
+
+  /** The held runs at or past their pool time whose tree pi-pool admits at `now`. They leave the list, and the next pass lists them again if the pool still holds them. */
+  async admitted(now: number): Promise<PoolHeldRun[]> {
+    const key = (run: PoolHeldRun): string => `${run.tree}|${run.provider}`;
+    const due = this.runs.filter(run => !(Date.parse(run.pool_at ?? "") > now));
+    const trees = [...new Map(due.map(run => [key(run), run] as const)).values()];
+    const open = new Set<string>();
+    for (let from = 0; from < trees.length; from += WAIT_READ_TREES) {
+      const part = trees.slice(from, from + WAIT_READ_TREES);
+      const said = await Promise.all(part.map(run => this.admits(run.tree, run.provider!).catch(() => false)));
+      part.forEach((run, index) => { if (said[index]) open.add(key(run)); });
+    }
+    const admitted = this.runs.filter(run => open.has(key(run)));
+    if (admitted.length) this.runs = this.runs.filter(run => !open.has(key(run)));
+    return admitted;
+  }
+}
+
+/**
  * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`), and so
  * does each session in `owners` (the owners of the chats' open steps, see resume_paused.py --owners) wherever it sits, and each top-level
  * session that is no chat (its own head). Never a chat: `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after
@@ -253,7 +289,7 @@ const isGone = (result: InterruptedHead["result"]): boolean => typeof result ===
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
   interrupted: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
-  owners: ReadonlySet<string> = new Set()): Promise<void> {
+  owners: ReadonlySet<string> = new Set(), held?: PoolHeldJobs): Promise<void> {
   const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
   try {
     const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "") ||
@@ -269,5 +305,9 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
     for (const entry of report?.stopped ?? []) {
       log(`job ${entry.name}: not resumed, stopped on purpose: ${entry.stopped_by} (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
+    for (const entry of report?.held ?? []) {
+      log(`job ${entry.name}: held by pi-pool until ${entry.pool_at ?? "a time it does not say"}: ${entry.held_by} (cut at ${entry.errored_at ?? "?"}, tree ${entry.tree.slice(0, 8)}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
+    }
+    held?.set(report?.held ?? []);
   } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }
 }

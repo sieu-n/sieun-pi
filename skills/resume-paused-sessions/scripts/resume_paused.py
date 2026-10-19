@@ -177,6 +177,7 @@ TOKEN_HOOK_ERROR = re.compile(r"from shell command: \S*pi-pool-token|token hook 
 POOLED_PROVIDERS = ("anthropic", "openai-codex")
 # A provider error Prime keeps retrying until an account serves the tree again: a rate limit, a used-up plan, or pi-pool's hold on the tree.
 PROVIDER_WAIT_ERROR = re.compile(r"rate.?limit|\b429\b|usage limit|waits for its slot", re.IGNORECASE)
+POOL_TIME_ERROR = re.compile(r"(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)")
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
@@ -211,6 +212,7 @@ FILES = {}
 INCOMPLETE = []
 UNRESOLVED = []
 STOPPED = []
+HELD = []
 SENDING = []
 STOP = []
 STARTED = time.monotonic()
@@ -1074,18 +1076,19 @@ def pool_bin():
 
 
 def account_blocker(root_session_id, provider, cache, strict=False):
-    """Why the account this tree's next request gets cannot serve, or None when it can (or there is no pool to ask).
+    """Why the account this tree's next request gets cannot serve and when pi-pool says that ends (pool_free_at, epoch seconds or None), or
+    (None, None) when it can serve (or there is no pool to ask).
 
     A run that stopped on a rate limit or a used-up account fails again at once if it resumes on the same account,
     so it stays off the list until pi-pool has an account for it. With `strict` (the abort of a run asleep in its provider retry) a pooled
     provider whose answer could not be read, or a resolved account `pi-pool ls` does not list, gives "unknown: ..." instead of None, since an
     unknown answer is no proof the account can serve. A provider pi-pool does not pool gives None either way.
     """
-    unknown = (lambda why: f"unknown: {why}") if strict else (lambda why: None)
+    unknown = (lambda why: (f"unknown: {why}", None)) if strict else (lambda why: (None, None))
     if provider is None:
         return unknown("the run's file names no provider")
     if provider not in POOLED_PROVIDERS:
-        return None
+        return None, None
     tool = pool_bin()
     if not tool:
         return unknown("no pi-pool binary")
@@ -1102,20 +1105,56 @@ def account_blocker(root_session_id, provider, cache, strict=False):
         return unknown(f"pi-pool ls --provider {provider} failed")
     if resolved is None:
         return unknown(f"pi-pool who gave no {provider} answer for the tree")
+    free_at = pool_free_at(resolved, rows, time.time())
     # A tree that pi-pool holds in a wait, its slot or R5's 0 to 120 min backoff draw (30f44c22b), gets no turn before slot_at: a continue
     # would only meet the same hold, and an abort of a run in its retry would end it early.
     wait = resolved.get("wait") or {}
     if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
-        return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}"
+        return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}", free_at
     account = resolved.get("account")
     if not account:
-        return f"no {provider} account can serve"
+        return f"no {provider} account can serve", free_at
     row = rows.get(account)
     if row is None:
         return unknown(f"pi-pool ls does not list {account}")
     if not row.get("usable"):
-        return f"{row.get('email')} is {row.get('reason') or 'not usable'}"
-    return None
+        return f"{row.get('email')} is {row.get('reason') or 'not usable'}", free_at
+    return None, None
+
+
+def pool_free_at(resolved, rows, now):
+    """When pi-pool next gives the tree an account, in epoch seconds, by the chat's rule (chat-pool.ts poolFreeAt): the slot of the wait `who`
+    holds the tree in, the end of the limit or cooldown of the account `who` names, or with no account named the earliest time any account
+    frees up (its limit or cooldown end, else the reset of a spent window). None when the pool does not say."""
+    slot = (resolved.get("wait") or {}).get("slot_at")
+    if isinstance(slot, (int, float)) and slot > now:
+        return slot
+
+    def ends(row, fields):
+        return [at for at in (row.get(field) for field in fields) if isinstance(at, (int, float)) and at > now]
+
+    account = resolved.get("account")
+    if account:
+        held = ends(rows.get(account) or {}, ("limited_until", "cooldown_until"))
+        return max(held) if held else None
+    if (resolved.get("selection") or {}).get("mode") == "manual":
+        return None
+    frees = []
+    for row in rows.values():
+        if row.get("disabled"):
+            continue
+        blocked = ends(row, ("limited_until", "cooldown_until"))
+        spent = [window["resets_at"] for window in row.get("windows") or [] if (window.get("pct") or 0) >= 100 and ends(window, ("resets_at",))]
+        if blocked or spent:
+            frees.append(max(blocked or spent))
+    return min(frees, default=None)
+
+
+def error_free_at(error, now):
+    """The latest pool time the run's error names that is still ahead (the extension's "limited until" and "waits for its slot at"), for a
+    hold account_blocker found no end for, in epoch seconds; None when there is none."""
+    ahead = [stamp.timestamp() for stamp in map(parse_ts, POOL_TIME_ERROR.findall(error)) if stamp and stamp.timestamp() > now]
+    return max(ahead) if ahead else None
 
 
 def last_user_at(entries):
@@ -1443,7 +1482,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         except RecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             return {"retry_blocked": f"its stop record did not read: {error}"}
-        blocker = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
+        blocker, _ = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
         return {"retry_blocked": blocker} if blocker else mark
 
     if BOX.remote:
@@ -1569,11 +1608,16 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 continue  # someone sent the head a message after the interruption
         root_id, provider = pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid))
         if verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
-            blocker = hook_blocker(root_id, provider, hooks) if check_hook else None
+            blocker, free_at = (hook_blocker(root_id, provider, hooks) if check_hook else None), None
         else:
-            blocker = account_blocker(root_id, provider, accounts)
+            blocker, free_at = account_blocker(root_id, provider, accounts)
         if blocker:
-            continue  # resuming now would fail the same way; it shows again once pi-pool gives the tree a token
+            free_at = free_at or error_free_at(verdict[1], time.time())
+            HELD.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head, "head_session_id": head_session(head, s),
+                         "tree": root_id, "provider": provider, "errored_at": last.get("timestamp"), "held_by": blocker,
+                         "pool_at": dt.datetime.fromtimestamp(free_at, dt.timezone.utc).isoformat(timespec="seconds") if free_at else None,
+                         **({"host": BOX.name} if BOX.remote else {})})
+            continue
         paused.append({
             "id": sid,
             # The short id changes when a session is reloaded; the state file keys by the full session id.
@@ -1889,6 +1933,8 @@ def main():
         report["unresolved"] = UNRESOLVED
     if STOPPED:
         report["stopped"] = STOPPED
+    if HELD:
+        report["held"] = HELD
     if args.json:
         print(json.dumps(report, indent=1))
         return finish()
@@ -1899,6 +1945,8 @@ def main():
         print(f"not resumed: {entry['id']}  {entry['name'][:40]}  archived {entry['archived_at']}: {entry['error']}")
     for entry in STOPPED:
         print(f"stopped on purpose: {entry['id']}  {entry['name'][:40]}: {entry['stopped_by']}")
+    for entry in HELD:
+        print(f"held by pi-pool: {entry['id']}  {entry['name'][:40]}: {entry['held_by']}, pool time {entry['pool_at'] or 'unknown'}")
     paused, actions, child_actions = report["paused"], report["heads"], report["children"]
     if not paused:
         print(f"no interrupted live run in the last {args.since_minutes:g} min")

@@ -16,7 +16,7 @@ import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
-import { resumeChatJobs } from "./chat-resume.ts";
+import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
@@ -33,6 +33,7 @@ import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
+import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
@@ -220,6 +221,7 @@ export class Chats {
    */
   private rootsSweptAt = -Infinity;
   private passWaits = false;
+  private readonly heldJobs = new PoolHeldJobs((tree, provider) => this.source.poolAdmits?.(tree, provider) ?? Promise.resolve(false));
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -761,7 +763,8 @@ export class Chats {
   /**
    * The pass over interrupted jobs runs `inMs` from now, at the next tick after that, instead of up to JOB_CLEANUP_EVERY_MS later, and never
    * later than it was due. A new daemon supervisor (a Prime update or a restart) cut the turns it stopped and passes SUPERVISOR_RESUME_MS; a
-   * cut job the catalog just read (`resumesNow`) passes 0. census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
+   * cut job the catalog just read (`resumesNow`) passes 0, and so does a held job whose tree pi-pool admits at its pool time (`PoolHeldJobs`).
+   * census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
    */
   interruptedSoon(inMs = SUPERVISOR_RESUME_MS): void {
     this.rootsSweptAt = Math.min(this.rootsSweptAt, this.now() - JOB_CLEANUP_EVERY_MS + inMs);
@@ -782,6 +785,7 @@ export class Chats {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
     }
+    if ((await this.heldJobs.admitted(this.now())).length) this.interruptedSoon(0);
     // A pass waiting behind a running one already covers every cut seen since: one run per pass at most stays queued, however many jobs are cut.
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS && !this.passWaits) {
       this.rootsSweptAt = this.now();
@@ -791,7 +795,7 @@ export class Chats {
         this.passWaits = true;
         this.queue("#interrupted", async () => {
           this.passWaits = false;
-          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept));
+          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs);
         });
       }
     }
@@ -1171,9 +1175,10 @@ export class Chats {
    * One check-in run for a chat (Chats.tick at its interval, or the owner's Run now): the precheck in code (`checkInPrecheck`: each step's
    * class, the misses against the duty's targets), kept as the new memory, then handed to the duty runner, which starts one check-in job with
    * it as context (src/chat-duty-run.ts). Every run with something to check starts a job, met targets included; the job decides what needs
-   * work. A chat with no job at work, no open plan step, no board read error and no ask overflow has nothing to check.
+   * work. A chat with no job at work, no open plan step, no board read error and no ask overflow has nothing to check. A rerun names the cut
+   * run it reruns (`rerunOf`).
    */
-  async checkIn(id: string, trigger: CheckInRun["trigger"] = "schedule"): Promise<void> {
+  async checkIn(id: string, trigger: CheckInRun["trigger"] = "schedule", rerunOf?: number): Promise<void> {
     await this.load();
     if (!this.chatIds.has(id)) return;
     try {
@@ -1205,7 +1210,7 @@ export class Chats {
       await this.source.memory.set(id, { ...precheck.memory, flags });
       const pushed = await this.pushJobs(id, precheck.jobs, gathered.sessions ?? new Map());
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
-        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags), prompt: checkInPrompt(precheck, pushed) });
+        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...rerunOf === undefined ? {} : { rerunOf } });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
@@ -1369,10 +1374,22 @@ export class Chats {
     });
   }
 
-  /** The owner's Run now on the check-in duty: a check-in at once, in the chat's check-in lane, and its schedule starts over. */
-  runCheckIn(id: string, trigger: CheckInRun["trigger"] = "owner"): Promise<void> {
+  /**
+   * The owner's Run now on the check-in duty, a verify run or a cut run's rerun (`rerunOf`, `Duties.rerunCut`): a check-in at once, in the
+   * chat's check-in lane, and its schedule starts over. A rerun runs only while no check-in after the cut one started a job, since a scheduled
+   * one may have run ahead of it in the lane.
+   */
+  runCheckIn(id: string, trigger: CheckInRun["trigger"] = "owner", rerunOf?: number): Promise<void> {
     return new Promise(resolve => this.queue(checkInLane(id), async () => {
-      try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, trigger); } } finally { resolve(); }
+      try {
+        if (!this.chatIds.has(id)) return;
+        if (rerunOf !== undefined && (await this.source.dutyRuns?.(id) ?? []).some(run => run.duty === CHECK_IN_DUTY_ID && run.at > rerunOf && run.job)) {
+          this.log(`chat ${id.slice(0, 8)}: check-in rerun of the cut run of ${new Date(rerunOf).toISOString()}: a later check-in started a job, so it does not run`);
+          return;
+        }
+        this.lastCheckIn.set(id, this.now());
+        await this.checkIn(id, trigger, rerunOf);
+      } finally { resolve(); }
     }));
   }
 

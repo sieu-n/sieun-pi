@@ -49,6 +49,26 @@ export interface InterruptedReport {
   unresolved?: UnresolvedStop[];
   /** Cut runs a record says were stopped on purpose: an rlm ledger delete, the chat's delete or archive, or a stop reason on the archive line. */
   stopped?: RecordedStop[];
+  /** Cut runs left for now because pi-pool holds their tree; the chat service asks the pool again at each one's `pool_at` (`PoolHeldJobs`). */
+  held?: PoolHeldRun[];
+}
+
+/**
+ * A cut run whose tree pi-pool holds: `tree` is the top-level session pi-pool keys it by, `held_by` the hold, and `pool_at` when the pool says
+ * the tree can run again (resume_paused.py pool_free_at), null when it does not say. A null provider is never admitted.
+ */
+export interface PoolHeldRun {
+  id: string;
+  name: string;
+  session_id: string;
+  head: string;
+  head_session_id: string;
+  tree: string;
+  provider: string | null;
+  errored_at: string | null;
+  held_by: string;
+  pool_at: string | null;
+  host?: string;
 }
 
 /** What decides whether a run or an unresolved stop belongs to the chats' jobs. */

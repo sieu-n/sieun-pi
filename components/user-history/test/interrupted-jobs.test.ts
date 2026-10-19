@@ -155,6 +155,41 @@ test("a new daemon supervisor brings the pass over interrupted jobs forward", as
   chats.close();
 });
 
+test("a job pi-pool holds gets its pass at the first tick at or after its pool time, and one with no pool time is asked about at each tick", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "interrupted-jobs-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = Date.parse("2026-10-19T05:55:37Z");
+  const rows = (): SessionRow[] => [row("c1", at, { chat: true, agents: [] })];
+  const held = (poolAt: string | null) => ({ id: "bebde466d3af", name: "twitch index gaps", session_id: "01a151d3", head: "bfae1773e0a0", head_session_id: "c1",
+    tree: "c1", provider: "anthropic", errored_at: "2026-10-19T02:31:41.345Z", held_by: "claude7@slack.green is limited", pool_at: poolAt });
+  const reports: InterruptedReport[] = [{ paused: [], heads: [], checked_at: "", held: [held("2026-10-19T05:59:59+00:00")] },
+    { paused: [], heads: [], checked_at: "", held: [held(null)] }];
+  const passes: string[] = [], asked: string[] = [];
+  let admits = (): boolean => now >= Date.parse("2026-10-19T05:59:59Z");
+  const lines: string[] = [];
+  const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, {}, () => now, rows), interrupted: async () => { passes.push(new Date(now).toISOString()); return reports.shift() ?? null; },
+      poolAdmits: async tree => { asked.push(`${tree} ${new Date(now).toISOString()}`); return admits(); } }, line => lines.push(line));
+  await chats.adopt();
+  const step = async (ms: number) => { now += ms; await chats.tick(); await chats.settled(); };
+  await step(0);
+  for (let tick = 0; tick < 8; tick++) await step(CHECK_IN_TICK_MS);
+  assert.deepEqual([passes, asked], [["2026-10-19T05:55:37.000Z"], []], "no pool read and no pass before the pool time");
+  await step(CHECK_IN_TICK_MS);
+  assert.deepEqual([passes, asked], [["2026-10-19T05:55:37.000Z", "2026-10-19T06:00:07.000Z"], ["c1 2026-10-19T06:00:07.000Z"]],
+    "the first tick at or after 05:59:59Z asks the pool and runs the pass, not the 06:05:37Z sweep");
+  admits = () => false;
+  await step(CHECK_IN_TICK_MS);
+  await step(CHECK_IN_TICK_MS);
+  admits = () => true;
+  await step(CHECK_IN_TICK_MS);
+  assert.deepEqual([passes.length, asked.slice(1)], [3, ["c1 2026-10-19T06:00:37.000Z", "c1 2026-10-19T06:01:07.000Z", "c1 2026-10-19T06:01:37.000Z"]],
+    "a held run with no pool time is asked about at each tick");
+  assert.ok(lines.includes("job twitch index gaps: held by pi-pool until 2026-10-19T05:59:59+00:00: claude7@slack.green is limited (cut at 2026-10-19T02:31:41.345Z, tree c1, 01a151d3)"), lines.join("\n"));
+  chats.close();
+});
+
 test("a resume run a signal ends names the signal, time and flags instead of the bare command", async () => {
   // 06:52Z and 06:57Z on 10-18 the service logged "Command failed: python3 -B .../resume_paused.py --json ... --owners <134 ids>" and nothing more.
   const dir = await mkdtemp(join(tmpdir(), "resume-script-"));

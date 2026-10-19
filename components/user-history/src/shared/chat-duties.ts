@@ -90,7 +90,8 @@ export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutySta
 /** What started a run: its schedule, a catch-up, or the owner's Run now. */
 /** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
 /** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/chat-duty-run.ts). */
-export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push";
+/** `rerun`: the one rerun of a cut run (`DutyRunRecord.cut`), at the first tick pi-pool admits the cut job's tree (`Duties.rerunCut`). */
+export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 /** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`). */
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number }
@@ -112,7 +113,18 @@ export interface DutyRunRecord {
   fixes?: Record<string, FixLink>;
   /** The measure taken after this run's own job ended: the run's verdict once its fixes are in (`effectiveRun`). */
   after?: AfterMeasure;
+  /** Set when the run's job ended cut, so the run did not do its work and reruns once. */
+  cut?: DutyCut;
+  /** On a rerun (trigger `rerun`), the `at` of the cut run it reruns: the record that the cut run was rerun. */
+  rerunOf?: number;
 }
+/**
+ * How a duty job was cut: its last turn failed on the model call, on a pi-pool wait or a provider error, and nothing came after it
+ * (`readJobCut` in src/chat-duty-job.ts). `at` is when that turn failed, `provider` the provider whose pool the rerun waits for, and `slotAt`
+ * the slot pi-pool gave the job when the error names one. On 10-19 check-in 01a1521d of "Twitch gaps" got "this session waits for its slot at
+ * 2026-10-19T03:42:00.000Z" as its first reply at 03:04:04Z, the idle unload stopped it at 03:06:30Z, and its run read "after its job, missed".
+ */
+export interface DutyCut { error: string; at: number; provider?: string; slotAt?: number }
 /** A fix step on the board for one missed metric: its plan step id, the job that owns it, and whether that job was live when the run looked. */
 export interface FixLink { step: string; job?: string; live: boolean }
 /** A run's re-measure after its own job ended. */

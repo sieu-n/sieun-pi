@@ -60,7 +60,7 @@ class ResumePausedTests(unittest.TestCase):
         hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
         hosts.start()
         self.addCleanup(hosts.stop)
-        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED):
+        for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED, resume_paused.HELD):
             found.clear()
             self.addCleanup(found.clear)
         for name, value in (("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
@@ -161,9 +161,9 @@ class ResumePausedTests(unittest.TestCase):
 
     def test_rate_limits_count_only_once_the_account_can_serve(self):
         self.session("aaaaaaaaaaaa", [assistant(30, "error", "Provider rate limit exceeded (rate_limit_error, 429): would exceed")])
-        with patch.object(resume_paused, "account_blocker", return_value="claude3@slack.green is depleted"):
+        with patch.object(resume_paused, "account_blocker", return_value=("claude3@slack.green is depleted", None)):
             self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
-        with patch.object(resume_paused, "account_blocker", return_value=None):
+        with patch.object(resume_paused, "account_blocker", return_value=(None, None)):
             self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["aaaaaaaaaaaa"])
 
     def test_hung_working_session_counts_only_with_nothing_long_running(self):
@@ -846,6 +846,64 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(p["reason"], p["errored_at"]) for p in report["paused"]], [("error", "2026-10-19T02:43:25.274Z")])
         self.assertEqual(self.sent, [(job[-12:], "continue")])
 
+    def test_the_sweep_reports_a_job_the_pool_holds_with_its_pool_time_and_resumes_it_once_who_admits_it(self):
+        chat, job = "01a151ca-2bab-71ee-a334-bfae1773e0a0", "01a151d3-6973-70f1-ba91-bebde466d3af"
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
+                   "[request_id: req_011CgAp1VZL8PUdAYKX5k9Xa] pi-pool: claude7@slack.green is limited until 2026-10-19T05:59:59.000Z; "
+                   "this session waits for its slot at 2026-10-19T02:48:11.000Z. Try again in 16 minutes.")
+        path = self.root / "artifacts" / chat / "sub-92bb92ab" / f"{job}.jsonl"
+        path.parent.mkdir(parents=True)
+        entries = [{"type": "message", "timestamp": "2026-10-19T01:44:20.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "research the Twitch index gaps"}]}},
+                   {"type": "message", "timestamp": "2026-10-19T02:31:41.345Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                           "content": [], "errorMessage": limited}},
+                   {"type": "session_state", "timestamp": "2026-10-19T02:34:39.567Z", "state": {"status": "archived"}},
+                   {"type": "session_state", "timestamp": "2026-10-19T02:34:39.992Z", "state": {"status": "active"}}]
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        rows = [{"id": chat, "sessionId": chat, "lifecycle": "live", "activity": "idle", "sessionName": "Twitch gaps", "runtimeKind": "top-level",
+                 "sessionFile": str(self.root / "sessions" / f"{chat}.jsonl"), "lastActivityAt": "2026-10-19T02:42:26.038Z"},
+                {"id": job, "sessionId": job, "lifecycle": "live", "activity": "idle", "sessionName": "twitch index gaps", "runtimeKind": "subagent",
+                 "sessionFile": str(path), "lastActivityAt": "2026-10-19T02:34:39.992Z", "parentSessionId": chat}]
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        asked = []
+
+        def run(usable, now):
+            def pool(cmd, **kwargs):
+                if cmd[1] == "ls":
+                    row = {"id": "claude7", "email": "claude7@slack.green", "usable": usable, "reason": None if usable else "limited",
+                           "limited_until": None if usable else 1792389599, "cooldown_until": None}
+                    return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": [row]}), "")
+                asked.append(cmd[cmd.index("--session") + 1])
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"providers": {"anthropic": {"account": "claude7", "wait": None}}}), "")
+            with patch.dict(resume_paused.UNLOADED, {job: resume_paused.parse_ts("2026-10-19T02:34:40.384Z")}, clear=True), \
+                    patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                    patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                    patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
+                    patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                    patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+                return resume_paused.resume(rows, args, now)
+
+        held = run(False, dt.datetime(2026, 10, 19, 5, 55, 37, tzinfo=dt.timezone.utc))
+        self.assertEqual((held["paused"], self.sent, asked), ([], [], [chat]), "pi-pool holds the chat's tree while claude7 is limited")
+        self.assertEqual([(entry["session_id"], entry["tree"], entry["provider"], entry["errored_at"], entry["held_by"], entry["pool_at"]) for entry in resume_paused.HELD],
+                         [(job, chat, "anthropic", "2026-10-19T02:31:41.345Z", "claude7@slack.green is limited", "2026-10-19T05:59:59+00:00")])
+        resume_paused.HELD.clear()
+        report = run(True, dt.datetime(2026, 10, 19, 6, 0, 30, tzinfo=dt.timezone.utc))
+        self.assertEqual(([(p["reason"], p["errored_at"]) for p in report["paused"]], resume_paused.HELD), ([("error", "2026-10-19T02:31:41.345Z")], []))
+        self.assertEqual(self.sent, [(job[-12:], "continue")])
+
+    def test_the_sweep_takes_a_held_runs_pool_time_from_the_wait_slot_the_account_hold_or_the_error(self):
+        now = dt.datetime(2026, 10, 19, 5, 55, 37, tzinfo=dt.timezone.utc).timestamp()
+        limited = {"claude7": {"limited_until": now + 264, "cooldown_until": None, "windows": []},
+                   "claude9": {"limited_until": None, "cooldown_until": None, "windows": [{"pct": 100, "resets_at": now + 600}, {"pct": 40, "resets_at": now + 60}]},
+                   "claude1": {"disabled": True, "limited_until": now + 30}}
+        self.assertEqual(resume_paused.pool_free_at({"account": None, "wait": {"slot_at": now + 90}}, limited, now), now + 90)
+        self.assertEqual(resume_paused.pool_free_at({"account": "claude7", "wait": None}, limited, now), now + 264)
+        self.assertEqual(resume_paused.pool_free_at({"account": None, "wait": None}, limited, now), now + 264, "the earliest account that frees up")
+        self.assertIsNone(resume_paused.pool_free_at({"account": "claude9", "wait": None}, limited, now))
+        error = ("pi-pool: claude7@slack.green is limited until 2026-10-19T05:59:59.000Z; this session waits for its slot at 2026-10-19T02:48:11.000Z.")
+        self.assertEqual(resume_paused.error_free_at(error, now), now + 262)
+        self.assertIsNone(resume_paused.error_free_at(error, now + 3600))
+
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
         seen = self.root / "hook-session"
@@ -973,7 +1031,7 @@ class ResumePausedTests(unittest.TestCase):
         os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
 
         def marked(blocker=None, record=None):
-            with patch.object(resume_paused, "account_blocker", return_value=blocker), patch.object(resume_paused, "stop_record", return_value=record):
+            with patch.object(resume_paused, "account_blocker", return_value=(blocker, None)), patch.object(resume_paused, "stop_record", return_value=record):
                 report = self.run_resume(dry_run=True)
             self.assertEqual([p["reason"] for p in report["paused"]], ["hung"])
             return "retry_error" in report["paused"][0]
@@ -992,7 +1050,7 @@ class ResumePausedTests(unittest.TestCase):
                 return resume_paused.subprocess.CompletedProcess(cmd, 0 if body is not None else 1, json.dumps(body or {}), "")
             with patch.object(resume_paused, "pool_bin", return_value=tool), patch.object(resume_paused.subprocess, "run", side_effect=run), \
                     patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
-                return (resume_paused.account_blocker("root", provider, {}, strict=True), resume_paused.account_blocker("root", provider, {}))
+                return (resume_paused.account_blocker("root", provider, {}, strict=True)[0], resume_paused.account_blocker("root", provider, {})[0])
 
         rows = {"rows": [{"id": "acct1", "usable": True}]}
         good = {"providers": {"anthropic": {"account": "acct1", "wait": None}}}
@@ -1011,7 +1069,7 @@ class ResumePausedTests(unittest.TestCase):
                                       assistant(80, "error", "429 This request would exceed your account's rate limit.")],
                      activity="working", isStreaming=True, lastActivityAt=at(80))
         os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
-        with patch.object(resume_paused, "account_blocker", return_value=None), \
+        with patch.object(resume_paused, "account_blocker", return_value=(None, None)), \
                 patch.object(resume_paused, "stop_record", side_effect=resume_paused.RecordError("deleted-jobs.json is not JSON")):
             report = self.run_resume(dry_run=True)
         run = report["paused"][0]
@@ -1029,7 +1087,7 @@ class ResumePausedTests(unittest.TestCase):
                 return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
             with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
                     patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
-                return resume_paused.account_blocker("root", "anthropic", {})
+                return resume_paused.account_blocker("root", "anthropic", {})[0]
 
         self.assertIsNone(who(None))
         self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later}))
@@ -1075,7 +1133,7 @@ class ResumePausedTests(unittest.TestCase):
                 return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
             with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
                     patch.object(resume_paused.time, "time", return_value=now):
-                return resume_paused.account_blocker("01a1164b-4a2d-742d-b27a-82f086ed0200", "anthropic", {}, strict=True)
+                return resume_paused.account_blocker("01a1164b-4a2d-742d-b27a-82f086ed0200", "anthropic", {}, strict=True)[0]
 
         self.assertIn("holds the tree until", blocker({"account": "claude7", "slot_at": 1792358013}))
         self.assertIsNone(blocker(None))
