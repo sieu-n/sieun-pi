@@ -332,6 +332,20 @@
           "feeder."
         ]
       }
+    },
+    {
+      "id": "F23",
+      "title": "us-metal01 runs CPU-saturated, so jobs pull media CPU levers such as media.webp_method by hand",
+      "designs": [
+        "01a11af8-962e-773d-a19a-ee4104011987/p438",
+        "commit:3c803ce5db"
+      ],
+      "owner": "ops guy chat (01a11af8), step p438, job metal01 cpu (01a154a4) with its child p438-signer-restart: us-metal01 reads 92 to 99% busy (iowait idle) since about 10-18 11Z and estate-cpu-saturated fires since 10-19 06:18Z; at 15:40Z on 10-19 it read 99.2% busy with CPU PSI some 58%, led by prod crawler-worker 13.9 CPUs, prod ClickHouse 9.2, the 12 media containers 13.6 and the 8 TikTok signers about 12. The job wrote media.webp_method 0 (audit 14865, 15:28Z) to cut libwebp CPU, but prod has run method 0 since the 2026-08-17 bench (audit 4103), so the write changed nothing and that lever is spent. The CPU fix is p438: 3c803ce5db drops the curl_cffi per-session timer of the 13 census processes from 10 Hz to 1 Hz (1,700 idle sessions 0.352 to 0.038 cores, about 3 CPUs on prod), and the signer job swaps the Chromium relaunch every 14 s for a fresh context. Once those are on prod nobody needs to write media.* encode settings by hand",
+      "match": {
+        "config_key_prefixes": [
+          "media.webp_method"
+        ]
+      }
     }
   ],
   "exempt": {
