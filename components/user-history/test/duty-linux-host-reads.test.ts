@@ -34,6 +34,7 @@ test("the Linux precheck reads dev_tree_mb with no source error", async () => {
     fetch: (async () => new Response("ok")) as typeof fetch, now: () => Date.parse("2026-10-18T07:50:00Z"), repo: "/repo", platform: "linux",
     pm2: { bin: "pm2", home: "/pm2", zone: "UTC" },
     read: async path => { if (path in files) return files[path]!; throw enoent(path); },
+    mtime: async path => { throw enoent(path); },
     exec: async file => {
       if (file === "pm2") return JSON.stringify([{ name: "virev-demo", pid: 606266 }]);
       if (file === "ps") return "  1 0\n606266 1\n606330 606266\n";

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, readlink, writeFile } from "node:fs/promises";
+import { readFile, readlink, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +13,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages). Each outside request counts 1, each test that
  *   failed for another reason counts 1, and a missing walk or one over a day old counts 1. The owner: "no external connection should work
  *   off of internal fake database". The walk is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
- *   report to WALK_FILE; this script only reads that report.
+ *   report to WALK_FILE and its stderr to WALK_ERR_FILE; this script only reads those files.
  * - health_ms: how long 5180 /health took to answer 200, at most 3 s. No answer or a non-200 reads as the full 30 s wait.
  * - restarts_24h: times in 24 h the dev server went down without anyone asking for it (crashes and other exit codes, dev-guard memory
  *   kills), from pm2.log, so it measures whether the sandbox stays up. A crash loop counts once. A deliberate `pm2 restart` or `pm2 stop`
@@ -91,6 +91,13 @@ export const PROBE_WORLD = "kbeauty-brand.000000000000";
 export const PM2_NAME = "virev-demo";
 /** Where the duty job saves the offline walk's Playwright JSON report, relative to the repo. */
 export const WALK_FILE = ".cache/duties/virev-demo-offline.json";
+/** Where the duty's walk command sends its stderr, relative to the repo, so a command that never starts the walk leaves its reason here. */
+export const WALK_ERR_FILE = ".cache/duties/virev-demo-offline.err";
+/**
+ * A stderr line that means the walk command itself broke and the walk never ran. From 10-18 to 10-19 a plain `ssh mac` PATH lacked node, so
+ * playwright's shebang gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale.
+ */
+const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND/;
 /** The duty runs the offline walk once a day, so a report older than a day is stale. */
 export const WALK_STALE_MS = 24 * 3_600_000;
 /** The window for restarts and SSR timeouts: the duty runs daily (c66), so each run counts the whole day. */
@@ -107,6 +114,8 @@ export interface SandboxDeps {
   now: () => number;
   /** A file's text, or a thrown error when it cannot be read. */
   read: (path: string) => Promise<string>;
+  /** A file's modification time in ms, or a thrown error when it cannot be read. */
+  mtime: (path: string) => Promise<number>;
   repo: string;
   /** The OS of the host whose pm2 and processes this run measures, which picks how dev_tree_mb is read (treeMb). */
   platform: NodeJS.Platform;
@@ -265,6 +274,14 @@ export function readWalk(report: WalkReport): { at: number; tests: number; outsi
 
 const iso = (at: number) => new Date(at).toISOString().slice(0, 19) + "Z";
 
+/** The first WALK_COMMAND_BROKE line of WALK_ERR_FILE when that file is newer than WALK_FILE (or WALK_FILE is missing), else null. */
+export async function walkCommandBroke(deps: Pick<SandboxDeps, "read" | "mtime" | "repo">): Promise<{ at: number; line: string } | null> {
+  const errPath = join(deps.repo, WALK_ERR_FILE);
+  const [text, errAt, walkAt] = await Promise.all([deps.read(errPath).catch(() => ""), deps.mtime(errPath).catch(() => NaN), deps.mtime(join(deps.repo, WALK_FILE)).catch(() => 0)]);
+  const line = text.split("\n").find(entry => WALK_COMMAND_BROKE.test(entry))?.trim();
+  return line && errAt > walkAt ? { at: errAt, line } : null;
+}
+
 export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput> {
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
@@ -351,6 +368,8 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
     flagged.push({ at, kind: "walk_missing", excerpt: missing ? `no offline walk result yet at ${WALK_FILE}` : `${WALK_FILE}: ${error instanceof Error ? error.message : String(error)}` });
   }
+  const broke = await walkCommandBroke(deps);
+  if (broke) flagged.push({ at, kind: "walk_command", excerpt: `the walk command failed at ${iso(broke.at)}, after the last walk report, so the walk never ran: ${broke.line} (${WALK_ERR_FILE})` });
 
   return { metrics, flagged, lastEventAt };
 }
@@ -366,7 +385,7 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("demo-sandbox: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = join(REPO, ".cache/pm2-dev");
-  const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), repo: REPO, platform: process.platform,
+  const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), mtime: async path => (await stat(path)).mtimeMs, repo: REPO, platform: process.platform,
     pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
