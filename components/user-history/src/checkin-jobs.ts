@@ -62,18 +62,20 @@ export function jobPushMessage({ act, owes, why }: JobPush): string {
     "If you are blocked, say on what in that report.";
 }
 
-/** The one line the chat gets about the pushes of a run; null when there were none. `failed` holds the jobs the server could not reach. */
+/** The push results the chat receives. A failed request has unknown delivery: a restart can time out after its prompt was accepted. */
 export function jobPushLine(pushes: readonly JobPush[], failed: ReadonlySet<string> = new Set()): string | null {
   if (!pushes.length) return null;
   const done = pushes.filter(push => !failed.has(push.fact.key));
-  const lost = pushes.filter(push => failed.has(push.fact.key) && push.owes.length > 0);
+  const unconfirmed = pushes.filter(push => failed.has(push.fact.key) && push.owes.length > 0);
   const names = (act: JobAct) => done.filter(push => push.act === act).map(push => ownerLabel(push.fact));
   const parts = [
     ...names("restart").length ? [`restarted ${names("restart").join(", ")}`] : [],
     ...names("nudge").length ? [`nudged ${names("nudge").join(", ")}`] : [],
-    // Only a job that owns an open step needs a job in its place: Vent's 16:56Z check-in on 10-18 said "could not reach job search flows end
-    // to end, so start a job in its place" though p7 had moved to "search flows finish thread", which reported at 16:53Z.
-    ...lost.length ? [`could not reach ${lost.map(push => ownerLabel(push.fact)).join(", ")}, so start a job in its place`] : [],
   ];
-  return parts.length ? `Check-in: ${parts.join("; ")}, because nothing moved on their work.` : null;
+  const sent = parts.length ? `${parts.join("; ")}, because nothing moved on their work.` : "";
+  // mac-management 10-19 16:44Z: a failed push called four live jobs lost; email template made another tool call ten seconds later.
+  const uncertain = unconfirmed.length ? `Could not confirm delivery to ${unconfirmed.map(({ fact }) => `${ownerLabel(fact)} (${fact.sessionId ?? fact.key})`).join(", ")}. ` +
+    "The message may already be queued or accepted. Check each existing session's current state, queued messages, provider wait and recent progress before retrying; keep its session and model. " +
+    "A delivery failure does not mean the job stopped. Resume the existing job when possible; replace it only after confirming it cannot be resumed and still owns unfinished work." : "";
+  return sent || uncertain ? `Check-in: ${[sent, uncertain].filter(Boolean).join(" ")}` : null;
 }

@@ -1228,7 +1228,7 @@ export class Chats {
   /**
    * Nudges or restarts each job the precheck found with no progress (`jobPushes`): a nudge is a steer into its session, a restart starts a new
    * turn with the same message (`jobPushMessage`). Then the chat gets one line saying which jobs were pushed (`jobPushLine`), which the check-in
-   * prompt repeats. A job whose session the server cannot reach is named for the check-in job to replace.
+   * prompt repeats. A failed request leaves delivery unknown; the chat checks the existing job before retrying it.
    */
   private async pushJobs(chat: string, pushes: readonly JobPush[], sessions: ReadonlyMap<string, string>): Promise<string | null> {
     const failed = new Set<string>();
