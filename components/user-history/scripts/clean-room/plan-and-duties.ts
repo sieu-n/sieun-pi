@@ -9,7 +9,7 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  * chat told "fix plan and duties based on THIS skill and persue completion of plans" should sort its plan out on its own. A fresh chat on a small
  * read-only area gets a messy board written here from scratch and the owner's one sentence as its first message. The criteria live in
  * ~/.prime/agent/clean-room/plan-and-duties/criteria.md, written before the first run. Each run takes an area no earlier run
- * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads since run 4), and the seeded risks sit inside that area only: run-3's
+ * left work in (Pinterest for runs 1 and 2, Rumble for run 3, Threads for run 4, Twitch since run 5), and the seeded risks sit inside that area only: run-3's
  * "wiki box disk fills" risk made its chat hand the risk to ops guy, a real chat.
  */
 export const SENTENCE = "fix plan and duties based on the board skill and pursue completion of plans";
@@ -26,16 +26,17 @@ const item = (id: string, text: string, status: PlanItem["status"], extra: Parti
 /** A plan the way a chat leaves it after a few days of drift: no done line, unowned steps, an upkeep step, a goal of standing risks, a done step left open. */
 export function messyBoard(now: string): ChatBoard {
   return { v: 2, rev: 37, updatedAt: now, todos: [], lastIds: { p: 8, t: 0 }, plan: [
-    item(SEED.work, "Threads index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
-      item(SEED.done, "Find where Threads data lands in the crawler", "doing", { note: "Found: _SOCIAL_HOSTS in apps/crawler-v3/src/index/sync/projectors/_shared.py " +
-        "lists threads, but _LINK_HOSTS there has no threads.net entry, and apps/crawler-v3/src/platforms/ has no threads folder." }),
-      item(SEED.research, "Research the Threads index gaps and measure each one's size from real data", "todo"),
+    item(SEED.work, "Twitch index gaps: find which gaps matter most and keep a top 10 page", "doing", {}, [
+      item(SEED.done, "Find where Twitch data lands in the crawler", "doing", { note: "Found: convex/search/contactPoints.ts maps twitch to a contact platform and " +
+        "apps/crawler-v3/src/contacts/fast_rank.py lists twitch.tv, but apps/crawler-v3/src/platforms/ has no twitch folder and _SOCIAL_HOSTS in " +
+        "apps/crawler-v3/src/index/sync/projectors/_shared.py has no twitch entry." }),
+      item(SEED.research, "Research the Twitch index gaps and measure each one's size from real data", "todo"),
       item(SEED.page, "Write the top 10 page on the wiki, ranked by who each gap hurts", "todo"),
       item(SEED.upkeep, "Keep the page fresh every day", "todo"),
     ]),
     item(SEED.alerts, "Firing prod alerts", "doing", {}, [
-      item(SEED.risks[0], "Threads rate limit hit on the gap scripts' reads", "todo"),
-      item(SEED.risks[1], "Threads profile page markup changes and the gap scripts read 0", "todo"),
+      item(SEED.risks[0], "Twitch rate limit hit on the gap scripts' reads", "todo"),
+      item(SEED.risks[1], "Twitch channel page markup changes and the gap scripts read 0", "todo"),
     ]),
   ] };
 }
@@ -115,7 +116,7 @@ export function procedureRead(files: readonly string[], since: number): { at: nu
 interface Duty { id: string; name: string; metrics?: { key: string; label: string; why?: string }[]; status?: string }
 const FRESH = /fresh|stale|age|refresh|updated|since the|last (run|update|measure)/i;
 /** A work step that builds the duty an upkeep item needs, when its check script does not exist yet (plan-and-duties.md, sieun-pi dc84d167). */
-const BUILD_DUTY = /^\s*build the duty\b/i;
+const BUILD_DUTY = /^\s*build the\b[^.]*\bduty\b/i;
 /** A turn that ended on the model's rate limit or a pi-pool slot wait rather than on the chat's own choice. */
 const THROTTLED = /\b429\b|rate[_ ]limit|waits for its slot/i;
 
@@ -170,13 +171,23 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     const left = find(board, id);
     const goalId = id === SEED.upkeep ? SEED.work : SEED.alerts;
     const goal = find(board, goalId)?.item;
-    const gone = !left || !OPEN.has(left.item.status) || (id === SEED.upkeep && BUILD_DUTY.test(left.item.text));
+    const gone = !left || !OPEN.has(left.item.status) || (id === SEED.upkeep && BUILD_DUTY.test(left.item.text) && OPEN.has(left.item.status));
     const holds = (note: string): boolean => dutyNamed(note) || (id !== SEED.upkeep && RISK_PAGE.test(note));
     const holder = [goal?.note ?? "", left?.item.note ?? ""].find(holds);
     return { id, ok: gone && holder !== undefined, detail: `${id} ${left ? `is ${left.item.status}` : "is removed"}; its goal ${goalId} ${goal ? `notes "${clip(goal.note ?? "", 200)}"` : "is removed"}` +
       (left?.item.note ? `; its own note "${clip(left.item.note, 160)}"` : "") };
   });
-  checks.push({ id: "3", ok: moved.every(entry => entry.ok), detail: moved.map(entry => `${entry.ok ? "ok" : "not yet"}: ${entry.detail}`).join("\n    ") });
+  // A "Build the duty" step holds an upkeep item only until the duty is written (plan-and-duties.md, sieun-pi 5116c17b): it is done, or it is
+  // open with its "Done when" line while no duty is in the duties file yet. Run-4 on 10-18 kept its build step doing for 3 h after duty d1 was written.
+  const written = (step: PlanItem): boolean => duties.some(duty => step.text.toLowerCase().includes(duty.name.toLowerCase())) || duties.some(duty => (duty.metrics ?? []).some(metric => FRESH.test(`${metric.key} ${metric.label}`)));
+  const buildSteps: PlanItem[] = [];
+  walk(board?.plan ?? [], one => { if (BUILD_DUTY.test(one.text) && one.status !== "dropped") buildSteps.push(one); });
+  const built = buildSteps.map(step => {
+    const ok = step.status === "done" || (OPEN.has(step.status) && /^\s*done when/i.test(step.note ?? "") && !written(step));
+    return { id: step.id, ok, detail: `${step.id} "${clip(step.text, 80)}" is ${step.status}${OPEN.has(step.status) ? `, ${written(step) ? "its duty is written already" : "no duty written yet"}, note "${clip(step.note ?? "", 120)}"` : ""}` };
+  });
+  const third = [...moved, ...built];
+  checks.push({ id: "3", ok: third.every(entry => entry.ok), detail: third.map(entry => `${entry.ok ? "ok" : "not yet"}: ${entry.detail}`).join("\n    ") });
 
   const goals = (board?.plan ?? []).filter(goal => OPEN.has(goal.status));
   const lined = goals.map(goal => ({ goal, ok: /^\s*done when/i.test(goal.note ?? "") || goal.target !== undefined }));
@@ -245,7 +256,12 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const ended = state.until !== undefined && state.until <= now;
   // On 10-18 run-1's chat and its check-in job waited on pi-pool for the whole 90 min window and never got a model turn, so nothing was judged.
   const ran = head.some(event => event.at >= sentAt && (event.kind === "assistant" || event.kind === "call"));
-  const throttled = throttledMs(sessionFile(state.chat.id), sentAt, Math.min(now, state.until ?? now));
+  // The chat and every job of it count: run-4 on 10-18 had its job, its duty run and every check-in end on 429s from 21:32Z to the end while the
+  // chat itself sat idle waiting for them, so the chat's own file read 0 min throttled.
+  const until = Math.min(now, state.until ?? now);
+  const workers = [state.chat.id, ...family];
+  const stretches = workers.map(id => ({ id, ms: throttledMs(sessionFile(id, [state.chat.id]), sentAt, until) }));
+  const throttled = Math.max(0, ...stretches.map(entry => entry.ms));
   const span = Math.max(1, Math.min(now, state.until ?? now) - sentAt);
   const starved = ended && throttled / span > 0.5;
   const voided = checks.find(check => check.id === "8")!.ok === false || raced || (ended && !ran) || starved;
@@ -256,7 +272,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${state.chat.id}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(now)}, check-in every ${state.everyMs / 60_000} min, with a messy seeded board and the owner's one sentence. Judged by \`clean-room.ts evaluate\` at board rev ${board?.rev ?? "?"}.`,
     `Criteria: ${join(run, "criteria.md")}. Evidence: the board file ${join(DATA, "boards", `${state.chat.id}.json`)}, the duties file ${join(DATA, "duties", `${state.chat.id}.json`)}, the session file ${join(homedir(), ".prime/agent/sessions", `${state.chat.id}.jsonl`)}, and ${run}/boards and agents.`, "",
-    `The chat's turns ended on a 429 or a pool slot wait for ${Math.round(throttled / 60_000)} of ${Math.round(span / 60_000)} min after the sentence${starved ? ", more than half the window, so the run is void" : ""}.`, "",
+    `The longest a session of the chat sat on a 429 or a pool slot wait was ${Math.round(throttled / 60_000)} of ${Math.round(span / 60_000)} min after the sentence${throttled ? ` (${stretches.filter(entry => entry.ms === throttled)[0]!.id})` : ""}${starved ? ", more than half the window, so the run is void" : ""}.`, "",
     ...(!ran ? ["The chat never got a model turn after the sentence: each of its turns ended with an error before any text or tool call, such as a pi-pool slot wait, so the run judged nothing.", ""] : []),
     ...(raced ? [`The chat read its board at ${iso(firstRead!.at)}, before the seed at ${iso(seededTime)}, so it saw an empty board and the run is void.`, ""] : []),
     "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${label(check)}: ${check.detail}`), "",
