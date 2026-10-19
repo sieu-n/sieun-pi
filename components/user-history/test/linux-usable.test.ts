@@ -133,14 +133,12 @@ test("a restart in a minute the last process already wrote writes no start line;
   mkdirSync(join(dataDir, "mac-usable"), { recursive: true });
   const at = Date.parse("2026-10-18T06:15:49Z");
   writeFileSync(join(dataDir, "mac-usable", "last-sample.json"), JSON.stringify({ at: Date.parse("2026-10-18T06:15:30Z"), sched: null }));
-  const written = startMacUsableWatch(watchSource(dataDir, () => at));
-  await new Promise(done => setTimeout(done, 200));
-  written();
+  // Each stop is awaited: it waits for the sample in flight. A fixed 200 ms sleep and a stop left running failed under the release build's
+  // load on 10-19 (build of 2e49a5b, 11:4xZ), when the sample landed after the assertion and after the folder was removed.
+  await startMacUsableWatch(watchSource(dataDir, () => at))();
   assert.deepEqual(lines(dataDir, at), []);
   const later = Date.parse("2026-10-18T06:16:05Z");
-  const filled = startMacUsableWatch(watchSource(dataDir, () => later));
-  await new Promise(done => setTimeout(done, 200));
-  filled();
+  await startMacUsableWatch(watchSource(dataDir, () => later))();
   assert.equal(lines(dataDir, later).length, 1);
   assert.equal(JSON.parse(readFileSync(join(dataDir, "mac-usable", "last-sample.json"), "utf8")).at, later);
 });
