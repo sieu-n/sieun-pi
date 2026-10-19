@@ -10,7 +10,7 @@ import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -26,7 +26,9 @@ import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
 export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine; error?: string;
   /** Tailscale read the box offline that minute (HostWatchLine.offline). */
-  offline?: true }
+  offline?: true;
+  /** The Playwright or Puppeteer browsers agents ran on the box that minute; only the Mac's helper lists them (HostWatchLine.testBrowsers). */
+  testBrowsers?: readonly TestBrowserLine[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
@@ -54,12 +56,13 @@ export function hostViews(line: WatchLine): HostView[] {
   const own = checked(line.usable);
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
-      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {} },
+      ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {} };
+        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {} };
     }),
   ];
 }
@@ -388,6 +391,22 @@ export function oversized(latest: WatchLine | undefined, day: readonly WatchLine
   return found;
 }
 
+/** An agent's Playwright or Puppeteer browser on the Mac: the chat tree and session that started it ("" when unknown) and the finding. */
+export interface TestBrowser { root: string; session: string; text: string }
+
+/**
+ * Every Chrome for Testing or chrome-headless-shell main process in the newest watch line, which only the Mac's helper lists, since agent
+ * browsers run on us-metal02 (skills/aside-browser/SKILL.md, c103). At 16:35Z on 10-19 a 'teams green add-on' job's rig ran one on the Mac
+ * and frontend bro had to ask whose it was.
+ */
+export function testBrowsers(latest: WatchLine | undefined): TestBrowser[] {
+  if (!latest) return [];
+  return hostViews(latest).flatMap(view => (view.testBrowsers ?? []).map(browser => ({ root: browser.root, session: browser.session,
+    text: `${view.name}: ${browser.command.includes("chrome-headless-shell") ? "chrome-headless-shell" : "Chrome for Testing"} pid ${browser.pid}` +
+      `${browser.started === null ? "" : ` since ${clock(browser.started * 1000)}`}, started by ${browser.session ? `${browser.tree || browser.root} session ${browser.session}` : "no agent session its env names (a duty or an ssh command)"}; ` +
+      `agent browsers run on us-metal02 (aside-browser box Chrome, or apps/virev-demo/scripts/shot-browser.mjs for 5180)` })));
+}
+
 /**
  * A box's Agent sessions in one watch minute that sat past the quiet window: no session of the box had worked (src/agent-states.ts, a retry or
  * pool wait is no work) in any line for `quietMs`, so the box should have dropped its agents' memory by then. `since` is the first line of
@@ -684,6 +703,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const worst = quiet.reduce<QuietMinute | undefined>((top, minute) => !top || minute.agents.gb >= top.agents.gb ? minute : top, undefined);
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
+  const browsers = testBrowsers(latest);
   const hung = hungNow(input.watch, start);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
@@ -692,6 +712,7 @@ export function measure(input: Inputs): PrecheckOutput {
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     ...worst ? { quiet_agent_gb: worst.agents.gb } : {},
     oversized_procs: oversize.length,
+    mac_test_browsers: browsers.length,
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
@@ -743,6 +764,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
+  for (const entry of browsers) flagged.push({ kind: "test_browser", ...entry.root ? { chat: entry.root } : {}, ...entry.session ? { item: entry.session } : {}, excerpt: entry.text });
   for (const call of hung?.calls ?? []) flagged.push({ kind: "hung_call", chat: call.root, item: call.session, excerpt: `${call.tree}: ${call.name} (${call.session}) ` +
     `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +
     `${call.command ? ` (${call.command})` : ""}, at ${clock(hung!.at)}.` });

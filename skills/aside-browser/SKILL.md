@@ -154,6 +154,12 @@ On a Linux box the default is the box's own headful Chrome:
 6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
 
 On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside, and nothing else may open a window there.
+An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing browser there either, headless included, because Mac browsers pushed its load to 110 to 170 and froze 5180 on 10-19.
+
+- A script browser, such as a rig that loads an unpacked extension into a persistent profile, runs on us-metal02: copy the files with `scp` or `rsync`, then run it with `ssh us-metal02`, which loads `playwright-core` from `~/.prime/agent/skills/aside-browser/box/node_modules` with the `no-netlink-chromium.py` wrapper there.
+- A Playwright spec or shot script against the Mac's 5180 runs through `node apps/virev-demo/scripts/shot-browser.mjs --run <command>` in auto-sns-agent, which puts its browser on us-metal02.
+- The Chat page from the Mac duty's probe is the one exception, since it times the Mac's own network path in one short headless run a day.
+- The Whole system duty (d7) counts every Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
 
 ## Browser rules
 

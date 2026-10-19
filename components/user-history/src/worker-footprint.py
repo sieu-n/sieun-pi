@@ -8,6 +8,7 @@ Each `python -m rlm.repl` kernel in a worker tree is reported with its session a
 the kernel process's own bytes (`own`) and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
+On macOS each Chrome for Testing or chrome-headless-shell main process is listed with the session that started it (`test_browsers`), since no agent browser may run there.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--started <pid>`
 prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
 cleanup keeps a dir any of them uses and signals none of them.
@@ -349,6 +350,21 @@ def inside(table, dirs):
     return found
 
 
+# The browsers Playwright and Puppeteer download, which no agent work starts on the Mac (skills/aside-browser/SKILL.md, c103): at 16:35Z on
+# 10-19 a job's headless Playwright rig in ~/scratch/teams-green ran one there with 11 helper processes.
+TEST_BROWSER = re.compile(r"/Google Chrome for Testing\.app/Contents/MacOS/Google Chrome for Testing$|/chrome-headless-shell$")
+
+
+def test_browsers(table):
+    """Each Chrome for Testing or chrome-headless-shell main process on macOS, with the root and session its RLM_HARNESS_STATE_DIR names ("" when
+    none, as for a duty walk over ssh); [] on Linux, where agents run the box's own Chrome by design."""
+    if sys.platform != "darwin":
+        return []
+    found = (process(table, pid, dict(zip(("root", "session"), harness(args[1]) or ("", ""))))
+             for pid, (_, _, _, args) in table.items() if args and args[0] and TEST_BROWSER.search(args[0][0]) and not any(arg.startswith("--type=") for arg in args[0]))
+    return [entry for entry in found if entry]
+
+
 def cpu():
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return round(usage.ru_utime + usage.ru_stime, 3)
@@ -366,5 +382,6 @@ if __name__ == "__main__":
         sys.exit(0)
     kernels, seen = [], set()
     workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
-    print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(scan(), seen),
+    table = scan()
+    print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "test_browsers": test_browsers(table),
                       "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))

@@ -154,7 +154,9 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   /** The box's Agent sessions as Settings > Hosts reads them (`agentLine`); absent on lines written before 10-19 and when its relay did not answer. */
   agents?: AgentLine; swapGb: number | null; error?: string;
   /** Tailscale read the box offline, so its relay was not asked (src/host-reach.ts); absent on lines written before 10-18 16:xxZ. */
-  offline?: true }
+  offline?: true;
+  /** The box's agent test browsers (`TestBrowserLine`); absent when there are none. */
+  testBrowsers?: TestBrowserLine[] }
 
 export interface WatchLine {
   at: string;
@@ -187,6 +189,8 @@ export interface WatchLine {
   hung?: HungCall[];
   /** The services sessions handed off before their kernels were freed (`orphan-services.ts`), the first 5 named; absent when there are none. */
   services?: ServicesLine;
+  /** This box's agent test browsers (`TestBrowserLine`); absent when there are none. */
+  testBrowsers?: TestBrowserLine[];
 }
 /** How many handed-off services the records name, how many of them still run, and the first 5. */
 export interface ServicesLine { count: number; live: number; top: { session: string; unit: string; pid: number; live: boolean }[] }
@@ -225,6 +229,8 @@ function parseRow(value: unknown): Row | null {
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
 export interface Footprints { workers: Record<string, { pids: number; bytes: number; own?: number }>; kernels?: RawKernel[]; orphans?: RawOrphan[];
+  /** The Mac's Chrome for Testing and chrome-headless-shell main processes, with the session whose RLM_HARNESS_STATE_DIR they carry; absent from a helper older than 10-19 17:xxZ. */
+  test_browsers?: RawOrphan[];
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
@@ -237,6 +243,11 @@ export interface RawKernel { pid: number; root: string; session: string; pids: n
   cpu_s?: number; work_cpu_s?: number }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
+/**
+ * A Playwright or Puppeteer browser running on the Mac, where no agent browser may run (skills/aside-browser/SKILL.md, c103): its pid, start, the
+ * chat tree and session that started it ("" when its env names none, as for a duty walk over ssh) and its command's first 200 characters.
+ */
+export interface TestBrowserLine { pid: number; started: number | null; root: string; tree: string; session: string; command: string }
 /** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
 export interface TreeLine { root: string; tree: string; gb: number; biggest: { pid: number; gb: number; started: number | null; command: string } | null }
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
@@ -306,6 +317,8 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
+    ...input.footprints.test_browsers?.length ? { testBrowsers: input.footprints.test_browsers.map(browser => ({ pid: browser.pid, started: browser.started,
+      ...browser.root || browser.session ? owner(browser.session, browser.root) : { root: "", tree: "" }, session: browser.session, command: browser.command })) } : {},
     ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
@@ -451,7 +464,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] }] } : null, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
-    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working, agents, swapGb: line.mac.swapGb };
+    return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, live: line.live, working: line.working, agents, swapGb: line.mac.swapGb,
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
