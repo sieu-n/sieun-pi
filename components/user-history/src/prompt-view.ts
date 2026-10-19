@@ -74,8 +74,12 @@ export async function promptView(sessionId: string, options: { sessionFile: stri
  */
 export async function sessionFileFor(sessionId: string, options: { listed: (id: string) => Promise<string | undefined>; via?: readonly string[]; dataDir: string; agentDir: string }): Promise<string | null> {
   const exists = (file: string | undefined | null): Promise<boolean> => file ? access(file).then(() => true, () => false) : Promise.resolve(false);
+  // Each place is read only when the one before it gave no file: a capture is the session's whole last request (0.3 to 1.9 MB on 10-19), and
+  // the agent outbox asks for every send's file.
+  const places = (id: string): (() => Promise<string | null | undefined>)[] => [() => options.listed(id),
+    async () => (await readCapture(options.dataDir, id))?.sessionFile, async () => join(options.agentDir, "sessions", `${id}.jsonl`)];
   const find = async (id: string): Promise<string | null> => {
-    for (const file of [await options.listed(id), (await readCapture(options.dataDir, id))?.sessionFile, join(options.agentDir, "sessions", `${id}.jsonl`)]) if (await exists(file)) return file!;
+    for (const place of places(id)) { const file = await place(); if (await exists(file)) return file!; }
     return null;
   };
   let parent: { id: string; file: string } | null = null;
