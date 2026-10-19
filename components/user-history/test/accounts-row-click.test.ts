@@ -42,12 +42,14 @@ function devtools(binary: string, profile: string, url: string) {
     { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"] });
   const [input, output] = [child.stdio[3] as NodeJS.WritableStream, child.stdio[4] as NodeJS.ReadableStream];
   const waiting = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  const listeners: { method: string; sessionId: string; done: () => void }[] = [];
   let buffered = "", next = 0;
   output.on("data", (chunk: Buffer) => {
     buffered += chunk.toString("utf8");
     for (let end = buffered.indexOf("\0"); end >= 0; end = buffered.indexOf("\0")) {
       const message = JSON.parse(buffered.slice(0, end));
       buffered = buffered.slice(end + 1);
+      if (message.method) { for (const listen of listeners) if (listen.method === message.method && listen.sessionId === message.sessionId) listen.done(); continue; }
       const entry = waiting.get(message.id);
       if (!entry) continue;
       waiting.delete(message.id);
@@ -59,12 +61,16 @@ function devtools(binary: string, profile: string, url: string) {
     waiting.set(id, { resolve, reject });
     input.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
   });
-  return { send, close: () => new Promise<void>(resolve => { child.once("exit", () => resolve()); child.kill(); }) };
+  const onEvent = (method: string, sessionId: string, done: () => void) => { listeners.push({ method, sessionId, done }); };
+  return { send, onEvent, close: () => new Promise<void>(resolve => { child.once("exit", () => resolve()); child.kill(); }) };
 }
 
 test("a click on an account row sends no account action, and Use in this thread sends exactly one", { skip: chrome ? false : "no Chrome on this host" }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "accounts-row-click-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // One hook closes Chrome and then removes its profile: as two hooks the rm ran first, since after hooks run in the order they were added,
+  // and Chrome still writing the profile failed the test with ENOTEMPTY.
+  let browser: ReturnType<typeof devtools> | undefined;
+  t.after(async () => { await browser?.close(); await rm(dir, { recursive: true, force: true }); });
   await symlink(join(import.meta.dirname, "../node_modules"), join(dir, "node_modules"), "dir");
   const plugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
   const bundled = await build({ stdin: { contents: `import { mount } from "svelte"; import Accounts from "./AccountsSettings.svelte"; mount(Accounts, { target: document.body });`,
@@ -78,11 +84,16 @@ test("a click on an account row sends no account action, and Use in this thread 
   const script = bundled.outputFiles[0]!.text.replaceAll("</script", "<\\/script");
   await writeFile(join(dir, "page.html"), `<!doctype html><meta charset="utf-8"><body></body><script>${script}</script>`);
 
-  const browser = devtools(chrome!, join(dir, "profile"), pathToFileURL(join(dir, "page.html")).href);
-  t.after(() => browser.close());
+  // Chrome opens about:blank and the test navigates once attached: with the page URL on the command line, the first navigation could still swap
+  // the context under the first evaluate, which failed release-chat of d31ab0f4 at 20:1xZ on 10-19 with "Execution context was destroyed".
+  browser = devtools(chrome!, join(dir, "profile"), "about:blank");
   const { targetInfos } = await browser.send("Target.getTargets");
   const page = targetInfos.find((target: { type: string }) => target.type === "page");
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
+  await browser.send("Page.enable", {}, sessionId);
+  const loaded = new Promise<void>(resolve => browser.onEvent("Page.loadEventFired", sessionId, resolve));
+  await browser.send("Page.navigate", { url: pathToFileURL(join(dir, "page.html")).href }, sessionId);
+  await loaded;
   const evaluate = async (expression: string) => (await browser.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result.value;
   const ready = await evaluate(`new Promise(resolve => { const look = () => document.querySelectorAll(".row:not(.head)").length === 2 ? resolve(true) : setTimeout(look, 20); look(); })`);
   assert.equal(ready, true);
