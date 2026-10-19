@@ -13,7 +13,7 @@
     ]
   },
   "scripts": {
-    "test": "node --import tsx --test --test-concurrency=1 --test-timeout=120000 test/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=20 --test-timeout=120000 test/*.test.ts",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
   },
   "dependencies": {
