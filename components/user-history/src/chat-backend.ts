@@ -196,7 +196,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))),
     handoff: id => markOwnerTurn(id) });
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...scratch ? { tickMs: 0 } : {},
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, admit: turns.admit, ...quiet ? { tickMs: 0 } : {},
+    ...replay ? { precheckCommand: () => ["/bin/sh", "-c", 'printf \'{"metrics":{}}\' > "$OUTPUT_FILE"'] } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: async (id, item) => {
       const now = Date.now();
@@ -243,7 +244,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   });
   const unwatchBoards = boards.watch((id, board) => {
     threads.setBoard(id, board);
-    if (!scratch) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    if (!quiet) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // A chat over 100 MB is compacted after its Prime compaction, in a child process (src/session-autocompact.ts). Another box's chat is left to that box.

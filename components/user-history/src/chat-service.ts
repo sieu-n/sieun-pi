@@ -358,6 +358,16 @@ async function serve(options: Options): Promise<void> {
   // A scratch serve on the live dir still keeps off everything the main instance owns: the daemon, the bridges, Slack, Tailscale and login.
   const primary = service.primary && !scratch;
   if (scratch) process.stderr.write(`${new Date().toISOString()} scratch serve: it only reads; no wakes, briefs, check-ins, duties, job cleanup, archives, resumes, reopens, adopts or pool writes (${service.directory})\n`);
+  // A scratch serve writes nothing under the live agent dir (src/scratch-fence.ts): it refuses to run on it, and every file write of the
+  // process under it fails. On 10-19 replay serves with the live agent dir wrote session_state into 7 real session files.
+  if (scratch) {
+    const { fencedAgentDirs, fencedRoot, fenceWrites } = await import("./scratch-fence.ts");
+    const roots = fencedAgentDirs();
+    const agentDir = (await import("prime-agent")).getAgentDir();
+    const live = fencedRoot(agentDir, roots);
+    if (live) throw new Error(`A scratch serve refuses the agent dir ${agentDir}, which is under the live one ${live}. Set PRIME_AGENT_CODING_AGENT_DIR to a copy, such as one under --data-dir.`);
+    fenceWrites(roots, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  }
   // Every daemon command of a scratch serve goes through a socket that passes only reads (src/read-only-daemon.ts).
   const replay = scratch && options.replayDaemon === true;
   const readOnly = scratch ? await (await import("./read-only-daemon.ts")).readOnlyDaemon(service.config.socketPath, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`), { replay }) : null;

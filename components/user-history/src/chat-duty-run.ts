@@ -48,6 +48,8 @@ export interface DutyHost {
   tickMs?: number;
   /** The node binary a precheck whose first word is `node` runs with; default this process's. */
   node?: string;
+  /** The command a precheck runs in place of its own; a replay serve's writes an empty metrics object, since a duty's precheck reads prod. */
+  precheckCommand?: (duty: Duty) => readonly string[];
   /** The Mac-wide turn queue's wait before a duty job's session is created (`dutyAdmitter`); absent: every job starts at once. */
   admit?: DutyAdmitter["admit"];
   /** The chat's pool class from its sidebar label (`chatPoolPriority`), for the card; absent: high, as for an unlabelled chat. */
@@ -907,7 +909,7 @@ export class Duties {
     await copyFile(stateFile, nextState).catch(async () => { await writeFile(nextState, "{}", { mode: 0o600 }); });
     await writeFile(lastRunsFile, JSON.stringify(lastRuns), { mode: 0o600 });
     await rm(outputFile, { force: true });
-    const [command, ...args] = duty.precheck.command;
+    const [command, ...args] = this.host.precheckCommand?.(duty) ?? duty.precheck.command;
     const file = command === "node" ? this.host.node ?? process.execPath : command!;
     const stderrFile = `${outputFile.replace(/\.json$/, "")}.stderr.log`;
     try {

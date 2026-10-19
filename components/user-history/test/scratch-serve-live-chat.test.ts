@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -91,8 +91,9 @@ async function fakeDaemon(t: TestContext, socketPath: string, rows: unknown[], h
 }
 
 function startServe(t: TestContext, args: string[], home: string, extraEnv: NodeJS.ProcessEnv = {}) {
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, SIEUN_PI_CHAT_START_DAEMON: "0", SIEUN_PI_CHAT_OPEN_AT_LOGIN: "0", SIEUN_PI_SLACK: "0", ...extraEnv };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, SIEUN_PI_CHAT_START_DAEMON: "0", SIEUN_PI_CHAT_OPEN_AT_LOGIN: "0", SIEUN_PI_SLACK: "0" };
   for (const name of ["LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES", "PRIME_AGENT_CODING_AGENT_DIR", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"]) delete env[name];
+  Object.assign(env, extraEnv);
   const child = spawn(process.execPath, [cli, "serve", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
   const out = { log: "" };
   child.stdout.on("data", chunk => { out.log += chunk; });
@@ -197,4 +198,56 @@ test("a --replay-daemon scratch serve attaches its chats only through a daemon w
   assert.notEqual(code, 0, `the replay serve started on the live socket:\n${refused.out.log}`);
   assert.match(refused.out.log, /live daemon socket/);
   assert.equal(daemon.connections(), 0, "the refused serve connected to the live daemon");
+});
+
+/** Every file under `dir` with its bytes, so a test can tell that nothing was written, created or removed there. */
+function filesUnder(dir: string): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) { const path = join(entry.parentPath, entry.name); files.set(path, readFileSync(path, "base64")); }
+  }
+  return files;
+}
+
+test("a scratch serve refuses the live agent dir, and a --replay-daemon serve writes nothing under it", { timeout: 120_000 }, async t => {
+  // On 10-19 replay serves with the live agent dir wrote session_state into 7 real session files after their fake daemon took a kill.
+  const dir = mkdtempSync(join(tmpdir(), "scratch-fence-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const socketPath = join(dir, "replay.sock"), port = await freePort();
+  const { home, data, row } = copiedDataDir(join(dir, "copy"), socketPath, port);
+  const live = join(dir, "live-agent");
+  mkdirSync(join(live, "sessions"), { recursive: true });
+  const now = new Date().toISOString();
+  const file = (id: string, text: string) => {
+    const path = join(live, "sessions", `${id}.jsonl`);
+    writeFileSync(path, [{ type: "session", version: 3, id, timestamp: now, cwd: dir },
+      { type: "message", id: "m1", parentId: null, timestamp: now, message: { role: "user", content: text, timestamp: Date.now() } }].map(line => JSON.stringify(line)).join("\n") + "\n");
+    return path;
+  };
+  const SAVED = "01a14d31-0000-7000-8000-000000000002";
+  const rows = [{ ...row, sessionFile: file(CHAT, "scratch copy hello") },
+    { sessionId: SAVED, cwd: dir, sessionFile: file(SAVED, "a saved job"), messageCount: 1, name: "saved job", modified: now }];
+  await fakeDaemon(t, socketPath, rows, { replay: true });
+  const fenced = { SIEUN_PI_FENCED_AGENT_DIRS: live };
+  const args = ["--data-dir", data, "--port", String(port), "--socket", socketPath, "--scratch", "--replay-daemon"];
+
+  const refused = startServe(t, args, home, { ...fenced, PRIME_AGENT_CODING_AGENT_DIR: live });
+  const code = await Promise.race([new Promise<number | null>(resolve => refused.child.once("exit", resolve)), delay(30_000, "still running")]);
+  assert.notEqual(code, 0, `the serve started on the live agent dir:\n${refused.out.log}`);
+  assert.match(refused.out.log, /refuses the agent dir/);
+
+  const before = filesUnder(live);
+  const serve = startServe(t, args, home, fenced);
+  await waitListening(serve, port);
+  const config = JSON.parse(readFileSync(join(data, "configuration.json"), "utf8")) as { capability: string; csrfToken: string };
+  const post = (id: string, action: string, body: unknown) => fetch(`http://127.0.0.1:${port}/${config.capability}/api/threads/${id}/${action}`,
+    { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "x-chat-token": config.csrfToken, "content-type": "application/json" }, body: JSON.stringify(body) });
+  await openTab(t, data, port, 6_000);
+  await post(SAVED, "rename", { name: "renamed in scratch" });
+  await post(SAVED, "archive", {});
+  await delay(2_000);
+  serve.child.kill("SIGTERM");
+  await new Promise(resolve => serve.child.once("exit", resolve));
+  assert.deepEqual(filesUnder(live), before, `the replay serve wrote under the live agent dir:\n${serve.out.log}`);
+  assert.match(serve.out.log, /writes nothing under/);
 });
