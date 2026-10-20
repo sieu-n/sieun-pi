@@ -56,6 +56,7 @@ import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { sessionFileOf, type TargetState } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
+import { rowSubagent } from "./subagent-relay.ts";
 import { OwnerOutbox } from "./owner-outbox.ts";
 import type { AgentKind } from "./outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
@@ -192,8 +193,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
   };
   /** A session's queued input and whether its worker is busy, from the daemon's get_state; null when the daemon did not answer. */
-  const workerQueue = async (session: string): Promise<TargetState | null> => {
-    const client = await catalog.daemonFor(session).catch(() => null);
+  const workerQueue = async (session: string, host?: string | null): Promise<TargetState | null> => {
+    const client = await (host ? catalog.hostClient(host) : catalog.daemonFor(session)).catch(() => null);
     const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
     if (!response) return null;
     if (!response.success) return REOPENABLE.test(response.error) ? { queued: [], busy: false } : null;
@@ -290,9 +291,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
+    synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
     stopped: stopRecords(dataDir),
-    send: async (session, text) => {
-      const response = await sendReopening(session, async target => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
+    send: async (session, text, host) => {
+      const response = await sendReopening(session, async target => (await (host ? catalog.hostClient(host) : catalog.daemonFor(session))).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, ...replay ? {} : { adopt: (root: string) => adoptMoved(root, agentDir) } }, id), dutyLog);
       if (response.success) return "sent";
       // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).

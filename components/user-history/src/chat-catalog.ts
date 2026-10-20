@@ -1184,6 +1184,9 @@ export class Catalog {
   /** True once every other box of hosts.json listed its sessions, and always without hosts.json. */
   hostsListed(): boolean { return this.hosts?.allListed() ?? true; }
 
+  /** True once every other box of hosts.json answered a list in this run, so an id none lists is on none; always without hosts.json. */
+  hostsSynced(): boolean { return this.hosts?.allSynced() ?? true; }
+
   /** The other boxes' rows, live ones only from a box whose daemon answers now; empty without hosts.json. */
   remoteRows(): readonly SessionSummary[] { return this.hosts?.rows() ?? []; }
   /** Each other host with its rows, for the watch line's per-host numbers. */

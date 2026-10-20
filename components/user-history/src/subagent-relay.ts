@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import type { SessionSummary } from "prime-agent";
 
 /**
  * A stopped subagent and the sessions above it. The daemon finds a subagent only while its tree's worker holds it, and the chat service's
@@ -11,7 +12,7 @@ export interface StoppedSubagent {
   id: string;
   /** The rlm handle name its parent messages it by. */
   name: string;
-  /** The session ids above it, its parent first and the tree's root last. */
+  /** The session ids above it, its parent first; a walk of its files lists them up to the tree's root. */
   parents: string[];
 }
 
@@ -32,6 +33,16 @@ export async function stoppedSubagent(file: string): Promise<StoppedSubagent | n
   }
   parents.push(basename(folder));
   return { id: basename(file, ".jsonl"), name, parents };
+}
+
+/**
+ * A subagent from its daemon row, as any box lists it: its rlm handle name and its parent. It serves a subagent whose file is on another box,
+ * since this box's copy of that file has no spawn record (`rlm-subagent.json`) beside it.
+ */
+export function rowSubagent(row: Pick<SessionSummary, "sessionId" | "sessionName" | "runtimeKind" | "parentSessionId" | "parentSessionPath"> | undefined): StoppedSubagent | null {
+  if (row?.runtimeKind !== "subagent" || !row.sessionName) return null;
+  const parent = row.parentSessionId ?? (row.parentSessionPath ? basename(row.parentSessionPath, ".jsonl") : undefined);
+  return parent ? { id: row.sessionId, name: row.sessionName, parents: [parent] } : null;
 }
 
 /** The message for the parent of `child`: send `text` on to it through the rlm handle. */

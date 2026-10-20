@@ -5,7 +5,7 @@ import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
 import type { PeerReach } from "./host-reach.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
-import { relayNote, stoppedSubagent } from "./subagent-relay.ts";
+import { relayNote, type StoppedSubagent, stoppedSubagent } from "./subagent-relay.ts";
 import { moveOf } from "./worker-move.ts";
 
 /*
@@ -37,16 +37,30 @@ import { moveOf } from "./worker-move.ts";
  */
 
 export interface AgentOutboxDeps {
-  /** One send_message; "gone" when the daemon knows no such session, even after a reopen from its file. Throws on any other failure. */
-  send: (session: string, text: string) => Promise<"sent" | "gone">;
-  /** The target's worker: its queued texts and whether it is busy; idle and empty when it has no worker, null when the daemon did not answer. */
-  target: (session: string) => Promise<TargetState | null>;
+  /**
+   * One send_message to the daemon of `host` (`AgentOutbox.hostFor`, null for this box); "gone" when that daemon knows no such session, even
+   * after a reopen from its file. Throws on any other failure.
+   */
+  send: (session: string, text: string, host: string | null) => Promise<"sent" | "gone">;
+  /** The target's worker on `host`: its queued texts and whether it is busy; idle and empty when it has no worker, null when the daemon did not answer. */
+  target: (session: string, host: string | null) => Promise<TargetState | null>;
   /** The target's session file, or null. */
   fileOf: (session: string) => Promise<string | null>;
   /** Starts a tree's root from its file, for a target the daemon does not find. */
   startRoot?: (root: string) => Promise<void>;
-  /** The box that runs the session, null for this box; the outbox lines name another box, so the Whole system precheck books them there. */
+  /** The box whose list holds the session, null for this box and an unlisted id; the outbox lines name another box, so the Whole system precheck books them there. */
   hostOf?: (session: string) => string | null;
+  /**
+   * True once every box listed its sessions in this service's run, so an id no box lists is on none. A target on another box is dropped only
+   * then; before it, the message waits.
+   */
+  synced?: () => boolean;
+  /**
+   * The target as a subagent from its row on any box's list (`rowSubagent`), for a target whose file has no spawn record on this disk: this
+   * box's copy of a Mac file has none, and all 27 "not a session the daemon has" drops from 10-18 to 10-20 were to sessions of Mac trees,
+   * among them wakes to the live jobs 01a152a6, 01a15312 and 01a153b7 of frontend bro, which a relay through their parent reaches.
+   */
+  subagentOf?: (session: string) => Promise<StoppedSubagent | null>;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
   /** The record that stopped the target (`stopRecords`), or null. */
@@ -268,25 +282,26 @@ export class AgentOutbox {
     this.outbox = new Outbox({ dir, log: deps.log, where: session => this.where(session), ...deps.sleep ? { sleep: deps.sleep } : {}, ...deps.now ? { now: deps.now } : {},
       deliver: async (entry, sending) => {
         const session = entry.threadId;
+        const host = this.hostFor(session, entry.root);
         const parts = messageParts(entry.text);
         if (parts.length > 1) {
           const ids: string[] = [];
           for (const part of parts) ids.push(await this.keepOne(session, part, entry.root, entry.kind, entry.setAt));
           return { obsolete: `it is ${entry.text.length} chars, over the daemon's ${DAEMON_MESSAGE_LIMIT}, so it goes as ${ids.join(", ")}` };
         }
-        await this.room(session, entry.id);
+        await this.room(session, entry.id, host);
         const merged = await this.merge(entry);
         if ("obsolete" in merged) return merged;
         const text = agedText(merged.change?.text ?? entry.text, entry.at, this.now());
         const go = async () => {
           await sending(merged.change);
           await this.took(entry, merged);
-          return this.send(session, entry.id, text);
+          return this.send(session, entry.id, text, host);
         };
         if (await this.inTree(session, go) === "sent") return;
         // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
         const file = await deps.fileOf(session).catch(() => null);
-        const child = file ? await stoppedSubagent(file) : null;
+        const child = (file ? await stoppedSubagent(file) : null) ?? await deps.subagentOf?.(session).catch(() => null) ?? null;
         if (child) {
           await this.deliver(child.parents[0]!, relayNote(child, text), entry.root);
           deps.log(`relay: ${session.slice(0, 8)} (${child.name}) is stopped; its message goes through its parent ${child.parents[0]!.slice(0, 8)}`);
@@ -295,9 +310,10 @@ export class AgentOutbox {
         if (entry.root && deps.startRoot) {
           await deps.startRoot(entry.root);
           await sending();
-          if (await deps.send(session, text) === "sent") return;
+          if (await deps.send(session, text, host) === "sent") return;
         }
-        deps.log(`messages: ${session.slice(0, 8)} is not a session the daemon has or can reopen; message ${entry.id} dropped`);
+        if (host && deps.synced && !deps.synced()) throw new Error(`${host} has not listed its sessions in this run, so ${session.slice(0, 8)} may still be there`);
+        deps.log(`messages: ${session.slice(0, 8)} is not a session the daemon${host ? ` on ${host}` : ""} has or can reopen; message ${entry.id} dropped`);
         throw new Gone("The daemon has no such session.");
       },
       copy: async (entry, since) => {
@@ -309,7 +325,7 @@ export class AgentOutbox {
       // A pending-limit refusal is a wait like Full: send() logs it once with its counts, and the Whole system precheck reads that line as detail.
       quiet: error => error instanceof Full || error instanceof Moving || pendingCounts(error) !== undefined,
       held: async entry => {
-        const host = deps.reach && deps.hostOf?.(entry.threadId);
+        const host = deps.reach && this.hostFor(entry.threadId, entry.root);
         return !!host && !(await deps.reach!(host)).online;
       },
       changed: () => {},
@@ -350,7 +366,7 @@ export class AgentOutbox {
     const limit = send.limit ?? this.full.get(send.session) ?? DAEMON_PENDING_LIMIT;
     if (send.behind && !ahead) return { deliveryStatus: "clear", target: limit, ahead };
     if (send.pending !== undefined) this.full.set(send.session, limit);
-    const pending = send.pending ?? (await this.deps.target(send.session).catch(() => null))?.unfinished;
+    const pending = send.pending ?? (await this.deps.target(send.session, this.hostFor(send.session, send.root)).catch(() => null))?.unfinished;
     const id = await this.keep(send.session, queuedText(send.from, send.role, send.text), send.root);
     this.deps.log(`outbox ${this.where(send.session)}: queued ${id} from ${send.from.name} (${send.from.id.slice(0, 8)}) while the target held ` +
       `${pending ?? "an unknown number of"} of ${limit} pending, ${ahead} ahead of it here`);
@@ -422,9 +438,9 @@ export class AgentOutbox {
     return { obsolete: `${wake ? `a wake for the same ${wake}` : "the same message"} landed in the target's file at ${new Date(landed).toISOString()}, after it was queued` };
   }
 
-  private async send(session: string, id: string, text: string): Promise<"sent" | "gone"> {
+  private async send(session: string, id: string, text: string, host: string | null): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
-    try { sent = await this.deps.send(session, text); } catch (error) {
+    try { sent = await this.deps.send(session, text, host); } catch (error) {
       const doing = moveOf(error);
       if (doing) {
         if (!this.moving.has(session)) {
@@ -458,6 +474,15 @@ export class AgentOutbox {
     return run;
   }
 
+  /**
+   * The box that runs the session, null for this box: the box whose list holds it, else its tree root's, since a tree's sessions share one
+   * worker. A subagent its parent deleted leaves its box's list, and on 10-20 the 08:20:09Z wake for the Mac's cs-stage (01a157d9), deleted
+   * at 07:51:44Z and gone from the Mac's 08:06:15Z full list, went to this box's daemon and was dropped as unknown there.
+   */
+  hostFor(session: string, root?: string): string | null {
+    return this.deps.hostOf?.(session) ?? (root ? this.deps.hostOf?.(root) : null) ?? null;
+  }
+
   /** The session's short id, and the box that runs it when that is another box. */
   private where(session: string): string {
     const host = this.deps.hostOf?.(session) ?? null;
@@ -465,12 +490,12 @@ export class AgentOutbox {
   }
 
   /** Throws Full while a target the daemon refused as full still reads as full, or does not answer; a target with no worker has room. */
-  private async room(session: string, id: string): Promise<void> {
+  private async room(session: string, id: string, host: string | null): Promise<void> {
     // The daemon refuses get_state too while the worker moves; a target that reads running or gone takes the send.
-    if (this.moving.has(session) && await this.deps.target(session).catch(() => null) === null) throw new Moving(`the target's worker is still ${this.moving.get(session)!.doing}`);
+    if (this.moving.has(session) && await this.deps.target(session, host).catch(() => null) === null) throw new Moving(`the target's worker is still ${this.moving.get(session)!.doing}`);
     const limit = this.full.get(session);
     if (limit === undefined) return;
-    const target = await this.deps.target(session).catch(() => null);
+    const target = await this.deps.target(session, host).catch(() => null);
     const unfinished = target === null ? undefined : target.unfinished ?? 0;
     if (unfinished === undefined || unfinished >= limit) throw new Full(`the target holds ${unfinished ?? "an unknown number of"} unfinished messages, limit ${limit}`);
     this.full.delete(session);
@@ -480,13 +505,14 @@ export class AgentOutbox {
   /** Where a copy that may have gone is: in the target's file, in its worker's queue, held while the target is busy, in neither, or unknown. */
   private async copyState(entry: Stored, since: number): Promise<"landed" | "queued" | "busy" | "absent" | "unknown"> {
     const session = entry.threadId;
+    const host = this.hostFor(session, entry.root);
     const file = await this.deps.fileOf(session).catch(() => null);
     const sent = (other: string) => unaged(other).trim() === entry.text.trim();
     if (file && await messageAt(file, since, sent)) return "landed";
-    let target = await this.deps.target(session).catch(() => null);
+    let target = await this.deps.target(session, host).catch(() => null);
     if (target === null && await this.deps.open?.(session).catch(() => false)) {
       this.deps.log(`outbox ${this.where(session)}: get_state did not answer for ${entry.id}, and the target had no worker; opened it from its file`);
-      target = await this.deps.target(session).catch(() => null);
+      target = await this.deps.target(session, host).catch(() => null);
     }
     if (target === null) return "unknown";
     if (target.queued.some(item => item === entry.text || item === QUEUED_PREFIX + entry.text || item.includes(entry.text))) return "queued";
