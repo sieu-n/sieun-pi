@@ -172,7 +172,8 @@ async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput
   return output;
 }
 
-export async function sendProbe(config: ChatConfig): Promise<{ id: string; sends: SendTiming[] }> {
+/** `firstReplyMs` bounds the new thread's turn, its slot-wait retries included; tests make it short. */
+export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_MS): Promise<{ id: string; sends: SendTiming[] }> {
   const origin = `http://127.0.0.1:${config.port}`;
   const base = `${origin}/${config.capability}/`;
   const post = async (route: string, body: unknown): Promise<Record<string, unknown>> => {
@@ -208,13 +209,22 @@ export async function sendProbe(config: ChatConfig): Promise<{ id: string; sends
     const kind = (frame: Frame) => frame.data?.type === "event" ? frame.data.event?.type : undefined;
     const reply = (frame: Frame) => mine(frame) && ["message_update", "message_end"].includes(kind(frame) ?? "") && frame.data!.event!.message?.role === "assistant";
     const first = await until(0, frame => reply(frame) || (mine(frame) && frame.data?.type === "snapshot" && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant")),
-      FIRST_REPLY_MS, "first reply frame");
+      firstReplyMs, "first reply frame");
     sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at, create: true });
     const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
     if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
-    // A first turn that ended in an error, such as pi-pool's slot wait, goes into a retry after its agent_end, and a follow-up then waits behind
-    // it: on 10-20 at 05:49Z every Mac account was limited, and the follow-up got no user message in 120 s, which left the new-thread send unread.
-    if (frames.slice(first.index, end.index + 1).some(({ frame }) => mine(frame) && frame.data?.event?.message?.role === "assistant" && frame.data.event.message.stopReason === "error")) return { id, sends };
+    // A first turn that ended in an error, such as pi-pool's slot wait, goes into a retry after its agent_end, and a follow-up sent then waits
+    // behind it: on 10-20 at 05:49Z the follow-up got no user message in 120 s. So the follow-ups wait for a turn that ends with no error,
+    // within the new thread's bound; at 05:52Z the slot came after about 1 min, and a probe that sent none left p93's metric unread.
+    const failed = (from: number, to: number) => frames.slice(from, to + 1).some(({ frame }) => mine(frame) && kind(frame) === "message_end" &&
+      frame.data?.event?.message?.role === "assistant" && frame.data.event.message.stopReason === "error");
+    for (let from = first.index, turn = end.index; failed(from, turn); ) {
+      const left = createdAt + firstReplyMs - Date.now();
+      const next = left > 0 ? await until(turn + 1, frame => mine(frame) && kind(frame) === "agent_end", left, "turn after the slot wait").catch(() => null) : null;
+      if (!next) return { id, sends };
+      from = turn + 1;
+      turn = next.index;
+    }
     for (let count = 1; count < SENDS; count++) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       const text = marker();

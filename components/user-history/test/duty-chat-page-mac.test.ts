@@ -94,25 +94,67 @@ test("the create send is timed from before its POST, listed as a new thread and 
   assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_new_thread", "reply"]);
 });
 
-test("a first turn that ended in an error sends no follow-up, so the new-thread send is still read while the accounts wait", async t => {
+/** A fake chat service: `script` sends the first turn's frames; each follow-up prompt gets a user message, an "ok" reply and agent_end. */
+async function fakeService(t: { after: (fn: () => unknown) => void }, script: (frame: (type: string, message?: Record<string, unknown>) => void) => void) {
   const posts: string[] = [];
+  let frame: ((type: string, message?: Record<string, unknown>) => void) | undefined;
   const server = createServer((req, res) => {
-    posts.push(req.url!.replace(/^.*\/api\//, ""));
-    req.resume();
-    req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000002" })); });
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      posts.push(req.url!.replace(/^.*\/api\//, ""));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000002" }));
+      if (!req.url!.endsWith("/prompt") || !frame) return;
+      const message = (JSON.parse(body) as { message: string }).message;
+      setTimeout(() => {
+        frame!("agent_start");
+        frame!("message_start", { role: "user", content: [{ type: "text", text: message }] });
+        frame!("message_update", { role: "assistant", content: [{ type: "text", text: "ok" }] });
+        frame!("message_end", { role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop" });
+        frame!("agent_end");
+      }, 20);
+    });
   });
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", socket => socket.on("message", data => {
     const { sub } = JSON.parse(data.toString()) as { sub: number };
-    const frame = (type: string, message?: Record<string, unknown>) => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "event", event: { type, ...(message ? { message } : {}) } } }));
-    frame("message_end", { role: "assistant", content: [], stopReason: "error", errorMessage: "pi-pool: this session waits for its slot" });
-    frame("agent_end");
-    frame("auto_retry_start");
+    frame = (type, message) => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "event", event: { type, ...(message ? { message } : {}) } } }));
+    script(frame);
   }));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { sockets.close(); server.close(); });
-  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" });
+  return { posts, port: (server.address() as AddressInfo).port };
+}
+const slotWait = { role: "assistant", content: [], stopReason: "error", errorMessage: "pi-pool: this session waits for its slot" };
+
+test("after a first turn that ended in the slot wait, the follow-ups go once the retried turn ends with no error, and the new-thread send keeps its first frame", async t => {
+  const { posts, port } = await fakeService(t, frame => {
+    frame("message_end", slotWait);
+    frame("agent_end");
+    frame("auto_retry_start");
+    setTimeout(() => {
+      frame("agent_start");
+      frame("message_update", { role: "assistant", content: [{ type: "text", text: "ok" }] });
+      frame("message_end", { role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop" });
+      frame("agent_end");
+    }, 300);
+  });
+  const started = Date.now();
+  const { sends } = await sendProbe({ port, capability: "cap", csrfToken: "token" }, 20_000);
+  assert.deepEqual(sends.map(send => Boolean(send.create)), [true, false, false, false]);
+  assert.ok(sends[0]!.firstTokenAt - started < 250, "the new-thread send was timed from the retried turn instead of its first frame");
+  assert.equal(posts.filter(path => path.endsWith("/prompt")).length, 3);
+});
+
+test("a slot wait that outlasts the new thread's bound sends no follow-up, so the new-thread send is still read", async t => {
+  const { posts, port } = await fakeService(t, frame => {
+    frame("message_end", slotWait);
+    frame("agent_end");
+    frame("auto_retry_start");
+  });
+  const { sends } = await sendProbe({ port, capability: "cap", csrfToken: "token" }, 1_000);
   assert.deepEqual(sends.map(send => send.create), [true]);
   assert.deepEqual(posts.filter(path => path.endsWith("/prompt")), []);
 });
