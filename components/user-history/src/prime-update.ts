@@ -1,5 +1,7 @@
+import { watch } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { DaemonClient } from "prime-agent";
 import { processStartId } from "./orphan-services.ts";
 
 /** The phases after which an update restart coordinator no longer restores sessions. */
@@ -39,4 +41,68 @@ export async function primeUpdateRunning(agentDir: string, socketPath: string, s
     return { requestId: typeof record.requestId === "string" ? record.requestId : name, phase: record.phase, startedAt: typeof record.startedAt === "string" ? record.startedAt : "", file };
   }
   return null;
+}
+
+/** The daemon's answer to a mutation it fenced out while it prepares an update restart (prime-agent's UPDATE_RESTART_PREPARING_MESSAGE). */
+const PREPARING = "Daemon is preparing an update restart";
+
+/** Whether a daemon answer is the refusal of a call made while the daemon prepared an update restart; older daemons send only the text. */
+export const isPrepareRefusal = (answer: { success: boolean; error?: string; errorInfo?: { code?: string } }): boolean =>
+  !answer.success && (answer.errorInfo?.code === "update_restarting" || answer.error === PREPARING);
+
+/**
+ * The longest a daemon's update prepare runs: prime-agent's supervisor rolls a prepare back once UPDATE_RESTART_PREPARE_DEADLINE_MS, 100 s,
+ * passed (daemon-supervisor.js), and then takes calls again. On 10-20 us-metal02's prepare ran from 15:46:51Z to its refusal at 15:48:21Z,
+ * 90 s, and the Mac's ran from 15:45:55Z to its new daemon at 15:46:45Z, 50 s. A wait reads it only for a daemon whose update records this box
+ * cannot read, another box's.
+ */
+export const DAEMON_PREPARE_DEADLINE_MS = 100_000;
+
+/** This box's update records, read and watched: `running` is `primeUpdateRunning`, and `watch` calls back on each change of the folder. */
+export interface UpdateRecords { running(): Promise<PrimeUpdate | null>; watch(changed: () => void): () => void }
+
+export function updateRecords(agentDir: string, socketPath: string): UpdateRecords {
+  const dir = join(agentDir, "update-restarts");
+  return {
+    running: () => primeUpdateRunning(agentDir, socketPath),
+    watch: changed => {
+      try {
+        const watcher = watch(dir, () => changed());
+        watcher.on("error", () => {});
+        watcher.unref();
+        return () => watcher.close();
+      } catch { return () => {}; }
+    },
+  };
+}
+
+/**
+ * How the update prepare that refused a call ended: the daemon came back under a new supervisor (its next hello names a new generation), this
+ * box's update record of it ended (the prepare was refused, or the update finished), or, for a daemon whose records this box cannot read, the
+ * daemon's own prepare deadline passed.
+ */
+export type PrepareEnd = "restarted" | "update ended" | "deadline passed";
+
+/** An update window a daemon call met: the daemon refused it while it prepared, or this box's daemon was down while its update ran. */
+export interface UpdateWindow { kind: "prepare" | "restart"; ended: Promise<PrepareEnd> }
+
+/**
+ * Resolves once the update prepare that refused a call on `client` ended (`PrepareEnd`). `records` are this box's update records, given only
+ * for this box's daemon: a prepare that no running record names, such as another box's, ends by DAEMON_PREPARE_DEADLINE_MS at the latest.
+ */
+export async function prepareEnd(client: Pick<DaemonClient, "hello" | "onMessage">, records: UpdateRecords | null,
+  deadlineMs = DAEMON_PREPARE_DEADLINE_MS): Promise<PrepareEnd> {
+  const generation = client.hello?.supervisorGeneration;
+  let finish: (end: PrepareEnd) => void = () => {};
+  const ended = new Promise<PrepareEnd>(resolve => { finish = resolve; });
+  const offHello = client.onMessage(message => { if (message.type === "daemon_hello" && message.supervisorGeneration !== generation) finish("restarted"); });
+  let offRecords = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const update = records ? await records.running().catch(() => null) : null;
+  if (records && update) {
+    const check = () => { void records.running().then(now => { if (now?.requestId !== update.requestId) finish("update ended"); }, () => {}); };
+    offRecords = records.watch(check);
+    check();
+  } else timer = setTimeout(() => finish("deadline passed"), deadlineMs);
+  try { return await ended; } finally { offHello(); offRecords(); clearTimeout(timer); }
 }

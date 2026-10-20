@@ -70,6 +70,8 @@ export interface OutboxDeps {
   uncertain?: (error: unknown) => boolean;
   /** Whether a failure is a wait the deps already logged, so each try of it writes no line; absent means none is. */
   quiet?: (error: unknown) => boolean;
+  /** Whether a failure is a wait the deps already sat out, such as the daemon's update window, so the entry goes again with no backoff. */
+  again?: (error: unknown) => boolean;
   /** Whether the entry's target cannot be reached now, such as a session on a box that is offline: it waits, with no try and no line. */
   held?: (entry: Stored) => Promise<boolean>;
   /** The thread's queued, sending and failed entries changed; `left` is the one that was just delivered. */
@@ -234,7 +236,7 @@ export class Outbox {
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
       if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
       current = this.update(current, { state: "queued" });
-      if (!this.closed) await this.sleep(backoff(current.attempts));
+      if (!this.closed && !this.deps.again?.(error)) await this.sleep(backoff(current.attempts));
     } finally { this.out.delete(current.threadId); }
   }
 

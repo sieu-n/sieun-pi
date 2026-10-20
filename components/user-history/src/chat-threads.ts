@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
+import { DaemonAgentConnection, DaemonClient, getAgentDir, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Catalog, parseSummaries } from "./chat-catalog.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
 import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
-import { CHAT_FLAG, OWNER_THREAD_FLAG } from "./chat-guard.ts";
+import { CHAT_FLAG, OWNER_THREAD_FLAG, ownerStopSinceActive } from "./chat-guard.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
@@ -21,7 +21,8 @@ import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
 import { FirstPages, firstPage, wireEvent } from "./first-page.ts";
-import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
+import { DAEMON_WORKER_START_MS, workerStartThroughUpdates } from "./daemon-worker-start.ts";
+import { isPrepareRefusal, prepareEnd, updateRecords, type UpdateRecords, type UpdateWindow } from "./prime-update.ts";
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
@@ -288,6 +289,8 @@ export async function disposeConnection(connection: DaemonAgentConnection): Prom
  * and 25 s). Another box's bridge keeps its 3 s: while the Mac's relay did not answer on 10-18, its hello never came (open 01a11ba8 on mac).
  */
 const LOCAL_HELLO_MS = 30_000;
+/** A call that found this box's daemon socket gone or closed, as the SDK words it. */
+const DAEMON_DOWN = /Prime Agent daemon (?:on \S+ )?is not reachable|Failed to connect to the Prime Agent daemon|Connection to the Prime Agent daemon closed/;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
@@ -325,6 +328,8 @@ export class ThreadHub {
   private readonly archivedAt = new Map<string, number>();
   /** When the last archive through this server began, so an owner send that came in before it does not go (`archivedSince`). */
   private readonly archiveStarts = new Map<string, number>();
+  /** When the owner last pressed Stop on each thread through this server (`ownerStopped`). */
+  private readonly ownerStops = new Map<string, number>();
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
@@ -348,11 +353,14 @@ export class ThreadHub {
   readonly cancels: SavedArchiveQueue | null;
   /** The owner-turn mark of a session on this box (`prompt` with `owner`); the service sets pi-pool's, and tests leave it a no-op. */
   markOwnerTurn: (id: string) => Promise<void> = async () => {};
+  /** This box's Prime update records, which end a wait on this box's update prepare (`startWorker`); tests point them at their own folder. */
+  updates: UpdateRecords | null;
 
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
     private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {},
     private readonly firstPages = new FirstPages(null), private readonly readOnly = false, pendingCancels: string | null = null) {
     this.dormant = new Dormancy(idle);
+    this.updates = readOnly ? null : updateRecords(getAgentDir(), socketPath);
     this.cancels = pendingCancels ? new SavedArchiveQueue({ path: pendingCancels, attempt: entry => this.retryCancel(entry), reachable: host => this.catalog.reachable(host),
       log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`), ...readOnly ? { tickMs: 0 } : {} }) : null;
     this.sweeper = setInterval(() => this.sweep(), 30000);
@@ -544,7 +552,8 @@ export class ThreadHub {
     const activeSessionId = reloadTarget(await this.summary(id), this.threads.get(id)?.live?.activeSessionId);
     if (activeSessionId === undefined) return "saved";
     if (await this.daemonBusy(activeSessionId)) return "busy";
-    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, async () => (await this.daemon(activeSessionId)).request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    const response = await this.startWorker(`reload ${id.slice(0, 8)}`, this.catalog.hostOf(activeSessionId), client => client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }),
+      async () => await this.daemonBusy(activeSessionId) ? "its session is busy now" : null);
     if (!response.success) throw new ThreadError(502, response.error);
     return "reloaded";
   }
@@ -617,6 +626,55 @@ export class ThreadHub {
       thread.live = null;
     }
   }
+
+  /**
+   * A daemon create or reload on `host` (this box when null) that waits out the daemon's update prepare and starts again after it
+   * (`workerStartThroughUpdates`). This box's prepare ends with its update record (`updates`); another box's with its daemon's next hello or
+   * the daemon's prepare deadline. `dropped` names what makes the start moot meanwhile, and a stopped service drops it too.
+   */
+  private startWorker<T extends { success: boolean; error?: string; errorInfo?: { code?: string } }>(label: string, host: string | null,
+    run: (client: DaemonClient) => Promise<T>, dropped: () => Promise<string | null> = async () => null, refusedStart?: (answer: T) => boolean): Promise<T> {
+    let used: DaemonClient | undefined;
+    const other = Boolean(host && this.catalog.isOtherHost(host));
+    return workerStartThroughUpdates(label, async () => run(used = await this.hostDaemon(host)),
+      () => prepareEnd(used!, other ? null : this.updates),
+      async () => this.closed ? "the chat service stopped" : dropped(), refusedStart);
+  }
+
+  /**
+   * The owner's stop or archive of `id` that came at or after `since`, in words, or null: an archive or Stop through this server, or one
+   * another client of the daemon wrote into the session file on this box (`ownerStopSinceActive`). A resume that waited out an update
+   * prepare yields to it.
+   */
+  private async ownerStopSince(id: string, since: number): Promise<string | null> {
+    if (this.archivedSince(id, since)) return "the owner archived it";
+    if ((this.ownerStops.get(id) ?? -Infinity) >= since) return "the owner stopped it";
+    if (this.catalog.hostOf(id)) return null;
+    const file = (await this.catalog.summary(id))?.sessionFile;
+    const stop = file ? await ownerStopSinceActive(file) : null;
+    const at = stop ? Date.parse(stop.slice(stop.lastIndexOf(" at ") + 4)) : NaN;
+    return at >= since ? `the session file records ${stop}` : null;
+  }
+
+  /**
+   * For a call to the daemon of `host` (this box when null) that failed with `error`: the daemon's update window it met, whose `ended`
+   * resolves with how it ended, or null when the failure is no such window. A refusal while the daemon prepared waits for the prepare to end
+   * (`prepareEnd`). A failed connect to this box's daemon while its update record runs waits for the new daemon's hello: on 10-20 at
+   * 16:13:19Z an outbox send to vent met the socket gone between the old daemon's exit and the new one's start, and that try made a d7
+   * minute dirty.
+   */
+  async updateWindow(host: string | null, error: unknown): Promise<UpdateWindow | null> {
+    const text = error instanceof Error ? error.message : String(error);
+    const other = Boolean(host && this.catalog.isOtherHost(host));
+    const records = other ? null : this.updates;
+    const refused = isPrepareRefusal({ success: false, error: text });
+    if (!refused && (!records || !DAEMON_DOWN.test(text) || !await records.running().catch(() => null))) return null;
+    const client = other ? await this.catalog.hostClient(host).catch(() => null) : this.catalog.client;
+    return client ? { kind: refused ? "prepare" : "restart", ended: prepareEnd(client, records) } : null;
+  }
+
+  /** The owner's Stop of `id` through this server, before its abort, for a resume waiting out an update prepare (`ownerStopSince`). */
+  ownerStopped(id: string): void { this.ownerStops.set(id, Date.now()); }
 
   /** A connected client for the named hosts.json box, this box's own when the name is null. */
   private async hostDaemon(host: string | null): Promise<DaemonClient> {
@@ -1217,14 +1275,16 @@ export class ThreadHub {
   /** Opens a saved or failed session from its file with a daemon create, which drops a dead worker's registration; resolves the new active id. */
   private async reopen(id: string, summary: SessionSummary): Promise<string> {
     if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
-    const client = await this.daemon(id);
+    const host = this.catalog.hostOf(id);
+    const asked = Date.now();
     // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
     // A folder that is gone resumes in the daemon's folder rather than not at all. Another box's folder is that box's to check.
     const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
     const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
-    const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    const response = await this.startWorker(`resume ${id.slice(0, 8)}${host && this.catalog.isOtherHost(host) ? ` on ${host}` : ""}`, host,
+      client => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }), () => this.ownerStopSince(id, asked));
     if (!response.success) {
-      const running = await this.runningElsewhere(client, id, response.error);
+      const running = await this.runningElsewhere(await this.daemon(id), id, response.error);
       if (running) return running;
       throw new ThreadError(502, response.error);
     }
@@ -1251,10 +1311,9 @@ export class ThreadHub {
     const key = spareKey(input);
     if (this.spare?.key === key) return (await this.spare.created) !== null;
     await this.dropSpare();
-    const client = await this.hostDaemon(input.host);
-    const created = timedWorkerStart(`spare ${input.host} ${input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", config: { cwd: input.cwd,
+    const created: Promise<SessionSummary | null> = this.startWorker(`spare ${input.host} ${input.cwd}`, input.host, client => client.request({ type: "create", lifecycle: "resident", config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-      extensionFlagValues: { [OWNER_THREAD_FLAG]: true } } }, DAEMON_WORKER_START_MS, { recoverable: false }))
+      extensionFlagValues: { [OWNER_THREAD_FLAG]: true } } }, DAEMON_WORKER_START_MS, { recoverable: false }), async () => this.spare?.created === created ? null : "another pick replaced it")
       .then(response => {
         const data = response.success ? response.data as Partial<SessionSummary> | undefined : undefined;
         if (typeof data?.sessionId !== "string" || typeof data.activeSessionId !== "string") return null;
@@ -1330,8 +1389,10 @@ export class ThreadHub {
     // saves the round trip between that answer and this box's prompt: about 190 ms to the Mac on 10-20. The relay adds the prompt's result to
     // the answer; an answer without it came through an older relay, and the prompt goes from here as before.
     const relayed = input.first && !named && input.host && this.catalog.isOtherHost(input.host) ? { ...promptFields("", { ...input.first, images: [] }, false), ownerTurn: true } : undefined;
-    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, async () => {
-      const created = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), ...(relayed ? { [RELAY_FIRST_PROMPT]: relayed } : {}),
+    // Only the create's own refusal waits out a prepare: a refused rename comes after a session was made, which a second create would double.
+    let made: unknown;
+    const response = await this.startWorker(`create ${input.name ?? input.cwd}`, input.host ?? null, async client => {
+      const created = made = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), ...(relayed ? { [RELAY_FIRST_PROMPT]: relayed } : {}),
         config: { cwd: input.cwd, ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
         ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } } as never, DAEMON_WORKER_START_MS, { recoverable: false });
       const activeSessionId = created.success && typeof created.data === "object" && created.data !== null && "activeSessionId" in created.data ? created.data.activeSessionId : undefined;
@@ -1341,7 +1402,7 @@ export class ThreadHub {
       if (answer.success) return created;
       await client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
       return answer;
-    });
+    }, undefined, answer => answer === made && isPrepareRefusal(answer));
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {

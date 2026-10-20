@@ -1035,6 +1035,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           // stall that stands in for an interruption sends cancel: false.
           const chat = (await backend.chats.ids()).has(id);
           if (!chat && body.cancel !== false) await backend.chats.cancelJob(id, "stop");
+          if (body.cancel !== false) backend.threads.ownerStopped(id);
           await backend.threads.abort(id);
           if (chat) await backend.threads.resumeQueue(id);
           break;

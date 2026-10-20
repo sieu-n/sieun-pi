@@ -1,3 +1,5 @@
+import { PREPARE_WAIT } from "./daemon-worker-start.ts";
+
 /**
  * Daemon calls that failed or ran over SLOW_MS, read from the chat service's log and the supervisor's own log, for the Whole system precheck
  * (scripts/duties/whole-system.ts). The VP's rule on 10-18: a minute where opening a chat (the daemon's attach), a status read (get_state or
@@ -35,6 +37,15 @@ const WORKER_START = /^daemon (create|resume|reload) (.+?): (answered|refused) i
  * 20:37" ("client closed", a fault), and its retry at 11:40:09Z was refused for the name, so the minute of the retry is no new fault.
  */
 const NAME_TAKEN = /is unavailable: an agent of that name already exists/;
+/**
+ * A start the daemon refused while it prepared an update restart, which waits for the prepare to end and starts again
+ * (src/daemon-worker-start.ts `workerStartThroughUpdates`); its next try writes its own line, which counts as any start does. On 10-20 the
+ * refused resumes of Mac chat 01a15503 at 15:46:05Z and 15:46:35Z and the refused create of "alert triage Crawler VP 01:13" at 16:13:12Z each
+ * made a minute dirty while nothing failed but the update's own window.
+ */
+const WAITS_OUT_PREPARE = new RegExp(`; ${PREPARE_WAIT}$`);
+/** A resume of another box's session names that box after the id (`resume 01a15503 on mac`). */
+const START_ON = /^([0-9a-f]{8}) on ([\w.-]+)$/;
 const WORKER_NO_ANSWER = /^daemon (create|resume|reload) (.+): no answer after ([\d.]+) s: (.*)$/;
 /**
  * The service closed its own daemon link: DaemonClient.close() is the only source of this error, and the clients of worker starts belong to
@@ -168,14 +179,16 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     }
     if ((found = WORKER_START.exec(text))) {
       const seconds = Number(found[4]);
-      const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "");
+      const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "") && !WAITS_OUT_PREPARE.test(found[5] ?? "");
+      const on = START_ON.exec(found[2]!);
       if (refused || seconds * 1000 > SLOW_MS)
-        faults.push({ at: at + seconds * 1000, host: local, ...titleOrSession(found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}` });
+        faults.push({ at: at + seconds * 1000, host: on?.[2] ?? local, ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}` });
       continue;
     }
     if ((found = WORKER_NO_ANSWER.exec(text))) {
       if (OWN_STOP.test(found[4]!)) continue;
-      faults.push({ at: at + Number(found[3]) * 1000, host: hostOf(text, local), ...titleOrSession(found[2]!), what: `its ${found[1]} got no answer, ${faultReason(found[4]!) ?? found[4]!.slice(0, 80)}` });
+      const on = START_ON.exec(found[2]!);
+      faults.push({ at: at + Number(found[3]) * 1000, host: on?.[2] ?? hostOf(text, local), ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} got no answer, ${faultReason(found[4]!) ?? found[4]!.slice(0, 80)}` });
       continue;
     }
     if ((found = OUTBOX_MOVED.exec(text))) {

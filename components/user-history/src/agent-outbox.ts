@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
 import type { PeerReach } from "./host-reach.ts";
+import type { UpdateWindow } from "./prime-update.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, type StoppedSubagent, stoppedSubagent } from "./subagent-relay.ts";
@@ -71,6 +72,8 @@ export interface AgentOutboxDeps {
    * after that, and its lane held every later send for an hour, while a daemon create opened it in 1.6 s at 23:18Z and a send then went at once.
    */
   open?: (session: string) => Promise<boolean>;
+  /** The daemon's update window a failed send met (`ThreadHub.updateWindow`), or null when the failure is no such window. */
+  updateWindow?: (host: string | null, error: unknown) => Promise<UpdateWindow | null>;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -84,6 +87,9 @@ class Full extends Error {}
 
 /** The target's worker is stopping or starting, so nothing was sent. */
 class Moving extends Error {}
+
+/** The send met the daemon's update window and waited it out, so it goes again at once, with the outbox's checks of a new try. */
+class UpdateWaited extends Error {}
 
 /** The counts a pending-limit refusal names ("Target session has too many pending messages: 21 unfinished, limit is 20"). */
 export function pendingCounts(error: unknown): { pending: number; limit: number } | undefined {
@@ -323,7 +329,8 @@ export class AgentOutbox {
       final: error => error instanceof Gone ? error.message : null,
       uncertain: isSendTimeout,
       // A pending-limit refusal is a wait like Full: send() logs it once with its counts, and the Whole system precheck reads that line as detail.
-      quiet: error => error instanceof Full || error instanceof Moving || pendingCounts(error) !== undefined,
+      quiet: error => error instanceof Full || error instanceof Moving || error instanceof UpdateWaited || pendingCounts(error) !== undefined,
+      again: error => error instanceof UpdateWaited,
       held: async entry => {
         const host = deps.reach && this.hostFor(entry.threadId, entry.root);
         return !!host && !(await deps.reach!(host)).online;
@@ -441,6 +448,14 @@ export class AgentOutbox {
   private async send(session: string, id: string, text: string, host: string | null): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
     try { sent = await this.deps.send(session, text, host); } catch (error) {
+      const window = await this.deps.updateWindow?.(host, error).catch(() => null);
+      if (window) {
+        const since = this.now();
+        this.deps.log(`outbox ${this.where(session)}: ${id} met the daemon's update ${window.kind}; it and the sends after it wait for it to end`);
+        const end = await window.ended;
+        this.deps.log(`outbox ${this.where(session)}: the daemon's update ${window.kind} ended (${end}) after ${Math.round((this.now() - since) / 1000)} s; ${id} goes again`);
+        throw new UpdateWaited(`the daemon's update ${window.kind} ended (${end})`);
+      }
       const doing = moveOf(error);
       if (doing) {
         if (!this.moving.has(session)) {

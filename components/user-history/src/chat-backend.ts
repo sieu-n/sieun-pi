@@ -302,6 +302,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
     stopped: stopRecords(dataDir),
+    updateWindow: (host, error) => threads.updateWindow(host, error),
     send: async (session, text, host) => {
       const response = await sendReopening(session, async target => (await (host ? catalog.hostClient(host) : catalog.daemonFor(session))).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, ...replay ? {} : { adopt: (root: string) => adoptMoved(root, agentDir) } }, id), dutyLog);
