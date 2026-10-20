@@ -1,4 +1,4 @@
-// Reads and parses the CI cache (src/ci-runs.ts) off the chat server's event loop, and sends back each run's fields without its jobs.
+// Reads and parses the CI cache (src/ci-runs.ts) off the chat server's event loop, and sends back each run's fields and ghost flag without its jobs.
 import { readFile } from "node:fs/promises";
 import { parentPort, workerData } from "node:worker_threads";
 
@@ -11,7 +11,7 @@ try {
     if (!run || typeof run !== "object") continue;
     const kept = {};
     for (const field of FIELDS) if (field in run) kept[field] = run[field];
-    runs[key] = { run: kept };
+    runs[key] = entry.ghost === true ? { run: kept, ghost: true } : { run: kept };
   }
   parentPort.postMessage({ ok: true, cache: { fetchedAt: cache?.fetchedAt, runs } });
 } catch (error) {

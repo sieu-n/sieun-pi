@@ -42,6 +42,8 @@ export interface JobFact {
   inTurn?: true;
   /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
   wake?: string;
+  /** The dead waits it sleeps on (`withDeadWakes`): board.wakes on runs that ended long enough ago that the service should have sent them. */
+  deadWake?: string;
   /** Its session has no first prompt (state `unstarted`): when it was spawned, and when the chat service last sent its brief. */
   unstarted?: { at: number; sentAt?: number };
 }
@@ -351,7 +353,8 @@ export const quote = (text: string) => `"${clip(text)}"`;
 export const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `${clip(fact.name, 40)} thread` : `job ${fact.name}`;
 export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed", unstarted: "not started" };
 /** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
-export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` : STATE_WORD[fact.state];
+export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` :
+  fact.deadWake ? `${STATE_WORD[fact.state]}, asleep on a dead wait: ${fact.deadWake}` : STATE_WORD[fact.state];
 export function ago(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / 60_000));
   if (minutes < 120) return `${minutes} min`;

@@ -148,6 +148,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   for (const gate of gates) if (gate.kind === "go_waiting") notes.push(gateLine(gate));
   if (!context.boardError) for (const review of readyReviews(board, active, { memos: steps, owner: context.owner ?? [] })) notes.push(readyReviewLine(review));
   if (!context.boardError) notes.push(...parkedUnnamed(board, facts));
+  notes.push(...facts.flatMap(fact => fact.deadWake ? [deadWaitLine(fact)] : []));
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
@@ -186,6 +187,10 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
 }
+
+/** A job asleep on dead waits (`JobFact.deadWake`): the wake service did not send them, so the chat tells the job how its run ended. */
+export const deadWaitLine = (fact: JobFact): string =>
+  `${ownerLabel(fact)} is a dead wait: it sleeps on ${fact.deadWake}, and the wake never went out. Tell it the run's result now so it acts on it`;
 
 /**
  * The ended jobs whose last reply says they hold parked work (`JobMessage.parked`) while no open step names them (`stepNamesJob`), one line each.

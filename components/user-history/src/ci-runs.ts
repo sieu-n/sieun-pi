@@ -5,7 +5,7 @@ import { Worker } from "node:worker_threads";
 export type CachedRun = { id?: unknown; name?: unknown; path?: unknown; head_branch?: unknown; head_sha?: unknown; event?: unknown; status?: unknown;
   conclusion?: unknown; created_at?: unknown; updated_at?: unknown };
 /** The CI cache (`trainFile`) with only what the chat reads: when it was fetched and each run. */
-export type CiRuns = { fetchedAt?: unknown; runs: Record<string, { run: CachedRun }> };
+export type CiRuns = { fetchedAt?: unknown; runs: Record<string, { run: CachedRun; ghost?: true }> };
 
 const read = new Map<string, { key: string; runs: Promise<CiRuns | null> }>();
 

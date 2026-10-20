@@ -16,7 +16,7 @@ export type WakeOn = { kind: "run"; run: number; repo?: string } | { kind: "time
 /** `root`: the chat tree's root session, when the wake's session is a child of it; board.wake reads it from RLM_SESSION_DIR. */
 export interface Wake { session: string; root?: string; on: WakeOn; note: string; since: number }
 /** What a run's state read answers: still going, finished with its conclusion, or not readable now (looked at again next tick). */
-export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string } | { error: string };
+export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string; why?: string } | { error: string };
 
 export const TICK_MS = 30_000;
 /** The file the ticker rewrites as it starts and on every beat (`startWakes`); board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
@@ -29,6 +29,8 @@ export const RUN_LOOK_MS = 2 * 60_000;
  * because board.wake got no repo and the CI cache, which holds only its own repo, answered "not in the cache" every 2 min.
  */
 export const UNREADABLE_MS = 10 * 60_000;
+/** The longest a ticking service takes to send a run wake after its run ends: one RUN_LOOK_MS between reads of an unmoved run, plus one tick. */
+export const RUN_WAKE_DUE_MS = RUN_LOOK_MS + TICK_MS;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const SESSION = /^[\w-]{1,128}$/;
@@ -56,7 +58,7 @@ export function wakeText(wake: Wake, state: RunState | null, now: number): strin
   if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note}`;
   const done = state && "done" in state && state.done ? state : null;
   return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} finished: ${done?.conclusion ?? "unknown"}${done?.label ? ` (${done.label})` : ""}. ` +
-    `${done?.url ?? ""} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
+    `${done?.why ? `${done.why} ` : ""}${done?.url ?? ""} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
 }
 
 export interface WakeDeps {
@@ -178,6 +180,15 @@ export const CI_CACHE_REPO = "sieu-n/auto-sns-agent";
  * finished runs held their wakes 12 and 13 min (d7 queue_holds_30 2 at 11:46Z).
  */
 export const OTHER_RUN_REPOS: readonly string[] = ["sieu-n/slack-green", "sieu-n/sieun-pi"];
+/**
+ * ci-run-status's status for a run with no result (ci-cache.mjs NO_RESULT): a ghost, which GitHub still lists as queued when every job of its
+ * attempt finished or when it has had no job for GHOST_EMPTY_MS (2 min) after it started, or a finished run with no job that GitHub calls
+ * success. The cache's ghost rule already waited out that grace, and such a run never reaches a result, so its wake goes out with the reason.
+ * Crawler VP 10-20: about 15 jobs slept from 10-19 21:07Z on promote run 39323562100, which read this way, because the ticker took only a
+ * "completed" status as final.
+ */
+export const NO_RESULT = "ghost, no result";
+const NO_RESULT_WHY = "The CI cache reads it as a ghost or a jobless run, so it will not report a result: rerun it or push again if you still need one.";
 /** ci-run-status's answer for a run the poller has not listed yet. */
 const NOT_CACHED = / is not in the cache /;
 /** gh's answer for a run id its repo does not have. */
@@ -206,11 +217,12 @@ export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (
       if (error instanceof Error && NOT_CACHED.test(error.message)) return anyRepo();
       throw error;
     })) as Record<string, unknown>;
-  if (raw.status !== "completed") return { done: false };
+  const ghost = raw.status === NO_RESULT;
+  if (raw.status !== "completed" && !ghost) return { done: false };
   const workflow = typeof raw.workflow === "string" ? raw.workflow : typeof raw.workflowName === "string" ? raw.workflowName : "";
   const branch = typeof raw.headBranch === "string" ? raw.headBranch : "";
-  return { done: true, conclusion: typeof raw.conclusion === "string" ? raw.conclusion : "unknown", url: typeof raw.url === "string" ? raw.url : "",
-    label: [workflow, branch].filter(Boolean).join(" on ") };
+  return { done: true, conclusion: ghost ? "no result" : typeof raw.conclusion === "string" ? raw.conclusion : "unknown", url: typeof raw.url === "string" ? raw.url : "",
+    label: [workflow, branch].filter(Boolean).join(" on "), ...ghost ? { why: NO_RESULT_WHY } : {} };
 }
 
 /** The CI cache poller rewrites a run's stamp only when its status, conclusion, attempt or a job moved. */
