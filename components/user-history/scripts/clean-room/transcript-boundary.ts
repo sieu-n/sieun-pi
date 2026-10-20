@@ -95,10 +95,15 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const events = readSession(chat).filter(event => event.at >= state.windowStart);
   const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
     !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill"));
-  const outside = events.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling"));
+  // A reply from a session the chat asked first is the relay criterion b wants: in run1 the chat asked chat-057a at 16:48:36Z and its
+  // answer at 16:50:54Z voided the run. Only a message from a session the chat never wrote to counts as someone stepping in.
+  const asked = new Map<string, number>();
+  for (const event of events) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
+  const outside = events.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at));
   add("e", typed.length === 0 && outside.length === 0, typed.length || outside.length
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 120)}"`).join("; ")
-    : "only the owner-style message, server notes and the chat's own jobs reached the chat");
+    : `only the owner-style message, server notes, the chat's own jobs and replies to its own relay asks reached the chat`);
 
   const verdict: Verdict = checks.find(check => check.id === "e")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
     : checks.some(check => check.ok === null) ? "open" : "pass";
