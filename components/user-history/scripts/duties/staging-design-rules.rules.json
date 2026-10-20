@@ -62,6 +62,9 @@
         "gr[ae]y (fat|pill|track)",
         "회색",
         "희미"
+      ],
+      "tests": [
+        "tests/unit/boxed-sections.test.ts"
       ]
     },
     {
@@ -82,6 +85,9 @@
         "ㅈㄴ fat",
         "(too much|so much|less|fat|reduce|extra|excess|no|big)\\W{0,3}padding",
         "padding\\W{0,15}(too|fat|big|much)"
+      ],
+      "tests": [
+        "tests/unit/boxed-sections.test.ts"
       ]
     },
     {
@@ -151,6 +157,9 @@
         "add cancel",
         "enter to save",
         "enter.{0,6}save가"
+      ],
+      "tests": [
+        "tests/unit/no-add-cancel.test.ts"
       ]
     },
     {
@@ -208,6 +217,9 @@
       "match": [
         "smooo*th",
         "transition"
+      ],
+      "tests": [
+        "tests/unit/smooth-motion.test.ts"
       ]
     },
     {
