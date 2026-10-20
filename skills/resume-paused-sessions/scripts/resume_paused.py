@@ -149,6 +149,7 @@ SESSIONS_DIR = Path.home() / ".prime" / "agent" / "sessions"
 ARTIFACTS_DIR = Path.home() / ".prime" / "agent" / "session-artifacts"
 DELETED_JOBS = Path.home() / ".prime" / "agent" / "browser-chat" / "deleted-jobs.json"
 ARCHIVED_CHATS = Path.home() / ".prime" / "agent" / "browser-chat" / "archived-chats.json"
+JOB_CANCELS = Path.home() / ".prime" / "agent" / "browser-chat" / "job-cancels.json"
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -609,7 +610,8 @@ class JobRecordError(RecordError):
 
 # The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
 # the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
-CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded"}
+CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded",
+              "job-cancels.json": "api/agent/job-cancels"}
 # How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
 CHAT_HOST_WAIT_S = 30
 # {file name: (text or None, source)} from the chat host, read once per pass.
@@ -702,8 +704,7 @@ def stop_record(path):
     deleted = deleted_on_purpose(path)
     if deleted:
         return deleted
-    return owner_archived(path)
-    return None
+    return owner_cancelled(path) or owner_archived(path)
 
 
 def deleted_on_purpose(path):
@@ -722,6 +723,18 @@ def deleted_on_purpose(path):
             return "deleted on purpose"
         folder = folder.parent
     return next(iter(recorded_deletes(path)), None)
+
+
+def owner_cancelled(path):
+    """Why the owner's Stop or Archive of the session at `path` holds, by job-cancels.json (the chat service's Chats.cancelJob), or None. The
+    service writes the cancel before it aborts or archives the session, and ends it when the owner sends to the session or unarchives it
+    (reopenedAt). A Stop alone writes no archive line: on 10-20 run7's Stop of job "user history test run" at 11:20:16Z wrote only the abort."""
+    record = read_record(JOB_CANCELS, lambda data: isinstance(data, dict) and all(isinstance(entry, dict) for entry in data.values())) or {}
+    cancel = record.get(Path(path).stem)
+    if not cancel or cancel.get("reopenedAt") is not None or not isinstance(cancel.get("at"), (int, float)):
+        return None
+    at = dt.datetime.fromtimestamp(cancel["at"] / 1000, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"the owner {'archived' if cancel.get('how') == 'archive' else 'stopped'} it (job-cancels.json, at {at})"
 
 
 def owner_archived(path):

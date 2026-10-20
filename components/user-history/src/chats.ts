@@ -42,6 +42,7 @@ import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
+import { cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
 
 export { TELL_OWNER_TOOL };
 
@@ -450,6 +451,7 @@ export class Chats {
    */
   async archiveJob(id: string): Promise<void> {
     await this.load();
+    await this.cancelJob(id, "archive");
     const since = this.now();
     const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
     let archived = false;
@@ -473,6 +475,47 @@ export class Chats {
     });
     if (left && (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length))
       this.log(`chat ${chat.slice(0, 8)}: archived job ${id.slice(0, 8)} ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+  }
+
+  /**
+   * The owner's Stop or Archive of a thread that is not a chat, such as a job, recorded as his cancel (`<data dir>/job-cancels.json`) before the
+   * route aborts or archives it. Prime tells the parent "[child-exited: no-reply ...]" within milliseconds of the abort, and the parent's context
+   * hook rewrites that notice to "stopped by the owner at HH:MM, don't reopen it" (`withCancelledNotices`). The failed-turn wakes, the job-end,
+   * no-report and open-steps notices, the check-in's pushes and steers, the waiting-job restart and the resume pass skip the job until the owner
+   * sends it a message or unarchives it (`reopenJob`). On 10-20 run7's Stop and Archive of job "user history test run" at 11:20:16Z reached the chat
+   * as a plain exit, and its "You exited without a reply. Finish the task" reopened the job 34 s later. A record that cannot be written is logged
+   * and the stop goes on. Null for a chat, or when no record is kept.
+   */
+  async cancelJob(id: string, how: JobCancel["how"]): Promise<JobCancel | null> {
+    const record = this.source.cancels;
+    if (!record) return null;
+    await this.load();
+    if (this.chatIds.has(id) || (await this.archivedIds()).has(id)) return null;
+    try {
+      const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
+      const cancel = await record.cancel(id, { at: this.now(), how, ...sessionFile ? await jobPlace(sessionFile) : {} });
+      this.log(`thread ${id.slice(0, 8)}: ${cancelWords(cancel)}; no recovery reopens it until the owner sends to it or unarchives it`);
+      return cancel;
+    } catch (error) {
+      this.log(`thread ${id.slice(0, 8)}: the owner's ${how} was not recorded as a cancel: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /** The owner's send to a thread or his unarchive of it ends his cancel of it (`cancelJob`). */
+  async reopenJob(id: string): Promise<void> {
+    if (this.source.cancels && await this.source.cancels.reopen(id, this.now()).catch(() => false)) this.log(`thread ${id.slice(0, 8)}: the owner reopened it; his cancel no longer holds`);
+  }
+
+  /** The owner's cancel of the job session `session` while it holds; undefined when none holds or the record does not read. */
+  private async cancelled(session: string | undefined): Promise<JobCancel | undefined> {
+    if (!session || !this.source.cancels) return undefined;
+    return this.source.cancels.holding(session).catch(() => undefined);
+  }
+
+  /** `cancelled` for a subagent of `chat`, by the session the hub or the daemon's list gives it. */
+  private cancelledChild(chat: string, child: ChildAgent): Promise<JobCancel | undefined> {
+    return this.cancelled(child.sessionId ?? this.subagents.get(chat)?.find(row => row.id === child.id)?.sessionId);
   }
 
   /** How many times the owner archived the chat since the service started; a send that began at another count stops before it goes. */
@@ -808,6 +851,8 @@ export class Chats {
     todos: readonly OwnerTodo[]): Promise<void> {
     const resumes = this.source.resumes!;
     const name = childName(child);
+    const cancel = await this.cancelledChild(id, child);
+    if (cancel) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name} as it is: ${cancelWords(cancel)}, so no fresh job takes its steps`); return; }
     try {
       const sessionFile = (await this.summary(id))?.sessionFile;
       const brief = sessionFile ? await jobBrief(join(artifactsDir(sessionFile), child.id)) : undefined;
@@ -1028,6 +1073,7 @@ export class Chats {
    */
   private async wakeJob(threadId: string, stamp: string, woke: boolean, job?: ChatJob): Promise<void> {
     const now = this.now();
+    if (await this.cancelled(threadId)) { this.jobWakes.delete(threadId); this.jobQuiet.set(threadId, stamp); this.keepQuiet(); return; }
     try {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
@@ -1161,7 +1207,7 @@ export class Chats {
    * way the owner did it by hand: abort, a `continue` steer, resume the queue. Again on the RETRY_BACKOFF_MS schedule while it stays stranded.
    */
   private async wakeOwner(threadId: string): Promise<void> {
-    if (this.chatIds.has(threadId)) return;
+    if (this.chatIds.has(threadId) || await this.cancelled(threadId)) return;
     const now = this.now();
     const last = this.ownerWakes.get(threadId);
     if (last && !retryDue(last.attempts - 1, last.at, now)) return;
@@ -1324,10 +1370,17 @@ export class Chats {
    * turn with the same message (`jobPushMessage`). Then the chat gets one line saying which jobs were pushed (`jobPushLine`), which the check-in
    * prompt repeats. A failed request leaves delivery unknown; the chat checks the existing job before retrying it.
    */
-  private async pushJobs(chat: string, pushes: readonly JobPush[], sessions: ReadonlyMap<string, string>): Promise<string | null> {
+  private async pushJobs(chat: string, all: readonly JobPush[], sessions: ReadonlyMap<string, string>): Promise<string | null> {
     const failed = new Set<string>();
+    const sessionOf = (push: JobPush) => push.fact.key.startsWith("thread:") ? push.fact.key.slice("thread:".length) : sessions.get(push.fact.key) ?? push.fact.sessionId;
+    const pushes: JobPush[] = [];
+    for (const push of all) {
+      const cancel = await this.cancelled(sessionOf(push));
+      if (cancel) this.log(`chat ${chat.slice(0, 8)}: check-in left job ${push.fact.name} alone: ${cancelWords(cancel)}`);
+      else pushes.push(push);
+    }
     for (const push of pushes) {
-      const session = push.fact.key.startsWith("thread:") ? push.fact.key.slice("thread:".length) : sessions.get(push.fact.key) ?? push.fact.sessionId;
+      const session = sessionOf(push);
       try {
         if (!session) throw new Error("no session id");
         if (push.act === "restart") await this.threads.restart(session, jobPushMessage(push), true);
@@ -1355,7 +1408,7 @@ export class Chats {
    * at once and its wake stays as a later backstop: on 10-18 VP of CI's check-in told "repo design count" to attack p75 at 12:00Z and the message
    * waited in its wake note for 19:50Z, 7.5 h away.
    */
-  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | null> {
+  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | { cancelled: string } | null> {
     await this.load();
     if (!this.chatIds.has(chat)) return null;
     // The daemon's list can time out for minutes after a restart (502 at 08:2xZ on 10-16), so the board alone then names the job's session.
@@ -1371,6 +1424,11 @@ export class Chats {
     const fact = facts.find(candidate => candidate.name.trim().toLowerCase() === wanted || sessionOf(candidate) === job.trim());
     const session = fact ? sessionOf(fact) : stepSessions.get(wanted) ?? [...stepSessions.values()].find(id => id === job.trim());
     if (!session) return { jobs: facts.map(candidate => candidate.name) };
+    const cancel = await this.cancelled(session);
+    if (cancel) {
+      this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${fact?.name ?? job.trim()} not sent: ${cancelWords(cancel)}`);
+      return { cancelled: `${fact?.name ?? job.trim()} was ${cancelWords(cancel)}. The owner ended it on purpose, so nothing reopens it; don't start a copy of it.` };
+    }
     const act = fact && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();
     try {
@@ -1549,7 +1607,7 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     const child = this.children.get(id)?.find(candidate => candidate.id === childId);
     if (!child || childWorking(child) || child.status === "cancelled" || child.repliedSinceTask !== false) return;
-    if (await this.jobLive(id, child)) return;
+    if (await this.cancelledChild(id, child) || await this.jobLive(id, child)) return;
     if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterNoReport(id, childId, tries + 1); return; }
     const lastMessage = lastJobMessages(this.messages(id) ?? []).get(childName(child));
     const wokeAt = this.workingSince.get(child.id) ?? 0;
@@ -1582,7 +1640,7 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     const children = this.children.get(id) ?? [];
     const child = children.find(candidate => candidate.id === childId);
-    if (!child || childWorking(child) || await this.jobLive(id, child)) return;
+    if (!child || childWorking(child) || await this.cancelledChild(id, child) || await this.jobLive(id, child)) return;
     if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterOpenSteps(id, childId, tries + 1); return; }
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }
@@ -1609,7 +1667,7 @@ export class Chats {
    */
   private async jobEndNote(threadId: string, job: ChatJob): Promise<void> {
     const { chat, agent } = job;
-    if (!this.chatIds.has(chat)) return;
+    if (!this.chatIds.has(chat) || await this.cancelled(threadId)) return;
     // Read when the note runs: it waits on the chat's queue, and a view taken before the final reply ends at the last tool result.
     const state = await this.threads.view(threadId).catch(() => null);
     if (!state || this.threads.running(threadId)) return;

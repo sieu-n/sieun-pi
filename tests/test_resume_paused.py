@@ -60,6 +60,9 @@ class ResumePausedTests(unittest.TestCase):
         hosts = patch.object(resume_paused, "HOSTS_FILE", self.root / "no-hosts.json")
         hosts.start()
         self.addCleanup(hosts.stop)
+        cancels = patch.object(resume_paused, "JOB_CANCELS", self.root / "job-cancels.json", create=True)
+        cancels.start()
+        self.addCleanup(cancels.stop)
         for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED, resume_paused.HELD):
             found.clear()
             self.addCleanup(found.clear)
@@ -373,6 +376,22 @@ class ResumePausedTests(unittest.TestCase):
         with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
             report = self.run_direct(dry_run=True)
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("stepownerjob", "aborted")])
+
+    def test_a_job_the_owner_stopped_is_not_resumed_until_he_reopens_it(self):
+        # run7 on 10-20: the owner's Stop of job "user history test run" at 11:20:16Z wrote only "Request was aborted", the same line an
+        # interruption writes, and the job owned open step p1. The chat service records the Stop in job-cancels.json before the abort.
+        self.session("stepownerjob", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        self.session("reopenedjob1", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        stopped = int((NOW - dt.timedelta(minutes=20, seconds=1)).timestamp() * 1000)
+        (self.root / "job-cancels.json").write_text(json.dumps({
+            "stepownerjob": {"at": stopped, "how": "stop", "by": "owner", "parent": "01a15903-32dc-722e-87d3-55af930292fe", "child": "sub-efba9220"},
+            "reopenedjob1": {"at": stopped, "how": "archive", "by": "owner", "reopenedAt": stopped + 30_000}}))
+        self.owners("0" * 24 + "stepownerjob", "0" * 24 + "reopenedjob1")
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_direct()
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("reopenedjob1", "aborted")])
+        self.assertEqual([target for target, _ in self.sent], ["reopenedjob1"])
+        self.assertEqual([(s["id"], s["stopped_by"]) for s in resume_paused.STOPPED], [("stepownerjob", "the owner stopped it (job-cancels.json, at 2026-10-05T19:39:59Z)")])
 
     def test_direct_never_messages_a_hung_or_dead_worker_run(self):
         self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))

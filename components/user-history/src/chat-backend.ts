@@ -61,6 +61,7 @@ import { OwnerOutbox } from "./owner-outbox.ts";
 import type { AgentKind } from "./outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
+import { JOB_CANCELS_FILE, jobCancelRecord } from "./job-cancels.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -229,7 +230,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
-      heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")),
+      heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),

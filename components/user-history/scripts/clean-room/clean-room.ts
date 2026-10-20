@@ -615,11 +615,12 @@ async function stallJobs(run: string, until: number, afterMs: number): Promise<v
       if (!seen.has(job.sessionId)) seen.set(job.sessionId, Date.now());
       if (!moved && Date.now() - seen.get(job.sessionId)! < afterMs) continue;
       try {
-        await call(srv, "POST", `api/threads/${job.sessionId}/abort`, {});
+        // cancel: false, since this stall stands in for an interruption that the chat should recover, not the owner's Stop (Chats.cancelJob).
+        await call(srv, "POST", `api/threads/${job.sessionId}/abort`, { cancel: false });
         // The job's helpers go too: in r3h the YouTube job's 6 tracers kept writing after its abort and finished the page by 12:55Z.
         for (const helper of agents.filter(agent => agent !== job && agent.key?.startsWith("child:") && agent.state === "working" && !/^check-in /.test(agent.name ?? ""))) {
           const child = helper.sessionId ?? helper.key!.slice("child:".length);
-          await call(srv, "POST", `api/threads/${child.startsWith("sub-") ? sessionOnDisk(chat.id, child) ?? child : child}/abort`, {}).catch(error => log(run, `stall helper ${helper.name}: ${error instanceof Error ? error.message : String(error)}`));
+          await call(srv, "POST", `api/threads/${child.startsWith("sub-") ? sessionOnDisk(chat.id, child) ?? child : child}/abort`, { cancel: false }).catch(error => log(run, `stall helper ${helper.name}: ${error instanceof Error ? error.message : String(error)}`));
         }
         stalled.set(chat.id, job.sessionId);
         log(run, `stalled job ${job.name} (${job.sessionId}) of ${chat.name}: aborted its turn ${moved ? "after the goal's first move" : `after ${Math.round(afterMs / 60_000)} min of work`}`);

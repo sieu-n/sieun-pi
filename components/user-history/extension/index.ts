@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -15,6 +15,7 @@ import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
+import { childCancels, childEndId, type JobCancel, JOB_CANCELS_FILE, noticeOfCancel, parseJobCancels, stampOf, withCancelledNotices } from "../src/job-cancels.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -30,11 +31,32 @@ export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter(undefined, undefined, line => {
     void appendFile(join(getAgentDir(), "logs", "context-images.log"), `${new Date().toISOString()} ${line}\n`).catch(() => {});
   });
-  pi.on("context", async event => {
+  pi.on("context", async (event, ctx) => {
     const short = shortNotices(event.messages);
-    const messages = await images.messages(short ?? event.messages) ?? short;
+    let cancelled: typeof short;
+    try { cancelled = await cancelledNotices(short ?? event.messages, ctx.sessionManager.getSessionId()); } catch { /* notices as Prime wrote them */ }
+    const changed = cancelled ?? short;
+    const messages = await images.messages(changed ?? event.messages) ?? changed;
     return messages ? { messages } : undefined;
   });
+  // The cancel each child-end notice belongs to, looked up once per notice (by session, child id and time), so a chat whose chat host is another box asks
+  // it only for a notice it has not seen. The service writes a cancel before it aborts or kills the job, so the first look already finds it.
+  const noticeCancels = new Map<string, JobCancel | null>();
+  const cancelledNotices = async <T>(messages: readonly T[], parent: string): Promise<T[] | undefined> => {
+    const unseen = messages.some(message => { const child = childEndId(message); return child !== null && !noticeCancels.has(`${parent}/${child}@${stampOf(message)}`); });
+    if (unseen) {
+      const service = await remoteChatService();
+      const cancels = parseJobCancels(service ? await serviceCall<unknown>(service, "api/agent/job-cancels") : await readFile(join(dataDir(), JOB_CANCELS_FILE), "utf8").then(JSON.parse, () => ({})));
+      const byChild = childCancels(parent, cancels);
+      for (const message of messages) {
+        const child = childEndId(message);
+        if (child === null) continue;
+        const cancel = byChild.get(child);
+        noticeCancels.set(`${parent}/${child}@${stampOf(message)}`, cancel && noticeOfCancel(stampOf(message), cancel) ? cancel : null);
+      }
+    }
+    return withCancelledNotices(messages, (child, at) => noticeCancels.get(`${parent}/${child}@${at}`) ?? undefined);
+  };
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
   pi.registerFlag(OWNER_THREAD_FLAG, { description: "A thread the owner started with his first message (the chat server sets it), so no job registry lookup", type: "boolean" });
   // The chat brief lives in the board tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message

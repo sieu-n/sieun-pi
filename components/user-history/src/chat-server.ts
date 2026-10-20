@@ -59,7 +59,7 @@ const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
  * stop records resume_paused.py reads, since a Mac pass that read its own stale deleted-jobs.json could resume a job deleted after the move.
  */
 const AGENT_FILES = new Map([["api/agent/corrections", "corrections.json"], ["api/agent/sends", "sends.jsonl"], ["api/agent/deleted-jobs", "deleted-jobs.json"],
-  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"]]);
+  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"], ["api/agent/job-cancels", "job-cancels.json"]]);
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -1024,13 +1024,17 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const images = parseImages(body.images);
           const mode = (await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id) ? "steer" : parseMode(body.mode);
           if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
+          await backend.chats.reopenJob(id);
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
           try { json(res, 200, await backend.outbox.submit({ id: rid, threadId: id, text: message, images, mode, fingerprint })); }
           catch (error) { throw error instanceof OutboxConflict ? new RequestError(409, error.message) : error; }
           return;
         }
         case "abort": {
+          // The owner's Stop of a job is his cancel, recorded before the abort so the parent's child-exited notice already reads it. A clean-room
+          // stall that stands in for an interruption sends cancel: false.
           const chat = (await backend.chats.ids()).has(id);
+          if (!chat && body.cancel !== false) await backend.chats.cancelJob(id, "stop");
           await backend.threads.abort(id);
           if (chat) await backend.threads.resumeQueue(id);
           break;
@@ -1055,6 +1059,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         }
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
+          await backend.chats.reopenJob(id);
           await backend.threads.supersedeArchive(id);
           await unarchiveOnItsBox(backend.catalog, { agentDir: getAgentDir() }, id);
           await backend.threads.unarchive(id);
@@ -1119,6 +1124,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const steered = await backend.chats.steerJob(id, text(body.job, "job", 256), text(body.message, "message"));
           if (!steered) throw new RequestError(404, "This thread is not a chat.");
           if ("jobs" in steered) throw new RequestError(404, `The chat has no job by that name. Its jobs: ${steered.jobs.join(", ") || "none"}.`);
+          if ("cancelled" in steered) throw new RequestError(409, steered.cancelled);
           json(res, 200, steered); return;
         }
         case "check-in": {

@@ -14,6 +14,7 @@ import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
+import type { JobCancelRecord } from "./job-cancels.ts";
 import type { Leftovers } from "./job-leftovers.ts";
 import type { PoolPlaces } from "./chat-turn-queue.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, FirstMessage, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
@@ -329,6 +330,8 @@ export interface CheckInSource {
   quietJobs?: QuietJobRecord;
   /** The notices held for parked chats (`<data dir>/held-notices.json`, `Chats.tell`). Absent: every notice goes at once. */
   heldNotices?: HeldNoticeRecord;
+  /** The owner's Stops and Archives of jobs (`<data dir>/job-cancels.json`, `Chats.cancelJob`). Absent (tests): no cancel is kept. */
+  cancels?: JobCancelRecord;
   /**
    * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
    * they opened, under its session folder `dir`, the repo copies in the wiki session folders it opened, and the /tmp trees it made with the
