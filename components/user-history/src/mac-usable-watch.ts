@@ -6,6 +6,7 @@ import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
 import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts";
+import { bounded } from "../../prime-relay/kernel-read.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
@@ -90,7 +91,9 @@ export function unusable(reading: HostUsable): UsableMiss[] {
 }
 
 /** This box's reading now: ops guy's feed on macOS, the kernel's pressure, swap and load on Linux. */
-export const readUsable = async (now: number): Promise<HostUsable | null> => process.platform === "darwin" ? await readPressureFeed(now) : await linuxUsable(now);
+/** This box's reading now, by `cut` (kernel-read.ts `bounded`), with each read the cut passed named in `unread`. */
+export const readUsable = async (now: number, cut?: Promise<unknown>, unread?: string[]): Promise<HostUsable | null> => process.platform === "darwin"
+  ? await bounded("feed", () => readPressureFeed(now), cut, unread) ?? null : await linuxUsable(now, cut, unread);
 
 const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 /**
@@ -198,6 +201,8 @@ export interface WatchLine {
   chat?: ChatLatency;
   /** This box's sessions in a tool call silent long enough to be judged soon (src/hung-calls.ts `callMarks`); absent when none. */
   calls?: CallMark[];
+  /** This box's reads that had not answered by the end of the line's minute (`sample`), such as "cgroups" or "footprints"; absent when none. */
+  unread?: string[];
   /** This box's hung tool calls this minute (`hungCalls`), which `agents` counts as hung instead of working; absent when none. */
   hung?: HungCall[];
   /** The hung calls whose bash() commands or cell the watch stopped this minute (src/hung-stop.ts), left out of `hung`; absent when none. */
@@ -456,7 +461,7 @@ export interface WatchSource {
   footprints?: typeof readFootprints;
   now?: () => number;
   /** This box's reading at `now`; absent, `readUsable`. */
-  feed?: (now: number) => Promise<HostUsable | null>;
+  feed?: (now: number, cut?: Promise<unknown>, unread?: string[]) => Promise<HostUsable | null>;
   /** This box's memory by group; absent, `memoryByGroup`, the reading Settings > Hosts draws. */
   memory?: typeof memoryByGroup;
   /** This box's name in hosts.json, written on each line. */
@@ -510,6 +515,13 @@ const unreadHost = (name: string): HostWatchLine => ({ name, usable: null, worke
  * Takes one sample and appends its line; null when the catalog holds no rows yet. Once `stopping` resolves, each relay read still out reads
  * unread and the line goes out with this box's own numbers, so a stop never drops a sample in flight. On 10-18 the Mac's relay timed out at
  * 35 s (hosts.ts relayWatch) while restarts at 10:46:55Z and 10:58:45Z stopped the service, and the 10:46:30Z and 10:58:30Z samples left no line.
+ *
+ * Each of this box's own reads answers by the end of the sample's minute or by `stopping` (kernel-read.ts `bounded`), and one that did not is
+ * named in the line's `unread`, so the minute keeps its line and the Whole system duty judges it from what was read. On 10-20 a hung cgroup
+ * read held the sample, every tick until 13:08:29Z found it running and skipped, and d7's 13:08Z run read 30 of 30 minutes with no line. A
+ * minute's next read of a kind still out joins it, so a hung helper or file is not started again each minute. With no footprints the minute
+ * judges no call, since each kernel would be missing from them. The relay reads keep their own
+ * 35 s bound, because the Mac's relay answered in 34 to 37 s at load 440 on 10-18.
  */
 export async function sample(source: WatchSource, stopping?: Promise<void>): Promise<WatchLine | null> {
   const now = source.now ?? Date.now;
@@ -519,24 +531,36 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const pids = workerPids(rows);
   let own = process.cpuUsage(started);
   const at = now();
+  let minuteEnd: NodeJS.Timeout | undefined;
+  const cut = Promise.race([new Promise<void>(resolve => { minuteEnd = setTimeout(resolve, Math.max(0, Math.floor(at / MINUTE) * MINUTE + MINUTE - now())); }),
+    ...stopping ? [stopping] : []]);
+  const unread: string[] = [];
+  const read = <T>(kind: string, value: () => Promise<T>): Promise<T | undefined> => bounded(kind, value, cut, unread);
   const chatIds = source.chats();
-  const [footprints, queue, chats, usable, memory, hosts, services] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), chatIds,
-    (source.feed ?? readUsable)(at), (source.memory ?? memoryByGroup)().catch(() => null),
+  const [read_, queue, chats, usable, memory, hosts, services] = await Promise.all([read("footprints", () => (source.footprints ?? readFootprints)(pids)),
+    read("queue", () => source.queue().catch(() => null)), chatIds,
+    (source.feed ?? readUsable)(at, cut, unread), read("memory", () => (source.memory ?? memoryByGroup)().catch(() => null)),
     chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
       const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title });
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
-    }))), (source.services ?? listOrphanServices)().catch(() => [])]);
-  const handed = servicesLine(services);
+    }))), read("services", () => (source.services ?? listOrphanServices)().catch(() => []))]);
+  const handed = servicesLine(services ?? []);
   const resumed = process.cpuUsage();
   const latency = takeLatency();
-  const marks = source.calls ? callMarks(rows, footprints.kernels ?? [], at) : [];
-  const judged = source.calls ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
-  const { stopped, left: hung } = source.stop ? await source.stop.stop(judged, footprints.kernels ?? []) : { stopped: [], left: judged };
-  if (stopped.length) source.calls?.release(stopped.map(call => call.session));
-  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory,
+  const footprints = read_ ?? { workers: {}, swap_used_bytes: null, pressure_level: null, cpu_s: 0 };
+  const marks = source.calls && read_ ? callMarks(rows, footprints.kernels ?? [], at) : [];
+  const judged = source.calls && read_ ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
+  const stopper = source.stop;
+  const { stopped, left: hung } = stopper ? await read("stop", () => stopper.stop(judged, footprints.kernels ?? []).then(result => {
+    if (result.stopped.length) source.calls?.release(result.stopped.map(call => call.session));
+    return result;
+  })) ?? { stopped: [], left: judged } : { stopped: [], left: judged };
+  clearTimeout(minuteEnd);
+  const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue: queue ?? null, chats, title: source.title, cpuMs: 0, usable, memory: memory ?? null,
     hung: new Set(hung.map(call => call.session)) }),
     ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
-    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...stopped.length ? { stopped } : {}, ...handed ? { services: handed } : {} };
+    ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...stopped.length ? { stopped } : {}, ...handed ? { services: handed } : {},
+    ...unread.length ? { unread } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

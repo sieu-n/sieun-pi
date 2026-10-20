@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { kernelDir, kernelFile } from "./kernel-read.ts";
 
 /**
  * The harness side's CPU split into the harness's own work and the rigs jobs start (asked on 10-18 after us-metal02 read 10 CPU minutes
@@ -91,6 +92,9 @@ export const shortCommand = (cmdline: string): string => {
 };
 
 const read = (path: string): Promise<string> => readFile(path, "utf8").catch(() => "");
+/** A /proc or cgroup file in its lane (kernel-read.ts), "" when it cannot be read. */
+const kernel = (path: string): Promise<string> => kernelFile(path).catch(() => "");
+const dirNames = (dir: string): Promise<string[]> => kernelDir(dir).then(entries => entries.map(entry => entry.name), () => []);
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const jobNames = new Map<string, string | undefined>();
 const jobName = async (dir: string): Promise<string | undefined> => {
@@ -120,9 +124,9 @@ export function unitOf(cgroup: string, app: string): string | null {
 export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: number, at = Date.now()): Promise<Snapshot> {
   const units = new Map<string, { role: UnitRole; usec: number }>();
   const slice = app.slice(0, app.indexOf("/user@"));
-  const usage = async (path: string): Promise<number> => Number(/^usage_usec (\d+)$/m.exec(await read(join(CGROUP_ROOT, path, "cpu.stat")))?.[1]);
-  const names = (await readdir(join(CGROUP_ROOT, app)).catch(() => [] as string[])).filter(name => /\.(service|scope|slice)$/.test(name) && !excluded.has(name));
-  const scopes = (await readdir(join(CGROUP_ROOT, slice)).catch(() => [] as string[])).filter(name => SSH_SCOPE.test(name));
+  const usage = async (path: string): Promise<number> => Number(/^usage_usec (\d+)$/m.exec(await kernel(join(CGROUP_ROOT, path, "cpu.stat")))?.[1]);
+  const names = (await dirNames(join(CGROUP_ROOT, app))).filter(name => /\.(service|scope|slice)$/.test(name) && !excluded.has(name));
+  const scopes = (await dirNames(join(CGROUP_ROOT, slice))).filter(name => SSH_SCOPE.test(name));
   await Promise.all([...names.map(async name => {
     const usec = await usage(join(app, name));
     if (!Number.isFinite(usec)) return;
@@ -133,13 +137,13 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
     if (Number.isFinite(usec)) units.set(name, { role: "rig", usec });
   })]);
   const stats = new Map<number, { ppid: number; start: number; ticks: number; unit: string }>();
-  const pids = (await readdir("/proc").catch(() => [] as string[])).filter(name => /^\d+$/.test(name));
+  const pids = (await dirNames("/proc")).filter(name => /^\d+$/.test(name));
   await Promise.all(pids.map(async name => {
-    const unit = unitOf((await read(`/proc/${name}/cgroup`)).trim(), app);
+    const unit = unitOf((await kernel(`/proc/${name}/cgroup`)).trim(), app);
     if (!unit) return;
     const role = units.get(unit)?.role;
     if (role !== "split" && role !== "rig") return;
-    const stat = parseProcStat(await read(`/proc/${name}/stat`));
+    const stat = parseProcStat(await kernel(`/proc/${name}/stat`));
     if (stat) stats.set(Number(name), { ...stat, unit });
   }));
   const ownerFor = async (pid: number, hops = 0): Promise<string | undefined> => {
@@ -147,14 +151,14 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
     if (!stat || hops > 40) return undefined;
     const key = `${pid}:${stat.start}`;
     if (!envOwners.has(key)) {
-      const dir = /(?:^|\0)RLM_SESSION_DIR=([^\0]+)/.exec(await read(`/proc/${pid}/environ`))?.[1];
+      const dir = /(?:^|\0)RLM_SESSION_DIR=([^\0]+)/.exec(await kernel(`/proc/${pid}/environ`))?.[1];
       envOwners.set(key, dir ? ownerOf(dir, await jobName(dir)) : null);
     }
     return envOwners.get(key) ?? await ownerFor(stat.ppid, hops + 1);
   };
   const procs = new Map<number, Proc>();
   await Promise.all([...stats].map(async ([pid, stat]) => {
-    const command = await read(`/proc/${pid}/cmdline`);
+    const command = await kernel(`/proc/${pid}/cmdline`);
     const own = stat.unit === DAEMON_UNIT && ownCommand(command.replaceAll("\0", " "));
     const owner = own ? undefined : await ownerFor(pid) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
     procs.set(pid, { start: stat.start, ticks: stat.ticks, unit: stat.unit, own, command: shortCommand(command), ...owner ? { owner } : {} });

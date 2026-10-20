@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { bounded, kernelDir, kernelFile } from "./kernel-read.ts";
 import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot as RigSnapshot } from "./rig-cpu.ts";
 
 /**
@@ -228,7 +229,7 @@ export function vmSwap(status: string): number {
 /** The swap the processes of a cgroup's `cgroup.procs` hold; a process that exited meanwhile counts 0. */
 export async function processSwap(procs: string): Promise<number> {
   const pids = procs.split("\n").filter(pid => /^\d+$/.test(pid));
-  const swaps = await Promise.all(pids.map(pid => readFile(`/proc/${pid}/status`, "utf8").then(vmSwap, () => 0)));
+  const swaps = await Promise.all(pids.map(pid => kernelFile(`/proc/${pid}/status`).then(vmSwap, () => 0)));
   return swaps.reduce((sum, bytes) => sum + bytes, 0);
 }
 
@@ -237,9 +238,9 @@ export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<LeafMemory[]
   const leaves: LeafMemory[] = [];
   async function walk(relative: string): Promise<void> {
     const dir = relative ? join(root, relative) : root;
-    const children = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => relative ? `${relative}/${entry.name}` : entry.name);
+    const children = (await kernelDir(dir).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => relative ? `${relative}/${entry.name}` : entry.name);
     if (relative && !children.length) {
-      const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => readFile(join(dir, name), "utf8").catch(() => null)));
+      const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => kernelFile(join(dir, name)).catch(() => null)));
       const swapped = Number(swap?.trim() || 0) > 0;
       const held = heldBytes(stat ?? "", swap ?? "", swapped && procs !== null ? await processSwap(procs) : null);
       if (held && (held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) leaves.push({ path: relative, ...held });
@@ -269,18 +270,18 @@ export function cgroupGroups(leaves: readonly LeafMemory[]): MemoryGroup[] | nul
 /**
  * The box's memory by group, the one reading Settings > Hosts draws and the Whole system duty's quiet_agent_gb reads (src/mac-usable-watch.ts
  * `agentLine`), so the two cannot disagree: on Linux the leaf cgroups' held memory with their file cache beside it, on macOS the pressure
- * feed's owners by footprint.
+ * feed's owners by footprint. A call while a Linux walk is still out joins it (kernel-read.ts `bounded`), so a hung cgroup file is read once.
  */
 export async function memoryByGroup(): Promise<{ groups: MemoryGroup[] | null; cacheBytes?: number | null }> {
   if (process.platform === "darwin") return { groups: memoryGroups(await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), Date.now()) };
-  const leaves = await leafCgroups();
+  const leaves = (await bounded("leaf cgroups", () => leafCgroups()))!;
   return { groups: cgroupGroups(leaves), cacheBytes: leaves.length ? leaves.reduce((sum, leaf) => sum + leaf.cacheBytes, 0) : null };
 }
 
 async function linuxMemory(): Promise<MachineView["memory"]> {
   const [meminfo, psi, byGroup] = await Promise.all([
-    readFile("/proc/meminfo", "utf8").then(parseMeminfo, () => null),
-    readFile("/proc/pressure/memory", "utf8").then(parsePsi, () => null),
+    kernelFile("/proc/meminfo").then(parseMeminfo, () => null),
+    kernelFile("/proc/pressure/memory").then(parsePsi, () => null),
     memoryByGroup(),
   ]);
   const totalBytes = totalmem();
@@ -387,18 +388,14 @@ const ownSlice = process.platform === "linux" ? userSlice(readText("/proc/self/c
 /**
  * The usage_usec of the user slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. The reads are
  * async, off the main thread: on 10-20 from 11:45Z to 13:08Z one readFileSync of a cpu.stat here held the live chat's event loop for 83 min,
- * while systemd killed hung `ss` reads of the box textfile collector, and the chat's CPU profile ended in readCgroups. A read still pending
- * from the last call makes this call answer undefined, so a hung cgroup file holds one thread-pool thread and no more.
+ * while systemd killed hung `ss` reads of the box textfile collector, and the chat's CPU profile ended in readCgroups. They run in the cgroup
+ * lane (kernel-read.ts), so a hung cgroup file holds one thread-pool thread and no more.
  */
-let cgroupsPending = false;
 async function readCgroups(slice: { slice: string; app: string } | null): Promise<Map<string, number> | undefined> {
-  if (!slice || cgroupsPending) return undefined;
-  cgroupsPending = true;
-  try {
-    const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
-    const texts = await Promise.all(paths.map(path => readFile(join(CGROUP_ROOT, path, "cpu.stat"), "utf8").catch(() => "")));
-    return new Map(paths.flatMap((path, at) => { const usec = parseUsageUsec(texts[at]!); return usec === null ? [] : [[path, usec] as const]; }));
-  } finally { cgroupsPending = false; }
+  if (!slice) return undefined;
+  const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
+  const texts = await Promise.all(paths.map(path => kernelFile(join(CGROUP_ROOT, path, "cpu.stat")).catch(() => "")));
+  return new Map(paths.flatMap((path, at) => { const usec = parseUsageUsec(texts[at]!); return usec === null ? [] : [[path, usec] as const]; }));
 }
 /** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
 export function psiAvg10(text: string, kind: "some" | "full"): number | null {
@@ -462,12 +459,12 @@ const loadSchedstat = (): Sched | null => {
 let lastSched = process.platform === "linux" ? loadSchedstat() : null;
 /** Resolves once the load-time reading has its cgroups, which `schedstatMark` then carries. */
 export const loadedCgroups: Promise<void> = lastSched
-  ? (first => readCgroups(ownSlice).then(cgroups => { if (cgroups && lastSched === first) first.cgroups = cgroups; }))(lastSched) : Promise.resolve();
+  ? (first => bounded("cgroups", () => readCgroups(ownSlice)).then(cgroups => { if (cgroups && lastSched === first) first.cgroups = cgroups; }))(lastSched) : Promise.resolve();
 /** The units under app.slice that SIDE_CGROUPS gives another side, which the harness split leaves out. */
 const SIDE_UNITS = new Set(Object.values(SIDE_CGROUPS).flat().filter(path => path.startsWith("{app}/")).map(path => path.slice("{app}/".length)));
 const readRigs = async (now: number): Promise<RigSnapshot | null> => ownSlice && process.getuid ? await rigSnapshot(ownSlice.app, SIDE_UNITS, process.getuid(), now) : null;
 let lastRigs: RigSnapshot | null = null;
-if (process.platform === "linux") void readRigs(Date.now()).then(read => { lastRigs ??= read; });
+if (process.platform === "linux") void bounded("rigs", () => readRigs(Date.now())).then(read => { lastRigs ??= read ?? null; });
 /** Where the next linuxUsable window starts: the last reading's time, per-CPU nanoseconds and cgroup usage_usec; null before the module could read schedstat. */
 export type SchedstatMark = { at: number; times: Record<string, number>; cgroups?: Record<string, number> };
 export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times),
@@ -497,10 +494,15 @@ export function seedSchedstat(mark: unknown): boolean {
 /**
  * The box's LinuxUsable now. The first call's window starts at the mark seedSchedstat took, else when this module loaded, so the watch line
  * a chat restart writes carries a reading. Null, so the box reads unknown, when /proc/pressure/memory, /proc/schedstat or this process's CPU set cannot be read.
+ * Each of its three reads (the /proc files, the cgroups, the rigs) answers by `cut` (kernel-read.ts `bounded`) and adds its name to `unread`
+ * when it does not: unread /proc files make the reading null and leave the window where it was, unread cgroups leave out cpuCores and unread
+ * rigs the harness split, so the watch line of a minute with a hung cgroup file still carries the box's memory and run queue.
  */
-export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null> {
-  const [memory, cpu, vmstat, schedstat, status] = await Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat", "/proc/schedstat", "/proc/self/status"]
-    .map(path => readFile(path, "utf8").catch(() => "")));
+export async function linuxUsable(now = Date.now(), cut?: Promise<unknown>, unread?: string[]): Promise<LinuxUsable | null> {
+  const texts = await bounded("proc", () => Promise.all(["/proc/pressure/memory", "/proc/pressure/cpu", "/proc/vmstat", "/proc/schedstat", "/proc/self/status"]
+    .map(path => kernelFile(path).catch(() => ""))), cut, unread);
+  if (!texts) return null;
+  const [memory, cpu, vmstat, schedstat, status] = texts;
   const memSome = psiAvg10(memory!, "some"), memFull = psiAvg10(memory!, "full");
   const pages = parsePswpout(vmstat!);
   const previous = lastSwap;
@@ -508,19 +510,20 @@ export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null>
   const swapoutsPerS = pages !== null && previous && now > previous.at ? Math.max(0, (pages - previous.pages) * 1000 / (now - previous.at)) : null;
   const times = parseSchedstat(schedstat!);
   const before = lastSched;
-  const cgroups = await readCgroups(ownSlice);
+  const cgroups = await bounded("cgroups", () => readCgroups(ownSlice), cut, unread);
   lastSched = times ? { at: now, times, ...cgroups ? { cgroups } : {} } : null;
   const cores = parseCpusAllowed(status!);
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
   if (memSome === null || memFull === null || runnable === null || !cores) return null;
   const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at) : null;
-  const rigs = await readRigs(now);
+  const rigs = await bounded("rigs", () => readRigs(now), cut, unread) ?? null;
   const split = sides && lastRigs && rigs ? harnessSplit(lastRigs, rigs, sides.harness) : null;
   lastRigs = rigs;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
     swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
     ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {} };
 }
+
 /** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
 export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };
 export async function usableRaw(now = Date.now()): Promise<UsableRaw> {
