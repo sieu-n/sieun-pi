@@ -10,8 +10,10 @@ import type { HungCall } from "./hung-calls.ts";
  * SIGTERM, and the rest of the session and its kernel are left alone. Prime has no request that interrupts one tool call without aborting the
  * turn, and an abort loses the turn ("Request was aborted" at 14:49Z on 10-19).
  *
- * Only a call with no progress is stopped, and only the handles its kernel started since the call went silent; a kernel that burns CPU on its
- * own has no command to stop and stays hung. The first minute a call is judged hung its handles get SIGTERM; a call still hung a minute later
+ * Only a call with no progress is stopped, and only the handles its kernel started since the call went silent. When there are none, the call
+ * awaits a handle an earlier cell started (`h = bash(...)`, then `await h`), so every handle its kernel still runs is stopped: at 23:13Z on
+ * 10-19 li-http-reads sat 87 min in `await hp` on a `g07_stage.py` started 42 s before, and the watch left it hung. A kernel that burns CPU
+ * on its own has no command to stop and stays hung. The first minute a call is judged hung its handles get SIGTERM; a call still hung a minute later
  * gets SIGKILL and counts as hung, since the TERM did not free it.
  */
 
@@ -51,14 +53,16 @@ export class CallStopper {
   async stop(hung: readonly HungCall[], kernels: readonly { pid: number; session: string }[]): Promise<{ stopped: StoppedCall[]; left: HungCall[] }> {
     const kernelOf = new Map(kernels.map(kernel => [kernel.session, kernel.pid] as const));
     const stoppable = hung.filter(call => call.why === "no progress" && call.since !== undefined && kernelOf.has(call.session));
-    const found = stoppable.length ? await this.deps.handles(stoppable.map(call => ({ kernel: kernelOf.get(call.session)!, since: Math.floor(call.since! / 1000) }))).catch(error => {
+    const found = stoppable.length ? await this.deps.handles(stoppable.map(call => ({ kernel: kernelOf.get(call.session)!, since: 0 }))).catch(error => {
       this.deps.log(`hung-stop: handle read failed: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }) : [];
     const stopped: StoppedCall[] = [], left: HungCall[] = [], current = new Set<string>();
     for (const call of hung) {
       const kernel = kernelOf.get(call.session);
-      const handles = stoppable.includes(call) ? found.filter(handle => handle.kernel === kernel && handle.started >= Math.floor(call.since! / 1000)) : [];
+      const running = stoppable.includes(call) ? found.filter(handle => handle.kernel === kernel) : [];
+      const own = running.filter(handle => handle.started >= Math.floor(call.since! / 1000));
+      const handles = own.length ? own : running;
       if (!handles.length) { left.push(call); continue; }
       const key = keyOf(call);
       current.add(key);

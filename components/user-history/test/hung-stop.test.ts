@@ -32,7 +32,7 @@ test("share-cascade's hung probe gets SIGTERM on its shell and child, the sessio
   const fake = fakeDeps([{ kernel: 3141759, pid: 3851767, started: Math.floor(SINCE / 1000) + 24, command: PROBE, pids: [3851767, 3851865] }]);
   const stopper = new CallStopper(fake.deps);
   const first = await stopper.stop([call()], [{ pid: 3141759, session: SHARE }]);
-  assert.deepEqual(fake.asked, [[{ kernel: 3141759, since: Math.floor(SINCE / 1000) }]]);
+  assert.deepEqual(fake.asked, [[{ kernel: 3141759, since: 0 }]]);
   assert.deepEqual(fake.kills, [[3851767, "SIGTERM"], [3851865, "SIGTERM"]]);
   assert.deepEqual(first.left, []);
   assert.deepEqual(first.stopped.map(entry => [entry.session, entry.handles.map(handle => handle.pid)]), [[SHARE, [3851767]]]);
@@ -47,17 +47,30 @@ test("share-cascade's hung probe gets SIGTERM on its shell and child, the sessio
   assert.equal(fake.told.length, 1, "the session is told once");
 });
 
-test("a burning kernel, a call with no kernel read and a handle an earlier cell started are left hung and never signaled", async () => {
-  const fake = fakeDeps([{ kernel: 77, pid: 78, started: Math.floor(SINCE / 1000) - 600, command: "pnpm dev", pids: [78] }]);
+test("a burning kernel and a call with no kernel read are left hung and never signaled", async () => {
+  const fake = fakeDeps([]);
   const stopper = new CallStopper(fake.deps);
   const burning = call({ session: "burning", why: "kernel burning", kernelCores: 0.99 });
   const unread = call({ session: "unread" });
-  const older = call({ session: "older" });
-  const result = await stopper.stop([burning, unread, older], [{ pid: 76, session: "burning" }, { pid: 77, session: "older" }]);
+  const result = await stopper.stop([burning, unread], [{ pid: 76, session: "burning" }]);
   assert.deepEqual(fake.kills, []);
   assert.deepEqual(result.stopped, []);
-  assert.deepEqual(result.left.map(entry => entry.session), ["burning", "unread", "older"]);
-  assert.deepEqual(fake.asked, [[{ kernel: 77, since: Math.floor(SINCE / 1000) }]]);
+  assert.deepEqual(result.left.map(entry => entry.session), ["burning", "unread"]);
+  assert.deepEqual(fake.asked, []);
+});
+
+test("li-http-reads's `await hp` on a handle started 42 s before the call went silent is stopped, and a call with a handle of its own spares older ones", async () => {
+  const LI = "01a155fe-56af-7770-b9f0-83aef1660e03", liSince = Date.parse("2026-10-19T21:46:54Z");
+  const fake = fakeDeps([{ kernel: 2438074, pid: 108719, started: Math.floor(liSince / 1000) - 42, command: "cd apps/llm-wiki/content/sessions/2026/10/18/1116-linkedin-api-fixes/data/http && time python3 g07_stage.py prod list", pids: [108719, 108725] },
+    { kernel: 77, pid: 78, started: Math.floor(SINCE / 1000) - 600, command: "sleep 9000", pids: [78] },
+    { kernel: 77, pid: 90, started: Math.floor(SINCE / 1000) + 5, command: "ssh mac true", pids: [90, 91] }]);
+  const stopper = new CallStopper(fake.deps);
+  const result = await stopper.stop([call({ session: LI, name: "li-http-reads", silentMin: 87, since: liSince }), call({ session: "own" })],
+    [{ pid: 2438074, session: LI }, { pid: 77, session: "own" }]);
+  assert.deepEqual(fake.asked, [[{ kernel: 2438074, since: 0 }, { kernel: 77, since: 0 }]]);
+  assert.deepEqual(fake.kills, [[108719, "SIGTERM"], [108725, "SIGTERM"], [90, "SIGTERM"], [91, "SIGTERM"]]);
+  assert.deepEqual(result.stopped.map(entry => entry.session), [LI, "own"]);
+  assert.deepEqual(result.left, []);
 });
 
 test("the watch line leaves a stopped call out of hung, d7's hung_calls reads 0 and flags the stop with its chat", async () => {
@@ -103,7 +116,7 @@ test("a real rlm.bash await on a silent command returns -15 once the stopper sig
   const exited = new Promise<number | null>(resolve => kernel.on("exit", code => resolve(code)));
   try {
     let found: CallHandle[] = [];
-    for (let tries = 0; tries < 50 && !found.length && kernel.exitCode === null; tries++) {
+    while (!found.length && kernel.exitCode === null) {
       await new Promise(resolve => setTimeout(resolve, 100));
       found = await readCallHandles([{ kernel: kernel.pid!, since }]);
     }
