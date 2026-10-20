@@ -22,6 +22,12 @@ export type GcKind = "major" | "minor" | "incremental" | "weak";
 const GC_KINDS: ReadonlyMap<number, GcKind> = new Map([[constants.NODE_PERFORMANCE_GC_MAJOR, "major"], [constants.NODE_PERFORMANCE_GC_MINOR, "minor"],
   [constants.NODE_PERFORMANCE_GC_INCREMENTAL, "incremental"], [constants.NODE_PERFORMANCE_GC_WEAKCB, "weak"]]);
 let longestGc: { ms: number; kind: GcKind } | null = null;
+/** A gc entry's kind from its `detail`, which this @types/node leaves off PerformanceEntry; -1 when it has none. */
+const gcKindOf = (entry: object): number => {
+  const detail: unknown = Reflect.get(entry, "detail");
+  const kind: unknown = typeof detail === "object" && detail !== null ? Reflect.get(detail, "kind") : undefined;
+  return typeof kind === "number" ? kind : -1;
+};
 
 /**
  * Keeps the longest GC of the window. p769's scratch profile on 10-19 found every main-thread run over 1 s was a major GC, and the live
@@ -47,7 +53,7 @@ export const readRoute = (url: string, base: string): string => {
 export function timeRead(req: IncomingMessage, res: ServerResponse, base: string): void {
   if (!loop) {
     loop = monitorEventLoopDelay({ resolution: 20 }); loop.enable();
-    new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, (entry.detail as { kind?: number } | null)?.kind ?? -1); })
+    new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, gcKindOf(entry)); })
       .observe({ entryTypes: ["gc"] });
   }
   if (req.method !== "GET") return;
