@@ -119,7 +119,7 @@ test("unitLimits counts our unit files and runtime settings, and skips vendor fi
 
 test("unitLimits lists a setting the deploy/linux layer scripts set as owner-asked, and counts one that differs from them (owner's t84 answer 10-19)", () => {
   assert.equal(layers.weights.get("system user@1001.service"), "10000");
-  assert.equal(layers.weights.get("user sieun-pi-chat.service"), "1000");
+  assert.equal(layers.weights.get("user sieun-pi-chat.service"), "10000");
   assert.deepEqual([layers.nice, layers.heavy], [{ unit: "prime-agent-daemon.service", value: -10 }, { swapMax: "0", score: 500 }]);
   const asked = (unit: Record<string, string>, ...rest: Parameters<typeof context>) => unitLimits(unit, context(...rest)).map(finding => [finding.key, Boolean(finding.ownerAsked)]);
   const dropin = "/etc/systemd/system/ssh.service.d/cpu-weight.conf";

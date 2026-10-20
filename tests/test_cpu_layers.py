@@ -23,17 +23,22 @@ class CpuProtectPlan(unittest.TestCase):
     def test_a_job_that_niced_itself_up_keeps_its_value_and_a_converged_unit_needs_no_writes(self):
         self.assertEqual(cpu.plan({10: ("prime-agent", -10), 20: ("vitest", 10), 21: ("python", 0)}), {})
 
-    def test_minus_10_matches_the_10_to_1_of_the_chat_weight(self):
-        self.assertEqual(weights("USER")["sieun-pi-chat.service"] // 100, 10)
+    def test_minus_10_weighs_10_to_1_inside_the_daemon(self):
         self.assertEqual(cpu.CORE_NICE, -10)
 
 
 class Setup(unittest.TestCase):
-    def test_logins_and_the_chat_get_1000_and_agents_and_prod_300_on_every_level(self):
-        self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 300, "user@1001.service": 10000,
+    def test_logins_get_1000_and_the_chat_and_daemon_the_most_systemd_takes(self):
+        self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
                                              "virev.slice": 400, "virev-prod.slice": 300})
-        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 1000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
-                                           "prime-agent-daemon.service": 300})
+        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
+                                           "prime-agent-daemon.service": 10000})
+
+    def test_the_chat_path_is_outweighed_at_no_level(self):
+        system, user = weights("SYSTEM"), weights("USER")
+        self.assertGreater(system["user.slice"], max(system["virev.slice"], 100))
+        self.assertGreater(system["user@1001.service"], 100)
+        self.assertEqual(user["sieun-pi-chat.service"], max(user.values()))
 
     def test_ci_dev_and_rigs_stay_at_the_default(self):
         system = weights("SYSTEM")
