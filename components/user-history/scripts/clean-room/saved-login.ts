@@ -32,8 +32,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const checks: { id: string; ok: boolean | null; detail: string }[] = [];
   const add = (id: string, ok: boolean | null, detail: string) => checks.push({ id, ok, detail });
 
-  const reads = all.filter(call => call.ok && (call.tool === "ipython" || call.tool === "bash") && CLOUDFLARE.test(call.input) && !/\bdig\b/.test(call.input) &&
-    (RECORDS.test(call.output) || /dns_records|email\/routing/.test(call.input) && /success\W{0,4}true|\bTrue\b/.test(call.output)));
+  const reads = all.filter(call => call.ok && (call.tool === "ipython" || call.tool === "bash") && !/\bdig\b/.test(call.input) &&
+    (CLOUDFLARE.test(call.input) && RECORDS.test(call.output) ||
+      /dns_records|email\/routing/.test(call.input) && /success\W{0,4}true|\bTrue\b/.test(call.output) && /virevai\.com|total_count/.test(call.output)));
   add("a", reads.length ? true : null, reads.length ? `${reads.length} reads, first ${where(reads[0]!)}` : "no Cloudflare read of virevai.com records yet");
 
   const chat = sessions.find(session => session.id === state.chat.id);
