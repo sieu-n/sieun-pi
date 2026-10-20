@@ -191,6 +191,55 @@ export const NO_RESULT = "ghost, no result";
 const NO_RESULT_WHY = "The CI cache reads it as a ghost or a jobless run, so it will not report a result: rerun it or push again if you still need one.";
 /** ci-run-status's answer for a run the poller has not listed yet. */
 const NOT_CACHED = / is not in the cache /;
+/** ci-run-status's answer once the cache has not moved past its readers' dead line (ci-cache.mjs deadMs, 10 min at the 30 s pace). */
+const DEAD_CACHE = / has not moved since /;
+/**
+ * The gh the CI cache's shims hand off to (ci-cache.mjs REAL_GH). The gh on PATH answers `gh run view` from the cache until the cache is 10 min
+ * old, so a read that must skip a stale cache calls this one.
+ */
+export const REAL_GH = process.env.CI_CACHE_REAL_GH || (process.platform === "darwin" ? "/opt/homebrew/bin/gh" : join(homedir(), ".local/opt/gh-2.89.0/bin/gh"));
+/** The poller's pace when its heartbeat names none (ci-cache.mjs INTERVAL_S). */
+export const CACHE_INTERVAL_S = 30;
+/** Poll intervals with no good read of GitHub after which a wake reads its run from GitHub instead of the cache. */
+export const STALE_CYCLES = 3;
+/** What the poller's heartbeat (ci-cache.heartbeat.json, written after every cycle, good or failed) says. */
+export interface CacheBeat { fetchedAt: number; intervalSeconds: number; error?: string }
+
+/** The heartbeat's content, parsed at the boundary; null when it is not one. */
+export function parseBeat(value: unknown): CacheBeat | null {
+  if (!isRecord(value) || typeof value.fetchedAt !== "string") return null;
+  const fetchedAt = Date.parse(value.fetchedAt);
+  if (!Number.isFinite(fetchedAt)) return null;
+  const interval = typeof value.intervalSeconds === "number" && value.intervalSeconds > 0 ? value.intervalSeconds : CACHE_INTERVAL_S;
+  return { fetchedAt, intervalSeconds: interval, ...typeof value.error === "string" && value.error ? { error: value.error } : {} };
+}
+
+/** Whether the cache's last good read of GitHub is over STALE_CYCLES of the poller's own pace old; a backed-off poller paces itself slower. */
+export const beatStale = (beat: CacheBeat, now: number): boolean => now - beat.fetchedAt > STALE_CYCLES * beat.intervalSeconds * 1000;
+
+/** The poller's heartbeat in `dir`, or null when there is none to read. */
+export async function readBeat(dir = CI_CACHE): Promise<CacheBeat | null> {
+  try { return parseBeat(JSON.parse(await readFile(join(dir, "ci-cache.heartbeat.json"), "utf8"))); } catch { return null; }
+}
+
+/**
+ * Whether the CI cache is stale now, logging each change once: "wakes: CI cache stale ..." when it goes stale and "wakes: CI cache fresh ..." when
+ * it reads GitHub again. From 11:23:57Z to 13:08:28Z on 10-20 every ci-cache cycle on us-metal02 failed with "fetch failed", ci-run-status
+ * answered "has not moved since 11:23:16Z" from 11:34Z, and the ticker sent the wakes on promote run 39382235504 out at 11:45:16Z as unreadable,
+ * while gh, which reads GitHub without Node's resolver, still worked.
+ */
+export function cacheWatch(log: (line: string) => void, beat: () => Promise<CacheBeat | null> = readBeat, now: () => number = Date.now): () => Promise<boolean> {
+  let was = false;
+  return async () => {
+    const read = await beat();
+    const stale = read !== null && beatStale(read, now());
+    if (stale !== was && read) log(stale
+      ? `wakes: CI cache stale since ${new Date(read.fetchedAt).toISOString()} (pace ${read.intervalSeconds} s${read.error ? `, last cycle: ${read.error}` : ""}); run wakes read GitHub with gh run view`
+      : `wakes: CI cache fresh again at ${new Date(read.fetchedAt).toISOString()}; run wakes read the cache`);
+    was = stale;
+    return stale;
+  };
+}
 /** gh's answer for a run id its repo does not have. */
 const NO_SUCH_RUN = /HTTP 404/;
 
@@ -198,25 +247,29 @@ const NO_SUCH_RUN = /HTTP 404/;
  * A run's state from the local CI cache (`ci-run-status <id>`, no GitHub call) or, for a run in another repo, from `gh run view`. A run the
  * cache has not listed yet is read with `gh run view` in the cache's repo: from 00:24Z to 00:44Z on 10-18 a GitHub token sat at 0 calls left,
  * the poller backed off to a 10 min cycle, and run 39083318405, created at 00:35:23Z, read "not in the cache" from 00:38Z to 00:44Z, so its
- * wake counted as unreadable and would have gone out with an error at UNREADABLE_MS while the run was still queued.
+ * wake counted as unreadable and would have gone out with an error at UNREADABLE_MS while the run was still queued. While `stale` says the cache
+ * has not read GitHub for STALE_CYCLES of its pace, or ci-run-status calls it dead, the run is read with the real gh (REAL_GH), past the shims.
  */
-export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run): Promise<RunState> {
-  const gh = (repo: string) => exec("gh", ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
-  const anyRepo = async (): Promise<string> => {
+export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run,
+  stale: () => Promise<boolean> = async () => false): Promise<RunState> {
+  const gh = (repo: string, bin = "gh") => exec(bin, ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
+  const anyRepo = async (bin = "gh"): Promise<string> => {
     let missing: unknown;
     for (const repo of [CI_CACHE_REPO, ...OTHER_RUN_REPOS]) {
-      try { return await gh(repo); } catch (error) {
+      try { return await gh(repo, bin); } catch (error) {
         if (!(error instanceof Error && NO_SUCH_RUN.test(error.message))) throw error;
         missing = error;
       }
     }
     throw missing;
   };
-  const raw = JSON.parse(on.repo ? await gh(on.repo)
-    : await exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
+  const cached = async (): Promise<string> => await stale() ? anyRepo(REAL_GH)
+    : exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
       if (error instanceof Error && NOT_CACHED.test(error.message)) return anyRepo();
+      if (error instanceof Error && DEAD_CACHE.test(error.message)) return anyRepo(REAL_GH);
       throw error;
-    })) as Record<string, unknown>;
+    });
+  const raw = JSON.parse(on.repo ? await gh(on.repo) : await cached()) as Record<string, unknown>;
   const ghost = raw.status === NO_RESULT;
   if (raw.status !== "completed" && !ghost) return { done: false };
   const workflow = typeof raw.workflow === "string" ? raw.workflow : typeof raw.workflowName === "string" ? raw.workflowName : "";

@@ -48,7 +48,7 @@ import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
-import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
@@ -323,7 +323,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!await reopenSession(catalog, { agentDir }, root)) throw new Error(`no session file for root ${root.slice(0, 8)}`);
     } });
   const agentMessage = { deliver: (session: string, text: string, root?: string, kind?: AgentKind, setAt?: number) => agentOutbox.deliver(session, text, root, kind, setAt) };
-  const stopWakes = quiet ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: replay ? async () => ({ done: false }) : readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const cacheStale = cacheWatch(dutyLog);
+  const stopWakes = quiet ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: replay ? (async () => ({ done: false })) : (on => readRunState(on, undefined, cacheStale)),
+    stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopBriefs = quiet ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), worker: treeWorker, log: dutyLog, ...agentMessage,
     restart: async (record, text) => {
       const chat = await dutyJobs.chat(record.root);

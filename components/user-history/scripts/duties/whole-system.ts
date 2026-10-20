@@ -15,7 +15,7 @@ import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-mi
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { pendingWakes, treeWakes } from "../../src/wakes.ts";
+import { beatStale, type CacheBeat, pendingWakes, readBeat, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
@@ -565,6 +565,8 @@ export interface Inputs {
   queueOverruns?: readonly QueueOverrun[];
   /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
   listed?: ReadonlyMap<string, ListedSession>;
+  /** The CI cache poller's heartbeat on this box (`readBeat`); absent or null, no CI cache line. */
+  ciCache?: CacheBeat | null;
 }
 
 /**
@@ -883,6 +885,12 @@ export function measure(input: Inputs): PrecheckOutput {
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
+  if (input.ciCache) {
+    metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
+    if (beatStale(input.ciCache, now)) flagged.push({ kind: "ci_cache_stale", excerpt: `The CI cache last read GitHub at ${clock(input.ciCache.fetchedAt)}, ` +
+      `${Math.round((now - input.ciCache.fetchedAt) / MINUTE)} min ago at a ${input.ciCache.intervalSeconds} s pace${input.ciCache.error ? ` (last cycle: ${input.ciCache.error})` : ""}. ` +
+      "Run wakes read GitHub with gh run view meanwhile; ci-run-status and the gh shim answer from the old cache until it is 10 min old. Read ~/.cache/virev/ci-cache.log and systemctl --user status ci-cache." });
+  }
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
@@ -1250,6 +1258,7 @@ async function main(): Promise<void> {
     listed,
     cut: cutJobsHoldingWork(cut, plan.boards, plan.pausedChats),
     poolHeldJobs: poolHeldCuts(serviceLines),
+    ciCache: await readBeat(),
   });
   // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
   const here = watch.at(-1)?.host;
