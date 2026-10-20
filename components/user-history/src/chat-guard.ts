@@ -151,7 +151,7 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string> }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean }
 /** The open owner todos on the chat's board that it added before the running turn started: a decision already waiting for him. */
 export function askedTodos(todos: readonly { id: string; done?: boolean; at?: string; from?: string }[], startedAt: number | undefined): Set<string> {
   return new Set(startedAt === undefined ? [] : todos.filter(todo => !todo.done && todo.from !== "owner" && todo.at !== undefined && Date.parse(todo.at) < startedAt).map(todo => todo.id));
@@ -169,6 +169,15 @@ const repeatOf = (about: string, done: readonly string[]): string | undefined =>
 };
 const REPEAT_MARK = "Not sent, you already told him this goal is done";
 const REASK_MARK = "Not sent, this decision already waits for him on For you";
+const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen in this turn";
+/**
+ * A 5180 demo link (localhost or the box's 15180 copy) or a screenshot image in a tell_owner text: a UI result handed to the owner to look at.
+ * On 10-19 frontend bro sent "The new onboarding is on your Mac's 5180 too. http://localhost:5180/configure?..." at 07:18:44Z after only an
+ * ls of the variant folder, two minutes after it filed c118, and the owner answered "and it's ugly as fuck ... consistent with our actual apps"
+ * at 07:29:01Z. Of the 78 tell_owner texts in that chat that carried such a link or shot, 50 went with no image opened in their turn, and 13 of
+ * the 25 after c118.
+ */
+const UI_HANDOFF = /\b(?:localhost|127\.0\.0\.1|[\w-]+(?:\.[\w-]+)+):1?5180\b|!\[[^\]]*\]\([^)\s]+\.(?:png|jpe?g|webp|gif)\)/iu;
 /** The todo ids a text names, like t4. */
 const todoIds = (text: string): string[] => [...text.matchAll(/\bt(\d+)\b/g)].map(match => `t${match[1]}`);
 
@@ -179,13 +188,16 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const doneAbout = new Map<string, string>();
   const resent = new Set<string>();
   let done: string[] = [];
+  let looked = false;
   for (const message of messages) {
     if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); done = []; }
     if (message.role === "assistant") for (const part of message.content) {
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && part.arguments?.why === "done" && typeof part.arguments?.about === "string") doneAbout.set(part.id, part.arguments.about);
     }
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "user" || message.role === "custom") looked = false;
+    if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -200,7 +212,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
   const startedAt = before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, ...(typeof startedAt === "number" ? { startedAt } : {}) };
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}) };
 }
 
 /**
@@ -209,7 +221,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * decision, blocker or question; else it is held, the feed shows it in the turn's notes, and the answer says how to send it if it is one
  * (c117; on 10-19 469 of 597 messages in a day came on turns the owner did not start, and the brief's rule since c104 had not held them).
  * Length and form stay brief rules (c81, c97). A text it would send with shop talk (`shopTalk`: a UTC time, git's land or roll out, a commit
- * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98).
+ * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98). A text that
+ * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
+ * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118).
  */
 export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
@@ -227,9 +241,13 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
     "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
   if (turn.owner || answers || declared) {
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
-    return talk.length ? { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
-      "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." }
-      : { kind: "sent", text: TELL_OWNER_DONE };
+    if (talk.length) return { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
+      "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." };
+    if (turn.looked === false && !turn.resent?.has(told) && UI_HANDOFF.test(told)) return { kind: "refused", text: `${UNLOOKED_MARK}. ` +
+      "Before you hand him a 5180 link or screenshots, open each screenshot of what it shows with attach_image and compare it with the " +
+      "accepted Staging app it should match, its page frame, title, filter row, row icons and spacing. A screen that looks unlike the accepted " +
+      "apps goes back to the job, not to him. If you compared them in this turn, send the very same text again and it goes out (c118, c98)." };
+    return { kind: "sent", text: TELL_OWNER_DONE };
   }
 if (!named(input.why)) return { kind: "refused", text: "why is required on a turn the owner did not start. Call tell_owner again " +
     "with why (done, decision, blocker, answer or update) and about, or update the board and end the turn if it is only an update." };
