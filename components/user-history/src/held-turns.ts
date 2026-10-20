@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { JobFact } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { CUT_CONFIRM_BYTES, CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
+import { turnError } from "./shared/credential-wait.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
 /**
@@ -64,14 +65,14 @@ export async function writeResumePending(dataDir: string, runs: readonly Pick<In
 export function lastTurnError(tail: string): string | undefined {
   const lines = tail.split("\n");
   for (let index = lines.length - 1; index >= 0; index--) {
-    let line: { type?: unknown; customType?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+    let line: { type?: unknown; customType?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
     try { line = JSON.parse(lines[index]!); } catch { continue; }
     if (line.type === "custom" && line.customType === "pi-pool-queue") return undefined;
     if (line.type === "custom_message" && line.customType === "agent_message") return undefined;
     if (line.type !== "message" || !line.message) continue;
     if (line.message.role !== "assistant" || line.message.stopReason !== "error") return undefined;
-    const error = line.message.errorMessage;
-    return typeof error === "string" && error.trim() ? error : "error";
+    const error = turnError(line.message);
+    return error?.trim() ? error : "error";
   }
   return undefined;
 }
@@ -147,13 +148,14 @@ export function turnSince(text: string, since: number): TurnSince {
   let error: string | undefined;
   let ran: number | undefined;
   for (const raw of text.split("\n")) {
-    let line: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
+    let line: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
     try { line = JSON.parse(raw); } catch { continue; }
     if (line.type !== "message" || line.message?.role !== "assistant" || typeof line.timestamp !== "string") continue;
     const at = Date.parse(line.timestamp);
     if (!(at >= since)) continue;
     if (line.message.stopReason !== "error") { ran = at; error = undefined; continue; }
-    error = typeof line.message.errorMessage === "string" && line.message.errorMessage.trim() ? line.message.errorMessage : "error";
+    const failed = turnError(line.message);
+    error = failed?.trim() ? failed : "error";
   }
   if (ran !== undefined) return { ran: true, at: ran };
   if (error === undefined) return { ran: false };

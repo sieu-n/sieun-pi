@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import { clockTime } from "./checkin-settings.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
+import { turnError } from "./shared/credential-wait.ts";
 import { turnErrorCause } from "./turn-error.ts";
 
 /**
@@ -101,7 +102,7 @@ function reportedBefore(lines: readonly string[], index: number): boolean {
 function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: number }) | null {
   let archivedAfter: number | undefined;
   for (let index = end - 1; index >= 0; index--) {
-    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string; errorMessage?: string } };
+    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string; errorMessage?: string; diagnostics?: unknown } };
     try { entry = JSON.parse(lines[index]!); } catch { continue; }
     if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
     if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
@@ -116,8 +117,9 @@ function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: 
     if (role !== "assistant") return null;
     if (stopReason === "length") return { at, cause: stopReason, index, ...archived };
     if (stopReason === "error") {
-      const slotAt = poolSlot(entry.message.errorMessage ?? "");
-      return { at, cause: stopReason, index, ...archived, ...slotAt === null ? {} : { slotAt }, error: turnErrorCause(entry.message.errorMessage) };
+      const error = turnError(entry.message);
+      const slotAt = poolSlot(error ?? "");
+      return { at, cause: stopReason, index, ...archived, ...slotAt === null ? {} : { slotAt }, error: turnErrorCause(error) };
     }
     if (stopReason !== "aborted") return null;
     for (let back = index - 1; back >= 0; back--) {

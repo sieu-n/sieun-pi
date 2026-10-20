@@ -3,6 +3,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
 import { imageKey, movedImage } from "./moved-images.ts";
 import { TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { turnError } from "./shared/credential-wait.ts";
 import type { AssistantMessage, ChildAgent, ImagePart, ModelInfo, ProjectedSessionEvent, TextPart, ThinkingPart, ThreadInfo, ThreadMessage, ToolCallPart, ToolResultMessage } from "./shared/types.ts";
 
 export const TEXT_LIMIT = 600;
@@ -118,8 +119,9 @@ export class Projector {
   }
   assistant(message: AgentMessage & { role: "assistant" }): AssistantMessage {
     const usage = message.usage;
+    const errorMessage = turnError(message);
     return { role: "assistant", content: this.assistantContent(message.content), provider: message.provider, model: message.model,
-      stopReason: message.stopReason, ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}), timestamp: message.timestamp,
+      stopReason: message.stopReason, ...(errorMessage ? { errorMessage } : {}), timestamp: message.timestamp,
       ...(usage ? { usage: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, totalTokens: usage.totalTokens, cost: usage.cost.total } } : {}) };
   }
   toolResult(message: AgentMessage & { role: "toolResult" }): ToolResultMessage {

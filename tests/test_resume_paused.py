@@ -803,6 +803,52 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
                          [("error", self.CI_TRAIN, "2026-10-16T10:25:52.307Z")])
 
+    # stuck duty chat page from the mac (01a15a2b-be18), on us-metal02 with dhx.3 Prime and the p692 hook on 10-20: the hook answered exit 75
+    # with a slot at 17:32:00Z, Prime wrote this wait marker at 17:30:08Z (copied from a dhx.3 session, provider and times set to the
+    # incident's), the idle unload stopped it at 17:31:50Z ("pool wait"), and no pass listed it.
+    MARKED = "01a15a2b-be18-7478-8fd1-ec1fc833dec4"
+    MARKER = {"type": "message", "id": "708fdbc3", "parentId": "9da3ef81", "timestamp": "2026-10-20T17:30:08.140Z", "message": {
+        "role": "assistant", "content": [], "api": "anthropic-messages", "provider": "anthropic", "model": "claude-opus-5-5",
+        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        "stopReason": "error", "errorMessage": "API key for provider \"anthropic\" is temporarily unavailable until 2026-10-20T17:32:00.000Z: waiting for an account slot",
+        "timestamp": 1792517408140, "diagnostics": [{"type": "provider_stream_failure", "timestamp": 1792517408140,
+                                                      "details": {"kind": "credential_unavailable", "retryAtMs": 1792517520000, "retryAfterMs": 111860}}]}}
+
+    def run_marked(self, dry_run=True, hook=None):
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        entries = [{"type": "message", "timestamp": "2026-10-20T17:30:07.900Z", "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}},
+                   self.MARKER, {"type": "session_state", "timestamp": "2026-10-20T17:31:50.300Z", "state": {"status": "archived"}}]
+        (sessions / f"{self.MARKED}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        now = dt.datetime(2026, 10, 20, 17, 31, 55, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=dry_run, include_children=False, direct=True,
+                                  only="" if dry_run else self.MARKED, state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.dict(resume_paused.UNLOADED, {self.MARKED: resume_paused.parse_ts("2026-10-20T17:31:50.341Z")}, clear=True), \
+                patch.object(resume_paused, "hook_blocker", return_value=hook), \
+                patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.MARKED}), {self.MARKED})
+            return resume_paused.resume(rows, args, now)
+
+    def test_a_run_the_idle_unload_stopped_in_a_credential_wait_is_resumed(self):
+        report = self.run_marked()
+        self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
+                         [("error", self.MARKED, "2026-10-20T17:30:08.140Z")])
+        self.assertIn("waits for its slot at 2026-10-20T17:32:00.000Z", report["paused"][0]["error"])
+
+    def test_a_credential_wait_the_hook_still_holds_is_held_until_its_retry_at(self):
+        report = self.run_marked(dry_run=False, hook="the token hook gave no anthropic token (exit 1)")
+        self.assertEqual(report["paused"], [])
+        self.assertEqual([(h["session_id"], h["pool_at"]) for h in resume_paused.HELD], [(self.MARKED, "2026-10-20T17:32:00+00:00")])
+        self.assertEqual(self.sent, [])
+
+    def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
+        message = self.MARKER["message"]
+        self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)
+        self.assertIsNone(resume_paused.credential_wait_at({**message, "diagnostics": [{"type": "provider_stream_failure", "details": {"kind": "rate_limit", "retryAfterMs": 5}}]}))
+        self.assertEqual(resume_paused.turn_error({**message, "diagnostics": []}), message["errorMessage"])
+
     def test_the_unload_stop_counts_only_after_a_token_hook_failure(self):
         sessions = self.root / "sessions"
         sessions.mkdir(exist_ok=True)

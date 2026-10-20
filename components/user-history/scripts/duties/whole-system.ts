@@ -9,6 +9,7 @@ import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
@@ -1129,8 +1130,8 @@ export function endsOnPoolWait(lines: readonly string[]): boolean {
   for (let at = lines.length - 1; at >= 0; at--) {
     if (!lines[at]!.includes('"role":"assistant"')) continue;
     try {
-      const message = (JSON.parse(lines[at]!) as { message?: { stopReason?: unknown; errorMessage?: unknown } }).message;
-      return message?.stopReason === "error" && typeof message.errorMessage === "string" && POOL_WAIT.test(message.errorMessage);
+      const message = (JSON.parse(lines[at]!) as { message?: { stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } }).message;
+      return message?.stopReason === "error" && POOL_WAIT.test(turnError(message) ?? "");
     } catch { continue; }
   }
   return false;

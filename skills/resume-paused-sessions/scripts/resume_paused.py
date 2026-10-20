@@ -129,7 +129,7 @@ from pathlib import Path
 INTERRUPTION_ERROR = re.compile(
     r"connection error|fetch failed|econnreset|econnrefused|enotfound|etimedout|eai_again|"
     r"socket hang up|network|terminated|other side closed|timed? ?out|websocket closed|"
-    r"failed to resolve api key|rate.?limit|\b429\b|overloaded|\b529\b|\b50[234]\b|internal server error|usage limit|refused to respond",
+    r"failed to resolve api key|token hook gave no token|rate.?limit|\b429\b|overloaded|\b529\b|\b50[234]\b|internal server error|usage limit|refused to respond",
     re.IGNORECASE,
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
@@ -185,6 +185,30 @@ POOLED_PROVIDERS = ("anthropic", "openai-codex")
 PROVIDER_WAIT_ERROR = re.compile(r"rate.?limit|\b429\b|usage limit|waits for its slot", re.IGNORECASE)
 POOL_TIME_ERROR = re.compile(r"(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)")
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
+
+
+def credential_wait_at(msg):
+    """retryAtMs of Prime's credential wait marker, else None. When the token hook answers that no account is free until a time (exit 75),
+    dhx.3 Prime writes an assistant entry with stopReason "error", no content and a provider_stream_failure diagnostic whose details hold
+    kind "credential_unavailable" and retryAtMs. Its text names no pi-pool slot: on 10-20 the idle unload stopped 15 sessions in such a wait
+    on us-metal02 and this pass listed none of them."""
+    for diagnostic in msg.get("diagnostics") or []:
+        details = diagnostic.get("details") if isinstance(diagnostic, dict) else None
+        if not isinstance(details, dict):
+            continue
+        at = details.get("retryAtMs")
+        if details.get("kind") == "credential_unavailable" and isinstance(at, (int, float)) and not isinstance(at, bool):
+            return at
+    return None
+
+
+def turn_error(msg):
+    """The error a failed assistant turn ended on, with a credential wait marker read as the token hook's slot wait at its retryAtMs."""
+    at = credential_wait_at(msg)
+    if at is None:
+        return str(msg.get("errorMessage") or "")
+    stamp = dt.datetime.fromtimestamp(at / 1000, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return f"token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at {stamp}."
 # The hook models.json names for both pooled providers.
 TOKEN_HOOK = Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool-token"
 # Prime gives the token hook 10 s.
@@ -1306,7 +1330,7 @@ def retry_cut(entries):
 def pool_error(entries):
     """The error text when a hung run's turn failed (retry_cut) on an interruption error or on the token hook (pi-pool's own hold), the two
     failures Prime sleeps on before it tries the turn again; else None."""
-    error = str(((retry_cut(entries) or {}).get("message") or {}).get("errorMessage") or "")
+    error = turn_error((retry_cut(entries) or {}).get("message") or {})
     return error if INTERRUPTION_ERROR.search(error) or TOKEN_HOOK_ERROR.search(error) else None
 
 
@@ -1320,7 +1344,7 @@ def retry_wait(entries):
     """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
     provider retry, and the abort waits for account_blocker to say pi-pool would let the tree in now, so it loses no queue place. After the account outage of 10-18 ssh tailnet only,
     admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
-    error = str(((retry_cut(entries) or {}).get("message") or {}).get("errorMessage") or "")
+    error = turn_error((retry_cut(entries) or {}).get("message") or {})
     # A token hook answer is pi-pool's own hold or a hook failure, never a stuck provider retry: a hook failure has its own path once the
     # hook gives the tree a token. A provider error the extension gave a pool hold (its "waits for its slot at", up to the 120 min backoff
     # draw) is marked too: Prime sleeps that whole draw, while the pool lets the tree in as soon as an account takes its class again
@@ -1449,7 +1473,7 @@ def aborted_verdict(last, entries, shutdowns, owner=False, restarts=list):
     user or a parent stopped the run."""
     before = last_message(entries[:entries.index(last)]) if last in entries else None
     msg = (before or {}).get("message") or {}
-    err = str(msg.get("errorMessage") or "")
+    err = turn_error(msg)
     if msg.get("role") == "assistant" and msg.get("stopReason") == "error" and INTERRUPTION_ERROR.search(err):
         return ("error", err)
     ts = parse_ts(last.get("timestamp"))
@@ -1508,7 +1532,7 @@ def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
             return None
         return ("empty_reply", "The model returned an empty reply that asked for a tool, so the turn ended.")
     if role == "assistant" and stop == "error":
-        err = str(msg.get("errorMessage") or "")
+        err = turn_error(msg)
         return ("error", err) if INTERRUPTION_ERROR.search(err) else None
     cut_off = role in ("user", "toolResult") or (role == "assistant" and stop == "toolUse")
     if not cut_off:
@@ -1547,7 +1571,7 @@ def hook_pairs(sessions, only, by_id, entries_of):
         sid = short_id(s)
         entries = entries_of(sid)
         msg = (last_message(entries) or {}).get("message") or {}
-        if msg.get("role") == "assistant" and msg.get("stopReason") == "error" and TOKEN_HOOK_ERROR.search(str(msg.get("errorMessage") or "")):
+        if msg.get("role") == "assistant" and msg.get("stopReason") == "error" and TOKEN_HOOK_ERROR.search(turn_error(msg)):
             pairs.append((pool_tree(s, by_id.get(head_of(sid, by_id), s)), run_provider(entries)))
     return pairs
 

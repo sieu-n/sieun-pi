@@ -46,7 +46,7 @@ const waitOf = (schedule: readonly number[], attempts: number): number => schedu
  * `rate-limit` for a 429, a 401 or a Consumer Terms 400 (account availability matters only when the pool also has no usable account), `other` for the rest (Stop).
  */
 export function failureCause(error: string): "account" | "rate-limit" | "transient" | "other" {
-  if (/Failed to resolve API key for provider "[^"]*" from shell command/i.test(error)) return "transient";
+  if (/Failed to resolve API key for provider "[^"]*" from shell command|token hook gave no token/i.test(error)) return "transient";
   if (/Failed to resolve API key for provider "anthropic"|No Claude account|No API key for (?:provider: )?anthropic/i.test(error)) return "account";
   // A 401 (bad or expired credentials) or a 400 asking to accept new terms is the vended account failing, like a 429: account availability matters only when
   // the pool has no other usable account (10-08: every account went 401 or "accept the updated Consumer Terms" and provider retries continued).
@@ -105,7 +105,7 @@ export function turnStall(view: TurnView, now: number): Stall | null {
   if (!failed && !view.retrying) return null;
   const error = clip(view.retryError?.replace(/\s+/g, " ") || failed?.error || "retrying", 160);
   // The slot note sits after the provider's own text, past the clip.
-  const slotAt = poolSlot(view.retryError || failed?.error || "");
+  const slotAt = poolSlot(view.retryError ?? "") ?? poolSlot(failed?.error ?? "");
   const owner = failed && !failed.aborted && turnStarter(view.messages) === "owner" && asked !== null
     ? clip(asked.includes(OWNER_RETRY_MARK) ? asked.slice(asked.indexOf(OWNER_RETRY_MARK) + OWNER_RETRY_MARK.length).replace(/^"|"\. Answer it first\.$/g, "") : asked, 200)
     : null;
