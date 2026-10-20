@@ -283,6 +283,12 @@ class LocalBox:
     def mtime(self, path):
         return os.path.getmtime(path)
 
+    def pool_queue(self):
+        tool = pool_bin()
+        if not tool:
+            return {}
+        return json.loads(subprocess.run([tool, "queue", "--json"], capture_output=True, text=True, timeout=30, check=True).stdout)
+
     def logs(self):
         texts = []
         for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
@@ -309,12 +315,12 @@ class RelayBox:
         self.log_texts = None
         self.local = threading.local()
 
-    def _get(self, path, start=None, timeout=20):
-        """One GET /v1/file on this thread's kept-alive connection. Until 10-18 each read opened its own TCP connection, so a pass paid a
-        handshake, a request and a cold slow start at 185 ms a round trip for each of its 265 reads. A connection the relay closed while idle
-        is opened again once."""
-        DOING[0] = f"GET {path} from {self.name}"
-        target = f"/v1/file?path={urllib.parse.quote(str(path))}"
+    def _get(self, path, start=None, timeout=20, target=None):
+        """One GET /v1/file (or `target`) on this thread's kept-alive connection. Until 10-18 each read opened its own TCP connection, so a pass
+        paid a handshake, a request and a cold slow start at 185 ms a round trip for each of its 265 reads. A connection the relay closed while
+        idle is opened again once."""
+        DOING[0] = f"GET {target or path} from {self.name}"
+        target = target or f"/v1/file?path={urllib.parse.quote(str(path))}"
         headers = {"Authorization": f"Bearer {self.token}", **({"Range": f"bytes={start}-"} if start is not None else {})}
         for attempt in (0, 1):
             connection = getattr(self.local, "connection", None)
@@ -416,6 +422,13 @@ class RelayBox:
         except (OSError, ValueError, AttributeError, TypeError):
             pass
         return [row for row in self.list(all_rows=True) if (row.get("sessionId") or row["id"]) in ids]
+
+    def pool_queue(self):
+        """That box's `pi-pool queue --json`, from its relay's GET /v1/host (prime-relay host-stats.ts), the read Settings > Hosts makes."""
+        status, _, body = self._get(None, target="/v1/host")
+        if status != 200:
+            raise OSError(f"relay {self.name}: /v1/host: {status}")
+        return (json.loads(body).get("pool") or {}).get("queue") or {}
 
     def mtime(self, path):
         status, _, body = self._get(Path(path).parent)
@@ -1254,6 +1267,24 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
         isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or [])
 
 
+def pool_error(entries):
+    """The error text when a run's last entry is an assistant reply that failed on an interruption error or on the token hook (pi-pool's own
+    hold), the two failures Prime sleeps on before it tries the turn again; else None."""
+    last = entries[-1] if entries else {}
+    msg = last.get("message") or {}
+    error = str(msg.get("errorMessage") or "")
+    if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
+            and (INTERRUPTION_ERROR.search(error) or TOKEN_HOOK_ERROR.search(error)):
+        return error
+    return None
+
+
+def queue_places(reading):
+    """{session id: "place P of T"} for each session `pi-pool queue --json` lists as queued for a working slot."""
+    return {entry["session"]: f"queued in pi-pool for a working slot, place {entry.get('position')} of {entry.get('total')}"
+            for entry in (reading or {}).get("queued") or [] if isinstance(entry, dict) and entry.get("session")}
+
+
 def retry_wait(entries):
     """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
     provider retry, and the abort waits for account_blocker to say pi-pool would let the tree in now, so it loses no queue place. After the account outage of 10-18 ssh tailnet only,
@@ -1498,6 +1529,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
     tails = {}
     accounts = {}
     hooks = {}
+    pool_reads = {}
     stops = []
 
     def shutdowns():
@@ -1524,19 +1556,51 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
     def asleep_in_retry(s, sid, head):
         """retry_wait's mark, which lets the job sweep abort the run and continue it, only when the continue would go through right now: no
         stop record names the run, and pi-pool has an account that can serve its tree and holds the tree in no wait or backoff. A run asleep
-        in its retry that fails a check gets `retry_blocked` with the reason instead, so a stop record that did not read or a pool answer
-        that is unknown shows in the report (and the record also under "incomplete") and the run stays with the Resume button."""
-        mark = retry_wait(entries_of(sid))
-        if not mark:
+        on a 429 or a token hook hold whose tree pi-pool still holds gets `pool_hold` and `pool_at` (epoch seconds) instead, which
+        waits_for_pool turns into a HELD entry. A run asleep in its retry that fails another check gets `retry_blocked` with the reason, so a
+        stop record that did not read or a pool answer that is unknown shows in the report (and the record also under "incomplete") and the
+        run stays with the Resume button."""
+        error = pool_error(entries_of(sid))
+        if not error:
             return {}
+        mark = retry_wait(entries_of(sid))
         try:
             if stop_record(s.get("sessionFile")):
-                return {"retry_blocked": "a stop record names it"}
-        except RecordError as error:
-            INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
-            return {"retry_blocked": f"its stop record did not read: {error}"}
-        blocker, _ = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
-        return {"retry_blocked": blocker} if blocker else mark
+                return {"retry_blocked": "a stop record names it"} if mark else {}
+        except RecordError as record_error:
+            INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {record_error}"})
+            return {"retry_blocked": f"its stop record did not read: {record_error}"} if mark else {}
+        blocker, free_at = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
+        if blocker and not blocker.startswith("unknown:"):
+            return {"pool_hold": blocker, "pool_at": free_at or error_free_at(error, time.time())}
+        return ({"retry_blocked": blocker} if blocker else mark) if mark else {}
+
+    def queued_in_pool(full):
+        """Where pi-pool's turn queue holds the session, read once a pass from the box's pool; None when it is not queued or the read failed."""
+        if "queue" not in pool_reads:
+            try:
+                pool_reads["queue"] = queue_places(BOX.pool_queue())
+            except (OSError, ValueError, AttributeError, subprocess.SubprocessError) as error:
+                sys.stderr.write(f"resume: pi-pool queue on {BOX.name or 'this box'} did not read: {error}\n")
+                pool_reads["queue"] = {}
+        return pool_reads["queue"].get(full)
+
+    def waits_for_pool(s, sid, head, hung, wait):
+        """A hung run that only waits for pi-pool goes to HELD ("waiting for its provider"), not to `paused`: its turn sits in pi-pool's queue,
+        or Prime sleeps on a 429 or a token hook hold while `pi-pool who` still holds its tree. An abort would only drop its queue place or
+        meet the same hold, and the chat service asks the pool again at its pool time. On 10-20 from 23:34Z every Claude account on the Mac was
+        limited, and d1 counted 32 such runs as stopped for 3 runs in a row."""
+        full = s.get("sessionId") or s["id"]
+        held_by = queued_in_pool(full) or wait.get("pool_hold")
+        if not held_by:
+            return False
+        pool_at = wait.get("pool_at")
+        HELD.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head, "head_session_id": head_session(head, s),
+                     "tree": pool_tree(s, by_id.get(head, s)), "provider": run_provider(entries_of(sid)), "reason": "hung", "hung_min": round(hung, 1),
+                     "errored_at": s.get("lastActivityAt") or s.get("modified"), "held_by": held_by,
+                     "pool_at": dt.datetime.fromtimestamp(pool_at, dt.timezone.utc).isoformat(timespec="seconds") if pool_at else None,
+                     **({"host": BOX.name} if BOX.remote else {})})
+        return True
 
     if BOX.remote:
         # Each relay read takes 0.4 to 1.6 s from us-metal02 to the Mac (10-18), so the tails this pass may read are fetched at once.
@@ -1605,11 +1669,14 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if hung is None or (since_minutes and hung > since_minutes):
                 continue
             head = head_of(sid, by_id)
+            wait = asleep_in_retry(s, sid, head)
+            if waits_for_pool(s, sid, head, hung, wait):
+                continue
             paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
-                           "head_session_id": head_session(head, s), **asleep_in_retry(s, sid, head)})
+                           "head_session_id": head_session(head, s), **wait})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
@@ -2008,7 +2075,7 @@ def main():
     for entry in STOPPED:
         print(f"stopped on purpose: {entry['id']}  {entry['name'][:40]}: {entry['stopped_by']}")
     for entry in HELD:
-        print(f"held by pi-pool: {entry['id']}  {entry['name'][:40]}: {entry['held_by']}, pool time {entry['pool_at'] or 'unknown'}")
+        print(f"waiting for {entry['provider'] or 'its provider'} in pi-pool: {entry['id']}  {entry['name'][:40]}: {entry['held_by']}, pool time {entry['pool_at'] or 'unknown'}")
     paused, actions, child_actions = report["paused"], report["heads"], report["children"]
     if not paused:
         print(f"no interrupted live run in the last {args.since_minutes:g} min")

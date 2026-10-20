@@ -1110,14 +1110,65 @@ class ResumePausedTests(unittest.TestCase):
         os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
 
         def marked(blocker=None, record=None):
+            resume_paused.HELD.clear()
             with patch.object(resume_paused, "account_blocker", return_value=(blocker, None)), patch.object(resume_paused, "stop_record", return_value=record):
                 report = self.run_resume(dry_run=True)
+            if resume_paused.HELD:
+                self.assertEqual(report["paused"], [])
+                return False
             self.assertEqual([p["reason"] for p in report["paused"]], ["hung"])
             return "retry_error" in report["paused"][0]
 
         self.assertTrue(marked())
         self.assertFalse(marked(blocker="pi-pool holds the tree until 2026-10-18T12:40:00+00:00"))
+        self.assertFalse(marked(blocker="unknown: pi-pool did not answer (TimeoutExpired)"))
         self.assertFalse(marked(record="deleted on purpose"))
+
+    def test_a_hung_run_that_only_waits_for_pi_pool_is_held_not_stopped(self):
+        # 10-20, the Mac: every Claude account was limited from 23:34Z, and d1 (stopped_runs) read 32 runs of chat 01a15427 as stopped for
+        # 3 runs. cs-ship slept on its 00:07:34Z 429 with a backoff slot at 01:47:32Z, cs-rail on its 23:29:01Z token hook hold, and
+        # as-ship sat queued 29th of 29 for a working slot. A run that waits for pi-pool is held; one the pool can serve now is stopped.
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again "
+                   "later. [request_id: req_011CgCWpwju9xuaGVqqpTwFF] pi-pool: claude-virev1@slack.green is limited until 2026-10-20T02:20:00.000Z; "
+                   "this session waits for its slot at 2026-10-20T01:47:32.000Z. Try again in 100 minutes.")
+        hook = ('Failed to resolve API key for provider "anthropic" from shell command: /Users/sieunpark/.config/pi-pool/bin/pi-pool-token '
+                "pi-pool: this session waits for its slot at 2026-10-20T00:52:35.000Z. Try again in 83 minutes.")
+
+        def hung(sid, error):
+            last = assistant(40, "error", error) if error else role(40, "toolResult")
+            last["message"]["provider"] = "anthropic"
+            self.session(sid, [assistant(41, "toolUse"), last], parent="headheadhead", activity="working", lastActivityAt=at(40))
+            os.utime(self.sessions[-1]["sessionFile"], (NOW.timestamp() - 40 * 60,) * 2)
+
+        def run(blocker, queued=()):
+            self.sessions = []
+            resume_paused.HELD.clear()
+            self.session("headheadhead", [assistant(1, "stop")])
+            hung("csshipcsship", limited)
+            hung("csrailcsrail", hook)
+            hung("asshipasship", None)
+            reading = {"working": [], "queued": [{"session": "0" * 24 + sid, "position": 29, "total": 29} for sid in queued]}
+            with patch.object(resume_paused, "account_blocker", return_value=(blocker, NOW.timestamp() + 3600 if blocker else None)), \
+                    patch.object(resume_paused.LocalBox, "pool_queue", return_value=reading, create=True), patch.object(resume_paused, "stop_record", return_value=None):
+                report = self.run_resume(dry_run=True)
+            return ({p["id"]: p for p in report["paused"]}, {h["id"]: h for h in resume_paused.HELD})
+
+        paused, held = run("pi-pool holds the tree until 2026-10-20T01:47:32+00:00", queued=["asshipasship"])
+        self.assertEqual(paused, {}, "d1 counts `paused`; a run that waits for pi-pool is not stopped")
+        self.assertEqual(sorted(held), ["asshipasship", "csrailcsrail", "csshipcsship"])
+        self.assertEqual(held["csshipcsship"]["reason"], "hung")
+        self.assertIn("holds the tree", held["csshipcsship"]["held_by"])
+        self.assertEqual(held["csshipcsship"]["pool_at"], (NOW + dt.timedelta(hours=1)).isoformat(timespec="seconds"))
+        self.assertEqual(held["asshipasship"]["held_by"], "queued in pi-pool for a working slot, place 29 of 29")
+        self.assertEqual(held["csrailcsrail"]["tree"], "0" * 24 + "headheadhead")
+
+        # From about 00:20Z claude-virev4 to virev11 served the tree again, so the same runs could go now: they count, and the 429 one keeps
+        # the retry_error mark that lets the job sweep abort it and continue it.
+        paused, held = run(None)
+        self.assertEqual(held, {})
+        self.assertEqual(sorted(paused), ["asshipasship", "csrailcsrail", "csshipcsship"])
+        self.assertIn("retry_error", paused["csshipcsship"])
+        self.assertNotIn("retry_error", paused["csrailcsrail"])
 
     def test_an_unknown_pool_answer_blocks_the_retry_abort_and_a_non_pooled_provider_does_not(self):
         # chat-057a's review of 19fde4349 (10-18): a pool read that failed returned None, which read as "this account can serve".
