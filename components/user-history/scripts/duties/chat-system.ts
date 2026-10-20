@@ -107,11 +107,17 @@ export interface CatalogRow { sessionId: string; sessionName?: string; sessionFi
 const ROOT_OF = /\/session-artifacts\/([0-9a-f-]{36})\//;
 const ms = (iso: string | undefined): number => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : 0; };
 
-/** Each chat's jobs in the catalog copies of both boxes, by the chat id their file sits under. */
-export function jobsByChat(rows: readonly CatalogRow[]): Map<string, CatalogRow[]> {
+/**
+ * Each chat's jobs in the catalog copies of both boxes: by the chat id their file sits under, or, for a job started with `rlm.create_session`
+ * (file under `sessions/`), by the board whose plan item names its session. At 13:57Z on 10-20 d9 counted the AI harness chat's d7 and Crawler
+ * VP's d9 as stuck while their fix jobs on p814 and p865, both create_session jobs, showed "working" in the catalog.
+ */
+export function jobsByChat(rows: readonly CatalogRow[], boards: ReadonlyMap<string, ChatBoard | null> = new Map()): Map<string, CatalogRow[]> {
+  const stepChat = new Map<string, string>();
+  for (const [chat, board] of boards) walk(board?.plan ?? [], item => { if (item.sessionId) stepChat.set(item.sessionId, chat); });
   const out = new Map<string, CatalogRow[]>();
   for (const row of rows) {
-    const chat = ROOT_OF.exec(row.sessionFile ?? "")?.[1];
+    const chat = ROOT_OF.exec(row.sessionFile ?? "")?.[1] ?? stepChat.get(row.sessionId);
     if (chat) out.set(chat, [...out.get(chat) ?? [], row]);
   }
   return out;
@@ -299,7 +305,7 @@ async function main(): Promise<void> {
   const names = new Map(ids.map(id => [id, listed.get(id)?.name ?? id.slice(0, 8)] as const));
   const plan = await planInputs(dataDir, now, names);
   const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
-  const jobs = jobsByChat(rows);
+  const jobs = jobsByChat(rows, plan.boards);
   const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);

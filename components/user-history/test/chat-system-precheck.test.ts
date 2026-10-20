@@ -117,3 +117,27 @@ test("a stuck duty whose newest run's own job still works or waits for its rerun
   assert.equal(left([run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 1);
   assert.equal(left([run({})], [{ sessionId: "s-job", activity: "idle", lastActivityAt: "2026-10-19T20:00:00Z" }] as never), 1);
 });
+
+// 10-20 13:57Z: d9 counted the AI harness chat's d7 and Crawler VP's d9 as stuck while their fix jobs on p814 and p865, started with
+// rlm.create_session, showed "working" in the catalog; their files sit under sessions/, so no chat claimed their rows.
+test("a red duty whose fix step's create_session job works is not stuck, though its transcript last wrote before the run measured", () => {
+  const now = Date.parse("2026-10-20T13:57:15Z");
+  const CV = "01a11af8-0000-7000-8000-000000000000";
+  const JOB = "01a15996-001e-70cc-ba2d-dab87c278b04";
+  const missed = { duty: "d9", at: now - 180_000, trigger: "schedule", verdict: "missed", ms: 1, after: { at: now - 180_000, verdict: "missed", metrics: {} },
+    metrics: { ig_queues_growing_6h: { value: 2, target: 0, op: "<=", met: false, lastEventAt: now - 600_000 } } };
+  const fix = { v: 2, rev: 1, updatedAt: "2026-10-20T13:53:00Z", todos: [], plan: [{ id: "p864", text: "IG queues drain", status: "doing", note: "Done when 0", children: [
+    { id: "p865", text: "Find the video-writer hold", status: "doing", duty: "d9/ig_queues_growing_6h", job: "ig video-writer hold root cause", sessionId: JOB, children: [] }] }] } as unknown as ChatBoard;
+  const boards = new Map([[CV, fix]]);
+  const plan = { now, chats: [{ id: CV, name: "Crawler VP", runs: [missed], everyMs: 3_600_000, paused: false, duties: [{ id: "d9", name: "Crawler running" }] }],
+    boards, ownerActivity: new Map([[JOB, now - 400_000]]), waking: new Set<string>(), poolWaiting: new Set<string>(), named: new Map<string, Map<string, string[]>>() } as unknown as PlanInputs;
+  assert.equal(planCounts(plan).redDuties.length, 1);
+  const row = { sessionId: JOB, sessionName: "ig video-writer hold root cause", sessionFile: `/home/x/.prime/agent/sessions/${JOB}.jsonl`, activity: "working" };
+  const jobs = jobsByChat([row], boards);
+  assert.equal(planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) }).redDuties.length, 0);
+  const reads = { now, named: new Map(), jobs: jobs.get(CV) ?? [], activity: new Map(), waking: new Set<string>(), poolWaiting: new Set<string>() };
+  assert.deepEqual(goalsWithNoJob(fix, reads).map(goal => goal.id), []);
+  const idle = jobsByChat([{ ...row, activity: "idle", lastActivityAt: "2026-10-20T13:50:00Z" }], boards);
+  assert.equal(planCounts({ ...plan, ...withCatalogOwners(plan, idle, now) }).redDuties.length, 1);
+  assert.equal(jobsByChat([row]).size, 0);
+});
