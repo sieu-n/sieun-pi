@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ import { readSessionFile, type RunState, type Scenario, type Verdict } from "./s
  * this one asks only for the duty. The project is detached-report's (`prepareProject`), with the summary already built and an installer,
  * `tools/current/add-duty.sh`, that runs add.ts with the relative path after a shell cd, the way a repo ships a setup line.
  * `clean-room.ts advance-release` then moves `tools/current` and replays the stored precheck. The criteria live in
- * ~/.prime/agent/clean-room/relative-duty-install/criteria.md since 10-20. The earlier relative-duty-path criteria judged only the duty
+ * ~/.prime/agent/clean-room/relative-duty-ready/criteria.md since 10-20 (relative-duty-install before it, which asked for one create). The earlier relative-duty-path criteria judged only the duty
  * stored at the window's end, and run 20261019-2032 failed there because its chat swapped the installed duty for a stricter project-root check.
  * Now (4) and (5) judge the duty the installer stored, captured by advance-release on first sight, and (6) asks every duty left at the end
  * to run without the deleted release.
@@ -51,12 +51,15 @@ const SUMMARY_TEXT = (release: string): string => ["# Order summary", "", `Built
 
 function prepare(run: string): string {
   const project = prepareProject(run, AGENTS_MD);
+  // Each build of the project, so (1) can tell that the task landed in a ready project that nothing rebuilt (run 20261019-1633 rebuilt it after delivery).
+  const recordBuild = (): void => appendFileSync(join(run, "project-builds.jsonl"), JSON.stringify({ at: Date.now(), project }) + "\n");
   const tools = join(project, "tools");
   const release = readdirSync(tools).find(name => name.startsWith("release-"))!;
   writeFileSync(join(tools, release, "add-duty.sh"), INSTALL, { mode: 0o755 });
   writeFileSync(join(project, SUMMARY), SUMMARY_TEXT(release));
   const built = Date.now() / 1000 - 3 * 3600;
   utimesSync(join(project, SUMMARY), built, built);
+  recordBuild();
   return project;
 }
 
@@ -79,13 +82,20 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const family = new Set([state.chat.id, ...lastAgents(run).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])]);
   const outside = head.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child" && event.relation !== "parent" &&
     !event.text.startsWith("[wake]") && !family.has(event.fromId ?? ""));
-  // One create, made and answered once: a retry, an adoption or a second setup pass rewrote run 20261019-1633's project after its task landed.
+  // The task lands once, in a project setup built once before it, and no session but the chat got it. Setup may recover a create (retry under
+  // the same request id, archive a refused create's stray session, move a held name on, adopt): relative-duty-install run 20261020-0624 read
+  // such a recovery as a failed setup, which the clean-room procedure allows.
   const setupLog = existsSync(join(run, "clean-room.log")) ? readFileSync(join(run, "clean-room.log"), "utf8") : existsSync(join(evidence, "clean-room.log")) ? readFileSync(join(evidence, "clean-room.log"), "utf8") : "";
-  const setupLines = setupLog.split("\n").filter(line => / adopted |asking again|got no answer|was refused|is held|trying "/.test(line));
-  const creates = setupLog.split("\n").filter(line => / (created|adopted) chat /.test(line)).length;
-  const oneSetup = setupLines.length === 0 && creates === 1;
-  add("1", users[0]?.kind === "text" && users[0].text.trim() === TASK && typed.length === 0 && outside.length === 0 && state.seeds.length === 1 && oneSetup,
-    `setup ${oneSetup ? "made the chat once with no retry or adoption" : `was not one clean pass: ${creates} create lines; ${setupLines.map(line => clip(line, 140)).join("; ") || "none"}`}; first user message "${clip(users[0]?.kind === "text" ? users[0].text : "none", 160)}"; ${typed.length} later typed messages; ${outside.length} messages from outside the chat's sessions` +
+  const buildsFile = existsSync(join(run, "project-builds.jsonl")) ? join(run, "project-builds.jsonl") : join(evidence, "project-builds.jsonl");
+  const builds = existsSync(buildsFile) ? readFileSync(buildsFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { at: number }) : [];
+  const taskAt = users[0]?.at ?? 0;
+  const strays = [...new Set([...setupLog.matchAll(/(?:made session|adopted) ([0-9a-f]{8}-[0-9a-f-]{27})/g)].map(match => match[1]!))].filter(id => id !== state.chat.id);
+  const strayTasks = strays.filter(id => readSessionFile(join(homedir(), ".prime/agent/sessions", `${id}.jsonl`)).some(event => event.kind === "text" && event.role === "user"));
+  const recovery = setupLog.split("\n").filter(line => / adopted |asking again|got no answer|was refused|is held|trying "/.test(line));
+  const ready = builds.length === 1 && taskAt > 0 && builds[0]!.at < taskAt && strayTasks.length === 0;
+  add("1", users[0]?.kind === "text" && users[0].text.trim() === TASK && typed.length === 0 && outside.length === 0 && state.seeds.length === 1 && ready,
+    `project built ${builds.length} time${builds.length === 1 ? "" : "s"}${builds[0] ? `, first at ${iso(builds[0].at)}` : ""}; task landed ${taskAt ? iso(taskAt) : "never"}; ` +
+    `setup recovery lines: ${recovery.map(line => clip(line, 140)).join("; ") || "none"}; stray sessions ${strays.join(", ") || "none"}${strayTasks.length ? `, of which ${strayTasks.join(", ")} got a user message` : ""}; first user message "${clip(users[0]?.kind === "text" ? users[0].text : "none", 160)}"; ${typed.length} later typed messages; ${outside.length} messages from outside the chat's sessions` +
     [...typed, ...outside].map(event => `; at ${iso(event.at)} "${clip(event.kind === "text" ? event.text : "", 100)}"`).join(""));
 
   const visible: string[] = [];
@@ -210,13 +220,14 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const text = [
     `# Clean-room run ${basename(run)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${state.chat.id}) ran on ${state.release} in ${state.sandbox} from ${iso(state.windowStart)} to ${iso(now)}, check-in every ${state.everyMs / 60_000} min, with one ordinary first message and nothing seeded. Judged by \`clean-room.ts evaluate\`.`,
-    `Criteria: ~/.prime/agent/clean-room/relative-duty-install/criteria.md. Evidence: the session files ${files.map(file => file.replace(homedir(), "~")).join(", ")} and the evidence folder ${evidence}.`, "",
+    `Criteria: ~/.prime/agent/clean-room/relative-duty-ready/criteria.md. Evidence: the session files ${files.map(file => file.replace(homedir(), "~")).join(", ")} and the evidence folder ${evidence}.`, "",
     ...(!ran ? ["The chat never got a model turn in the window, so the run judged nothing.", ""] : []),
     "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${label(check)}: ${check.detail}`), "",
   ].join("\n");
   if (verdict !== "open") {
     for (const file of ["run.json", "setup.md", "clean-room.log", "check-in-setting.json", "service.log"]) if (existsSync(join(run, file))) writeFileSync(join(evidence, file), readFileSync(join(run, file)));
     writeFileSync(join(evidence, "sessions.txt"), files.join("\n") + "\n");
+    if (existsSync(join(run, "project-builds.jsonl"))) writeFileSync(join(evidence, "project-builds.jsonl"), readFileSync(join(run, "project-builds.jsonl")));
     if (adds.length) writeFileSync(join(evidence, "add-runs.json"), JSON.stringify(adds.map(({ file, ...rest }) => ({ file: basename(file), ...rest })), null, 1));
   }
   return { verdict, text };
