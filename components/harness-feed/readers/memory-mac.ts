@@ -4,7 +4,7 @@ import { access, open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Context, Sample } from "../otlp.ts";
-import { FEED_FRESH_MS, heldBytes, linuxUsable, machineView, MEMORY_GROUPS, userSlice, type LinuxUsable, type MachineView, type MemoryPressure } from "../../prime-relay/host-stats.ts";
+import { FEED_FRESH_MS, heldBytes, linuxUsable, machineView, MEMORY_GROUPS, processSwap, userSlice, type LinuxUsable, type MachineView, type MemoryPressure } from "../../prime-relay/host-stats.ts";
 
 /**
  * Memory, OOM and the Mac, on both boxes. The machine numbers are Settings > Hosts' own reading (prime-relay/host-stats.ts machineView, drawn by
@@ -321,9 +321,9 @@ async function linuxLayers(ctx: Context): Promise<Sample[]> {
     const events = fields(body);
     for (const event of ["max", "oom", "oom_kill"]) if (events.has(event)) out.push(counter("harness.memory.cgroup_events", "memory.events of the user slice and the Prime daemon's cgroup: times at memory.max, OOMs and OOM kills.", events.get(event)!, { cgroup, event }));
   }
-  const held = heldBytes(daemonStat, daemonSwap);
-  if (held) for (const [kind, value] of [["held", held.bytes], ["swap", held.swapBytes], ["cache", held.cacheBytes], ["current", Number(daemonCurrent.trim())]] as const)
-    if (Number.isFinite(value)) out.push(gauge("harness.memory.daemon_cgroup", "The Prime daemon's cgroup: held (anon, shmem and swap, as Settings > Hosts counts), swap, file cache and memory.current.", value, { kind }, "By"));
+  const held = heldBytes(daemonStat, daemonSwap, daemonCg ? await processSwap(await text(cg(`${daemonCg}/cgroup.procs`))) : null);
+  if (held) for (const [kind, value] of [["held", held.bytes], ["swap", held.swapBytes], ["cache", held.cacheBytes], ["files", held.fileBytes], ["current", Number(daemonCurrent.trim())]] as const)
+    if (Number.isFinite(value)) out.push(gauge("harness.memory.daemon_cgroup", "The Prime daemon's cgroup as Settings > Hosts counts it: held by its processes (anon and their swap), that swap, file cache, tmpfs and shared memory files charged to it, and memory.current.", value, { kind }, "By"));
 
   const units = new Map([...parseShow(system), ...parseShow(user)]);
   for (const unit of LAYER_UNITS) out.push(gauge("harness.memory.unit_active", "1 when a memory layer's unit is active.", units.get(unit)?.active ? 1 : 0, { unit }));

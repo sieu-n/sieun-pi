@@ -14,7 +14,7 @@ import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot
 const run = promisify(execFile);
 
 export type MemoryPressure = "normal" | "warn" | "critical";
-export const MEMORY_GROUPS = ["agents", "dev", "ci", "docker", "browsers", "coding", "system", "other"] as const;
+export const MEMORY_GROUPS = ["agents", "dev", "ci", "docker", "browsers", "coding", "system", "files", "other"] as const;
 export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
 /**
  * One memory group: its bytes and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers, a systemd unit). On Linux `bytes` is
@@ -82,7 +82,7 @@ function cpuPercent(): { percent: number; cores: number } {
 
 const GB = 1024 ** 3;
 const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", dev: "Dev servers and app code", ci: "CI runners", docker: "Docker",
-  browsers: "Browsers", coding: "Coding tools", system: "System", other: "Other" };
+  browsers: "Browsers", coding: "Coding tools", system: "System", files: "Files in /tmp and shared memory", other: "Other" };
 
 function grouped(items: { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number }[], always: MemoryGroupId[]): MemoryGroup[] {
   const groups = new Map<MemoryGroupId, { label: string; bytes: number; swapBytes?: number }[]>(MEMORY_GROUPS.map(id => [id, []]));
@@ -191,35 +191,58 @@ export const CGROUP_RULES: [MemoryGroupId, RegExp][] = [
 ];
 export const cgroupGroupOf = (path: string): MemoryGroupId => CGROUP_RULES.find(([, rule]) => rule.test(path))?.[0] ?? "other";
 
-/** One leaf cgroup's memory: what it holds that the box cannot take back (`heldBytes`), the part of that in swap, and its file cache. */
-export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number }
+/**
+ * One leaf cgroup's memory: what its processes hold that the box cannot take back (`heldBytes`), the part of that in swap, its file cache, and
+ * the tmpfs and shared memory files charged to it (`fileBytes`, `fileSwapBytes` of them in swap), which outlive the processes that wrote them.
+ */
+export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number; fileBytes: number; fileSwapBytes: number }
 
 /**
- * A leaf cgroup's held memory from its memory.stat and memory.swap.current: anonymous pages plus shmem (tmpfs files such as /tmp, which the
- * kernel can only move to swap, never drop) plus the swap the cgroup uses, which holds both kinds once paged out. File cache (`file` less
- * shmem) is apart, since the box takes it back when it needs the room. Settings > Hosts summed memory.current before 10-19, which counts that
- * cache and reclaimable slab: at 01:11Z on 10-19 the Prime daemon's cgroup read 109.4 GB there with 43.7 GB of anon, 56.5 GB of file cache
- * and 8.4 GB of slab, more than the 88.0 GB the whole box used. Null when memory.stat has no anon line.
+ * A leaf cgroup's memory from its memory.stat, memory.swap.current and the swap its live processes hold (`processSwap`, the sum of their
+ * VmSwap; null when they were not read). Its processes hold their anonymous pages and that swap. Its files are shmem (tmpfs files such as
+ * /tmp, which the kernel can only move to swap, never drop) and the cgroup's swap no live process holds, which is such files paged out. File
+ * cache (`file` less shmem) is apart, since the box takes it back when it needs the room. Settings > Hosts summed memory.current before 10-19,
+ * which counts that cache and reclaimable slab: at 01:11Z on 10-19 the Prime daemon's cgroup read 109.4 GB there with 43.7 GB of anon, 56.5
+ * GB of file cache and 8.4 GB of slab, more than the 88.0 GB the whole box used. Until 10-20 the files counted with the processes, so Agent
+ * sessions held the auto-sns-agent clones jobs left in /tmp: at 02:20Z on 10-20 the Prime daemon's cgroup had 4.11 GB more swap than all its
+ * processes, while /tmp held 3.94 GB of files with 0.18 GB of them in RAM, and d7 read 9.3 GB with no session working at 00:23Z.
+ * Null when memory.stat has no anon line.
  */
-export function heldBytes(stat: string, swap: string): { bytes: number; swapBytes: number; cacheBytes: number } | null {
+export function heldBytes(stat: string, swap: string, processSwap: number | null): Omit<LeafMemory, "path"> | null {
   const field = (name: string): number | null => { const value = new RegExp(`^${name} (\\d+)$`, "m").exec(stat)?.[1]; return value === undefined ? null : Number(value); };
   const anon = field("anon"), shmem = field("shmem") ?? 0, file = field("file") ?? 0;
   if (anon === null) return null;
   const swapped = Number(swap.trim());
-  const swapBytes = swap.trim() && Number.isFinite(swapped) ? swapped : 0;
-  return { bytes: anon + shmem + swapBytes, swapBytes, cacheBytes: Math.max(0, file - shmem) };
+  const cgroupSwap = swap.trim() && Number.isFinite(swapped) ? swapped : 0;
+  const swapBytes = processSwap === null ? cgroupSwap : Math.min(cgroupSwap, processSwap);
+  const fileSwapBytes = cgroupSwap - swapBytes;
+  return { bytes: anon + swapBytes, swapBytes, cacheBytes: Math.max(0, file - shmem), fileBytes: shmem + fileSwapBytes, fileSwapBytes };
 }
 
-/** The leaf cgroups under `root` with their held memory (`heldBytes`), so each byte counts once. A cgroup that cannot be read is skipped. */
+/** The VmSwap of /proc/<pid>/status in bytes, 0 when it has none. */
+export function vmSwap(status: string): number {
+  const kb = /^VmSwap:\s+(\d+) kB/m.exec(status)?.[1];
+  return kb === undefined ? 0 : Number(kb) * 1024;
+}
+
+/** The swap the processes of a cgroup's `cgroup.procs` hold; a process that exited meanwhile counts 0. */
+export async function processSwap(procs: string): Promise<number> {
+  const pids = procs.split("\n").filter(pid => /^\d+$/.test(pid));
+  const swaps = await Promise.all(pids.map(pid => readFile(`/proc/${pid}/status`, "utf8").then(vmSwap, () => 0)));
+  return swaps.reduce((sum, bytes) => sum + bytes, 0);
+}
+
+/** The leaf cgroups under `root` with their memory (`heldBytes`), so each byte counts once. A cgroup that cannot be read is skipped. */
 export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<LeafMemory[]> {
   const leaves: LeafMemory[] = [];
   async function walk(relative: string): Promise<void> {
     const dir = relative ? join(root, relative) : root;
     const children = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => relative ? `${relative}/${entry.name}` : entry.name);
     if (relative && !children.length) {
-      const [stat, swap] = await Promise.all(["memory.stat", "memory.swap.current"].map(name => readFile(join(dir, name), "utf8").catch(() => "")));
-      const held = heldBytes(stat!, swap!);
-      if (held && (held.bytes > 0 || held.cacheBytes > 0)) leaves.push({ path: relative, ...held });
+      const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => readFile(join(dir, name), "utf8").catch(() => null)));
+      const swapped = Number(swap?.trim() || 0) > 0;
+      const held = heldBytes(stat ?? "", swap ?? "", swapped && procs !== null ? await processSwap(procs) : null);
+      if (held && (held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) leaves.push({ path: relative, ...held });
       return;
     }
     await Promise.all(children.map(walk));
@@ -239,7 +262,8 @@ export function cgroupLabel(path: string): string {
 
 export function cgroupGroups(leaves: readonly LeafMemory[]): MemoryGroup[] | null {
   if (!leaves.length) return null;
-  return grouped(leaves.map(leaf => ({ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes, swapBytes: leaf.swapBytes })), []);
+  return grouped(leaves.flatMap(leaf => [{ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes, swapBytes: leaf.swapBytes },
+    ...leaf.fileBytes > 0 ? [{ id: "files" as const, label: cgroupLabel(leaf.path), bytes: leaf.fileBytes, swapBytes: leaf.fileSwapBytes }] : []]), []);
 }
 
 /**

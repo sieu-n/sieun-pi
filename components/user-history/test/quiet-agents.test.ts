@@ -3,9 +3,11 @@
 // workers, while almost every one of them sat in a provider retry or pool slot wait, and d7's sleeping_gb read 0.72 GB against 0.25.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { cgroupGroups, heldBytes, type MachineView, type MemoryGroup } from "../../prime-relay/host-stats.ts";
+import { cgroupGroups, heldBytes, leafCgroups, vmSwap, type MachineView, type MemoryGroup } from "../../prime-relay/host-stats.ts";
 import { measure, quietAgents } from "../scripts/duties/whole-system.ts";
 import { agentCounts } from "../src/agent-states.ts";
 import { hostGlance } from "../src/client/hosts.ts";
@@ -88,18 +90,50 @@ test("the quiet window is one setting: minutes inside it are not judged, and a b
   assert.ok(quietAgents(gap, RUN - 31 * MIN, RUN, 15 * MIN).every(minute => minute.since >= Date.parse("2026-10-18T23:34:00Z")), "a watch gap restarts the stretch");
 });
 
-test("Hosts counts memory the box cannot take back: anon, shmem and swap, with file cache apart", () => {
+test("Hosts counts memory the box cannot take back: anon and swap, tmpfs files apart, with file cache apart", () => {
   // The Prime daemon cgroup at 01:11Z on 10-19: memory.current 109.4 GB, of it 43.7 GB anon, 56.5 GB file (3.0 GB of that shmem) and 8.4 GB slab.
   const bytes = (gb: number) => Math.round(gb * GB);
   const stat = [`anon ${bytes(43.7)}`, `file ${bytes(56.5)}`, `kernel ${bytes(9.1)}`, `shmem ${bytes(3)}`, `slab_reclaimable ${bytes(8.4)}`].join("\n") + "\n";
-  const held = heldBytes(stat, `${bytes(6.75)}\n`)!;
-  assert.equal(Math.round(10 * held.bytes / GB) / 10, 53.5);
+  const held = heldBytes(stat, `${bytes(6.75)}\n`, null)!;
+  assert.equal(Math.round(10 * held.bytes / GB) / 10, 50.5);
   assert.equal(held.swapBytes / GB, 6.75);
+  assert.equal(held.fileBytes / GB, 3);
   assert.equal(Math.round(10 * held.cacheBytes / GB) / 10, 53.5);
-  assert.equal(heldBytes("", ""), null);
+  assert.equal(heldBytes("", "", null), null);
   const groups = cgroupGroups([{ path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", ...held },
-    { path: "user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", bytes: 1.4 * GB, swapBytes: 0, cacheBytes: 0 }])!;
+    { path: "user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", bytes: 1.4 * GB, swapBytes: 0, cacheBytes: 0, fileBytes: 0, fileSwapBytes: 0 }])!;
   assert.equal(groups[0]!.id, "agents");
-  assert.equal(Math.round(10 * groups[0]!.bytes / GB) / 10, 54.9);
+  assert.equal(Math.round(10 * groups[0]!.bytes / GB) / 10, 51.9);
   assert.equal(groups[0]!.swapBytes, 6.75 * GB);
+  assert.equal(groups.find(group => group.id === "files")!.bytes, 3 * GB);
+});
+
+test("Agent sessions leave out the tmpfs files jobs left in /tmp, which no session unload frees", async () => {
+  // At 00:23Z on 10-20 d7 read us-metal02's Agent sessions at 9.3 GB, 4.86 GB of it in swap, with no session working for 17 min. At 02:20Z
+  // the Prime daemon's cgroup had 22.79 GB of swap and its processes 18.67 GB (VmSwap), while /tmp held 3.94 GB of auto-sns-agent clones and
+  // caches with 0.18 GB of them in RAM: the other 4.11 GB was those files, paged out, charged to the daemon whose jobs wrote them.
+  const bytes = (gb: number) => Math.round(gb * GB);
+  const held = heldBytes(`anon ${bytes(28.24)}\nfile ${bytes(37.18)}\nshmem ${bytes(0.02)}\n`, `${bytes(22.79)}\n`, bytes(18.68))!;
+  assert.equal(Math.round(100 * held.bytes / GB) / 100, 46.92);
+  assert.equal(Math.round(100 * held.fileSwapBytes / GB) / 100, 4.11);
+  assert.equal(Math.round(100 * held.fileBytes / GB) / 100, 4.13);
+  const groups = cgroupGroups([{ path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", ...held }])!;
+  assert.equal(Math.round(100 * groups.find(group => group.id === "agents")!.bytes / GB) / 100, 46.92);
+  const files = groups.find(group => group.id === "files")!;
+  assert.equal(files.label, "Files in /tmp and shared memory");
+  assert.deepEqual(files.top.map(item => item.label), ["prime-agent-daemon"]);
+  assert.equal(heldBytes(`anon 0\n`, `${bytes(1)}\n`, bytes(2))!.fileSwapBytes, 0, "processes that hold more swap than the cgroup read leave it no files");
+
+  // leafCgroups reads each leaf's processes' VmSwap: a leaf whose one process holds none has its whole swap in files.
+  const root = await mkdtemp(join(tmpdir(), "leaf-cgroups-"));
+  const leaf = join(root, "user.slice/app.slice/prime-agent-daemon.service");
+  await mkdir(leaf, { recursive: true });
+  await writeFile(join(leaf, "memory.stat"), `anon ${bytes(0.5)}\nfile 0\nshmem 0\n`);
+  await writeFile(join(leaf, "memory.swap.current"), `${bytes(2)}\n`);
+  const own = vmSwap(await readFile(`/proc/${process.pid}/status`, "utf8"));
+  await writeFile(join(leaf, "cgroup.procs"), `${process.pid}\n`);
+  const [read] = await leafCgroups(root);
+  assert.equal(read!.fileSwapBytes, bytes(2) - Math.min(own, bytes(2)));
+  assert.equal(read!.bytes, bytes(0.5) + Math.min(own, bytes(2)));
+  await rm(root, { recursive: true, force: true });
 });
