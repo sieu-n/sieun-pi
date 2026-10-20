@@ -12,5 +12,5 @@ test("a job whose worker failed has nothing to reload, even with an attached thr
 test("a live job reloads through its attached id first, then the catalog's, and a saved one has none", () => {
   assert.equal(reloadTarget({ workerState: "ready", activeSessionId: "a-cat" }, "a-live"), "a-live");
   assert.equal(reloadTarget({ workerState: "ready", activeSessionId: "a-cat" }, undefined), "a-cat");
-  assert.equal(reloadTarget({ activeSessionId: undefined }, undefined), undefined);
+  assert.equal(reloadTarget({}, undefined), undefined);
 });
