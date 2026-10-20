@@ -13,7 +13,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
-import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
+import { closedFixes, dutyFixes, missedKeys, reopenOps } from "./shared/duty-fixes.ts";
 import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
@@ -537,7 +537,15 @@ export class Duties {
     const board = this.host.board ? await this.host.board(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: read the board: ${message(error)}`); return null; }) : null;
     const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)), record.flagged);
     if (Object.keys(fixes).length) record.fixes = fixes;
-    return metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key));
+    const streaks = metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key));
+    const reopen = record.trigger === "verify" && record.duty !== CHECK_IN_DUTY_ID ? reopenOps(board, streaks, record.at) : [];
+    if (reopen.length && this.host.applyBoard) {
+      const steps = reopen.map(op => "id" in op ? op.id : "").join(", ");
+      await this.host.applyBoard(chatId, latest => reopenOps(latest, streaks, record.at))
+        .then(() => this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: its verify run still misses, so it reopened ${steps}`))
+        .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: reopen ${steps}: ${message(error)}`));
+    }
+    return streaks;
   }
 
   /**

@@ -104,7 +104,7 @@ test("a red duty whose fix job works on the other box is not stuck once the cata
 });
 
 // 10-20 01:2xZ: the AI harness chat's check-in counted as stuck while its own 01:19Z check-in job worked on the step its run flagged.
-test("a stuck duty whose newest run's own job still works is left out, and one whose job ended or was cut stays", () => {
+test("a stuck duty whose newest run's own job still works or waits for its rerun is left out, and one whose job ended or whose rerun was cut stays", () => {
   const now = Date.parse("2026-10-20T01:25:00Z");
   const run = (extra: object) => ({ duty: "checkin", at: now - 360_000, trigger: "schedule", verdict: "missed", ms: 1, job: { id: "s-job", name: "check-in x 10:19" },
     metrics: { stuck_steps: { value: 1, target: 0, op: "<=", met: false } }, ...extra });
@@ -113,6 +113,7 @@ test("a stuck duty whose newest run's own job still works is left out, and one w
   const left = (runs: object[], over = rows) => withoutWorkingRuns(stuck, new Map([["c", runs as never]]), over, now).length;
   assert.equal(left([run({})]), 0);
   assert.equal(left([run({ after: { at: now - 60_000, verdict: "missed", metrics: {} } })]), 1);
-  assert.equal(left([run({ cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 1);
+  assert.equal(left([run({ cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 0);
+  assert.equal(left([run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 1);
   assert.equal(left([run({})], [{ sessionId: "s-job", activity: "idle", lastActivityAt: "2026-10-19T20:00:00Z" }] as never), 1);
 });

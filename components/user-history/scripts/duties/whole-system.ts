@@ -21,7 +21,7 @@ import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
@@ -649,6 +649,19 @@ export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivit
 export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; at: number | undefined; items: string[] }
 
 /**
+ * The missed metrics of a red duty that still owe a fix job, newest run first in `runs`. Two kinds owe none, as the duty runner itself reads them.
+ * A count over a trailing window with no new event since the run before (`MetricStreak.quietSince`) only waits for old events to leave the
+ * window, and the duty job's brief says to start no job for it (`missLine`): frontend bro's d1 restarts_24h read 3 from a 14:07Z stop on 10-19
+ * and its d6 repeated_design_notes_24h 14 from a 17:33Z note, and d9 counted both as stuck from 03:29Z to 06:16Z on 10-20. A check-in's
+ * stuck_steps owes none once none of the steps it flagged is stuck on the live board (`liveStuck`, which stuck_steps_all reads): launch main
+ * bro's and CI and RepoOps' check-ins counted at 03:29Z and 03:52Z while stuck_steps_all read 0.
+ */
+export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], stepsMoving: boolean): string[] {
+  const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
+  return missed.filter(key => !quiet.has(key) && !(stepsMoving && key === "stuck_steps"));
+}
+
+/**
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0).
  */
@@ -687,7 +700,11 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // sat red with no fix step and no push. The duty's own run job still at work is left out by the precheck (`withoutWorkingRuns`).
     if (!newest || missStreak(own) < 1) return [];
     if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
-    const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
+    const missed = missedKeys(effectiveRun(newest));
+    const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
+    const owed = owedKeys(missed, own, duty.id === CHECK_IN_DUTY_ID && fresh && !stuck.some(entry => entry.chat.id === chat.id));
+    if (missed.length && !owed.length) return [];
+    const links = owed.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));

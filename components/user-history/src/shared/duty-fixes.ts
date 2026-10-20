@@ -1,5 +1,6 @@
 import type { DutyRunRecord, FixLink, FlaggedSlice } from "./chat-duties.ts";
-import type { ChatBoard, PlanItem, SessionRow } from "./types.ts";
+import type { MetricStreak } from "./duty-streak.ts";
+import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run records them for its missed
@@ -65,6 +66,28 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);
+
+/**
+ * The ops that reopen each fix step a verify run finds closed while its metric still misses. The board skill's rule is that a fix step closes
+ * when its metric is met again, and closing one starts the verify run (`closedFixes`). On 10-20 the AI harness chat closed p774 at 02:59Z and
+ * p775 at 03:29Z with d9's stuck_duties and duties_green_pct still off target, both verify runs missed, their jobs were aborted by a daemon
+ * restart and cut by a pi-pool wait, and d9 sat red with no open fix step until 06:20Z. A windowed count with no new event (`quietSince`) is
+ * left closed, since its fix may have landed while old events leave the window.
+ */
+export function reopenOps(board: ChatBoard | null, streaks: readonly MetricStreak[], at: number): BoardOp[] {
+  const steps = new Map<string, PlanItem>();
+  const visit = (items: readonly PlanItem[]) => { for (const item of items) { steps.set(item.id, item); visit(item.children); } };
+  visit(board?.plan ?? []);
+  const ops = new Map<string, BoardOp>();
+  for (const streak of streaks) {
+    const step = streak.fix && steps.get(streak.fix.step);
+    if (!step || step.status !== "done" || streak.quietSince !== undefined || ops.has(step.id)) continue;
+    const words = `Reopened ${new Date(at).toISOString().slice(11, 16)}Z: the verify run read ${streak.key} ${streak.value}, target ${streak.op} ${streak.target}, ` +
+      "so this fix has not moved the metric to target yet.";
+    ops.set(step.id, { op: "plan_update", id: step.id, status: "todo", note: step.note ? `${words} ${step.note}` : words });
+  }
+  return [...ops.values()];
+}
 
 /** The steps with a duty link that were open or absent before and are done after: each starts one verify run of its duty. */
 export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step: string; duty: string; metric: string }[] {
