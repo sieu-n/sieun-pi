@@ -7,13 +7,15 @@ import test from "node:test";
 
 // On 10-19 (runtime intent trace) and on 10-20 from 15:59Z to 16:10Z (p8-prepare-hold) jobs of chat-057a opened the transcripts of unrelated
 // roots under ~/.prime/agent/sessions to read their state lines, and the scope reminder in their brief came too late. kernel-read.py lets a
-// session read only its own family's transcripts: itself, the sessions above it, its siblings and the sessions below it.
+// session read only its own chat's transcripts: the chat's root tree and the trees of the root jobs the chat started (chat-jobs.json).
 const { PRELUDE } = await import("../components/global-rules/kernel-guard.ts");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-read-")));
 const home = join(root, "home");
 const prime = join(home, ".prime/agent");
 const A = "01a1000a-0000-7000-8000-00000000000a";
 const B = "01a1000b-0000-7000-8000-00000000000b";
+const J = "01a1000d-0000-7000-8000-00000000000d";
+const K = "01a1000e-0000-7000-8000-00000000000e";
 const id = (n) => `01a10000-0000-7000-8000-0000000000${n}`;
 const files = {
   rootA: join(prime, "sessions", `${A}.jsonl`),
@@ -26,12 +28,20 @@ const files = {
   copyB: join(prime, "backups", "restore-1", "sessions", `${B}.jsonl`),
   copyA: join(prime, "backups", "restore-1", "sessions", `${A}.jsonl`),
   cleanRoom: join(prime, "clean-room", "run1", `${id("e1")}.jsonl`),
+  jobJ: join(prime, "sessions", `${J}.jsonl`),
+  jobK: join(prime, "sessions", `${K}.jsonl`),
+  jobKChild: join(prime, "session-artifacts", K, "sub-66666666", `${id("f1")}.jsonl`),
 };
 for (const [name, file] of Object.entries(files)) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `{"type":"session","id":"${name}"}\n`);
 }
 writeFileSync(join(prime, "session-artifacts", A, "sub-11111111", "semantic-edges.jsonl"), "{}\n");
+// J is a duty job the chat A started (filed by id), K a root job it started with rlm.create_session (filed by its session name).
+writeFileSync(files.jobK, `{"type":"session","id":"${K}"}\n{"type":"session_info","id":"ab12cd34","parentId":null,"name":"nightly look"}\n`);
+mkdirSync(join(root, "chat"), { recursive: true });
+writeFileSync(join(root, "chat", "chat-jobs.json"), JSON.stringify({ jobs: { [J]: { chat: "chat A", at: 1, chatId: A }, "nightly look": { chat: "chat A", at: 1, chatId: A },
+  "other job": { chat: "chat B", at: 1, chatId: B } } }));
 const me = dirname(files.me);
 mkdirSync(join(prime, "skills", "catalog"), { recursive: true });
 writeFileSync(join(prime, "skills", "catalog", "reader.py"), "def first(path):\n    with open(path) as handle:\n        return handle.readline()\n");
@@ -66,7 +76,7 @@ def sh(command):
     return run.stdout
 `;
 
-test("a job reads its own, its root's, its sibling's and its child's transcripts, and lists or counts any session", () => {
+test("a job reads its own chat's transcripts, root jobs the chat started included, and lists or counts any session", () => {
   assert.deepEqual(kernel(`${ATTEMPT}
 attempt("own", lambda: open(F["me"]).read())
 attempt("root", lambda: Path(F["rootA"]).read_text())
@@ -81,11 +91,16 @@ attempt("wc", lambda: sh(f"wc -l {F['rootB']}"))
 attempt("find", lambda: sh(f"find {P}/sessions {P}/session-artifacts -name '*.jsonl' | wc -l"))
 attempt("rg own", lambda: sh(f"rg -l session {os.path.dirname(F['me'])} || true"))
 attempt("tail sibling", lambda: sh(f"tail -1 {F['sibling']}"))
+attempt("nephew", lambda: open(F["nephew"]).read())
+attempt("duty job", lambda: open(F["jobJ"]).read())
+attempt("root job", lambda: open(F["jobK"]).read())
+attempt("root job child", lambda: open(F["jobKChild"]).read())
+attempt("rg chat tree", lambda: sh(f"rg -l session {P}/session-artifacts/${A} || true"))
 sys.path.insert(0, P + "/skills/catalog")
 import reader
 attempt("catalog tool", lambda: reader.first(F["rootB"]))
 `), ["own ran", "root ran", "sibling ran", "child ran", "root copy ran", "edges ran", "clean room ran", "listdir ran", "ls ran", "wc ran", "find ran",
-    "rg own ran", "tail sibling ran", "catalog tool ran"]);
+    "rg own ran", "tail sibling ran", "nephew ran", "duty job ran", "root job ran", "root job child ran", "rg chat tree ran", "catalog tool ran"]);
 });
 
 test("a job's reads of another family's transcripts are refused in Python, in commands and in Python processes it starts", () => {
@@ -94,7 +109,6 @@ test("a job's reads of another family's transcripts are refused in Python, in co
 attempt("open", lambda: open(F["rootB"]).read())
 attempt("path", lambda: Path(F["jobB"]).read_text())
 attempt("os.open", lambda: os.read(os.open(F["rootB"], os.O_RDONLY), 10))
-attempt("nephew", lambda: open(F["nephew"]).read())
 attempt("copy", lambda: open(F["copyB"]).read())
 attempt("tail", lambda: sh(f"tail -n 5 {F['rootB']}"))
 attempt("jq", lambda: sh(f"cd {P}/sessions && jq -c .type < ${B}.jsonl"))
@@ -109,23 +123,37 @@ attempt("system", lambda: (_ for _ in ()).throw(PermissionError("refused agent_o
 child = subprocess.run([sys.executable, "-c", f"print(open({F['rootB']!r}).read())"], capture_output=True, text=True)
 print("child", "refused" if "TranscriptRefused" in child.stderr and child.returncode else "ran")
 `), ["open refused TranscriptRefused True", "path refused TranscriptRefused True", "os.open refused TranscriptRefused True",
-    "nephew refused TranscriptRefused True", "copy refused TranscriptRefused True", "tail refused TranscriptRefused True",
+    "copy refused TranscriptRefused True", "tail refused TranscriptRefused True",
     "jq refused TranscriptRefused True", "rg wide refused TranscriptRefused True", "rg cwd refused TranscriptRefused True",
     "xargs refused TranscriptRefused True", "exec refused TranscriptRefused True", "glob refused TranscriptRefused True",
     "grep -r refused TranscriptRefused True", "cp refused TranscriptRefused True", "system refused TranscriptRefused True", "child refused"]);
   assert.ok(!existsSync("/tmp/extract.jsonl") || readFileSync("/tmp/extract.jsonl", "utf8") !== `{"type":"session","id":"jobB"}\n`);
   const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.ok(lines.length >= 15, `${lines.length} refusal lines`);
+  assert.ok(lines.length >= 14, `${lines.length} refusal lines`);
   assert.deepEqual([...new Set(lines.map((line) => line.session))], [me]);
-  assert.ok(lines.every((line) => [B, id("d1"), id("b1")].includes(line.of)), JSON.stringify(lines.map((line) => line.of)));
+  assert.ok(lines.every((line) => [B, id("d1")].includes(line.of)), JSON.stringify(lines.map((line) => line.of)));
+});
+
+test("a root job the chat started reads the chat's transcripts, and a root job of another chat reads none of them", () => {
+  assert.deepEqual(kernel(`${ATTEMPT}
+attempt("chat", lambda: open(F["rootA"]).read())
+attempt("chat job", lambda: open(F["me"]).read())
+attempt("other root job", lambda: open(F["jobJ"]).read())
+attempt("rootB", lambda: open(F["rootB"]).read())
+`, { RLM_SESSION_DIR: join(prime, "session-artifacts", K) }), ["chat ran", "chat job ran", "other root job ran", "rootB refused TranscriptRefused True"]);
+  assert.deepEqual(kernel(`${ATTEMPT}
+attempt("chat A", lambda: open(F["rootA"]).read())
+attempt("chat B", lambda: open(F["jobB"]).read())
+`, { RLM_SESSION_DIR: join(prime, "session-artifacts", B, "sub-55555555") }), ["chat A refused TranscriptRefused True", "chat B ran"]);
 });
 
 test("a root reads its own tree and nothing of another root, and with no RLM_SESSION_DIR nothing is judged", () => {
   assert.deepEqual(kernel(`${ATTEMPT}
 attempt("nephew", lambda: open(F["nephew"]).read())
 attempt("rootA", lambda: open(F["rootA"]).read())
+attempt("root job", lambda: open(F["jobKChild"]).read())
 attempt("rootB", lambda: open(F["rootB"]).read())
-`, { RLM_SESSION_DIR: join(prime, "session-artifacts", A) }), ["nephew ran", "rootA ran", "rootB refused TranscriptRefused True"]);
+`, { RLM_SESSION_DIR: join(prime, "session-artifacts", A) }), ["nephew ran", "rootA ran", "root job ran", "rootB refused TranscriptRefused True"]);
   assert.deepEqual(kernel(`${ATTEMPT}
 attempt("rootB", lambda: open(F["rootB"]).read())
 attempt("rg wide", lambda: sh(f"rg -l -i 'prepare' {P}/sessions || true"))
@@ -136,9 +164,12 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
   const { judgeTool } = await import("../components/global-rules/transcript-guard.ts");
   process.env.PRIME_AGENT_CODING_AGENT_DIR = prime;
   process.env.GLOBAL_RULES_TRANSCRIPT_LOG = join(root, "tool-refusals.jsonl");
+  const data = process.env.AGENT_CHAT_DATA_DIR;
+  process.env.AGENT_CHAT_DATA_DIR = join(root, "chat");
   try {
     assert.match(judgeTool("read", { path: files.rootB }, home, me) ?? "", /outside this session's family/);
     assert.equal(judgeTool("read", { path: files.sibling }, home, me), undefined);
+    assert.equal(judgeTool("read", { path: files.jobK }, home, me), undefined);
     assert.match(judgeTool("grep", { pattern: "x", path: join(prime, "sessions") }, home, me) ?? "", /as a whole/);
     assert.match(judgeTool("bash", { command: `tail -1 ${files.jobB}` }, home, me) ?? "", /agent_observe/);
     assert.equal(judgeTool("bash", { command: `ls ${join(prime, "sessions")}` }, home, me), undefined);
@@ -146,5 +177,7 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
   } finally {
     delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
     delete process.env.GLOBAL_RULES_TRANSCRIPT_LOG;
+    if (data === undefined) delete process.env.AGENT_CHAT_DATA_DIR;
+    else process.env.AGENT_CHAT_DATA_DIR = data;
   }
 });

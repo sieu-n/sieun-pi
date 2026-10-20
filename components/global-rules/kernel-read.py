@@ -1,11 +1,14 @@
-"""Refuses this session's reads of another family's session transcripts, in the Prime kernel and the Python processes it starts.
+"""Refuses this session's reads of another chat's session transcripts, in the Prime kernel and the Python processes it starts.
 
-On 2026-10-19 the runtime intent trace job and on 2026-10-20 from 15:59Z to 16:10Z p8-prepare-hold, a job of chat-057a, opened the
+On 2026-10-19 the runtime intent trace job and on 2026-10-20 from 15:59Z to 16:10Z p8-prepare-hold, both jobs of chat-057a, opened the
 session transcripts of unrelated roots under ~/.prime/agent/sessions to read their state lines, and each time a later scope reminder in its
-brief came too late. agent_observe already limits observation to the parent, siblings and children, but a cell could still open the files.
-So a session reads only its own family's transcripts: itself, the sessions above it up to its root, its siblings and the sessions below it.
-Any other `<session id>.jsonl` under the Prime agent dir (sessions/, session-artifacts/ and their copies) raises TranscriptRefused, which
-names the catalog, status and relay paths that stay open.
+brief came too late. A scan of the 7 days to 10-20 16:43Z on both boxes (~/work/observation-boundary/evidence-7d.md) found 1636 reads of
+another chat's transcript and 2313 scans of whole transcript folders. agent_observe already limits observation to the family, but a cell
+could still open the files. So a session reads only its own chat's transcripts: the chat's root tree (the chat, its jobs and their
+subagents) and the trees of the root jobs the chat started, which chat-jobs.json records. The same scan found 1773 reads by check-in, alert
+and root jobs of their own chat's conversation in another root, as their briefs tell them to, and those stay open. Any other
+`<session id>.jsonl` under the Prime agent dir (sessions/, session-artifacts/ and their copies) raises TranscriptRefused, which names the
+catalog, status and relay paths that stay open.
 
 1. open(), io.open(), os.open() and Path.read_text() of such a file from cell code, or from code that is not a sieun-pi, skill or Prime tool.
 2. A command the kernel starts (bash(), subprocess, os.system) that names such a file, or that reads a folder holding one as a whole
@@ -42,6 +45,7 @@ LOG = os.environ.get("GLOBAL_RULES_TRANSCRIPT_LOG") or os.path.join(PRIME, "logs
 CLEAN_ROOM = os.path.join(PRIME, "clean-room")
 TRANSCRIPT = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SUB = re.compile(r"^sub-[0-9a-f]+$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 KERNEL = os.getpid()
 STDLIB = tuple(os.path.realpath(p) + os.sep for p in {sysconfig.get_paths().get("stdlib", ""), sysconfig.get_paths().get("platstdlib", "")} if p)
 # The tools whose reads stand for the catalog and the duty prechecks: this sieun-pi tree, the chat release and the runtime copy, the
@@ -64,7 +68,6 @@ KEYWORDS = {"{", "}", "!", "then", "do", "else", "elif", "if", "while", "until",
 REDIRECTS = {">", ">>", "<<", "<<<", ">&", "<&", "&>", ">|", "&>>"}
 SEPARATORS = {";", "&", "&&", "||", "(", ")", "\n", ";;"}
 GLOB = re.compile(r"[*?\[]")
-_family_ids = None
 
 
 class TranscriptRefused(PermissionError):
@@ -88,32 +91,95 @@ def transcript_id(path: str):
     return match.group(1) if under(real, PRIME) and not under(real, CLEAN_ROOM) else None
 
 
-def session_folder(real: str, sid: str) -> str:
-    if under(real, SESSIONS):
-        return os.path.join(ARTIFACTS, sid)
-    return os.path.dirname(real)
+def root_of(real: str, sid: str) -> str:
+    """The root session whose tree holds a transcript: the folder after session-artifacts/, live or in a copy, else the file's own id."""
+    parts = os.path.relpath(real, PRIME).split(os.sep)
+    if "session-artifacts" in parts:
+        index = parts.index("session-artifacts")
+        if index + 2 < len(parts) and UUID.match(parts[index + 1]):
+            return parts[index + 1]
+    return sid
 
 
-def family_ids(folder: str) -> set:
-    """The ids of this family's sessions, for a transcript copy outside the live tree (premove-sessions, backups)."""
-    global _family_ids
-    if _family_ids is not None:
-        return _family_ids
-    ids = set()
-    if under(folder, ARTIFACTS) and folder != ARTIFACTS:
-        ids.add(os.path.relpath(folder, ARTIFACTS).split(os.sep)[0])
-        current = folder
-        while current != ARTIFACTS and under(current, ARTIFACTS):
-            ids.update(transcripts_in(current))
-            current = os.path.dirname(current)
-        if SUB.match(os.path.basename(folder)):
-            for entry in scan(os.path.dirname(folder)):
-                if entry.is_dir(follow_symlinks=False) and SUB.match(entry.name):
-                    ids.update(transcripts_in(entry.path))
-        for _, dirs, files in os.walk(folder):
-            ids.update(m.group(1) for m in map(TRANSCRIPT.match, files) if m)
-    _family_ids = ids
-    return ids
+def board_module():
+    """The board skill a kernel pre-imports, or its file in this sieun-pi tree, for the chat host's job registry."""
+    module = sys.modules.get("board")
+    if module is not None and hasattr(module, "_chat_host"):
+        return module
+    module = sys.modules.get("global_rules_board")
+    if module is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("global_rules_board", os.path.join(HERE, "..", "..", "skills", "board", "src", "board", "__init__.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["global_rules_board"] = module
+    return module
+
+
+_registry = {"key": None, "jobs": {}, "names": {}}
+
+
+def registry(fresh: bool) -> tuple:
+    """The chat job registry (chat-jobs.json): which chat started each root job, by session id or name, and each chat name's id.
+
+    The chat host reads its own file, and another box reads it through the chat service (api/agent/jobs), as the board skill does. A local
+    file is read again when it changes, and the chat host's copy when `fresh` asks for it. A registry that cannot be read counts as empty.
+    """
+    path = os.path.join(os.environ.get("AGENT_CHAT_DATA_DIR") or os.path.join(PRIME, "browser-chat"), "chat-jobs.json")
+    try:
+        remote = board_module()._chat_host() is not None
+    except Exception:
+        remote = False
+    try:
+        key = "remote" if remote else os.stat(path).st_mtime_ns
+    except OSError:
+        key = "missing"
+    if key != _registry["key"] or (remote and fresh):
+        jobs = {}
+        try:
+            if remote:
+                raw = board_module()._call("api/agent/jobs") or b"{}"
+            else:
+                with _open(path, "rb") as handle:
+                    raw = handle.read()
+            jobs = json.loads(raw).get("jobs", {})
+        except Exception:
+            jobs = {}
+        names = {entry["chat"]: entry["chatId"] for entry in jobs.values()
+                 if isinstance(entry, dict) and isinstance(entry.get("chatId"), str) and isinstance(entry.get("chat"), str)}
+        _registry.update(key=key, jobs=jobs, names=names)
+    return _registry["jobs"], _registry["names"]
+
+
+_names: dict = {}
+
+
+def name_of(root: str):
+    """A root session's name, from the session_info line near the start of its own transcript; None when it has none."""
+    if root not in _names:
+        _names[root] = None
+        try:
+            with _open(os.path.join(SESSIONS, root + ".jsonl"), "rb") as handle:
+                head = handle.read(65536).decode("utf-8", "replace")
+            match = re.search(r'"type":"session_info"[^\n]*?"name":"((?:[^"\\]|\\.)*)"', head)
+            _names[root] = json.loads(f'"{match.group(1)}"') if match else None
+        except (OSError, ValueError):
+            pass
+    return _names[root]
+
+
+def chat_of(root: str, fresh: bool) -> str:
+    """The chat a root belongs to: the root itself, or the chat that started it, followed up the registry (a job's own root jobs)."""
+    jobs, names = registry(fresh)
+    seen, current = set(), root
+    while current not in seen:
+        seen.add(current)
+        entry = jobs.get(current) or jobs.get(name_of(current) or "\0")
+        parent = (entry.get("chatId") or names.get(entry.get("chat"))) if isinstance(entry, dict) else None
+        if not isinstance(parent, str) or not UUID.match(parent):
+            break
+        current = parent
+    return current
 
 
 def scan(path: str) -> list:
@@ -127,17 +193,25 @@ def transcripts_in(folder: str) -> list:
     return [m.group(1) for m in (TRANSCRIPT.match(e.name) for e in scan(folder) if e.is_file(follow_symlinks=False)) if m]
 
 
+_fresh = {"done": False}
+
+
 def in_family(path: str, sid: str, folder: str) -> bool:
-    """Whether the transcript at `path` is this session's, an ancestor's, a sibling's or a descendant's."""
+    """Whether the transcript at `path` belongs to this session's chat: the same root tree, or a root the same chat started.
+
+    The first miss in a check reads the chat host's registry again, so a job the chat started a moment ago counts.
+    """
     if not folder:
         return True
     real = os.path.realpath(path)
-    other = session_folder(real, sid)
-    if under(other, folder) or under(folder, other):
+    mine = os.path.relpath(folder, ARTIFACTS).split(os.sep)[0]
+    theirs = root_of(real, sid)
+    if theirs == mine or chat_of(theirs, False) == chat_of(mine, False):
         return True
-    if SUB.match(os.path.basename(other)) and SUB.match(os.path.basename(folder)) and os.path.dirname(other) == os.path.dirname(folder):
-        return True
-    return sid in family_ids(folder)
+    if not _fresh["done"]:
+        _fresh["done"] = True
+        return chat_of(theirs, True) == chat_of(mine, True)
+    return False
 
 
 def outside_in(directory: str, folder: str):
@@ -158,16 +232,15 @@ def outside_in(directory: str, folder: str):
 
 
 def allowed_paths(folder: str) -> str:
-    if not folder:
-        return "its own session folder"
-    own = transcripts_in(folder)
-    own_file = os.path.join(folder, own[0] + ".jsonl") if own else os.path.join(SESSIONS, os.path.basename(folder) + ".jsonl")
-    return f"its own transcript {own_file}, the transcripts of the sessions above it and its siblings, and everything below {folder}"
+    mine = os.path.relpath(folder, ARTIFACTS).split(os.sep)[0] if folder else ""
+    chat = chat_of(mine, False) if mine else ""
+    return (f"the transcripts of its own chat {chat}: the chat, its jobs and their subagents under {os.path.join(ARTIFACTS, chat)}, "
+            "and the root jobs that chat started") if chat else "its own chat's transcripts"
 
 
 def reason(path: str, sid: str, folder: str, whole: str = "") -> str:
     what = f"reading {whole} as a whole, which holds {path}" if whole else f"reading {path}"
-    return (f"global-rules refused {what}: it is the transcript of session {sid}, outside this session's family. A session reads only "
+    return (f"global-rules refused {what}: it is the transcript of session {sid}, outside this session's family, which is its own chat. A session reads only "
             f"{allowed_paths(folder)}. For another session, use its catalog and status: agent_observe.list_agents() and its message "
             "previews, `prime-agent status`, the board (board.open(chat=...), board.get(...)), the chat's job-resumes and duty files, and the "
             "daemon-workers descriptors with the worker and supervisor logs, or ask the chat that owns it to relay what you need. A fact that "
@@ -359,6 +432,7 @@ def check_open(file) -> None:
     name = os.fsdecode(file)
     if not name.endswith(".jsonl"):
         return
+    _fresh["done"] = False
     found = judge_path(os.path.abspath(name), FOLDER)
     if found and not tool_caller():
         record(found[0], found[1], "open")
@@ -388,6 +462,7 @@ def command_text(args) -> str:
 def check_command(args, cwd, env) -> None:
     if not ACTIVE:
         return
+    _fresh["done"] = False
     try:
         hit = judge_shell(command_text(args), os.fsdecode(cwd or os.getcwd()), env, FOLDER)
     except Exception:
@@ -439,6 +514,7 @@ def install() -> None:
 
 def judge_tool(request: dict):
     """The tool_call half (transcript-guard.ts): the reason to refuse a `read`, `grep` or `bash` tool call, or None."""
+    _fresh["done"] = False
     folder = folder_of(request.get("session", ""))
     if not folder or not under(folder, ARTIFACTS) or folder == ARTIFACTS:
         return None
