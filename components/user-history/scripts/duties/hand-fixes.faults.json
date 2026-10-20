@@ -362,6 +362,33 @@
           "proxy.census_tunnel_share"
         ]
       }
+    },
+    {
+      "id": "F25",
+      "title": "Prod raced 20 connects per new session into a dark GeoNode gateway, so a job pulled proxy.connect_racers down by hand",
+      "designs": [
+        "commit:fe43a60cbc"
+      ],
+      "owner": "geonode-racers-guard on us-metal02 (~/work/geonode-port-drop/racers_guard.py, a transient systemd-run unit) for the 'geonode timeouts our side' job: on 10-20 us-08 dropped every SYN 05:08-05:53Z while prod (43490e7e9f, no connect window) raced 20 connects per new session into it, and the job wrote proxy.connect_racers 4 (audit 15135, 05:44Z). fe43a60cbc adds sirocco's per-gateway connect window, which skips a read's extra connects while a gateway drops them, so nobody needs to cut the racers by hand; the guard exits once prod /health has fe43a60cbc",
+      "match": {
+        "config_key_prefixes": [
+          "proxy.connect_racers"
+        ]
+      }
+    },
+    {
+      "id": "F26",
+      "title": "The proxy connect window held API reads too, so a job turned proxy.connect_limiter off and on by hand on staging",
+      "designs": [
+        "commit:528d8f7156",
+        "commit:2940920308"
+      ],
+      "owner": "api portal vp, step p48: staging parity showed API reads waiting in the connect window, and the job wrote proxy.connect_limiter off (audit 14402, 02:37Z 10-20) and back (audit 14412, 05:54Z). 528d8f7156 gives API reads priority on the connect window and 2940920308 lets a priority read's extra connects skip it, both on staging in 5598f4e5f7 since 05:48Z, so the limiter stays on its default and API reads never wait",
+      "match": {
+        "config_key_prefixes": [
+          "proxy.connect_limiter"
+        ]
+      }
     }
   ],
   "exempt": {
