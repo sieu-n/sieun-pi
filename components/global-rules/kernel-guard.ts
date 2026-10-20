@@ -14,6 +14,8 @@ const FILE = join(HERE, "kernel-guard.py");
 // kernel-cwd.py reports the kernel's cwd to the tool_call guard (kernel-cwd.ts). It has its own flag, so a kernel that loaded the
 // send guard before this file existed gets it on its next cell.
 const CWD_FILE = join(HERE, "kernel-cwd.py");
+// kernel-own.py records each path under ~/scratch the kernel makes in the session's owned.json (c130). It has its own flag for the same reason.
+const OWN_FILE = join(HERE, "kernel-own.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -29,6 +31,12 @@ if not getattr(sys, "global_rules_kernel_cwd", False):
         exec(compile(open(${JSON.stringify(CWD_FILE)}).read(), ${JSON.stringify(CWD_FILE)}, "exec"), {"__name__": "global_rules_kernel_cwd", "__file__": ${JSON.stringify(CWD_FILE)}})
     except Exception as error:
         print(f"global-rules: the kernel cwd report did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_own", False):
+    sys.global_rules_kernel_own = True
+    try:
+        exec(compile(open(${JSON.stringify(OWN_FILE)}).read(), ${JSON.stringify(OWN_FILE)}, "exec"), {"__name__": "global_rules_kernel_own", "__file__": ${JSON.stringify(OWN_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel owner record did not load: {error}", file=sys.stderr)
 `;
 
 /** One line, so the cell's own line numbers in a traceback move by one. */

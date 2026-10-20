@@ -55,6 +55,8 @@ board.own("~/scratch/my-job/tree")                              # a git archive 
 board.own("/tmp/p8iso-a", unit="p8iso-a-daemon.service")        # a rig and the systemd-run unit that serves it
 ```
 
+The Prime kernel records most of it for you. Each folder under `~/scratch` that a cell makes, by Python or by a command it starts, goes into the record when it is made, unless it existed before or lies in a job's own `~/scratch/<session id>/` folder (global-rules `kernel-own.py`). Call `board.own` for the rest, such as a path under `/tmp`, a path a process outside the kernel made, or a unit.
+
 1. Record only what is yours to throw away, such as an export, a rig, a data copy or a `systemd-run` unit.
 2. Never record a report, evidence or a helper another job runs, and keep reports and evidence under `~/work/<job>/`.
 3. A path must lie below `/tmp`, `~/scratch` or `~/.prime/agent/session-artifacts`, outside every session folder.
