@@ -3,7 +3,7 @@
 // Also guards the 10-18 false drop: /blog/will-ai-kill-us-all's launch days (1,248 and 263) made its usual 4 to 56 a day read as a fall.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { droppedPages, visitsOutput, type GscRead, type PagesDaily } from "../scripts/duties/seo-search-visits.ts";
+import { droppedPages, readNoindex, visitsOutput, type GscRead, type PagesDaily } from "../scripts/duties/seo-search-visits.ts";
 
 const JA_PAY = "https://virev.ai/ja/blog/how-much-does-youtube-pay-per-view";
 const IG_ALGO = "https://virev.ai/blog/instagram-algorithm";
@@ -35,4 +35,17 @@ test("dropped_pages flags both 10-13 drops by the 10-16 final day and leaves a s
   assert.match(output.flagged!.find(slice => slice.kind === "dropped_pages")!.excerpt,
     /2026-09-30\.\.2026-10-13 against 2026-10-14\.\.2026-10-16.*how-much-does-youtube-pay-per-view 147\.8 to 1\.3, .*instagram-algorithm 23\.8 to 3/);
   assert.equal(visitsOutput({ gsc: { error: "HTTP 500" } }, 0).metrics.dropped_pages, 999_999);
+});
+
+test("a page that answers robots noindex is left out of dropped_pages, since we asked Google to drop it", async () => {
+  assert.deepEqual(droppedPages(upTo("2026-10-16"), new Set([IG_ALGO])).map(page => page.page), [JA_PAY]);
+  const html = (robots: string): Response => new Response(`<html><head>${robots}</head></html>`, { headers: { "content-type": "text/html" } });
+  const get = (async (url: string | URL | Request) => {
+    const page = String(url);
+    if (page === IG_ALGO) return html('<meta name="robots" content="noindex,follow"/>');
+    if (page === STEADY) return new Response("x", { headers: { "x-robots-tag": "noindex" } });
+    if (page === LAUNCH) throw new Error("connect timeout");
+    return html('<meta name="robots" content="index,follow"/>');
+  }) as typeof fetch;
+  assert.deepEqual(await readNoindex([JA_PAY, IG_ALGO, STEADY, LAUNCH], get), [IG_ALGO, STEADY]);
 });

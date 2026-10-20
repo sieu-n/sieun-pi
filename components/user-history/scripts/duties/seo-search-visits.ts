@@ -100,7 +100,7 @@ export interface SignupsRead { clerk_users: number; d28: number; attribution: st
 export interface TipCommit { sha: string; committedAt: number; subject: string }
 export interface ShipRead { tipRef: string; commits: TipCommit[] }
 export interface CopyRead { pages: number; banned: BannedPage[] }
-export interface VisitsRead { traffic?: TrafficRead | Err; gsc?: GscRead | Err; signups?: SignupsRead | Err; ship?: ShipRead | Err; copy?: CopyRead | Err }
+export interface VisitsRead { traffic?: TrafficRead | Err; gsc?: GscRead | Err; signups?: SignupsRead | Err; ship?: ShipRead | Err; copy?: CopyRead | Err; noindex?: string[] }
 export interface DroppedPage { page: string; baseDaily: number; recentDaily: number }
 
 const isErr = (value: unknown): value is Err => typeof value === "object" && value !== null && "error" in value;
@@ -114,12 +114,15 @@ export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
   return { base: { start: addDays(recentStart, -DROP_BASE_DAYS), end: addDays(recentStart, -1) }, recent: { start: recentStart, end: lastFinal } };
 }
 
-/** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first. */
-export function droppedPages(daily: PagesDaily): DroppedPage[] {
+/** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first.
+ * A page in `noindex` answers robots noindex, so we asked Google to drop it: /blog/tag/creator-selection went noindex as a one-article
+ * tag page after the 10-15 merge of 20 guides into 13 (e177d75478), and its 6 to 0.3 a day on 10-16..10-18 was that ask working. */
+export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = new Set()): DroppedPage[] {
   const { base, recent } = dropWindows(daily.end);
   const pages = new Map<string, { date: string; impressions: number }[]>();
   for (const row of daily.rows) if (row.date >= base.start && row.date <= recent.end) pages.set(row.page, [...pages.get(row.page) ?? [], row]);
   return [...pages].flatMap(([page, rows]) => {
+    if (noindex.has(page)) return [];
     const first = rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end);
     const from = first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : first;
     if (from > base.end) return [];
@@ -169,11 +172,14 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   else if (daysBetween(gsc.last_final, gsc.today) > GSC_STALE_DAYS) fail("Search Console (virev_seo.gsc)", `the last final day is ${gsc.last_final}, ${daysBetween(gsc.last_final, gsc.today)} days before ${gsc.today}`, gscKeys);
   else {
     const { base, recent } = dropWindows(gsc.pages.end);
-    const dropped = droppedPages(gsc.pages);
+    const noindex = new Set(read.noindex ?? []);
+    const dropped = droppedPages(gsc.pages, noindex);
+    const skipped = droppedPages(gsc.pages).filter(page => noindex.has(page.page));
+    const left = skipped.length ? ` Left out, since they answer robots noindex: ${skipped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.` : "";
     metrics.dropped_pages = dropped.length;
-    flagged.push({ at, kind: "dropped_pages", excerpt: dropped.length
+    flagged.push({ at, kind: "dropped_pages", excerpt: (dropped.length
       ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
-      : `No page with ${DROP_MIN_DAILY}+ Google impressions a day over ${base.start}..${base.end} fell under ${DROP_SHARE * 100}% of that over ${recent.start}..${recent.end}.` });
+      : `No page with ${DROP_MIN_DAILY}+ Google impressions a day over ${base.start}..${base.end} fell under ${DROP_SHARE * 100}% of that over ${recent.start}..${recent.end}.`) + left });
     metrics.google_clicks_d7 = round(gsc.d7.clicks / 7, 1);
     const prior = gsc.d7_prior;
     flagged.push({ at, kind: "google", excerpt: `Google clicks ${gsc.d7.clicks} and impressions ${gsc.d7.impressions} over ${gsc.d7.start}..${gsc.d7.end}, average position ${gsc.d7.position}` +
@@ -243,6 +249,20 @@ export function readSources(repo: string): Promise<VisitsRead> {
   });
 }
 
+/** The pages among `pages` whose live HTML answers a robots noindex meta tag or X-Robots-Tag header. A page that fails to load stays counted. */
+export async function readNoindex(pages: readonly string[], get: typeof fetch = fetch): Promise<string[]> {
+  const answers = await Promise.all(pages.map(async page => {
+    try {
+      const response = await get(page, { redirect: "follow", signal: AbortSignal.timeout(15_000) });
+      const header = response.headers.get("x-robots-tag") ?? "";
+      const html = await response.text();
+      const meta = /<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html);
+      return /noindex/i.test(header) || meta ? page : undefined;
+    } catch { return undefined; }
+  }));
+  return answers.filter((page): page is string => page !== undefined);
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("seo-search-visits: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -255,7 +275,9 @@ async function main(): Promise<void> {
     readShip(runGit(REPO)).catch((error: unknown): Err => ({ error: why(error) })),
     readCopy(runGit(REPO)).catch((error: unknown): Err => ({ error: why(error) })),
   ]);
-  await writeFile(output, JSON.stringify(visitsOutput({ ...read, ship, copy }, Date.now()), null, 2) + "\n");
+  const gscPages = !isErr(read.gsc) ? read.gsc?.pages : undefined;
+  const noindex = gscPages ? await readNoindex(droppedPages(gscPages).map(page => page.page)) : [];
+  await writeFile(output, JSON.stringify(visitsOutput({ ...read, ship, copy, noindex }, Date.now()), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
