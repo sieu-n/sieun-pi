@@ -6,6 +6,8 @@ import { Projector } from "../../src/chat-projection.ts";
 import { readBranchPage, historyMessages } from "../../src/session-tail.ts";
 import { chatLines, lineId, OWNER_RETRY_MARK, serverNote } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
+import { noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "./noise-split.ts";
+import { fixRepos, gitCommitTime } from "./repeat-split.ts";
 
 /**
  * The Owner messages duty's precheck (owner-messages.duty.json): what the owner's real chats sent him in the last 24 h, the way the :5182 feed
@@ -16,6 +18,8 @@ import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
  * - needed_pct_24h: needed lines of the labelled ones, in percent; 100 when nothing went out.
  * - unlabeled_lines: lines on turns he did not start that have no label yet; each is flagged with its chat, wake and text.
  * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS.
+ * - noise_before_fix_24h, noise_after_fix_24h, noise_no_fix_24h: the noise lines by when the check for their kind landed (noise-split.ts), and
+ *   needed_pct_24h's lastEventAt, so a miss on noise that went out before its fix only waits for the lines to leave the 24 h.
  * Clean-room test chats are left out (clean-room-chats.json), since the goal is about his real chats.
  *
  *   OUTPUT_FILE=<file> node --import tsx scripts/duties/owner-messages.ts [--hours 24] [--end <ISO>]
@@ -54,8 +58,9 @@ async function branchSince(file: string, since: number): Promise<any[]> {
   return pages.flat();
 }
 
-let needed = 0, noise = 0, unlabeled = 0, unanswered = 0;
+let needed = 0, unlabeled = 0, unanswered = 0;
 const flagged: FlaggedSlice[] = [];
+const noiseLines: { chat: string; at: number; case: string; text: string }[] = [];
 for (const chat of chats) {
   const file = PLACES.map(dir => join(dir, `${chat}.jsonl`)).find(existsSync);
   if (!file) continue;
@@ -85,7 +90,7 @@ for (const chat of chats) {
     if (ownerTurn[index]) { needed++; continue; }
     const label = labels.get(line.id);
     if (label?.label === "needed") needed++;
-    else if (label?.label === "noise") { noise++; flagged.push({ kind: "noise", chat, at: line.at, excerpt: `${label.case ?? "noise"}: ${line.text.slice(0, 300)}` }); }
+    else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, case: label.case ?? "noise", text: line.text });
     else { unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
   }
   const seq = lines.filter(line => line.at >= start - 6 * 3_600_000 && line.at < end);
@@ -100,7 +105,9 @@ for (const chat of chats) {
     }
   }
 }
-const labelled = needed + noise;
-const metrics = { needed_pct_24h: labelled ? Math.round(1000 * needed / labelled) / 10 : 100, unlabeled_lines: unlabeled, unanswered_bursts: unanswered };
-writeFileSync(out, JSON.stringify({ metrics, flagged } satisfies PrecheckOutput, null, 1));
+const noise = await splitNoise(noiseLines, gitCommitTime(fixRepos("")));
+noise.forEach((line, index) => flagged.push({ kind: "noise", chat: noiseLines[index]!.chat, at: line.at, excerpt: `${line.case}, ${noiseSide(line)}: ${noiseLines[index]!.text.slice(0, 300)}` }));
+const labelled = needed + noise.length;
+const metrics = { needed_pct_24h: labelled ? Math.round(1000 * needed / labelled) / 10 : 100, unlabeled_lines: unlabeled, unanswered_bursts: unanswered, ...noiseMetrics(noise) };
+writeFileSync(out, JSON.stringify({ metrics, flagged, lastEventAt: noiseLastEvent(noise, end) } satisfies PrecheckOutput, null, 1));
 process.stdout.write(`${JSON.stringify(metrics)}\n`);

@@ -204,7 +204,7 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
   const fix = streak.fix;
   if (streak.quietSince !== undefined) {
     return `${where} Its newest counted event is from ${localTime(streak.quietSince)}, before the last run, so no new event came since and the number ` +
-      `falls as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
+      `moves toward its target as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
   }
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +
