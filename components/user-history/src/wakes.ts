@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { hostExecFile } from "./spawn-host.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -163,7 +163,7 @@ const CI_CACHE = process.env.CI_CACHE_DIR ?? join(homedir(), ".cache", "virev");
 const PATH_WITH_LOCAL = [join(homedir(), ".local", "bin"), "/opt/homebrew/bin", process.env.PATH ?? ""].join(":");
 function run(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PATH: PATH_WITH_LOCAL } }, (error, stdout, stderr) => {
+    hostExecFile(command, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PATH: PATH_WITH_LOCAL } }, (error, stdout, stderr) => {
       if (error && !stdout) { reject(new Error(String(stderr || error.message).trim().split("\n")[0])); return; }
       resolve(stdout);
     });

@@ -1,4 +1,4 @@
-import { execFile, type ExecFileException } from "node:child_process";
+import { type HostExecError, hostExecFile } from "./spawn-host.ts";
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -65,7 +65,7 @@ function parseReport(stdout: string): { report: InterruptedReport } | { malforme
   return bad ? { malformed: `printed a report whose ${bad} is missing or has the wrong type` } : { report: value as unknown as InterruptedReport };
 }
 
-function exitCause(error: ExecFileException, ms: number): string {
+function exitCause(error: HostExecError, ms: number): string {
   const after = `after ${(ms / 1000).toFixed(1)} s`;
   if (error.signal) return `ended by ${error.signal} ${after}`;
   if (typeof error.code === "number") return `exited ${error.code} ${after}`;
@@ -83,7 +83,7 @@ export function runScript(args: readonly string[], file = script, warnAfterMs = 
   const started = Date.now();
   const overrun = setTimeout(() => warn(`resume: resume_paused.py ${describeArgs(args)} still running after ${(warnAfterMs / 1000).toFixed(1)} s`), warnAfterMs);
   return new Promise((resolve, reject) => {
-    execFile(process.env.PYTHON ?? "python3", ["-B", file, "--json", ...args], { maxBuffer: Infinity }, (error, stdout, stderr) => {
+    hostExecFile(process.env.PYTHON ?? "python3", ["-B", file, "--json", ...args], { maxBuffer: Infinity }, (error, stdout, stderr) => {
       clearTimeout(overrun);
       const ms = Date.now() - started;
       if (ms > warnAfterMs) warn(`resume: resume_paused.py ${describeArgs(args)} took ${(ms / 1000).toFixed(1)} s`);

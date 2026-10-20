@@ -1,4 +1,5 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
 import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -359,7 +360,7 @@ async function endArtifacts(source: LeftoverSource, transcripts: readonly string
 
 function helper(args: readonly string[], input = ""): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const child = execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+    const child = hostExecFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
       if (error) { reject(error); return; }
       try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
@@ -370,7 +371,7 @@ function helper(args: readonly string[], input = ""): Promise<unknown> {
 /** Runs `systemctl --user` with these arguments: whether it exited 0, and its trimmed stdout. */
 function systemctl(args: readonly string[]): Promise<{ ok: boolean; output: string }> {
   return new Promise(resolve => {
-    execFile("systemctl", ["--user", ...args], { maxBuffer: 1024 * 1024 }, (error, stdout) => resolve({ ok: !error, output: String(stdout).trim() }));
+    hostExecFile("systemctl", ["--user", ...args], { maxBuffer: 1024 * 1024 }, (error, stdout) => resolve({ ok: !error, output: String(stdout).trim() }));
   });
 }
 
@@ -385,7 +386,7 @@ for (const id of __leftoverIds) if (__leftoverOpen.has(id)) { const tab = await 
 let __leftoverLeft = new Set(); for (let i = 0; i < 20; i++) { await sleep(250); __leftoverLeft = new Set((await listBrowserTabs()).map(tab => tab.targetId)); if (!__leftoverIds.some(id => __leftoverLeft.has(id))) break; }
 console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(id) && !__leftoverLeft.has(id)).length);`;
   return new Promise((resolve, reject) => {
-    execFile(cli, ["repl", code], { timeout: 130_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    hostExecFile(cli, ["repl", code], { timeout: 130_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       const closed = /LEFTOVER_CLOSED (\d+)/.exec(stdout);
       if (closed) resolve(Number(closed[1]));
       else reject(error ?? new Error(`aside repl: ${(stdout + stderr).slice(0, 300)}`));
@@ -505,7 +506,7 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
 export const sshLeftovers: RemoteLeftovers = (host, args) => new Promise((resolve, reject) => {
   if (!host.ssh) { reject(new Error(`hosts.json gives ${host.name} no ssh target`)); return; }
   const command = `PATH="$HOME/.local/bin:$PATH"; cd "$(sieun-pi source)/components/user-history" && exec node --import tsx src/job-leftovers.ts ${args.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(" ")}`;
-  execFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, command], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+  hostExecFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, command], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
     try { if (!error) { resolve(JSON.parse(String(stdout).trim().split("\n").at(-1) ?? "") as Leftovers); return; } } catch { /* reported below */ }
     reject(new Error(`job leftovers on ${host.name}: ${(String(stderr) || String(stdout)).replace(/\s+/g, " ").trim().slice(0, 300) || error?.message || "no answer"}`));
   });

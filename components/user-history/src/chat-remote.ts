@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { hostExecFile } from "./spawn-host.ts";
 import { access, constants } from "node:fs/promises";
 import type { RemoteAccessInput, RemoteAccessView, RemoteMode } from "./shared/types.ts";
 
@@ -14,7 +14,7 @@ export type CommandResult = { code: number; stdout: string; stderr: string; time
 export type Runner = (file: string, args: string[], timeoutMs: number) => Promise<CommandResult>;
 
 export const runCommand: Runner = (file, args, timeoutMs) => new Promise(resolve => {
-  execFile(file, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, NO_COLOR: "1" } }, (error, stdout, stderr) => {
+  hostExecFile(file, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, NO_COLOR: "1" } }, (error, stdout, stderr) => {
     const failure = error as (NodeJS.ErrnoException & { killed?: boolean; code?: number | string }) | null;
     resolve({ code: failure ? typeof failure.code === "number" ? failure.code : 1 : 0, stdout: String(stdout), stderr: String(stderr || failure?.message || ""),
       timedOut: failure?.killed === true });

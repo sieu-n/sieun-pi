@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { hostExecFile } from "./spawn-host.ts";
 import { readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -432,7 +432,7 @@ export async function readWatch(dataDir: string, since: number, now: number): Pr
 const HELPER = join(import.meta.dirname, "worker-footprint.py");
 function runHelper(args: readonly string[], input: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const child = execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+    const child = hostExecFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
       if (error) { reject(error); return; }
       try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
