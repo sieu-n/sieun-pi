@@ -95,7 +95,7 @@ test("the create send is timed from before its POST, listed as a new thread and 
 });
 
 /** A fake chat service: `script` sends the first turn's frames; each follow-up prompt gets a user message, an "ok" reply and agent_end. */
-async function fakeService(t: { after: (fn: () => unknown) => void }, script: (frame: (type: string, message?: Record<string, unknown>) => void) => void) {
+async function fakeService(t: { after: (fn: () => unknown) => void }, script: (frame: (type: string, message?: Record<string, unknown>) => void, snapshot: (messages: Record<string, unknown>[]) => void) => void) {
   const posts: string[] = [];
   let frame: ((type: string, message?: Record<string, unknown>) => void) | undefined;
   const server = createServer((req, res) => {
@@ -120,7 +120,7 @@ async function fakeService(t: { after: (fn: () => unknown) => void }, script: (f
   sockets.on("connection", socket => socket.on("message", data => {
     const { sub } = JSON.parse(data.toString()) as { sub: number };
     frame = (type, message) => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "event", event: { type, ...(message ? { message } : {}) } } }));
-    script(frame);
+    script(frame, messages => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "snapshot", snapshot: { messages, streaming: false } } })));
   }));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -145,6 +145,27 @@ test("after a first turn that ended in the slot wait, the follow-ups go once the
   const { sends } = await sendProbe({ port, capability: "cap", csrfToken: "token" }, 20_000);
   assert.deepEqual(sends.map(send => Boolean(send.create)), [true, false, false, false]);
   assert.ok(sends[0]!.firstTokenAt - started < 250, "the new-thread send was timed from the retried turn instead of its first frame");
+  assert.equal(posts.filter(path => path.endsWith("/prompt")).length, 3);
+});
+
+test("a subscribe snapshot that already holds the slot-wait error also holds the follow-ups until the retried turn ends with no error", async t => {
+  let retried = 0;
+  const { posts, port } = await fakeService(t, (frame, snapshot) => {
+    snapshot([{ role: "user", content: [] }, slotWait]);
+    setTimeout(() => {
+      frame("agent_end");
+      frame("auto_retry_end");
+      setTimeout(() => {
+        retried = Date.now();
+        frame("agent_start");
+        frame("message_end", { role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop" });
+        frame("agent_end");
+      }, 2500);
+    }, 200);
+  });
+  const { sends } = await sendProbe({ port, capability: "cap", csrfToken: "token" }, 20_000);
+  assert.deepEqual(sends.map(send => Boolean(send.create)), [true, false, false, false]);
+  assert.ok(retried > 0 && sends[1]!.sentAt >= retried, "a follow-up went before the retried turn ended");
   assert.equal(posts.filter(path => path.endsWith("/prompt")).length, 3);
 });
 

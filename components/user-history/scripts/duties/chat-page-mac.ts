@@ -220,8 +220,19 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
     // A first turn that ended in an error, such as pi-pool's slot wait, goes into a retry after its agent_end, and a follow-up sent then waits
     // behind it: on 10-20 at 05:49Z the follow-up got no user message in 120 s. So the follow-ups wait for a turn that ends with no error,
     // within the new thread's bound; at 05:52Z the slot came after about 1 min, and a probe that sent none left p93's metric unread.
-    const failed = (from: number, to: number) => frames.slice(from, to + 1).some(({ frame }) => mine(frame) && kind(frame) === "message_end" &&
-      frame.data?.event?.message?.role === "assistant" && frame.data.event.message.stopReason === "error");
+    // The newest assistant outcome in the frames decides, a snapshot's last assistant message included: at 06:05Z on 10-20 the subscribe
+    // answered with a snapshot that already held the slot-wait error, and follow-ups sent behind its retry read up to 89 round trips.
+    const failed = (from: number, to: number) => {
+      let error = false;
+      for (const { frame } of frames.slice(from, to + 1)) {
+        if (!mine(frame)) continue;
+        if (frame.data?.type === "snapshot") {
+          const last = (frame.data.snapshot?.messages ?? []).filter(message => message.role === "assistant").at(-1);
+          if (last) error = last.stopReason === "error";
+        } else if (kind(frame) === "message_end" && frame.data?.event?.message?.role === "assistant") error = frame.data.event.message.stopReason === "error";
+      }
+      return error;
+    };
     for (let from = first.index, turn = end.index; failed(from, turn); ) {
       const left = createdAt + firstReplyMs - Date.now();
       const next = left > 0 ? await until(turn + 1, frame => mine(frame) && kind(frame) === "agent_end", left, "turn after the slot wait").catch(() => null) : null;
