@@ -110,7 +110,7 @@ let created = false;
 const results = [];
 // A thread the probe made is archived on every exit, pass or fail, so no scratch session stays resident.
 async function finish(code) {
-  if (created && !args.keep) await post(`api/threads/${encodeURIComponent(id)}/archive`, {}).catch(() => {});
+  if (created && !args.keep) await post(`api/threads/${encodeURIComponent(id)}/archive`, { by: "service_cleanup" }).catch(() => {});
   ws.close();
   process.exit(code);
 }

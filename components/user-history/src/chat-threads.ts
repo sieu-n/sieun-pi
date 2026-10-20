@@ -11,6 +11,7 @@ import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
+import type { ArchiveBy, ServiceArchive, ServiceArchiveRecord } from "./service-archives.ts";
 import { activeIn, AMBIGUOUS, isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
@@ -356,6 +357,8 @@ export class ThreadHub {
    * owner reopens the session. Null when the hub was given no file (tests): such an archive only reports that its jobs may still run.
    */
   readonly cancels: SavedArchiveQueue | null;
+  /** The service's own archives and stops (`<data dir>/service-archives.json`); the service sets it, and tests without it record none. */
+  serviceArchives: ServiceArchiveRecord | null = null;
   /** The owner-turn mark of a session on this box (`prompt` with `owner`); the service sets pi-pool's, and tests leave it a no-op. */
   markOwnerTurn: (id: string) => Promise<void> = async () => {};
   /** This box's Prime update records, which end a wait on this box's update prepare (`startWorker`); tests point them at their own folder. */
@@ -667,7 +670,7 @@ export class ThreadHub {
     if ((this.ownerStops.get(id) ?? -Infinity) >= since) return "the owner stopped it";
     if (this.catalog.hostOf(id)) return null;
     const file = (await this.catalog.summary(id))?.sessionFile;
-    const stop = file ? await ownerStopSinceActive(file) : null;
+    const stop = file ? await ownerStopSinceActive(file, await this.serviceArchiveOf(id)) : null;
     const at = stop ? Date.parse(stop.slice(stop.lastIndexOf(" at ") + 4)) : NaN;
     return at >= since ? `the session file records ${stop}` : null;
   }
@@ -1357,6 +1360,7 @@ export class ThreadHub {
     const data = await spare.created;
     if (!data) return;
     const client = await this.hostDaemon(spare.host).catch(() => null);
+    await this.noteArchive(data.sessionId, "service_cleanup");
     await client?.request({ type: "kill", activeSessionId: data.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
     this.catalog.spare(data.sessionId, false);
   }
@@ -1402,6 +1406,7 @@ export class ThreadHub {
       const fields = promptFields(spare.sessionId, { ...input.first, images: [], owner: true }, true);
       const answer = await client.request({ type: "prompt", activeSessionId: spare.activeSessionId!, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false }).catch(() => null);
       if (answer?.success) return this.opened(client, spare, input, input.name, null);
+      void this.noteArchive(spare.sessionId, "service_cleanup");
       void client.request({ type: "kill", activeSessionId: spare.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
     }
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
@@ -1421,6 +1426,8 @@ export class ThreadHub {
       const answer = await client.request({ type: "rename", activeSessionId, name: named } as never, DAEMON_WORKER_START_MS, { recoverable: false })
         .catch((error: unknown) => ({ success: false as const, error: error instanceof Error ? error.message : String(error) }));
       if (answer.success) return created;
+      const sessionId = created.success && typeof created.data === "object" && created.data !== null && "sessionId" in created.data ? created.data.sessionId : undefined;
+      if (typeof sessionId === "string") await this.noteArchive(sessionId, "service_cleanup");
       await client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
       return answer;
     }, undefined, answer => answer === made && isPrepareRefusal(answer));
@@ -1608,7 +1615,8 @@ export class ThreadHub {
    * stop, the archive still holds here and it throws ScheduledJobsLeft. When the daemon archived it and cancelled its jobs but holds the stop of
    * a handed-off service for a receipt it could not read, it throws ServicesStopPending and queues nothing, since Prime finishes that stop itself.
    */
-  async archive(id: string): Promise<void> {
+  async archive(id: string, by: ArchiveBy): Promise<void> {
+    await this.noteArchive(id, by);
     this.archiveStarts.set(id, Date.now());
     this.cancelWaits(id);
     this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
@@ -1647,6 +1655,23 @@ export class ThreadHub {
         "unless the thread is reopened first. If a typed prompt or a message from the chat service reaches the thread before then, the retry cannot tell " +
         "who sent it and waits until you archive or reopen the thread again."
       : `The thread is archived, but its scheduled jobs may still run (${left}), and the retry could not be recorded.`, queued);
+  }
+
+  /**
+   * Writes who archives or stops `id` before the command goes out: the service's reason (service-archives.ts), since Prime writes owner_stop or
+   * owner_archive for every archive this server sends, or, for the owner's own, drops an older service entry. A record that cannot be written is
+   * logged and the archive goes on.
+   */
+  private async noteArchive(id: string, by: ArchiveBy): Promise<void> {
+    const record = this.serviceArchives;
+    if (!record) return;
+    await (by === "owner" ? record.drop(id) : record.add(id, { at: Date.now(), reason: by }))
+      .catch(error => process.stderr.write(`${new Date().toISOString()} thread ${id.slice(0, 8)}: the ${by === "owner" ? "owner's" : by} archive was not recorded: ${error instanceof Error ? error.message : String(error)}\n`));
+  }
+
+  /** The service's own archive or stop of `id` that service-archives.json holds, or undefined. */
+  serviceArchiveOf(id: string): Promise<ServiceArchive | undefined> {
+    return this.serviceArchives ? this.serviceArchives.of(id).catch(() => undefined) : Promise.resolve(undefined);
   }
 
   /** A bare kill, which a kill_origin daemon records as the owner's stop, so it ends the session's scheduled jobs. "gone": the daemon no longer holds it. */

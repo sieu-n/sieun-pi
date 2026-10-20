@@ -162,7 +162,7 @@ async function createThread(srv: Server, run: string, pending: Pending, role: st
   const io: CreateIo = {
     post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one); },
     find: async one => findSession(SESSIONS, one, new Set(await new IdIndex(join(DATA, "chats.json"), "Chat index").ids())),
-    archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, {}).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
+    archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, { by: "service_cleanup" }).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
     deliver: async (id, text, rid) => { await call(srv, "POST", `api/threads/${id}/prompt`, { message: text, images: [], mode: "steer", requestId: rid }); },
     save, log: line => log(run, line), newRequestId: requestId, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
   };
@@ -729,7 +729,7 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     for (const path of pages.archived) log(run, `archived the wiki page ${path} as test output`);
     for (const path of pages.failed) { failed.push(path); log(run, `archive the wiki page ${path} failed`); }
   }
-  const archive = (id: string, what: string) => call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived ${what} ${id}`), (error: unknown) => {
+  const archive = (id: string, what: string) => call(srv, "POST", `api/threads/${id}/archive`, { by: "service_cleanup" }).then(() => log(run, `archived ${what} ${id}`), (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (/: 404 /.test(message)) { log(run, `${what} ${id} is gone already`); return; }
     // A job archived with its chat answers 502 "not on this box" once the chat is gone, so its own transcript decides: r3h's job and its 6

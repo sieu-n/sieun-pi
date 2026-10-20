@@ -267,7 +267,7 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
       if (kind(frames[done.index]!.frame) === "auto_retry_start") break;
     }
   } finally {
-    await post(`api/threads/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
+    await post(`api/threads/${encodeURIComponent(id)}/archive`, { by: "service_cleanup" }).catch(() => undefined);
     ws.close();
   }
   return { id, sends };

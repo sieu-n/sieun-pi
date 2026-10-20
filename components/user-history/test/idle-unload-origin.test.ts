@@ -209,7 +209,7 @@ test("on a kill_origin daemon the idle stop keeps the owner's thread listed, and
   try {
     await f.unloader.sweep();
     await f.killAsked;
-    await f.hub.archive(f.id);
+    await f.hub.archive(f.id, "owner");
     f.release();
     await f.unloader.settled();
     assert.deepEqual(f.sent.map(command => command.origin), ["idle_unload", undefined], "the idle kill names itself and the archive's kill stays the owner's");

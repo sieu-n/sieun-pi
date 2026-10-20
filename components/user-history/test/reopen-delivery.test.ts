@@ -332,7 +332,7 @@ for (const reopen of [false, true]) test(`archiving during resume cancels the ol
     assert.equal((await f.post()).status, 200);
     f.createReady.resolve();
     await f.attaching.promise;
-    await f.hub.archive(f.id);
+    await f.hub.archive(f.id, "owner");
     const replacement = reopen ? await f.hub.open(f.id, false, false) : undefined;
     f.attachReady.resolve(); f.replyReady.resolve();
     await f.delivered();

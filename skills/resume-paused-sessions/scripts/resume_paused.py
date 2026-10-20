@@ -32,6 +32,9 @@ archive that stopped the turn counts only when it is the idle unload's, by its
 idle_unload reason or the unload's record. A stop record or a stop reason on the
 archive (owner_stop, owner_archive, subagent_deleted, completed, replaced and
 the like) keeps the run stopped and lists it under "stopped" with that record.
+An owner_stop or owner_archive line that the chat's service-archives.json names
+is listed as the chat service's own archive, since Prime writes those reasons
+for every archive the service sends.
 Any other archive is listed under "unresolved" with its cause and gets nothing:
 a line with no reason, daemon_shutdown, an update discard (named by its discard
 record when exactly one matches), one the update left out under stoppedBeforeRestore,
@@ -151,6 +154,10 @@ ARTIFACTS_DIR = Path.home() / ".prime" / "agent" / "session-artifacts"
 DELETED_JOBS = Path.home() / ".prime" / "agent" / "browser-chat" / "deleted-jobs.json"
 ARCHIVED_CHATS = Path.home() / ".prime" / "agent" / "browser-chat" / "archived-chats.json"
 JOB_CANCELS = Path.home() / ".prime" / "agent" / "browser-chat" / "job-cancels.json"
+# The chat service's own archives (service-archives.ts): Prime writes owner_stop or owner_archive for every archive the service sends.
+SERVICE_ARCHIVES = Path.home() / ".prime" / "agent" / "browser-chat" / "service-archives.json"
+# A line up to this long before the entry still belongs to it, for a session stamped by another box's clock (SERVICE_ARCHIVE_CLOCK_SLACK_MS).
+SERVICE_ARCHIVE_SLACK = dt.timedelta(seconds=5)
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -636,7 +643,7 @@ class JobRecordError(RecordError):
 # The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
 # the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
 CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded",
-              "job-cancels.json": "api/agent/job-cancels"}
+              "job-cancels.json": "api/agent/job-cancels", "service-archives.json": "api/agent/service-archives"}
 # How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
 CHAT_HOST_WAIT_S = 30
 # {file name: (text or None, source)} from the chat host, read once per pass.
@@ -967,6 +974,9 @@ def archive_verdict(archive, session_id, path, unloaded_at, entries):
         if unload_archive(archive, unloaded_at):
             return ("unload", f"the idle unload stopped it (unloaded.json, archive at {at})")
         return ("unresolved", "An archive with no recorded cause stopped its turn, so it is not resumed.")
+    service = service_archive(archive, Path(path).stem if path else session_id, entries)
+    if service:
+        return ("stopped", service)
     kind, said = ARCHIVE_REASONS.get(reason, (None, None))
     if kind == "discarded":
         return update_discard(archive, session_id, path, entries)
@@ -977,15 +987,42 @@ def archive_verdict(archive, session_id, path, unloaded_at, entries):
     return ("unresolved", f"Its archive at {at} names a cause this pass does not know ({reason!r}), so it is not resumed.")
 
 
-def stopped_since(entries, found_at):
-    """What stopped the run after the pass found it at `found_at`: an archive line written later whose reason means the stop, or None."""
+def stopped_since(entries, found_at, session_id=None):
+    """What stopped the run after the pass found it at `found_at`: an archive line written later whose reason means the stop, or None. A line
+    the chat service wrote for its own archive of `session_id` says so (service_archive)."""
     for entry in reversed(entries):
         reason = (entry.get("state") or {}).get("reason")
         kind, said = ARCHIVE_REASONS.get(reason, (None, None))
         stamp = parse_ts(entry.get("timestamp"))
         if is_archive(entry) and kind == "stopped" and found_at and stamp and stamp > found_at:
-            return f"{said} (archive reason {reason}, at {entry.get('timestamp')})"
+            return (session_id and service_archive(entry, session_id, entries)) or f"{said} (archive reason {reason}, at {entry.get('timestamp')})"
     return None
+
+
+def service_archive(archive, session_id, entries):
+    """Why the chat service archived the session `session_id` itself, when the owner_stop or owner_archive line `archive` is its archive, else
+    None. Prime writes those two reasons for every archive the service sends, such as the duty runner's archive of each cut duty job on 10-20
+    0.4 to 3 s after "its turn ended; queued its archive". The service writes service-archives.json first, so the line belongs to the entry
+    when it is stamped at or after the entry and no active line between them reopened the session. Raises RecordError like read_record."""
+    reason = (archive.get("state") or {}).get("reason")
+    if reason not in ("owner_stop", "owner_archive"):
+        return None
+    record = read_record(SERVICE_ARCHIVES, lambda data: isinstance(data, dict) and all(isinstance(entry, dict) for entry in data.values())) or {}
+    entry = record.get(session_id)
+    if not entry or not isinstance(entry.get("at"), (int, float)) or not isinstance(entry.get("reason"), str):
+        return None
+    since = dt.datetime.fromtimestamp(entry["at"] / 1000, dt.timezone.utc)
+    stamp = parse_ts(archive.get("timestamp"))
+    if not stamp or stamp < since - SERVICE_ARCHIVE_SLACK:
+        return None
+    for line in entries:
+        if line is archive:
+            break
+        active = parse_ts(line.get("timestamp")) if line.get("type") == "session_state" and (line.get("state") or {}).get("status") == "active" else None
+        if active and active >= since:
+            return None
+    return (f"the chat service archived it ({entry['reason']}, service-archives.json at {since.strftime('%Y-%m-%dT%H:%M:%SZ')}; "
+            f"Prime wrote archive reason {reason}, at {archive.get('timestamp')})")
 
 
 def with_saved_owners(sessions, saved_rows, owners):
@@ -1922,7 +1959,7 @@ def send_guard(p, found_at):
             entries = parse_lines(BOX.tail(path, 256_000)) if path else []
         except OSError as error:
             raise JobRecordError(f"the transcript of {p['id']} could not be read ({error})") from None
-        why = stop_record(path) or stopped_since(entries, found_at)
+        why = stop_record(path) or stopped_since(entries, found_at, Path(path).stem if path else None)
     except RecordError as error:
         INCOMPLETE.append({"host": BOX.name, "error": f"not sent to {p['id']}: {error}"})
         return {"error": f"not sent: {error}"}

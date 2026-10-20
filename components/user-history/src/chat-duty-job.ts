@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
+import type { ArchiveBy } from "./service-archives.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
@@ -336,10 +337,13 @@ export interface DutyJobThreads {
   prompt(id: string, input: { message: string; images: []; mode: "steer" }): Promise<void>;
 }
 
-/** The archive the duty archive queue runs for a duty job: a session the catalog lists as live is archived; one archived or gone is done. */
-export const archiveDutyJob = (threads: { archive(id: string): Promise<void> }, rows: () => Promise<readonly SessionRow[]>) => async (id: string): Promise<void> => {
+/**
+ * The archive the duty archive queue runs for a duty job: a session the catalog lists as live is archived as the service's (`duty_job_end`),
+ * never as the owner's; one archived or gone is done.
+ */
+export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Promise<void> }, rows: () => Promise<readonly SessionRow[]>) => async (id: string): Promise<void> => {
   const found = (await rows()).find(candidate => candidate.id === id);
-  if (found && !found.archived) await threads.archive(id);
+  if (found && !found.archived) await threads.archive(id, "duty_job_end");
 };
 
 /** The waits before each look for a session whose create failed (a timeout, a lost client): about 2 min in all. */

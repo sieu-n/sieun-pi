@@ -87,7 +87,7 @@ test("an explicit archive that lands while the unload's kill is out wins", async
   try {
     await f.unloader.sweep();
     await f.killAsked;
-    await f.hub.archive(f.id);
+    await f.hub.archive(f.id, "owner");
     f.release();
     await f.unloader.settled();
     assert.equal(f.state(), "archived");

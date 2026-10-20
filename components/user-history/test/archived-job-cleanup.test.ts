@@ -89,7 +89,7 @@ test("a deleted job releases what it owns under a live chat and under an archive
     deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
   }, line => lines.push(line));
   await chats.adopt();
-  await chats.archive(archived);
+  await chats.archive(archived, "owner");
   assert.ok(!(await chats.ids()).has(archived), "the owner's archive takes the chat out of the live set");
   threadCalls.length = 0;
 

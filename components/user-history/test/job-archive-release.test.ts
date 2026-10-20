@@ -76,7 +76,7 @@ test("the owner's archive of a job releases its own folder and its recorded path
   }, line => lines.push(line));
   await chats.adopt();
 
-  for (const id of [cancelled, reopened, held, foreign]) await chats.archiveJob(id);
+  for (const id of [cancelled, reopened, held, foreign]) await chats.archiveJob(id, "owner");
 
   assert.deepEqual(calls.filter(call => call.startsWith("archive")), [cancelled, reopened, held, foreign].map(id => `archive ${id}`));
   assert.ok(!existsSync(join(scratch, cancelled)), `the cancelled job's own folder is released\n${lines.join("\n")}`);

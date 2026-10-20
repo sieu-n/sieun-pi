@@ -276,7 +276,7 @@ test("chats: the scan never takes back a chat archived while it ran or a clean-r
     { ...source(dir, {}, () => now, () => rows), archived, cleanRoomChats }, line => lines.push(line));
   const scan = chats.rescan();
   await waiting;
-  await chats.archive("run1");
+  await chats.archive("run1", "owner");
   release();
   assert.deepEqual(await scan, ["slow", "ended"], "an archived session_state comes from the daemon's eviction or the Mac copy too, so it is no owner archive");
   assert.deepEqual(await archived.ids(), ["run1"], "the owner's archive stands");
@@ -326,7 +326,7 @@ test("chats: a chat the owner archived may wake and answer an agent message but 
   };
   const chats = serve();
   await chats.adopt();
-  await chats.archive("stripe");
+  await chats.archive("stripe", "owner");
   assert.deepEqual(await index.ids(), ["vp"], "the owner's archive leaves the index");
 
   // 20:38 KST: a relayed agent message resumes the archived session; it answers, and the daemon lists it unarchived again.

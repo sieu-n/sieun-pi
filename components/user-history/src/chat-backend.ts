@@ -64,6 +64,7 @@ import type { AgentKind } from "./outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
 import { prStates } from "./pr-states.ts";
 import { JOB_CANCELS_FILE, jobCancelRecord } from "./job-cancels.ts";
+import { SERVICE_ARCHIVES_FILE, serviceArchiveRecord } from "./service-archives.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -178,6 +179,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
       file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), quiet, join(dataDir, "saved-archive-queue.json"));
+  // Prime writes owner_stop or owner_archive for every archive the service sends, so the service's own archives carry their reason here.
+  if (!quiet) threads.serviceArchives = serviceArchiveRecord(join(dataDir, SERVICE_ARCHIVES_FILE));
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), read: readPoolClasses, set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });

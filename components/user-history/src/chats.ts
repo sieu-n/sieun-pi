@@ -43,6 +43,7 @@ import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThre
 import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 import { cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
+import type { ArchiveBy } from "./service-archives.ts";
 
 export { TELL_OWNER_TOOL };
 
@@ -428,9 +429,9 @@ export class Chats {
    * the index and the archive throws ScheduledJobsLeft; the route answers 502 only when no retry of the cancel was recorded. When only Prime's stop of a
    * handed-off service waits on a receipt, the chat leaves the index the same way and the archive throws ServicesStopPending, which says so.
    */
-  async archive(id: string): Promise<void> {
+  async archive(id: string, by: ArchiveBy): Promise<void> {
     this.archiveCounts.set(id, this.archives(id) + 1);
-    const stop = this.threads.archive(id);
+    const stop = this.threads.archive(id, by);
     stop.catch(() => {});
     await this.membership(id, async () => {
       const left = await stop.then(() => undefined, (error: unknown) => { if (error instanceof ArchiveLeftWork) return error; throw error; });
@@ -448,14 +449,15 @@ export class Chats {
    * sweep ran endLeftovers and the job ended "completed". Only a session under the session-artifacts folder of a chat this service owns counts,
    * and the release runs only while the session's own file still ends archived at or after this archive began, so a reopen (the chat's
    * "finish the task" at 11:20:49Z brought this job back) keeps its new work. The job is not marked ended, so its later delete releases again.
+   * Only the owner's archive (`by` "owner") records his cancel; a script's teardown that names a service reason records none.
    */
-  async archiveJob(id: string): Promise<void> {
+  async archiveJob(id: string, by: ArchiveBy): Promise<void> {
     await this.load();
-    await this.cancelJob(id, "archive");
+    if (by === "owner") await this.cancelJob(id, "archive");
     const since = this.now();
     const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
     let archived = false;
-    try { await this.threads.archive(id); archived = true; }
+    try { await this.threads.archive(id, by); archived = true; }
     catch (error) { if (error instanceof ScheduledJobsLeft) archived = true; throw error; }
     finally { if (archived && sessionFile) await this.releaseArchivedJob(id, sessionFile, since); }
   }
@@ -531,7 +533,7 @@ export class Chats {
       if (this.archives(id) !== since || !(await this.archivedIds()).has(id)) return false;
       const rearchivedSince = async (): Promise<boolean> => {
         if (this.archives(id) === since) return false;
-        await this.threads.archive(id);
+        await this.threads.archive(id, "owner");
         return true;
       };
       await this.threads.unarchive(id);
@@ -602,7 +604,7 @@ export class Chats {
     if ((await this.archivedIds()).has(id)) return "the owner archived it";
     if ((await this.source.cleanRoomChats?.ids() ?? []).includes(id)) return "it is a clean-room test chat";
     const sessionFile = (await this.summary(id))?.sessionFile;
-    const stop = sessionFile && await fileHasChatMarker(sessionFile) ? await ownerStopSinceActive(sessionFile) : null;
+    const stop = sessionFile && await fileHasChatMarker(sessionFile) ? await ownerStopSinceActive(sessionFile, await this.threads.serviceArchiveOf(id)) : null;
     if (!stop) return null;
     await this.source.archived?.add(id);
     return `its session file records the owner's stop (${stop}) after its last active state, so it is filed as archived`;
@@ -1033,7 +1035,7 @@ export class Chats {
           const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
           const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
             report: jobReport(messages, agent.sender), endedAt: now });
-          await this.threads.archive(id);
+          await this.threads.archive(id, "idle_root_end");
           const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
           this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
         } catch (error) {

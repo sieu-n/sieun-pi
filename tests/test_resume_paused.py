@@ -63,6 +63,9 @@ class ResumePausedTests(unittest.TestCase):
         cancels = patch.object(resume_paused, "JOB_CANCELS", self.root / "job-cancels.json", create=True)
         cancels.start()
         self.addCleanup(cancels.stop)
+        service = patch.object(resume_paused, "SERVICE_ARCHIVES", self.root / "service-archives.json")
+        service.start()
+        self.addCleanup(service.stop)
         for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED, resume_paused.HELD):
             found.clear()
             self.addCleanup(found.clear)
@@ -1894,6 +1897,7 @@ class RecordedStops(unittest.TestCase):
         self.sent = []
         for name, value in (("SESSIONS_DIR", self.agent / "sessions"), ("ARTIFACTS_DIR", self.agent / "session-artifacts"),
                             ("DELETED_JOBS", self.agent / "browser-chat" / "deleted-jobs.json"), ("ARCHIVED_CHATS", self.agent / "browser-chat" / "archived-chats.json"),
+                            ("JOB_CANCELS", self.agent / "browser-chat" / "job-cancels.json"), ("SERVICE_ARCHIVES", self.agent / "browser-chat" / "service-archives.json"),
                             ("UPDATE_RESTARTS_DIR", self.agent / "update-restarts"), ("LOG_DIR", self.agent / "logs"), ("TOKEN_HOOK", self.root / "no-hook"),
                             ("HOSTS_FILE", self.root / "no-hosts.json"), ("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
             kept = patch.object(resume_paused, name, value, create=True)
@@ -2046,6 +2050,23 @@ class RecordedStops(unittest.TestCase):
         self.assertIn("daemon_shutdown", said["daemon_shutdown"])
         self.assertIn("'a_future_reason'", said["a_future_reason"])
         self.assertEqual(said[None], "An archive with no recorded cause stopped its turn, so it is not resumed.")
+
+    def test_an_owner_archive_line_the_chat_service_wrote_for_its_own_archive_says_the_service_archived_it(self):
+        # 10-20 18:25Z: the duty runner archived each cut duty job 0.4 to 3 s after "its turn ended; queued its archive", and Prime wrote
+        # owner_archive on each, since it takes no reason from a client. The service names its own archive in service-archives.json first.
+        duty = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f1")
+        owner = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f2")
+        early = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f3")
+        queued = int(resume_paused.parse_ts("2026-10-18T10:20:29.600Z").timestamp() * 1000)
+        (self.agent / "browser-chat").mkdir(parents=True, exist_ok=True)
+        (self.agent / "browser-chat" / "service-archives.json").write_text(json.dumps({
+            duty.stem: {"at": queued, "reason": "duty_job_end"}, early.stem: {"at": queued + 60_000, "reason": "idle_root_end"}}))
+        report = self.run_owners([duty.stem, owner.stem, early.stem])
+        self.assertEqual(report["paused"], [])
+        said = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
+        self.assertTrue(said[duty.stem].startswith("the chat service archived it (duty_job_end, service-archives.json at 2026-10-18T10:20:29Z"), said[duty.stem])
+        self.assertTrue(said[owner.stem].startswith("the owner archived it"), said[owner.stem])
+        self.assertTrue(said[early.stem].startswith("the owner archived it"), "a service entry written after the line is not that archive's")
 
     def test_an_idle_unload_reason_follows_the_token_hook_rule_without_the_chats_record(self):
         hook = self.reasoned("idle_unload", self.message("2026-10-18T10:20:00.000Z", "assistant", stopReason="error", provider="anthropic", errorMessage=self.HOOK_ERROR))

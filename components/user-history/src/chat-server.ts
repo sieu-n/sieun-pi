@@ -49,6 +49,7 @@ import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead } from "./chat-latency.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
+import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -59,7 +60,7 @@ const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
  * stop records resume_paused.py reads, since a Mac pass that read its own stale deleted-jobs.json could resume a job deleted after the move.
  */
 const AGENT_FILES = new Map([["api/agent/corrections", "corrections.json"], ["api/agent/sends", "sends.jsonl"], ["api/agent/deleted-jobs", "deleted-jobs.json"],
-  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"], ["api/agent/job-cancels", "job-cancels.json"]]);
+  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"], ["api/agent/job-cancels", "job-cancels.json"], ["api/agent/service-archives", SERVICE_ARCHIVES_FILE]]);
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -902,7 +903,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
               try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }
               catch (error) {
-                await backend.threads.archive(thread.id).catch(() => {});
+                await backend.threads.archive(thread.id, "service_cleanup").catch(() => {});
                 if (kind === "chat") await backend.chats.forget(thread.id).catch(() => {});
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));
               }
@@ -1044,9 +1045,11 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const audit = archiveAudit(req, id);
           audit("started");
           const chat = await backend.chats.archivesAsChat(id);
+          // A script's teardown of a thread it made names a service reason, so neither Prime's owner_archive line nor a job cancel reads as the owner's.
+          const by: ArchiveBy = isServiceArchiveReason(body.by) ? body.by : "owner";
           try {
-            if (chat) await backend.chats.archive(id);
-            else await backend.chats.archiveJob(id);
+            if (chat) await backend.chats.archive(id, by);
+            else await backend.chats.archiveJob(id, by);
           } catch (error) {
             // The archive holds and the saved archive queue retries the cancel of its scheduled jobs: on 10-20 06:26:34Z that case answered 502.
             if (!(error instanceof ScheduledJobsLeft && error.retrying)) { audit("failed"); throw error; }

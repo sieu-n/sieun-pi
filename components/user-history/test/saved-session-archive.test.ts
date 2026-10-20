@@ -173,7 +173,7 @@ async function fixture(t: TestContext, options: { known: readonly string[]; box?
 
 test("a mem.3 daemon without saved_session_archive gets no new command, and the archive works as before", async t => {
   const f = await fixture(t, { known: OLD, box: OLD });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.box!.connections(), 0, "no connection opens for a command the daemon does not list");
   assert.deepEqual(f.sent, []);
   assert.equal(f.state(), "archived", "the session file records the archive, as before");
@@ -185,14 +185,14 @@ test("a mem.3 daemon without saved_session_archive gets no new command, and the 
 test("a mem.3 daemon that is down still gets the archive as before, with no error", async t => {
   const f = await fixture(t, { known: OLD });
   t.mock.method(f.catalog, "connect", async () => { throw new Error("The Prime Agent daemon on this box is not reachable."); });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.state(), "archived");
   assert.equal(await f.archivedChat(), true);
 });
 
 test("a daemon replaced by an older one meanwhile gets nothing on the connection whose hello lacks the capability", async t => {
   const f = await fixture(t, { known: NEW, box: OLD });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.box!.connections(), 1);
   assert.deepEqual(f.box!.archives, []);
   assert.deepEqual(f.box!.other, []);
@@ -202,7 +202,7 @@ test("a daemon replaced by an older one meanwhile gets nothing on the connection
 
 test("an unloaded chat on this box is archived through archive_saved_session by its full path, with no kill and no wake", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: path => { SessionManager.open(path).appendSessionState({ status: "archived" }); return { success: true }; } });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.box!.archives.length, 1);
   const [archive] = f.box!.archives;
   assert.equal(archive!.sessionPath, f.file);
@@ -218,7 +218,7 @@ test("an unloaded chat on this box is archived through archive_saved_session by 
 
 test("an unloaded chat on the Mac goes to the Mac's daemon by the Mac's path, and this box's daemon gets nothing", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, mac: NEW, host: "mac" });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.deepEqual(f.mac!.archives.map(archive => archive.sessionPath), [f.macFile]);
   assert.equal(f.box!.connections(), 0);
   assert.deepEqual(f.sent, []);
@@ -228,7 +228,7 @@ test("an unloaded chat on the Mac goes to the Mac's daemon by the Mac's path, an
 
 test("a Mac daemon without the capability gets nothing, as before", async t => {
   const f = await fixture(t, { known: OLD, box: NEW, mac: OLD, host: "mac" });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.mac!.connections(), 0);
   assert.equal(f.box!.connections(), 0);
   assert.equal(await f.archivedChat(), true);
@@ -240,7 +240,7 @@ test("a chat that loaded again before the archive is refused as resident, and on
     f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, activeSessionId: "w-2", workerState: "ready" } : row));
     return { success: false, error: RESIDENT };
   } });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.equal(f.box!.archives.length, 1);
   assert.deepEqual(f.sent.map(command => [command.type, command.activeSessionId, command.origin]), [["kill", "w-2", undefined]], "never w-other, never an origin");
   assert.equal(await f.archivedChat(), true);
@@ -252,7 +252,7 @@ test("a session loaded after the daemon confirmed the archive is left to its wor
     f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, activeSessionId: "w-3", workerState: "ready" } : row));
     return { success: true };
   } });
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.deepEqual(f.sent, [], "no kill");
   assert.deepEqual(await f.pending(), []);
 });
@@ -265,7 +265,7 @@ test("a chat the idle unload stopped while the archive's kill was out still gets
   } });
   f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, activeSessionId: "w-1", workerState: "ready" } : row));
   await f.catalog.refresh();
-  await f.chats.archive(f.id);
+  await f.chats.archive(f.id, "owner");
   assert.deepEqual(f.sent.map(command => [command.type, command.activeSessionId]), [["kill", "w-1"]]);
   assert.deepEqual(f.box!.archives.map(archive => archive.sessionPath), [f.file]);
 });
@@ -273,7 +273,7 @@ test("a chat the idle unload stopped while the archive's kill was out still gets
 test("a failed archive_saved_session is reported, the owner's archive still holds, and the cancel is queued by box and full path", async t => {
   let fail = true;
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => fail ? { success: false, error: "The supervisor is draining" } : { success: true } });
-  await assert.rejects(f.chats.archive(f.id), (error: unknown) => error instanceof ScheduledJobsLeft && /retries the cancel/.test(error.message));
+  await assert.rejects(f.chats.archive(f.id, "owner"), (error: unknown) => error instanceof ScheduledJobsLeft && /retries the cancel/.test(error.message));
   assert.equal(await f.archivedChat(), true, "archived-chats.json keeps the owner's archive");
   assert.equal(await f.chat(), false);
   assert.equal(f.state(), "archived", "the file records the archive as before, so the daemon's passive wakes skip it");
@@ -291,13 +291,13 @@ test("a failed archive_saved_session is reported, the owner's archive still hold
 
 test("without a queue file the archive still reports that its jobs may still run", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, noQueue: true, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(f.chats.archive(f.id), (error: unknown) => error instanceof ScheduledJobsLeft && /may still run/.test(error.message));
+  await assert.rejects(f.chats.archive(f.id, "owner"), (error: unknown) => error instanceof ScheduledJobsLeft && /may still run/.test(error.message));
   assert.equal(await f.archivedChat(), true);
 });
 
 test("an offline Mac's cancel is queued, and goes to the Mac by the Mac's path on the first drain after the Mac answers", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, host: "mac" });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   assert.equal(f.box!.connections(), 0, "nothing is sent to this box instead");
   assert.equal(await f.archivedChat(), true);
   assert.equal((await f.row())?.archived, true);
@@ -323,7 +323,7 @@ test("the owner's reopen ends a pending cancel, and waits for a retry already ou
     await new Promise<void>(resolve => { release = resolve; });
     return { success: false, error: "The supervisor is draining" };
   } });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   assert.equal((await f.pending()).length, 1, "the failed cancel is queued");
   mode = "hold";
   f.later(61_000);
@@ -346,7 +346,7 @@ test("the owner's reopen ends a pending cancel, and waits for a retry already ou
 
 test("an agent message that loads the archived thread is never killed, and the cancel never ends the work it answered", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   f.later(1_000);
   f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, activeSessionId: "w-9", workerState: "ready", lifecycle: "live" } : row));
   await f.catalog.refresh();
@@ -366,7 +366,7 @@ test("an agent message that loads the archived thread is never killed, and the c
 
 test("a heartbeat that fires on the Mac while it is offline is no reopen: the owner's cancel still goes out after the Mac answers", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, host: "mac" });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   f.later(1_000);
   f.turn("heartbeat_prompt");
   f.later(1_000);
@@ -382,7 +382,7 @@ test("a heartbeat that fires on the Mac while it is offline is no reopen: the ow
 
 test("a user prompt after the archive, which a plain cron run writes too, keeps the cancel pending and sends nothing", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   f.later(1_000);
   f.turn("heartbeat_prompt");
   f.turn("user");
@@ -398,7 +398,7 @@ test("a user prompt after the archive, which a plain cron run writes too, keeps 
 
 test("a message the chat service delivered, such as a board.wake or a held outbox send, is no authorized resume: the cancel stays pending", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   f.later(1_000);
   f.turn("service_message");
   f.later(3_600_000);
@@ -415,7 +415,7 @@ test("a message the chat service delivered, such as a board.wake or a held outbo
 
 test("a Mac whose session file does not read keeps the cancel pending and sends nothing", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, host: "mac" });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   await f.startMac(NEW);
   t.mock.method(f.catalog, "localFile", async () => { throw new Error("relay read failed"); });
   await f.hub.cancels!.drain();
@@ -425,7 +425,7 @@ test("a Mac whose session file does not read keeps the cancel pending and sends 
 
 test("the idle unload's rewrite after its own stop never reopens a thread whose cancel is pending, also after a service start", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   const restarted = f.restartedHub();
   t.after(() => restarted.close());
   assert.equal(await restarted.keepListed(f.id, 0), false, "a service start forgets its archive times, and the queue file still holds the archive");
@@ -439,7 +439,7 @@ const STOP_PENDING: Answer = { success: false, error: "Detached handoff ownershi
 
 test("an archive whose only open part is Prime's stop of a handed-off service says the jobs are cancelled, and queues no archive retry", async t => {
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => STOP_PENDING });
-  await assert.rejects(f.chats.archive(f.id), (error: unknown) => error instanceof ServicesStopPending && !(error instanceof ScheduledJobsLeft) &&
+  await assert.rejects(f.chats.archive(f.id, "owner"), (error: unknown) => error instanceof ServicesStopPending && !(error instanceof ScheduledJobsLeft) &&
     /scheduled jobs are cancelled/.test(error.message) && /h-b: EACCES/.test(error.message) && !/may still run|not cancelled/.test(error.message));
   assert.equal(await f.archivedChat(), true, "the owner's archive holds");
   assert.equal(f.state(), "archived");
@@ -455,7 +455,7 @@ test("an archive whose only open part is Prime's stop of a handed-off service sa
 test("a queued retry that Prime answers with a pending service stop ends the retry, and an agent reply after it reissues nothing", async t => {
   let answer: Answer = { success: false, error: "The supervisor is draining" };
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => answer });
-  await assert.rejects(f.chats.archive(f.id), ScheduledJobsLeft);
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
   assert.equal((await f.pending()).length, 1);
   answer = STOP_PENDING;
   f.later(61_000);
@@ -470,7 +470,7 @@ test("a queued retry that Prime answers with a pending service stop ends the ret
 
 test("a queued retry whose session answered an authorized agent message is dropped before any archive goes out", async t => {
   const failing = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
-  await assert.rejects(failing.chats.archive(failing.id), ScheduledJobsLeft);
+  await assert.rejects(failing.chats.archive(failing.id, "owner"), ScheduledJobsLeft);
   failing.later(1_000);
   failing.turn("agent_message");
   failing.later(61_000);
@@ -533,4 +533,19 @@ test("resumeSince reads from the end across chunk edges and multibyte text, and 
   write([old, pad]);
   assert.equal(await resumeSince(path, archive, SELF), "none");
   await assert.rejects(resumeSince(join(dir, "missing.jsonl"), archive, SELF));
+});
+
+test("the hub records the service's own archive before it goes out, and the owner's later archive takes the record back", async t => {
+  const f = await fixture(t, { known: OLD, box: OLD });
+  const { serviceArchiveRecord } = await import("../src/service-archives.ts");
+  const { archiveDutyJob } = await import("../src/chat-duty-job.ts");
+  f.hub.serviceArchives = serviceArchiveRecord(join(mkdtempSync(join(tmpdir(), "service-archives-")), "service-archives.json"));
+  const before = Date.now();
+  await archiveDutyJob(f.hub, () => f.catalog.rows())(f.id);
+  assert.equal(f.state(), "archived");
+  const entry = await f.hub.serviceArchiveOf(f.id);
+  assert.equal(entry?.reason, "duty_job_end");
+  assert.ok(entry!.at >= before, "the record is written as the archive starts");
+  await f.hub.archive(f.id, "owner");
+  assert.equal(await f.hub.serviceArchiveOf(f.id), undefined);
 });

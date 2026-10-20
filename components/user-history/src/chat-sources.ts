@@ -15,6 +15,7 @@ import type { JobResumes } from "./job-resume.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { JobCancelRecord } from "./job-cancels.ts";
+import type { ArchiveBy, ServiceArchive } from "./service-archives.ts";
 import type { Leftovers } from "./job-leftovers.ts";
 import type { PoolPlaces } from "./chat-turn-queue.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, FirstMessage, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
@@ -252,8 +253,10 @@ export interface ChatThreads {
   unarchive(id: string): Promise<void>;
   /** Resumes the session and attaches it; throws when the daemon does not resume it. */
   resume(id: string): Promise<unknown>;
-  /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
-  archive(id: string): Promise<void>;
+  /** Archives the session: its turn stops, its worker ends and its session file records the archived state. `by` is the owner or the service's reason. */
+  archive(id: string, by: ArchiveBy): Promise<void>;
+  /** The service's own archive or stop of the session that service-archives.json holds, or undefined. */
+  serviceArchiveOf(id: string): Promise<ServiceArchive | undefined>;
   /** A transcript line that starts no turn; the feed shows it as a notice. */
   notice(id: string, text: string): Promise<void>;
   /** What the feed shows under the owner's unanswered message while a restart waits; null clears it. */
