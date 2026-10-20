@@ -93,6 +93,19 @@
   $effect(() => { if (account && activeModel && activeModel.provider !== account.provider) account = null; });
   const acceptsImages = $derived((model ?? catalog?.current)?.input.includes("image") ?? true);
 
+  /**
+   * While the owner writes a new thread for another box, that box makes its session (ThreadHub.prewarm), so his send skips the create: about
+   * 0.6 s on the Mac on 10-20. A chat, a chosen account or this box gets none; leaving the box drops the spare.
+   */
+  const spareFor = $derived(hostsRead && host && host !== selfName && cwd && kind === "thread" && !account
+    ? { host, cwd, ...(activeModel ? { provider: activeModel.provider, modelId: activeModel.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}) } : null);
+  const spareKey = $derived(spareFor ? JSON.stringify(spareFor) : "");
+  $effect(() => {
+    const input = spareKey ? JSON.parse(spareKey) as { host: string; cwd: string } : null;
+    void api.prewarm(input ?? { host: null }).catch(() => {});
+  });
+  onMount(() => () => { void api.prewarm({ host: null }).catch(() => {}); });
+
   async function loadHosts(): Promise<void> {
     try {
       const view = await api.hosts();

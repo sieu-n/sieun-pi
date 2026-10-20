@@ -202,6 +202,9 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
   };
   const marker = () => `chat page probe ${randomUUID().slice(0, 8)}.`;
   const firstText = marker();
+  // The New chat box asks the Mac for a spare session while the owner writes (ThreadHub.prewarm), and his writing takes longer than the spare's
+  // start, so the send is timed once the spare is ready, as his is.
+  await post("api/new-chat/prewarm", { host: "mac", cwd: "/Users/sieunpark", ...MODEL, thinkingLevel: "off" });
   const createdAt = Date.now();
   const created = await post("api/threads", { requestId: randomUUID().replaceAll("-", ""), host: "mac", cwd: "/Users/sieunpark", kind: "thread", ...MODEL, thinkingLevel: "off",
     name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: startMessage(`${firstText} Reply with exactly: ok`, startSkill) });

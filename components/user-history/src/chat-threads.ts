@@ -7,6 +7,7 @@ import type { SubagentDelete } from "./chat-sources.ts";
 import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG, OWNER_THREAD_FLAG } from "./chat-guard.ts";
+import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
@@ -291,6 +292,11 @@ const LOCAL_HELLO_MS = 30_000;
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
 /** A daemon prompt's fields; an owner send to another box carries `ownerTurn`, which that box's relay marks (components/prime-relay/owner-turn.mjs). */
+/** What a spare session is made for: the box, folder, model and effort of the new thread the owner is writing. */
+export interface SpareInput { host: string; cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }
+interface Spare { key: string; host: string; created: Promise<SessionSummary | null>; timer: ReturnType<typeof setTimeout> }
+const spareKey = (input: SpareInput): string => JSON.stringify([input.host, input.cwd, input.provider && input.modelId ? `${input.provider}/${input.modelId}` : null, input.thinkingLevel ?? null]);
+
 /** The create field another box's relay reads to send the first prompt itself (components/prime-relay/first-prompt.mjs FIRST_PROMPT_FIELD). */
 export const RELAY_FIRST_PROMPT = "relayFirstPrompt";
 
@@ -1208,6 +1214,62 @@ export class ThreadHub {
     return data.activeSessionId;
   }
 
+  /** The session made while the owner writes a new thread's first message for another box (`prewarm`), which that thread's create takes. */
+  private spare: Spare | null = null;
+
+  /**
+   * Makes a session on `host` for the new thread the owner is writing, so his send skips the create: on 10-20 a new Mac session took 0.55 to
+   * 0.6 s on the Mac itself (worker start about 0.17 s, session setup about 0.4 s) before its first prompt could go. One spare at a time, for
+   * the folder, model and effort the New chat box shows; another pick replaces it. A spare nobody takes is stopped after QUIET_MINUTES, the
+   * owner's window for idle sessions to hold memory, and its empty file stays out of the sidebar. Only another box's threads get one: this
+   * box's create crosses no link. Resolves true once the spare is ready.
+   */
+  async prewarm(input: SpareInput | null): Promise<boolean> {
+    if (!input || !this.catalog.isOtherHost(input.host)) { await this.dropSpare(); return false; }
+    const key = spareKey(input);
+    if (this.spare?.key === key) return (await this.spare.created) !== null;
+    await this.dropSpare();
+    const client = await this.hostDaemon(input.host);
+    const created = timedWorkerStart(`spare ${input.host} ${input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", config: { cwd: input.cwd,
+      ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
+      extensionFlagValues: { [OWNER_THREAD_FLAG]: true } } }, DAEMON_WORKER_START_MS, { recoverable: false }))
+      .then(response => {
+        const data = response.success ? response.data as Partial<SessionSummary> | undefined : undefined;
+        if (typeof data?.sessionId !== "string" || typeof data.activeSessionId !== "string") return null;
+        this.catalog.spare(data.sessionId, true);
+        this.catalog.place(input.host, data.sessionId, data.activeSessionId);
+        return data as SessionSummary;
+      }, () => null);
+    const spare: Spare = { key, host: input.host, created, timer: setTimeout(() => { void this.dropSpare(spare); }, QUIET_MINUTES * 60_000) };
+    spare.timer.unref?.();
+    this.spare = spare;
+    return (await created) !== null;
+  }
+
+  /** Stops the spare (only `which`, when given) and forgets it. */
+  private async dropSpare(which?: Spare): Promise<void> {
+    const spare = this.spare;
+    if (!spare || (which && spare !== which)) return;
+    this.spare = null;
+    clearTimeout(spare.timer);
+    const data = await spare.created;
+    if (!data) return;
+    const client = await this.hostDaemon(spare.host).catch(() => null);
+    await client?.request({ type: "kill", activeSessionId: data.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
+    this.catalog.spare(data.sessionId, false);
+  }
+
+  /** The spare made for `key`, waited for while it starts, and no longer a spare; null when there is none or it did not start. */
+  private async takeSpare(key: string): Promise<SessionSummary | null> {
+    const spare = this.spare;
+    if (spare?.key !== key) return null;
+    this.spare = null;
+    clearTimeout(spare.timer);
+    const data = await spare.created;
+    if (data) this.catalog.spare(data.sessionId, false);
+    return data;
+  }
+
   /**
    * `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. `host`
    * is the hosts.json box whose daemon runs the new session; absent means this box. `first` is the owner's first message, sent the moment the daemon answers the create and before this box attaches, so the session's first
@@ -1226,6 +1288,14 @@ export class ThreadHub {
    */
   async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage }): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
+    // A spare made while the owner wrote (prewarm) takes the first message at once; a spare whose session is gone falls back to a create.
+    const spare = input.first && input.host && input.kind !== "chat" ? await this.takeSpare(spareKey({ ...input, host: input.host })) : null;
+    if (spare && input.first) {
+      const fields = promptFields(spare.sessionId, { ...input.first, images: [], owner: true }, true);
+      const answer = await client.request({ type: "prompt", activeSessionId: spare.activeSessionId!, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false }).catch(() => null);
+      if (answer?.success) return this.opened(client, spare, input, input.name, null);
+      void client.request({ type: "kill", activeSessionId: spare.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
+    }
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
     const renamed = input.first && input.kind !== "chat" ? input.name : undefined;
     const named = !input.first && input.kind !== "chat" ? input.name : undefined;
@@ -1263,14 +1333,19 @@ export class ThreadHub {
         .then(answer => { if (!answer.success) throw new ThreadError(502, answer.error); });
       sent.catch(() => {});
     }
-    // A failed rename leaves the thread unnamed and the message sent, as the rename after a create always did.
-    const naming = renamed ? client.request({ type: "rename", activeSessionId: data.activeSessionId, name: renamed } as never, undefined, { recoverable: false }).catch(() => {}) : null;
+    return this.opened(client, data as SessionSummary, input, renamed, sent);
+  }
+
+  /** The new session `data` named by `renamed` (a failed rename leaves it unnamed and the message sent) and attached; waits for `sent`. */
+  private async opened(client: DaemonClient, data: SessionSummary, input: { host?: string }, renamed: string | undefined, sent: Promise<void> | null): Promise<Thread> {
+    const activeSessionId = data.activeSessionId!;
+    const naming = renamed ? client.request({ type: "rename", activeSessionId, name: renamed } as never, undefined, { recoverable: false }).catch(() => {}) : null;
     this.evict("live");
-    const connection = await this.attach(data.activeSessionId, input.host ?? null);
+    const connection = await this.attach(activeSessionId, input.host ?? null);
     let thread: Thread;
     try {
-      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), (candidate, before) => this.childrenChanged(candidate, before));
-      this.bind(thread, connection, data.activeSessionId);
+      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data), (candidate, before) => this.childrenChanged(candidate, before));
+      this.bind(thread, connection, activeSessionId);
     } catch (error) { await disposeConnection(connection); throw error; }
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
@@ -1752,6 +1827,7 @@ export class ThreadHub {
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.sweeper);
+    await this.dropSpare().catch(() => {});
     this.cancels?.close();
     this.unwatchCatalog?.();
     await Promise.all([...this.threads.keys()].map(id => this.dispose(id)));

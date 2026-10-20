@@ -180,12 +180,12 @@ test("a slot wait that outlasts the new thread's bound sends no follow-up, so th
   assert.deepEqual(posts.filter(path => path.endsWith("/prompt")), []);
 });
 
-test("the new-thread send starts with the start skill, as the owner's first messages do", async t => {
-  const bodies: Record<string, unknown>[] = [];
+test("the new-thread send asks for the spare first and starts with the start skill, as the owner's first messages do", async t => {
+  const bodies: Record<string, unknown>[] = [], prewarms: Record<string, unknown>[] = [];
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", chunk => { body += chunk; });
-    req.on("end", () => { if (req.url!.endsWith("/api/threads")) bodies.push(JSON.parse(body)); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000003" })); });
+    req.on("end", () => { if (req.url!.endsWith("/api/threads")) bodies.push(JSON.parse(body)); if (req.url!.endsWith("/api/new-chat/prewarm")) prewarms.push(JSON.parse(body)); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000003" })); });
   });
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", socket => socket.on("message", data => {
@@ -198,6 +198,7 @@ test("the new-thread send starts with the start skill, as the owner's first mess
   await once(server, "listening");
   t.after(() => { sockets.close(); server.close(); });
   const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 60_000, "poteto-mode");
+  assert.deepEqual(prewarms, [{ host: "mac", cwd: "/Users/sieunpark", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "off" }], "the spare is asked for before the send");
   assert.match(String(bodies[0]!.message), new RegExp(`^/skill:poteto-mode ${sends[0]!.marker.replace(".", "\\.")} Reply with exactly: ok$`));
 });
 

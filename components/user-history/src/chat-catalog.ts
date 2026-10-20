@@ -897,7 +897,7 @@ export class Catalog {
       if (++since === BREATHE_ROWS) { since = 0; await breathe(); }
       const remote = this.hostOf(row.sessionId);
       // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
-      if (!(remote ? isListed(row, () => true) : listedHere(row))) continue;
+      if (!(remote ? isListed(row, () => true) : listedHere(row)) || this.spares.has(row.sessionId)) continue;
       const host = remote ?? selfName;
       const schedule = this.schedules.get(row.sessionId);
       const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
@@ -1234,6 +1234,9 @@ export class Catalog {
    * this box's daemon, because the Mac's roster had not listed the session yet.
    */
   place(host: string, ...ids: string[]): void { for (const id of ids) this.placed.set(id, host); this.inputs++; }
+  /** A spare session made for a new thread the owner is still writing (ThreadHub.prewarm) stays out of the sidebar until his send takes it. */
+  spare(sessionId: string, on: boolean): void { if (on) this.spares.add(sessionId); else this.spares.delete(sessionId); this.inputs++; }
+  private readonly spares = new Set<string>();
 
   /**
    * The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. A session

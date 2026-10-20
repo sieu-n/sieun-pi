@@ -935,6 +935,14 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         await backend.defaults.write(parseDefaults(body, await backend.threads.models(null)));
         json(res, 200, backend.defaults.read()); return;
       }
+      if (route === "api/new-chat/prewarm") {
+        // The New chat box asks for a spare session on another box while the owner writes; host null drops it (ThreadHub.prewarm).
+        const host = typeof body.host === "string" ? text(body.host, "host", 64) : null;
+        const ready = host && typeof body.cwd === "string" && backend.catalog.isOtherHost(host) ? await backend.threads.prewarm({ host, cwd: remoteWorkspace(text(body.cwd, "cwd", 1024), host),
+          ...(typeof body.provider === "string" && typeof body.modelId === "string" ? { provider: text(body.provider, "provider", 128), modelId: text(body.modelId, "modelId", 256) } : {}),
+          ...(typeof body.thinkingLevel === "string" ? { thinkingLevel: text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel } : {}) }) : await backend.threads.prewarm(null);
+        json(res, 200, { ready }); return;
+      }
       if (route === "api/new-chat") {
         let startSkill: string | null;
         try { startSkill = parseStartSkill(body.startSkill); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }

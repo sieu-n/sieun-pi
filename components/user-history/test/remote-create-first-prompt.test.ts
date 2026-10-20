@@ -129,3 +129,52 @@ test("a first message the relay could not deliver fails the create with the rela
   t.after(() => hub.close());
   await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac", first: { message: "hi", mode: "followUp" } }), /Session is busy/);
 });
+
+const spareHub = async (t: TestContext, answer: (command: Record<string, unknown>) => Record<string, unknown> = () => ({ success: true, data: undefined })) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: Record<string, unknown>[] = [];
+  const hidden: string[] = [];
+  let n = 0;
+  const mac = { request: async (command: Record<string, unknown>) => {
+    sent.push(command);
+    if (command.type === "create") { n++; return { success: true, data: { sessionId: `${ID.slice(0, -1)}${n}`, activeSessionId: `active${n}` } }; }
+    return answer(command);
+  } };
+  const catalog = { hostClient: async () => mac, isOtherHost: (name: string) => name === "mac", place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"),
+    refresh: async () => {}, spare: (id: string, on: boolean) => { hidden.push(`${on ? "+" : "-"}${id.slice(-1)}`); } } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  return { hub, sent, hidden };
+};
+const pick = { host: "mac", cwd: "/Users/sieunpark", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "off" as const };
+
+test("the owner's send takes the spare made while he wrote: no create, the prompt goes at once with his turn, then the rename", async (t: TestContext) => {
+  const { hub, sent, hidden } = await spareHub(t);
+  assert.equal(await hub.prewarm(pick), true);
+  assert.deepEqual(sent.map(command => command.type), ["create"]);
+  assert.deepEqual((sent[0]!.config as Record<string, unknown>).extensionFlagValues, { [OWNER_THREAD_FLAG]: true });
+  assert.equal(await hub.prewarm(pick), true, "the same pick keeps its spare");
+  await assert.rejects(hub.create({ ...pick, name: "probe", first: { message: "hi", mode: "followUp" } }), "the attach to the missing socket still fails");
+  assert.deepEqual(sent.map(command => command.type), ["create", "prompt", "rename"]);
+  assert.deepEqual({ ...sent[1] }, { type: "prompt", activeSessionId: "active1", message: "hi", source: "interactive", streamingBehavior: "followUp", queueIfBusy: true, ownerTurn: `${ID.slice(0, -1)}1` });
+  assert.deepEqual(hidden, ["+1", "-1"]);
+});
+
+test("another pick replaces the spare, a send for another folder makes its own session, and leaving drops the spare", async (t: TestContext) => {
+  const { hub, sent } = await spareHub(t);
+  await hub.prewarm(pick);
+  await hub.prewarm({ ...pick, thinkingLevel: "high" });
+  assert.deepEqual(sent.map(command => `${command.type} ${command.activeSessionId ?? ""}`.trim()), ["create", "kill active1", "create"]);
+  await assert.rejects(hub.create({ ...pick, cwd: "/tmp", first: { message: "hi", mode: "followUp" } }));
+  assert.equal(sent.filter(command => command.type === "create").length, 3);
+  await hub.prewarm(null);
+  assert.deepEqual(sent.at(-1), { type: "kill", activeSessionId: "active2" });
+  assert.equal(await hub.prewarm({ ...pick, host: "us-metal02" }), false, "this box's threads get no spare");
+});
+
+test("a spare whose session is gone is stopped and the send makes a new session", async (t: TestContext) => {
+  const { hub, sent } = await spareHub(t, command => command.type === "prompt" && command.activeSessionId === "active1" ? { success: false, error: "Unknown active session" } : { success: true, data: undefined });
+  await hub.prewarm(pick);
+  await assert.rejects(hub.create({ ...pick, first: { message: "hi", mode: "followUp" } }));
+  assert.deepEqual(sent.map(command => `${command.type} ${command.activeSessionId ?? ""}`.trim()), ["create", "prompt active1", "kill active1", "create", "prompt active2"]);
+});

@@ -94,6 +94,8 @@ export const api = {
   defaults: () => get<ChatDefaults>("api/defaults"),
   setDefaults: (input: ChatDefaultsInput) => post<ChatDefaults>("api/defaults", input),
   newChat: () => get<NewChatSettings>("api/new-chat"),
+  /** A spare session on another box for the new thread being written; host null drops it (ThreadHub.prewarm). */
+  prewarm: (input: { host: string; cwd: string; provider?: string; modelId?: string; thinkingLevel?: string } | { host: null }) => post<{ ready: boolean }>("api/new-chat/prewarm", input),
   setNewChat: (input: NewChatSettings) => post<NewChatSettings>("api/new-chat", input),
   remote: () => get<RemoteAccessView>("api/remote"),
   setRemote: (input: RemoteAccessInput) => post<RemoteAccessView>("api/remote", input, 60000),
