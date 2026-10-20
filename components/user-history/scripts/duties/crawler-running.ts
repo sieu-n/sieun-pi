@@ -30,9 +30,13 @@ export const NEW_CONNECTION_BYTES = 8_678;
 /** The meter's lane for census attempts; once the meter carries it, census connections come from the meter (geonode-proxy-use.mjs). */
 const CENSUS_METER_LANE = "instagram_census";
 /**
- * A queue grew when its 15-minute mean now is over 6 h ago's by more than 10% and by more than about one minute of census intake, and its 6 h
- * slope is up. On 10-19 at 15:17Z the m-backlogs read of 38 prod series found every rise under 10% inside the queue's normal 24 h bursts, and
- * census ran 450k to 490k reads an hour, about 8,000 a minute, so a smaller rise (crawl.videos at 280 records, 15:33Z) is no backlog.
+ * A queue grew when its 15-minute mean now is over 6 h ago's by more than 10% and by more than about one minute of census intake, its lowest
+ * point over 30 minutes rose past the same line, and its 6 h slope is up. On 10-19 at 15:17Z the m-backlogs read of 38 prod series found every
+ * rise under 10% inside the queue's normal 24 h bursts, and census ran 450k to 490k reads an hour, about 8,000 a minute, so a smaller rise
+ * (crawl.videos at 280 records, 15:33Z) is no backlog. The low point keeps a buffer that fills and drains with intake out: on 10-20 the search
+ * sync profile outbox swung 6k to 38k within an hour at 13k census reads a minute, so its 07:30Z mean read 22k against 11k 6 h earlier while its
+ * 30-minute low read 14k against 7.8k. Real backlogs rise at their low point too: census-pg at 04:00Z on 10-20 (103k against 0), crawl.videos
+ * at 07:30Z on 10-20 (532k against 438k) and the profile outbox at 21:30Z on 10-19 (731k against 2.6k).
  */
 export const GROW_SHARE = 0.1;
 export const GROW_MIN = 8_000;
@@ -131,7 +135,7 @@ export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSig
   };
 }
 
-export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null }
+export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null }
 export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
 export interface ProxyLane { lane: string; wire: number; newSessions: number }
 export interface WireDay { day: number; wire: number; updated: number }
@@ -161,8 +165,9 @@ export function geonodeMbps(census: CensusWindow, proxy: readonly ProxyLane[], a
   return round1((bytes * 8) / ((to - from) / 1000) / 1e6);
 }
 
+const rose = (now: number, then: number): boolean => now - then > Math.max(GROW_MIN, GROW_SHARE * then);
 export const grew = (q: Queue): boolean =>
-  q.ago6h !== null && q.slope6h !== null && q.now - q.ago6h > Math.max(GROW_MIN, GROW_SHARE * q.ago6h) && q.slope6h > 0;
+  q.ago6h !== null && q.slope6h !== null && q.slope6h > 0 && rose(q.now, q.ago6h) && (q.low == null || q.low6h == null || rose(q.low, q.low6h));
 
 const count = (n: number): string => n >= 1e6 ? `${round1(n / 1e6)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
 
@@ -230,15 +235,20 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("queues", async () => {
       const out: Queue[] = [];
       for (const q of QUEUES) {
-        const [nowS, agoS, slopeS] = await Promise.all([
+        const [nowS, agoS, slopeS, lowS, low6hS] = await Promise.all([
           promInstant(query, PROM.prod, `avg_over_time((${q.expr})[15m:1m])`),
           promInstant(query, PROM.prod, `avg_over_time((${q.expr})[15m:1m] offset 6h)`),
           promInstant(query, PROM.prod, `deriv((${q.expr})[6h:5m])`),
+          promInstant(query, PROM.prod, `min_over_time((${q.expr})[30m:1m])`),
+          promInstant(query, PROM.prod, `min_over_time((${q.expr})[30m:1m] offset 6h)`),
         ]);
         const key = (labels: Record<string, string>): string => q.by.map(name => labels[name] ?? "").join("/");
-        const ago = new Map(agoS.map(s => [key(s.labels), s.value]));
-        const slope = new Map(slopeS.map(s => [key(s.labels), s.value]));
-        for (const s of nowS) out.push({ family: q.family, name: key(s.labels), now: s.value, ago6h: ago.get(key(s.labels)) ?? null, slope6h: slope.get(key(s.labels)) ?? null });
+        const byKey = (series: typeof nowS): Map<string, number> => new Map(series.map(s => [key(s.labels), s.value]));
+        const [ago, slope, low, low6h] = [byKey(agoS), byKey(slopeS), byKey(lowS), byKey(low6hS)];
+        for (const s of nowS) {
+          const name = key(s.labels);
+          out.push({ family: q.family, name, now: s.value, ago6h: ago.get(name) ?? null, slope6h: slope.get(name) ?? null, low: low.get(name) ?? null, low6h: low6h.get(name) ?? null });
+        }
       }
       return out;
     }),

@@ -29,6 +29,10 @@ test("a queue grows only past 10% and about a minute of census intake, with its 
   assert.equal(grew({ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }), false);
   assert.equal(grew({ family: "kafka lag", name: "instagram.observed/instagram-census-os", now: 200_000, ago6h: 100_000, slope6h: 15_000 }), true);
   assert.equal(grew({ family: "kafka lag", name: "instagram.observed/instagram-census-os", now: 10_400_000, ago6h: null, slope6h: null }), false);
+  // 10-20 07:30Z: the profile outbox fills and drains with census intake, so its mean doubled while its 30-minute low stayed under the line.
+  assert.equal(grew({ family: "search sync outbox", name: "profile", now: 22_350, ago6h: 11_502, slope6h: 1, low: 14_124, low6h: 7_844 }), false);
+  // 10-20 07:30Z: crawl.videos rose at its low point too, so it is a backlog.
+  assert.equal(grew({ family: "kafka lag", name: "crawl.videos/video-writers", now: 652_138, ago6h: 447_386, slope6h: 20, low: 532_587, low6h: 437_735 }), true);
 });
 
 test("the run reads every metric, and a failed source misses instead of reading green", () => {
