@@ -73,6 +73,14 @@ class PoolHeld(unittest.TestCase):
         verdict, sends, actions = self.cycle([failed(LIMIT, [{'type': 'provider_stream_failure', 'details': {'kind': 'rate_limit', 'status': 429}}])])
         self.assertEqual((verdict, sends, self.daemon, actions), ('POOL_WAIT', [], [], []))
 
+    def test_a_turn_that_ended_on_a_credential_wait_marker_gets_nothing(self):
+        # dhx.3 Prime with the p692 hook on us-metal02, 10-20: the hook answered exit 75 and Prime wrote this wait marker, whose text names
+        # no pi-pool slot (marker shape from a dhx.3 session, times from 01a15a2b-be18's 17:30:08Z wait).
+        marker = failed('API key for provider "anthropic" is temporarily unavailable until 2026-10-20T17:32:00.000Z: waiting for an account slot',
+                        [{'type': 'provider_stream_failure', 'details': {'kind': 'credential_unavailable', 'retryAtMs': 1792517520000, 'retryAfterMs': 111860}}])
+        verdict, sends, actions = self.cycle([marker])
+        self.assertEqual((verdict, sends, self.daemon, actions), ('POOL_WAIT', [], [], []))
+
     def test_a_turn_that_failed_another_way_is_still_resumed(self):
         verdict, sends, _ = self.cycle([failed('Connection reset by peer')])
         self.assertEqual(verdict, 'DROPPED_TURN')

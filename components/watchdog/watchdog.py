@@ -67,7 +67,7 @@ def snapshot():
         lm = (last_msg or {}).get('message') or {}
         limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
             'pi-pool' in (lm.get('errorMessage') or '') or
-            any((d.get('details') or {}).get('kind') == 'rate_limit' for d in (lm.get('diagnostics') or []) if isinstance(d, dict)))
+            any((d.get('details') or {}).get('kind') in ('rate_limit', 'credential_unavailable') for d in (lm.get('diagnostics') or []) if isinstance(d, dict)))
         last_asst_min = round((now - last_asst).total_seconds() / 60, 1) if last_asst else None
         # A pending cell that deliberately sleeps/polls (pipeline watching, log tailing) looks
         # identical to a wedge from the outside: read the code before calling it frozen.
