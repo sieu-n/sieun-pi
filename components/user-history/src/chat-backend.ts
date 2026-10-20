@@ -30,7 +30,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, providerWaits, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
-import { handOff, handoffSend, speaksHandoff, systemPorts } from "./detached-handoff.ts";
+import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
@@ -400,9 +400,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`));
     },
     receipt: entry => writeReceipt(dataDir, entry),
-    // A session on this box whose daemon lists detached_handoff hands its detached services to systemd scopes of their own, and then its kernel
-    // is freed (src/detached-handoff.ts). The scope move and the /proc checks run on this box, so another box's sessions keep the old rule.
-    handsOff: row => !catalog.hostOf(row.sessionId) && speaksHandoff(catalog.helloOf(null)),
+    // A root session on this box whose daemon lists detached_handoff hands its detached services to systemd scopes of their own, and then its
+    // kernel is freed (src/detached-handoff.ts `handsOffRow`). Every other session keeps the old rule.
+    handsOff: row => handsOffRow(row, { local: !catalog.hostOf(row.sessionId), hello: catalog.helloOf(null) }),
     handOff: async (row, resume) => {
       const outcome = await handOff(row, systemPorts(catalog.clientFor(row.sessionId), undefined, handoffSend(catalog.socketPathFor(null))), resume);
       return outcome === null ? null : outcome.done ? { done: true } : { done: false, error: outcome.error };

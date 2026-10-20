@@ -8,7 +8,7 @@ import { measure } from "../scripts/duties/whole-system.ts";
 import { createServer } from "node:net";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { type CandidateGroup, handOff, type HandoffPorts, handoffSend, type MovedGroup, parseCandidates, parseReceipt, type Receipt, speaksHandoff } from "../src/detached-handoff.ts";
+import { type CandidateGroup, handOff, type HandoffPorts, handoffSend, handsOffRow, type MovedGroup, parseCandidates, parseReceipt, type Receipt, speaksHandoff } from "../src/detached-handoff.ts";
 import { type DaemonAnswer, IdleUnloader, unloadPlan } from "../src/idle-unload.ts";
 import { endLeftovers, type LeftoverSource } from "../src/job-leftovers.ts";
 import { servicesLine } from "../src/mac-usable-watch.ts";
@@ -462,4 +462,12 @@ test("d7 counts a handoff still open a whole window after it began as stuck, fla
   assert.equal(out.metrics.handoffs_stuck, 1);
   assert.deepEqual([out.metrics.handed_off_services, out.metrics.handed_off_live], [2, 1]);
   assert.match(out.flagged?.find(slice => slice.kind === "handoff_stuck")?.excerpt ?? "", /^1 detached-service handoffs stayed open over 30 min, .*01a15036 moving since 16:29Z/);
+});
+
+test("only a root session on this box under a hello that speaks the handoff is handed off; a subagent keeps its service and its kernel (10-20 16:52Z)", () => {
+  const hello = { serverCapabilities: ["detached_handoff"], protocol: { version: 7 } };
+  assert.equal(handsOffRow({ runtimeKind: "top-level", rlmDepth: 0 }, { local: true, hello }), true);
+  assert.equal(handsOffRow({ runtimeKind: "subagent", rlmDepth: 1 }, { local: true, hello }), false, "rlm.delete_subagent of a passive child left its handed-off service running");
+  assert.equal(handsOffRow({ runtimeKind: "top-level", rlmDepth: 0 }, { local: false, hello }), false);
+  assert.equal(handsOffRow({ runtimeKind: "top-level", rlmDepth: 0 }, { local: true, hello: { serverCapabilities: ["kill_origin"], protocol: { version: 7 } } }), false);
 });
