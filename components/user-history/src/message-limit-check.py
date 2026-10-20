@@ -33,6 +33,11 @@ its own reference. It does three things.
    left to remember a retry. The owner made every such limit a target (c98), so the send goes to the chat service's agent outbox
    (api/agent/queue, src/agent-outbox.ts), which delivers it once the target has room, and the sender gets a "queued" receipt. Later sends
    from this kernel to that target go behind it in the outbox until it went, so they keep their order.
+7. The login PATH. A kernel whose PATH finds no node takes the login shell's PATH when this file loads, so the node runs above and every
+   other node, bun, uv or tsx a cell starts resolve. On 10-20 the Mac supervisor restarted at 07:49:42Z from an ssh command, and all 41
+   revived kernels had PATH /usr/bin:/bin:/usr/sbin:/sbin: mac-management, mcp for chris and frontend bro saw each cross-host send fail
+   with "No such file or directory: 'node'" until they set PATH by hand, and the send guard's node check (kernel-guard.py) let every call
+   through unjudged. The prelude runs a new VERSION at the next cell, so a running kernel gets its PATH back without a restart.
 """
 
 import asyncio
@@ -40,13 +45,14 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 19
+VERSION = 20
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -473,6 +479,23 @@ def install() -> None:
             module.host_request = request
 
 
+def login_path() -> None:
+    """Puts the login shell's PATH in front of the kernel's when the kernel's finds no node (point 7).
+
+    zsh loads nvm in .zshrc, so the shell runs interactive (-i), in its own session so it never takes a terminal, and the PATH is the
+    last line it prints."""
+    if shutil.which("node"):
+        return
+    try:
+        out = subprocess.run([os.environ.get("SHELL") or "/bin/sh", "-lic", 'printf "\\n%s" "$PATH"'], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, start_new_session=True).stdout
+    except OSError:
+        return
+    login = out.rsplit("\n", 1)[-1].strip().split(os.pathsep)
+    os.environ["PATH"] = os.pathsep.join(dict.fromkeys(entry for entry in [*login, *os.environ.get("PATH", "").split(os.pathsep)] if entry))
+
+
 if getattr(sys, "user_history_message_check", None) != VERSION:
+    login_path()
     install()
     sys.user_history_message_check = VERSION
