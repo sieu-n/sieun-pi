@@ -176,7 +176,8 @@ export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact |
  * while p523 and p528 under it were live, and goal_gaps flagged it 27 times in a row. It is also held when every open step under it besides its
  * push step is For you or parked by his correction, with at least one For you. frontend bro 10-16 to 10-18: p106 "Connections parts the owner
  * accepts" 0 of 5 and p118 "Email parts the owner accepts" 0 of 3 waited on For you t28 and t25, with every part built and walked on Staging,
- * and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again.
+ * and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again. A goal whose open steps are all parked by his
+ * correction is held the same way: frontend bro p62 kept no number on purpose, because with one its c40-parked p52 and p31 read as no live job.
  */
 export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: Parameters<typeof heldByTodo>[1] = []): string[] | undefined {
   const named = new Set(goal.waitFor?.match(/\bt\d+\b/g) ?? []);
@@ -184,8 +185,8 @@ export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: Par
   const push = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
   if (push && heldByTodo(push.item, todos)) return [push.item.id];
   const open = views.filter(view => view.goal?.id === goal.id && view.item.duty !== GOAL_PUSH_LINK);
-  const asks = open.filter(view => view.cls === "foryou").map(view => view.item.id);
-  return asks.length && open.every(view => view.cls === "foryou" || view.cls === "parked") ? asks : undefined;
+  const held = open.filter(view => view.cls === "foryou" || view.cls === "parked");
+  return held.length && held.length === open.length ? held.map(view => view.cls === "parked" ? `${view.item.id} (parked by ${view.parked})` : view.item.id) : undefined;
 }
 
 /**
@@ -339,7 +340,7 @@ function askText(push: GoalPush): string {
     : `no live job owns it: add a push step under ${goal.id} for one job that names and attacks the biggest blocker`;
   if (push.act === "steer") return `${ownerLabel(owner!)} owns it and it is off pace: steer it to name and attack the biggest blocker now`;
   if (push.act === "no_number") return "it has no target and no linked duty metric: set a target from the owner's words in this run";
-  if (push.act === "owner") return `it moves when the owner answers the For you ask on ${ownerAsks(push)}`;
+  if (push.act === "owner") return `it moves on the owner's word on ${ownerAsks(push)}`;
   if (push.act === "waiting") return `it waits ${push.waits}`;
   return `${owner ? ownerLabel(owner) : "its owner"} moves it on pace`;
 }
@@ -391,7 +392,7 @@ const paceText = (push: GoalPush): string => {
   const trend = push.trend;
   if (!trend || trend.kind === "unmeasured") return "not measured yet";
   if (trend.kind === "met") return "at target";
-  const pace = push.act === "owner" ? `waits on the owner's answer on ${ownerAsks(push)}` : push.act === "waiting" ? `waits ${push.waits}`
+  const pace = push.act === "owner" ? `waits on the owner's word on ${ownerAsks(push)}` : push.act === "waiting" ? `waits ${push.waits}`
     : pushNeeded(push) ? "off pace" : "on pace";
   return `${trendText(push.number!, trend, push.stale)}, ${pace}`;
 };
