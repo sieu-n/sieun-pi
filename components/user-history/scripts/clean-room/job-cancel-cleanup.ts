@@ -28,6 +28,22 @@ const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok
 export interface CancelRecord { at: string; job: string; childDir: string; session: string; scratch: string[]; paths: string[]; present: string[]; units: string[]; abort: string; archive: string }
 export const cancelFile = (run: string): string => join(dirname(run), `${run.split("/").at(-1)}.cancel.json`);
 
+/** What reopened or reached a cancelled job after `since`: a session_state other than archived, or a message to it, read from its own file. */
+function revivals(file: string, since: number): string[] {
+  if (!existsSync(file)) return [];
+  const found: string[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    let entry: { type?: string; timestamp?: string; state?: { status?: string; reason?: string }; customType?: string; content?: unknown; message?: { role?: string; content?: unknown } };
+    try { entry = JSON.parse(line); } catch { continue; }
+    const at = Date.parse(entry.timestamp ?? "");
+    if (!(at > since)) continue;
+    if (entry.type === "session_state" && entry.state?.status !== "archived") found.push(`${entry.timestamp} session_state ${entry.state?.status}`);
+    if (entry.type === "custom_message" && entry.customType === "agent_message") found.push(`${entry.timestamp} message "${clip(JSON.stringify(entry.content ?? ""), 120)}"`);
+    if (entry.type === "message" && entry.message?.role === "user") found.push(`${entry.timestamp} user turn "${clip(JSON.stringify(entry.message.content ?? ""), 120)}"`);
+  }
+  return found;
+}
+
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
   const chat = state.chat.id;
   const checks: { id: string; ok: boolean | null; detail: string }[] = [];
@@ -62,6 +78,11 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("d", !watched.length ? (cancel && over ? false : null) : left.length || running.length ? (over ? false : null) : logged.length === watched.length ? true : over ? false : null,
     `owned paths with files at the cancel: ${watched.join(", ") || "none"}; still there: ${left.join(", ") || "none"}; the service log names the deletion of ${logged.join(", ") || "none"}; ` +
     `units still running: ${running.map(([unit]) => unit).join(", ") || "none"}`);
+
+  const revived = cancel ? revivals(join(cancel.childDir, `${cancel.session}.jsonl`), Date.parse(cancel.at)) : [];
+  add("r", cancel ? revived.length === 0 : null, cancel
+    ? revived.length ? `the cancelled job came back after the cancel: ${revived.join("; ")}` : "the cancelled job stayed archived, and nothing reopened or messaged it after the cancel"
+    : "the harness has not cancelled a job yet");
 
   const roots = [join(homedir(), "scratch") + "/", "/tmp/"];
   const stray = freed.paths.filter(path => !roots.some(root => path.startsWith(root)) || !(explicit.includes(path) || scratch.includes(path)));
